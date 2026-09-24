@@ -49,5 +49,6 @@ Usage: `moneybin sql query [OPTIONS] QUERY`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--json-fields` | text |  | Comma-separated fields to include in JSON output (e.g. id,date,amount). Only applies with --output json. Available fields are documented in each command's --help text. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

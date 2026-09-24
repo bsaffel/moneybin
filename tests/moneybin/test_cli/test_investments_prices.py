@@ -601,6 +601,95 @@ class TestPricesRenderThroughTheSharedRenderer:
             assert header in result.stdout
         assert "0.0000432100" in result.stdout
 
+    def test_list_offers_no_pager_for_a_finite_human_result(self) -> None:
+        """A long price series can be read through the shared pager boundary."""
+        result = runner.invoke(app, ["list", "--help"])
+
+        assert result.exit_code == 0
+        assert "--no-pager" in result.stdout
+
+    @patch("moneybin.services.price_service.build_price_service")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_list_no_pager_prints_a_long_answer_without_starting_a_pager(
+        self,
+        _db: MagicMock,
+        build: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The command itself passes the escape hatch through to the pager boundary."""
+        from moneybin.cli import pager
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=True,
+            ascii=True,
+            width=20,
+            height=1,
+            symbols=TerminalSymbols("OK", "!", "X", ">"),
+            minus="-",
+        )
+
+        def _pager_policy(**_kwargs: object) -> TerminalPolicy:
+            return policy
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.investments.prices.get_terminal_policy",
+            _pager_policy,
+        )
+        paged: list[str] = []
+
+        def _capture_page(text: str, *, color: bool, wide: bool) -> bool:
+            del color, wide
+            paged.append(text)
+            return True
+
+        monkeypatch.setattr(
+            pager,
+            "page_text",
+            _capture_page,
+        )
+        service = build.return_value
+        service.resolve_security.return_value = "sec_1"
+        service.list_prices.return_value.rows = [
+            SimpleNamespace(
+                price_date=date(2026, 7, 15),
+                close=1,
+                quote_currency="USD",
+                source_type="tiingo",
+                price_basis="close",
+            )
+        ]
+
+        paged_result = runner.invoke(app, ["list", "sec_1"])
+        result = runner.invoke(app, ["list", "sec_1", "--no-pager"])
+
+        assert paged_result.exit_code == 0, paged_result.output
+        assert paged
+        assert result.exit_code == 0, result.output
+        assert "sec_1" in result.stdout
+
+    @patch("moneybin.services.price_service.build_price_service")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_list_empty_names_the_filtered_scope(
+        self, _db: MagicMock, build: MagicMock
+    ) -> None:
+        """An empty resolved series distinguishes no matching prices from silence."""
+        service = build.return_value
+        service.resolve_security.return_value = "sec_1"
+        service.list_prices.return_value.rows = []
+
+        result = runner.invoke(app, ["list", "sec_1", "--source", "tiingo"])
+
+        assert result.exit_code == 0, result.output
+        assert "Prices" in result.stdout
+        assert "No prices match this security and filter." in result.stdout
+
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_pull(
         _pull_result(

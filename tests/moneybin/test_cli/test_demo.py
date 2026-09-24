@@ -90,8 +90,9 @@ def test_demo_formats_its_headline_the_way_networth_does(mocker: Any) -> None:
     result = runner.invoke(app, ["demo", "--yes"])
 
     assert result.exit_code == 0, result.output
-    assert "EUR: 29,668.74" in result.output
-    assert f"GBP: {MINUS}1,278.75" in result.output
+    assert "Net worth (EUR):" in result.output
+    assert "29,668.74" in result.output
+    assert f"{MINUS}1,278.75" in result.output
 
 
 @pytest.mark.unit
@@ -106,6 +107,21 @@ def test_demo_json_uses_standard_envelope(mocker: Any) -> None:
     assert envelope["data"]["profile"] == "demo"
     assert envelope["data"]["net_worth"] == "12345.67"
     assert envelope["data"]["transaction_count"] == 900
+
+
+@pytest.mark.unit
+def test_demo_json_never_prompts_for_an_existing_demo_profile(mocker: Any) -> None:
+    """Agents cannot answer a rebuild prompt, so JSON refuses before a write."""
+    svc = _patch_service(mocker, _fake_result())
+    svc.profile_has_data.return_value = True
+    confirm = mocker.patch("typer.confirm")
+
+    result = runner.invoke(app, ["demo", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["error"] is not None
+    confirm.assert_not_called()
+    svc.run.assert_not_called()
 
 
 @pytest.mark.unit
@@ -149,6 +165,20 @@ def test_demo_json_carries_null_scalar_and_per_currency(mocker: Any) -> None:
             "account_count": 1,
         },
     ]
+
+
+@pytest.mark.unit
+def test_demo_json_doctor_failure_exits_nonzero(mocker: Any) -> None:
+    """JSON carries the same failed doctor outcome and process signal as text."""
+    _patch_service(
+        mocker,
+        _fake_result(doctor_failing=1, doctor_failing_names=["schema"]),
+    )
+
+    result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["data"]["doctor_failing"] == 1
 
 
 @pytest.mark.unit
@@ -319,8 +349,27 @@ def test_demo_quiet_suppresses_status_but_not_the_answer(mocker: Any) -> None:
     # The answer is the data — never suppressed.
     assert "12,345.67" in result.stdout
     # Status chatter is.
-    assert "Demo profile" not in result.output
+    assert "Demo profile ready" in result.output
     assert "Try next" not in result.output
+
+
+@pytest.mark.unit
+def test_demo_text_receipt_names_the_generated_persona_seed_and_counts(
+    mocker: Any,
+) -> None:
+    """The unpaged receipt must identify the dataset whose answer it prints."""
+    _patch_service(mocker, _fake_result(persona="family", seed=81))
+
+    result = runner.invoke(app, ["demo", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Profile:" in result.stdout
+    assert "Persona:" in result.stdout
+    assert "family" in result.stdout
+    assert "Seed:" in result.stdout
+    assert "81" in result.stdout
+    assert "Transactions saved:" in result.stdout
+    assert "900" in result.stdout
 
 
 @pytest.mark.unit
@@ -329,5 +378,5 @@ def test_demo_announces_the_default_profile_switch(mocker: Any) -> None:
     _patch_service(mocker, _fake_result(previous_default="personal"))
     result = runner.invoke(app, ["demo", "--yes"])
     assert result.exit_code == 0, result.output
-    assert "Default profile is now 'demo'" in result.output
+    assert "Default profile is now demo" in result.output
     assert "moneybin profile switch personal" in result.output

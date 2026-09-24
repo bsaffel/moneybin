@@ -38,6 +38,41 @@ def test_transactions_create_minimum(runner: CliRunner, db: Database) -> None:
     assert rows[0][0] == "Coffee"
 
 
+def test_transactions_create_text_is_an_unpaged_receipt(
+    runner: CliRunner, db: Database
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "transactions",
+            "create",
+            "--account",
+            "A1",
+            "--currency",
+            "USD",
+            "--",
+            "-12.50",
+            "Coffee",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Transaction created" in result.stdout
+    assert "−12.50 USD" in result.stdout
+
+
+def test_transactions_create_receipt_uses_committed_amount_and_unknown_currency(
+    runner: CliRunner, db: Database
+) -> None:
+    result = runner.invoke(
+        app, ["transactions", "create", "--account", "A1", "--", "-12.567", "Coffee"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "12.57 n/a" in result.stdout
+    assert "12.567" not in result.stdout
+
+
 def test_transactions_create_json_output(runner: CliRunner, db: Database) -> None:
     result = runner.invoke(
         app,

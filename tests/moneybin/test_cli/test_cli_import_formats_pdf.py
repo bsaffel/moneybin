@@ -13,6 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app as import_app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.payloads.imports import (
     ImportPdfFormatDetail,
@@ -88,6 +89,23 @@ def _mock_get_database(mocker: Any, pdf_formats: list[Any]) -> None:
     )
 
 
+def _pager_policy(*, no_pager: bool = False) -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=not no_pager,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=3,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -110,6 +128,48 @@ class TestFormatsListPdf:
         # PDF section present
         assert "PDF formats" in result.output
         assert "chase_a1b2c3d4e5f6" in result.output
+
+    def test_no_pager_keeps_the_catalog_complete(
+        self, runner: CliRunner, mocker: Any
+    ) -> None:
+        """The finite catalog accepts --no-pager and retains both result sections."""
+        _mock_get_database(mocker, [_make_pdf_format()])
+
+        result = runner.invoke(import_app, ["formats", "list", "--no-pager"])
+
+        assert result.exit_code == 0, result.output
+        assert "Tabular formats" in result.stdout
+        assert "PDF formats" in result.stdout
+
+    def test_long_catalog_pager_and_no_pager_receive_the_same_complete_answer(
+        self, runner: CliRunner, mocker: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A mixed long catalog pages one complete answer, including its action."""
+        pdf_formats = [
+            _make_pdf_format(name=f"issuer_format_{index:02d}_full_name")
+            for index in range(8)
+        ]
+        _mock_get_database(mocker, pdf_formats)
+        captured: list[str] = []
+        monkeypatch.setattr(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy", _pager_policy
+        )
+
+        def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+            captured.append(text)
+            return True
+
+        monkeypatch.setattr("moneybin.cli.pager.page_text", capture_page)
+        paged = runner.invoke(import_app, ["formats", "list"])
+        direct = runner.invoke(import_app, ["formats", "list", "--no-pager"])
+
+        assert paged.exit_code == direct.exit_code == 0
+        assert len(captured) == 1
+        assert "Tabular formats" in captured[0]
+        assert "PDF formats" in captured[0]
+        assert "issuer_format_07_full_name" in captured[0]
+        assert "moneybin import formats show <name>" in captured[0]
+        assert captured[0].removesuffix("\nq return to shell\n") == direct.stdout
 
     def test_default_includes_both_types_json(
         self, runner: CliRunner, mocker: Any

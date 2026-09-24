@@ -79,6 +79,28 @@ def get_active_categories(db: Database) -> list[dict[str, str | bool | None]]:
     return CategorizationService(db).get_active_categories()
 
 
+def test_list_merchants_carries_category_id_from_the_core_view(db: Database) -> None:
+    """The merchant category label remains joinable by its stable category ID."""
+    db.execute(
+        """
+        CREATE OR REPLACE VIEW core.dim_merchants AS
+        SELECT 'merchant-1' AS merchant_id,
+               'COFFEE' AS raw_pattern,
+               'contains' AS match_type,
+               'Coffee Shop' AS canonical_name,
+               'cat_food_coffee' AS category_id,
+               'Food' AS category,
+               'Coffee' AS subcategory
+        """
+    )
+
+    merchants = CategorizationQueries(db).list_merchants().merchants
+
+    assert len(merchants) == 1
+    assert merchants[0].category == "Food"
+    assert merchants[0].category_id == "cat_food_coffee"
+
+
 @pytest.fixture(autouse=True)
 def _core_tables(db: Database) -> None:  # pyright: ignore[reportUnusedFunction]
     create_core_tables(db)

@@ -30,12 +30,15 @@ from moneybin.cli.render import (
     ELISION,
     MINUS,
     Money,
+    MoneyWithCurrency,
     Placeholder,
     Style,
     _fit_columns,  # pyright: ignore[reportPrivateUsage]  # the fit is a property, not a rendering
     _table_width,  # pyright: ignore[reportPrivateUsage]  # so the check agrees with it on "fits"
+    build_summary,
     color_enabled,
     format_money,
+    render_human_text,
     render_note,
     render_rows,
     render_summary,
@@ -57,6 +60,26 @@ class _Terminal(io.StringIO):
         return True
 
 
+def _ascii_terminal_policy() -> Any:
+    """A non-styled terminal whose stdout accepts only ASCII bytes."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
 # --- format_money: separators and precision (requirement 11) ---
 
 
@@ -68,6 +91,19 @@ def test_format_money_always_separates_thousands() -> None:
 def test_format_money_always_shows_two_decimal_places() -> None:
     """Requirement 11: two decimal places always, even on a whole amount."""
     assert format_money(Decimal("42"), "balance") == "42.00"
+
+
+def test_money_with_currency_keeps_a_large_negative_value_atomic(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The denomination follows the exact signed value on a 40-column terminal."""
+    monkeypatch.setenv("COLUMNS", "40")
+    render_rows(
+        ["balance"],
+        [(MoneyWithCurrency(Decimal("-1234567.89"), "EUR"),)],
+        money={"balance": Money("balance")},
+    )
+    assert "−1,234,567.89 EUR" in capsys.readouterr().out
 
 
 def test_a_boolean_in_a_money_column_renders_absent_not_as_one() -> None:
@@ -1268,6 +1304,129 @@ def test_render_summary_aligns_values_under_each_other(
     assert lines[0].index("1.00") == lines[1].index("2.00")
 
 
+def test_render_summary_honors_the_supplied_terminal_width(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A summary uses the same width policy as tables and receipts."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=12,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+    render_summary([("Long label", "value")], terminal=terminal)
+
+    assert capsys.readouterr().out.splitlines() == ["Long label: ", "value"]
+
+
+def test_render_rows_uses_ascii_borders_for_an_ascii_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ASCII-only stdout must not receive Rich's default Unicode table border."""
+    render_rows(["status"], [("ready",)], terminal=_ascii_terminal_policy())
+
+    output = capsys.readouterr().out
+    output.encode("ascii")
+
+
+def test_render_rows_keeps_unicode_borders_without_ascii_policy(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The fallback does not change the normal Rich table presentation."""
+    render_rows(["status"], [("ready",)])
+
+    assert "┏" in capsys.readouterr().out
+
+
+def test_build_summary_styles_the_heading_and_labels_but_not_external_values() -> None:
+    """Receipt hierarchy must survive shared-summary composition.
+
+    Removing either semantic style makes a dense multi-section receipt flat;
+    styling the value would instead colour caller-provided text such as an
+    institution name or a recovery command.
+    """
+    from rich.text import Span, Text
+
+    summary = build_summary(
+        [("Loaded", "28 transactions"), ("Next", "moneybin sync status")],
+        title="Sync complete",
+    )
+
+    assert isinstance(summary, Text)
+    assert summary.spans == [
+        Span(0, len("Sync complete"), Style.HIERARCHY),
+        Span(len("Sync complete\n"), len("Sync complete\nLoaded:"), Style.CONTEXT),
+        Span(
+            len("Sync complete\nLoaded: 28 transactions\n"),
+            len("Sync complete\nLoaded: 28 transactions\nNext:"),
+            Style.CONTEXT,
+        ),
+    ]
+
+
+def test_summary_styles_are_visible_on_a_terminal_and_absent_from_plain_output() -> (
+    None
+):
+    """The shared receipt hierarchy must obey the terminal's one style decision."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    summary = build_summary(
+        [("Loaded", "28 transactions"), ("Next", "moneybin sync status")],
+        title="Sync complete",
+    )
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=False,
+        color=True,
+        style=True,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=False,
+        width=120,
+        height=24,
+        symbols=TerminalSymbols(success="✓", attention="!", failure="×", action="›"),
+        minus="−",
+    )
+    plain = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=False,
+        width=120,
+        height=24,
+        symbols=terminal.symbols,
+        minus="−",
+    )
+
+    styled = render_human_text(summary, terminal=terminal)
+    redirected = render_human_text(summary, terminal=plain)
+
+    assert "\x1b[1mSync complete" in styled
+    assert "\x1b[2mLoaded:" in styled
+    assert "moneybin sync status" in styled
+    assert (
+        redirected
+        == "Sync complete\nLoaded: 28 transactions\nNext:   moneybin sync status\n"
+    )
+    assert "\x1b" not in redirected
+
+
 # --- render_note (requirements 4, 5) ---
 
 
@@ -1317,8 +1476,9 @@ def test_quiet_does_not_suppress_result_rows(
 
 
 def _cli_modules() -> list[Path]:
-    """Every CLI module the guards apply to — the renderer itself is exempt."""
-    return sorted(p for p in CLI_ROOT.rglob("*.py") if p != RENDERER)
+    """Every CLI module except the centralized presentation helpers."""
+    presentation_helpers = {RENDERER, CLI_ROOT / "terminal.py"}
+    return sorted(p for p in CLI_ROOT.rglob("*.py") if p not in presentation_helpers)
 
 
 def _imported_roots(module: Path) -> set[str]:
@@ -1381,21 +1541,22 @@ def _styling_calls(module: Path) -> list[str]:
     ]
 
 
-def test_only_the_render_module_imports_rich() -> None:
-    """Requirements 1 and 36: Rich is the render layer's private dependency.
+def test_only_presentation_helpers_import_rich() -> None:
+    """Requirements 1 and 36: Rich stays out of command-local renderers.
 
     A command that cannot import Rich cannot build a second table idiom beside
     `render_rows`, and cannot write a style literal beside the palette. One
     guard covers both requirements because both failures need the same import.
     """
+    presentation_helpers = {"render.py", "terminal.py", "progress.py"}
     offenders = [
         str(module.relative_to(CLI_ROOT))
         for module in _cli_modules()
-        if "rich" in _imported_roots(module)
+        if module.name not in presentation_helpers and "rich" in _imported_roots(module)
     ]
     assert offenders == [], (
         "these modules import Rich directly instead of calling "
-        f"moneybin.cli.render: {offenders}"
+        f"moneybin.cli presentation helpers: {offenders}"
     )
 
 
@@ -1447,6 +1608,9 @@ def test_the_palette_names_a_meaning_for_every_colour() -> None:
         "POSITIVE",
         "NEGATIVE",
         "WARNING",
+        "HIERARCHY",
+        "CONTEXT",
+        "ACTION",
         "NEUTRAL",
     }
 

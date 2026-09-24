@@ -29,71 +29,38 @@ class _SuppressFilter(logging.Filter):
         return "Shutting down the event dispatcher" not in record.getMessage()
 
 
-# Logger-name prefixes whose INFO/DEBUG output is too noisy for the console but
-# should still reach the log file. That second half is the point: `logger.debug`
-# would drop these records everywhere, because the root logger sits at INFO and
-# never emits them at all. Use this list when the detail belongs in the file;
-# use `logger.debug` only when a surviving INFO line already carries it.
-#
-# - sqlmesh: model evaluation, plan creation, state sync, analytics. Has its own
-#   file via _setup_sqlmesh_file_handler.
-# - httpx/httpcore: one line per request, so a `sync pull` becomes a wall of
-#   "HTTP/1.1 201 Created".
-# - matching.engine: per-tier counts in the engine's own vocabulary. The file
-#   keeps them because MatchResult.summary() reports only run-wide totals.
-# - extractors.plaid: per-table row counts that name a Chase card a "Plaid
-#   account". The file keeps them because the CLI's per-institution totals go
-#   out through typer.echo, which never reaches the log file.
-#
-# This is a denylist: anything not named here reaches the console. That is the
-# deliberate choice. An allowlist would be quiet by default — nicer as new
-# dependencies arrive — but it inverts the default for every one of the ~168
-# `logger.info` sites in the tree, and each one whose output a user actually
-# needs becomes a silent regression. The cases worth hiding are enumerable; the
-# cases that must stay visible are not.
-_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = (
-    "sqlmesh",
-    "httpx",
-    "httpcore",
-    "moneybin.matching.engine",
-    "moneybin.extractors.plaid",
-    # Which of --profile / MONEYBIN_PROFILE / config.yaml chose the profile.
-    # A child logger so this one line can be suppressed without silencing
-    # `moneybin.cli`, which is ordinary user-facing output.
-    "moneybin.cli.utils.profile_source",
-    # Per-engine categorization counts. `categorize_pending()` restates them
-    # in its run summary, so they duplicate on the console — but the
-    # per-method path calls the engines directly with no summary, so the file
-    # needs them. A child logger keeps the parent's run summary visible.
-    "moneybin.services.categorization.orchestrator.engine_counts",
-)
-
-
-def _matches(name: str, prefixes: tuple[str, ...]) -> bool:
-    """True when ``name`` is one of ``prefixes`` or a descendant of one."""
-    return any(name == p or name.startswith(f"{p}.") for p in prefixes)
-
-
 class _ConsoleNoiseFilter(logging.Filter):
-    """Suppress noisy INFO messages from the console only.
+    """Keep normal CLI output to warnings while preserving other streams.
 
-    Attached to the console handler so file handlers still see everything.
-    WARNING and above always pass — quieting noise must never quiet a problem.
+    CLI result and progress presentation has dedicated stdout/stderr owners;
+    routine logging is diagnostic and appears only under ``--verbose``. File
+    handlers are deliberately unfiltered. MCP and SQLMesh keep their existing
+    host-facing console behavior.
     """
 
-    def __init__(self, *, file_sink: bool = False) -> None:
+    def __init__(self, *, stream: str, verbose: bool) -> None:
         super().__init__()
-        # Suppression assumes the log file keeps a copy of what stderr drops.
-        # With `log_to_file: false` there is no copy, and both
-        # docs/guides/observability.md and threat-model.md promise stderr stays
-        # "unaffected" so containers and journald can capture it — so filtering
-        # there would destroy records, not relocate them. Stand down instead.
-        self._file_sink = file_sink
+        self._stream = stream
+        self._verbose = verbose
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno >= logging.WARNING or not self._file_sink:
+        if record.levelno >= logging.WARNING:
             return True
-        return not _matches(record.name, _CONSOLE_SUPPRESSED_PREFIXES)
+        if self._stream == "mcp":
+            suppressed_prefixes = (
+                "sqlmesh",
+                "httpx",
+                "httpcore",
+                "moneybin.matching.engine",
+                "moneybin.extractors.plaid",
+            )
+            return not any(
+                record.name == prefix or record.name.startswith(f"{prefix}.")
+                for prefix in suppressed_prefixes
+            )
+        if self._stream != "cli":
+            return True
+        return self._verbose
 
 
 def session_log_path(
@@ -252,8 +219,7 @@ def setup_logging(
     # Prepare handlers
     handlers: list[logging.Handler] = []
 
-    # Console handler (always present, writes to stderr). Its filter is
-    # attached below, once we know whether a file handler actually landed.
+    # Console filtering is independent of whether file logging is available.
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
     handlers.append(console_handler)
@@ -279,14 +245,7 @@ def setup_logging(
             # ensures they still reach a log file for debugging.
             _setup_sqlmesh_file_handler(log_file_path, inner_formatter)
 
-    # Attach the console filter now that the file-handler outcome is known —
-    # including the mkdir failure above, which leaves stderr as the only sink
-    # just as surely as `log_to_file: false` does.
-    console_handler.addFilter(
-        _ConsoleNoiseFilter(
-            file_sink=any(isinstance(h, logging.FileHandler) for h in handlers)
-        )
-    )
+    console_handler.addFilter(_ConsoleNoiseFilter(stream=stream, verbose=verbose))
 
     # Configure root logger
     logging.basicConfig(

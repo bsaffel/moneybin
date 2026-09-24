@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 
 from moneybin import error_codes
 from moneybin.cli.commands.fx import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.services.currency_service import (
     RateUnavailableError,
     ResolvedRate,
@@ -79,6 +80,48 @@ class TestFxRate:
         assert "0.87138" in result.output
         assert "2026-03-13" in result.output
         assert "frankfurter" in result.output
+
+    @patch("moneybin.cli.commands.fx.get_database")
+    @_patched_resolve(_resolved(rate=Decimal("0.87138000")))
+    def test_rate_keeps_full_precision_in_a_narrow_terminal(
+        self,
+        _resolve: MagicMock,
+        _db: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A per-unit rate and its metadata stay together at 40 columns."""
+        policy = TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=40,
+            height=24,
+            symbols=TerminalSymbols("OK", "!", "X", ">"),
+            minus="-",
+        )
+
+        def policy_factory(**_: object) -> TerminalPolicy:
+            return policy
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.fx.get_terminal_policy", policy_factory
+        )
+        result = runner.invoke(app, ["rate", "USD", "EUR", "2026-03-13"])
+
+        assert result.exit_code == 0
+        rate_line = next(
+            line for line in result.output.splitlines() if "0.87138000" in line
+        )
+        assert rate_line.strip().replace(" ", "", 1).startswith("Rate:")
+        assert "0.87138000" in rate_line
+        assert "Pair:         USD/EUR" in result.output
+        assert "Applied date: 2026-03-13" in result.output
+        assert "Source:       frankfurter" in result.output
 
     @patch("moneybin.cli.commands.fx.get_database")
     @_patched_resolve(
@@ -248,6 +291,152 @@ class TestFxList:
         for header in ("date", "rate", "source"):
             assert header in result.output
 
+    @pytest.mark.parametrize("width", [40, 80])
+    @patch("moneybin.cli.commands.fx.get_database")
+    @patch(
+        "moneybin.services.currency_service.CurrencyService.list_rates",
+        return_value=[
+            _resolved(
+                rate=Decimal("1234567890.12345678"),
+                requested=date(2026, 3, 13),
+                published=date(2026, 3, 13),
+            )
+        ],
+    )
+    def test_list_keeps_long_rate_pair_and_date_at_40_and_80_columns(
+        self,
+        _rates: MagicMock,
+        _db: MagicMock,
+        width: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        policy = TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=width,
+            height=24,
+            symbols=TerminalSymbols("OK", "!", "X", ">"),
+            minus="-",
+        )
+
+        def policy_factory(**_: object) -> TerminalPolicy:
+            return policy
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.fx.get_terminal_policy", policy_factory
+        )
+
+        result = runner.invoke(app, ["list", "USD", "EUR", "--no-pager"])
+
+        assert result.exit_code == 0
+        rate_lines = [
+            line for line in result.output.splitlines() if "1234567890.12345678" in line
+        ]
+        assert len(rate_lines) == 1
+        assert "1234567890.12345678" in rate_lines[0]
+        assert "Scope:        USD/EUR" in result.output
+        assert "2026-03-13" in result.output
+
+    @patch("moneybin.cli.commands.fx.get_database")
+    @patch(
+        "moneybin.services.currency_service.CurrencyService.list_rates",
+        return_value=[
+            _resolved(
+                requested=date(2026, 3, day),
+                published=date(2026, 3, day),
+                rate=Decimal(f"0.{day:02d}12345678"),
+            )
+            for day in range(1, 10)
+        ],
+    )
+    def test_list_pages_the_complete_answer_and_no_pager_matches_it(
+        self,
+        _rates: MagicMock,
+        _db: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Paging receives the complete FX series and --no-pager prints it."""
+        from moneybin.cli import pager
+
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=40,
+            height=4,
+            symbols=TerminalSymbols("OK", "!", "X", ">"),
+            minus="-",
+        )
+
+        def policy_factory(**_: object) -> TerminalPolicy:
+            return policy
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.fx.get_terminal_policy", policy_factory
+        )
+        captured: list[str] = []
+
+        def capture_page(text: str, **_: object) -> bool:
+            captured.append(text)
+            return True
+
+        monkeypatch.setattr(pager, "page_text", capture_page)
+
+        paged = runner.invoke(app, ["list", "USD", "EUR"])
+        direct = runner.invoke(app, ["list", "USD", "EUR", "--no-pager"])
+
+        assert paged.exit_code == 0
+        assert direct.exit_code == 0
+        assert captured and "0.0112345678" in captured[0]
+        assert (
+            captured[0].replace("\n\nq return to shell\n", "").rstrip()
+            == direct.output.rstrip()
+        )
+
+    @pytest.mark.parametrize("quiet", [False, True])
+    @patch("moneybin.cli.commands.fx.get_database")
+    @patch(
+        "moneybin.services.currency_service.CurrencyService.list_rates",
+        return_value=[],
+    )
+    def test_empty_list_has_quiet_safe_guidance(
+        self,
+        _rates: MagicMock,
+        _db: MagicMock,
+        quiet: bool,
+    ) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "list",
+                "USD",
+                "EUR",
+                "--since",
+                "2026-03-01",
+                *(["--quiet"] if quiet else []),
+            ],
+        )
+
+        assert result.exit_code == 0
+        if quiet:
+            assert "USD/EUR" in result.output
+            assert "fx rate" not in result.output
+        else:
+            assert "No stored rates" in result.output
+            assert "since 2026-03-01" in result.output
+            assert "moneybin fx rate USD EUR" in result.output
+
     @patch("moneybin.cli.commands.fx.get_database")
     @patch(
         "moneybin.services.currency_service.CurrencyService.list_rates",
@@ -330,22 +519,62 @@ class TestFxSet:
         assert result.exit_code == 2
         assert db.call_count == 0
 
+    @patch("moneybin.cli.commands.fx.get_database")
+    @patch("moneybin.services.currency_service.CurrencyService.set_override")
+    def test_set_quiet_keeps_the_human_receipt_unpaged(
+        self, _override: MagicMock, _db: MagicMock
+    ) -> None:
+        result = runner.invoke(
+            app,
+            ["set", "USD", "EUR", "2026-03-13", "0.87138000", "--quiet"],
+        )
+
+        assert result.exit_code == 0
+        assert "Recorded 1 USD = 0.87138000 EUR on 2026-03-13" in result.output
+
 
 class TestFxDelete:
     """`fx delete` returns a date to provider pricing."""
 
+    @pytest.mark.parametrize(("ascii_mode", "success"), [(False, "✓"), (True, "OK")])
     @patch("moneybin.cli.commands.fx.get_database")
     @patch(
         "moneybin.services.currency_service.CurrencyService.delete_override",
         return_value=True,
     )
     def test_delete_confirms_a_removal(
-        self, _delete: MagicMock, _db: MagicMock
+        self,
+        _delete: MagicMock,
+        _db: MagicMock,
+        ascii_mode: bool,
+        success: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=ascii_mode,
+            width=80,
+            height=24,
+            symbols=TerminalSymbols(success, "!", "X", ">"),
+            minus="-" if ascii_mode else "−",
+        )
+
+        def policy_factory(**_: object) -> TerminalPolicy:
+            return policy
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.fx.get_terminal_policy", policy_factory
+        )
         result = runner.invoke(app, ["delete", "USD", "EUR", "2026-03-13"])
 
         assert result.exit_code == 0
-        assert "✅" in result.output
+        assert success in result.output
 
     @patch("moneybin.cli.commands.fx.get_database")
     @patch(
@@ -381,3 +610,16 @@ class TestFxDelete:
 
         assert result.exit_code == 0
         assert json.loads(result.output)["data"]["removed"] is False
+
+    @patch("moneybin.cli.commands.fx.get_database")
+    @patch(
+        "moneybin.services.currency_service.CurrencyService.delete_override",
+        return_value=True,
+    )
+    def test_delete_quiet_keeps_the_human_receipt_unpaged(
+        self, _delete: MagicMock, _db: MagicMock
+    ) -> None:
+        result = runner.invoke(app, ["delete", "USD", "EUR", "2026-03-13", "--quiet"])
+
+        assert result.exit_code == 0
+        assert "Removed the USD/EUR correction for 2026-03-13" in result.output

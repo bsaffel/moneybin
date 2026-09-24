@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -62,6 +63,9 @@ class DemoResult:
     # The default profile demo displaced, so the CLI can name the way back.
     # None when no default was set (or it was already `demo`).
     previous_default: str | None
+    # Text-only receipt context. JSON retains its established envelope shape.
+    start_date: date | None = None
+    end_date: date | None = None
 
 
 class DemoProfileNotOursError(UserError):
@@ -318,10 +322,16 @@ class DemoService:
             # 4. Generate persona data into the (now fresh) database.
             result = GeneratorEngine(persona, seed=seed, years=years).generate()
             counts = SyntheticWriter(db).write(result)
-            account_count = len(result.accounts)
+            account_count = sum(
+                counts.get(k, 0) for k in ("ofx_accounts", "tabular_accounts")
+            )
             txn_count = sum(
                 counts.get(k, 0) for k in ("ofx_transactions", "tabular_transactions")
             )
+            if account_count != len(result.accounts) or txn_count != len(
+                result.transactions
+            ):
+                raise DemoRefreshFailedError("generated rows were not all saved")
 
             # 5. Transform FIRST, on its own. `refresh()` always runs its steps in
             #    canonical order (gsheet → match → transform → categorize), so a
@@ -390,4 +400,6 @@ class DemoService:
             total_liabilities=snapshot.total_liabilities,
             per_currency=list(snapshot.per_currency),
             previous_default=previous_default,
+            start_date=result.start_date,
+            end_date=result.end_date,
         )

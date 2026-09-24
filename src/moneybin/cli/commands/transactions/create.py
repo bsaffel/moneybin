@@ -13,8 +13,21 @@ from decimal import Decimal, InvalidOperation
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, render_or_json
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    currency_label,
+    emit_human_result,
+    output_option,
+    render_or_json,
+)
+from moneybin.cli.render import (
+    Money,
+    MoneyWithCurrency,
+    build_rows,
+    build_summary,
+    compose_human_result,
+)
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
@@ -56,8 +69,13 @@ def transactions_create(
     try:
         amount_dec = Decimal(amount)
     except InvalidOperation as e:
-        typer.echo(f"❌ Invalid --amount {amount!r}: not a decimal", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="transactions_create",
+            message=f"Invalid --amount {amount!r}: not a decimal",
+        )
 
     parsed_date: date_cls
     if date is None:
@@ -66,8 +84,13 @@ def transactions_create(
         try:
             parsed_date = date_cls.fromisoformat(date)
         except ValueError as e:
-            typer.echo(f"❌ Invalid --date {date!r}: expected YYYY-MM-DD", err=True)
-            raise typer.Exit(2) from e
+            abort_cli_error(
+                e,
+                output=output,
+                exit_code=2,
+                cli_actor="transactions_create",
+                message=f"Invalid --date {date!r}: expected YYYY-MM-DD",
+            )
 
     entry: dict[str, object] = {
         "account_id": account,
@@ -107,8 +130,7 @@ def transactions_create(
                 if tags:
                     applied_tags = svc.add_tags(transaction_id, tags, actor="cli")
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(e, output=output, exit_code=1, cli_actor="transactions_create")
 
     payload = {
         "transaction_id": transaction_id,
@@ -125,10 +147,26 @@ def transactions_create(
         )
         return
 
-    logger.info(
-        f"✅ Created transaction {transaction_id} (import_id={batch.import_id})"
-    )
+    receipt = [
+        ("Transaction", transaction_id),
+        ("Account", account),
+        ("Description", description),
+    ]
     if note_id:
-        logger.info(f"   note_id={note_id}")
+        receipt.append(("Note ID", note_id))
     if applied_tags:
-        logger.info(f"   tags: {', '.join(applied_tags)}")
+        receipt.append(("Tags", ", ".join(applied_tags)))
+    emit_human_result(
+        compose_human_result([
+            build_summary(receipt, title="Transaction created"),
+            build_rows(
+                ["amount"],
+                [(MoneyWithCurrency(row.amount, currency_label(row.currency_code)),)],
+                money={"amount": Money("flow")},
+                terminal=get_terminal_policy(),
+            ),
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )

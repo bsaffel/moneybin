@@ -22,31 +22,38 @@ hygiene — importing this module must stay cheap enough for `--help`.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import accumulate
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import typer
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
+    from moneybin.cli.terminal import TerminalPolicy
     from moneybin.reports._framework.contract import MoneyKind, Polarity
 
 __all__ = [
     "UNCATEGORIZED_LABEL",
     "ColumnView",
     "Money",
+    "MoneyWithCurrency",
     "Placeholder",
     "Style",
     "color_enabled",
+    "build_rows",
+    "build_summary",
+    "compose_human_result",
     "column_view",
     "count_wide_request",
     "format_money",
+    "render_human_text",
     "render_note",
     "render_rows",
     "render_summary",
@@ -58,6 +65,11 @@ MINUS = "\N{MINUS SIGN}"
 The design system's ``Amount`` component signs money with this glyph; matching
 it keeps a CLI amount and a web amount the same string.
 """
+
+_TERMINAL_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|.)"
+)
+_TERMINAL_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 
 
 class Style(StrEnum):
@@ -83,6 +95,9 @@ class Style(StrEnum):
     POSITIVE = "green"
     NEGATIVE = "red"
     WARNING = "yellow"
+    HIERARCHY = "bold"
+    CONTEXT = "dim"
+    ACTION = "cyan"
     NEUTRAL = ""
 
 
@@ -134,7 +149,15 @@ class Money:
         return Style.NEUTRAL
 
 
-def format_money(value: object, kind: MoneyKind) -> str:
+@dataclass(frozen=True, slots=True)
+class MoneyWithCurrency:
+    """A monetary value and its normalized currency, rendered atomically."""
+
+    amount: object
+    currency: str
+
+
+def format_money(value: object, kind: MoneyKind, *, minus: str = MINUS) -> str:
     """Stringify one amount — the only place text output does so (req 11).
 
     Thousands separators always, two decimal places always. A missing amount
@@ -163,7 +186,7 @@ def format_money(value: object, kind: MoneyKind) -> str:
         return "-"
     digits = f"{abs(amount):,.2f}"
     if amount < 0:
-        return f"{MINUS}{digits}"
+        return f"{minus}{digits}"
     # `flow` and `delta` state their direction; a zero has none to state, so it
     # goes unsigned rather than claiming income with a `+`.
     if kind in ("flow", "delta") and amount > 0:
@@ -181,6 +204,38 @@ def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
         return False
     isatty = getattr(stream, "isatty", None)
     return bool(isatty and isatty())
+
+
+def render_human_text(result: RenderableType, *, terminal: TerminalPolicy) -> str:
+    """Render one answer once at the selected width for output or paging."""
+    from rich.console import Console
+    from rich.segment import Segment, Segments
+
+    console = Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
+    )
+    renderable = result.table if isinstance(result, _RowsAnswer) else result
+    lines = console.render_lines(renderable, pad=False, new_lines=True)
+    safe_segments = (
+        Segment(
+            _TERMINAL_CONTROL.sub("", _TERMINAL_ESCAPE.sub("", segment.text)),
+            segment.style,
+            segment.control,
+        )
+        for line in lines
+        for segment in line
+    )
+    with console.capture() as capture:
+        console.print(Segments(safe_segments), end="")
+    text = capture.get()
+    return (
+        text if not isinstance(result, _RowsAnswer) else text + result.disclosure + "\n"
+    )
 
 
 #: Stands in for the columns a width fit dropped, in the position it dropped
@@ -216,6 +271,20 @@ class Placeholder:
 
     column: str
     value: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RowsAnswer:
+    """A table and its one-line disclosure, rendered as one answer."""
+
+    table: RenderableType
+    disclosure: str
+
+    def __rich_console__(self, console: object, options: object):
+        from rich.segment import Segment
+
+        yield self.table
+        yield Segment(self.disclosure + "\n")
 
 
 def _cell_width(cell: RenderableType) -> int:
@@ -382,7 +451,7 @@ def column_view[T](
     )
 
 
-def render_rows(
+def build_rows(
     columns: Sequence[str],
     rows: Iterable[Sequence[object]],
     *,
@@ -393,8 +462,9 @@ def render_rows(
     has_more: bool = False,
     placeholder: Placeholder | None = None,
     fit: bool = False,
-) -> None:
-    """Render ``rows`` as a table to stdout (requirement 2).
+    terminal: TerminalPolicy | None = None,
+) -> RenderableType:
+    """Build ``rows`` as a table renderable (requirement 2).
 
     ``money`` declares the columns holding amounts, keyed by header name.
     Declared columns are formatted by :func:`format_money`, right-aligned
@@ -451,8 +521,17 @@ def render_rows(
     repeated rows; collapsing them here would make the output look right while
     the total stayed wrong, removing the symptom that finds the defect.
     """
-    from rich.console import Console  # defer heavy import
+    from rich import box  # defer heavy import
+    from rich.console import (
+        Console,  # defer heavy import
+    )
     from rich.table import Table  # defer heavy import
+    from rich.text import Text  # defer heavy import
+
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
 
     declared = money or {}
     # Formatting and atomicity are separate declarations. A per-unit price is
@@ -468,7 +547,10 @@ def render_rows(
     console = Console(
         markup=False,
         highlight=False,
-        no_color=not color_enabled(sys.stdout, os.environ),
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
     )
     absent_at: int | None = None
     absent_as = ""
@@ -487,7 +569,15 @@ def render_rows(
         absent_at = columns.index(placeholder.column)
         absent_as = placeholder.value
     cells_source: Iterable[tuple[list[RenderableType], bool]] = (
-        _cells(columns, row, declared, absent_at, absent_as) for row in rows
+        _cells(
+            columns,
+            row,
+            declared,
+            absent_at,
+            absent_as,
+            minus=terminal.minus,
+        )
+        for row in rows
     )
     kept = tuple(range(len(columns)))
     if fit and columns:
@@ -514,13 +604,13 @@ def render_rows(
         None,
     )
 
-    table = Table()
+    table = Table(box=box.ASCII if terminal.ascii else box.HEAVY_HEAD)
     for at, i in enumerate(kept):
         name = columns[i]
         is_money = name in declared
         is_number = name in unwrappable
         table.add_column(
-            name,
+            Text(name),
             justify="right" if is_money else "left",
             # Text folds; a number does not. Folding only saves a value that
             # has a space to break on, and the text values most likely to
@@ -548,7 +638,7 @@ def render_rows(
             no_wrap=is_number,
         )
         if at == gap:
-            table.add_column(ELISION, justify="center", overflow="fold")
+            table.add_column(Text(ELISION), justify="center", overflow="fold")
     # Counted off the kept columns, not the caller's whole projection: the
     # disclosure is about what this table shows, and a placeholder in a column
     # the fit dropped is not on screen to be misread.
@@ -566,7 +656,6 @@ def render_rows(
     # Rich holds every cell now, so let a buffered measurement copy go before
     # rendering allocates its own.
     del cells_source
-    console.print(table)
     # Counted from what was actually printed, so a caller's declared narrowing
     # and the renderer's own width fit are disclosed by one line rather than
     # two — and a fit the caller never asked about still cannot happen silently.
@@ -592,11 +681,97 @@ def render_rows(
         # parameter): both are load-bearing. `moneybin reports spending-trend >
         # report.txt` has to capture the disclosure with the table it describes,
         # or the file records a truncated result that reads as a whole one.
-        typer.echo(" · ".join(clauses))
+        return _RowsAnswer(table, " · ".join(clauses))
+    return table
+
+
+def render_rows(
+    columns: Sequence[str],
+    rows: Iterable[Sequence[object]],
+    *,
+    money: Mapping[str, Money] | None = None,
+    numeric: Sequence[str] | None = None,
+    total_columns: int | None = None,
+    total_rows: int | None = None,
+    has_more: bool = False,
+    placeholder: Placeholder | None = None,
+    fit: bool = False,
+    terminal: TerminalPolicy | None = None,
+) -> None:
+    """Render ``rows`` as a table to stdout using :func:`build_rows`."""
+    from rich.console import Console
+
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
+    console = Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
+    )
+    result = build_rows(
+        columns,
+        rows,
+        money=money,
+        numeric=numeric,
+        total_columns=total_columns,
+        total_rows=total_rows,
+        has_more=has_more,
+        placeholder=placeholder,
+        fit=fit,
+        terminal=terminal,
+    )
+    if isinstance(result, _RowsAnswer):
+        console.print(result.table)
+        typer.echo(result.disclosure)
+        return
+    console.print(result)
+
+
+def build_summary(
+    pairs: Sequence[tuple[str, str]], *, title: str | None = None
+) -> RenderableType:
+    """Build labelled scalars for composition with rows in one answer."""
+    from rich.text import Text
+
+    if not pairs:
+        return Text()
+    width = max(len(label) for label, _ in pairs) + 1
+    summary = Text()
+    if title is not None:
+        summary.append(title, style=str(Style.HIERARCHY))
+        summary.append("\n")
+    for index, (label, value) in enumerate(pairs):
+        summary.append(f"{label}:", style=str(Style.CONTEXT))
+        summary.append(" " * (width - len(label) - 1))
+        summary.append(f" {value}")
+        if index != len(pairs) - 1:
+            summary.append("\n")
+    return summary
+
+
+def compose_human_result(
+    parts: Sequence[object], *, disclosures: Sequence[str] = ()
+) -> RenderableType:
+    """Compose scalars, rows, and disclosures before terminal paging."""
+    from rich.console import Group
+    from rich.text import Text
+
+    rendered = list(parts)
+    if disclosures:
+        rendered.append(Text("\n".join(disclosures)))
+    return Group(*cast("Sequence[RenderableType]", rendered))
 
 
 def render_summary(
-    pairs: Sequence[tuple[str, str]], *, title: str | None = None
+    pairs: Sequence[tuple[str, str]],
+    *,
+    title: str | None = None,
+    terminal: TerminalPolicy | None = None,
 ) -> None:
     """Render labelled scalars to stdout as aligned pairs (requirement 3).
 
@@ -607,13 +782,21 @@ def render_summary(
     the reader needs to know which is which; `reports networth` emits one per
     currency the profile holds.
     """
-    if not pairs:
-        return
-    if title is not None:
-        typer.echo(title)
-    width = max(len(label) for label, _ in pairs) + 1
-    for label, value in pairs:
-        typer.echo(f"{label + ':':<{width}} {value}")
+    from rich.console import Console
+
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
+
+    Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
+    ).print(build_summary(pairs, title=title))
 
 
 def render_note(message: str, *, quiet: bool = False, warn: bool = False) -> None:
@@ -641,6 +824,8 @@ def _cells(
     declared: Mapping[str, Money],
     absent_at: int | None = None,
     absent_as: str = "",
+    *,
+    minus: str = MINUS,
 ) -> tuple[list[RenderableType], bool]:
     """Render one record's cells, and report whether the declared value was absent.
 
@@ -675,14 +860,18 @@ def _cells(
                 # agree means normalizing blanks in staging, which is a change
                 # to what the queue contains rather than to how it renders.
                 absent = True
-                cells.append(absent_as)
+                cells.append(Text(absent_as))
             else:
-                cells.append("" if value is None else str(value))
+                cells.append(Text("" if value is None else str(value)))
             continue
+        raw_amount = value.amount if isinstance(value, MoneyWithCurrency) else value
+        text = format_money(raw_amount, column_money.kind, minus=minus)
+        if isinstance(value, MoneyWithCurrency):
+            text = f"{text} {value.currency}"
         cells.append(
             Text(
-                format_money(value, column_money.kind),
-                style=str(column_money.style_for(value)),
+                text,
+                style=str(column_money.style_for(raw_amount)),
             )
         )
     return cells, absent

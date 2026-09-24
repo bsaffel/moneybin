@@ -1,16 +1,17 @@
 """system — system and data status meta-view."""
 
-import logging
-
 import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
@@ -28,13 +29,12 @@ app.command(
     help="Run pipeline integrity checks across all invariants",
 )(_doctor.doctor_command)
 
-logger = logging.getLogger(__name__)
-
 
 @app.command("status")
 def system_status(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # status is data-only; nothing to suppress
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show data inventory and pending review queue counts."""
     from moneybin.exports.service import ExportService
@@ -83,20 +83,27 @@ def system_status(
         )
         return
 
-    typer.echo(f"Accounts: {s.accounts_count}")
-    if s.transactions_count:
-        typer.echo(f"Transactions: {s.transactions_count} ({min_d} – {max_d})")
-    else:
-        typer.echo("Transactions: 0")
-    typer.echo(f"Last import: {s.last_import_at or 'never'}")
-    typer.echo(f"Matches pending: {s.matches_pending}")
-    typer.echo(f"Uncategorized: {s.categorize_pending}")
+    transaction_range = (
+        f"{s.transactions_count} ({min_d} – {max_d})" if s.transactions_count else "0"
+    )
+    pairs = [
+        ("Accounts", str(s.accounts_count)),
+        ("Transactions", transaction_range),
+        ("Last import", str(s.last_import_at or "never")),
+        ("Matches pending", str(s.matches_pending)),
+        ("Uncategorized", str(s.categorize_pending)),
+    ]
     for destination in exports.destinations:
         state = "ready" if destination.ready else "not ready"
-        line = (
-            f"Export {destination.name} ({destination.kind}): {state}; "
-            f"write capable: {destination.write_capable}"
+        value = (
+            f"{destination.kind}; {state}; write capable: {destination.write_capable}"
         )
         if destination.reasons:
-            line = f"{line}; reasons: {', '.join(destination.reasons)}"
-        typer.echo(line)
+            value = f"{value}; reasons: {', '.join(destination.reasons)}"
+        pairs.append((f"Export {destination.name}", value))
+    emit_human_result(
+        compose_human_result([build_summary(pairs, title="System status")]),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )

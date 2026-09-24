@@ -473,6 +473,23 @@ class TestProfileSet:
         data = yaml.safe_load(config_path.read_text())
         assert data["mcp"]["max_rows"] == 500
 
+    def test_set_never_logs_the_raw_setting_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A config write must not send a supplied secret-shaped value to logs."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+
+        with caplog.at_level("INFO", logger="moneybin.services.profile_service"):
+            svc.set("alice", "logging.level", "synthetic-secret-value")
+
+        assert "synthetic-secret-value" not in caplog.text
+        assert "logging.level" in caplog.text
+
     def test_set_invalid_key_format_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

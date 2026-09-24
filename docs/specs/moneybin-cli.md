@@ -937,6 +937,9 @@ Error handling: if any pipeline stage fails, prior stages' data is preserved (ra
 ### `sync pull` follows the same pattern
 
 After fetching new data from providers, `sync pull` runs the same transform -> match -> categorize pipeline and reports identically.
+Any failed requested post-load refresh stage leaves the pull partial and exits
+nonzero in both text and JSON modes; intentionally unrequested or cleanly
+skipped stages do not change the exit status.
 
 ### `--validate` (parse-only preview)
 
@@ -984,6 +987,12 @@ Supported clients: `claude-desktop`, `claude-code`, `cursor`, `vscode`, `windsur
 - `chatgpt-desktop` installs into the **shared Codex host config** (`~/.codex/config.toml`), because the ChatGPT desktop app hosts Codex and shares its MCP configuration — installing for `codex` or `chatgpt-desktop` is equivalent. ChatGPT on the **web/mobile** cannot reach a local server (it doesn't read local Codex config); that needs remote transport with auth, which is M3D.
 - `--yes` / `-y` — skip the install confirmation prompt.
 - Interactive mode (no `--client` flag) prompts the user to select a client and profile.
+
+**Superseding implementation note.** The current CLI defaults an omitted
+`--client` to `claude-desktop` and resolves an omitted profile from the active
+profile; it does not prompt for either optional value. This supersedes only the
+interaction detail above. [CLI Human Experience](cli-human-experience.md)
+requires prompts for missing required choices, not optional defaults.
 
 Scope: install only. Does not edit or remove existing entries — that's the user's responsibility. Re-running `--install` for a different profile **adds** an additional entry rather than replacing the previous one.
 

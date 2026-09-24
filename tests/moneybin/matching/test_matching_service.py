@@ -10,7 +10,7 @@ from pytest_mock import MockerFixture
 import moneybin.services.matching_service as matching_service
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.matching.aliasing import AliasForwardResult
 from moneybin.matching.application import MatchApplicationEffects, MatchStatusChange
 from moneybin.matching.engine import MatchResult, MatchRunError
@@ -32,6 +32,8 @@ def _seed(
     status: MatchStatus,
     *,
     match_type: str = "dedup",
+    confidence_score: float = 0.9,
+    match_signals: dict[str, object] | None = None,
 ) -> None:
     MatchDecisionsRepo(db).insert(
         match_id=match_id,
@@ -42,8 +44,8 @@ def _seed(
         source_type_b="ofx",
         source_origin_b="o2",
         account_id="acct1",
-        confidence_score=0.9,
-        match_signals={},
+        confidence_score=confidence_score,
+        match_signals=match_signals or {},
         match_tier="3",
         match_type=match_type,
         account_id_b="acct2" if match_type == "transfer" else None,
@@ -322,6 +324,154 @@ def test_accept_all_pending_accepts_and_counts(db: Database) -> None:
     assert outcome.reversed_by_reconciliation == 0
     assert _status_of(db, "q1") == "accepted"
     assert MatchingService(db).get_pending() == []
+
+
+def test_accept_previewed_changes_only_the_limited_selection(db: Database) -> None:
+    """A bounded approval cannot widen to the rest of the pending queue."""
+    _seed(db, "low", "pending", confidence_score=0.7)
+    _seed(db, "middle", "pending", confidence_score=0.8)
+    _seed(db, "high", "pending", confidence_score=0.9)
+
+    service = MatchingService(db)
+    selection = service.preview_pending(limit=1)
+    outcome = service.accept_previewed(selection, actor="cli")
+
+    assert selection.ids == ("high",)
+    assert outcome.accepted == 1
+    assert {
+        match_id: _status_of(db, match_id) for match_id in ("high", "middle", "low")
+    } == {"high": "accepted", "middle": "pending", "low": "pending"}
+    updates = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log "
+        "WHERE action = 'match_decision.update_status'"
+    ).fetchone()
+    assert updates == (1,)
+
+
+@pytest.mark.parametrize("drift", ["changed", "deleted", "displaced"])
+def test_accept_previewed_refuses_a_stale_selection(db: Database, drift: str) -> None:
+    """A changed selected set requires another explicit approval."""
+    _seed(db, "selected", "pending", confidence_score=0.9)
+    _seed(db, "outside", "pending", confidence_score=0.8)
+    service = MatchingService(db)
+    selection = service.preview_pending(limit=1)
+
+    if drift == "changed":
+        db.execute(
+            "UPDATE app.match_decisions SET match_reason = 'changed' "
+            "WHERE match_id = ?",
+            ["selected"],
+        )
+    elif drift == "deleted":
+        db.execute("DELETE FROM app.match_decisions WHERE match_id = ?", ["selected"])
+    else:
+        _seed(db, "new-high", "pending", confidence_score=0.99)
+
+    with pytest.raises(UserError, match="changed") as exc:
+        service.accept_previewed(selection, actor="cli")
+
+    assert exc.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert _status_of(db, "outside") == "pending"
+    if drift != "deleted":
+        assert _status_of(db, "selected") == "pending"
+    updates = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log "
+        "WHERE action = 'match_decision.update_status'"
+    ).fetchone()
+    assert updates == (0,)
+
+
+def test_accept_previewed_ignores_new_rows_outside_the_limited_selection(
+    db: Database,
+) -> None:
+    """The preview fingerprint intentionally excludes unrelated lower-ranked work."""
+    _seed(db, "selected", "pending", confidence_score=0.9)
+    service = MatchingService(db)
+    selection = service.preview_pending(limit=1)
+    _seed(db, "outside", "pending", confidence_score=0.1)
+
+    service.accept_previewed(selection, actor="cli")
+
+    assert _status_of(db, "selected") == "accepted"
+    assert _status_of(db, "outside") == "pending"
+
+
+def test_accept_previewed_accepts_equivalent_match_signals_json(db: Database) -> None:
+    """Database JSON key order is not a change to the reviewed proposal."""
+    _seed(db, "selected", "pending", match_signals={"a": 1, "b": 2})
+    service = MatchingService(db)
+    selection = service.preview_pending(limit=1)
+    db.execute(
+        "UPDATE app.match_decisions SET match_signals = ? WHERE match_id = ?",
+        ['{"b":2,"a":1}', "selected"],
+    )
+
+    service.accept_previewed(selection, actor="cli")
+
+    assert _status_of(db, "selected") == "accepted"
+
+
+def test_accept_previewed_reports_committed_effects_when_fx_restatement_fails(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FX runs after commit, so its failure cannot turn saved work into a rollback."""
+    _seed(db, "selected", "pending")
+    selection = MatchingService(db).preview_pending(limit=1)
+
+    def _fail_restatement(*_args: object, **_kwargs: object) -> None:
+        raise UserError(
+            "FX accounting needs refresh.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+            hint="Run 'moneybin refresh' before relying on FX lots or gains.",
+            recovery_actions=[
+                RecoveryAction(
+                    tool="refresh",
+                    arguments={},
+                    rationale="Rebuild derived FX accounting after the saved match decision.",
+                    confidence="suggested",
+                    idempotent=True,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting_after_match_effects",
+        _fail_restatement,
+    )
+
+    outcome = MatchingService(db).accept_previewed(selection, actor="cli")
+
+    assert outcome.accepted == 1
+    assert outcome.accounting_stale is True
+    assert outcome.accounting_error_code == error_codes.REFRESH_MODEL_FAILED
+    assert (
+        outcome.accounting_hint
+        == "Run 'moneybin refresh' before relying on FX lots or gains."
+    )
+    assert outcome.accounting_recovery_actions[0].tool == "refresh"
+    assert _status_of(db, "selected") == "accepted"
+
+
+def test_accept_all_pending_keeps_its_existing_fx_error_behavior(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounded receipt does not change legacy bulk callers' exception contract."""
+    _seed(db, "selected", "pending")
+
+    def _fail_restatement(*_args: object, **_kwargs: object) -> None:
+        raise UserError(
+            "FX accounting needs refresh.", code=error_codes.REFRESH_MODEL_FAILED
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting_after_match_effects",
+        _fail_restatement,
+    )
+
+    with pytest.raises(UserError, match="FX accounting"):
+        MatchingService(db).accept_all_pending(actor="cli")
+
+    assert _status_of(db, "selected") == "accepted"
 
 
 def test_accept_all_pending_restates_when_it_accepts_a_transfer(
