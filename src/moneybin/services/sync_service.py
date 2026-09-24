@@ -16,6 +16,7 @@ from collections.abc import Callable
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
@@ -26,6 +27,7 @@ from moneybin.connectors.sync_models import (
     SyncDataResponse,
 )
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.investments.source_overlap import investment_source_overlap
@@ -105,8 +107,9 @@ class SyncService:
         ``docs/specs/sync-plaid.md`` Req 10 for the latency profile.
         """
         if institution is not None and provider_item_id is not None:
-            raise ValueError(
-                "institution and provider_item_id are mutually exclusive — pass one or neither"
+            raise UserError(
+                "institution and provider_item_id are mutually exclusive — pass one or neither",
+                code=error_codes.MUTATION_INVALID_INPUT,
             )
         if provider_item_id is None and institution is not None:
             provider_item_id = self._resolve_institution(institution)
@@ -486,29 +489,33 @@ class SyncService:
         Mutually exclusive with `institution`, mirroring `pull()`'s guard.
         """
         if institution is not None and provider_item_id is not None:
-            raise ValueError(
+            raise UserError(
                 "institution and provider_item_id are mutually exclusive — "
-                "pass exactly one"
+                "pass exactly one",
+                code=error_codes.MUTATION_INVALID_INPUT,
             )
         if provider_item_id is not None:
             inst = self._find_institution_by_item(provider_item_id)
             if inst is None:
-                raise ValueError(
+                raise UserError(
                     f"no connected institution with provider_item_id "
                     f"'{provider_item_id}' — run `moneybin sync status` to "
-                    f"list connected banks"
+                    f"list connected banks",
+                    code=error_codes.MUTATION_NOT_FOUND,
                 )
             return inst
         if institution is None:
-            raise ValueError(
+            raise UserError(
                 "institution or provider_item_id is required to disconnect — "
-                "run `moneybin sync status` to list connected banks"
+                "run `moneybin sync status` to list connected banks",
+                code=error_codes.SYNC_INSTITUTION_REQUIRED,
             )
         inst = self._find_institution(institution)
         if inst is None:
-            raise ValueError(
+            raise UserError(
                 f"no connected institution matching '{institution}' — "
-                f"run `moneybin sync status` to list connected banks"
+                f"run `moneybin sync status` to list connected banks",
+                code=error_codes.MUTATION_NOT_FOUND,
             )
         return inst
 
@@ -565,10 +572,11 @@ class SyncService:
                 f"(linked {m.created_at.strftime('%Y-%m-%d %H:%M UTC')})"
                 for m in matches
             )
-            raise ValueError(
+            raise UserError(
                 f"multiple connected institutions match '{name}': {candidates}. "
                 f"Target one by provider_item_id; `moneybin sync status --wide` "
-                f"lists every connection's id."
+                f"lists every connection's id.",
+                code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
             )
         return matches[0] if matches else None
 
@@ -593,8 +601,9 @@ class SyncService:
         """
         inst = self._find_institution(name)
         if inst is None:
-            raise ValueError(
+            raise UserError(
                 f"no connected institution matching '{name}' — "
-                f"run `moneybin sync status` to list connected banks"
+                f"run `moneybin sync status` to list connected banks",
+                code=error_codes.MUTATION_NOT_FOUND,
             )
         return inst.provider_item_id

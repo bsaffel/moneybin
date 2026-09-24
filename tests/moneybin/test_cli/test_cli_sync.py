@@ -11,6 +11,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.main import app
 from moneybin.cli.output import OutputFormat
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
@@ -20,6 +21,7 @@ from moneybin.connectors.sync_models import (
     PullResult,
     SyncConnectionView,
 )
+from moneybin.errors import UserError
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 runner = CliRunner()
@@ -1014,11 +1016,12 @@ def test_sync_disconnect_by_provider_item_id(mock_build: MagicMock) -> None:
 def test_sync_disconnect_rejects_both_institution_and_provider_item_id(
     mock_build: MagicMock,
 ) -> None:
-    service = MagicMock()
-    service.disconnect.side_effect = ValueError(
-        "institution and provider_item_id are mutually exclusive — pass exactly one"
-    )
-    mock_build.return_value.__enter__.return_value = service
+    """Both selectors refuse as a usage error before the confirmation gate.
+
+    Even with --yes present, the selector check must fire first — passing
+    both should never reach the service, and the message must name both
+    flags rather than telling the caller to add --yes.
+    """
     result = runner.invoke(
         app,
         [
@@ -1031,7 +1034,37 @@ def test_sync_disconnect_rejects_both_institution_and_provider_item_id(
             "--yes",
         ],
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2, result.output
+    assert "--institution" in result.stderr
+    assert "--provider-item-id" in result.stderr
+    assert "--yes" not in result.stderr
+    mock_build.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_rejects_both_selectors_json(mock_build: MagicMock) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--institution",
+            "Chase",
+            "--provider-item-id",
+            "item_a",
+            "--yes",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "mutation_invalid_input"
+    assert "--institution" in payload["error"]["hint"]
+    assert "--provider-item-id" in payload["error"]["hint"]
+    assert "--yes" not in payload["error"]["hint"]
+    mock_build.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1050,14 +1083,31 @@ def test_sync_disconnect_requires_yes_without_an_interactive_terminal(
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_disconnect_requires_a_target(mock_build: MagicMock) -> None:
-    """Neither --institution nor --provider-item-id given must refuse, not delete."""
-    service = MagicMock()
-    service.disconnect.side_effect = ValueError(
-        "institution or provider_item_id is required to disconnect"
-    )
-    mock_build.return_value.__enter__.return_value = service
+    """Neither --institution nor --provider-item-id given must refuse, not delete.
+
+    The selector check fires before the confirmation gate — even with --yes,
+    the message must name both flags rather than telling the caller to add
+    --yes.
+    """
     result = runner.invoke(app, ["sync", "disconnect", "--yes"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2, result.output
+    assert "--institution" in result.stderr
+    assert "--provider-item-id" in result.stderr
+    assert "--yes" not in result.stderr
+    mock_build.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_requires_a_target_json(mock_build: MagicMock) -> None:
+    result = runner.invoke(app, ["sync", "disconnect", "--yes", "--output", "json"])
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "sync_institution_required"
+    assert "--institution" in payload["error"]["hint"]
+    assert "--provider-item-id" in payload["error"]["hint"]
+    assert "--yes" not in payload["error"]["hint"]
+    mock_build.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1107,7 +1157,12 @@ def test_sync_disconnect_refusal_performs_no_mutation(
     mock_build.return_value.__enter__.return_value = service
 
     with pytest.raises(typer.Exit) as exit_info:
-        sync_disconnect(institution="Chase", yes=False, output=OutputFormat.TEXT)
+        sync_disconnect(
+            institution="Chase",
+            provider_item_id=None,
+            yes=False,
+            output=OutputFormat.TEXT,
+        )
 
     assert exit_info.value.exit_code == 0
     from rich.text import Text
@@ -1148,7 +1203,12 @@ def test_sync_disconnect_interactive_confirm_names_provider_item_id(
     service.disconnect.return_value = service.plan_disconnect.return_value
     mock_build.return_value.__enter__.return_value = service
 
-    sync_disconnect(institution="Chase", yes=False, output=OutputFormat.TEXT)
+    sync_disconnect(
+        institution="Chase",
+        provider_item_id=None,
+        yes=False,
+        output=OutputFormat.TEXT,
+    )
 
     prompt = mock_confirm.call_args.args[0]
     assert "Chase" in prompt
@@ -1211,7 +1271,12 @@ def test_sync_disconnect_interactive_confirm_targets_planned_connection(
     service.disconnect.side_effect = _disconnect
     mock_build.return_value.__enter__.return_value = service
 
-    sync_disconnect(institution="Chase", yes=False, output=OutputFormat.TEXT)
+    sync_disconnect(
+        institution="Chase",
+        provider_item_id=None,
+        yes=False,
+        output=OutputFormat.TEXT,
+    )
 
     service.disconnect.assert_called_once_with(provider_item_id="item_a")
 
@@ -1230,19 +1295,25 @@ def test_sync_disconnect_ambiguous_institution_fails_before_prompt(
     monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
 
     service = MagicMock()
-    service.plan_disconnect.side_effect = ValueError(
+    service.plan_disconnect.side_effect = UserError(
         "multiple connected institutions match 'Chase': "
         "item_a (linked 2026-01-05 09:00 UTC), "
         "item_b (linked 2026-02-10 14:30 UTC). "
         "Target one by provider_item_id; `moneybin sync status --wide` "
-        "lists every connection's id."
+        "lists every connection's id.",
+        code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
     )
     mock_build.return_value.__enter__.return_value = service
 
     from moneybin.cli.commands.sync import sync_disconnect
 
     with pytest.raises(typer.Exit) as exit_info:
-        sync_disconnect(institution="Chase", yes=False, output=OutputFormat.TEXT)
+        sync_disconnect(
+            institution="Chase",
+            provider_item_id=None,
+            yes=False,
+            output=OutputFormat.TEXT,
+        )
 
     assert exit_info.value.exit_code == 1
     mock_confirm.assert_not_called()

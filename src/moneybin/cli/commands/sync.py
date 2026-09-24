@@ -643,6 +643,39 @@ def sync_disconnect(
     output: OutputFormat = output_option,
 ) -> None:
     """Remove a bank connection."""
+    if institution is not None and provider_item_id is not None:
+        message = (
+            "--institution and --provider-item-id are mutually exclusive — "
+            "pass exactly one."
+        )
+        if output == OutputFormat.JSON:
+            emit_json_failure(
+                UserError(
+                    "institution and provider_item_id are mutually exclusive",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint=message,
+                ),
+                cli_actor="sync_disconnect",
+            )
+        else:
+            typer.echo(message, err=True)
+        raise typer.Exit(2)
+    if institution is None and provider_item_id is None:
+        message = (
+            "One of --institution or --provider-item-id is required to disconnect."
+        )
+        if output == OutputFormat.JSON:
+            emit_json_failure(
+                UserError(
+                    "institution or provider_item_id is required",
+                    code=error_codes.SYNC_INSTITUTION_REQUIRED,
+                    hint=message,
+                ),
+                cli_actor="sync_disconnect",
+            )
+        else:
+            typer.echo(message, err=True)
+        raise typer.Exit(2)
     if not yes and (
         output == OutputFormat.JSON or not get_terminal_policy().interactive
     ):

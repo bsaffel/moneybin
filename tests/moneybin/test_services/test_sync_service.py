@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from moneybin import error_codes
 from moneybin.connectors.sync_client import SyncAPIError
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
@@ -20,6 +21,7 @@ from moneybin.connectors.sync_models import (
     SyncTriggerResponse,
 )
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services import sync_service
@@ -288,8 +290,9 @@ def test_pull_with_unknown_institution_raises(
 ) -> None:
     mock_client.list_institutions.return_value = []
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="no connected institution"):
+    with pytest.raises(UserError, match="no connected institution") as exc_info:
         service.pull(institution="UnknownBank")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
 
 
 @pytest.mark.usefixtures("mock_sync_refresh")
@@ -309,8 +312,9 @@ def test_pull_rejects_both_institution_and_provider_item_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    with pytest.raises(UserError, match="mutually exclusive") as exc_info:
         service.pull(institution="Chase", provider_item_id="item_x")
+    assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
 
 
 @pytest.mark.usefixtures("mock_sync_refresh")
@@ -722,9 +726,10 @@ def test_resolve_institution_raises_on_ambiguous_name(
     ]
     service = SyncService(client=mock_client, db=db, loader=loader)
     with pytest.raises(
-        ValueError, match="multiple connected institutions match"
+        UserError, match="multiple connected institutions match"
     ) as exc_info:
         service.pull(institution="Chase")
+    assert exc_info.value.code == error_codes.SYNC_INSTITUTION_AMBIGUOUS
     message = str(exc_info.value)
     assert "item_a (linked 2026-01-05 09:00 UTC)" in message
     assert "item_b (linked 2026-02-10 14:30 UTC)" in message
@@ -901,8 +906,9 @@ def test_disconnect_unknown_institution_raises(
 ) -> None:
     mock_client.list_institutions.return_value = []
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="no connected institution"):
+    with pytest.raises(UserError, match="no connected institution") as exc_info:
         service.disconnect(institution="UnknownBank")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
 
 
 def _two_items_same_institution() -> list[ConnectedInstitution]:
@@ -959,17 +965,19 @@ def test_plan_disconnect_unknown_provider_item_id_raises(
     mock_client.list_institutions.return_value = _two_items_same_institution()
     service = SyncService(client=mock_client, db=db, loader=loader)
     with pytest.raises(
-        ValueError, match="no connected institution with provider_item_id"
-    ):
+        UserError, match="no connected institution with provider_item_id"
+    ) as exc_info:
         service.plan_disconnect(provider_item_id="item_missing")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
 
 
 def test_plan_disconnect_rejects_both_institution_and_provider_item_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    with pytest.raises(UserError, match="mutually exclusive") as exc_info:
         service.plan_disconnect(institution="Chase", provider_item_id="item_a")
+    assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
     mock_client.list_institutions.assert_not_called()
 
 
@@ -977,8 +985,9 @@ def test_plan_disconnect_requires_institution_or_provider_item_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="required to disconnect"):
+    with pytest.raises(UserError, match="required to disconnect") as exc_info:
         service.plan_disconnect()
+    assert exc_info.value.code == error_codes.SYNC_INSTITUTION_REQUIRED
 
 
 def test_ambiguous_institution_error_names_provider_item_id(
@@ -987,8 +996,9 @@ def test_ambiguous_institution_error_names_provider_item_id(
     """The dead-end message must name a parameter the caller can actually use."""
     mock_client.list_institutions.return_value = _two_items_same_institution()
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="provider_item_id"):
+    with pytest.raises(UserError, match="provider_item_id") as exc_info:
         service.plan_disconnect(institution="Chase")
+    assert exc_info.value.code == error_codes.SYNC_INSTITUTION_AMBIGUOUS
 
 
 class TestPullAutoRefreshes:

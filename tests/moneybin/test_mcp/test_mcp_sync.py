@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
     InstitutionResult,
@@ -15,6 +16,7 @@ from moneybin.connectors.sync_models import (
     PullResult,
     SyncConnectionView,
 )
+from moneybin.errors import UserError
 from moneybin.mcp.tools.sync import register_sync_tools
 from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
@@ -126,6 +128,30 @@ async def test_sync_pull_coarse_preserves_partial_failure_recovery_actions(
     assert "system_status(sections=['doctor'])" in actions
     assert "investments_securities_links_pending" not in actions
     assert "system_doctor" not in actions
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_coarse_surfaces_mutual_exclusion_as_mutation_error(
+    mock_build: MagicMock,
+) -> None:
+    """The service's mutual-exclusion guard must classify as mutation_invalid_input.
+
+    A bare ValueError would classify as infra_invalid_input via the generic
+    exception classifier — the service raises UserError directly instead.
+    """
+    service = MagicMock()
+    service.pull.side_effect = UserError(
+        "institution and provider_item_id are mutually exclusive — pass one or neither",
+        code=error_codes.MUTATION_INVALID_INPUT,
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull_coarse
+
+    envelope = await sync_pull_coarse(institution="Chase")
+
+    assert envelope.error is not None
+    assert envelope.error.code == error_codes.MUTATION_INVALID_INPUT
 
 
 @pytest.mark.unit
@@ -413,13 +439,35 @@ async def test_sync_disconnect_rejects_both_institution_and_provider_item_id() -
 
     with patch("moneybin.mcp.tools.sync._build_sync_service") as mock_build:
         service = MagicMock()
-        service.plan_disconnect.side_effect = ValueError(
-            "institution and provider_item_id are mutually exclusive — pass exactly one"
+        service.plan_disconnect.side_effect = UserError(
+            "institution and provider_item_id are mutually exclusive — pass exactly one",
+            code=error_codes.MUTATION_INVALID_INPUT,
         )
         mock_build.return_value.__enter__.return_value = service
         envelope = await sync_disconnect(institution="Chase", provider_item_id="item_a")
 
     assert envelope.error is not None
+    assert envelope.error.code == error_codes.MUTATION_INVALID_INPUT
+    service.disconnect_confirmed.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_sync_disconnect_surfaces_unknown_provider_item_id_as_not_found() -> None:
+    """An unknown provider_item_id classifies as mutation_not_found, not infra."""
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    with patch("moneybin.mcp.tools.sync._build_sync_service") as mock_build:
+        service = MagicMock()
+        service.plan_disconnect.side_effect = UserError(
+            "no connected institution with provider_item_id 'item_missing' — "
+            "run `moneybin sync status` to list connected banks",
+            code=error_codes.MUTATION_NOT_FOUND,
+        )
+        mock_build.return_value.__enter__.return_value = service
+        envelope = await sync_disconnect(provider_item_id="item_missing")
+
+    assert envelope.error is not None
+    assert envelope.error.code == error_codes.MUTATION_NOT_FOUND
     service.disconnect_confirmed.assert_not_called()
 
 
