@@ -431,6 +431,7 @@ def render_report_result(
             ],
             money=money,
             numeric=numeric,
+            grouped=numeric,
             total_columns=len(result.columns),
             fit=fit,
             terminal=policy,

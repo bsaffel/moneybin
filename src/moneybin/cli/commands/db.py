@@ -25,7 +25,6 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
-    wide_option,
 )
 from moneybin.cli.progress import operation_progress
 from moneybin.cli.render import (
@@ -469,7 +468,12 @@ def db_info(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # db info has no info-only chatter; only data lines
-    wide: bool = wide_option,
+    limit: int = typer.Option(
+        _DB_INFO_TABLE_LIMIT,
+        "--limit",
+        "-n",
+        help="Tables to list in text output, largest first; 0 lists every table.",
+    ),
     no_pager: bool = no_pager_option,
 ) -> None:
     """Display database metadata: file size, tables, encryption status, versions."""
@@ -579,18 +583,20 @@ def db_info(
 
             # Text defaults to the biggest tables — the ones most likely to be
             # the reason someone ran this command — and discloses the cap
-            # (requirement 12); `--wide` restores every table (requirement 4).
-            # JSON already returns the whole `table_rows` list unconditionally.
+            # (requirement 12); `--limit 0` restores every table. A row cap is
+            # `--limit`, never `--wide`, which the shared contract reserves for
+            # restoring omitted columns. JSON already returns the whole
+            # `table_rows` list unconditionally.
             shown_rows = table_rows
             truncated = False
-            if not wide and len(table_rows) > _DB_INFO_TABLE_LIMIT:
+            if limit > 0 and len(table_rows) > limit:
                 shown_rows = sorted(
                     table_rows, key=lambda row: cast(int, row["rows"]), reverse=True
-                )[:_DB_INFO_TABLE_LIMIT]
+                )[:limit]
                 truncated = True
             tables_summary = (
                 f"{len(shown_rows)} of {len(table_rows)} shown, largest first "
-                "— --wide for all"
+                "— --limit 0 for all"
                 if truncated
                 else str(len(table_rows))
             )

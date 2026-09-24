@@ -590,10 +590,9 @@ def import_files_command(
                             if result.sign_assumed:
                                 typer.echo(
                                     format_cli_attention(
-                                        f"Sign convention assumed: {result.sign_assumed} "
-                                        "(all amounts appear positive). Rerun with "
-                                        "--sign negative_is_income if expense amounts "
-                                        "look wrong."
+                                        _sign_assumed_notice(
+                                            result.sign_assumed, result.import_id
+                                        )
                                     ),
                                     err=True,
                                 )
@@ -629,13 +628,13 @@ def import_files_command(
                             confirm=confirm,
                             actor_kind="human",
                         )
-                        if any(r.sign_assumed for r in batch_result.per_file):
+                        assumed = [r for r in batch_result.per_file if r.sign_assumed]
+                        if assumed:
                             typer.echo(
                                 format_cli_attention(
-                                    "Sign convention assumed for one or more imports "
-                                    "(all amounts appear positive). Rerun with "
-                                    "--sign negative_is_income if expense amounts "
-                                    "look wrong."
+                                    _batch_sign_assumed_notice([
+                                        (r.path, r.import_id) for r in assumed
+                                    ])
                                 ),
                                 err=True,
                             )
@@ -1078,6 +1077,45 @@ def _batch_payload(
     if batch.transforms_error:
         data["transforms_error"] = batch.transforms_error
     return files_list, data
+
+
+def _sign_assumed_notice(sign_assumed: str, import_id: str | None) -> str:
+    """The attention line for an import that guessed its sign convention.
+
+    The import has already committed, so "rerun with --sign" alone would
+    double-load the file: rows without source ids hash the signed amount into
+    their transaction id, so a flipped re-import adds negatives beside the
+    positives, and rows with source ids are ignored on re-import and keep the
+    wrong sign. Revert first; the id is the one `import history` shows.
+    """
+    revert = (
+        f"revert it with 'moneybin import revert {import_id}'"
+        if import_id
+        else "revert it with 'moneybin import revert <import_id>'"
+    )
+    return (
+        f"Sign convention assumed: {sign_assumed} (all amounts appear positive). "
+        f"If expense amounts look wrong, {revert} and re-import the file with "
+        "--sign negative_is_income."
+    )
+
+
+def _batch_sign_assumed_notice(files: list[tuple[str, str | None]]) -> str:
+    """The batch form of :func:`_sign_assumed_notice`.
+
+    `--sign` is ignored in multi-file mode, so each affected file has to be
+    reverted and re-imported on its own.
+    """
+    named = ", ".join(
+        f"{Path(file_path).name} (import {import_id or '<import_id>'})"
+        for file_path, import_id in files
+    )
+    return (
+        f"Sign convention assumed for {named} (all amounts appear positive). "
+        "If expense amounts look wrong, revert each with 'moneybin import revert "
+        "<import_id>' and re-import that file on its own with --sign "
+        "negative_is_income; --sign is ignored when several files import together."
+    )
 
 
 def _batch_receipt(data: Mapping[str, Any]) -> object:
@@ -2843,10 +2881,7 @@ def import_confirm_command(
             )
         if result.sign_assumed:
             actions.insert(
-                0,
-                f"Sign convention assumed: {result.sign_assumed} (all amounts "
-                "appear positive). Rerun with --sign negative_is_income if "
-                "expense amounts look wrong.",
+                0, _sign_assumed_notice(result.sign_assumed, result.import_id)
             )
         envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
         render_or_json(envelope, output, cli_actor="import_confirm_command")
@@ -2868,9 +2903,7 @@ def import_confirm_command(
     if result.sign_assumed:
         typer.echo(
             format_cli_attention(
-                f"Sign convention assumed: {result.sign_assumed} (all amounts "
-                "appear positive). Rerun with --sign negative_is_income if "
-                "expense amounts look wrong.",
+                _sign_assumed_notice(result.sign_assumed, result.import_id)
             ),
             err=True,
         )

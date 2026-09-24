@@ -1616,7 +1616,7 @@ class TestDbInfoCommand:
     def test_info_caps_the_default_table_listing_and_discloses_the_omission(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
-        """A large schema shows the biggest tables by default; `--wide` shows all.
+        """A large schema shows the biggest tables by default; `--limit 0` shows all.
 
         Requirement 12: a capped listing must disclose the cap. `db info` on a
         demo database dumped every one of 81 tables with no indication anything
@@ -1651,12 +1651,12 @@ class TestDbInfoCommand:
         mocker.patch("moneybin.database.Database", return_value=mock_db)
 
         default_result = runner.invoke(app, ["info", "--no-pager"])
-        wide_result = runner.invoke(app, ["info", "--no-pager", "--wide"])
+        wide_result = runner.invoke(app, ["info", "--no-pager", "--limit", "0"])
         json_result = runner.invoke(app, ["info", "--output", "json"])
 
         assert default_result.exit_code == 0, default_result.output
         assert "20 of 25 shown, largest first" in default_result.output
-        assert "--wide for all" in default_result.output
+        assert "--limit 0 for all" in default_result.output
         assert "table_00" in default_result.output  # rows=25, the largest
         assert "table_24" not in default_result.output  # rows=1, dropped
 
