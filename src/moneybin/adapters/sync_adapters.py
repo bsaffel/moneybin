@@ -161,7 +161,7 @@ def sync_status_envelope(
 
 def sync_disconnect_envelope(
     *,
-    institution: str,
+    institution: str | None,
     provider_item_id: str,
     actions: list[str],
 ) -> ResponseEnvelope[SyncDisconnectPayload]:

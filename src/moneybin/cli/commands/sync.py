@@ -723,7 +723,6 @@ def sync_disconnect(
                 disconnected = service.disconnect(
                     provider_item_id=plan.provider_item_id
                 )
-    resolved = disconnected.institution_name or disconnected.provider_item_id
     if output == OutputFormat.JSON:
         from moneybin.adapters.sync_adapters import (
             sync_disconnect_envelope,
@@ -731,7 +730,7 @@ def sync_disconnect(
 
         render_or_json(
             sync_disconnect_envelope(
-                institution=resolved,
+                institution=disconnected.institution_name,
                 provider_item_id=disconnected.provider_item_id,
                 actions=["Use 'moneybin sync link' to reconnect an institution"],
             ),

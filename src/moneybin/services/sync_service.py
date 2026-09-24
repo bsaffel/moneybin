@@ -557,8 +557,9 @@ class SyncService:
         """Look up a connected institution by case-insensitive name match.
 
         Returns None when no connection matches (caller decides what to do).
-        Raises ValueError when multiple connections share the name — the name is
-        ambiguous and must be disambiguated by the caller before any action runs.
+        Raises UserError when multiple connections share the name — the name
+        is ambiguous and must be disambiguated by the caller before any
+        action runs.
         """
         institutions = self.client.list_institutions()
         matches = [

@@ -1049,6 +1049,47 @@ def test_sync_disconnect_json_carries_provider_item_id(mock_build: MagicMock) ->
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_json_keeps_nameless_institution_null(
+    mock_build: MagicMock,
+) -> None:
+    """`--output json` must not fall back to provider_item_id for institution.
+
+    Regression: a nameless connection used to write the raw provider_item_id
+    into the structured `institution` field. It must stay null, with the id
+    only in `provider_item_id`.
+    """
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    service = MagicMock()
+    service.disconnect.return_value = ConnectedInstitution(
+        id="conn_c",
+        provider_item_id="item_c",
+        provider="plaid",
+        institution_name=None,
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--provider-item-id",
+            "item_c",
+            "--yes",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["institution"] is None
+    assert payload["data"]["provider_item_id"] == "item_c"
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_disconnect_completion_receipt_labels_nameless_connection(
     mock_build: MagicMock,
 ) -> None:

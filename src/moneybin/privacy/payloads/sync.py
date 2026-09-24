@@ -262,14 +262,15 @@ class SyncDisconnectPayload:
     """Payload for ``sync_disconnect`` — confirmation of disconnection.
 
     ``status`` is a fixed string (TXN_TYPE), ``institution`` is the
-    caller-supplied institution name (INSTITUTION), and ``provider_item_id``
-    identifies exactly which connection was removed (RECORD_ID) — needed
-    because two same-named connections (e.g. after a relink) share the same
+    caller-supplied institution name (INSTITUTION), ``None`` when the
+    disconnected connection has no name, and ``provider_item_id`` identifies
+    exactly which connection was removed (RECORD_ID) — needed because two
+    same-named connections (e.g. after a relink) share the same
     ``institution`` value.
     """
 
     status: Annotated[str, DataClass.TXN_TYPE]
-    institution: Annotated[str, DataClass.INSTITUTION]
+    institution: Annotated[str | None, DataClass.INSTITUTION]
     provider_item_id: Annotated[str, DataClass.RECORD_ID]
 
 
@@ -280,7 +281,7 @@ class SyncInstitutionDisconnectView(BaseModel):
 
     kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
     status: Annotated[Literal["disconnected"], DataClass.TXN_TYPE]
-    institution: Annotated[str, DataClass.INSTITUTION]
+    institution: Annotated[str | None, DataClass.INSTITUTION]
     provider_item_id: Annotated[str, DataClass.RECORD_ID]
 
 

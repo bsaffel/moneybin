@@ -436,6 +436,54 @@ async def test_sync_disconnect_by_provider_item_id_threads_through_to_service(
 
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_keeps_nameless_institution_null(
+    mock_build: MagicMock,
+) -> None:
+    """A nameless connection's institution stays null, never the raw id.
+
+    Regression: the result used to fall back to provider_item_id for
+    institution when institution_name was None.
+    """
+    connection = ConnectedInstitution(
+        id="conn_c",
+        provider_item_id="item_c",
+        provider="plaid",
+        institution_name=None,
+        status="active",
+        created_at=datetime(2026, 4, 1, tzinfo=UTC),
+    )
+    service = MagicMock()
+    service.plan_disconnect.return_value = connection
+
+    def disconnect_confirmed(
+        *,
+        institution: str | None,
+        provider_item_id: str | None,
+        verify: object,
+    ) -> ConnectedInstitution:
+        assert institution is None
+        assert provider_item_id == "item_c"
+        verify(connection)  # type: ignore[operator]
+        return connection
+
+    service.disconnect_confirmed.side_effect = disconnect_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(provider_item_id="item_c")
+    assert required.error is not None
+
+    envelope = await sync_disconnect(
+        provider_item_id="item_c",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+    assert envelope.error is None
+    assert envelope.data.institution is None
+    assert envelope.data.provider_item_id == "item_c"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
 async def test_sync_disconnect_result_distinguishes_same_named_connections(
     mock_build: MagicMock,
 ) -> None:

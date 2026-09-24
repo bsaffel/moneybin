@@ -545,7 +545,7 @@ async def sync_disconnect(
     return build_envelope(
         data=SyncInstitutionDisconnectView(
             status="disconnected",
-            institution=disconnected.institution_name or disconnected.provider_item_id,
+            institution=disconnected.institution_name,
             provider_item_id=disconnected.provider_item_id,
         ),
         actions=["Use sync_status to inspect remaining institution connections."],
