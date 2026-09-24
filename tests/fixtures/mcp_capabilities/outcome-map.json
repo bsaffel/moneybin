@@ -804,7 +804,7 @@
     "exemption": {
       "surface": "mcp",
       "category": "admission-pending",
-      "reason": "MB-180 PR2 ships the CLI curation surface only; an MCP identity for this capability has no bounded-registry admission record yet"
+      "reason": "MB-180 PR2 ships the CLI curation surface only; the decided MCP surface (a source_categories kind in reviews and a source_category item in taxonomy_set, per category-source-map.md) extends existing tools and still owes its surface-change admission record in mcp-tool-surface-scaling.md"
     }
   },
   {

@@ -202,10 +202,17 @@ row carrying that text — with up to 3 `did_you_mean` suggestions against
 active MoneyBin category names; `MatchApplier.resolve_source_term` maps one
 term to an existing category or a newly-created one (via `create_category`),
 sharing one transaction with the `CategorySourceMapRepo.upsert` write. Both
-are exposed as `moneybin categories mappings pending` / `... set`. An MCP
-tool was not added in PR2 — this is CLI-only for now; the taxonomy of the
-future MCP surface, if one is added, is an open follow-up rather than a
-decision made here.
+are exposed as `moneybin categories mappings pending` / `... set`.
+
+PR2 is CLI-only. The MCP surface, decided after PR2 opened, extends two
+existing tools instead of adding one: an unmapped term is a
+`source_categories` kind in `reviews`, and a mapping is a `source_category`
+item in `taxonomy_set`, beside its `category` and `merchant` items. A mapping
+is a translation of a source's label, not a pattern rule. It reads the
+category the source attached rather than the transaction's own text, and it
+writes at `provider_native` rank, so every rule and merchant mapping outranks
+it. That is why it sits with merchant items in `taxonomy_set` and not in
+`transactions_categorize_rules_set`. It ships in a follow-up slice.
 
 ## Reverse-lookup contract
 
@@ -296,8 +303,11 @@ consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.m
 Agents read the canonical category and merchant catalog through
 `taxonomy(view="categories")` or `taxonomy(view="merchants")`. They declare
 category or merchant target state through `taxonomy_set(items=[...])`; each
-item is discriminated by `kind` and `state`. The provider-code bridge remains
-an internal categorization input, not a separate MCP mutation surface.
+item is discriminated by `kind` and `state`. The seeded provider-code rows
+remain an internal categorization input, not a separate MCP mutation surface.
+User-authored rows for imported vocabulary (MB-180) get no separate surface
+either: the follow-up MCP slice declares them as a `source_category` item in
+the same `taxonomy_set` batch.
 
 **In scope (this PR / M1V):** the three tables + view + two-tier contract;
 the `class` column on the category dim (available on `core.dim_categories`

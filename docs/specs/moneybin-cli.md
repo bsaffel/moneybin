@@ -430,6 +430,16 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- create <name> [--parent] [--icon] [--output text|json]
 |   +-- set <category_id> --active/--inactive [--output text|json]
 |   +-- delete <category_id> [--force]
+|   +-- mappings                   -- Map a source's own category text to a MoneyBin category
+|       +-- pending [--namespace <source_origin>] [--output json] [--quiet]
+|       |         Distinct unmapped (source_origin, category, subcategory) terms, one row per
+|       |         term with the count of rows it affects and up to 3 suggestions drawn from
+|       |         active categories; most-affected first.
+|       +-- set --namespace <source_origin> --category <text> [--subcategory <text>]
+|                 --into <category_id> | --new <name>
+|                 Map one term to an existing category (--into), or create a category and
+|                 map the term to it in one transaction (--new). The two flags are mutually
+|                 exclusive; omitting both exits 2.
 |
 +-- merchants                      -- Merchant mappings (reference data) and link-review
 |   +-- list
