@@ -11,8 +11,9 @@
    reconcile the rungs at the cent, not the sub-cent.
    Also emits one row per eligible account with holdings or transaction
    activity and no balance observation (Requirement 14): balance columns
-   NULL, is_observed FALSE, dated at the spine's own last date so it never
-   moves MAX(balance_date). */
+   NULL, is_observed FALSE, dated at the latest eligible balance day (else
+   the spine's last date, else CURRENT_DATE) so it never moves the eligible
+   rows' MAX(balance_date); reports.net_worth's fallback uses the same date. */
 MODEL (
   name reports.net_worth_accounts,
   kind VIEW
@@ -95,6 +96,21 @@ CROSS JOIN home AS h
 CROSS JOIN (
   SELECT
     COALESCE(
+      (
+        SELECT
+          MAX(e.balance_date)
+        FROM core.fct_balances_daily AS e
+        INNER JOIN core.dim_accounts AS ea
+          ON e.account_id = ea.account_id
+        WHERE
+          ea.include_in_net_worth
+          AND (
+            NOT ea.archived
+            OR (
+              NOT ea.archived_at IS NULL AND e.balance_date <= ea.archived_at
+            )
+          )
+      ),
       (
         SELECT
           MAX(b.balance_date)

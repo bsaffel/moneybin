@@ -1282,3 +1282,36 @@ def test_both_rungs_keep_a_candidate_archived_after_the_spine_max(
     assert day["net_worth"] is None
     assert acct["account_id"] == "m2b3_brk"
     assert str(acct["balance_date"]) == "2026-01-05"
+
+
+def test_unranged_reads_date_a_candidate_at_the_latest_eligible_day(
+    model_db: Database,
+) -> None:
+    """An excluded account's later balances must not hide the real latest day."""
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "m2b3_a", "Checking", "USD")
+    _account(model_db, "m2b3_x", "Excluded", "USD", include=False)
+    _account(model_db, "m2b3_b", "Brokerage", "USD")
+    _balance(model_db, "m2b3_a", "2026-01-05", "100.00", "USD")
+    _balance(model_db, "m2b3_x", "2026-01-05", "50.00", "USD")
+    _balance(model_db, "m2b3_x", "2026-01-09", "50.00", "USD", observed=False)
+    _rate(model_db, "USD", "USD", "2026-01-05", "1", source="identity")
+    _unanchored(model_db, "m2b3_b")
+    _install_report(model_db, "net_worth")
+    _install_report(model_db, "net_worth_accounts")
+
+    latest = model_db.execute(
+        "SELECT account_id, balance_date FROM reports.net_worth_accounts "
+        "WHERE balance_date = (SELECT MAX(balance_date) "
+        "FROM reports.net_worth_accounts) ORDER BY account_id"
+    ).fetchall()
+    day = _day_rows(model_db)[-1]
+
+    assert [(a, str(d)) for a, d in latest] == [
+        ("m2b3_a", "2026-01-05"),
+        ("m2b3_b", "2026-01-05"),
+    ]
+    assert str(day["balance_date"]) == "2026-01-05"
+    assert day["unanchored_account_count"] == 1
+    assert day["net_worth"] is None

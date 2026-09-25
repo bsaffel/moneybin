@@ -810,9 +810,11 @@ view: when the balance-driven output (the same three-rung read every other
 arm shares) is empty and the eligible-candidate count — the four sources,
 joined to `core.dim_accounts`, evaluated at the arm's own date exactly as
 the per-row predicate evaluates each real row at its own `balance_date` — is
-greater than zero, this arm emits exactly one row: `balance_date =
-COALESCE((SELECT MAX(balance_date) FROM core.fct_balances_daily),
-CURRENT_DATE)`, the date and archive test `reports.net_worth_accounts` uses
+greater than zero, this arm emits exactly one row: `balance_date =` the
+synthesis date (§`reports.net_worth_accounts`, and §"Deviations recorded
+during implementation" → M2B.3, item 7), whose eligible-spine term is NULL
+whenever this arm fires, so it resolves to `(SELECT MAX(balance_date) FROM
+core.fct_balances_daily)`, then `CURRENT_DATE` — the date and archive test `reports.net_worth_accounts` uses
 for the same candidate (§`reports.net_worth_accounts`), so the two rungs'
 unranged reads agree on the date and on whether the candidate appears.
 The balance-driven output can be empty while the spine is not — every
@@ -1146,9 +1148,13 @@ account IS the row — the guard's signal is the row's own presence with its
 balance-derived columns NULL, not a number carried beside it. The view gains
 a second `UNION ALL` arm reading the same four evidence sources joined to
 `core.dim_accounts` (§Data Model): one row per eligible unanchored account,
-dated `balance_date = COALESCE((SELECT MAX(balance_date) FROM
-core.fct_balances_daily), CURRENT_DATE)` — see below for why this date, not
-`CURRENT_DATE` unconditionally — with `account_balance`,
+dated at the synthesis date, `COALESCE(<MAX(balance_date) over eligible spine rows>, (SELECT
+MAX(balance_date) FROM core.fct_balances_daily), CURRENT_DATE)`, where "eligible spine rows" are
+`core.fct_balances_daily` joined to `core.dim_accounts` under this rung's own
+first-arm filter (`include_in_net_worth AND (NOT archived OR balance_date <=
+archived_at)`) — see below for why this date, not `CURRENT_DATE`
+unconditionally, and item 7 of the M2B.3 deviations for why the eligible term
+comes first — with `account_balance`,
 `account_balance_home`, `rate_published_date`, `rate_source`,
 `observation_source`, `days_since_observed`, and `reconciliation_delta` all
 NULL, and `is_observed = FALSE`. `currency_code` populates from
@@ -1165,7 +1171,7 @@ still populate from `core.dim_accounts` and `app.profile_settings` on this
 synthesized row, the same as on every ordinary one.
 
 **Unconditional per candidate, unlike `reports.net_worth`'s own arm — and
-dated at the spine's own maximum, not at `CURRENT_DATE`.**
+dated at the latest eligible spine day, not at `CURRENT_DATE`.**
 `reports.net_worth`'s fallback arm fires only when the whole
 balance-driven result is empty, because an ordinary row there already
 carries the correlated count for a mixed profile — the arm exists only to
@@ -1199,10 +1205,14 @@ new `MAX(balance_date)` over this rung the moment any eligible unanchored
 candidate exists, and the unranged default then filters to `CURRENT_DATE`
 alone — discarding every anchored account's row on `global_last_date` and
 returning only the synthesized ones. The synthesized row must instead be
-dated at the same date `core.fct_balances_daily` already carries every
-anchored account to — `COALESCE((SELECT MAX(balance_date) FROM
-core.fct_balances_daily), CURRENT_DATE)` — falling back to `CURRENT_DATE`
-only when the spine itself is empty. `reports.net_worth`'s own fallback
+dated at the latest day an eligible account occupies on the spine — the
+synthesis date, `COALESCE(<MAX(balance_date) over eligible spine rows>, (SELECT
+MAX(balance_date) FROM core.fct_balances_daily), CURRENT_DATE)` — falling back to the spine's own maximum
+when no eligible spine row exists, and to `CURRENT_DATE` only when the spine
+itself is empty. The spine's global maximum alone is not enough: an excluded
+account, or one archived earlier, can carry balances past every eligible
+account's, and a synthesized row dated there becomes the only row the
+unranged default returns (M2B.3 deviations, item 7). `reports.net_worth`'s own fallback
 arm uses the same date and the same archive test, so the two rungs' unranged
 reads agree. The
 synthesized row is simply one more account carried forward to the date every
@@ -1226,7 +1236,7 @@ fallback "only ever answers a bounded range the view cannot see," and
 conclude the two "never fire on the same query." That claim is false,
 and it contradicts this section's own "unconditional per candidate" text
 above: a `kind VIEW` has no notion of "ranged" versus "unranged" at all, so
-the view's arm's row — dated by the spine-maximum rule stated above, present
+the view's arm's row — dated by the synthesis-date rule stated above, present
 in the view's raw output on every read — survives the runner's ordinary date
 filter exactly like any other row whenever the requested range happens to
 include that date. Running the old per-candidate fallback unconditionally
@@ -1265,9 +1275,9 @@ exactly the per-candidate `synthesis_date` this section already computes
 above, so ranged behavior is unchanged. For an unranged read — no
 `from_date` and no `to_date` supplied — every row this rung's read can
 produce, synthesized or not, is dated at exactly the one date this rung's
-own dating rule already names, stated once above at `:1096`:
-`COALESCE((SELECT MAX(balance_date) FROM core.fct_balances_daily),
-CURRENT_DATE)` — never at `effective_to`'s own general default of
+own dating rule already names, stated once above: the synthesis date,
+`COALESCE(<MAX(balance_date) over eligible spine rows>, (SELECT
+MAX(balance_date) FROM core.fct_balances_daily), CURRENT_DATE)` — never at `effective_to`'s own general default of
 `CURRENT_DATE` (§Data Model), which is usually a few days ahead of it. An
 eligible-by-Requirement-14 candidate whose `archived_at` predates that date
 fails Requirement 9's own eligibility test at the one date an unranged read
@@ -2288,6 +2298,24 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
    carries at least one row for every account with a `fct_balances` row after
    a rebuild (each account's spine runs from its first observation to the
    global last one), so the switch drops no anchored account.
+7. **The synthesis date prefers the latest eligible spine day over the
+   spine's global maximum.** Both views date a synthesized unanchored row at
+   `COALESCE(<MAX(balance_date) over eligible spine rows>, (SELECT
+   MAX(balance_date) FROM core.fct_balances_daily), CURRENT_DATE)`, where "eligible spine rows" are
+   `core.fct_balances_daily` joined to `core.dim_accounts` under the first
+   arm's filter (`include_in_net_worth AND (NOT archived OR balance_date <=
+   archived_at)`), and the candidate's archive test uses that same date. The
+   spec dated the account rung's row at the global maximum alone. When an
+   excluded account, or one archived earlier, has balances past every
+   eligible account's, that maximum is later than the latest eligible row,
+   so the unranged `core:net_worth_accounts` read (latest day only) returned
+   only the NULL synthesized row and hid every real balance, while
+   `reports.net_worth` reported an earlier latest date. The eligible term
+   never moves the eligible rows' `MAX(balance_date)`. In `reports.net_worth`
+   the fallback fires only when no eligible row exists, so the term is NULL
+   there and behaviour is unchanged; the expression is kept identical so the
+   two views cannot drift. Pinned by
+   `test_unranged_reads_date_a_candidate_at_the_latest_eligible_day`.
 
 Three controller rulings made while implementing M2B.3, not anticipated by
 the plan above:
@@ -2494,7 +2522,7 @@ eligible unanchored account appears as a row (never absent), with
 — never zero rows for that account on that rung, which is the failure
 §`reports.net_worth_accounts` states this addition closes. Its
 `balance_date` follows that rung's own dating rule stated once there, not
-restated here: the balance spine's own maximum for the first, second, and
+restated here: the latest eligible spine day for the first, second, and
 seventh scenarios' mixed anchored/unanchored profiles, and `CURRENT_DATE`
 only for the third scenario's wholly-unanchored persona, where the spine is
 empty and the rule's fallback applies.

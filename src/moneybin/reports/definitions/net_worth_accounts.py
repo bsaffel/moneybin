@@ -234,7 +234,8 @@ def net_worth_accounts(
     params = list(rng.params)
     if rng.is_ranged:
         # Per candidate, never gated on the whole result: a range can hold other
-        # accounts' rows and still miss this one's view row (dated at the spine max).
+        # accounts' rows and still miss this one's view row (dated at the latest
+        # eligible day).
         candidates_sql, candidate_params = unanchored_candidates_ctes(rng)
         params += candidate_params
         source = f"""

@@ -111,10 +111,26 @@ WITH home AS (
   INNER JOIN unanchored_per_day AS u
     ON u.balance_date = p.balance_date
 ), spine_max AS (
-  /* The same date reports.net_worth_accounts dates a candidate at: the balance
-     spine's global last date, CURRENT_DATE only when the spine is empty. */
+  /* The same date reports.net_worth_accounts dates a candidate at: the latest
+     eligible balance day, else the spine's last date, else CURRENT_DATE. The
+     first is NULL whenever this arm fires; kept so the two views stay identical. */
   SELECT
     COALESCE(
+      (
+        SELECT
+          MAX(e.balance_date)
+        FROM core.fct_balances_daily AS e
+        INNER JOIN core.dim_accounts AS ea
+          ON e.account_id = ea.account_id
+        WHERE
+          ea.include_in_net_worth
+          AND (
+            NOT ea.archived
+            OR (
+              NOT ea.archived_at IS NULL AND e.balance_date <= ea.archived_at
+            )
+          )
+      ),
       (
         SELECT
           MAX(b.balance_date)
@@ -149,7 +165,7 @@ WITH home AS (
   UNION ALL
   /* No eligible balance row, but an eligible candidate: one row, every measure
      NULL, so a bare read never returns zero rows for a profile that holds
-     value. Dated, and archive-tested, at the spine max exactly as
+     value. Dated, and archive-tested, at the same date as
      reports.net_worth_accounts dates the same candidate. The runner covers an
      explicit range. */
   SELECT
