@@ -75,7 +75,7 @@ KDF derives the AES key material.
 ### Key retrieval chain
 
 1. **OS keychain** — `keyring.get_password("moneybin", profile_name)`
-2. **Environment variable** — `MONEYBIN_DATABASE__ENCRYPTION_KEY`
+2. **Environment variable** — `MONEYBIN_PROFILE__<PROFILE>__DATABASE__ENCRYPTION_KEY` (uppercase the normalized profile name and replace hyphens with underscores; named profiles refuse the former global `MONEYBIN_DATABASE__ENCRYPTION_KEY`)
 3. **Error** — `DatabaseKeyError` with instructions for the user's key mode
 
 ### Key storage

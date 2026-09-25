@@ -115,7 +115,7 @@ sequenceDiagram
 
 - Client calls `POST /auth/device/code`, displays verification URL and user code.
 - Client polls `POST /auth/device/token` until authorized, respecting `slow_down` backoff per RFC 8628 §3.5.
-- JWT stored in OS keychain (`keyring`). Falls back to `~/.moneybin/.token` with `0600` permissions if keychain unavailable.
+- JWT and refresh token are stored in the OS keychain through `SecretStore`. Login and refresh require writable keychain storage.
 - Automatic refresh via Auth0 refresh token when JWT expires.
 - One-time setup; subsequent commands use the stored token silently.
 
@@ -176,10 +176,12 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 
 **Auth handling:**
 
-- JWT stored in OS keychain via `keyring` (macOS Keychain, Linux Secret Service, Windows Credential Locker).
-- Falls back to `~/.moneybin/.token` with `0600` permissions if keychain unavailable.
+- JWT and refresh token are stored through `SecretStore`, preserving the `moneybin-sync` service and opaque profile-ID usernames.
+- No new plaintext token files are written. A legacy `~/.moneybin/.sync_token-<profile_id>` is imported only for that exact profile: validate both values, persist and read back both keychain entries, then remove the file. Existing keychain credentials are authoritative. On failure, retain the source file and refuse authentication from it; never adopt an unscoped legacy file into a named profile.
+- Headless sync requires a working OS keychain (for example Linux Secret Service); an unavailable or locked backend produces an actionable error. Database environment-key injection does not provide storage for rotating sync tokens.
 - `Authorization: Bearer {token}` header on all authenticated requests.
 - Automatic refresh via refresh token when JWT expires (transparent to callers).
+- Logout and failed-refresh cleanup remove only the selected sync identity's credentials. A named profile never deletes unscoped legacy credentials or another profile's token file.
 - Same storage pattern as the DB encryption key (`privacy-data-protection.md`).
 
 **Configuration:**
@@ -657,7 +659,7 @@ All unit tests and SQL tests run against mocked HTTP responses and in-memory Duc
 |---|---|
 | `SyncClient` methods | Mocked httpx responses: success, auth errors, server errors, timeouts, polling logic (including `slow_down` backoff) |
 | Provider extractors | JSON parsing, raw table loading, dedup on re-load, removed-record handling |
-| Auth flow | Device Authorization polling (success, timeout, denied, slow_down), token storage/retrieval (keychain mock + file fallback), refresh logic |
+| Auth flow | Device Authorization polling (success, timeout, denied, slow_down), token storage/retrieval (fake SecretStore, verified legacy-file import, denied/unavailable keychain), refresh logic |
 | Connection health | `GET /institutions` response mapping and error-code-to-guidance mapping |
 | Schedule management | Plist/cron generation and parsing, idempotent install/remove |
 | Staging views (SQL) | Sign convention flip, column mapping to core-compatible schema |

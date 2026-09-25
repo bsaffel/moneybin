@@ -46,6 +46,18 @@ from moneybin.db_lock._types import CheckpointReason, OperationType
 os.environ.setdefault("MAX_FORK_WORKERS", "1")
 
 from moneybin.config import DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS, get_settings
+from moneybin.crypto_constants import (
+    ARGON2_HASH_LEN,
+    ARGON2_MEMORY_COST,
+    ARGON2_PARALLELISM,
+    ARGON2_TIME_COST,
+    ENCRYPTION_KEY_BYTES,
+    PASSPHRASE_SALT_BYTES,
+    SALT_NAME,
+)
+from moneybin.crypto_constants import (
+    KEY_NAME as _KEY_NAME,
+)
 from moneybin.secrets import (
     SecretNotFoundError,
     SecretStorageUnavailableError,
@@ -56,11 +68,9 @@ from moneybin.tables import TableRef
 
 logger = logging.getLogger(__name__)
 
-_KEY_NAME = "DATABASE__ENCRYPTION_KEY"
-SALT_NAME = "DATABASE__PASSPHRASE_SALT"
 _DATABASE_ALIAS = "moneybin"
 
-_cached_encryption_key: str | None = None
+_cached_encryption_key: tuple[str | None, str] | None = None
 
 _active_write_conn: "Database | None" = None
 _active_write_lock: threading.Lock = threading.Lock()
@@ -635,8 +645,12 @@ class Database:
         # the default (secret_store=None) path repeat keyring lookups; letting it
         # override an explicit store would let a key cached in one context
         # decrypt-fail a DB opened with a different explicit key in another.
-        if secret_store is None and _cached_encryption_key is not None:
-            encryption_key = _cached_encryption_key
+        if (
+            secret_store is None
+            and _cached_encryption_key is not None
+            and _cached_encryption_key[0] == store.profile
+        ):
+            encryption_key = _cached_encryption_key[1]
         else:
             try:
                 encryption_key = store.get_key(_KEY_NAME)
@@ -651,10 +665,10 @@ class Database:
             except SecretNotFoundError as e:
                 raise DatabaseKeyError(
                     f"Cannot open database — encryption key not found in "
-                    f"keychain or env var MONEYBIN_{_KEY_NAME}."
+                    f"keychain or env var {store.env_var_name(_KEY_NAME)}."
                 ) from e
             if secret_store is None:
-                _cached_encryption_key = encryption_key
+                _cached_encryption_key = (store.profile, encryption_key)
 
         if read_only:
             self._conn = duckdb.connect()
@@ -1294,7 +1308,7 @@ def database_key_error_hint(db_path: Path | None = None) -> str:
         return "💡 Run 'moneybin db init' to create the database first"
     return (
         "💡 Run 'moneybin db unlock' if the keychain is simply locked, or "
-        f"set MONEYBIN_{_KEY_NAME} if this environment (sandboxed, "
+        f"set {SecretStore().env_var_name(_KEY_NAME)} if this environment (sandboxed, "
         "headless, or CI) denies keychain access outright — a denied read "
         "looks identical to a missing key"
     )
@@ -1854,10 +1868,10 @@ def derive_key_from_passphrase(
     passphrase: str,
     salt: bytes,
     *,
-    time_cost: int = 3,
-    memory_cost: int = 65536,
-    parallelism: int = 4,
-    hash_len: int = 32,
+    time_cost: int = ARGON2_TIME_COST,
+    memory_cost: int = ARGON2_MEMORY_COST,
+    parallelism: int = ARGON2_PARALLELISM,
+    hash_len: int = ARGON2_HASH_LEN,
 ) -> str:
     """Derive a hex encryption key from a passphrase using Argon2id.
 
@@ -1897,10 +1911,10 @@ def init_db(
     passphrase: str | None = None,
     secret_store: SecretStore | None = None,
     profile: str | None = None,
-    argon2_time_cost: int = 3,
-    argon2_memory_cost: int = 65536,
-    argon2_parallelism: int = 4,
-    argon2_hash_len: int = 32,
+    argon2_time_cost: int = ARGON2_TIME_COST,
+    argon2_memory_cost: int = ARGON2_MEMORY_COST,
+    argon2_parallelism: int = ARGON2_PARALLELISM,
+    argon2_hash_len: int = ARGON2_HASH_LEN,
 ) -> None:
     """Create a new encrypted database with all schemas initialized.
 
@@ -1938,7 +1952,7 @@ def init_db(
     if passphrase is not None:
         import base64
 
-        salt = secrets_mod.token_bytes(16)
+        salt = secrets_mod.token_bytes(PASSPHRASE_SALT_BYTES)
         encryption_key = derive_key_from_passphrase(
             passphrase,
             salt,
@@ -2035,7 +2049,7 @@ def init_db(
                 "encryption-key read (locked or restricted), so whether a "
                 "key already exists could not be determined. Refusing to "
                 "overwrite it; retry once the keychain is accessible, or "
-                f"set MONEYBIN_{_KEY_NAME} to bypass the keychain."
+                f"set {store.env_var_name(_KEY_NAME)} to bypass the keychain."
             ) from e
         if key_already_present:
             logger.debug("Using existing encryption key")
@@ -2051,11 +2065,11 @@ def init_db(
                     "the encryption-key read (locked or restricted), so "
                     "whether a key already exists could not be determined. "
                     "Refusing to overwrite it; retry once the keychain is "
-                    f"accessible, or set MONEYBIN_{_KEY_NAME} to bypass "
+                    f"accessible, or set {store.env_var_name(_KEY_NAME)} to bypass "
                     "the keychain."
                 ) from e
             except SecretNotFoundError:
-                encryption_key = secrets_mod.token_hex(32)
+                encryption_key = secrets_mod.token_hex(ENCRYPTION_KEY_BYTES)
                 logger.debug("Auto-generated encryption key stored in OS keychain")
             try:
                 store.set_key(_KEY_NAME, encryption_key)

@@ -87,7 +87,7 @@ def _build_env(tmp: str) -> dict[str, str]:
     # (e.g. transform_via_subprocess) so they see the same MemoryKeyring and
     # encryption key as the in-process steps.
     for var in (
-        "MONEYBIN_DATABASE__ENCRYPTION_KEY",
+        "MONEYBIN_PROFILE__SCENARIO__DATABASE__ENCRYPTION_KEY",
         "PYTHON_KEYRING_BACKEND",
         "PYTHONPATH",
     ):

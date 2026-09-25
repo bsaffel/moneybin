@@ -387,7 +387,7 @@ jobs:
 
       - name: Record durations on the CI runner
         env:
-          MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
+          MONEYBIN_PROFILE__SCENARIO__DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: |
           uv run pytest tests/ -m "unit or integration or e2e or (scenarios and not perf)" \
             -n logical --store-durations
