@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-09-23 -->
 # Database & Security
 
 MoneyBin encrypts every profile database at rest by default. This guide covers the encryption model, key lifecycle, headless and multi-machine deployments, backup and restore, disaster recovery, and what a stolen laptop or synced folder actually reveals. There is no unencrypted mode — every `.duckdb` file MoneyBin creates is AES-256-GCM encrypted from the moment it exists.
@@ -53,26 +53,28 @@ Every flag and subcommand is in the generated [`db` CLI reference](../reference/
 
 ```console
 $ uv run moneybin db info
-Using profile: demo
-  File size: 13.8 MB
-  Encryption: AES-256-GCM (always on)
-  Key mode: auto
-  Lock state: unlocked
-  Tables: 81
-    app.audit_log: 2699 rows
-    app.metrics: 84 rows
-    app.transaction_categories: 2473 rows
-  DuckDB version: v1.5.4
+File size:      14.3 MB
+Encryption:     AES-256-GCM (always on)
+Key mode:       auto
+Lock state:     unlocked
+Tables:         81
+DuckDB version: v1.5.5
+┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┓
+┃ schema         ┃ table                                         ┃ rows ┃
+┡━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━┩
+│ app            │ audit_log                                     │ 2699 │
+│ app            │ metrics                                       │ 43   │
+│ app            │ transaction_categories                        │ 2473 │
+└────────────────┴───────────────────────────────────────────────┴──────┘
 ```
 
-The line naming the database file (`<base>/profiles/demo/moneybin.duckdb`) is cut, and so are 78 of the 81 table rows.
+Three lines are cut: the `Database:` label and the two lines its path wrapped onto (`<base>/profiles/demo/moneybin.duckdb`). So are 78 of the 81 table rows.
 
 `db key show` prints the warning on stderr and the key on stdout. The 64-character hex key line is cut from the block below; the warning is what the block shows:
 
 ```console
 $ uv run moneybin db key show
-Using profile: demo
-⚠️  Security warning: this key provides full access to your database. Do not share it or store it in plain text.
+! Security warning: this key provides full access to your database. Do not share it or store it in plain text.
 ```
 
 **What "unlock" means here.** `db unlock` writes the derived key into the OS keychain — so "unlocked" is a *system-wide* state, not a shell-session state. Every moneybin process running under the same user can read the key for as long as it's in the keychain. `db lock` clears it. Locking your laptop or rebooting does not automatically lock the MoneyBin database; the keychain entry survives until you explicitly run `db lock` or delete it from the OS keychain UI. The OS keychain itself may be encrypted at rest and gated on your login session — that's an OS-level property, not a MoneyBin one; check your platform's keychain documentation if you want tighter scoping.
@@ -160,10 +162,11 @@ With no arguments it writes `<base>/profiles/<profile>/backups/moneybin_<timesta
 
 ```console
 $ uv run moneybin db backup
-Using profile: demo
+Copying database backup
+Securing database backup
 ```
 
-The success line is cut: it names the snapshot path described above and its size, `13.8 MB` — the same size `db info` reports for the live file.
+The two stage lines are stderr; the receipt is the one stdout line, and it is cut because it names the snapshot path described above. It reports the size as `14.3 MB` — the same size `db info` reports for the live file.
 
 It's a `shutil.copy2` of the encrypted file with `0600` permissions applied. The backup is **encrypted with the same key as the live database** — the file you copy off the machine is opaque without that key.
 
@@ -278,21 +281,18 @@ MoneyBin applies schema migrations automatically on first open after a package u
 
 ```console
 $ uv run moneybin db migrate status
-Using profile: demo
-Applied migrations:
-  ✅ V001 V001__rename_ofx_transaction_id.py (2ms) — 2026-09-14 14:52:33.271673
-  ✅ V002 V002__backfill_gold_keys.sql (1ms) — 2026-09-14 14:52:33.275434
-  ✅ V003 V003__ofx_import_batch_columns.py (12ms) — 2026-09-14 14:52:33.277847
-  ✅ V063 V063__add_account_settings_archived_at.py (1ms) — 2026-09-14 14:52:33.424065
-
-No pending migrations
-
-Component versions:
-  moneybin: 0.1.0
-  sqlmesh: 0.235.3
+Migration status
+Applied migrations: 65
+Pending migrations: 0
+Applied:            V002 V002__backfill_gold_keys.sql (success), 11ms, 2026-09-23 23:05:57.937270
+Applied:            V007 V007__transaction_curation.py (success), 4ms, 2026-09-23 23:05:57.978962
+Applied:            V017 V017__drop_w2_forms.sql (success), 0ms, 2026-09-23 23:05:58.067910
+Applied:            V064 V064__drop_ofx_institutions.py (success), 1ms, 2026-09-23 23:05:58.364624
+Version moneybin:   0.1.0
+Version sqlmesh:    0.236.2
 ```
 
-The 57 rows between `V003` and `V063` are cut; each has the same shape. Numbering is not contiguous — a purged migration leaves its number unused.
+61 of the 65 `Applied:` rows are cut; each has the same shape. The four shown are rows short enough to print on one line at 100 columns — a longer file name wraps the timestamp onto a second line. Numbering is not contiguous — a purged migration leaves its number unused.
 
 Behavior:
 
@@ -305,14 +305,13 @@ After a schema change, downstream views and reports are refreshed by the data pi
 
 ## Day-to-day operational commands
 
-`db ps` lists the processes holding the database file open; `db kill` sends them SIGTERM as a last resort for a stuck writer; `db shell` opens an interactive DuckDB shell with the encrypted database pre-attached as `moneybin`; `db query` runs one statement; `db info` reports profile, path, and encryption state without unlocking. The flags and output formats are in the [`db` CLI reference](../reference/cli/db.md).
+`db ps` lists the processes holding the database file open; `db kill` sends them SIGTERM as a last resort for a stuck writer; `db shell` opens an interactive DuckDB shell with the encrypted database pre-attached as `moneybin`; `db query` runs one statement; `db info` reports path, size, and encryption state without unlocking. The flags and output formats are in the [`db` CLI reference](../reference/cli/db.md).
 
 Check `db ps` before a backup or restore — a snapshot taken mid-write is corrupt:
 
 ```console
 $ uv run moneybin db ps
-Using profile: demo
-No other processes have moneybin.duckdb open
+Processes: No other processes have moneybin.duckdb open
 ```
 
 `db shell`, `db query`, and `db ui` build a short-lived, key-free init script (`0600` permissions) that runs `ATTACH '<path>' (..., ENCRYPTION_KEY getenv('MONEYBIN_DATABASE__ENCRYPTION_KEY'))` and then `USE moneybin`. MoneyBin supplies the key only through the DuckDB CLI child process environment, and removes the init script in a `finally` block. The DuckDB CLI binary must be installed separately (see [duckdb.org/docs/installation](https://duckdb.org/docs/installation/)) — `db shell` exits with a hint if it's missing. `db ui` provides browser-based read-only exploration with the same attach pattern.
@@ -329,7 +328,7 @@ No other processes have moneybin.duckdb open
 - **`db lock` does not check the key mode.** On an auto-key profile it deletes the only copy of the key without a warning, and `db unlock` cannot rebuild it (no passphrase salt exists). The recovery path is the key you saved from `db key show` before locking, supplied through `MONEYBIN_DATABASE__ENCRYPTION_KEY`; without it the file and every backup made under that key are unreadable. ([Lifecycle commands](#lifecycle-commands))
 - **No key envelope: `db key export` and `db key verify` exit `1`, `db key import` needs an argument it can do nothing with.** All three are hidden from `db key --help` and stay invocable so an existing script keeps its exit code. Move a key by hand — `db key show` into a password manager, or `MONEYBIN_DATABASE__ENCRYPTION_KEY` on the target machine.
 
-  `db key export` and `db key verify` each print one line to stderr and exit `1`: ⚠️  This command is not yet implemented. Support for encryption key export (respectively, verification) is planned — run `moneybin --help` for what works today.
+  `db key export` and `db key verify` each print one line to stderr and exit `1`: ! This command is not yet implemented. Support for encryption key export (respectively, verification) is planned — run `moneybin --help` for what works today.
 
   `db key import` takes a path, so a bare call exits `2` on the missing argument before reaching that body:
 
@@ -337,9 +336,9 @@ No other processes have moneybin.duckdb open
   $ uv run moneybin db key import  # <!-- cli-invocation-ok: shown bare on purpose, exits 2 for the missing path -->
   Usage: moneybin db key import [OPTIONS] ENVELOPE
   Try 'moneybin db key import --help' for help.
-  ╭─ Error ──────────────────────────────────────────────────────────────────────╮
-  │ Missing argument 'ENVELOPE'.                                                 │
-  ╰──────────────────────────────────────────────────────────────────────────────╯
+  ╭─ Error ──────────────────────────────────────────────────────────────────────────────────────────╮
+  │ Missing argument 'ENVELOPE'.                                                                     │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   ```
 
 - **No `db restore --dry-run`.** Restore into a scratch profile instead — the sequence is in [Restore verification](#restore-verification-without-clobbering-live-data).

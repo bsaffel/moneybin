@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-09-23 -->
 # Configuring MCP Clients
 
 MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-compliant client. This guide covers the eight clients we test against and the install steps for each. For the protocol-level details (envelope shape, tool catalog, sensitivity tiers), see the [MCP server guide](mcp-server.md).
@@ -50,7 +50,6 @@ moneybin mcp config path --client <name> [--profile <name>]
 
 ```console
 $ uv run moneybin mcp install --client cursor --print
-Using profile: demo
 {
   "mcpServers": {
     "MoneyBin (demo)": {
@@ -70,7 +69,7 @@ Using profile: demo
 }
 ```
 
-Three lines are trimmed from that block: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran (the `env` block appears only when `MONEYBIN_HOME` is set).
+Three lines are trimmed from that block: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran (the `env` block appears only when `MONEYBIN_HOME` is set). A two-line note `mcp install` writes to stderr is trimmed as well: it appears when install runs inside a linked git worktree and names the main checkout the config was anchored at.
 
 `command` is the **absolute path** to `uv`, resolved when you run install. That is deliberate: macOS clients launched from the GUI (Claude Desktop, Cursor) do not inherit your shell's `PATH`, so a bare `uv` resolves to nothing and the server dies at launch with an error the client reports as a generic failure. If `uv` isn't on your `PATH` at install time either, the bare name is emitted and the client will tell you it couldn't start.
 
@@ -361,8 +360,6 @@ The CLI reaches the same inventory without a client in the loop:
 
 ```console
 $ uv run moneybin system status --output json
-Using profile: demo
-System status: 4 accounts, 2886 transactions, 108 matches pending, 413 uncategorized, transforms_pending=False
 {"status": "ok", "summary": {"total_count": 1, "returned_count": 1, "has_more": false, "sensitivity": "medium", "display_currency": null}, "data": {"accounts_count": 4, "transactions_count": 2886, "transactions_date_range": ["2023-01-01", "2025-12-31"], "last_import_at": null, "matches_pending": 108, "categorize_pending": 413, "exports": [{"name": "local:exports", "kind": "local", "ready": true, "write_capable": true, "reasons": []}]}, "actions": []}
 ```
 
