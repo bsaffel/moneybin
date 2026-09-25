@@ -146,7 +146,7 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --from-date 2
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
 │ 2025-12-27   │ 0                       │ 106,066.73 │
 └──────────────┴─────────────────────────┴────────────┘
-3 of 9 columns shown — --wide for all
+3 of 10 columns shown — --wide for all
 
 › Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
@@ -206,7 +206,7 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --interval mo
 │ 2025-11-30   │ 4                       │          - │          - │
 │ 2025-12-27   │ 0                       │ 106,066.73 │          - │
 └──────────────┴─────────────────────────┴────────────┴────────────┘
-4 of 11 columns shown — --wide for all
+4 of 12 columns shown — --wide for all
 ```
 
 The three next-step hints are trimmed above.

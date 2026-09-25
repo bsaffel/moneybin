@@ -10,10 +10,20 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import resolve_date_range
-from moneybin.tables import REPORTS_NET_WORTH_ACCOUNTS
+from moneybin.reports.definitions._shared import (
+    resolve_date_range,
+    unanchored_candidates_ctes,
+)
+from moneybin.tables import PROFILE_SETTINGS, REPORTS_NET_WORTH_ACCOUNTS
 
 _REPORT_ID = "core:net_worth_accounts"
+
+_COLUMNS = (
+    "account_id, account_name, currency_code, home_currency_code, "
+    "account_type, is_observed, observation_source, rate_source, "
+    "balance_date, rate_published_date, days_since_observed, "
+    "reconciliation_delta, account_balance, account_balance_home"
+)
 
 
 @report(
@@ -64,12 +74,15 @@ _REPORT_ID = "core:net_worth_accounts"
         ),
         OutputColumn(
             "is_observed",
-            "False means the balance is carried forward from an earlier observation.",
+            "False means the balance is carried forward from an earlier "
+            "observation; false with a null account_balance means the account "
+            "holds value but has no balance observation at all.",
             DataClass.TXN_TYPE,
         ),
         OutputColumn(
             "observation_source",
-            "ofx, tabular, assertion, or plaid; null when interpolated.",
+            "ofx, tabular, assertion, or plaid; null when interpolated or "
+            "the account has no balance observation.",
             DataClass.TXN_TYPE,
         ),
         OutputColumn(
@@ -90,12 +103,14 @@ _REPORT_ID = "core:net_worth_accounts"
         ),
         OutputColumn(
             "days_since_observed",
-            "Days since the balance was last actually observed; 0 on an observed day.",
+            "Days since the balance was last actually observed; 0 on an "
+            "observed day; null when the account has no balance observation.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "reconciliation_delta",
-            "Observed minus transaction-derived; null on interpolated days.",
+            "Observed minus transaction-derived; null on interpolated days "
+            "and when the account has no balance observation.",
             DataClass.BALANCE,
             # `balance` for its rendering contract, not because a discrepancy is
             # a position: signed, and uncoloured. Mirrors balance_drift.drift's
@@ -110,13 +125,15 @@ _REPORT_ID = "core:net_worth_accounts"
         ),
         OutputColumn(
             "account_balance",
-            "In currency_code.",
+            "In currency_code; null when the account holds value but has no "
+            "balance observation, which also makes core:net_worth's total null.",
             DataClass.BALANCE,
             money_kind="balance",
         ),
         OutputColumn(
             "account_balance_home",
-            "In home_currency_code; null when unpriced.",
+            "In home_currency_code; null when unpriced or the account has no "
+            "balance observation.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -145,12 +162,16 @@ _REPORT_ID = "core:net_worth_accounts"
         exclusions=(
             "accounts excluded from net worth",
             "archived accounts after their archive date",
+            "no amounts for an eligible account holding value with no balance "
+            "observation: it gets one synthesized row with is_observed false "
+            "and every balance column null",
         ),
         provenance=(
             "reports.net_worth_accounts",
             "core.fct_balances_daily",
             "core.dim_accounts",
             "core.fct_exchange_rates_effective",
+            "core.dim_unanchored_accounts",
         ),
     ),
     class_downgrades={
@@ -180,14 +201,21 @@ def net_worth_accounts(
 
     One row per (account_id, balance_date), in the account's own currency_code
     and in the profile's home currency. Defaults to the latest available day
-    when no range is given.
+    when no range is given. On an explicit range, an eligible unanchored
+    candidate missing from the range gets its own synthesized row, dated
+    independently per candidate rather than gated on the whole result being
+    empty.
 
     Args:
         db: Open read-only database connection.
         from_date: Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper
-            end open when given alone.
+            end open when given alone. An eligible account holding value with
+            no balance observation still gets one row dated inside the range,
+            with null balances.
         to_date: Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower
-            end open when given alone.
+            end open when given alone. An eligible account holding value with
+            no balance observation still gets one row dated inside the range,
+            with null balances.
 
     Examples:
         reports(report_id="core:net_worth_accounts")
@@ -196,17 +224,48 @@ def net_worth_accounts(
     rng = resolve_date_range(
         from_date, to_date, report_id=_REPORT_ID, view=REPORTS_NET_WORTH_ACCOUNTS
     )
-    sql = f"""
-        SELECT account_id, account_name, currency_code, home_currency_code,
-               account_type, is_observed, observation_source, rate_source,
-               balance_date, rate_published_date, days_since_observed,
-               reconciliation_delta, account_balance, account_balance_home
-        FROM {REPORTS_NET_WORTH_ACCOUNTS.full_name}
-        WHERE 1=1{rng.where_sql}
-        ORDER BY balance_date, account_name, account_id
+    filtered = f"""
+        filtered AS (
+            SELECT {_COLUMNS}
+            FROM {REPORTS_NET_WORTH_ACCOUNTS.full_name}
+            WHERE 1=1{rng.where_sql}
+        )
     """  # noqa: S608  # TableRef interpolation, static column list
+    params = list(rng.params)
+    if rng.is_ranged:
+        # Per candidate, never gated on the whole result: a range can hold other
+        # accounts' rows and still miss this one's view row (dated at the latest
+        # eligible day).
+        candidates_sql, candidate_params = unanchored_candidates_ctes(rng)
+        params += candidate_params
+        source = f"""
+            {filtered}, {candidates_sql}
+            SELECT {_COLUMNS} FROM filtered
+            UNION ALL
+            SELECT c.account_id, c.account_name, c.currency_code,
+                   (SELECT p.home_currency FROM {PROFILE_SETTINGS.full_name} AS p),
+                   c.account_type, FALSE, CAST(NULL AS VARCHAR),
+                   CAST(NULL AS VARCHAR), c.synthesis_date, CAST(NULL AS DATE),
+                   CAST(NULL AS INTEGER), CAST(NULL AS DECIMAL(18, 2)),
+                   CAST(NULL AS DECIMAL(18, 2)), CAST(NULL AS DECIMAL(18, 2))
+            FROM unanchored_candidates AS c
+            WHERE NOT EXISTS (
+                SELECT 1 FROM filtered AS f WHERE f.account_id = c.account_id
+            )
+        """  # noqa: S608  # TableRef interpolation, static column list
+    else:
+        # Unranged: the view's own arm is dated at the read's one date and already
+        # applies Requirement 9 there; an archived-before candidate is correctly absent.
+        source = f"""
+            {filtered}
+            SELECT {_COLUMNS} FROM filtered
+        """  # noqa: S608  # TableRef interpolation, static column list
+    sql = f"""
+        WITH {source}
+        ORDER BY balance_date, account_name, account_id
+    """
     actions = [
         "Run reports(report_id='core:net_worth') for the single home-currency total",
         "Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown",
     ]
-    return ReportQuery(sql, rng.params, actions=actions, period=rng.period)
+    return ReportQuery(sql, params, actions=actions, period=rng.period)

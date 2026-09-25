@@ -1,7 +1,7 @@
 # Feature: Net Worth on the SQL Surface
 
 ## Status
-in-progress
+implemented
 
 ## Goal
 
@@ -177,6 +177,15 @@ this spec's to close.
     check that Defect 4 deferred — see §"`moneybin system doctor`: balance
     staleness" for its full specification.
 
+    **"No balance observation" means no row on the spine the totals sum.**
+    The anchor test reads `core.fct_balances_daily`, not the live
+    `core.fct_balances` view. `moneybin accounts balance assert` does not
+    rebuild the spine, so a balance recorded since the last rebuild is not
+    yet summed: the account stays a candidate, and the total stays NULL,
+    until `moneybin refresh` carries it into the spine. The guard and the
+    total therefore move together, never one without the other — see
+    §"Deviations recorded during implementation" → M2B.3, item 6.
+
     **The guard applies at the aggregate and per-account grains, deliberately
     not at the per-currency one.** `reports.net_worth_accounts` reads the
     same `core.fct_balances_daily` spine as `reports.net_worth`, so an
@@ -318,9 +327,9 @@ binds M2P.3 — see §Key Decision 6.
 `kind VIEW` query with it directly. The count and its NULL gate are a
 property of the row, computed on the SQL surface every rung already is, not
 hidden behind a runner a direct SQL reader never sees — and that includes
-the wholly-unanchored profile: the view synthesizes its own `CURRENT_DATE`
-row when the balance-driven output is empty but an eligible candidate
-exists, so "what am I worth right now" needs no runner even in that case.
+the wholly-unanchored profile: the view synthesizes its own row, dated at
+the balance spine's last date (`CURRENT_DATE` when the spine is empty), when
+the balance-driven output is empty but an eligible candidate exists, so "what am I worth right now" needs no runner even in that case.
 Only a specific *historical range* with no balance-spine rows in it —
 something a view with no per-query parameters genuinely cannot date — still
 needs the runner, and even that reads no `prep.*` and touches no spine.
@@ -581,10 +590,9 @@ implementation.
 - `has_position` → `DataClass.TXN_TYPE` — every boolean flag in the
   taxonomy takes this class; the closest analogue is `fct_investment_lots.is_open`
   (`taxonomy.py:960`).
-- `as_of` → `DataClass.TIMESTAMP_OBSERVABILITY`, matching
-  `dim_holdings.provider_reported_as_of` in the same entry
-  (`taxonomy.py:849`) and `dim_holdings.price_date`'s identical reasoning
-  just above it (`taxonomy.py:830-832`).
+- `as_of` → `DataClass.TXN_DATE`: one column name carries one class across
+  the registry, and `BalanceAssertionStatePayload.as_of` already uses
+  `TXN_DATE` (§"Deviations recorded during implementation" → M2B.3).
 
 So the read has ground truth to derive against instead of needing an
 exception.
@@ -766,7 +774,7 @@ three sources but not closed.
 row's own `balance_date` — the same shape Requirement 9's eligibility
 predicate already uses.** For every balance-driven row `reports.net_worth`
 emits, `unanchored_account_count` is the number of candidate accounts (the
-four sources above) that have no row in `core.fct_balances` at all and pass
+four sources above) that have no row in `core.fct_balances_daily` at all and pass
 `include_in_net_worth AND (NOT archived OR (archived_at IS NOT NULL AND
 balance_date <= archived_at))` — correlated to that row's own `balance_date`, exactly as
 Requirement 9 already evaluates eligibility for the balance-backed measures
@@ -800,10 +808,19 @@ its per-row predicates. `reports.net_worth`'s query therefore gains one
 more unconditional arm, evaluated fresh on every read like the rest of the
 view: when the balance-driven output (the same three-rung read every other
 arm shares) is empty and the eligible-candidate count — the four sources,
-joined to `core.dim_accounts`, evaluated at `CURRENT_DATE` exactly as the
-per-row predicate evaluates each real row at its own `balance_date` — is
-greater than zero, this arm emits exactly one row: `balance_date =
-CURRENT_DATE`, every measure NULL, `account_count = 0`,
+joined to `core.dim_accounts`, evaluated at the arm's own date exactly as
+the per-row predicate evaluates each real row at its own `balance_date` — is
+greater than zero, this arm emits exactly one row: `balance_date =` the
+synthesis date (§`reports.net_worth_accounts`, and §"Deviations recorded
+during implementation" → M2B.3, item 7), whose eligible-spine term is NULL
+whenever this arm fires, so it resolves to `(SELECT MAX(balance_date) FROM
+core.fct_balances_daily)`, then `CURRENT_DATE` — the date and archive test `reports.net_worth_accounts` uses
+for the same candidate (§`reports.net_worth_accounts`), so the two rungs'
+unranged reads agree on the date and on whether the candidate appears.
+The balance-driven output can be empty while the spine is not — every
+balance row may belong to an excluded or already-archived account — so the
+row is dated `CURRENT_DATE` only when the spine itself is empty. Every
+measure NULL, `account_count = 0`,
 `unanchored_account_count` set to that count. A bare `SELECT * FROM
 reports.net_worth` on a profile whose only accounts are eligible and
 unanchored now returns that one row with no runner, no `sql_query`
@@ -813,7 +830,7 @@ sql query` inspection path reads.
 
 **That still leaves one case a view cannot express: a specific historical
 range with no balance-spine rows in it.** The view's own arm is always
-dated `CURRENT_DATE`; a caller who explicitly asks for a range that
+dated at the spine max (`CURRENT_DATE` when the spine is empty); a caller who explicitly asks for a range that
 excludes today gets nothing from the bare view for a profile whose only
 data is that one arm's row — the same gap as before, just narrower now
 that "today" is covered. This is not hypothetical:
@@ -821,7 +838,7 @@ that "today" is covered. This is not hypothetical:
 first observation through the global last one
 (`fct_balances_daily.py:186-197`) and no further, so a historical query for
 a range that predates every account's first balance observation returns
-zero real rows and excludes the view's `CURRENT_DATE` arm too, even when an
+zero real rows and excludes the view's fallback arm too, even when an
 eligible unanchored account was live throughout that range. This is the one
 remaining place `reports.net_worth`'s runner does work the view genuinely
 cannot: it holds `from_date`/`to_date` as bound parameters, the way
@@ -839,8 +856,8 @@ which row," since the runner reads the view's output the same way any
 caller does. An unranged call never reaches this fallback at all: it
 answers straight from the ordinary `MAX(balance_date)` default below, and
 that default already subsumes the wholly-empty-profile case correctly —
-when a genuinely eligible (un-archived) candidate exists, the view's own
-`CURRENT_DATE` arm supplies that one row and the default is non-empty; when
+when a candidate eligible at the spine max exists, the view's own
+fallback arm supplies that one row and the default is non-empty; when
 the profile's only unanchored candidate has since been archived, that arm
 correctly excludes it, the default finds nothing, and the runner returns
 that emptiness rather than falling through to synthesis. A closed account's
@@ -855,7 +872,7 @@ bound," never "no range was given at all" — the reading that let a stale
 `reports.net_worth_accounts`'s own anti-join below (§Tier 2, "A ninth case
 pins the anti-join's unranged eligibility date"). The fallback fires only
 when it is still needed: an explicit range that excludes both real data and
-the view's own `CURRENT_DATE` row.
+the view's own fallback row.
 
 **Before computing `effective_from`/`effective_to` or issuing any query,
 the runner validates the range — an inverted one is rejected, not silently
@@ -1043,8 +1060,9 @@ makes the past-and-present cases above fall through unchanged.
 **Which layer owns which case, stated once.** The view owns every row that
 can be dated without knowing the request: every real balance-driven row
 (per-row count and NULL gate, correct in any requested range), plus the one
-`CURRENT_DATE` row for a profile with no balance data at all but an
-eligible candidate. No runner involvement in either — an unranged read
+fallback row, dated at the spine max (`CURRENT_DATE` when the spine is
+empty), for a profile with no eligible balance row but an eligible
+candidate. No runner involvement in either — an unranged read
 never reaches the runner's own synthesis logic, whether or not a currently
 eligible candidate exists. The runner owns exactly one thing beyond
 applying the ordinary range filter: deciding what to do when an *explicit*
@@ -1130,9 +1148,13 @@ account IS the row — the guard's signal is the row's own presence with its
 balance-derived columns NULL, not a number carried beside it. The view gains
 a second `UNION ALL` arm reading the same four evidence sources joined to
 `core.dim_accounts` (§Data Model): one row per eligible unanchored account,
-dated `balance_date = COALESCE((SELECT MAX(balance_date) FROM
-core.fct_balances_daily), CURRENT_DATE)` — see below for why this date, not
-`CURRENT_DATE` unconditionally — with `account_balance`,
+dated at the synthesis date, `COALESCE(<MAX(balance_date) over eligible spine rows>, (SELECT
+MAX(balance_date) FROM core.fct_balances_daily), CURRENT_DATE)`, where "eligible spine rows" are
+`core.fct_balances_daily` joined to `core.dim_accounts` under this rung's own
+first-arm filter (`include_in_net_worth AND (NOT archived OR balance_date <=
+archived_at)`) — see below for why this date, not `CURRENT_DATE`
+unconditionally, and item 7 of the M2B.3 deviations for why the eligible term
+comes first — with `account_balance`,
 `account_balance_home`, `rate_published_date`, `rate_source`,
 `observation_source`, `days_since_observed`, and `reconciliation_delta` all
 NULL, and `is_observed = FALSE`. `currency_code` populates from
@@ -1149,8 +1171,8 @@ still populate from `core.dim_accounts` and `app.profile_settings` on this
 synthesized row, the same as on every ordinary one.
 
 **Unconditional per candidate, unlike `reports.net_worth`'s own arm — and
-dated at the spine's own maximum, not at `CURRENT_DATE`.**
-`reports.net_worth`'s `CURRENT_DATE` arm fires only when the whole
+dated at the latest eligible spine day, not at `CURRENT_DATE`.**
+`reports.net_worth`'s fallback arm fires only when the whole
 balance-driven result is empty, because an ordinary row there already
 carries the correlated count for a mixed profile — the arm exists only to
 cover the wholly-empty case a correlated subquery has no row to attach to.
@@ -1183,16 +1205,21 @@ new `MAX(balance_date)` over this rung the moment any eligible unanchored
 candidate exists, and the unranged default then filters to `CURRENT_DATE`
 alone — discarding every anchored account's row on `global_last_date` and
 returning only the synthesized ones. The synthesized row must instead be
-dated at the same date `core.fct_balances_daily` already carries every
-anchored account to — `COALESCE((SELECT MAX(balance_date) FROM
-core.fct_balances_daily), CURRENT_DATE)` — falling back to `CURRENT_DATE`
-only when the spine itself is empty, the wholly-unanchored profile that is
-exactly the one case `reports.net_worth`'s own arm is already scoped to. The
+dated at the latest day an eligible account occupies on the spine — the
+synthesis date, `COALESCE(<MAX(balance_date) over eligible spine rows>, (SELECT
+MAX(balance_date) FROM core.fct_balances_daily), CURRENT_DATE)` — falling back to the spine's own maximum
+when no eligible spine row exists, and to `CURRENT_DATE` only when the spine
+itself is empty. The spine's global maximum alone is not enough: an excluded
+account, or one archived earlier, can carry balances past every eligible
+account's, and a synthesized row dated there becomes the only row the
+unranged default returns (M2B.3 deviations, item 7). `reports.net_worth`'s own fallback
+arm uses the same date and the same archive test, so the two rungs' unranged
+reads agree. The
 synthesized row is simply one more account carried forward to the date every
 other account already occupies, not an account entitled to define a new one.
 
 **The day-grain rung does not share this defect — confirmed, not assumed.**
-`reports.net_worth`'s own `CURRENT_DATE` arm fires only when its whole
+`reports.net_worth`'s own fallback arm fires only when its whole
 balance-driven result is already empty (§"The view carries a second `UNION
 ALL` arm for the wholly-unanchored profile," above), so it can only ever
 supply the one row `MAX(balance_date)` finds when there is no anchored row to
@@ -1209,7 +1236,7 @@ fallback "only ever answers a bounded range the view cannot see," and
 conclude the two "never fire on the same query." That claim is false,
 and it contradicts this section's own "unconditional per candidate" text
 above: a `kind VIEW` has no notion of "ranged" versus "unranged" at all, so
-the view's arm's row — dated by the spine-maximum rule stated above, present
+the view's arm's row — dated by the synthesis-date rule stated above, present
 in the view's raw output on every read — survives the runner's ordinary date
 filter exactly like any other row whenever the requested range happens to
 include that date. Running the old per-candidate fallback unconditionally
@@ -1248,9 +1275,9 @@ exactly the per-candidate `synthesis_date` this section already computes
 above, so ranged behavior is unchanged. For an unranged read — no
 `from_date` and no `to_date` supplied — every row this rung's read can
 produce, synthesized or not, is dated at exactly the one date this rung's
-own dating rule already names, stated once above at `:1096`:
-`COALESCE((SELECT MAX(balance_date) FROM core.fct_balances_daily),
-CURRENT_DATE)` — never at `effective_to`'s own general default of
+own dating rule already names, stated once above: the synthesis date,
+`COALESCE(<MAX(balance_date) over eligible spine rows>, (SELECT
+MAX(balance_date) FROM core.fct_balances_daily), CURRENT_DATE)` — never at `effective_to`'s own general default of
 `CURRENT_DATE` (§Data Model), which is usually a few days ahead of it. An
 eligible-by-Requirement-14 candidate whose `archived_at` predates that date
 fails Requirement 9's own eligibility test at the one date an unranged read
@@ -1269,10 +1296,11 @@ at its own `archived_at` in place of the single date the unranged contract
 (`:2236`, below) actually owes the read. That is the defect the anti-join
 above corrects.
 
-**This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
-invariant reads** — see §"`moneybin system doctor`: unanchored accounts" —
-because it is the one relation in this spec that names the affected accounts
-by id rather than only a count.
+**`moneybin system doctor`'s `net_worth_unanchored_accounts` invariant does
+not read this row.** It reads `core.dim_unanchored_accounts` joined to
+`core.dim_accounts`'s eligibility at the latest net-worth date — see §"`moneybin system doctor`:
+unanchored accounts" — so it names the same accounts by id without depending
+on which date a read of this rung lands on.
 
 #### `reports.net_worth_currencies`
 
@@ -1342,13 +1370,15 @@ Requirement 14 delivers the guard as its own work item precisely so the
 release gate on this row outlives M2B.2 closing. The view itself counts it,
 per row, from the union of `core.dim_holdings`, `core.dim_holdings_broker_reported`,
 `core.fct_transactions`, and `core.fct_investment_transactions` (§Data Model
-above) — sources none of the other two rungs reads — correlated against
-`core.fct_balances` and `core.dim_accounts`
+above), read through `core.dim_unanchored_accounts`, which anchors on
+`core.fct_balances_daily` and which `reports.net_worth_accounts` also reads,
+joined to `core.dim_accounts`
 at that row's own `balance_date`, to count an eligible account carrying
 evidence of holding value with no balance row at all, and drives `net_worth`
 NULL the same way `unpriced_currency_count` already does. The view also
-carries its own unconditional `CURRENT_DATE`-dated row for a profile with
-no balance data at all but an eligible candidate, so a bare read gets the
+carries its own fallback row, dated at the spine max (`CURRENT_DATE` when
+the spine is empty), for a profile with no eligible balance row but an
+eligible candidate, so a bare read gets the
 right "now" answer with no runner. Only the report's runner, and only for
 a specific historical range with no balance-spine rows in it, computes
 this column outside the view — §Data Model states why that one case
@@ -1694,60 +1724,64 @@ describing when it said "an eligible account ... must not contribute zero in
 silence," stated at the same level of detail as the staleness check above.
 
 `net_worth_unanchored_accounts` first joins `core.dim_accounts` and applies
-`include_in_net_worth AND NOT archived` — the same current-state
-eligibility `net_worth_stale_balance` applies just above, evaluated
-against the account's present row rather than date-scoped (`archived`,
-`dim_accounts.sql:362`; `include_in_net_worth`, `dim_accounts.sql:363`;
-both COALESCEd there from `app.account_settings`'s current row, not
-history). **The two invariants share one eligibility definition**, so a
-future change to what "eligible" means moves both checks together. That
+`include_in_net_worth AND (NOT archived OR archived_at >= <latest date>)`,
+where `<latest date>` is the date the latest `reports.net_worth` row carries,
+read from that view: `COALESCE((SELECT MAX(balance_date) FROM
+reports.net_worth), CURRENT_DATE)` (`archived`, `dim_accounts.sql:362`; `include_in_net_worth`,
+`dim_accounts.sql:363`). The report counts an archived candidate on every
+date up to its `archived_at`, and the spine ends at the last observed balance
+date rather than today, so archiving an unanchored account today leaves the
+latest total NULL; current-state eligibility would pass while it is. **This
+check therefore does not share `net_worth_stale_balance`'s current-state
+eligibility**: it fails exactly while the latest total is NULL for this
+reason, and clears for an archived account once the latest net-worth row is
+dated after its archive date. The date is read from the view itself, not
+from `core.fct_balances_daily`'s global maximum: an excluded account's
+balances can run past every included account's, and the latest
+`reports.net_worth` row then sits earlier than the spine's end. That
 join replaces two proxies for it that each fail differently: a
 `balance_date = CURRENT_DATE` filter produces a false
 negative (below); dropping the date filter entirely cures that but
 produces the opposite false positive (also below). Neither names the real
-condition, which was never a date — it is the account's current inclusion
-state.
+condition, which is the account's inclusion state at the latest net-worth
+date.
 
-Only an account that passes the join is then scanned in
-`reports.net_worth_accounts` for `account_balance IS NULL`, still with
-**no `balance_date` filter** — never a NULL-total read off
-`reports.net_worth`'s own aggregate rung, and never scoped to
-`CURRENT_DATE`. Every ordinary row populates `account_balance` (the
-column's own comment at `:1079`, "In currency_code," carries no NULL case);
-the synthesized-row arm is the only source of a NULL there, so the bare
-predicate identifies it regardless of what date §`reports.net_worth_accounts`
-dates that row at — that date is stated once, where the row is produced,
-and is not restated here. A mixed profile whose newest anchored balance
-predates today dates its synthesized row at the balance spine's own
-maximum, not at `CURRENT_DATE` (§`reports.net_worth_accounts`'s dating
-rule); filtering this check on `balance_date = CURRENT_DATE` in addition
-to `account_balance IS NULL` would silently exclude exactly that mixed
-profile — a false negative,
-because the spine can end before today with no row dated today at all.
-Omitting the date filter without the eligibility join produced the other
-failure: `reports.net_worth_accounts` intentionally retains an archived
-account's synthesized pre-archive row — preserving it for the range in
-which the account really was eligible and unanchored is the whole point
-of Requirement 9's date-scoped history — so an unrestricted scan kept
-that row at `fail` long after the account's current `archived = TRUE`
-excludes it from Requirement 14's guard. The eligibility join closes that
-false positive without bringing a date filter back. The account rung is
-the one relation in this spec that names the affected accounts by id;
-`reports.net_worth`'s `unanchored_account_count` is a number with nothing
-to attach `affected_ids` to, while several existing `fail` invariants in
-this file already return the specific rows they flag rather than only a
-count — `investment_source_overlap`, `orphan_app_state`,
+Only an account that passes the join is then checked for membership in
+`core.dim_unanchored_accounts` — the shared candidate relation Deviation 1
+(§"Deviations recorded during implementation" → M2B.3) introduces in place of
+the per-consumer four-source union this section originally specified, and
+which the account rung, the aggregate rung, and both runner fallbacks now all
+read instead of restating the union each. That relation's own docstring
+states it carries **no eligibility and no `balance_date` filter** — it is a
+plain `NOT EXISTS` against `core.fct_balances_daily` behind the evidence union — so
+this check needs neither: it reads the relation as-is with **no `balance_date`
+filter**, never a NULL-total read off `reports.net_worth`'s own aggregate
+rung, and never scoped to `CURRENT_DATE`. The false-negative and
+false-positive failure modes this section originally analyzed for a
+`reports.net_worth_accounts` scan still hold for the same reason, one join
+earlier: a mixed profile whose newest anchored balance predates today is
+still caught, because `core.dim_unanchored_accounts` has no date to filter on
+in the first place; and an archived account's preserved pre-archive history
+never leaks in, because this check never reads `reports.net_worth_accounts`
+at all — the eligibility join against `core.dim_accounts`, at the latest
+net-worth date, is what excludes an account archived before that date. The account rung is still
+the one relation in this spec that names the affected accounts by id for a
+human reading it directly; `reports.net_worth`'s `unanchored_account_count` is
+a number with nothing to attach `affected_ids` to, while several existing
+`fail` invariants in this file already return the specific rows they flag
+rather than only a count — `investment_source_overlap`, `orphan_app_state`,
 `app_audit_coverage_*`, `currency_integrity` all do (`dedup_reconciliation`
 is the exception, and only because a global count mismatch genuinely has
 no individual row to name). The affected accounts here are individually
 addressable, so this check follows the row-naming pattern rather than
-`dedup_reconciliation`'s. A row surviving both the eligibility join and
-the `account_balance IS NULL` filter means `core.dim_holdings`,
-`core.dim_holdings_broker_reported`, `core.fct_transactions`, or
-`core.fct_investment_transactions` carries evidence for a presently
-eligible account `core.fct_balances` has no anchor for at all —
-Requirement 14's own predicate, already computed once by the view this
-check re-reads rather than duplicating.
+`dedup_reconciliation`'s — reading `affected_ids` off `core.dim_unanchored_accounts.account_id`
+directly rather than off the account rung. A row surviving both the
+eligibility join and membership in `core.dim_unanchored_accounts` means
+`core.dim_holdings`, `core.dim_holdings_broker_reported`,
+`core.fct_transactions`, or `core.fct_investment_transactions` carries
+evidence for an account eligible at the latest net-worth date `core.fct_balances_daily` has no anchor
+for at all — Requirement 14's own predicate, already computed once by the
+shared relation this check re-reads rather than duplicating.
 
 Severity is `fail`, not `warn` — the opposite of the staleness check just
 above, and deliberately so: the balance `net_worth_stale_balance` flags is
@@ -1942,8 +1976,9 @@ only a write that flipped the flag is cascade evidence.
   column and its NULL gate to this file's own query, in its own change —
   joining the new `core.*` model (below), `core.fct_transactions`, and
   `core.fct_investment_transactions`, correlated per row against each row's
-  own `balance_date`, plus a second `UNION ALL` arm dated `CURRENT_DATE` for
-  a profile with no balance-driven output at all but an eligible candidate.
+  own `balance_date`, plus a second `UNION ALL` arm dated at the spine max
+  (`CURRENT_DATE` when the spine is empty) for a profile with no
+  balance-driven output at all but an eligible candidate.
   Only a historical range with no balance-spine rows in it still needs the
   runner (`net_worth.py`); see §Data Model.
 - `src/moneybin/sqlmesh/models/reports/net_worth_accounts.sql` — **`M2B.3`**
@@ -2005,13 +2040,20 @@ only a write that flipped the flag is cascade evidence.
 - `src/moneybin/sqlmesh/models/core/dim_holdings_broker_reported.sql` — the
   classified `core.*` relation the guard reads instead of `prep.*` directly;
   see §Data Model.
-- `src/moneybin/privacy/taxonomy.py` — its `CLASSIFICATION` entry.
+- `src/moneybin/sqlmesh/models/core/dim_unanchored_accounts.sql` — the shared
+  candidate relation Deviation 1 (§"Deviations recorded during
+  implementation" → M2B.3) introduces: one `kind VIEW`, aliasing each of the
+  four evidence branches so the privacy class deriver resolves it, read by
+  both rungs, both runner fallbacks, and the doctor check below instead of
+  each restating the union.
+- `src/moneybin/privacy/taxonomy.py` — a `CLASSIFICATION` entry for each of
+  `dim_holdings_broker_reported` and `dim_unanchored_accounts`.
 - `src/moneybin/reports/definitions/net_worth.py` — the inverted-range
   validation carried over from `service_reports.py`'s retired
   `_validate_networth_history_parameters`, the ordinary range filter (or
   `MAX(balance_date)` when unranged), and the range-scoped synthesized row
   for a historical range with no balance-spine rows in it. The guard's
-  per-row count, NULL gate, and `CURRENT_DATE` `UNION ALL` arm live in
+  per-row count, NULL gate, and fallback `UNION ALL` arm live in
   `net_worth.sql` itself, not here.
 - `src/moneybin/reports/definitions/net_worth_accounts.py` — the same
   range-filter and inverted-range-rejection shape as `net_worth.py`, plus the
@@ -2020,14 +2062,16 @@ only a write that flipped the flag is cascade evidence.
   range-filtered output, one row synthesized independently — never gated on
   the whole filtered result being empty, unlike `net_worth.py`'s own
   fallback above. The guard's own NULL-column arm and its synthesized-row
-  `UNION ALL` arm — dated per §`reports.net_worth_accounts`'s own rule, not
-  unconditionally at `CURRENT_DATE` the way `net_worth.sql`'s arm above is —
+  `UNION ALL` arm — dated per §`reports.net_worth_accounts`'s own rule, which
+  `net_worth.sql`'s fallback arm above shares —
   live in `net_worth_accounts.sql` itself, not here.
 - `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
 - `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
-  (`warn`) and `net_worth_unanchored_accounts` (`fail`) invariants; see
-  §"`moneybin system doctor`: unanchored accounts" for why the second one is
-  `fail` and the first stays `warn`.
+  (`warn`) and `net_worth_unanchored_accounts` (`fail`) invariants; the
+  second reads `core.dim_unanchored_accounts` joined to `core.dim_accounts`,
+  not `reports.net_worth_accounts`. See §"`moneybin system doctor`:
+  unanchored accounts" for why the second one is `fail` and the first stays
+  `warn`.
 - `docs/specs/moneybin-doctor.md` — both invariants' table entries.
 
 ### Files to Delete
@@ -2210,6 +2254,89 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
   reports need three parts") and are verified against derivation in CI, the
   same as every other runner-backed report. `_derived_classes.py` covers
   runner-less views only; none of the three rungs is one.
+
+**M2B.3**
+
+1. **One shared candidate relation, `core.dim_unanchored_accounts`, replaces
+   four per-consumer copies of the evidence union.** Brandon chose this on
+   2026-09-24: the evidence union and the no-balance-anchor test
+   live once in `src/moneybin/sqlmesh/models/core/dim_unanchored_accounts.sql`,
+   read by both rungs, both runner fallbacks, and the doctor check.
+2. **A mixed decisive/all-NULL newest snapshot resolves `has_position` to
+   `NULL`, not `FALSE`.** `src/moneybin/sqlmesh/models/core/dim_holdings_broker_reported.sql`:
+   only a definitive-zero reading requires every row decisive; a mixed origin
+   is inconclusive rather than a confirmed zero, and it changes no candidacy
+   because only `TRUE` adds evidence.
+3. **`core.dim_holdings`'s arm has no isolated end-to-end scenario.** Every
+   open lot traces back to `core.fct_investment_transactions`, so any
+   end-to-end account with a lot also trips that ledger's own arm; the
+   `dim_holdings` arm is pinned in isolation only at the unit level, in
+   `tests/moneybin/test_unanchored_guard_models.py`.
+4. **The Tier 3 doctor cases split between unit and scenario level.** The
+   per-evidence-shape cases (zero-quantity row, empty receipt, sold at a
+   gain, the bootstrap row) are pinned at the unit level against
+   `core.dim_unanchored_accounts` directly; one scenario profile in
+   `tests/scenarios/test_net_worth_unanchored.py` runs `DoctorService` end to
+   end over real transforms of those same shapes plus sibling checking.
+5. **`DateRange` gains `from_bound`/`to_bound`/`is_ranged`.** The runner
+   fallbacks in `src/moneybin/reports/definitions/net_worth.py` and
+   `net_worth_accounts.py` need the validated bounds themselves, not just the
+   `WHERE` fragment `_shared.py` already produced; an internal change to
+   `src/moneybin/reports/definitions/_shared.py`.
+6. **The anchor test reads `core.fct_balances_daily`, not `core.fct_balances`.**
+   The plan tested "no balance anchor" against the live `core.fct_balances`
+   view, but the totals sum `core.fct_balances_daily`, a `kind FULL` table
+   that changes only when a refresh rebuilds it. After
+   `moneybin accounts balance assert`, which does not rebuild, the account
+   left the candidate set at once and `system doctor` passed, while the total
+   was non-NULL and still omitted the account until the next refresh — the
+   silent zero Requirement 14 exists to close. Reading the spine keeps the
+   guard in step with the totals: between the assertion and the refresh the
+   account stays flagged, visibly. Both doctor remedies (`net_worth_unanchored_accounts`,
+   `net_worth_stale_balance`) now tell the user to run `moneybin refresh`
+   after recording a balance or excluding the account. `fct_balances_daily`
+   carries at least one row for every account with a `fct_balances` row after
+   a rebuild (each account's spine runs from its first observation to the
+   global last one), so the switch drops no anchored account.
+7. **The synthesis date prefers the latest eligible spine day over the
+   spine's global maximum.** Both views date a synthesized unanchored row at
+   `COALESCE(<MAX(balance_date) over eligible spine rows>, (SELECT
+   MAX(balance_date) FROM core.fct_balances_daily), CURRENT_DATE)`, where "eligible spine rows" are
+   `core.fct_balances_daily` joined to `core.dim_accounts` under the first
+   arm's filter (`include_in_net_worth AND (NOT archived OR balance_date <=
+   archived_at)`), and the candidate's archive test uses that same date. The
+   spec dated the account rung's row at the global maximum alone. When an
+   excluded account, or one archived earlier, has balances past every
+   eligible account's, that maximum is later than the latest eligible row,
+   so the unranged `core:net_worth_accounts` read (latest day only) returned
+   only the NULL synthesized row and hid every real balance, while
+   `reports.net_worth` reported an earlier latest date. The eligible term
+   never moves the eligible rows' `MAX(balance_date)`. In `reports.net_worth`
+   the fallback fires only when no eligible row exists, so the term is NULL
+   there and behaviour is unchanged; the expression is kept identical so the
+   two views cannot drift. Pinned by
+   `test_unranged_reads_date_a_candidate_at_the_latest_eligible_day`.
+
+Three controller rulings made while implementing M2B.3, not anticipated by
+the plan above:
+
+- **`core.dim_holdings_broker_reported.as_of` is classed `TXN_DATE`, not
+  `TIMESTAMP_OBSERVABILITY`.** One column name carries one class across the
+  registry — `BalanceAssertionStatePayload.as_of` already uses `TXN_DATE`, and
+  a second class for the same name would make the registry ambiguous by
+  column name alone.
+- **`core.dim_unanchored_accounts` aliases each evidence branch.** The four
+  `UNION ALL` arms in `dim_unanchored_accounts.sql` each carry an
+  `evidence_source` alias so the privacy class deriver can resolve the view;
+  without it, the view sits on `report_class_derivation.py`'s unresolvable
+  list.
+- **The end-to-end broker-arm scenario uses the spec's declined-bootstrap
+  shape.** `tests/scenarios/test_net_worth_unanchored.py` exercises a
+  value-only holding with NULL quantity for the broker-reported arm. A
+  positive-quantity snapshot with no transactions correctly writes an
+  `opening_bootstrap` row instead, and that shape lights the
+  investment-ledger arm, not the broker arm — it is pinned separately at the
+  unit level.
 
 ## Testing Strategy
 
@@ -2395,7 +2522,7 @@ eligible unanchored account appears as a row (never absent), with
 — never zero rows for that account on that rung, which is the failure
 §`reports.net_worth_accounts` states this addition closes. Its
 `balance_date` follows that rung's own dating rule stated once there, not
-restated here: the balance spine's own maximum for the first, second, and
+restated here: the latest eligible spine day for the first, second, and
 seventh scenarios' mixed anchored/unanchored profiles, and `CURRENT_DATE`
 only for the third scenario's wholly-unanchored persona, where the spine is
 empty and the rule's fallback applies.
@@ -2500,7 +2627,7 @@ case already gives for the account rung.
   synthesized pre-archive row for the historical range in which it really
   was eligible and unanchored. This is the regression guard for the
   `core.dim_accounts` eligibility join `net_worth_unanchored_accounts`
-  shares with `net_worth_stale_balance` — closing the false positive an
+  applies at the latest net-worth date — closing the false positive an
   unrestricted `account_balance IS NULL` scan produces once the
   `balance_date = CURRENT_DATE` filter that caused the opposite false
   negative was dropped.

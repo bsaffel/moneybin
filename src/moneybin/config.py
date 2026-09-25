@@ -612,6 +612,15 @@ class DoctorSettings(BaseModel):
             "on one amount; a duplicated account mirrors many."
         ),
     )
+    balance_staleness_threshold_days: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "net_worth_stale_balance warns when an account's latest observed "
+            "balance is more than this many days before today. 30 absorbs a "
+            "monthly statement cycle."
+        ),
+    )
 
 
 class MatchingSettings(BaseModel):

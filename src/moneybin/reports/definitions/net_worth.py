@@ -11,17 +11,22 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import resolve_date_range
-from moneybin.tables import REPORTS_NET_WORTH
+from moneybin.reports.definitions._shared import (
+    DateRange,
+    resolve_date_range,
+    unanchored_candidates_ctes,
+)
+from moneybin.tables import PROFILE_SETTINGS, REPORTS_NET_WORTH
 
 _REPORT_ID = "core:net_worth"
 
-#: The nine columns `reports.net_worth` itself projects, in its declared order.
+#: The ten columns `reports.net_worth` itself projects, in its declared order.
 _VIEW_COLUMNS = (
     "home_currency_code",
     "balance_date",
@@ -29,6 +34,7 @@ _VIEW_COLUMNS = (
     "carried_forward_count",
     "currency_count",
     "unpriced_currency_count",
+    "unanchored_account_count",
     "total_assets",
     "total_liabilities",
     "net_worth",
@@ -42,6 +48,55 @@ _BUCKET_EXPR: Mapping[str, str] = {
     "weekly": "date_trunc('week', balance_date)",
     "monthly": "date_trunc('month', balance_date)",
 }
+
+
+def _source_cte(view_cols: str, rng: DateRange) -> tuple[str, list[Binding]]:
+    """The rows a read starts from: the view's filtered rows, plus one synthesized row.
+
+    The synthesized row appears only when an explicit range filtered to nothing
+    and an eligible candidate is dateable inside it — the one row the view cannot
+    date for a range it never saw.
+    """
+    base = f"""
+        filtered AS (
+            SELECT {view_cols}
+            FROM {REPORTS_NET_WORTH.full_name}
+            WHERE 1=1{rng.where_sql}
+        )
+    """  # noqa: S608  # TableRef interpolation, static column list
+    if not rng.is_ranged:
+        source = f"""
+            {base},
+            source AS (SELECT {view_cols} FROM filtered)
+        """  # noqa: S608  # static column list
+        return source, list(rng.params)
+    candidates_sql, candidate_params = unanchored_candidates_ctes(rng)
+    sql = f"""
+        {base},
+        {candidates_sql},
+        synthesized AS (
+            SELECT
+                (SELECT p.home_currency FROM {PROFILE_SETTINGS.full_name} AS p)
+                    AS home_currency_code,
+                MIN(synthesis_date) AS balance_date,
+                0 AS account_count,
+                0 AS carried_forward_count,
+                0 AS currency_count,
+                0 AS unpriced_currency_count,
+                CAST(COUNT(*) AS INTEGER) AS unanchored_account_count,
+                CAST(NULL AS DECIMAL(18, 2)) AS total_assets,
+                CAST(NULL AS DECIMAL(18, 2)) AS total_liabilities,
+                CAST(NULL AS DECIMAL(18, 2)) AS net_worth
+            FROM unanchored_candidates
+            HAVING COUNT(*) > 0 AND NOT EXISTS (SELECT 1 FROM filtered)
+        ),
+        source AS (
+            SELECT {view_cols} FROM filtered
+            UNION ALL
+            SELECT {view_cols} FROM synthesized
+        )
+    """  # noqa: S608  # TableRef interpolation, static column list
+    return sql, [*rng.params, *candidate_params]
 
 
 def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
@@ -60,6 +115,10 @@ def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
     characters, and a fifth column crosses requirement 9's 80-character
     bound. It stays one `--wide` away rather than pushed onto a reader who
     only asked for the trend.
+
+    `unanchored_account_count` is not a default for the same reason: beside
+    the unbucketed three it measures 85 characters. A NULL `net_worth` beside
+    `unpriced_currency_count` 0 is the reader's cue to look for it.
     """
     if parameters.get("interval") is not None:
         return ("balance_date", "unpriced_currency_count", "net_worth", "change_abs")
@@ -113,6 +172,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         "carried_forward_count": DataClass.AGGREGATE,
         "currency_count": DataClass.AGGREGATE,
         "unpriced_currency_count": DataClass.AGGREGATE,
+        "unanchored_account_count": DataClass.AGGREGATE,
         "total_assets": DataClass.BALANCE,
         "total_liabilities": DataClass.BALANCE,
         "net_worth": DataClass.BALANCE,
@@ -149,14 +209,22 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         ),
         OutputColumn(
             "unpriced_currency_count",
-            "How many of them had no rate on this date; 0 means the totals "
-            "below are complete.",
+            "How many of them had no rate on this date; 0 means no currency "
+            "blanks the totals, but they are complete only when "
+            "unanchored_account_count is 0 too.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "unanchored_account_count",
+            "Accounts in net worth that hold value (holdings or transaction "
+            "activity) but have no balance observation; 0 means none. The "
+            "totals are null while it is above 0.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "total_assets",
             "Sum of positive balances in home_currency_code; null when "
-            "unpriced_currency_count > 0.",
+            "unpriced_currency_count or unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -164,7 +232,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         OutputColumn(
             "total_liabilities",
             "Sum of negative balances in home_currency_code, kept negative; "
-            "null when unpriced_currency_count > 0.",
+            "null when unpriced_currency_count or unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -172,7 +240,8 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         OutputColumn(
             "net_worth",
             "Headline: total_assets + total_liabilities in "
-            "home_currency_code; null when unpriced_currency_count > 0.",
+            "home_currency_code; null when unpriced_currency_count or "
+            "unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -234,12 +303,15 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "accounts excluded from net worth",
             "archived accounts after their archive date",
             "dates where any held currency is unpriced (measures are null)",
+            "dates where an eligible account holding value has no balance "
+            "observation (measures are null)",
         ),
         provenance=(
             "reports.net_worth",
             "core.fct_balances_daily",
             "core.dim_accounts",
             "core.fct_exchange_rates_effective",
+            "core.dim_unanchored_accounts",
         ),
     ),
     on_converted=_recompute_net_worth_and_change,
@@ -274,9 +346,15 @@ def net_worth(
     Args:
         db: Open read-only database connection.
         from_date: Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper
-            end open when given alone.
+            end open when given alone. An explicit range with no balance
+            rows, while an eligible account holding value has no balance
+            observation, returns one row dated inside the range with null
+            measures and unanchored_account_count set.
         to_date: Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower
-            end open when given alone.
+            end open when given alone. An explicit range with no balance
+            rows, while an eligible account holding value has no balance
+            observation, returns one row dated inside the range with null
+            measures and unanchored_account_count set.
         interval: daily | weekly | monthly — buckets the range into one row
             per bucket with change_abs/change_pct. Weekly buckets are ISO
             weeks starting Monday. Omitted returns the plain day-grain rows
@@ -303,19 +381,19 @@ def net_worth(
         rng = resolve_date_range(
             from_date, to_date, report_id=_REPORT_ID, view=REPORTS_NET_WORTH
         )
+        source_sql, params = _source_cte(view_cols, rng)
         sql = f"""
-            SELECT {view_cols}
-            FROM {REPORTS_NET_WORTH.full_name}
-            WHERE 1=1{rng.where_sql}
+            WITH {source_sql}
+            SELECT {view_cols} FROM source
             ORDER BY balance_date
-        """  # noqa: S608  # TableRef interpolation, static column list
+        """  # noqa: S608  # CTE text built above from TableRefs and a static column list
         actions = [
             "Run reports(report_id='core:net_worth', "
             "parameters={'interval': 'monthly'}) for period-over-period change",
             "Run reports(report_id='core:net_worth_currencies') for the "
             "currency-level breakdown",
         ]
-        return ReportQuery(sql, rng.params, actions=actions, period=rng.period)
+        return ReportQuery(sql, params, actions=actions, period=rng.period)
 
     rng = resolve_date_range(
         from_date,
@@ -325,14 +403,15 @@ def net_worth(
         default_latest=False,
     )
     bucket_expr = _BUCKET_EXPR[interval]
+    source_sql, params = _source_cte(view_cols, rng)
     sql = f"""
-        WITH ranked AS (
+        WITH {source_sql},
+        ranked AS (
             SELECT {view_cols},
                    ROW_NUMBER() OVER (
                        PARTITION BY {bucket_expr} ORDER BY balance_date DESC
                    ) AS rank_in_bucket
-            FROM {REPORTS_NET_WORTH.full_name}
-            WHERE 1=1{rng.where_sql}
+            FROM source
         ), bucketed AS (
             SELECT {view_cols},
                    LAG(net_worth) OVER (ORDER BY balance_date) AS prior_net_worth
@@ -352,4 +431,4 @@ def net_worth(
         "Set from_date to bound a recent window — rows return oldest-first, "
         "so a row limit keeps the earliest buckets, not the most recent",
     ]
-    return ReportQuery(sql, rng.params, actions=actions, period=rng.period)
+    return ReportQuery(sql, params, actions=actions, period=rng.period)

@@ -105,6 +105,15 @@ Remedy: `moneybin refresh --step match --step transform` proposes the pairs and 
 
 **`account_archive_intent_ambiguous`** — An account whose `include_in_net_worth = FALSE` may have been written by the retired archive cascade rather than chosen. `warn` when the account's audit history holds a pre-V063 `account_settings.set` row recording `archived = TRUE` that also flipped `include_in_net_worth` from TRUE (or absent) to FALSE (at any point, so an unarchived account still counts; pre-V063 means its `after_value` carries no `archived_at` key, since a later archive cannot be the cascade) and no forward `account_settings.set` row written after the latest such row, and not since undone, proves a decision (a later cascade overwrote any earlier choice): the `confirms_include_in_net_worth` context marker `AccountService.settings_update` writes whenever the caller names the flag, or a pre-marker write that excluded the account without archiving it (`before_value.include_in_net_worth` TRUE or absent, `after_value.include_in_net_worth` FALSE, `after_value.archived` FALSE). `pass` otherwise. `accounts set --include` or `--exclude` clears it; a rename or currency edit does not, and undoing the deciding write brings the warning back (a redo carries no marker, so it warns until `accounts set` restates the choice). Reads `app.account_settings` and `app.audit_log` directly, so it reflects a settings write without a transform. See [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md) §Prerequisites.
 
+### Net worth (M2B.3)
+
+| Name | What it checks |
+|---|---|
+| `net_worth_unanchored_accounts` | `fail`. Accounts included in net worth, and not archived or archived on or after the date the latest `reports.net_worth` row carries (read from that view; today when it has no rows), that carry evidence of holding value (an open lot, a broker-reported position, or any row on either transaction ledger) and have no balance observation at all (`core.dim_unanchored_accounts`). Each one makes `reports.net_worth`'s total NULL. `affected_ids` are account ids. Clears after `moneybin refresh` once a balance is recorded or the account is excluded, and, for an archived account, once the latest `reports.net_worth` row is dated after its archive date. |
+| `net_worth_stale_balance` | `warn`. Accounts included in net worth and not archived whose most recent observed balance is more than `doctor.balance_staleness_threshold_days` (default 30) days before today. Compares each account's own latest observed row, never a shared date. Warns only: the balance still counts toward the total. |
+
+See [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md) §`moneybin system doctor` for the derivation of both checks.
+
 ### Investment reconciliation (M1G.4)
 
 Nine checks covering the Plaid investment ledger. They split into two families: **refusals surfaced** (staging declined to guess and filed the row for review — these must be visible, not silently dropped) and **divergence from the broker** (MoneyBin's derived position disagrees with what the provider reports).
