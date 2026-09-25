@@ -510,6 +510,9 @@ class TestCreateRulesUnselectiveContainsGate:
                 category="Transfer",
                 subcategory="Internal Transfer",
                 match_type="contains",
+                account_id="acct00000001",
+                min_amount=5.0,
+                priority=7,
             )
         ]
         result = CategorizationService(db).create_rules(items)
@@ -519,8 +522,22 @@ class TestCreateRulesUnselectiveContainsGate:
         assert result.rule_ids == []
         assert len(result.error_details) == 1
         assert result.error_details[0]["name"] == "Transfer TO"
-        assert "too short" in result.error_details[0]["reason"].lower()
-        assert "allow_broad" in result.error_details[0]["reason"]
+        reason = result.error_details[0]["reason"].lower()
+        assert "too short" in reason
+        # Surface-neutral: no Python keyword syntax (match_type=..., allow_broad=...)
+        # since this reason string is shared with MCP through error_details.
+        assert "=" not in result.error_details[0]["reason"]
+        assert "allow a broad match" in reason
+        # Enough structured detail for the CLI to build a real rerun command.
+        assert result.error_details[0]["merchant_pattern"] == "TO"
+        assert result.error_details[0]["category"] == "Transfer"
+        assert result.error_details[0]["subcategory"] == "Internal Transfer"
+        # The row's own scoping, so a rerun hint recreates this rule and not
+        # an account- or amount-agnostic one — in a --from-file batch too.
+        assert result.error_details[0]["account_id"] == "acct00000001"
+        assert result.error_details[0]["min_amount"] == "5.0"
+        assert result.error_details[0]["max_amount"] == ""
+        assert result.error_details[0]["priority"] == "7"
 
         row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
         assert row == (0,)
@@ -617,6 +634,81 @@ class TestCreateRulesUnselectiveContainsGate:
         assert second.skipped == 0
         assert second.rule_ids == [original_rule_id]
         assert second.error_details == []
+
+
+class TestCreateRulesRecategorizedCount:
+    """``create_rules(..., reapply=True)`` reports the post-commit sweep total."""
+
+    @pytest.mark.unit
+    def test_reapply_reports_the_sweep_total(self, db: Database) -> None:
+        """Two uncategorized rows match the new rule; both get swept in."""
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, amount, transaction_date, description) VALUES "
+            "('t1', -10, '2026-05-01', 'AMAZON MARKETPLACE'), "
+            "('t2', -20, '2026-05-02', 'AMAZON PRIME')"
+        )
+        items = [
+            CategorizationRuleInput(
+                name="Amazon", merchant_pattern="AMAZON", category="Shopping"
+            )
+        ]
+        result = CategorizationService(db).create_rules(items, reapply=True)
+
+        assert result.created == 1
+        assert result.recategorized == 2
+
+        row = db.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories WHERE category = 'Shopping'"
+        ).fetchone()
+        assert row == (2,)
+
+    @pytest.mark.unit
+    def test_recategorized_is_none_without_reapply(self, db: Database) -> None:
+        items = [
+            CategorizationRuleInput(
+                name="Amazon", merchant_pattern="AMAZON", category="Shopping"
+            )
+        ]
+        result = CategorizationService(db).create_rules(items)
+
+        assert result.created == 1
+        assert result.recategorized is None
+
+    @pytest.mark.unit
+    def test_recategorized_is_none_when_reapply_requested_but_nothing_created(
+        self, db: Database
+    ) -> None:
+        """Every proposed rule was refused, so no sweep ran."""
+        items = [
+            CategorizationRuleInput(
+                name="Transfer TO",
+                merchant_pattern="TO",
+                category="Transfer",
+                match_type="contains",
+            )
+        ]
+        result = CategorizationService(db).create_rules(items, reapply=True)
+
+        assert result.created == 0
+        assert result.recategorized is None
+
+    @pytest.mark.unit
+    def test_recategorized_survives_to_payload(self, db: Database) -> None:
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, amount, transaction_date, description) VALUES "
+            "('t1', -10, '2026-05-01', 'NETFLIX')"
+        )
+        items = [
+            CategorizationRuleInput(
+                name="Netflix", merchant_pattern="NETFLIX", category="Entertainment"
+            )
+        ]
+        result = CategorizationService(db).create_rules(items, reapply=True)
+
+        payload = result.to_payload()
+        assert payload.recategorized == result.recategorized == 1
 
 
 class TestDeactivateRule:

@@ -41,9 +41,10 @@ app = typer.Typer(
 
 def _emit_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
     """Print one unpaged mutation receipt to stdout."""
+    policy = get_terminal_policy()
     emit_human_result(
-        compose_human_result([build_summary(pairs, title=title)]),
-        policy=get_terminal_policy(),
+        compose_human_result([build_summary(pairs, title=title, terminal=policy)]),
+        policy=policy,
         finite_read=False,
         receipt=True,
     )
@@ -51,9 +52,10 @@ def _emit_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
 
 def _emit_read(title: str, pairs: list[tuple[str, str]], *, no_pager: bool) -> None:
     """Print one pageable profile answer, including an empty answer's scope."""
+    policy = get_terminal_policy(no_pager=no_pager)
     emit_human_result(
-        compose_human_result([build_summary(pairs, title=title)]),
-        policy=get_terminal_policy(no_pager=no_pager),
+        compose_human_result([build_summary(pairs, title=title, terminal=policy)]),
+        policy=policy,
         finite_read=True,
         no_pager=no_pager,
     )
@@ -355,7 +357,8 @@ def profile_show(
             ("Database", str(info["database_path"])),
             ("DB state", db_status),
         ]
-        parts: list[object] = [build_summary(details, title="Profile")]
+        policy = get_terminal_policy(no_pager=no_pager)
+        parts: list[object] = [build_summary(details, title="Profile", terminal=policy)]
         if info.get("config"):
             config_pairs: list[tuple[str, str]] = []
             config = cast(Mapping[str, object], info["config"])
@@ -365,7 +368,11 @@ def profile_show(
                     for k, v in section_values.items():
                         config_pairs.append((f"{section}.{k}", str(v)))
             if config_pairs:
-                parts.append(build_summary(config_pairs, title="Config (config.yaml)"))
+                parts.append(
+                    build_summary(
+                        config_pairs, title="Config (config.yaml)", terminal=policy
+                    )
+                )
         settings: dict[str, object] = info["settings"]  # type: ignore[assignment]  # always set above
         if settings:
             setting_pairs: list[tuple[str, str]] = []
@@ -376,10 +383,14 @@ def profile_show(
                 else:
                     shown = "(not set)" if v is None else v
                 setting_pairs.append((k, str(shown)))
-            parts.append(build_summary(setting_pairs, title="Settings (database)"))
+            parts.append(
+                build_summary(
+                    setting_pairs, title="Settings (database)", terminal=policy
+                )
+            )
         emit_human_result(
             compose_human_result(parts),
-            policy=get_terminal_policy(no_pager=no_pager),
+            policy=policy,
             finite_read=True,
             no_pager=no_pager,
         )

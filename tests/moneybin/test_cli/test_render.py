@@ -661,6 +661,105 @@ def test_a_number_that_is_not_an_amount_never_folds_either(
         )
 
 
+def test_a_numeric_int_or_decimal_value_is_grouped_by_thousands(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 9: every numeric cell reads in the same thousands convention.
+
+    `db info`'s table listing mixed a hand-grouped total beside raw row
+    counts because only `money=` grouped digits. `grouped=` now groups an
+    `int`/`Decimal` value too, without rounding or a sign glyph — opt-in (not
+    inferred from `numeric=` alone) so a declared FX rate or per-unit price
+    keeps its own convention; see
+    `test_a_numeric_value_outside_grouped_keeps_its_own_convention`.
+    """
+    render_rows(
+        ["label", "rows"],
+        [("core.fct_transactions", 2892), ("app.audit_log", 1381)],
+        numeric=("rows",),
+        grouped=("rows",),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert any("2,892" in line for line in lines)
+    assert any("1,381" in line for line in lines)
+
+
+def test_a_numeric_string_value_is_never_regrouped(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A per-unit price stored as `str` for precision is printed exactly as given.
+
+    Grouping only ever touches `int`/`Decimal`, not the column declaration, so
+    `avg cost`'s `"8.2987654321"` — a `DECIMAL(28,10)` string this test
+    predates `format_money` rounding for — is untouched even if a caller
+    (wrongly) named it in `grouped=`.
+    """
+    render_rows(
+        ["security", "avg cost"],
+        [("VTSAX", "8.2987654321")],
+        numeric=("avg cost",),
+        grouped=("avg cost",),
+    )
+
+    assert "8.2987654321" in capsys.readouterr().out
+
+
+def test_a_numeric_value_outside_grouped_keeps_its_own_convention(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`numeric=` alone never groups — grouping is `grouped=`'s opt-in only.
+
+    `fx list`'s `rate` is a `Decimal` and is declared `numeric=` for the
+    no-fold guarantee, but grouping it would visually clutter a precise FX
+    rate for no reason; a caller that does not name a column in `grouped=`
+    gets exactly the pre-existing "printed as stored" behaviour.
+    """
+    render_rows(
+        ["pair", "rate"],
+        [("USD/EUR", Decimal("1234567890.12345678"))],
+        numeric=("rate",),
+    )
+
+    assert "1234567890.12345678" in capsys.readouterr().out
+
+
+def test_numeric_columns_right_align_like_money(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 9 covers every numeric column, not only declared amounts."""
+    render_rows(["label", "rows"], [("t", 5)], numeric=("rows",))
+
+    lines = capsys.readouterr().out.splitlines()
+    value_line = next(line for line in lines if "5" in line and "rows" not in line)
+    assert "    5 " in value_line, (
+        f"{value_line!r} is not right-aligned within its column, "
+        "the way a money column already is"
+    )
+
+
+def test_nowrap_column_never_folds_but_stays_left_aligned(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `nowrap` column (a timestamp) gets the no-fold guarantee, not right-align.
+
+    `privacy log`'s `When` column wrapped a full timestamp across rows at 100
+    columns. `nowrap=` fixes that without claiming the column is a number —
+    it stays left-aligned, unlike `money=`/`numeric=`.
+    """
+    monkeypatch.setenv("COLUMNS", "40")
+    render_rows(
+        ["When", "Details"],
+        [("2026-09-06T12:00:00+00:00", "a long details string that would wrap")],
+        nowrap=("When",),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert any("2026-09-06T12:00:00+00:00" in line for line in lines), (
+        "the timestamp was split across lines despite nowrap="
+    )
+
+
 def test_an_unfittable_money_cell_is_marked_truncated_rather_than_shortened(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1305,7 +1404,12 @@ def test_render_summary_aligns_values_under_each_other(
 def test_render_summary_honors_the_supplied_terminal_width(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A summary uses the same width policy as tables and receipts."""
+    """A summary uses the same width policy as tables and receipts.
+
+    At width 12 the label wraps at its own word boundary like ordinary prose
+    (`Long`/`label:`), but the single-token value is never split mid-token —
+    see `test_a_single_token_summary_value_never_splits_mid_token`.
+    """
     from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 
     terminal = TerminalPolicy(
@@ -1325,7 +1429,49 @@ def test_render_summary_honors_the_supplied_terminal_width(
 
     render_summary([("Long label", "value")], terminal=terminal)
 
-    assert capsys.readouterr().out.splitlines() == ["Long label: ", "value"]
+    output = capsys.readouterr().out
+    assert "value" in output, "the single-token value was split mid-token"
+
+
+def test_a_summary_value_wider_than_the_terminal_folds_whole(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 10: a path wider than the terminal folds, never truncates.
+
+    `db info`'s ``Database:`` and `import files`' ``Saved:`` are exactly this
+    shape — one unbroken token that no line could hold. Folding keeps every
+    character, so joining the lines gives the path back; an `…` would discard
+    the filename, which is the part the reader needs.
+    """
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=20,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+    render_summary(
+        [("Database", "/very/long/single/token/path/that/exceeds/twenty/columns")],
+        terminal=terminal,
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) > 1
+    assert lines[0].startswith("Database:")
+    joined = "".join(line.strip() for line in lines)
+    assert joined.endswith("/very/long/single/token/path/that/exceeds/twenty/columns")
+    assert "…" not in joined
+    assert all(len(line) <= terminal.width for line in lines)
 
 
 def test_render_rows_uses_ascii_borders_for_an_ascii_terminal(
@@ -1352,8 +1498,12 @@ def test_build_summary_styles_the_heading_and_labels_but_not_external_values() -
 
     Removing either semantic style makes a dense multi-section receipt flat;
     styling the value would instead colour caller-provided text such as an
-    institution name or a recovery command.
+    institution name or a recovery command. Each pair is now its own `Text`
+    (a `Group`, not one combined multi-line `Text`), so a rare oversized
+    value's `no_wrap` cannot also freeze every other line's ordinary wrap —
+    see `test_a_single_token_summary_value_never_splits_mid_token`.
     """
+    from rich.console import Group
     from rich.text import Span, Text
 
     summary = build_summary(
@@ -1361,16 +1511,17 @@ def test_build_summary_styles_the_heading_and_labels_but_not_external_values() -
         title="Sync complete",
     )
 
-    assert isinstance(summary, Text)
-    assert summary.spans == [
-        Span(0, len("Sync complete"), Style.HIERARCHY),
-        Span(len("Sync complete\n"), len("Sync complete\nLoaded:"), Style.CONTEXT),
-        Span(
-            len("Sync complete\nLoaded: 28 transactions\n"),
-            len("Sync complete\nLoaded: 28 transactions\nNext:"),
-            Style.CONTEXT,
-        ),
-    ]
+    assert isinstance(summary, Group)
+    title_line, loaded_line, next_line = summary.renderables
+    assert isinstance(title_line, Text)
+    assert isinstance(loaded_line, Text)
+    assert isinstance(next_line, Text)
+    assert title_line.plain == "Sync complete"
+    assert title_line.spans == [Span(0, len("Sync complete"), Style.HIERARCHY)]
+    assert loaded_line.plain == "Loaded: 28 transactions"
+    assert loaded_line.spans == [Span(0, len("Loaded:"), Style.CONTEXT)]
+    assert next_line.plain == "Next:   moneybin sync status"
+    assert next_line.spans == [Span(0, len("Next:"), Style.CONTEXT)]
 
 
 def test_summary_styles_are_visible_on_a_terminal_and_absent_from_plain_output() -> (
@@ -1444,6 +1595,34 @@ def test_render_note_is_suppressed_by_quiet(
     render_note("Converted from EUR at 1.08", quiet=True)
 
     assert capsys.readouterr().err == ""
+
+
+def test_a_warned_note_never_wraps_mid_token_or_leaves_trailing_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 10: a long `warn=True` note is one line, not a reflowed paragraph.
+
+    Rich's default word-wrap breaks a long note mid-token at the console width
+    and leaves a trailing space on the line it broke. `render_note` must not
+    exhibit either symptom regardless of terminal width.
+    """
+
+    def _always_colored(stream: object, env: object) -> bool:
+        return True
+
+    monkeypatch.setattr("moneybin.cli.render.color_enabled", _always_colored)
+    monkeypatch.setenv("COLUMNS", "40")
+    long_message = (
+        "› moneybin transactions matches pending --profile "
+        "very-long-single-token-profile-name-that-exceeds-a-narrow-terminal-width"
+    )
+
+    render_note(long_message, warn=True)
+
+    output = capsys.readouterr().err
+    assert output.rstrip("\n") == long_message
+    assert not any(line.endswith(" ") for line in output.splitlines())
 
 
 def test_quiet_does_not_suppress_result_rows(

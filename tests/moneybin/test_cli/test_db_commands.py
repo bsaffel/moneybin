@@ -6,6 +6,7 @@ and subprocess command building for DuckDB CLI wrapper commands.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess  # noqa: S404  # test executes the installed DuckDB CLI with static arguments
@@ -1558,7 +1559,11 @@ class TestDbInfoCommand:
     def test_info_keeps_large_row_count_whole_in_a_narrow_table(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
-        """A row count is numeric data, so narrow rendering cannot split its digits."""
+        """A row count is numeric data.
+
+        Narrow rendering cannot split its digits, and it groups by thousands
+        like every other numeric cell.
+        """
         from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 
         db_path = tmp_path / "moneybin.duckdb"
@@ -1598,7 +1603,7 @@ class TestDbInfoCommand:
         result = runner.invoke(app, ["info", "--no-pager"])
 
         assert result.exit_code == 0, result.output
-        assert "123456789" in result.output
+        assert "123,456,789" in result.output
 
     def test_info_fails_when_database_not_found(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -1607,6 +1612,70 @@ class TestDbInfoCommand:
         _make_settings_mock(tmp_path / "missing.duckdb", mocker)
         result = runner.invoke(app, ["info"])
         assert result.exit_code == 1
+
+    def test_info_caps_the_default_table_listing_and_discloses_the_omission(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A large schema shows the biggest tables by default; `--limit 0` shows all.
+
+        Requirement 12: a capped listing must disclose the cap. `db info` on a
+        demo database dumped every one of 81 tables with no indication anything
+        was omitted; the default listing now caps at 20, largest first.
+        """
+        test_db = tmp_path / "test.duckdb"
+        test_db.write_bytes(b"x" * 2048)
+        _make_settings_mock(test_db, mocker)
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = "abc123"
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+
+        table_names = [f"table_{i:02d}" for i in range(25)]
+
+        def execute_side_effect(sql: str, *_args: Any, **_kw: Any) -> MagicMock:
+            result = MagicMock()
+            if "information_schema" in sql:
+                result.fetchall.return_value = [("core", name) for name in table_names]
+            else:
+                # Row counts are the reverse of listing order, so "largest
+                # first" is a real reordering the test can detect.
+                result.fetchall.return_value = [
+                    ("core", name, len(table_names) - i)
+                    for i, name in enumerate(table_names)
+                ]
+            return result
+
+        mock_db = MagicMock()
+        mock_db.__enter__ = lambda self: self  # type: ignore[assignment]
+        mock_db.execute.side_effect = execute_side_effect
+        mock_db.sql.return_value.fetchone.return_value = ("v1",)
+        mocker.patch("moneybin.database.Database", return_value=mock_db)
+
+        default_result = runner.invoke(app, ["info", "--no-pager"])
+        wide_result = runner.invoke(app, ["info", "--no-pager", "--limit", "0"])
+        json_result = runner.invoke(app, ["info", "--output", "json"])
+
+        assert default_result.exit_code == 0, default_result.output
+        assert "20 of 25 shown, largest first" in default_result.output
+        assert "--limit 0 for all" in default_result.output
+        assert "table_00" in default_result.output  # rows=25, the largest
+        assert "table_24" not in default_result.output  # rows=1, dropped
+
+        assert wide_result.exit_code == 0, wide_result.output
+        assert "table_24" in wide_result.output
+        assert "shown, largest first" not in wide_result.output
+
+        assert json_result.exit_code == 0, json_result.output
+        payload = json.loads(json_result.output)
+        assert len(payload["tables"]) == 25
+
+    def test_info_rejects_a_negative_limit_as_a_usage_error(
+        self, runner: CliRunner
+    ) -> None:
+        """`--limit -1` is refused at the option, not read as "show everything"."""
+        result = runner.invoke(app, ["info", "--limit", "-1"])
+
+        assert result.exit_code == 2, result.output
+        assert "--limit" in result.output
 
 
 class TestDbRestoreCommand:

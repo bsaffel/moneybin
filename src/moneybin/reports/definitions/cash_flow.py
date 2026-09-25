@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -48,7 +49,10 @@ from moneybin.tables import REPORTS_CASH_FLOW
         ),
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn(
-            "txn_count", "Non-transfer transaction count.", DataClass.AGGREGATE
+            "txn_count",
+            "Non-transfer transaction count.",
+            DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "inflow",
@@ -138,6 +142,7 @@ def cash_flow(
         from_month,
         to_month,
         report_id="core:cash_flow",
+        cli=("reports", "cash-flow"),
     )
 
     # Assembled in Rule B order — grain key, label, dimensions, then the date —
@@ -195,10 +200,18 @@ def cash_flow(
         ORDER BY year_month, rank_in_currency, currency_code
     """  # noqa: S608  # select_cols allowlist
 
-    actions = [
-        "Rerun reports(report_id='core:cash_flow', "
-        "parameters={'by': 'category'}) to regroup by category",
-        "Run reports(report_id='core:spending_trend') for outflow-only MoM and YoY trends",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="regrouping by category",
+            cli=("reports", "cash-flow", "--by", "category"),
+            mcp="reports(report_id='core:cash_flow', parameters={'by': 'category'})",
+            verb="Rerun",
+        ),
+        NextStep(
+            reason="outflow-only MoM and YoY trends",
+            cli=("reports", "spending-trend"),
+            mcp="reports(report_id='core:spending_trend')",
+        ),
     ]
     if hint:
         actions.insert(0, hint)

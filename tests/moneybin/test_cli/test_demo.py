@@ -76,6 +76,23 @@ def test_demo_runs_and_prints_networth(mocker: Any) -> None:
 
 
 @pytest.mark.unit
+def test_demo_labels_the_single_currency_net_worth_too(mocker: Any) -> None:
+    """Requirement 9: a single-currency total still names its currency.
+
+    The single-total branch printed `Net worth: 211,413.05` with no currency,
+    unlike the multi-currency branch's `Net worth (EUR):` — `per_currency`
+    always carries the one segment behind the combined scalar, so the label
+    is available without inventing anything.
+    """
+    _patch_service(mocker, _fake_result())
+
+    result = runner.invoke(app, ["demo", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Net worth (USD):" in result.output
+
+
+@pytest.mark.unit
 def test_demo_formats_its_headline_the_way_networth_does(mocker: Any) -> None:
     """Requirements 3 and 11: one labelled block, one money formatter.
 

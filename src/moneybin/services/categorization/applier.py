@@ -148,6 +148,12 @@ class RuleCreationResult:
     conflicts: int = 0
     conflict_ids: list[str] = field(default_factory=list)
     conflict_details: list[RuleConflictDetail] = field(default_factory=list)
+    # None when reapply was not requested (or requested but nothing was
+    # created, so no sweep ran) — never a bare 0, which would claim a sweep
+    # ran and found nothing. Set by the facade's ``create_rules`` after its
+    # post-commit ``categorize_pending()`` sweep; ``create_rules_core`` never
+    # populates this.
+    recategorized: int | None = None
 
     def to_payload(self) -> RulesCreatePayload:
         """Return a typed payload for the MCP/CLI envelope boundary."""
@@ -160,6 +166,7 @@ class RuleCreationResult:
             conflicts=self.conflicts,
             conflict_ids=list(self.conflict_ids),
             conflict_details=list(self.conflict_details),
+            recategorized=self.recategorized,
         )
 
     def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
@@ -785,9 +792,28 @@ class MatchApplier:
                             f"Pattern {item.merchant_pattern!r} is too short to be a "
                             "'contains' rule — it would match unrelated merchants "
                             "(e.g. a 2-char pattern like 'TO' matches STORE, AUTO, "
-                            "TOTAL). Use match_type='exact' for a short pattern, or "
-                            "re-run with allow_broad=True to accept the risk."
+                            "TOTAL). Use an exact match for a short pattern, or "
+                            "allow a broad match explicitly to accept the risk."
                         ),
+                        # Surfaced (not logged — this is shared with MCP via
+                        # error_details) so the CLI renderer can offer a
+                        # concrete, runnable rerun command instead of
+                        # repeating Python keyword syntax at the caller.
+                        "merchant_pattern": item.merchant_pattern,
+                        "category": item.category,
+                        "subcategory": item.subcategory or "",
+                        # The row's own scoping, so the rerun recreates this
+                        # rule rather than an account- or amount-agnostic one.
+                        # Strings, like every value here: `error_details` is
+                        # `list[dict[str, str]]` on the MCP payload; "" is unset.
+                        "account_id": item.account_id or "",
+                        "min_amount": ""
+                        if item.min_amount is None
+                        else str(item.min_amount),
+                        "max_amount": ""
+                        if item.max_amount is None
+                        else str(item.max_amount),
+                        "priority": str(item.priority),
                     })
                     continue
                 conflict = detect_conflict(

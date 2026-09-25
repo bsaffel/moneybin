@@ -6064,3 +6064,98 @@ class TestEmbeddedRefreshRecoveryActions:
             action.arguments.get("steps") for action in (result.recovery_actions or [])
         ]
         assert ["match"] in steps
+
+
+async def test_import_files_surfaces_the_assumed_sign_with_revert_first(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """An agent gets the guessed sign as data plus the recovery, revert first.
+
+    The service now records an ambiguous sign on the result instead of
+    logging a WARNING, so this row and action are the only signal an agent
+    has that expenses may have loaded as income. Reverting comes before
+    re-importing because the import has committed: rows without source ids
+    would double-load and rows with source ids would keep the wrong sign.
+    """
+    csv_file = tmp_path / "statements" / "txns.csv"
+    csv_file.parent.mkdir(parents=True)
+    csv_file.touch()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
+    mock_service = MagicMock()
+    mock_service.import_file.return_value = ImportResult(
+        file_path=str(csv_file),
+        file_type="csv",
+        transactions=2,
+        import_id="imp_assumed",
+        sign_assumed="negative_is_expense",
+    )
+
+    with patch(
+        "moneybin.services.import_service.ImportService",
+        return_value=mock_service,
+    ):
+        result = await import_files_coarse(paths=[str(csv_file)])
+
+    assert result.data.files[0].sign_assumed == "negative_is_expense"
+    joined = " ".join(result.actions or [])
+    assert "Sign convention assumed: negative_is_expense" in joined
+    assert "import_revert(import_id='imp_assumed')" in joined
+    assert "--sign negative_is_income" in joined
+    assert joined.index("import_revert") < joined.index("--sign negative_is_income")
+
+
+async def test_import_files_carries_no_assumed_sign_when_it_was_never_guessed(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    csv_file = tmp_path / "statements" / "txns.csv"
+    csv_file.parent.mkdir(parents=True)
+    csv_file.touch()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
+    mock_service = MagicMock()
+    mock_service.import_file.return_value = ImportResult(
+        file_path=str(csv_file), file_type="csv", transactions=2, import_id="imp_plain"
+    )
+
+    with patch(
+        "moneybin.services.import_service.ImportService",
+        return_value=mock_service,
+    ):
+        result = await import_files_coarse(paths=[str(csv_file)])
+
+    assert result.data.files[0].sign_assumed is None
+    assert not any("Sign convention assumed" in a for a in result.actions or [])
+
+
+async def test_import_confirm_coarse_surfaces_the_assumed_sign(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The confirm path has the same blind spot as import_files; same action."""
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Coffee,4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        MagicMock(
+            return_value=ImportResult(
+                file_path=str(csv),
+                file_type="tabular",
+                transactions=1,
+                import_id="imp_assumed",
+                sign_assumed="negative_is_expense",
+            )
+        ),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    joined = " ".join(response.actions or [])
+    assert "Sign convention assumed: negative_is_expense" in joined
+    assert "import_revert(import_id='imp_assumed')" in joined

@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     OutputColumn,
@@ -92,11 +93,13 @@ def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> Non
             "account_count",
             "Accounts contributing on this date in this currency.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "carried_forward_count",
             "How many of them are carried forward.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "total_assets",
@@ -228,8 +231,16 @@ def net_worth_currencies(
         FROM ranked
         ORDER BY rank_in_currency, balance_date, currency_code NULLS LAST
     """  # noqa: S608  # TableRef interpolation, static column list
-    actions = [
-        "Run reports(report_id='core:net_worth') for the single home-currency total",
-        "Run reports(report_id='core:net_worth_accounts') for the account-level breakdown",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="the single home-currency total",
+            cli=("reports", "net-worth"),
+            mcp="reports(report_id='core:net_worth')",
+        ),
+        NextStep(
+            reason="the account-level breakdown",
+            cli=("reports", "net-worth-accounts"),
+            mcp="reports(report_id='core:net_worth_accounts')",
+        ),
     ]
     return ReportQuery(sql, rng.params, actions=actions, period=rng.period)

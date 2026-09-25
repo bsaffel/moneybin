@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     OutputColumn,
@@ -92,6 +93,7 @@ _REPORT_ID = "core:net_worth_accounts"
             "days_since_observed",
             "Days since the balance was last actually observed; 0 on an observed day.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "reconciliation_delta",
@@ -205,8 +207,16 @@ def net_worth_accounts(
         WHERE 1=1{rng.where_sql}
         ORDER BY balance_date, account_name, account_id
     """  # noqa: S608  # TableRef interpolation, static column list
-    actions = [
-        "Run reports(report_id='core:net_worth') for the single home-currency total",
-        "Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="the single home-currency total",
+            cli=("reports", "net-worth"),
+            mcp="reports(report_id='core:net_worth')",
+        ),
+        NextStep(
+            reason="the currency-level breakdown",
+            cli=("reports", "net-worth-currencies"),
+            mcp="reports(report_id='core:net_worth_currencies')",
+        ),
     ]
     return ReportQuery(sql, rng.params, actions=actions, period=rng.period)

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import MONEY_CLASSES, DataClass
 from moneybin.tables import TableRef
 
@@ -135,7 +136,10 @@ class ReportQuery:
     author's keyboard rather than in a test run. The runtime still accepts a
     bare value (see :func:`bound_class`) because an extension runner outside
     this repo is not checked against this contract."""
-    actions: Sequence[str] = ()
+    #: Every in-repo runner authors ``NextStep``; a bare ``str`` is accepted
+    #: for a dynamic/extension runner outside this repo (same rationale as
+    #: ``Binding`` above) and for test fixtures that stand in for one.
+    actions: Sequence[NextStep | str] = ()
     period: str | None = None
 
 
@@ -231,6 +235,16 @@ class OutputColumn:
     """How to render this column's amounts; ``None`` means it is not money."""
     polarity: Polarity | None = None
     """Required when ``money_kind`` is ``"delta"``; refused on the other kinds."""
+    numeric: bool = False
+    """A bare number that is not money — a count, a score, an interval in days.
+
+    Right-aligned and thousands-grouped like a money column
+    (``cli_register.py``'s ``numeric_columns`` feeds ``build_rows(numeric=...)``),
+    but through the plain-number path so `format_money` never rounds or signs
+    it. Mutually exclusive with ``money_kind`` per `.claude/rules/cli.md`'s
+    "Two declarations": every column holding a bare number declares one or the
+    other, never both.
+    """
     currency_basis: CurrencyBasis | None = None
     """``None`` (default) — this amount is in the row's own currency, the one
     ``ReportSemantics.currency`` names, and ``convert_records`` prices it from
@@ -300,6 +314,11 @@ class OutputColumn:
             raise ValueError(
                 f"money column {self.name!r} is not a delta, so its polarity "
                 f"{self.polarity!r} would be ignored rather than applied"
+            )
+        if self.numeric and self.money_kind is not None:
+            raise ValueError(
+                f"column {self.name!r} declares both money_kind and numeric; "
+                "a column holding a bare number is one or the other"
             )
         if self.currency_basis is not None and self.data_class not in MONEY_CLASSES:
             raise ValueError(

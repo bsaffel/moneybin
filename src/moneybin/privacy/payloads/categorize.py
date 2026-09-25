@@ -287,6 +287,10 @@ class RulesCreatePayload:
         default_factory=list
     )
     conflict_details: list[RuleConflictDetail] = field(default_factory=list)
+    # None unless ``reapply=True`` triggered a post-commit sweep — a bare 0
+    # would claim a sweep ran and recategorized nothing. Counts rows across
+    # every active rule, not only the ones this call created.
+    recategorized: Annotated[int | None, DataClass.AGGREGATE] = None
 
 
 # ---------------------------------------------------------------------------

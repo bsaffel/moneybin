@@ -587,6 +587,15 @@ def import_files_command(
                             batch_result = _single_file_failure(file_paths[0], file_exc)
                             files_list, data = _batch_payload(batch_result)
                         else:
+                            if result.sign_assumed:
+                                typer.echo(
+                                    format_cli_attention(
+                                        _sign_assumed_notice(
+                                            result.sign_assumed, result.import_id
+                                        )
+                                    ),
+                                    err=True,
+                                )
                             if result.sign_correction_suggested:
                                 typer.echo(
                                     format_cli_attention(
@@ -619,6 +628,16 @@ def import_files_command(
                             confirm=confirm,
                             actor_kind="human",
                         )
+                        assumed = [r for r in batch_result.per_file if r.sign_assumed]
+                        if assumed:
+                            typer.echo(
+                                format_cli_attention(
+                                    _batch_sign_assumed_notice([
+                                        (r.path, r.import_id) for r in assumed
+                                    ])
+                                ),
+                                err=True,
+                            )
                         if any(
                             r.sign_correction_suggested for r in batch_result.per_file
                         ):
@@ -987,6 +1006,10 @@ def _batch_payload(
             # --sign — the TTY path already warns to stderr; this closes the
             # gap for scripted callers.
             "sign_correction_suggested": r.sign_correction_suggested,
+            # Same reasoning as sign_correction_suggested: the ambiguous-mapping
+            # log record that used to be the only notice of this now lands here
+            # too, so a scripted caller sees it without scraping the log file.
+            "sign_assumed": r.sign_assumed,
             "sign_override_replayed": r.sign_override_replayed,
             # Omitted rather than emitted empty: this key means "an account you
             # have never seen now exists", and a key present on every row stops
@@ -1056,6 +1079,43 @@ def _batch_payload(
     return files_list, data
 
 
+def _sign_assumed_notice(sign_assumed: str, import_id: str | None) -> str:
+    """The attention line for an import that guessed its sign convention.
+
+    The import has already committed, so "rerun with --sign" alone would
+    double-load the file: rows without source ids hash the signed amount into
+    their transaction id, so a flipped re-import adds negatives beside the
+    positives, and rows with source ids are ignored on re-import and keep the
+    wrong sign. Revert first; the id is the one `import history` shows.
+    """
+    revert_cmd = generated_cli_command("import", "revert", import_id or "<import_id>")
+    revert = f"revert it with '{revert_cmd}'"
+    return (
+        f"Sign convention assumed: {sign_assumed} (all amounts appear positive). "
+        f"If expense amounts look wrong, {revert} and re-import the file with "
+        "--sign negative_is_income."
+    )
+
+
+def _batch_sign_assumed_notice(files: list[tuple[str, str | None]]) -> str:
+    """The batch form of :func:`_sign_assumed_notice`.
+
+    `--sign` is ignored in multi-file mode, so each affected file has to be
+    reverted and re-imported on its own.
+    """
+    named = ", ".join(
+        f"{Path(file_path).name} (import {import_id or '<import_id>'})"
+        for file_path, import_id in files
+    )
+    revert_cmd = generated_cli_command("import", "revert", "<import_id>")
+    return (
+        f"Sign convention assumed for {named} (all amounts appear positive). "
+        f"If expense amounts look wrong, revert each with '{revert_cmd}' and "
+        "re-import that file on its own with --sign negative_is_income; --sign "
+        "is ignored when several files import together."
+    )
+
+
 def _batch_receipt(data: Mapping[str, Any]) -> object:
     """Build the complete unpaged text receipt for ``import files``.
 
@@ -1066,22 +1126,32 @@ def _batch_receipt(data: Mapping[str, Any]) -> object:
     imported = int(data["imported_count"])
     failed = int(data["failed_count"])
     pending = int(data["confirmation_required_count"])
+    total = int(data["total_count"])
     transforms_error = data.get("transforms_error")
     if pending and not failed and not transforms_error and not imported:
         title = "Import needs confirmation"
     elif failed or pending or transforms_error:
         title = "Import partially completed" if imported else "Import incomplete"
     else:
-        title = "Import complete"
+        # Checkmark only on the fully-complete outcome (rule 29: partial
+        # failure gets no overall success checkmark) — every other branch
+        # above states its own outcome in words instead.
+        symbols = get_terminal_policy().symbols
+        title = f"{symbols.success} Import complete"
 
-    details: list[tuple[str, str]] = []
+    details: list[tuple[str, str]] = [("Files", f"{imported} of {total} imported")]
     for file_result in cast("list[dict[str, Any]]", data["files"]):
         path = str(file_result["path"])
         status = str(file_result["status"])
         if status == "imported":
+            # The id `import history` lists and `import revert` takes for this
+            # same batch — omitting it left the receipt naming no way to
+            # revert what it just reported saving.
+            import_id = file_result.get("import_id")
+            id_note = f" (import {import_id})" if import_id else ""
             details.append((
                 "Saved",
-                f"{path} — {file_result.get('rows_loaded') or 0} rows loaded",
+                f"{path} — {file_result.get('rows_loaded') or 0} rows loaded{id_note}",
             ))
         elif status == "confirmation_required":
             details.append((
@@ -1224,6 +1294,7 @@ def _single_file_success(
                 rows_loaded=result.rows_loaded,
                 import_id=result.import_id,
                 sign_correction_suggested=result.sign_correction_suggested,
+                sign_assumed=result.sign_assumed,
                 sign_override_replayed=result.sign_override_replayed,
                 accounts_created=result.accounts_created,
             )
@@ -2747,7 +2818,7 @@ def import_confirm_command(
             render_or_json(envelope, output, cli_actor="import_confirm_command")
         else:
             _confirm_receipt(
-                "Import complete",
+                f"{get_terminal_policy().symbols.success} Import complete",
                 [
                     ("File", str(file_path)),
                     ("Saved", f"{bridge_result.rows_loaded} rows"),
@@ -2784,6 +2855,7 @@ def import_confirm_command(
             "rows_loaded": result.rows_loaded,
             "file_type": result.file_type,
             "sign_correction_suggested": result.sign_correction_suggested,
+            "sign_assumed": result.sign_assumed,
             # merged_mapping is authoritative (threaded from
             # ImportResult.field_mapping); agents need it to verify which
             # column mapping was actually applied without re-detecting.
@@ -2805,12 +2877,16 @@ def import_confirm_command(
                 "Sign convention may be inverted — inspect amounts and re-import "
                 "with --mapping corrected if needed.",
             )
+        if result.sign_assumed:
+            actions.insert(
+                0, _sign_assumed_notice(result.sign_assumed, result.import_id)
+            )
         envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
         render_or_json(envelope, output, cli_actor="import_confirm_command")
         return
 
     _confirm_receipt(
-        "Import complete",
+        f"{get_terminal_policy().symbols.success} Import complete",
         [
             ("File", str(file_path)),
             ("Saved", f"{result.rows_loaded} rows"),
@@ -2822,6 +2898,13 @@ def import_confirm_command(
         ],
     )
     echo_accounts_created(_accounts_created_payload(result.accounts_created))
+    if result.sign_assumed:
+        typer.echo(
+            format_cli_attention(
+                _sign_assumed_notice(result.sign_assumed, result.import_id)
+            ),
+            err=True,
+        )
     if result.sign_correction_suggested:
         typer.echo(
             format_cli_attention(
@@ -2933,6 +3016,7 @@ def import_history(
             view.names,
             view.rows,
             numeric=("imported", "rejected"),
+            grouped=("imported", "rejected"),
             total_columns=view.total,
             terminal=policy,
         )
@@ -3802,6 +3886,7 @@ def formats_list(
                 pdf_view.names,
                 pdf_view.rows,
                 numeric=("version", "used"),
+                grouped=("used",),
                 total_columns=pdf_view.total,
                 terminal=policy,
             ),
@@ -4171,6 +4256,7 @@ def import_status(
                     for row in rows
                 ],
                 numeric=("rows",),
+                grouped=("rows",),
                 terminal=policy,
             ),
         ]

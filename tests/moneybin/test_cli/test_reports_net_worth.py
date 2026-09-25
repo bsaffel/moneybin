@@ -93,8 +93,11 @@ def test_net_worth_text_renders_the_day_grain_headline() -> None:
 
     assert invocation.exit_code == 0, invocation.output
     out = invocation.stdout
-    # The default text projection: balance_date, unpriced_currency_count,
-    # net_worth — total_assets/total_liabilities stay --wide-only.
+    # The default text projection: home_currency_code, balance_date,
+    # unpriced_currency_count, net_worth — total_assets/total_liabilities stay
+    # --wide-only. Requirement 9: net_worth is a home-currency total with no
+    # other column naming its denomination, so the currency must be visible.
+    assert "USD" in out
     assert "12,500.00" in out
     assert "15,000.00" not in out
     call = mock_catalog.return_value.execute.call_args

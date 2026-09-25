@@ -2811,7 +2811,12 @@ class TestTabularConfirmationFlow:
         db: Database,
         caplog: LogCaptureFixture,
     ) -> None:
-        """Sign-convention warning still fires when sign is ambiguous (confirm=True path)."""
+        """Sign-convention record still fires when sign is ambiguous (confirm=True path).
+
+        Downgraded from WARNING to INFO: `result.sign_assumed` is now the
+        user-facing notice (the CLI renders it), so this is a file-log record,
+        not a second console warning duplicating that fact.
+        """
         from moneybin.services.import_service import ImportService
 
         high_ambig = _make_mapping_result(
@@ -2822,9 +2827,9 @@ class TestTabularConfirmationFlow:
                 "moneybin.extractors.tabular.column_mapper.map_columns",
                 return_value=high_ambig,
             ),
-            caplog.at_level("WARNING"),
+            caplog.at_level("INFO"),
         ):
-            ImportService(db).import_file(
+            result = ImportService(db).import_file(
                 _STANDARD_CSV,
                 account_name="test",
                 account_bindings=_BIND_TEST_ACCOUNT,
@@ -2835,6 +2840,7 @@ class TestTabularConfirmationFlow:
             "sign convention" in caplog.text.lower()
             or "ambiguous" in caplog.text.lower()
         )
+        assert result.sign_assumed == "negative_is_expense"
 
     def test_agent_cannot_confirm_an_inferred_credit_card_inversion(
         self, db: Database

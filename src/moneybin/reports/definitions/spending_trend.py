@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -90,7 +91,9 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             DataClass.CURRENCY,
         ),
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
-        OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "txn_count", "Outflow transaction count.", DataClass.AGGREGATE, numeric=True
+        ),
         OutputColumn(
             "total_spend",
             "Absolute outflow in the month and category.",
@@ -120,6 +123,7 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "mom_pct",
             "Month-over-month delta divided by previous-month spend.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "prev_year_spend",
@@ -138,6 +142,7 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "yoy_pct",
             "Year-over-year delta divided by prior-year spend.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "trailing_3mo_avg",
@@ -222,6 +227,7 @@ def spending_trend(
         from_month,
         to_month,
         report_id="core:spending_trend",
+        cli=("reports", "spending-trend"),
     )
 
     ranked = f"""
@@ -268,11 +274,23 @@ def spending_trend(
         ORDER BY year_month, rank_in_currency, currency_code
     """  # noqa: S608  # subquery built from TableRef + allowlisted filters
 
-    actions = [
-        "Run reports(report_id='core:spending_trend', "
-        "parameters={'category': '<name>'}) to filter to one category",
-        "Run reports(report_id='core:cash_flow') for inflow, outflow, and net",
-        "Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="filtering to one category",
+            cli=("reports", "spending-trend", "--category", "<name>"),
+            mcp="reports(report_id='core:spending_trend', "
+            "parameters={'category': '<name>'})",
+        ),
+        NextStep(
+            reason="inflow, outflow, and net",
+            cli=("reports", "cash-flow"),
+            mcp="reports(report_id='core:cash_flow')",
+        ),
+        NextStep(
+            reason="recurring charge patterns",
+            cli=("reports", "recurring-subscriptions"),
+            mcp="reports(report_id='core:recurring_subscriptions')",
+        ),
     ]
     if hint:
         actions.insert(0, hint)

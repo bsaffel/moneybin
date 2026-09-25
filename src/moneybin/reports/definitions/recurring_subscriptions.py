@@ -65,19 +65,25 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
             "interval_days_avg",
             "Mean days between consecutive charges.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "interval_days_stddev",
             "Standard deviation of days between charges.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
-            "confidence", "Recurrence confidence from 0 to 1.", DataClass.AGGREGATE
+            "confidence",
+            "Recurrence confidence from 0 to 1.",
+            DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "occurrence_count",
             "Matching charge count in the observation window.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "avg_amount",
