@@ -55,6 +55,7 @@ from moneybin.tables import (
     DIM_UNANCHORED_ACCOUNTS,
     EXCHANGE_RATE_OVERRIDES,
     FCT_BALANCES,
+    FCT_BALANCES_DAILY,
     FCT_EXCHANGE_RATES_DAILY,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
@@ -2101,20 +2102,34 @@ class DoctorService:
 
         `fail`, because each one makes reports.net_worth's total NULL: the account
         contributes nothing, and the release bar says a total is right or visibly
-        incomplete. Eligibility is the account's CURRENT state (included, not
-        archived) — shared with net_worth_stale_balance — so a closed account's
-        preserved pre-archive history never keeps this red.
+        incomplete. Eligibility is taken at the date the latest reports.net_worth
+        row carries (the balance spine's last date, CURRENT_DATE when it is
+        empty), so the check fails exactly while that row's total is NULL: an
+        account archived on or after that date still counts, and a closed
+        account's preserved pre-archive history does not. Unlike
+        net_worth_stale_balance, which reads current state.
         """
         name = "net_worth_unanchored_accounts"
         try:
             rows = self._db.execute(
                 f"""
+                WITH latest AS (
+                    SELECT COALESCE(
+                        (SELECT MAX(b.balance_date)
+                         FROM {FCT_BALANCES_DAILY.full_name} AS b),
+                        CURRENT_DATE
+                    ) AS balance_date
+                )
                 SELECT u.account_id
                 FROM {DIM_UNANCHORED_ACCOUNTS.full_name} AS u
                 JOIN {DIM_ACCOUNTS.full_name} AS a ON a.account_id = u.account_id
-                WHERE a.include_in_net_worth AND NOT a.archived
+                CROSS JOIN latest AS l
+                WHERE a.include_in_net_worth
+                  AND (NOT a.archived
+                       OR (a.archived_at IS NOT NULL
+                           AND a.archived_at >= l.balance_date))
                 ORDER BY u.account_id
-                """
+                """  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # core views absent before first transform
             return InvariantResult(
