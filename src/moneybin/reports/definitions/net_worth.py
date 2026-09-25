@@ -65,10 +65,11 @@ def _source_cte(view_cols: str, rng: DateRange) -> tuple[str, list[Binding]]:
         )
     """  # noqa: S608  # TableRef interpolation, static column list
     if not rng.is_ranged:
-        return (
-            f"{base}, source AS (SELECT {view_cols} FROM filtered)",  # noqa: S608  # static column list
-            list(rng.params),
-        )
+        source = f"""
+            {base},
+            source AS (SELECT {view_cols} FROM filtered)
+        """  # noqa: S608  # static column list
+        return source, list(rng.params)
     candidates_sql, candidate_params = unanchored_candidates_ctes(rng)
     sql = f"""
         {base},

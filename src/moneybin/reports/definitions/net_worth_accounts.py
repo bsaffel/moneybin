@@ -255,7 +255,10 @@ def net_worth_accounts(
     else:
         # Unranged: the view's own arm is dated at the read's one date and already
         # applies Requirement 9 there; an archived-before candidate is correctly absent.
-        source = f"{filtered} SELECT {_COLUMNS} FROM filtered"  # noqa: S608  # TableRef interpolation, static column list
+        source = f"""
+            {filtered}
+            SELECT {_COLUMNS} FROM filtered
+        """  # noqa: S608  # TableRef interpolation, static column list
     sql = f"""
         WITH {source}
         ORDER BY balance_date, account_name, account_id
