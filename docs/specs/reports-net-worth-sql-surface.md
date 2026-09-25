@@ -1715,17 +1715,20 @@ silence," stated at the same level of detail as the staleness check above.
 
 `net_worth_unanchored_accounts` first joins `core.dim_accounts` and applies
 `include_in_net_worth AND (NOT archived OR archived_at >= <latest date>)`,
-where `<latest date>` is the date the latest `reports.net_worth` row carries:
-`COALESCE((SELECT MAX(balance_date) FROM core.fct_balances_daily),
-CURRENT_DATE)` (`archived`, `dim_accounts.sql:362`; `include_in_net_worth`,
+where `<latest date>` is the date the latest `reports.net_worth` row carries,
+read from that view: `COALESCE((SELECT MAX(balance_date) FROM
+reports.net_worth), CURRENT_DATE)` (`archived`, `dim_accounts.sql:362`; `include_in_net_worth`,
 `dim_accounts.sql:363`). The report counts an archived candidate on every
 date up to its `archived_at`, and the spine ends at the last observed balance
 date rather than today, so archiving an unanchored account today leaves the
 latest total NULL; current-state eligibility would pass while it is. **This
 check therefore does not share `net_worth_stale_balance`'s current-state
 eligibility**: it fails exactly while the latest total is NULL for this
-reason, and clears for an archived account once the balance history runs
-past its archive date. That
+reason, and clears for an archived account once the latest net-worth row is
+dated after its archive date. The date is read from the view itself, not
+from `core.fct_balances_daily`'s global maximum: an excluded account's
+balances can run past every included account's, and the latest
+`reports.net_worth` row then sits earlier than the spine's end. That
 join replaces two proxies for it that each fail differently: a
 `balance_date = CURRENT_DATE` filter produces a false
 negative (below); dropping the date filter entirely cures that but

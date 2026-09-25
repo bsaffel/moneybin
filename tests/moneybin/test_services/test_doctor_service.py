@@ -2729,6 +2729,7 @@ def _net_worth_guard_ddl(db: Database) -> None:
         "CREATE TABLE IF NOT EXISTS core.fct_balances_daily "
         "(account_id VARCHAR, balance_date DATE)"
     )
+    db.execute("CREATE TABLE reports.net_worth (balance_date DATE)")
     db.execute(
         "CREATE TABLE reports.net_worth_accounts (account_id VARCHAR, "
         "is_observed BOOLEAN, balance_date DATE)"
@@ -2749,6 +2750,21 @@ def _nw_account(
         "VALUES (?, ?, ?, CURRENT_DATE - ?::INTEGER)",
         [account_id, include, archived, archived_days_ago],
     )
+
+
+def _spine_row(
+    db: Database, account_id: str, days_ago: int, *, in_net_worth: bool = True
+) -> None:
+    """A balance-spine row; an included account's also dates a net-worth row."""
+    db.execute(
+        "INSERT INTO core.fct_balances_daily VALUES (?, CURRENT_DATE - ?::INTEGER)",
+        [account_id, days_ago],
+    )
+    if in_net_worth:
+        db.execute(
+            "INSERT INTO reports.net_worth VALUES (CURRENT_DATE - ?::INTEGER)",
+            [days_ago],
+        )
 
 
 def _observed(db: Database, account_id: str, days_ago: int) -> None:
@@ -2790,9 +2806,7 @@ def test_unanchored_accounts_fails_for_an_account_archived_after_the_spine_ends(
     """Archived today, spine ends 3 days ago: the latest net-worth row is still NULL."""
     _net_worth_guard_ddl(db)
     _nw_account(db, "m2b3_anchor")
-    db.execute(
-        "INSERT INTO core.fct_balances_daily VALUES ('m2b3_anchor', CURRENT_DATE - 3)"
-    )
+    _spine_row(db, "m2b3_anchor", 3)
     _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=0)
     db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
@@ -2807,13 +2821,33 @@ def test_unanchored_accounts_passes_for_an_account_archived_before_the_spine_end
     """A closed account's pre-archive history never keeps the check red."""
     _net_worth_guard_ddl(db)
     _nw_account(db, "m2b3_anchor")
-    db.execute(
-        "INSERT INTO core.fct_balances_daily VALUES ('m2b3_anchor', CURRENT_DATE - 3)"
-    )
+    _spine_row(db, "m2b3_anchor", 3)
     _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=10)
     db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_dates_eligibility_at_the_latest_net_worth_row(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An excluded account's later balances must not move the eligibility date.
+
+    Included balances end 10 days ago, an excluded account's run to 2 days ago,
+    and the candidate was archived 5 days ago: the latest reports.net_worth row
+    (10 days ago) still counts it, so its total is NULL and doctor must fail.
+    """
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "m2b3_anchor")
+    _nw_account(db, "m2b3_excl", include=False)
+    _spine_row(db, "m2b3_anchor", 10)
+    _spine_row(db, "m2b3_excl", 2, in_net_worth=False)
+    _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=5)
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["m2b3_brk"]
 
 
 @pytest.mark.unit
