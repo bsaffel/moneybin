@@ -125,12 +125,12 @@ This only updates the per-profile YAML — env-var overrides like `MONEYBIN_DATA
 Removes a profile permanently:
 
 - Deletes the entire `<base>/profiles/<name>/` tree, including `logs/`, `backups/`, `temp/`, the `config.yaml`, and the encrypted database file.
-- Clears the profile's keychain entries (`DATABASE__ENCRYPTION_KEY` and `DATABASE__PASSPHRASE_SALT` under service `moneybin-<name>`) after removing the directory. Missing entries are harmless; denied cleanup reports an error. Sibling profiles' keychain entries are never touched.
+- Clears the profile's keychain entries (`DATABASE__ENCRYPTION_KEY` and `DATABASE__PASSPHRASE_SALT` under service `moneybin-<name>`) after removing the directory's contents, then removes the empty directory. Missing entries are harmless. Denied cleanup reports an error and leaves the empty directory so `moneybin profile delete <name>` can retry after the keychain is unlocked. The empty directory is not shown by `profile list`. Sibling profiles' keychain entries are never touched.
 - Clears the profile's sync auth tokens through `SecretStore` before removing the directory. The existing keychain service is keyed by the profile's internal `profile_id` (a local, opaque id in `<base>/profiles/<name>/profile_id`, unrelated to the sync server's own user identity). If cleanup is denied, the directory and identity remain available for retry.
 - Refuses to delete the currently active profile — switch away first.
 - Prompts for confirmation; pass `--yes/-y` to skip the prompt for scripting.
 
-> **There is no undelete.** No grace period, no trash directory, no "are you sure" re-typing of the profile name beyond the single confirm prompt. The directory tree is removed with `shutil.rmtree`. The keychain entry — and therefore the only copy of the encryption key — is removed immediately after. If you deleted in error: check `~/.Trash` on macOS or your filesystem snapshot tool (Time Machine, ZFS / Btrfs snapshots, restic, Borg) before doing anything else. The OS keychain entry is gone the moment delete finishes; restoring the `.duckdb` file alone is not enough — you must also have an off-profile copy of the key. **Before deleting any profile you care about, run `db backup -o <path-outside-profile>` to a location that won't be swept by the delete, and save the key (`db key show`) somewhere safe.**
+> **There is no undelete.** No grace period, no trash directory, no "are you sure" re-typing of the profile name beyond the single confirm prompt. The directory's contents are removed first, then its keychain entries — including the only copy of the encryption key — and finally the empty directory. If you deleted in error: check `~/.Trash` on macOS or your filesystem snapshot tool (Time Machine, ZFS / Btrfs snapshots, restic, Borg) before doing anything else. The OS keychain entry is gone the moment delete finishes; restoring the `.duckdb` file alone is not enough — you must also have an off-profile copy of the key. **Before deleting any profile you care about, run `db backup -o <path-outside-profile>` to a location that won't be swept by the delete, and save the key (`db key show`) somewhere safe.**
 
 ```bash
 moneybin profile switch personal
@@ -252,7 +252,7 @@ Every profile has its own key, stored under its own keychain service name. The k
 
 - `profile create` generates a fresh key (auto-key mode) or derives one from your passphrase (passphrase mode) and stores it under `moneybin-<name>`.
 - `profile switch` does not touch keys — the next command that opens the database re-attaches with the new profile's key.
-- `profile delete` clears scoped sync credentials, removes the encrypted file, then clears the database keychain entries; denied cleanup reports an error.
+- `profile delete` clears scoped sync credentials, removes the profile's contents, then clears the database keychain entries and removes the empty directory. Denied keychain cleanup leaves the directory available for retry.
 
 See [`database-security.md`](database-security.md) for the full key lifecycle, passphrase mode, headless deployments, key rotation, and cross-machine transfer.
 

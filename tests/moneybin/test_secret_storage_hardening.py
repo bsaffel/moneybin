@@ -11,6 +11,7 @@ import keyring.errors
 import pytest
 
 from moneybin.connectors.sync_client import SyncClient
+from moneybin.crypto_constants import KEY_NAME, SALT_NAME
 from moneybin.secrets import (
     SecretNotFoundError,
     SecretStorageUnavailableError,
@@ -291,6 +292,98 @@ def test_profile_delete_keeps_identity_when_sync_cleanup_is_denied(
     with pytest.raises(SecretStorageUnavailableError):
         ProfileService().delete("alice")
     assert (profile / "profile_id").read_text() == "aaaaaaaaaaaa"
+
+
+@pytest.mark.parametrize("denied_name", [KEY_NAME, SALT_NAME])
+def test_profile_delete_retries_database_secret_cleanup(
+    vault: Vault, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, denied_name: str
+) -> None:
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "moneybin.services.profile_service.get_default_profile", lambda: "default"
+    )
+    profile = tmp_path / "profiles" / "alice"
+    profile.mkdir(parents=True)
+    (profile / "moneybin.duckdb").write_bytes(b"synthetic encrypted data")
+    vault[("moneybin-alice", KEY_NAME)] = "synthetic-key"
+    vault[("moneybin-alice", SALT_NAME)] = "synthetic-salt"
+    vault[("moneybin-bob", KEY_NAME)] = "sibling-key"
+    original_delete = keyring.delete_password
+
+    def denied(service: str, name: str) -> None:
+        if service == "moneybin-alice" and name == denied_name:
+            raise keyring.errors.KeyringLocked("synthetic denial")
+        original_delete(service, name)
+
+    monkeypatch.setattr(keyring, "delete_password", denied)
+    with pytest.raises(SecretStorageUnavailableError):
+        ProfileService().delete("alice")
+    assert profile.is_dir()
+    assert not list(profile.iterdir())
+    assert ("moneybin-alice", denied_name) in vault
+    monkeypatch.setattr(keyring, "delete_password", original_delete)
+    ProfileService().delete("alice")
+    assert not profile.exists()
+    assert vault == {("moneybin-bob", KEY_NAME): "sibling-key"}
+
+
+def test_profile_delete_preserves_keys_when_content_removal_fails(
+    vault: Vault, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "moneybin.services.profile_service.get_default_profile", lambda: "default"
+    )
+    profile = tmp_path / "profiles" / "alice"
+    backup = profile / "backups" / "saved.duckdb"
+    backup.parent.mkdir(parents=True)
+    backup.write_bytes(b"synthetic encrypted backup")
+    vault[("moneybin-alice", KEY_NAME)] = "synthetic-key"
+    vault[("moneybin-alice", SALT_NAME)] = "synthetic-salt"
+
+    def denied(path: Path) -> None:
+        raise PermissionError("synthetic file denial")
+
+    monkeypatch.setattr("moneybin.services.profile_service.shutil.rmtree", denied)
+    with pytest.raises(PermissionError):
+        ProfileService().delete("alice")
+    assert backup.read_bytes() == b"synthetic encrypted backup"
+    assert vault[("moneybin-alice", KEY_NAME)] == "synthetic-key"
+    assert vault[("moneybin-alice", SALT_NAME)] == "synthetic-salt"
+
+
+@pytest.mark.parametrize("root_link", [True, False])
+def test_profile_delete_never_follows_directory_symlinks(
+    vault: Vault, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, root_link: bool
+) -> None:
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "moneybin.services.profile_service.get_default_profile", lambda: "default"
+    )
+    target = tmp_path / "outside-profile"
+    target.mkdir()
+    sentinel = target / "retained.duckdb"
+    sentinel.write_bytes(b"retain this file")
+    profile = tmp_path / "profiles" / "alice"
+    profile.parent.mkdir()
+    vault[("moneybin-alice", KEY_NAME)] = "synthetic-key"
+    if root_link:
+        profile.symlink_to(target, target_is_directory=True)
+        with pytest.raises((OSError, ValueError)):
+            ProfileService().delete("alice")
+        assert vault[("moneybin-alice", KEY_NAME)] == "synthetic-key"
+    else:
+        profile.mkdir()
+        (profile / "linked-directory").symlink_to(target, target_is_directory=True)
+        ProfileService().delete("alice")
+        assert not profile.exists()
+    assert sentinel.read_bytes() == b"retain this file"
 
 
 def test_unpersisted_pending_marker_cannot_start_token_writes(

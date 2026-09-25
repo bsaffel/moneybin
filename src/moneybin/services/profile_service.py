@@ -336,6 +336,8 @@ class ProfileService:
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
+        if profile_dir.is_symlink():
+            raise ValueError("Cannot delete a profile through a symbolic link")
         if not profile_dir.exists():
             raise ProfileNotFoundError(f"Profile '{normalized}' not found")
         if normalized == get_default_profile():
@@ -354,7 +356,12 @@ class ProfileService:
             from moneybin.connectors.sync_client import SyncClient
 
             SyncClient.clear_tokens_for_profile(sync_profile_id)
-        shutil.rmtree(profile_dir)
+        # Keep the root for cleanup retries, but preserve keys until all data is gone.
+        for entry in profile_dir.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
         from moneybin.crypto_constants import KEY_NAME, SALT_NAME
         from moneybin.secrets import SecretNotFoundError, SecretStore
 
@@ -364,6 +371,7 @@ class ProfileService:
                 store.delete_key(key_name)
             except SecretNotFoundError:
                 pass
+        profile_dir.rmdir()
         logger.debug(f"Deleted profile directory: {normalized}")
 
     def show(
