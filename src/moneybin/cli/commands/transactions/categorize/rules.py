@@ -166,10 +166,12 @@ def _warn_rule_create_rows(
     persists to disk where `SanitizedLogFormatter` cannot recognize
     user-authored text.
 
-    ``carry`` is the caller's own scoping flags (`--account-id`, amount
-    bounds, `--priority`, `--reapply`), appended to the exact-match rerun so
-    the suggested command creates the rule that was refused, not a broader
-    one: an account-scoped proposal must not come back account-agnostic.
+    The exact-match rerun carries the refused row's own scoping
+    (`account_id`, amount bounds, a non-default `priority`), read from the
+    row itself so a `--from-file` batch keeps each rule's constraints, plus
+    ``carry`` — the caller's command-level flags (`--reapply`) — so the
+    suggested command creates the rule that was refused, not a broader one:
+    an account-scoped proposal must not come back account-agnostic.
     """
     for err in result.error_details:
         render_note(
@@ -193,7 +195,16 @@ def _warn_rule_create_rows(
             subcategory = err.get("subcategory")
             if subcategory:
                 args.extend(["--subcategory", subcategory])
-            args.extend(["--match-type", "exact", *carry])
+            args.extend(["--match-type", "exact"])
+            if account_id := err.get("account_id"):
+                args.extend(["--account-id", account_id])
+            if min_amount := err.get("min_amount"):
+                args.extend(["--min-amount", min_amount])
+            if max_amount := err.get("max_amount"):
+                args.extend(["--max-amount", max_amount])
+            if (priority := err.get("priority")) and priority != "100":
+                args.extend(["--priority", priority])
+            args.extend(carry)
             render_note(
                 f"› Rerun with an exact match: {generated_cli_command(*args)}",
                 warn=True,
@@ -345,20 +356,10 @@ def rules_create(
                 validated, reapply=reapply, actor="cli", allow_broad=allow_broad
             )
         result.merge_parse_errors(parse_errors)
-        # The flags a refused rule was created with, for its exact-match rerun.
-        # A --from-file batch carries none: each of its rules has its own.
-        carry: list[str] = []
-        if from_file is None:
-            if account_id:
-                carry += ["--account-id", account_id]
-            if min_amount is not None:
-                carry += ["--min-amount", str(min_amount)]
-            if max_amount is not None:
-                carry += ["--max-amount", str(max_amount)]
-            if priority is not None:
-                carry += ["--priority", str(priority)]
-            if reapply:
-                carry.append("--reapply")
+        # The command-level flag a refused rule's exact-match rerun keeps. Its
+        # scoping (account, amounts, priority) rides on the refused row itself,
+        # so a --from-file batch keeps each rule's own.
+        carry: list[str] = ["--reapply"] if reapply else []
         if result.conflicts > 0 and result.created == 0:
             # An error promises the call changed nothing. This batch routes
             # each row independently, so one call can create a rule *and*

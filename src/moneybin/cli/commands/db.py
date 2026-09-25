@@ -472,6 +472,7 @@ def db_info(
         _DB_INFO_TABLE_LIMIT,
         "--limit",
         "-n",
+        min=0,
         help="Tables to list in text output, largest first; 0 lists every table.",
     ),
     no_pager: bool = no_pager_option,

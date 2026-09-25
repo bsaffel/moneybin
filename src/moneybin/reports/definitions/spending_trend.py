@@ -91,7 +91,9 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             DataClass.CURRENCY,
         ),
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
-        OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "txn_count", "Outflow transaction count.", DataClass.AGGREGATE, numeric=True
+        ),
         OutputColumn(
             "total_spend",
             "Absolute outflow in the month and category.",
@@ -121,6 +123,7 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "mom_pct",
             "Month-over-month delta divided by previous-month spend.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "prev_year_spend",
@@ -139,6 +142,7 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "yoy_pct",
             "Year-over-year delta divided by prior-year spend.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "trailing_3mo_avg",

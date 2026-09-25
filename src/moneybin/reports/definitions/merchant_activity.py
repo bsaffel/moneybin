@@ -63,8 +63,14 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             "active_months",
             "Distinct active calendar-month count.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
-        OutputColumn("account_count", "Distinct account count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "account_count",
+            "Distinct account count.",
+            DataClass.AGGREGATE,
+            numeric=True,
+        ),
         OutputColumn(
             "total_inflow",
             "Lifetime sum of positive amounts.",

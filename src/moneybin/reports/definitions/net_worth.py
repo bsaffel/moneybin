@@ -153,22 +153,26 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "account_count",
             "Accounts contributing on this date, across every currency.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "carried_forward_count",
             "How many of them are carried forward rather than observed.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "currency_count",
             "Distinct currencies held on this date; unknown counts as one.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "unpriced_currency_count",
             "How many of them had no rate on this date; 0 means the totals "
             "below are complete.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "total_assets",
@@ -213,6 +217,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "on the first returned bucket, whenever either bucket's "
             "net_worth is null, or when the preceding value is zero.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
     ),
     semantics=ReportSemantics(

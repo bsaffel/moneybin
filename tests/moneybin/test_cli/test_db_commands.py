@@ -1668,6 +1668,15 @@ class TestDbInfoCommand:
         payload = json.loads(json_result.output)
         assert len(payload["tables"]) == 25
 
+    def test_info_rejects_a_negative_limit_as_a_usage_error(
+        self, runner: CliRunner
+    ) -> None:
+        """`--limit -1` is refused at the option, not read as "show everything"."""
+        result = runner.invoke(app, ["info", "--limit", "-1"])
+
+        assert result.exit_code == 2, result.output
+        assert "--limit" in result.output
+
 
 class TestDbRestoreCommand:
     """Tests for 'moneybin db restore'."""

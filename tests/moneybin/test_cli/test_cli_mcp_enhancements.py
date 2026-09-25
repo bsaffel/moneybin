@@ -266,6 +266,31 @@ class TestMCPListPrompts:
             == direct.stdout.rstrip()
         )
 
+    @pytest.mark.parametrize(
+        ("count", "header"),
+        [(1, "1 registered prompt:"), (4, "4 registered prompts:")],
+    )
+    def test_list_prompts_header_counts_the_catalog_and_pluralizes(
+        self, count: int, header: str
+    ) -> None:
+        """The header states how many prompts follow, singular for one."""
+
+        async def fake_list_prompts(*, run_middleware: bool = True) -> list[MagicMock]:
+            return [
+                _catalog_entry(f"prompt-{index}", "description")
+                for index in range(count)
+            ]
+
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.mcp.list_prompts", new=fake_list_prompts),
+        ):
+            result = runner.invoke(app, ["list-prompts", "--no-pager"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout.startswith(header)
+        assert "registered prompts:" not in result.stdout or count != 1
+
     def test_list_prompts_json_keeps_the_existing_low_sensitivity_envelope(
         self,
     ) -> None:

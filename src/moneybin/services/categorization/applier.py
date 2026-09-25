@@ -802,6 +802,18 @@ class MatchApplier:
                         "merchant_pattern": item.merchant_pattern,
                         "category": item.category,
                         "subcategory": item.subcategory or "",
+                        # The row's own scoping, so the rerun recreates this
+                        # rule rather than an account- or amount-agnostic one.
+                        # Strings, like every value here: `error_details` is
+                        # `list[dict[str, str]]` on the MCP payload; "" is unset.
+                        "account_id": item.account_id or "",
+                        "min_amount": ""
+                        if item.min_amount is None
+                        else str(item.min_amount),
+                        "max_amount": ""
+                        if item.max_amount is None
+                        else str(item.max_amount),
+                        "priority": str(item.priority),
                     })
                     continue
                 conflict = detect_conflict(

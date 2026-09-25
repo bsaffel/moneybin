@@ -510,6 +510,9 @@ class TestCreateRulesUnselectiveContainsGate:
                 category="Transfer",
                 subcategory="Internal Transfer",
                 match_type="contains",
+                account_id="acct00000001",
+                min_amount=5.0,
+                priority=7,
             )
         ]
         result = CategorizationService(db).create_rules(items)
@@ -529,6 +532,12 @@ class TestCreateRulesUnselectiveContainsGate:
         assert result.error_details[0]["merchant_pattern"] == "TO"
         assert result.error_details[0]["category"] == "Transfer"
         assert result.error_details[0]["subcategory"] == "Internal Transfer"
+        # The row's own scoping, so a rerun hint recreates this rule and not
+        # an account- or amount-agnostic one — in a --from-file batch too.
+        assert result.error_details[0]["account_id"] == "acct00000001"
+        assert result.error_details[0]["min_amount"] == "5.0"
+        assert result.error_details[0]["max_amount"] == ""
+        assert result.error_details[0]["priority"] == "7"
 
         row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
         assert row == (0,)

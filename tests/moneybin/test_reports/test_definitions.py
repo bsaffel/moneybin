@@ -965,3 +965,28 @@ def test_no_retired_net_worth_id_or_command_survives_in_src() -> None:
         if literal in path.read_text(encoding="utf-8")
     ]
     assert not hits, hits
+
+
+#: AGGREGATE columns that are not numbers. `is_top_100` is a boolean flag:
+#: `build_rows` never groups a bool and right-aligning "true" reads wrong.
+_NON_NUMERIC_AGGREGATES = frozenset({("large_transactions", "is_top_100")})
+
+
+def test_every_bare_number_column_declares_numeric() -> None:
+    """`.claude/rules/cli.md` "Two declarations": there is no third state.
+
+    A column holding a bare number declares `money_kind` or `numeric`. This
+    is the contract check the rule asked for, so a new count or ratio cannot
+    ship left-aligned and ungrouped beside the columns that declare it.
+    """
+    undeclared = sorted(
+        (spec.name, column.name)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+        if column.data_class is DataClass.AGGREGATE
+        and column.money_kind is None
+        and not column.numeric
+        and (spec.name, column.name) not in _NON_NUMERIC_AGGREGATES
+    )
+
+    assert undeclared == [], f"bare-number columns with no declaration: {undeclared}"

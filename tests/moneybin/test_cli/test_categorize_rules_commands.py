@@ -663,6 +663,11 @@ def test_rules_create_exact_match_rerun_carries_the_scoping_flags(
                 "merchant_pattern": "TO",
                 "category": "Transfer",
                 "subcategory": "Internal Transfer",
+                # What the service echoes back from the refused row itself.
+                "account_id": "acct1234",
+                "min_amount": "5.0",
+                "max_amount": "",
+                "priority": "7",
             }
         ],
         rule_ids=[],
@@ -687,6 +692,78 @@ def test_rules_create_exact_match_rerun_carries_the_scoping_flags(
         "--match-type exact --account-id acct1234 --min-amount 5.0 --priority 7 "
         "--reapply" in result.stderr
     )
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_from_file_rerun_keeps_each_refused_rows_own_scoping(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock, tmp_path: Path
+) -> None:
+    """A batch row's account and amount bounds ride on its own rerun hint.
+
+    The scoping comes from the refused row the service echoes back, not from
+    the command line, so a `--from-file` batch keeps each rule's constraints
+    instead of suggesting an account-agnostic recreation. The default
+    priority is not echoed: `--priority 100` would only add noise.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=0,
+        existing=0,
+        skipped=2,
+        error_details=[
+            {
+                "name": "Transfer TO",
+                "reason": "Pattern 'TO' is too short to be a 'contains' rule.",
+                "merchant_pattern": "TO",
+                "category": "Transfer",
+                "subcategory": "",
+                "account_id": "acct5678",
+                "min_amount": "",
+                "max_amount": "250.0",
+                "priority": "5",
+            },
+            {
+                "name": "Fee",
+                "reason": "Pattern 'FE' is too short to be a 'contains' rule.",
+                "merchant_pattern": "FE",
+                "category": "Fees",
+                "subcategory": "",
+                "account_id": "",
+                "min_amount": "",
+                "max_amount": "",
+                "priority": "100",
+            },
+        ],
+        rule_ids=[],
+    )
+    batch = tmp_path / "rules.json"
+    batch.write_text(
+        json.dumps([
+            {
+                "name": "Transfer TO",
+                "merchant_pattern": "TO",
+                "category": "Transfer",
+                "account_id": "acct5678",
+                "max_amount": 250.0,
+                "priority": 5,
+            },
+            {"name": "Fee", "merchant_pattern": "FE", "category": "Fees"},
+        ])
+    )
+
+    result = runner.invoke(app, ["rules", "create", "--from-file", str(batch)])
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "--category Transfer --match-type exact --account-id acct5678 "
+        "--max-amount 250.0 --priority 5" in result.stderr
+    )
+    assert "--category Fees --match-type exact" in result.stderr
+    assert "--category Fees --match-type exact --" not in result.stderr
+    assert "--priority 100" not in result.stderr
+    assert "--reapply" not in result.stderr
 
 
 @patch("moneybin.services.categorization.CategorizationService")

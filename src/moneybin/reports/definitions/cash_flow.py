@@ -49,7 +49,10 @@ from moneybin.tables import REPORTS_CASH_FLOW
         ),
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn(
-            "txn_count", "Non-transfer transaction count.", DataClass.AGGREGATE
+            "txn_count",
+            "Non-transfer transaction count.",
+            DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "inflow",
