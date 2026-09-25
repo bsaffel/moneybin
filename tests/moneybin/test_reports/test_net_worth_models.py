@@ -1226,3 +1226,59 @@ def test_accounts_view_emits_a_candidate_with_unknown_currency(
     (row,) = _account_rows(model_db)
     assert row["account_id"] == "brk"
     assert row["currency_code"] is None
+
+
+def _excluded_spine_with_unanchored_candidate(
+    db: Database, *, archived_at: str | None = None
+) -> None:
+    """Spine to 2026-01-05 from an excluded account; m2b3_brk has no balance row."""
+    _install_net_worth_sources(db)
+    _home(db, "USD")
+    _account(db, "m2b3_excl", "Excluded", "USD", include=False)
+    _account(
+        db,
+        "m2b3_brk",
+        "Brokerage",
+        "USD",
+        archived=archived_at is not None,
+        archived_at=archived_at,
+    )
+    _balance(db, "m2b3_excl", "2026-01-01", "100.00", "USD")
+    _balance(db, "m2b3_excl", "2026-01-05", "100.00", "USD", observed=False)
+    _unanchored(db, "m2b3_brk")
+    _install_report(db, "net_worth")
+    _install_report(db, "net_worth_accounts")
+
+
+def test_both_rungs_date_the_no_balance_fallback_at_the_spine_max(
+    model_db: Database,
+) -> None:
+    """No eligible balance row, spine ends before today: both rungs pick its end."""
+    _excluded_spine_with_unanchored_candidate(model_db)
+
+    (day,) = _day_rows(model_db)
+    (acct,) = _account_rows(model_db)
+
+    assert str(day["balance_date"]) == "2026-01-05"
+    assert day["unanchored_account_count"] == 1
+    assert day["net_worth"] is None
+    assert acct["account_id"] == "m2b3_brk"
+    assert str(acct["balance_date"]) == "2026-01-05"
+
+
+def test_both_rungs_keep_a_candidate_archived_after_the_spine_max(
+    model_db: Database,
+) -> None:
+    """Archived between the spine's end and today: eligible at the spine max in both."""
+    _excluded_spine_with_unanchored_candidate(model_db, archived_at="2026-01-10")
+
+    (day,) = _day_rows(model_db)
+    (acct,) = _account_rows(model_db)
+
+    assert str(day["balance_date"]) == "2026-01-05"
+    assert day["unanchored_account_count"] == 1
+    assert day["total_assets"] is None
+    assert day["total_liabilities"] is None
+    assert day["net_worth"] is None
+    assert acct["account_id"] == "m2b3_brk"
+    assert str(acct["balance_date"]) == "2026-01-05"

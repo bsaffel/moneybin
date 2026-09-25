@@ -110,15 +110,30 @@ WITH home AS (
   FROM per_day AS p
   INNER JOIN unanchored_per_day AS u
     ON u.balance_date = p.balance_date
-), unanchored_today AS (
+), spine_max AS (
+  /* The same date reports.net_worth_accounts dates a candidate at: the balance
+     spine's global last date, CURRENT_DATE only when the spine is empty. */
   SELECT
-    COUNT(*) AS unanchored_account_count
-  FROM candidates AS c
-  WHERE
-    NOT c.archived
+    COALESCE(
+      (
+        SELECT
+          MAX(b.balance_date)
+        FROM core.fct_balances_daily AS b
+      ),
+      CURRENT_DATE
+    ) AS balance_date
+), unanchored_at_spine_max AS (
+  SELECT
+    m.balance_date,
+    COUNT(c.account_id) AS unanchored_account_count
+  FROM spine_max AS m
+  LEFT JOIN candidates AS c
+    ON NOT c.archived
     OR (
-      NOT c.archived_at IS NULL AND CURRENT_DATE <= c.archived_at
+      NOT c.archived_at IS NULL AND m.balance_date <= c.archived_at
     )
+  GROUP BY
+    m.balance_date
 ), measured AS (
   SELECT
     home_currency_code,
@@ -132,14 +147,14 @@ WITH home AS (
     total_liabilities_home
   FROM balance_driven
   UNION ALL
-  /* No balance-spine row at all, but an eligible candidate today: one row, dated
-     today, every measure NULL — so a bare read never returns zero rows for a
-     profile that holds value. The runner covers an explicit past range.
-     reports.net_worth_accounts dates the same candidate at the global spine
-     max, which with no spine row falls back to this same CURRENT_DATE. */
+  /* No eligible balance row, but an eligible candidate: one row, every measure
+     NULL, so a bare read never returns zero rows for a profile that holds
+     value. Dated, and archive-tested, at the spine max exactly as
+     reports.net_worth_accounts dates the same candidate. The runner covers an
+     explicit range. */
   SELECT
     h.home_currency_code,
-    CURRENT_DATE AS balance_date,
+    t.balance_date,
     0 AS account_count,
     0 AS carried_forward_count,
     0 AS currency_count,
@@ -147,7 +162,7 @@ WITH home AS (
     t.unanchored_account_count,
     NULL::DECIMAL(18, 2) AS total_assets_home,
     NULL::DECIMAL(18, 2) AS total_liabilities_home
-  FROM unanchored_today AS t
+  FROM unanchored_at_spine_max AS t
   CROSS JOIN home AS h
   WHERE
     t.unanchored_account_count > 0
