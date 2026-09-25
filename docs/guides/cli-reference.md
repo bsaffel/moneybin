@@ -322,7 +322,13 @@ are stubs hidden from `--help`.
 Category taxonomy: list, create (with `--parent`), set, delete. Default
 (seeded) categories cannot be deleted — disable them with `set --inactive`.
 `delete` refuses a category that is still referenced unless `--force` is
-passed. Commands:
+passed. `mappings pending` lists distinct imported category-source vocabulary
+terms with no curated mapping (grouped by term, not by transaction) with
+`did_you_mean` suggestions; `mappings set` maps one term via
+`--into <category_id>` or `--new <name>`. `set` accepts a term only when an
+imported transaction carries it or it is already mapped, so a mistyped term is
+refused rather than stored as a mapping that never matches. It also refuses an
+inactive `--into` category. Commands:
 [`reference/cli/categories.md`](../reference/cli/categories.md).
 
 ### `merchants`

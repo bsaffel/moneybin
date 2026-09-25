@@ -40,15 +40,15 @@ coverage catalog.
 
 ## Coverage
 
-Counted from the map on 2026-08-30, it contains:
+Counted from the map on 2026-09-23, it contains:
 
 - 50 non-exempt capability rows covering all 50 standard MCP tools. `reports`
   serves two capabilities — the catalog read and report execution — under one
   tool identity.
-- 194 implemented Typer paths, including hidden compatibility aliases, with
+- 196 implemented Typer paths, including hidden compatibility aliases, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.
-- 17 policy-exempt rows.
+- 18 policy-exempt rows.
 - 9 reserved Typer paths that are still explicit `_not_implemented` stubs.
 
 The stub list is executable, not documentary: every excluded path is invoked
@@ -74,6 +74,7 @@ is added.
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate` | `transactions list/create`, notes, tags, and splits | Same transaction rows, stable-ID note lifecycle, and complete tag/split target state |
 | Categorization | `transactions_categorize_*`, `reviews*`, `identity_links_decide` | `transactions categorize *`, match and identity review commands | Same engine results, rules, queue state, and decisions. A rule claiming an active rule's canonical matcher under a different category is refused on both surfaces, queued in `app.rule_conflicts`, and decided with `replace` / `reprioritize` / `cancel` — `reviews_decide(kind='rule_conflict')` on MCP, `transactions categorize rules resolve` on the CLI |
 | Taxonomy | `taxonomy`, `taxonomy_set` | `categories *`, `merchants *` | Same category and merchant target state through `CategorizationService` |
+| Category-source-mapping curation | none — `admission-pending` | `categories mappings pending`, `categories mappings set` | Same distinct unmapped imported-vocabulary terms (grouped by term, not by transaction) with suggestions, and the same map-to-existing-or-new-category write through `CategorizationService.resolve_source_term` |
 | Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels`, `import formats *` | Same import log, raw rows, confirmation state, labels, and audited saved-format lifecycle |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect` | `sync login/link/status/pull/disconnect/logout` | Same authenticated, linked, pulled, disconnected, or logged-out state |
 | Google Sheets | `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | `gsheet *` | Same connection and pulled source state |

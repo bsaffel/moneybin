@@ -1595,6 +1595,135 @@ class TestMerchantLinksMutating:
         assert "Traceback (most recent call last)" not in result.stderr
 
 
+class TestCategoriesMappingsMutating:
+    """E2E smoke tests for `categories mappings set`.
+
+    Deep enumeration/resolution behavior is covered at the unit tier
+    (test_category_source_mapping_curation.py); these smoke the wiring, exit
+    codes, and mutual-exclusion guard the way `merchants links set` does.
+    """
+
+    def test_categories_mappings_set_missing_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`categories mappings set` without --into or --new exits 2 (usage error)."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-usage", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Groceries",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_categories_mappings_set_mutual_exclusion_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`categories mappings set --into X --new Y` exits 2 (mutually exclusive)."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-mutex", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Groceries",
+            "--into",
+            "cat-groceries",
+            "--new",
+            "New Category",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_categories_mappings_set_new_maps_an_imported_term(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Import a file with category text, then map a term `pending` lists."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-new", _mutating_profile_template
+        )
+        imported = run_cli(
+            "import",
+            "confirm",
+            str(FIXTURES_DIR / "tabular" / "chase_credit.csv"),
+            "--accept",
+            "--account-name",
+            "cmap-acct",
+            "--no-save-format",
+            "--output",
+            "json",
+            env=env,
+        )
+        imported.assert_success()
+        run_cli("transform", "apply", env=env, timeout=180).assert_success()
+        pending = run_cli(
+            "categories", "mappings", "pending", "--output", "json", env=env
+        )
+        pending.assert_success()
+        term = json.loads(pending.stdout)["data"]["terms"][0]
+
+        subcategory = (
+            ["--subcategory", term["subcategory"]] if term["subcategory"] else []
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            term["source_origin"],
+            "--category",
+            term["category"],
+            *subcategory,
+            "--new",
+            "E2E Minted Category",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert payload["data"]["action"] == "mapped"
+        assert payload["data"]["category_id"]
+
+    def test_categories_mappings_set_unknown_term_is_refused(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """A term no import carries is refused, not stored as a dead mapping."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-unknown", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Some Imported Text",
+            "--new",
+            "E2E Minted Category",
+            "--output",
+            "json",
+            env=env,
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "mutation_not_found"
+
+
 class TestSecurityLinksMutating:
     """E2E smoke tests for `investments securities links set`.
 

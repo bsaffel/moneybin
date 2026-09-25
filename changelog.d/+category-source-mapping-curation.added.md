@@ -1,0 +1,1 @@
+Added `moneybin categories mappings pending` and `moneybin categories mappings set` to curate imported category-source-text mappings — enumerate distinct unmapped vocabulary terms and map each to an existing or newly-created category.

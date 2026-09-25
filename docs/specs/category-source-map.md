@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-09-20
-> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition.
+> Last updated: 2026-09-23
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface.
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -193,11 +193,43 @@ unchanged; only the reverse-lookup key and code shape are new:
   cannot `ALTER` a primary key), replacing the JSON-encoded composite code
   described above.
 
-PR1 ships the engine only (repo write method + orchestrator leg, wired into
-`categorize_pending`). The CLI/MCP surface to author `app.category_source_map`
-rows for an exporter is a later slice — until it ships, this leg is a
-capability with no way to populate its own input for imported sources users
-haven't already mapped via Plaid-style curation.
+PR1 shipped the engine only (repo write method + orchestrator leg, wired into
+`categorize_pending`). PR2 adds the authoring surface:
+`CategorizationQueries.list_unmapped_source_terms` enumerates distinct
+unmapped `(source_origin, category, subcategory)` terms — the decision unit
+is the term, not the transaction, since one curated mapping resolves every
+row carrying that text — with up to 3 `did_you_mean` suggestions against
+active MoneyBin category names; `MatchApplier.resolve_source_term` maps one
+term to an existing category or a newly-created one (via `create_category`),
+sharing one transaction with the `CategorySourceMapRepo.upsert` write. Both
+are exposed as `moneybin categories mappings pending` / `... set`.
+
+In PR2, `set` on an already-mapped term rebinds it for later sweeps only.
+Transactions the earlier mapping already categorized keep that category,
+because the sweep fills only uncategorized rows. The follow-up that lets a
+term be ignored also makes a changed mapping follow through to history: it
+removes the `provider_native` categorizations that term produced and sweeps
+again, leaving user, rule, and merchant categorizations untouched. `set`
+refuses an inactive target category, since an inactive category takes no new
+categorizations.
+
+`set` accepts a term only when an imported row carries it — keyed through the
+sweep's own `source_category_bridge_match_predicate`, so it accepts exactly
+the terms the sweep can apply — or when the term is already mapped, so a
+mapping outlives a reverted import and can still be changed. Anything else is
+refused with `mutation_not_found` instead of being stored as a mapping that
+never matches. The term carries no length cap: imports bound none of its three
+parts, and a value that must already exist in the database is bounded by it.
+
+PR2 is CLI-only. The MCP surface, decided after PR2 opened, extends two
+existing tools instead of adding one: an unmapped term is a
+`source_categories` kind in `reviews`, and a mapping is a `source_category`
+item in `taxonomy_set`, beside its `category` and `merchant` items. A mapping
+is a translation of a source's label, not a pattern rule. It reads the
+category the source attached rather than the transaction's own text, and it
+writes at `provider_native` rank, so every rule and merchant mapping outranks
+it. That is why it sits with merchant items in `taxonomy_set` and not in
+`transactions_categorize_rules_set`. It ships in a follow-up slice.
 
 ## Reverse-lookup contract
 
@@ -275,8 +307,11 @@ rows, idempotent, wrapped in the runner's `BEGIN`/`COMMIT`) per
 Per the app-code-touches-metrics rule, the `app.category_source_map` write
 path (rows added / updated / removed) gets counters in
 `src/moneybin/metrics/registry.py`, mirroring existing `app.*` writers — this
-lands with the override writer itself (see "Deferred to Tier-2b" below; no
-writer exists yet, so there is nothing to instrument). The coverage query
+lands with the override writer itself. MB-180 PR2's curation writer records
+`moneybin_category_source_mapping_outcomes_total{outcome}` — `added`,
+`updated`, or `refused` — after its transaction commits; `removed` arrives
+with the MCP slice's `absent` state. Every write also increments the generic
+`app_mutation_audit_emitted_total{action="category_source_map.upsert"}`. The coverage query
 (source codes with no bridge row) shipped as observability with its first
 consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.md)
 (M1W), not the categorizer.
@@ -288,8 +323,11 @@ consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.m
 Agents read the canonical category and merchant catalog through
 `taxonomy(view="categories")` or `taxonomy(view="merchants")`. They declare
 category or merchant target state through `taxonomy_set(items=[...])`; each
-item is discriminated by `kind` and `state`. The provider-code bridge remains
-an internal categorization input, not a separate MCP mutation surface.
+item is discriminated by `kind` and `state`. The seeded provider-code rows
+remain an internal categorization input, not a separate MCP mutation surface.
+User-authored rows for imported vocabulary (MB-180) get no separate surface
+either: the follow-up MCP slice declares them as a `source_category` item in
+the same `taxonomy_set` batch.
 
 **In scope (this PR / M1V):** the three tables + view + two-tier contract;
 the `class` column on the category dim (available on `core.dim_categories`
@@ -332,9 +370,8 @@ consumer that needs it, rather than speculatively here:
    typed `CategoryRow` field (`src/moneybin/privacy/payloads/categories.py`)
    is still not added — M1U's categorizer shipped without needing it on the
    typed path, so this remains open for whichever future consumer needs it.
-3. **Write-path metrics** for `app.category_source_map`. No writer exists yet
-   — an override writer still hasn't shipped; instrumenting an unwritten path
-   would be speculative.
+3. **Write-path metrics** for `app.category_source_map`. Landed with the
+   MB-180 PR2 curation writer — see Observability above.
 
 ## Coordination
 

@@ -123,6 +123,7 @@ from moneybin.services.categorization.applier import (
     RuleStateTarget,
     RuleTargetPlan,
     RuleTargetResult,
+    SourceTermMapping,
     TaxonomyStateTarget,
     TaxonomyTargetPlan,
     TaxonomyTargetResult,
@@ -162,6 +163,7 @@ from moneybin.services.categorization.queries import (
     CategorizationCoverage,
     CategorizationQueries,
     CategorizationStats,
+    UnmappedSourceTerm,
 )
 from moneybin.tables import (
     CATEGORIES as CATEGORIES,
@@ -547,6 +549,43 @@ class CategorizationService:
             description=description,
             actor=actor,
             in_outer_txn=in_outer_txn,
+        )
+
+    # -- Imported category-source-map curation --
+
+    def list_unmapped_source_terms(
+        self, *, namespace: str | None = None
+    ) -> list[UnmappedSourceTerm]:
+        """List distinct imported vocabulary terms with no bridge mapping.
+
+        ``namespace`` optionally filters to one ``source_origin`` (a
+        provider tag or an exporter slug). See
+        :meth:`CategorizationQueries.list_unmapped_source_terms`.
+        """
+        return self._queries.list_unmapped_source_terms(namespace=namespace)
+
+    def resolve_source_term(
+        self,
+        *,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        category_id: str | None = None,
+        new_category: str | None = None,
+        actor: str = "system",
+    ) -> SourceTermMapping:
+        """Map one imported vocabulary term to a MoneyBin category.
+
+        See :meth:`MatchApplier.resolve_source_term` for the write contract
+        (exactly one of ``category_id`` / ``new_category``, atomic commit).
+        """
+        return self._applier.resolve_source_term(
+            source_origin=source_origin,
+            category=category,
+            subcategory=subcategory,
+            category_id=category_id,
+            new_category=new_category,
+            actor=actor,
         )
 
     def plan_taxonomy_targets(

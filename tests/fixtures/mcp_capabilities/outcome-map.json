@@ -789,6 +789,26 @@
     "exemption": null
   },
   {
+    "capability_id": "taxonomy.source-categories.curate",
+    "mcp_tools": [],
+    "cli_commands": [
+      "categories mappings pending",
+      "categories mappings set"
+    ],
+    "service_methods": [
+      "moneybin.services.categorization.CategorizationService.list_unmapped_source_terms",
+      "moneybin.services.categorization.CategorizationService.resolve_source_term"
+    ],
+    "observable_outcomes": [
+      "distinct unmapped imported-vocabulary terms (grouped by term, not by transaction), each with its affected row count and up to 3 did_you_mean suggestions, and the same audited app.category_source_map row after mapping a term to an existing or newly-created category"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "MB-180 PR2 ships the CLI curation surface only; the decided MCP surface (a source_categories kind in reviews and a source_category item in taxonomy_set, per category-source-map.md) extends existing tools and still owes its surface-change admission record in mcp-tool-surface-scaling.md"
+    }
+  },
+  {
     "capability_id": "import.files",
     "mcp_tools": [
       "import_files"
