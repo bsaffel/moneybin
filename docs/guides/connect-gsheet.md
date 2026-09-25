@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-03 -->
+<!-- Last reviewed: 2026-09-23 -->
 # Google Sheets
 
 Connect a Google Sheet as a live data source. MoneyBin authenticates once via direct OAuth, then every `moneybin refresh` re-pulls the sheet's current state — additions, edits, and deletions all flow through. Tiller-style ledger sheets participate in the full matching and categorization pipeline; any other sheet lands as queryable JSON with an auto-generated typed view.
@@ -193,7 +193,7 @@ Will show something like:
 ```
 abc123  status=healthy  adapter=seed  last_success=2026-07-24T14:32:00  failures=0
 def456  status=drift_detected  adapter=transactions  last_success=2026-07-23T09:00:00  failures=1
-   ⚠️  missing headers: ['description']
+   ! missing headers: ['description']
 ```
 
 To recover, run:

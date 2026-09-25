@@ -197,9 +197,12 @@ After the chain returns a profile name, the resolver:
 1. Calls `set_current_profile(name)`.
 2. Checks `<base>/profiles/<normalized>/` exists. If not, emits a hint to `profile list` / `profile create <name>` and exits 1.
 3. Calls `setup_observability(stream="cli", verbose=_flags.verbose, profile=name)` — this is the call that actually opens the profile- and stream-scoped log file at `<base>/profiles/<profile>/logs/cli_<YYYY-MM-DD>.log` (one file per stream per day; see `session_log_path()` in [`src/moneybin/logging/config.py`](../../src/moneybin/logging/config.py)).
-4. Logs `Using profile: X` to the console, and the resolution source
-   (`--profile`, `MONEYBIN_PROFILE`, config file, or first-run wizard) to the
-   log file only — see `.claude/rules/cli.md` → "Keeping the console readable".
+4. Logs `Using profile: X` at INFO, and the resolution source
+   (`--profile`, `MONEYBIN_PROFILE`, config file, or first-run wizard) after
+   it. Both reach the log file; on the CLI stream, INFO records reach the
+   console only under `--verbose`, so a normal run prints neither
+   (`_ConsoleNoiseFilter` in `src/moneybin/logging/config.py`) — see
+   `.claude/rules/cli.md` → "Keeping the console readable".
 
 ### Bare-group invocations and recovery commands
 
@@ -266,7 +269,7 @@ By the time the leaf command body runs:
 - The profile is resolved (eagerly or lazily) and `_current_profile` is set.
 - `get_settings()` returns a frozen `MoneyBinSettings` for that profile.
 - The first `get_database()` call inside the body opens the encrypted connection.
-- The body typically wraps work in `with handle_cli_errors():` (or `with sqlmesh_command(...)` for SQLMesh-fronted operations) to route classified user errors to the standard `❌`-prefixed log line and `typer.Exit(1)`.
+- The body typically wraps work in `with handle_cli_errors():` (or `with sqlmesh_command(...)` for SQLMesh-fronted operations) to route classified user errors to the standard `×`-prefixed console line and `typer.Exit(1)`.
 
 Output rendering follows the `--output {text,json}` contract from [`.claude/rules/cli.md`](../../.claude/rules/cli.md); JSON output uses the response envelope defined in `moneybin.protocol.envelope`. Diagnostic output goes to stderr; data output goes to stdout. Exit codes follow the docker/kubectl convention (`0` success, `1` runtime error, `2` usage error) — see [`docs/guides/cli-reference.md`](../guides/cli-reference.md) for the full table.
 

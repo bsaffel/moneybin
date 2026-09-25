@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-09-23 -->
 # Observability
 
 What MoneyBin records about itself, how to read it, and what's intentionally NOT recorded. Three surfaces: structured logs (per-profile log files + stderr), persisted metrics (in the `app.metrics` table), and the `system doctor` integrity sweep. The privacy threat model lives in [`threat-model.md`](threat-model.md); this guide is operational.
@@ -36,15 +36,17 @@ The stream argument, the follow and prune flags, and `--print-path` are in the g
 
 ```console
 $ uv run moneybin logs cli -n 5
-Using profile: demo
+Logs · cli · requested line cap 5
+
 Profile resolved from config.yaml
 Using profile: demo
 Profile resolved from config.yaml
 Using profile: demo
 Profile resolved from config.yaml
+
 ```
 
-Five lines, message-only, because a CLI run wrote them (see "Log-line shapes" above).
+Five lines, message-only, because a CLI run wrote them (see "Log-line shapes" above). The header names the stream and the cap that was requested, not the number of lines found.
 
 Three behaviours the flag list does not carry:
 
@@ -138,29 +140,25 @@ Every metric is recorded manually (`METRIC.labels(...).inc()` / `.observe()`) at
 
 ```console
 $ uv run moneybin stats
-Using profile: demo
 Import pipeline
-Import Batch Size:           3 snapshots (sum=0.00 files)
-Inbox Sync Duration Seconds: 3 snapshots (sum=0.00 s)
+Import Batch Size:           1 snapshots (sum=0.00 files)
+Inbox Sync Duration Seconds: 1 snapshots (sum=0.00 s)
 Tabular import
 OFX Fitid Collision Repaired: 0 total
-PDF Extraction Confidence:    3 snapshots (sum=0.00 score)
+PDF Extraction Confidence:    1 snapshots (sum=0.00 score)
 PDF Replay Guard Failure:     0 total
 Smart import confirmation
-Import Detection Score: 3 snapshots (sum=0.00 score)
-SQLMesh transforms
-SQLMesh Run Duration Seconds (model: transform_apply): 2 snapshots (sum=7.05 s)
+Import Detection Score: 1 snapshots (sum=0.00 score)
 ```
 
-Another 88 lines follow, under the headers from Deduplication through User-created reports. `--metric` narrows to one family by name substring — it matches the header's metrics, not the header:
+Another 46 lines follow, under the headers from Deduplication through User-created reports. This profile was built by `moneybin demo`, which flushed each metric once; `snapshots` counts those flushes, not observations. `--metric` narrows to one family by name substring — it matches the header's metrics, not the header:
 
 ```console
 $ uv run moneybin stats --metric import
-Using profile: demo
 Import pipeline
-Import Batch Size: 3 snapshots (sum=0.00 files)
+Import Batch Size: 1 snapshots (sum=0.00 files)
 Smart import confirmation
-Import Detection Score: 3 snapshots (sum=0.00 score)
+Import Detection Score: 1 snapshots (sum=0.00 score)
 ```
 
 `stats` returns the most recent snapshot per `(metric_name, labels)`, groups the result under a header per subsystem, and reports counters as `N total`, gauges as `value`, and histograms as `N snapshots (sum=X <unit>)`. Cumulative counters are not summed across snapshots — that would double-count.
@@ -181,26 +179,24 @@ A clean sweep prints one line. On the family demo profile, immediately after `mo
 
 ```console
 $ uv run moneybin system doctor
-Using profile: demo
 
-65 invariants checked across 2,886 transactions — all passing
+67 invariants checked across 2,886 transactions — all passing
 ```
 
 `--verbose` names each invariant that ran, plus the affected IDs on anything failing:
 
 ```console
 $ uv run moneybin system doctor --verbose
-Using profile: demo
-✅ fct_transactions_fk_integrity
-✅ fct_investment_transactions_fk_integrity
-✅ fct_investment_transactions_sign_convention
-✅ fct_investment_transactions_uniqueness
-✅ fct_transactions_sign_convention
-✅ bridge_transfers_balanced
-✅ transform_model_presence
+✓ fct_transactions_fk_integrity
+✓ fct_investment_transactions_fk_integrity
+✓ fct_investment_transactions_sign_convention
+✓ fct_investment_transactions_uniqueness
+✓ fct_transactions_sign_convention
+✓ bridge_transfers_balanced
+✓ transform_model_presence
 ```
 
-The other 58 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
+The other 60 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
 
 What it audits, via `DoctorService`:
 
@@ -231,7 +227,7 @@ $ uv run moneybin system doctor --output json | jq .
     "display_currency": null
   },
   "data": {
-    "passing": 65,
+    "passing": 67,
     "failing": 0,
     "warning": 0,
     "skipped": 0,
@@ -257,7 +253,7 @@ $ uv run moneybin system doctor --output json | jq .
 }
 ```
 
-The `Using profile: demo` line the CLI writes to stderr and the 63 `invariants` entries between the first and the last are cut. `summary.total_count` counts the sweep, not its invariants — the per-invariant tallies are `data.passing` and `data.failing`.
+The 65 `invariants` entries between the first and the last are cut; this command writes nothing to stderr. `summary.total_count` counts the sweep, not its invariants — the per-invariant tallies are `data.passing` and `data.failing`.
 
 On failure (exit `1`), the top-level `status` flips to `"error"`, an `error` object appears (`{"code": "audit_invariant_failure", "message": "N invariant(s) failing"}`), and the offending entries in `data.invariants[]` carry `"status": "fail"` with `detail` set to `"N violation(s)"`. Match on `data.invariants[].status == "fail"` (or top-level `status == "error"`) to drive alerts. `affected_ids` is populated only when `--verbose` is passed.
 

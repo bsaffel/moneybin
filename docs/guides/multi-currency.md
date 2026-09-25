@@ -54,28 +54,26 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 4 of 13 columns shown — --wide for all
 
 › Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_accounts') for the account-level
-breakdown
-
+› Run reports(report_id='core:net_worth_accounts') for the account-level breakdown
 $ uv run moneybin --profile cli-ux-international reports net-worth-accounts --no-pager
-┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
-┃ account_name        ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
-┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
-│ Barclays checking   │ GBP           │        8,786.52 │                    - │
-│ Chase Bank checking │ USD           │        6,294.20 │                    - │
-│ …0005               │               │                 │                      │
-│ Emirates NBD        │ AED           │       40,748.33 │                    - │
-│ checking            │               │                 │                      │
-│ ING checking …0001  │ EUR           │       61,072.11 │                    - │
-│ RBC Royal Bank      │ CAD           │       14,035.34 │                    - │
-│ checking …0003      │               │                 │                      │
-└─────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name                  ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Barclays checking             │ GBP           │        8,786.52 │                    - │
+│ Chase Bank checking …0005     │ USD           │        6,294.20 │                    - │
+│ Emirates NBD checking         │ AED           │       40,748.33 │                    - │
+│ ING checking …0001            │ EUR           │       61,072.11 │                    - │
+│ RBC Royal Bank checking …0003 │ CAD           │       14,035.34 │                    - │
+└───────────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
+
+› Run reports(report_id='core:net_worth') for the single home-currency total
+› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
 Each report's third hint, which points to `moneybin profile set home_currency`
-because this profile has none, and the account report's other two hints are
-trimmed above. The `*_home` columns stay `-` until a home currency is set.
+because this profile has none, is two lines trimmed above. The `*_home` columns
+stay `-` until a home currency is set.
 
 The doctor reports this as a warning: the profile is internally coherent, but
 it cannot produce one combined figure until it has rates for the requested
@@ -150,26 +148,22 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --from-date 2
 └──────────────┴─────────────────────────┴────────────┘
 3 of 10 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth', parameters={'interval': 'monthly'})
-for period-over-period change
-› Run reports(report_id='core:net_worth_currencies') for the currency-level
-breakdown
-
+› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
-┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
-┃               ┃ original_currenc ┃              ┃           ┃                ┃
-┃ currency_code ┃ y_code           ┃ balance_date ┃ net_worth ┃ net_worth_home ┃
-┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩
-│ USD           │ AED              │ 2025-12-27   │ 11,083.55 │      11,083.55 │
-│ USD           │ CAD              │ 2025-12-27   │ 10,526.51 │      10,526.51 │
-│ USD           │ EUR              │ 2025-12-27   │ 67,179.32 │      67,179.32 │
-│ USD           │ GBP              │ 2025-12-27   │ 10,983.15 │      10,983.15 │
-│ USD           │ USD              │ 2025-12-27   │  6,294.20 │       6,294.20 │
-└───────────────┴──────────────────┴──────────────┴───────────┴────────────────┘
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
+┃ currency_code ┃ original_currency_code ┃ balance_date ┃ net_worth ┃ net_worth_home ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩
+│ USD           │ AED                    │ 2025-12-27   │ 11,083.55 │      11,083.55 │
+│ USD           │ CAD                    │ 2025-12-27   │ 10,526.51 │      10,526.51 │
+│ USD           │ EUR                    │ 2025-12-27   │ 67,179.32 │      67,179.32 │
+│ USD           │ GBP                    │ 2025-12-27   │ 10,983.15 │      10,983.15 │
+│ USD           │ USD                    │ 2025-12-27   │  6,294.20 │       6,294.20 │
+└───────────────┴────────────────────────┴──────────────┴───────────┴────────────────┘
 5 of 14 columns shown — --wide for all
 ```
 
-The currency report's closing disclosure and two next-step hints are trimmed
+The net-worth report's first hint, which points to `--interval monthly`, and
+the currency report's closing disclosure and two next-step hints are trimmed
 above. The disclosure reads "Converted from AED, CAD, EUR, GBP using 4 stored
 rates" and points to `moneybin fx rate AED USD 2025-12-27` for any one of them,
 or `--output json` for all.
