@@ -57,7 +57,7 @@ Server behavior is documented in the moneybin-sync project. The client treats th
 - Staging views and core model integration per provider
 - Provider-specific testing strategies (e.g., Plaid Sandbox)
 
-These live in provider child specs: [`sync-plaid.md`](sync-plaid.md) (first provider), future `sync-simplefin.md`, `sync-mx.md`, etc.
+These live in provider child specs: [`sync-plaid.md`](sync-plaid.md) (first provider), [SimpleFIN](sync-simplefin.md) (draft), future `sync-mx.md`, etc.
 
 ---
 
@@ -607,10 +607,12 @@ The client's response models in `src/moneybin/connectors/sync_models.py` are nam
 | `SyncTransaction.amount` | positive = expense (Plaid convention). The MoneyBin sign flip lives in `prep.stg_plaid__transactions`, NOT in the extractor or model. |
 | `SyncTransaction.category` | single flat string. We're collapsing Plaid's `personal_finance_category.primary` + `.detailed` somewhere in the server pipeline. |
 | `SyncTransaction.merchant_name` | populated by Plaid's merchant enrichment. SimpleFIN doesn't send this; OFX/MX use different sources. |
-| `SyncTransaction.pending` | meaningful (Plaid models pending → posted transitions). SimpleFIN doesn't surface pending. |
+| `SyncTransaction.pending` | meaningful (Plaid models pending → posted transitions). SimpleFIN also exposes optional pending rows; its draft child contract excludes them from the posted ledger. |
 | `SyncMetadata.institutions[].provider_item_id` | one item per institution per response — matches Plaid's item model. |
 
 The names suggest provider-agnostic; the contents don't.
+
+**SimpleFIN proposal.** [M1G.5](sync-simplefin.md) retains the mediated boundary and proposes Option B with an explicitly negotiated broker envelope, provider-specific batches, and durable per-scope acknowledgement. Its detailed contract awaits review; the code remains Plaid-shaped until that work lands.
 
 **Two paths when provider #2 lands.**
 
@@ -738,7 +740,7 @@ Phase 1 of this spec maps to **M1G — Plaid Transactions sync** in [`docs/roadm
 | Provider | Child spec | Status | Notes |
 |---|---|---|---|
 | Plaid | [`sync-plaid.md`](sync-plaid.md) | implemented | First provider. Transactions product shipped; investments is a separate implemented child. Liabilities remains a separate future child. |
-| SimpleFIN | `sync-simplefin.md` | Planned | Alternative aggregator used by Actual Budget. Lower coverage but no per-institution fees. |
+| SimpleFIN | [sync-simplefin.md](sync-simplefin.md) | Draft | M1G.5: mediated cash/credit sync, explicit protocol versions, bounded history and partial-data outcomes; Early Access acceptance required. |
 | MX | `sync-mx.md` | Planned | Enterprise-grade aggregator. Potential alternative to Plaid for hosted tier. |
 
 Adding a provider requires a child spec, the four artifacts from the
