@@ -17,6 +17,7 @@ from pydantic import JsonValue
 
 from moneybin.audits.recipes import registry as recipe_registry
 from moneybin.database import Database
+from moneybin.errors import next_step_text
 from moneybin.mcp import prompts
 from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 from moneybin.mcp.tools.reports import reports
@@ -347,12 +348,13 @@ def test_report_result_actions_use_executable_standard_calls() -> None:
             parameters=supplied,
             limit=0,
         )
+        texts = [next_step_text(action) for action in result.actions]
         invalid = [
-            action
-            for action in result.actions
+            text
+            for text in texts
             if (
-                not _mentioned_names(action, STANDARD_TOOL_NAMES)
-                or _tool_references(action) - STANDARD_TOOL_NAMES
+                not _mentioned_names(text, STANDARD_TOOL_NAMES)
+                or _tool_references(text) - STANDARD_TOOL_NAMES
             )
         ]
         if invalid:

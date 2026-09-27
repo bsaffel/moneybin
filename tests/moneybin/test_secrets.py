@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+from keyring.errors import KeyringLocked, NoKeyringError, PasswordDeleteError
 
 from moneybin.secrets import (
     SecretNotFoundError,
@@ -29,7 +30,9 @@ class TestGetKey:
 
     def test_falls_back_to_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Keychain miss + env var set — returns env var value."""
-        monkeypatch.setenv("MONEYBIN_DATABASE__ENCRYPTION_KEY", "secret-from-env")
+        monkeypatch.setenv(
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY", "secret-from-env"
+        )
         store = SecretStore()
         with patch("moneybin.secrets.keyring") as mock_kr:
             mock_kr.get_password.return_value = None
@@ -39,7 +42,9 @@ class TestGetKey:
 
     def test_raises_when_both_miss(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Both keychain and env var miss — raises SecretNotFoundError."""
-        monkeypatch.delenv("MONEYBIN_DATABASE__ENCRYPTION_KEY", raising=False)
+        monkeypatch.delenv(
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY", raising=False
+        )
         store = SecretStore()
         with patch("moneybin.secrets.keyring") as mock_kr:
             mock_kr.get_password.return_value = None
@@ -54,12 +59,12 @@ class TestGetKey:
         A locked/restricted keychain is not the same condition as a routine
         miss: the OS is telling us the secret may well exist. See #419.
         """
-        monkeypatch.delenv("MONEYBIN_DATABASE__ENCRYPTION_KEY", raising=False)
+        monkeypatch.delenv(
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY", raising=False
+        )
         store = SecretStore()
         with patch("moneybin.secrets.keyring") as mock_kr:
-            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
-            mock_kr.errors.KeyringLocked = type("KeyringLocked", (Exception,), {})
-            mock_kr.get_password.side_effect = mock_kr.errors.KeyringLocked("denied")
+            mock_kr.get_password.side_effect = KeyringLocked("denied")
             with pytest.raises(SecretUnavailableError, match="denied"):
                 store.get_key("DATABASE__ENCRYPTION_KEY")
 
@@ -71,12 +76,12 @@ class TestGetKey:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A locked keychain doesn't block a working env var fallback."""
-        monkeypatch.setenv("MONEYBIN_DATABASE__ENCRYPTION_KEY", "secret-from-env")
+        monkeypatch.setenv(
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY", "secret-from-env"
+        )
         store = SecretStore()
         with patch("moneybin.secrets.keyring") as mock_kr:
-            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
-            mock_kr.errors.KeyringLocked = type("KeyringLocked", (Exception,), {})
-            mock_kr.get_password.side_effect = mock_kr.errors.KeyringLocked("denied")
+            mock_kr.get_password.side_effect = KeyringLocked("denied")
             result = store.get_key("DATABASE__ENCRYPTION_KEY")
 
         assert result == "secret-from-env"
@@ -133,13 +138,12 @@ class TestSetAndDeleteKey:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No keyring backend + env var set — env var satisfies the read."""
-        monkeypatch.setenv("MONEYBIN_DATABASE__ENCRYPTION_KEY", "env-key")
+        monkeypatch.setenv(
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY", "env-key"
+        )
         store = SecretStore()
         with patch("moneybin.secrets.keyring") as mock_kr:
-            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
-            mock_kr.get_password.side_effect = mock_kr.errors.NoKeyringError(
-                "no backend"
-            )
+            mock_kr.get_password.side_effect = NoKeyringError("no backend")
             assert store.get_key("DATABASE__ENCRYPTION_KEY") == "env-key"
 
     def test_set_key_raises_storage_unavailable_when_no_keyring_backend(
@@ -148,13 +152,10 @@ class TestSetAndDeleteKey:
         """No keyring backend on a write — surface a clear error, do not silently no-op."""
         store = SecretStore(profile="alice")
         with patch("moneybin.secrets.keyring") as mock_kr:
-            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
-            mock_kr.set_password.side_effect = mock_kr.errors.NoKeyringError(
-                "no backend"
-            )
+            mock_kr.set_password.side_effect = NoKeyringError("no backend")
             with pytest.raises(
                 SecretStorageUnavailableError,
-                match="MONEYBIN_DATABASE__ENCRYPTION_KEY",
+                match="MONEYBIN_PROFILE__ALICE__DATABASE__ENCRYPTION_KEY",
             ):
                 store.set_key("DATABASE__ENCRYPTION_KEY", "any-value")
 
@@ -162,12 +163,8 @@ class TestSetAndDeleteKey:
         """PasswordDeleteError from keyring backend is wrapped as SecretNotFoundError."""
         store = SecretStore(profile="alice")
         with patch("moneybin.secrets.keyring") as mock_kr:
-            mock_kr.errors.PasswordDeleteError = type(
-                "PasswordDeleteError", (Exception,), {}
-            )
-            mock_kr.delete_password.side_effect = mock_kr.errors.PasswordDeleteError(
-                "not found"
-            )
+            mock_kr.get_password.return_value = None
+            mock_kr.delete_password.side_effect = PasswordDeleteError("not found")
             with pytest.raises(SecretNotFoundError, match="not found in keychain"):
                 store.delete_key("DATABASE__ENCRYPTION_KEY")
 
@@ -184,10 +181,7 @@ class TestHasKeychainEntry:
     def test_returns_false_when_no_keyring_backend(self) -> None:
         store = SecretStore(profile="alice")
         with patch("moneybin.secrets.keyring") as mock_kr:
-            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
-            mock_kr.get_password.side_effect = mock_kr.errors.NoKeyringError(
-                "no backend"
-            )
+            mock_kr.get_password.side_effect = NoKeyringError("no backend")
             assert store.has_keychain_entry("DATABASE__ENCRYPTION_KEY") is False
 
     def test_raises_secret_unavailable_when_keychain_locked(self) -> None:
@@ -198,8 +192,6 @@ class TestHasKeychainEntry:
         """
         store = SecretStore(profile="alice")
         with patch("moneybin.secrets.keyring") as mock_kr:
-            mock_kr.errors.NoKeyringError = type("NoKeyringError", (Exception,), {})
-            mock_kr.errors.KeyringLocked = type("KeyringLocked", (Exception,), {})
-            mock_kr.get_password.side_effect = mock_kr.errors.KeyringLocked("denied")
+            mock_kr.get_password.side_effect = KeyringLocked("denied")
             with pytest.raises(SecretUnavailableError, match="denied"):
                 store.has_keychain_entry("DATABASE__ENCRYPTION_KEY")

@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import NextStep, UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -100,7 +100,16 @@ def _source_cte(view_cols: str, rng: DateRange) -> tuple[str, list[Binding]]:
 
 
 def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
-    """Requirement 6: the date, the fail-closed guard, and the headline.
+    """Requirement 6: the currency, the date, the fail-closed guard, the headline.
+
+    `home_currency_code` leads (column-ordering.md Rule B: dimension before
+    date) because `net_worth` and `change_abs` are a single home-currency
+    total with no other column naming its denomination — requirement 9's bar
+    for an unambiguous shared label. `_MAX_WIDTH_BY_REPORT["core:net_worth"]`
+    in `test_default_column_widths.py` raises this report's bound past 80 for
+    the same reason `core:realized_fx` already exceeds it: a column the
+    default set cannot afford to drop pushes the measured width past the
+    general bar.
 
     `unpriced_currency_count` stays in the set whether or not `interval` is
     given — it is not redundant with the change columns once they join the
@@ -110,19 +119,27 @@ def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
     column alone does not tell a reader which of those it is. Only
     `unpriced_currency_count` answers that.
 
-    `change_pct` drops out of the bucketed default set: `balance_date`,
-    `unpriced_currency_count`, `net_worth`, `change_abs` already measures 74
-    characters, and a fifth column crosses requirement 9's 80-character
-    bound. It stays one `--wide` away rather than pushed onto a reader who
+    `change_pct` stays one `--wide` away rather than pushed onto a reader who
     only asked for the trend.
 
-    `unanchored_account_count` is not a default for the same reason: beside
-    the unbucketed three it measures 85 characters. A NULL `net_worth` beside
+    `unanchored_account_count` is not a default either: it would push the
+    unbucketed row past the width bound. A NULL `net_worth` beside
     `unpriced_currency_count` 0 is the reader's cue to look for it.
     """
     if parameters.get("interval") is not None:
-        return ("balance_date", "unpriced_currency_count", "net_worth", "change_abs")
-    return ("balance_date", "unpriced_currency_count", "net_worth")
+        return (
+            "home_currency_code",
+            "balance_date",
+            "unpriced_currency_count",
+            "net_worth",
+            "change_abs",
+        )
+    return (
+        "home_currency_code",
+        "balance_date",
+        "unpriced_currency_count",
+        "net_worth",
+    )
 
 
 def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -> None:
@@ -196,16 +213,22 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "account_count",
             "Accounts contributing on this date, across every currency.",
             DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "carried_forward_count",
             "How many of them are carried forward rather than observed.",
             DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "currency_count",
             "Distinct currencies held on this date; unknown counts as one.",
             DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "unpriced_currency_count",
@@ -213,6 +236,8 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "blanks the totals, but they are complete only when "
             "unanchored_account_count is 0 too.",
             DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "unanchored_account_count",
@@ -220,6 +245,8 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "activity) but have no balance observation; 0 means none. The "
             "totals are null while it is above 0.",
             DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "total_assets",
@@ -265,6 +292,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "on the first returned bucket, whenever either bucket's "
             "net_worth is null, or when the preceding value is zero.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
     ),
     semantics=ReportSemantics(
@@ -387,11 +415,18 @@ def net_worth(
             SELECT {view_cols} FROM source
             ORDER BY balance_date
         """  # noqa: S608  # CTE text built above from TableRefs and a static column list
-        actions = [
-            "Run reports(report_id='core:net_worth', "
-            "parameters={'interval': 'monthly'}) for period-over-period change",
-            "Run reports(report_id='core:net_worth_currencies') for the "
-            "currency-level breakdown",
+        actions: list[NextStep] = [
+            NextStep(
+                reason="period-over-period change",
+                cli=("reports", "net-worth", "--interval", "monthly"),
+                mcp="reports(report_id='core:net_worth', "
+                "parameters={'interval': 'monthly'})",
+            ),
+            NextStep(
+                reason="the currency-level breakdown",
+                cli=("reports", "net-worth-currencies"),
+                mcp="reports(report_id='core:net_worth_currencies')",
+            ),
         ]
         return ReportQuery(sql, params, actions=actions, period=rng.period)
 
@@ -425,10 +460,34 @@ def net_worth(
         FROM bucketed
         ORDER BY balance_date
     """  # noqa: S608  # TableRef interpolation, bucket_expr from a closed dict keyed by a validated interval
-    actions = [
-        "Run reports(report_id='core:net_worth') for the single latest-day total",
-        "Run reports(report_id='core:net_worth_accounts') for the account-level breakdown",
-        "Set from_date to bound a recent window — rows return oldest-first, "
-        "so a row limit keeps the earliest buckets, not the most recent",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="the single latest-day total",
+            cli=("reports", "net-worth"),
+            mcp="reports(report_id='core:net_worth')",
+        ),
+        NextStep(
+            reason="the account-level breakdown",
+            cli=("reports", "net-worth-accounts"),
+            mcp="reports(report_id='core:net_worth_accounts')",
+        ),
+        NextStep(
+            reason=(
+                "a recent window — rows return oldest-first, so a row limit "
+                "keeps the earliest buckets, not the most recent"
+            ),
+            cli=(
+                "reports",
+                "net-worth",
+                "--interval",
+                interval,
+                "--from-date",
+                "<YYYY-MM-DD>",
+            ),
+            mcp=(
+                "reports(report_id='core:net_worth', "
+                f"parameters={{'interval': {interval!r}, 'from_date': 'YYYY-MM-DD'}})"
+            ),
+        ),
     ]
     return ReportQuery(sql, params, actions=actions, period=rng.period)

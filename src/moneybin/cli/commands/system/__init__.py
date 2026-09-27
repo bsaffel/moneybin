@@ -95,9 +95,8 @@ def system_status(
     ]
     for destination in exports.destinations:
         state = "ready" if destination.ready else "not ready"
-        value = (
-            f"{destination.kind}; {state}; write capable: {destination.write_capable}"
-        )
+        access = "read-write" if destination.write_capable else "read-only"
+        value = f"{destination.kind}; {state}; {access}"
         if destination.reasons:
             value = f"{value}; reasons: {', '.join(destination.reasons)}"
         pairs.append((f"Export {destination.name}", value))

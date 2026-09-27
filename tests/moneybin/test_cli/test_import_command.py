@@ -500,11 +500,11 @@ def test_import_history_renders_one_row_per_import(wide_terminal: None) -> None:
     assert result.exit_code == 0, result.output
     assert "imp_0123456789ab" in result.stdout
     assert "imp_ba9876543210" in result.stdout
-    # A row count is not an amount, so it renders unseparated. Accepting either
-    # spelling made this assertion inert; `1,204` would mean a count had been
-    # routed through `format_money`.
-    assert "1204" in result.stdout
-    assert "1,204" not in result.stdout
+    # A row count is grouped by thousands like every other number, but it is
+    # not an amount: `1,204.00` would mean a count had been routed through
+    # `format_money`.
+    assert "1,204" in result.stdout
+    assert "1,204.00" not in result.stdout
 
 
 def test_import_history_no_pager_prints_the_complete_finite_answer(

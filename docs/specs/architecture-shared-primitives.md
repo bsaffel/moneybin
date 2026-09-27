@@ -290,11 +290,11 @@ Every tunable lives in a Settings field with a description and (where appropriat
 - All timeouts and intervals (MCP tool timeout, metrics flush).
 - All security parameters (Argon2 cost factors, salt sizes, hash lengths).
 
-Security-critical parameters are defined exactly once, at `_CONSTANTS` module-level or in a Settings field. Never duplicated across call sites — duplication introduces drift, and drift in a crypto cost factor locks users out.
+Security-critical defaults and secret lookup names are defined once in `moneybin.crypto_constants`; Settings and key derivation import them. Never duplicated across call sites — duplication introduces drift, and drift in a crypto cost factor locks users out.
 
 ### Secrets are not in `MoneyBinSettings`
 
-Encryption keys and high-sensitivity credentials live in `SecretStore` (`src/moneybin/secrets.py`) — keychain-first, env-var fallback. Per-profile keychain service: `service="moneybin-<profile>"`. The `Database` class is the only consumer of `_KEY_NAME`; CLI commands manage lifecycle (`db init`, `db unlock`, `db rotate-key`).
+Encryption keys and high-sensitivity credentials live in `SecretStore` (`src/moneybin/secrets.py`) — keychain-first, env-var fallback. Per-profile keychain service: `service="moneybin-<profile>"`. `KEY_NAME` and `SALT_NAME` are shared by database and CLI callers; CLI commands manage lifecycle (`db init`, `db unlock`, `db key rotate`). Named profiles use `MONEYBIN_PROFILE__<PROFILE>__<SECRET_NAME>` for environment fallback. The encryption-key cache records the profile identity and is invalidated on lock and rotation. Sync tokens use SecretStore with their existing opaque profile-ID keychain slots and require writable keychain storage.
 
 API keys and server credentials that don't need keychain storage use `SecretStore.get_env(name)` — env-var-only.
 

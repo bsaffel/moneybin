@@ -241,8 +241,8 @@ _AUDIT_TARGET = (
 # into core.* (which select_lots validates against) only on the next refresh.
 # Surface that so a not-found error on a just-recorded id isn't a dead end.
 _REFRESH_MATERIALIZE_HINT = (
-    "💡 Newly recorded events materialize into the ledger only after a refresh — "
-    "run 'moneybin refresh' (MCP: refresh_run), then retry."
+    "Newly recorded events materialize into the ledger only after a refresh — "
+    "run 'moneybin refresh', then retry."
 )
 
 
@@ -1563,11 +1563,10 @@ class InvestmentService:
                 "selection.",
                 code=error_codes.INVESTMENT_SECURITY_NOT_BOUND,
                 hint=(
-                    "💡 Bind the security first — review the pending link with "
-                    "'moneybin investments securities links pending' "
-                    "(MCP: reviews(kind='security_links')), accept it, then run "
-                    "'moneybin refresh' (MCP: refresh_run) so the ledger carries "
-                    "the binding, and retry the selection."
+                    "Bind the security first — review the pending link with "
+                    "'moneybin investments securities links pending', accept "
+                    "it, then run 'moneybin refresh' so the ledger carries the "
+                    "binding, and retry the selection."
                 ),
             )
         security = self._fetch_security(security_id)
@@ -1586,10 +1585,9 @@ class InvestmentService:
                 "lot selection against it would not survive the next refresh.",
                 code=error_codes.INVESTMENT_SECURITY_NOT_IN_CATALOG,
                 hint=(
-                    "💡 If a security-link merge just ran, the ledger still names "
-                    "the deleted security until you run 'moneybin refresh' "
-                    "(MCP: refresh_run) — refresh, then select lots against the "
-                    "surviving security."
+                    "If a security-link merge just ran, the ledger still names "
+                    "the deleted security until you run 'moneybin refresh' — "
+                    "refresh, then select lots against the surviving security."
                 ),
             )
         settings = self._db.execute(
@@ -1609,9 +1607,9 @@ class InvestmentService:
             "lot selections; only 'specific' identification consumes them.",
             code=error_codes.INVESTMENT_METHOD_NOT_SPECIFIC,
             hint=(
-                "💡 Elect specific identification first — 'moneybin investments "
-                f"securities set {security_id} --method specific' "
-                "(MCP: investments_securities_set) — then retry the selection."
+                "Elect specific identification first — 'moneybin investments "
+                f"securities set {security_id} --method specific' — then "
+                "retry the selection."
             ),
             recovery_actions=[
                 RecoveryAction(

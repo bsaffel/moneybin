@@ -713,6 +713,54 @@ class TestAccountsSet:
         assert "flag" in result.stderr.lower() or "required" in result.stderr.lower()
 
     @pytest.mark.unit
+    def test_set_currency_warns_reports_need_a_rebuild(self, runner: CliRunner) -> None:
+        """A currency change reaches `core.dim_accounts` (a FULL model) only.
+
+        Reports won't reflect it until `refresh --step transform`; the
+        receipt must say so (rule 34).
+        """
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.settings_update.return_value = (
+                MagicMock(currency_code="EUR"),
+                [],
+            )
+            result = runner.invoke(
+                app, ["accounts", "set", "acct_a", "--currency", "EUR"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "moneybin refresh --step transform" in result.output
+
+    @pytest.mark.unit
+    def test_set_display_name_alone_has_no_rebuild_warning(
+        self, runner: CliRunner
+    ) -> None:
+        """A field the report pipeline never reads gets no rebuild disclosure."""
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.settings_update.return_value = (
+                MagicMock(display_name="Checking"),
+                [],
+            )
+            result = runner.invoke(
+                app, ["accounts", "set", "acct_a", "--display-name", "Checking"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "refresh --step transform" not in result.output
+
+    @pytest.mark.unit
     def test_set_writes_canonical_subtype(self, runner: CliRunner) -> None:
         from unittest.mock import MagicMock, patch
 

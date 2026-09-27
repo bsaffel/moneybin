@@ -21,6 +21,13 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from moneybin.crypto_constants import (
+    ARGON2_HASH_LEN,
+    ARGON2_MEMORY_COST,
+    ARGON2_PARALLELISM,
+    ARGON2_TIME_COST,
+)
+
 # Direct-path imports of provider configs. We import from the concrete
 # config modules (not the package ``__init__``) to avoid triggering
 # tabular/__init__.py's lazy ``__getattr__``, which gates polars and is
@@ -177,16 +184,18 @@ class DatabaseConfig(BaseModel):
     # WARNING: changing these after a database is created locks you out —
     # the derived key will differ and the database will be unreadable.
     argon2_time_cost: int = Field(
-        default=3, ge=1, description="Argon2id time cost (iterations)"
+        default=ARGON2_TIME_COST, ge=1, description="Argon2id time cost (iterations)"
     )
     argon2_memory_cost: int = Field(
-        default=65536, ge=8192, description="Argon2id memory cost in KiB"
+        default=ARGON2_MEMORY_COST, ge=8192, description="Argon2id memory cost in KiB"
     )
     argon2_parallelism: int = Field(
-        default=4, ge=1, description="Argon2id degree of parallelism"
+        default=ARGON2_PARALLELISM, ge=1, description="Argon2id degree of parallelism"
     )
     argon2_hash_len: int = Field(
-        default=32, ge=16, description="Argon2id output hash length in bytes"
+        default=ARGON2_HASH_LEN,
+        ge=16,
+        description="Argon2id output hash length in bytes",
     )
     no_auto_upgrade: bool = Field(
         default=False,

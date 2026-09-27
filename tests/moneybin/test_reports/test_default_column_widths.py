@@ -111,7 +111,16 @@ _ENUM_VOCABULARIES: Mapping[tuple[str, str], Sequence[str]] = {
 # several rows one multi-lot disposal produces even when two lots land on the
 # same gain or loss, something no other default column (including a date)
 # guarantees.
-_MAX_WIDTH_BY_REPORT: Mapping[str, int] = {"core:realized_fx": 106}
+# `core:net_worth`'s bucketed default adds `home_currency_code` (requirement
+# 9's unambiguous shared label for its single home-currency total) beside two
+# money columns and the fail-closed `unpriced_currency_count` guard — no
+# combination of those four is droppable without losing the guard or the
+# period-over-period headline `--interval` exists to show. See
+# `net_worth.py::_default_columns`.
+_MAX_WIDTH_BY_REPORT: Mapping[str, int] = {
+    "core:realized_fx": 106,
+    "core:net_worth": 95,
+}
 
 #: Parameter vocabularies that change a report's default column set. Only a
 #: report declaring a *callable* default needs an entry; the guard below fails
