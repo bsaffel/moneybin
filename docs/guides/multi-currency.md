@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Multi-currency
 
 Every transaction, balance, and investment event keeps the currency it arrived
@@ -53,8 +53,8 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 └───────────────┴──────────────┴───────────┴────────────────┘
 4 of 13 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_accounts') for the account-level breakdown
+› The single home-currency total: moneybin --profile cli-ux-international reports net-worth
+› The account-level breakdown: moneybin --profile cli-ux-international reports net-worth-accounts
 $ uv run moneybin --profile cli-ux-international reports net-worth-accounts --no-pager
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ account_name                  ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
@@ -67,13 +67,14 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-accounts --no
 └───────────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+› The single home-currency total: moneybin --profile cli-ux-international reports net-worth
+› The currency-level breakdown: moneybin --profile cli-ux-international reports net-worth-currencies
 ```
 
 Each report's third hint, which points to `moneybin profile set home_currency`
-because this profile has none, is two lines trimmed above. The `*_home` columns
-stay `-` until a home currency is set.
+because this profile has none, is two lines trimmed above. Each hint repeats
+the `--profile cli-ux-international` the command was run with. The `*_home`
+columns stay `-` until a home currency is set.
 
 The doctor reports this as a warning: the profile is internally coherent, but
 it cannot produce one combined figure until it has rates for the requested
@@ -122,7 +123,7 @@ Exchange rates
 Scope:        AED/USD since 2025-12-27
 Stored rates: 1
 ┏━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ date       ┃ rate       ┃ source   ┃
+┃ date       ┃       rate ┃ source   ┃
 ┡━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━┩
 │ 2025-12-27 │ 0.27200000 │ override │
 └────────────┴────────────┴──────────┘
@@ -141,14 +142,14 @@ currency's row keeps its source currency beside it:
 
 ```console
 $ uv run moneybin --profile cli-ux-international reports net-worth --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
-┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
-┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│ 2025-12-27   │ 0                       │ 106,066.73 │
-└──────────────┴─────────────────────────┴────────────┘
-3 of 9 columns shown — --wide for all
+┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ home_currency_code ┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃
+┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ USD                │ 2025-12-27   │                       0 │ 106,066.73 │
+└────────────────────┴──────────────┴─────────────────────────┴────────────┘
+4 of 9 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+› The currency-level breakdown: moneybin --profile cli-ux-international reports net-worth-currencies
 $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
 ┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
 ┃ currency_code ┃ original_currency_code ┃ balance_date ┃ net_worth ┃ net_worth_home ┃
@@ -162,11 +163,12 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 5 of 14 columns shown — --wide for all
 ```
 
-The net-worth report's first hint, which points to `--interval monthly`, and
-the currency report's closing disclosure and two next-step hints are trimmed
-above. The disclosure reads "Converted from AED, CAD, EUR, GBP using 4 stored
-rates" and points to `moneybin fx rate AED USD 2025-12-27` for any one of them,
-or `--output json` for all.
+The net-worth report's first hint, which points to `--interval monthly` and
+runs to two lines, and the currency report's two-line closing disclosure and
+two next-step hints are trimmed above. The disclosure reads "Converted from
+AED, CAD, EUR, GBP using 4 stored rates" and points to `moneybin --profile
+cli-ux-international fx rate AED USD 2025-12-27` for any one of them, or
+`--output json` for all.
 `reports net-worth-accounts` takes the same dates and prices each account the
 same way.
 
@@ -199,17 +201,17 @@ currency reports no figure. Here the four overrides cover 2025-12-27 only:
 
 ```console
 $ uv run moneybin --profile cli-ux-international reports net-worth --interval monthly --from-date 2025-10-01 --to-date 2025-12-31 --no-pager
-┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
-┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃ change_abs ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│ 2025-10-31   │ 4                       │          - │          - │
-│ 2025-11-30   │ 4                       │          - │          - │
-│ 2025-12-27   │ 0                       │ 106,066.73 │          - │
-└──────────────┴─────────────────────────┴────────────┴────────────┘
-4 of 11 columns shown — --wide for all
+┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ home_currency_code ┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃ change_abs ┃
+┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ USD                │ 2025-10-31   │                       4 │          - │          - │
+│ USD                │ 2025-11-30   │                       4 │          - │          - │
+│ USD                │ 2025-12-27   │                       0 │ 106,066.73 │          - │
+└────────────────────┴──────────────┴─────────────────────────┴────────────┴────────────┘
+5 of 11 columns shown — --wide for all
 ```
 
-The three next-step hints are trimmed above.
+The three next-step hints, five lines at this width, are trimmed above.
 
 ## From an AI client
 

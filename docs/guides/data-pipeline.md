@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Data Pipeline
 
 Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. Each section below takes one layer and gives its writer, its models as they are spelled in the repo, and the surface a consumer reads it from.
@@ -243,17 +243,17 @@ and review. Transfer detection uses `transfer_review_threshold` instead.
 $ uv run moneybin transactions matches pending
 Pending matches
 Scope: Showing 50 of 108 pending matches
-Component: 0040b941401a (1 edge(s))
+Component: 0132df02ff45 (1 edge(s))
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━┓
 ┃ match id     ┃ type     ┃ tier ┃ score ┃ type a ┃ type b ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━┩
-│ 0040b941401a │ transfer │ -    │ 0.92  │ ofx    │ ofx    │
+│ 0132df02ff45 │ transfer │ -    │  0.92 │ ofx    │ csv    │
 └──────────────┴──────────┴──────┴───────┴────────┴────────┘
-Component: 04b8894424aa (1 edge(s))
+Component: 034ecd409237 (1 edge(s))
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━┓
 ┃ match id     ┃ type     ┃ tier ┃ score ┃ type a ┃ type b ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━┩
-│ 04b8894424aa │ transfer │ -    │ 0.92  │ ofx    │ csv    │
+│ 034ecd409237 │ transfer │ -    │  0.92 │ ofx    │ csv    │
 └──────────────┴──────────┴──────┴───────┴────────┴────────┘
 More pending matches remain; raise --limit to review them.
 Use 'moneybin transactions matches set <match-id> --status accepted|rejected' to decide a match.
@@ -506,31 +506,31 @@ $ uv run moneybin import status
 Imported data summary
 Tables:   21
 Records:  2,892 rows
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
-┃ table                                     ┃ rows ┃ first date ┃ last date  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│ raw.exchange_rates                        │ 0    │ -          │ -          │
-│ raw.gsheet_seeds                          │ 0    │ -          │ -          │
-│ raw.import_preview_snapshots              │ 0    │ -          │ -          │
-│ raw.manual_investment_transactions        │ 0    │ -          │ -          │
-│ raw.manual_transactions                   │ 0    │ -          │ -          │
-│ raw.ofx_accounts                          │ 2    │ -          │ -          │
-│ raw.ofx_balances                          │ 2    │ -          │ -          │
-│ raw.ofx_transactions                      │ 1381 │ 2023-01-01 │ 2025-12-31 │
-│ raw.pdf_seeds                             │ 0    │ -          │ -          │
-│ raw.plaid_accounts                        │ 0    │ -          │ -          │
-│ raw.plaid_balances                        │ 0    │ -          │ -          │
-│ raw.plaid_investment_holding_lots         │ 0    │ -          │ -          │
-│ raw.plaid_investment_holdings             │ 0    │ -          │ -          │
-│ raw.plaid_investment_holdings_snapshots   │ 0    │ -          │ -          │
-│ raw.plaid_investment_transaction_receipts │ 0    │ -          │ -          │
-│ raw.plaid_investment_transactions         │ 0    │ -          │ -          │
-│ raw.plaid_securities                      │ 0    │ -          │ -          │
-│ raw.plaid_transactions                    │ 0    │ -          │ -          │
-│ raw.security_prices                       │ 0    │ -          │ -          │
-│ raw.tabular_accounts                      │ 2    │ -          │ -          │
-│ raw.tabular_transactions                  │ 1505 │ 2023-01-06 │ 2025-12-31 │
-└───────────────────────────────────────────┴──────┴────────────┴────────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ table                                     ┃  rows ┃ first date ┃ last date  ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ raw.exchange_rates                        │     0 │ -          │ -          │
+│ raw.gsheet_seeds                          │     0 │ -          │ -          │
+│ raw.import_preview_snapshots              │     0 │ -          │ -          │
+│ raw.manual_investment_transactions        │     0 │ -          │ -          │
+│ raw.manual_transactions                   │     0 │ -          │ -          │
+│ raw.ofx_accounts                          │     2 │ -          │ -          │
+│ raw.ofx_balances                          │     2 │ -          │ -          │
+│ raw.ofx_transactions                      │ 1,381 │ 2023-01-01 │ 2025-12-31 │
+│ raw.pdf_seeds                             │     0 │ -          │ -          │
+│ raw.plaid_accounts                        │     0 │ -          │ -          │
+│ raw.plaid_balances                        │     0 │ -          │ -          │
+│ raw.plaid_investment_holding_lots         │     0 │ -          │ -          │
+│ raw.plaid_investment_holdings             │     0 │ -          │ -          │
+│ raw.plaid_investment_holdings_snapshots   │     0 │ -          │ -          │
+│ raw.plaid_investment_transaction_receipts │     0 │ -          │ -          │
+│ raw.plaid_investment_transactions         │     0 │ -          │ -          │
+│ raw.plaid_securities                      │     0 │ -          │ -          │
+│ raw.plaid_transactions                    │     0 │ -          │ -          │
+│ raw.security_prices                       │     0 │ -          │ -          │
+│ raw.tabular_accounts                      │     2 │ -          │ -          │
+│ raw.tabular_transactions                  │ 1,505 │ 2023-01-06 │ 2025-12-31 │
+└───────────────────────────────────────────┴───────┴────────────┴────────────┘
 ```
 
 A raw table at `0 rows` is not an error — it is a source this profile has never used; 16 of the 21 are in that state here. Three lines are trimmed above: the `Database:` label and the two lines its absolute path wrapped onto.

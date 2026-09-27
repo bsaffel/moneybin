@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Reports
 
 Ten built-in reports answer the standing questions — what am I worth, where
@@ -47,63 +47,64 @@ $ uv run moneybin reports net-worth-accounts
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+› The single home-currency total: moneybin reports net-worth
+› The currency-level breakdown: moneybin reports net-worth-currencies
 ```
 
-A third hint, pointing at `profile set home_currency <CODE>` for converted totals, is trimmed above. With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Holdings in investment accounts do not count toward net worth yet.
+A third hint, pointing at `profile set home_currency <CODE>` for converted totals, is trimmed above; it runs to two lines at this width. With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Holdings in investment accounts do not count toward net worth yet.
 
 ### Net worth over time
 
 ```console
 $ uv run moneybin profile set home_currency USD
 $ uv run moneybin reports net-worth --interval monthly --from-date 2025-01-01 --to-date 2025-12-31
-┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
-┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃ change_abs ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│ 2025-01-31   │ 0                       │ 300,133.10 │          - │
-│ 2025-02-28   │ 0                       │ 310,383.89 │ +10,250.79 │
-│ 2025-03-31   │ 0                       │ 320,763.38 │ +10,379.49 │
-│ 2025-04-30   │ 0                       │ 331,318.81 │ +10,555.43 │
-│ 2025-05-31   │ 0                       │ 342,064.37 │ +10,745.56 │
-│ 2025-06-30   │ 0                       │ 352,756.07 │ +10,691.70 │
-│ 2025-07-31   │ 0                       │ 362,791.60 │ +10,035.53 │
-│ 2025-08-31   │ 0                       │ 381,166.67 │ +18,375.07 │
-│ 2025-09-30   │ 0                       │ 390,621.39 │  +9,454.72 │
-│ 2025-10-31   │ 0                       │ 400,767.89 │ +10,146.50 │
-│ 2025-11-30   │ 0                       │ 410,775.08 │ +10,007.19 │
-│ 2025-12-31   │ 0                       │ 420,080.77 │  +9,305.69 │
-└──────────────┴─────────────────────────┴────────────┴────────────┘
-4 of 11 columns shown — --wide for all
+┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ home_currency_code ┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃ change_abs ┃
+┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ USD                │ 2025-01-31   │                       0 │ 300,133.10 │          - │
+│ USD                │ 2025-02-28   │                       0 │ 310,383.89 │ +10,250.79 │
+│ USD                │ 2025-03-31   │                       0 │ 320,763.38 │ +10,379.49 │
+│ USD                │ 2025-04-30   │                       0 │ 331,318.81 │ +10,555.43 │
+│ USD                │ 2025-05-31   │                       0 │ 342,064.37 │ +10,745.56 │
+│ USD                │ 2025-06-30   │                       0 │ 352,756.07 │ +10,691.70 │
+│ USD                │ 2025-07-31   │                       0 │ 362,791.60 │ +10,035.53 │
+│ USD                │ 2025-08-31   │                       0 │ 381,166.67 │ +18,375.07 │
+│ USD                │ 2025-09-30   │                       0 │ 390,658.51 │  +9,491.84 │
+│ USD                │ 2025-10-31   │                       0 │ 400,802.98 │ +10,144.47 │
+│ USD                │ 2025-11-30   │                       0 │ 410,815.53 │ +10,012.55 │
+│ USD                │ 2025-12-31   │                       0 │ 420,080.77 │  +9,265.24 │
+└────────────────────┴──────────────┴─────────────────────────┴────────────┴────────────┘
+5 of 11 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single latest-day total
-› Run reports(report_id='core:net_worth_accounts') for the account-level breakdown
+› The single latest-day total: moneybin reports net-worth
+› The account-level breakdown: moneybin reports net-worth-accounts
 ```
 
-`net-worth` is a home-currency total, so it reports no figure until the profile has a home currency; the `profile set` output is trimmed above. `--interval` is `daily`, `weekly` (ISO weeks starting Monday), or `monthly`; each row is the bucket's last available balance date, and `change_abs` (with `change_pct` under `--wide`) compares it to the bucket before it. Both bounds are optional.
+`net-worth` is a home-currency total, so it reports no figure until the profile has a home currency; the `profile set` output is trimmed above, and so is a third hint naming a narrower window, which runs to two lines. `home_currency_code` names the currency the total is priced in. `--interval` is `daily`, `weekly` (ISO weeks starting Monday), or `monthly`; each row is the bucket's last available balance date, and `change_abs` (with `change_pct` under `--wide`) compares it to the bucket before it. Both bounds are optional.
 
 ### Spending
 
 ```console
 $ uv run moneybin reports spending-trend --from-month 2025-01 --to-month 2025-12
 ┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ category            ┃ currency_code ┃ year_month ┃ total_spend ┃ yoy_pct                ┃
+┃ category            ┃ currency_code ┃ year_month ┃ total_spend ┃                yoy_pct ┃
 ┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━┩
-│                     │ USD           │ 2025-12    │    3,151.16 │ -0.050429258914392296  │
+│                     │ USD           │ 2025-12    │    3,151.16 │  -0.050429258914392296 │
 │ Housing & Utilities │ USD           │ 2025-12    │    2,641.06 │ -0.0016783216783216785 │
-│ Shopping            │ USD           │ 2025-12    │    1,659.53 │ 0.4079444128651299     │
-│ Food & Drink        │ USD           │ 2025-12    │      967.39 │ 0.05113383242967197    │
-│ Other               │ USD           │ 2025-12    │      451.23 │ 0.321820898145707      │
-│ Services            │ USD           │ 2025-12    │      250.00 │ 0.0                    │
-│ Transportation      │ USD           │ 2025-12    │      241.04 │ -0.3999950215318746    │
-│ Entertainment       │ USD           │ 2025-12    │      112.04 │ -0.27076282218172354   │
-│ Healthcare          │ USD           │ 2025-12    │       66.92 │ -0.6928302579638299    │
-│ Personal Care       │ USD           │ 2025-12    │        0.00 │ -1.0                   │
+│ Shopping            │ USD           │ 2025-12    │    1,659.53 │     0.4079444128651299 │
+│ Food & Drink        │ USD           │ 2025-12    │      967.39 │    0.05113383242967197 │
+│ Other               │ USD           │ 2025-12    │      451.23 │      0.321820898145707 │
+│ Services            │ USD           │ 2025-12    │      250.00 │                    0.0 │
+│ Transportation      │ USD           │ 2025-12    │      241.04 │    -0.3999950215318746 │
+│ Entertainment       │ USD           │ 2025-12    │      112.04 │   -0.27076282218172354 │
+│ Healthcare          │ USD           │ 2025-12    │       66.92 │    -0.6928302579638299 │
+│ Personal Care       │ USD           │ 2025-12    │        0.00 │                   -1.0 │
 └─────────────────────┴───────────────┴────────────┴─────────────┴────────────────────────┘
 5 of 12 columns shown — --wide for all
 
-› Run reports(report_id='core:cash_flow') for inflow, outflow, and net
-› Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns
+› Filtering to one category: moneybin reports spending-trend --category '<name>'
+› Inflow, outflow, and net: moneybin reports cash-flow
+› Recurring charge patterns: moneybin reports recurring-subscriptions
 ```
 
 The full year is 120 rows; the eleven earlier months are trimmed here. `total_spend` is a positive absolute outflow, biggest category first within each month. The blank category is money nobody has categorized yet, which on this persona is the largest line — the [categorization guide](categorization.md) is how it shrinks. `yoy_pct` is a fraction: `-0.05` is 5% less than the same month a year earlier, `-1.0` means the category spent nothing this month. The comparison columns are computed over all history, so narrowing the window never blanks them.
@@ -113,25 +114,26 @@ Omit both bounds for the last 12 calendar months. `--compare mom` or `--compare 
 ```console
 $ uv run moneybin reports spending-trend --from-month 2025-01 --to-month 2025-12 --category "Food & Drink" --compare mom
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ category     ┃ currency_code ┃ year_month ┃ total_spend ┃ mom_pct               ┃
+┃ category     ┃ currency_code ┃ year_month ┃ total_spend ┃               mom_pct ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
 │ Food & Drink │ USD           │ 2025-01    │      876.71 │ -0.047396042723805584 │
-│ Food & Drink │ USD           │ 2025-02    │    1,390.84 │ 0.58643108895758      │
-│ Food & Drink │ USD           │ 2025-03    │      814.71 │ -0.41423168732564497  │
-│ Food & Drink │ USD           │ 2025-04    │    1,154.29 │ 0.416810889764456     │
-│ Food & Drink │ USD           │ 2025-05    │      800.06 │ -0.3068812863318577   │
-│ Food & Drink │ USD           │ 2025-06    │      885.48 │ 0.10676699247556434   │
-│ Food & Drink │ USD           │ 2025-07    │      670.95 │ -0.24227537606721777  │
-│ Food & Drink │ USD           │ 2025-08    │      940.29 │ 0.4014308070646098    │
-│ Food & Drink │ USD           │ 2025-09    │    1,140.32 │ 0.21273224218060385   │
-│ Food & Drink │ USD           │ 2025-10    │    1,058.10 │ -0.07210256770029466  │
-│ Food & Drink │ USD           │ 2025-11    │      991.80 │ -0.06265948398072016  │
-│ Food & Drink │ USD           │ 2025-12    │      967.39 │ -0.02461181689856826  │
+│ Food & Drink │ USD           │ 2025-02    │    1,390.84 │      0.58643108895758 │
+│ Food & Drink │ USD           │ 2025-03    │      814.71 │  -0.41423168732564497 │
+│ Food & Drink │ USD           │ 2025-04    │    1,154.29 │     0.416810889764456 │
+│ Food & Drink │ USD           │ 2025-05    │      800.06 │   -0.3068812863318577 │
+│ Food & Drink │ USD           │ 2025-06    │      885.48 │   0.10676699247556434 │
+│ Food & Drink │ USD           │ 2025-07    │      670.95 │  -0.24227537606721777 │
+│ Food & Drink │ USD           │ 2025-08    │      940.29 │    0.4014308070646098 │
+│ Food & Drink │ USD           │ 2025-09    │    1,140.32 │   0.21273224218060385 │
+│ Food & Drink │ USD           │ 2025-10    │    1,058.10 │  -0.07210256770029466 │
+│ Food & Drink │ USD           │ 2025-11    │      991.80 │  -0.06265948398072016 │
+│ Food & Drink │ USD           │ 2025-12    │      967.39 │  -0.02461181689856826 │
 └──────────────┴───────────────┴────────────┴─────────────┴───────────────────────┘
 5 of 12 columns shown — --wide for all
 
-› Run reports(report_id='core:cash_flow') for inflow, outflow, and net
-› Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns
+› Filtering to one category: moneybin reports spending-trend --category '<name>'
+› Inflow, outflow, and net: moneybin reports cash-flow
+› Recurring charge patterns: moneybin reports recurring-subscriptions
 ```
 
 ### Cash flow
@@ -154,8 +156,8 @@ $ uv run moneybin reports cash-flow --from-month 2025-07 --to-month 2025-12 --by
 └─────────────────────┴───────────────┴────────────┴────────────┘
 4 of 7 columns shown — --wide for all
 
-› Rerun reports(report_id='core:cash_flow', parameters={'by': 'category'}) to regroup by category
-› Run reports(report_id='core:spending_trend') for outflow-only MoM and YoY trends
+› Regrouping by category: moneybin reports cash-flow --by category
+› Outflow-only MoM and YoY trends: moneybin reports spending-trend
 ```
 
 Six months is 64 rows; July through November are trimmed here. Cash flow is signed — income positive, spending negative — where `spending` is outflow only and unsigned. `--by account` groups by account instead, and the default `account-and-category` gives one row per pair. `inflow` and `outflow` are among the `--wide` columns.
@@ -164,9 +166,10 @@ Six months is 64 rows; July through November are trimmed here. Cash flow is sign
 
 ```console
 $ uv run moneybin reports recurring-subscriptions
+No rows matched recurring_subscriptions (min_confidence=0.5, status=active).
 ```
 
-Empty — no rows and no output line. `--status` defaults to `active`, and a stream counts as active while its last charge is within 60 days or two cadence intervals, whichever is longer; the demo's data ends on the last December 31, and this transcript was captured in September, when every stream had lapsed — rerun the demo in January and the same command lists them as active. On live data the default is what you want. Here, ask for everything:
+No rows, and the command names the filters it searched. `--status` defaults to `active`, and a stream counts as active while its last charge is within 60 days or two cadence intervals, whichever is longer; the demo's data ends on the last December 31, and this transcript was captured in September, when every stream had lapsed — rerun the demo in January and the same command lists them as active. On live data the default is what you want. Here, ask for everything:
 
 ```console
 $ uv run moneybin reports recurring-subscriptions --status all
@@ -195,16 +198,16 @@ $ uv run moneybin reports merchant-activity --top 10
 ┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━┓
 ┃ merchant_normalized ┃ currency_code ┃ last_seen  ┃ txn_count ┃ total_spend ┃
 ┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━┩
-│ (uncategorized)     │ USD           │ 2025-12-30 │ 413       │   89,334.18 │
-│ Mortgage Payment    │ USD           │ 2025-12-01 │ 36        │   75,600.00 │
-│ Auto Insurance      │ USD           │ 2025-12-05 │ 36        │    6,660.00 │
-│ Costco              │ USD           │ 2025-12-10 │ 45        │    6,441.18 │
-│ Electric Company    │ USD           │ 2025-12-15 │ 36        │    5,492.22 │
-│ Phone Plan          │ USD           │ 2025-12-08 │ 36        │    5,220.00 │
-│ Trader Joe's        │ USD           │ 2025-12-29 │ 54        │    3,260.58 │
-│ Internet Service    │ USD           │ 2025-12-10 │ 36        │    3,204.00 │
-│ Apple Store         │ USD           │ 2025-12-11 │ 21        │    3,147.23 │
-│ Gas Utility         │ USD           │ 2025-12-18 │ 36        │    3,110.78 │
+│ (uncategorized)     │ USD           │ 2025-12-30 │       413 │   89,334.18 │
+│ Mortgage Payment    │ USD           │ 2025-12-01 │        36 │   75,600.00 │
+│ Auto Insurance      │ USD           │ 2025-12-05 │        36 │    6,660.00 │
+│ Costco              │ USD           │ 2025-12-10 │        45 │    6,441.18 │
+│ Electric Company    │ USD           │ 2025-12-15 │        36 │    5,492.22 │
+│ Phone Plan          │ USD           │ 2025-12-08 │        36 │    5,220.00 │
+│ Trader Joe's        │ USD           │ 2025-12-29 │        54 │    3,260.58 │
+│ Internet Service    │ USD           │ 2025-12-10 │        36 │    3,204.00 │
+│ Apple Store         │ USD           │ 2025-12-11 │        21 │    3,147.23 │
+│ Gas Utility         │ USD           │ 2025-12-18 │        36 │    3,110.78 │
 └─────────────────────┴───────────────┴────────────┴───────────┴─────────────┘
 5 of 14 columns shown — --wide for all
 ```
@@ -219,14 +222,14 @@ $ uv run moneybin reports large-transactions --top 10
 ┃ account_name              ┃ description          ┃ currency_code ┃ txn_date   ┃    amount ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
 │ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-02-28 │ +4,455.78 │
-│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-01-03 │ +4,455.78 │
+│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-09-26 │ +4,455.78 │
+│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-12-19 │ +4,455.78 │
 │ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-07-04 │ +4,455.78 │
+│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-07-18 │ +4,455.78 │
+│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-11-21 │ +4,455.78 │
 │ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-04-25 │ +4,455.78 │
-│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-06-20 │ +4,455.78 │
-│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-08-29 │ +4,455.78 │
-│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-12-05 │ +4,455.78 │
-│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-06-06 │ +4,455.78 │
-│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-10-10 │ +4,455.78 │
+│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-09-12 │ +4,455.78 │
+│ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-01-03 │ +4,455.78 │
 │ Chase Bank checking …0001 │ DIRECT DEP Acme Corp │ USD           │ 2025-01-31 │ +4,455.78 │
 └───────────────────────────┴──────────────────────┴───────────────┴────────────┴───────────┘
 5 of 13 columns shown — --wide for all
@@ -239,11 +242,11 @@ $ uv run moneybin reports large-transactions --anomaly category
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
 ┃ account_name              ┃ description      ┃ currency_code ┃ txn_date   ┃    amount ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
-│ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2024-03-01 │ −2,100.00 │
-│ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2025-10-01 │ −2,100.00 │
+│ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2025-08-01 │ −2,100.00 │
+│ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2025-04-01 │ −2,100.00 │
+│ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2023-07-01 │ −2,100.00 │
+│ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2024-05-01 │ −2,100.00 │
 │ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2023-11-01 │ −2,100.00 │
-│ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2025-01-01 │ −2,100.00 │
-│ Chase Bank checking …0001 │ Mortgage Payment │ USD           │ 2025-12-01 │ −2,100.00 │
 └───────────────────────────┴──────────────────┴───────────────┴────────────┴───────────┘
 5 of 13 columns shown — --wide for all
 ```
@@ -254,18 +257,21 @@ Twenty-five rows come back on this persona (the default `--top`); twenty are tri
 
 ```console
 $ uv run moneybin reports balance-drift
-› Rerun reports(report_id='core:balance_drift', parameters={'status': 'drift'}) to show drift rows
+No rows matched balance_drift (status=all).
+› Filtering to one account: moneybin reports balance-drift --account '<name or id>'
+› Showing drift rows: moneybin reports balance-drift --status drift
 ```
 
-Empty on the demo, because drift needs an assertion: a balance you typed from a statement, recorded with `accounts balance assert`. Each assertion becomes one row comparing the asserted figure to the balance the transactions imply on that date, bucketed `clean`, `warning`, `drift`, `no-data`, or `currency-mismatch`. It is the report that tells you an import is missing rows.
+No rows on the demo, because drift needs an assertion: a balance you typed from a statement, recorded with `accounts balance assert`. Each assertion becomes one row comparing the asserted figure to the balance the transactions imply on that date, bucketed `clean`, `warning`, `drift`, `no-data`, or `currency-mismatch`. It is the report that tells you an import is missing rows.
 
 ### Realized FX
 
 ```console
 $ uv run moneybin reports realized-fx --currency EUR --coverage complete
+No rows matched realized_fx (currency=EUR, coverage=complete).
 ```
 
-Empty on the demo, because the family persona holds only USD accounts and
+No rows on the demo, because the family persona holds only USD accounts and
 never converts currency — no Currency lot is ever consumed. Each complete row
 is one consumed Currency lot from a deliberate conversion, so
 one disposal can produce several rows with different acquisition dates and bases.
@@ -292,7 +298,7 @@ same report is available to an agent as
 - **Default columns.** A text table shows the columns that answer the question; the footer (`5 of 12 columns shown — --wide for all`) counts the rest. `--wide` renders all of them on every report command and on `reports run`. JSON always carries all of them.
 - **Signs.** `spending-trend`, `merchant-activity`, and `recurring-subscriptions` report outflow as positive absolute amounts. `cash-flow`, `large-transactions`, and every transaction listing are signed: negative is money out.
 - **Currency.** Every ordinary built-in row carries a `currency_code`, and a built-in never blends two known currencies into one figure; `realized_fx` additionally names `home_currency` because its row is deliberately mixed-unit. A saved report inherits whatever its own SQL does. Rows with no currency at all pool into one unknown segment and are summed together, because nothing can tell two unknowns apart; `system doctor` fails on any such account and `accounts set --currency` followed by `moneybin refresh` or `moneybin transform apply` is the fix, because the account table is rebuilt rather than read live; set them before trusting a total. A multi-currency profile gets its rows interleaved per currency, best-ranked first within each, so a capped result holds every currency that fits inside the cap — a `--limit` smaller than the number of currencies still drops some, and `summary.has_more` says the cap cut the result — a report has no page after the first, so raise the limit to see the rest. See [One display currency](#one-display-currency).
-- **The `›` lines.** Each one is the MCP tool call an assistant would make next, written out so you can read it as the CLI's own next move — with one exception: a report that masked one of its columns adds a `Run moneybin reports explain <id>` hint, which names the CLI command by design. The parameter a tool-call hint names maps to a flag on the dedicated command, not always under the same name (`from_date` is `--from`), and the [reference page](../reference/cli/reports.md) lists each command's flags.
+- **The `›` lines.** Each one is a reason followed by the CLI command that acts on it, so the line ends in something you can paste into the shell; a report that masked one of its columns adds `moneybin reports explain <id>`. A hint that names an argument writes it as a placeholder (`--category '<name>'`), and the [reference page](../reference/cli/reports.md) lists each command's flags. The same hints reach an assistant as the envelope's `actions`.
 - **Freshness.** Every built-in reads views over the canonical tables, so it reflects the last import or `moneybin refresh` the moment that finishes, and nothing is cached between runs. The one deferral is an import run with `--no-refresh`, whose rows reach the canonical tables only after `moneybin refresh` or `moneybin transform apply`. `balance-drift` has one live side: an `accounts balance assert` shows up on its next run, while the computed balance it is compared against comes from the last rebuild. A saved report is as fresh as what it reads: over `raw.*` or the `prep.*` views it sees an import at once, over `core.*` or `reports.*` it waits for that same transform.
 - **Rows, not aggregates.** When the question is "show me the transactions", `moneybin transactions list` filters by `--account`, `--from`/`--to`, `--category`, `--amount-min`/`--amount-max`, and `--description`, and `moneybin sql query` takes a `SELECT`, `WITH`, `DESCRIBE`, or `SHOW` over the `core`, `app`, `reports`, `raw`, and `prep` schemas.
 
@@ -314,8 +320,8 @@ $ uv run moneybin reports run core:net_worth_accounts
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+› The single home-currency total: moneybin reports net-worth
+› The currency-level breakdown: moneybin reports net-worth-currencies
 ```
 
 `reports explain HANDLE` runs nothing. It prints the report's description, every output column with its privacy class and where it comes from, the tables it reads, and, for a report that is a `SELECT`, the SQL in bound and template form:
@@ -348,7 +354,7 @@ Fingerprint: -
 └──────────────────┴────────────┴──────────┴──────────┘
 ```
 
-The `SQL:` and `Template:` blocks that follow the table, the closing `Withheld from the rendered SQL (classed above the lowest tier): ?1, ?2` line, and the description's second paragraph, which wraps at this width, are trimmed here. `Updated` and `Fingerprint` print `-` because a built-in has neither. The SQL reads the `reports.spending_trend` view, which the [data model](../reference/data-model.md) documents column by column, and you can run it yourself with `moneybin sql query` once you replace each `?` with a literal: the date bounds stay withheld as `?` because their values carry a privacy class, and `sql query` binds nothing. The `class` column is what decides masking when the report leaves the machine through MCP or an export. `Graduation` says whether the report could be materialized as a view of its own; `Fingerprint`, on a saved report, is a hash over the SQL text, the classes of every column it reads, and the current masking policy for each of those classes; a run whose recomputed hash differs — the SQL was rewritten, even to the same shape, or a policy moved — re-derives the classes before serving anything.
+The `SQL:` and `Template:` blocks that follow the table, the closing `Withheld from the rendered SQL (classed above the lowest tier): ?1, ?2` line, and the blank line plus the description's second paragraph, which wraps at this width, are trimmed here. `Updated` and `Fingerprint` print `-` because a built-in has neither. The SQL reads the `reports.spending_trend` view, which the [data model](../reference/data-model.md) documents column by column, and you can run it yourself with `moneybin sql query` once you replace each `?` with a literal: the date bounds stay withheld as `?` because their values carry a privacy class, and `sql query` binds nothing. The `class` column is what decides masking when the report leaves the machine through MCP or an export. `Graduation` says whether the report could be materialized as a view of its own; `Fingerprint`, on a saved report, is a hash over the SQL text, the classes of every column it reads, and the current masking policy for each of those classes; a run whose recomputed hash differs — the SQL was rewritten, even to the same shape, or a policy moved — re-derives the classes before serving anything.
 
 ## JSON
 
@@ -367,7 +373,7 @@ $ uv run moneybin reports run core:recurring_subscriptions --param status=all --
   },
   "data": [
     {
-      "merchant_id": "e3f0bb7da071",
+      "merchant_id": "189ee82b6fbe",
       "merchant_normalized": "Mortgage Payment",
       "currency_code": "USD",
       "cadence": "monthly",
@@ -411,7 +417,7 @@ A saved report is a read-only `SELECT` stored in the profile, with typed paramet
 $ uv run moneybin reports create coffee --sql "SELECT merchant_name, currency_code, SUM(amount) AS spend FROM core.fct_transactions WHERE category = \$category GROUP BY merchant_name, currency_code QUALIFY ROW_NUMBER() OVER (PARTITION BY currency_code ORDER BY spend) BETWEEN 1 AND 5 ORDER BY currency_code, spend" --param category:str --description "Top merchants in one category"
 Report saved
 Report:    coffee
-Report ID: user:rf94c75de466f
+Report ID: user:r4e8db8ea2568
 ```
 
 `currency_code` sits in the grouping key and the rank is taken within it, so a profile holding two currencies gets a top five per currency rather than one sum across both. Saving a report derives its privacy classes and checks nothing about its arithmetic, so keeping currencies apart in your own SQL is on you; the built-ins do it this same way. `--sql-file` takes the query from a file instead. Run it by name:
@@ -434,12 +440,12 @@ You never declare privacy classes. MoneyBin derives them from the SQL at save ti
 ```console
 $ uv run moneybin reports explain coffee --param "category=Food & Drink"
 Report explanation
-Report:      user:rf94c75de466f
+Report:      user:r4e8db8ea2568
 Tier:        user
 Description: Top merchants in one category
 Reads:       core.fct_transactions
 Graduation:  eligible
-Updated:     2026-09-23 23:16:12.698075
+Updated:     2026-09-27 12:01:40.543148
 Fingerprint: a5ff30ae3f62c0dd6368d61fbc135744746672b11e247952a2d8abfba8b35a71
 ┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ column        ┃ class         ┃ origin   ┃ upstream                            ┃
@@ -450,7 +456,7 @@ Fingerprint: a5ff30ae3f62c0dd6368d61fbc135744746672b11e247952a2d8abfba8b35a71
 └───────────────┴───────────────┴──────────┴─────────────────────────────────────┘
 ```
 
-The `SQL:` and `Template:` lines under that table are trimmed above; they print the saved query in bound and template form and wrap at this width.
+The `SQL:` and `Template:` lines under that table are trimmed above; they print the saved query in bound and template form, each on one line that is never wrapped or cropped however long the query is.
 
 A report may read `raw.*` or `prep.*` too, but those schemas declare classes for few columns, so masking there falls back to scanning values by shape — an account number of fewer than eight digits passes through. Keep saved reports on `core.*` and `reports.*` unless you have read [what the AI provider sees](what-the-ai-sees.md). When a derived class is stricter than the column deserves, `reports reclassify` lowers it for one column, with a `--reason`, and the change is audited.
 
@@ -461,22 +467,22 @@ $ uv run moneybin reports list --tier user
 ┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ name   ┃ report_id          ┃ tier ┃ parameters ┃ description                   ┃
 ┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ coffee │ user:rf94c75de466f │ user │ category   │ Top merchants in one category │
+│ coffee │ user:r4e8db8ea2568 │ user │ category   │ Top merchants in one category │
 └────────┴────────────────────┴──────┴────────────┴───────────────────────────────┘
 $ uv run moneybin reports set coffee --archive
 Report updated
 Report:    coffee
-Report ID: user:rf94c75de466f
+Report ID: user:r4e8db8ea2568
 $ uv run moneybin reports list --include-archived --tier user
 ┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ name   ┃ report_id          ┃ tier            ┃ parameters ┃ description                   ┃
 ┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ coffee │ user:rf94c75de466f │ user [archived] │ category   │ Top merchants in one category │
+│ coffee │ user:r4e8db8ea2568 │ user [archived] │ category   │ Top merchants in one category │
 └────────┴────────────────────┴─────────────────┴────────────┴───────────────────────────────┘
 $ uv run moneybin reports delete coffee --yes
 Report deleted
 Report:    coffee
-Report ID: user:rf94c75de466f
+Report ID: user:r4e8db8ea2568
 ```
 
 `reports set` also renames (`--name`), re-describes, and replaces the SQL or the parameters, re-deriving the privacy classes when it does. `--restore` unarchives. A delete is audited; `system audit undo` brings the report back.
@@ -499,8 +505,8 @@ $ uv run moneybin reports net-worth-accounts --display-currency EUR
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+› The single home-currency total: moneybin reports net-worth
+› The currency-level breakdown: moneybin reports net-worth-currencies
 ```
 
 Between the table and the hints the command prints the reason, two lines trimmed from the transcript above: `! no stored USD->EUR rates at all; run 'moneybin refresh' to gather them, and record one with 'moneybin fx set' if refresh reports the pair unsupported`. In JSON the same sentence is `summary.degraded_reason`. On this profile, declare the target before refreshing (`profile set display_currency_targets EUR`); refresh then gathers the direct USD→EUR pair for currencies your rows hold. You can also make EUR the home currency (`profile set home_currency EUR`, then `moneybin refresh`) or record the pair yourself with `moneybin fx set`.

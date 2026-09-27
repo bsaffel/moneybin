@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Getting started
 
 From a clean machine to a first report and a first question to your AI assistant, in eight steps: install from source, try the synthetic demo, create a profile, import one bank file, check what landed, read the first reports, categorize, and wire the MCP server into a client. Budget about an hour, most of it on your bank's download page.
@@ -77,6 +77,8 @@ home_currency:            (not set)
 display_currency_targets: (not set)
 ```
 
+Six lines are trimmed from `profile show`: the `Path:` and `Database:` labels and the two lines each of their values wrapped onto, naming the profile directory and the encrypted database file inside it.
+
 `--profile personal` on any single command does the same job for one invocation. `home_currency` stays unset until you choose one — MoneyBin never assumes USD — but the three net-worth reports price their totals into it, so a profile without one reads `net-worth` as an empty total with `unpriced_currency_count` at 1 even in a single currency; the [reports guide](reports.md#one-display-currency) says when it matters. Everything else about profiles — several of them, moving one between machines, deleting one — is in the [profiles guide](profiles.md).
 
 ## 4. Import your first file
@@ -85,14 +87,15 @@ Download a statement from your bank as OFX, QFX, or QBO — most banks list it a
 
 ```console
 $ uv run moneybin import files checking.qfx
-Import complete
-Saved:        checking.qfx — 20 rows loaded
+✓ Import complete
+Files:        1 of 1 imported
+Saved:        checking.qfx — 20 rows loaded (import f17bfebb-1fc1-4146-b015-ad2c91e259be)
 Derived data: Core tables rebuilt
-! Created account: Example Bank checking …7890 (cc9cc9bbd736)
+! Created account: Example Bank checking …7890 (b640f08f4bdc)
    Rename with 'moneybin accounts set <account_id> --display-name <name>'; if it duplicates an account you already have, 'moneybin accounts links run' proposes the merge — and if that proposes nothing, the pair shares no signal, so name it yourself with 'moneybin accounts links run <account_id> <candidate_account_id>'.
 ```
 
-Behind those three lines: the file's rows landed untouched in `raw.ofx_*`; the transforms rebuilt the canonical `core.*` tables the built-in reports read (`sql query` and a saved report can also read `raw`, `prep`, and `app` directly); matching looked for an existing account the new one duplicates (none, on a first import); categorization ran with nothing to apply yet (step 7). `Saved` counts the 20 transactions; the batch total is 22 rows — those 20 plus the account and the closing balance the file carries — and `import history` prints it next to the batch id `import revert` takes. The `!` marks attention, not failure: a new account needs a name, and the two lines saying so arrive on stderr, so `> file.txt` keeps them on screen. A two-line deprecation warning a dependency printed to stderr is trimmed from the block.
+Behind that receipt: the file's rows landed untouched in `raw.ofx_*`; the transforms rebuilt the canonical `core.*` tables the built-in reports read (`sql query` and a saved report can also read `raw`, `prep`, and `app` directly); matching looked for an existing account the new one duplicates (none, on a first import); categorization ran with nothing to apply yet (step 7). `Saved` counts the 20 transactions; the batch total is 22 rows — those 20 plus the account and the closing balance the file carries — and `import history` prints it next to the batch id `import revert` takes, the id the `Saved` line carries in parentheses. The `!` marks attention, not failure: a new account needs a name, and the two lines saying so arrive on stderr, so `> file.txt` keeps them on screen. A two-line deprecation warning a dependency printed to stderr is trimmed from the block.
 
 Imports are idempotent: the import log refuses a file it has already seen (`--force` overrides), and source ids plus content matching keep an overlapping month from double-counting. `import revert` undoes one batch.
 
@@ -111,10 +114,10 @@ $ uv run moneybin system status
 System status
 Accounts:             1
 Transactions:         20 (2026-01-02 – 2026-01-31)
-Last import:          2026-09-23
+Last import:          2026-09-27
 Matches pending:      0
 Uncategorized:        20
-Export local:exports: local; ready; write capable: True
+Export local:exports: local; ready; read-write
 ```
 
 ```console
@@ -122,27 +125,26 @@ $ uv run moneybin accounts list
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
 ┃ account                     ┃ account_id   ┃ institution  ┃ type       ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│ Example Bank checking …7890 │ cc9cc9bbd736 │ Example Bank │ depository │
+│ Example Bank checking …7890 │ b640f08f4bdc │ Example Bank │ depository │
 └─────────────────────────────┴──────────────┴──────────────┴────────────┘
 ```
 
-The display name is institution, account type, and last four. The account-number field itself leaves the process as those four digits (`****7890`) and a routing number as `*****` in every MCP response and every `--output json` result, because masking follows a field's declared class. Two things that rule does not cover: the operator commands `moneybin db query`, `db shell`, and `db ui`, which print the raw columns behind a banner saying so, and a number that rides inside a description, a note, or an import sample, which travels under that field's own class and is not scrubbed. `sql_query` reads of the `raw` and `prep` schemas fall back to a value scan that catches an unbroken run of eight or more digits and misses shorter or hyphenated ones. [What the AI provider sees](what-the-ai-sees.md#not-masked-stated-plainly) states each case. `accounts set cc9cc9bbd736 --display-name "Everyday checking"` renames it, and the twelve-character `account_id` is what every other command and the MCP tools take as a reference.
+The display name is institution, account type, and last four. The account-number field itself leaves the process as those four digits (`****7890`) and a routing number as `*****` in every MCP response and every `--output json` result, because masking follows a field's declared class. Two things that rule does not cover: the operator commands `moneybin db query`, `db shell`, and `db ui`, which print the raw columns behind a banner saying so, and a number that rides inside a description, a note, or an import sample, which travels under that field's own class and is not scrubbed. `sql_query` reads of the `raw` and `prep` schemas fall back to a value scan that catches an unbroken run of eight or more digits and misses shorter or hyphenated ones. [What the AI provider sees](what-the-ai-sees.md#not-masked-stated-plainly) states each case. `accounts set b640f08f4bdc --display-name "Everyday checking"` renames it, and the twelve-character `account_id` is what every other command and the MCP tools take as a reference.
 
 `system doctor` runs the integrity checks and says what to do about each warning:
 
 ```console
 $ uv run moneybin system doctor
 ! categorization_coverage — 100% of the transactions needing a category are uncategorized
-   › [suggested] transactions_categorize_run arguments: {"methods": ["rules", "merchants"]} — Run
-the deterministic categorization cascade (rules + merchants) to raise coverage above the 50%
-threshold. Suggested (not certain) because the cascade applies 0 rows when no active rules or
-merchant mappings match the remaining uncategorized transactions — re-run the doctor after to
-verify.
+   › Consider Run the deterministic categorization cascade (rules + merchants) to raise coverage
+above the 50% threshold. Suggested (not certain) because the cascade applies 0 rows when no active
+rules or merchant mappings match the remaining uncategorized transactions — re-run the doctor after
+to verify.: moneybin transactions categorize run --methods rules,merchants
 
 67 invariants checked across 20 transactions — 66 passing, 1 warn, 0 skipped
 ```
 
-The one warning is expected on a first import and is step 7; a warn alone keeps the exit status at 0. The `›` lines under a doctor check or a report name the MCP tool call an assistant would make next, with the equivalent flag on each command's [reference page](../reference/cli/README.md); the one exception is a report that masked one of its columns, which points at `moneybin reports explain` instead, and elsewhere a `›` line is a plain hint, such as the command to run next.
+The one warning is expected on a first import and is step 7; a warn alone keeps the exit status at 0. A `›` line is a next action: the reason first, then a `moneybin` command you can paste into the shell, documented on each command's [reference page](../reference/cli/README.md). A report that masked one of its columns points at `moneybin reports explain` the same way.
 
 ## 6. First reports
 
@@ -155,22 +157,22 @@ $ uv run moneybin reports net-worth-accounts
 └─────────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+› The single home-currency total: moneybin reports net-worth
+› The currency-level breakdown: moneybin reports net-worth-currencies
 ```
 
-A third hint, pointing at `profile set home_currency <CODE>` for converted totals, is trimmed above. Each row is an account at the latest balance the file carried, and `--wide` adds `observation_source`, which names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
+A third hint, pointing at `profile set home_currency <CODE>` for converted totals, is trimmed above: it wraps onto a second line at 100 columns. Each row is an account at the latest balance the file carried, and `--wide` adds `observation_source`, which names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
 
 ```console
 $ uv run moneybin transactions list --limit 5
 ┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
 ┃ date       ┃ description          ┃    amount ┃ currency ┃ category      ┃ account_id   ┃
 ┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━┩
-│ 2026-01-31 │ INTEREST PAID        │     +0.42 │ USD      │ Uncategorized │ cc9cc9bbd736 │
-│ 2026-01-30 │ STATE FARM INSURANCE │   −118.00 │ USD      │ Uncategorized │ cc9cc9bbd736 │
-│ 2026-01-28 │ CHIPOTLE 1188        │    −13.20 │ USD      │ Uncategorized │ cc9cc9bbd736 │
-│ 2026-01-26 │ PARKSIDE APARTMENTS  │ −1,850.00 │ USD      │ Uncategorized │ cc9cc9bbd736 │
-│ 2026-01-24 │ WHOLE FOODS MARKET   │    −92.15 │ USD      │ Uncategorized │ cc9cc9bbd736 │
+│ 2026-01-31 │ INTEREST PAID        │     +0.42 │ USD      │ Uncategorized │ b640f08f4bdc │
+│ 2026-01-30 │ STATE FARM INSURANCE │   −118.00 │ USD      │ Uncategorized │ b640f08f4bdc │
+│ 2026-01-28 │ CHIPOTLE 1188        │    −13.20 │ USD      │ Uncategorized │ b640f08f4bdc │
+│ 2026-01-26 │ PARKSIDE APARTMENTS  │ −1,850.00 │ USD      │ Uncategorized │ b640f08f4bdc │
+│ 2026-01-24 │ WHOLE FOODS MARKET   │    −92.15 │ USD      │ Uncategorized │ b640f08f4bdc │
 └────────────┴──────────────────────┴───────────┴──────────┴───────────────┴──────────────┘
 5 of 20 shown · raise --limit for more · 5 uncategorized
 ```
