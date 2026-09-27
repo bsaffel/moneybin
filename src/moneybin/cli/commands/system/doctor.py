@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
+from typing import Any, cast
 
 import typer
 
@@ -16,13 +16,62 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.protocol.envelope import build_envelope, build_error_envelope
 from moneybin.services.doctor_service import DoctorService
 
 logger = logging.getLogger(__name__)
+
+
+#: Maps the five MCP tool names doctor's recipes emit (`src/moneybin/audits/
+#: recipes/`) to the CLI argv that performs the same repair, given that
+#: action's own ``arguments``. Returns ``None`` when the arguments name
+#: nothing the CLI can express (e.g. clearing a transaction's tags to an
+#: exact empty set has no CLI primitive) — the rationale alone still prints.
+def _recovery_command(action: RecoveryAction) -> tuple[str, ...] | None:
+    args = action.arguments
+    if action.tool == "refresh_run":
+        return ("refresh",)
+    if action.tool == "system_status":
+        if args.get("sections") == ["doctor"]:
+            full = args.get("detail") == "full"
+            return ("system", "doctor", "--full") if full else ("system", "doctor")
+        return ("system", "status")
+    if action.tool == "transactions_categorize_run":
+        methods = args.get("methods")
+        if methods:
+            return (
+                "transactions",
+                "categorize",
+                "run",
+                "--methods",
+                ",".join(methods),
+            )
+        return ("transactions", "categorize", "run")
+    if action.tool == "import_revert":
+        # `import_id` is never known at recovery-construction time (the
+        # rationale tells the agent to read it from import_status); the
+        # placeholder keeps the command runnable-with-substitution.
+        return ("import", "revert", str(args.get("import_id") or "<import_id>"))
+    if action.tool == "transactions_annotate":
+        requests = cast("list[dict[str, Any]]", args.get("requests") or [])
+        if len(requests) != 1:
+            return None
+        request = requests[0]
+        if request.get("kind") == "note_delete" and request.get("note_id"):
+            return ("transactions", "notes", "delete", str(request["note_id"]))
+        # `tags_set` has no CLI equivalent when it clears to an exact set —
+        # `transactions tags remove` takes the tags to remove, not the tags
+        # a transaction should end up without.
+        return None
+    return None
+
 
 verbose_option: bool = typer.Option(
     False,
@@ -146,11 +195,17 @@ def doctor_command(
         # Quiet preserves recovery guidance needed to act on a failed check.
         recovery = result.recovery_actions or []
         for action in recovery:
-            lines.append(
-                f"   {symbols.action} [{action.confidence}] {action.tool} "
-                f"arguments: {json.dumps(action.arguments, sort_keys=True)} "
-                f"— {action.rationale}"
-            )
+            rationale = action.rationale
+            if action.confidence == "suggested":
+                rationale = f"Consider {rationale}"
+            command = _recovery_command(action)
+            if command is None:
+                lines.append(f"   {symbols.action} {rationale}")
+            else:
+                lines.append(
+                    f"   {symbols.action} {rationale}: "
+                    f"{generated_cli_command(*command)}"
+                )
 
     # Ungated by `quiet`, unlike most summary lines: once requirement 20 stops
     # narrating a passing invariant, this is the only thing a clean run prints,
@@ -159,8 +214,12 @@ def doctor_command(
     # nothing about it. It is doctor's result, not a status line about
     # producing one.
     n = len(report.invariants)
+    # A leading blank line separates the summary from the invariant lines above
+    # it — but on an all-pass, non-verbose run `lines` is still empty here, and
+    # the blank line would be the first thing the command prints (rule 1).
+    lead = "\n" if lines else ""
     summary = (
-        f"\n{n} invariants checked across {report.transaction_count:,} transactions"
+        f"{lead}{n} invariants checked across {report.transaction_count:,} transactions"
     )
     if failing:
         summary += f" — {failing} failing"

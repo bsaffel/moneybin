@@ -253,6 +253,11 @@ class ImportPerFileRow:
     # alongside `error`, so the row's effective tier is unchanged.
     details: Annotated[dict[str, Any] | None, DataClass.DESCRIPTION] = None
     sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
+    # The sign convention a tabular import guessed when every amount was
+    # positive, or None when the sign was never ambiguous. Mirrors
+    # `ImportResult.sign_assumed`; a closed vocabulary of conventions, so
+    # TXN_TYPE like the two sign flags beside it.
+    sign_assumed: Annotated[str | None, DataClass.TXN_TYPE] = None
     # True when a saved `sign=` override replayed onto this PDF, bypassing the
     # credit-card marker detector for its format.
     sign_override_replayed: Annotated[bool, DataClass.TXN_TYPE] = False

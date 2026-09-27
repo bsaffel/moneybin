@@ -441,6 +441,57 @@ class TestImportFilesCommand:
         # two signals are distinct — the False proves they aren't crossed.
         assert payload["data"]["files"][0]["sign_override_replayed"] is True
         assert payload["data"]["files"][0]["sign_correction_suggested"] is False
+        assert payload["data"]["files"][0]["sign_assumed"] is None
+
+    def test_text_mode_shows_sign_assumed_attention_line(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`sign_assumed` surfaces the attention line the log record used to.
+
+        The ambiguous-mapping log record used to be the only notice of this;
+        it is now INFO, and this line is the user-facing replacement.
+        """
+        mock_import_file.return_value = ImportResult(
+            file_path="test.ofx",
+            file_type="ofx",
+            accounts=2,
+            transactions=15,
+            sign_assumed="negative_is_expense",
+        )
+        test_file = tmp_path / "test.ofx"
+        test_file.touch()
+
+        result = runner.invoke(app, ["files", str(test_file)])
+
+        assert result.exit_code == 0, result.output
+        assert "Sign convention assumed: negative_is_expense" in result.output
+        assert "--sign negative_is_income" in result.output
+
+    def test_text_mode_omits_sign_assumed_attention_line_when_unset(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """No attention line when the sign convention was never ambiguous."""
+        mock_import_file.return_value = ImportResult(
+            file_path="test.ofx",
+            file_type="ofx",
+            accounts=2,
+            transactions=15,
+        )
+        test_file = tmp_path / "test.ofx"
+        test_file.touch()
+
+        result = runner.invoke(app, ["files", str(test_file)])
+
+        assert result.exit_code == 0, result.output
+        assert "Sign convention assumed" not in result.output
 
     def test_batch_envelope_sensitivity_medium_when_confirmation_payload_present(
         self,
@@ -1083,6 +1134,38 @@ class TestImportFilesCommand:
 
         payload = json.loads(result.stdout)
         assert payload["summary"]["sensitivity"] == "low"
+
+    def test_complete_batch_receipt_shows_checkmark_and_import_id(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A fully-imported batch gets the success checkmark and the import id.
+
+        Also asserts the files-imported summary. `import history`/`import
+        revert` use the id — a bare 'Import complete' with no id left the
+        receipt naming no way to act on what it just reported saving.
+        """
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        # _make_batch_result's default per_file already carries
+        # import_id="abc123" and rows_loaded=15 for status="imported".
+
+        result = runner.invoke(app, ["files", str(a), str(b)])
+
+        assert result.exit_code == 0, result.output
+        assert "Import complete" in result.stdout
+        assert "1 of 1 imported" in result.stdout
+        assert "abc123" in result.stdout
+        # A checkmark precedes the title text on the fully-complete outcome.
+        title_line = next(
+            line for line in result.stdout.splitlines() if "Import complete" in line
+        )
+        assert title_line.strip() != "Import complete"
 
     def test_text_mode_batch_stays_quiet_under_quiet_flag(
         self,

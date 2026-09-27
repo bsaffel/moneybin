@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import platform
 import traceback
+from dataclasses import dataclass
 from decimal import InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
@@ -60,6 +61,35 @@ class RecoveryAction(BaseModel):
     rationale: str = Field(..., min_length=1)
     confidence: Literal["certain", "suggested"]
     idempotent: bool
+
+
+@dataclass(frozen=True)
+class NextStep:
+    """One next action, authored once and rendered per surface.
+
+    A report runner (or the framework) builds one of these instead of a raw
+    hint string, so the CLI and MCP surfaces stop sharing one grammar: MCP
+    reads ``for_mcp()``, the CLI renders ``cli`` as a copyable command (see
+    ``cli_register.py`` and ``.claude/rules/cli.md`` "Next-step hints").
+    """
+
+    reason: str
+    """Prose completing '... for {reason}'; no trailing period."""
+    cli: tuple[str, ...]
+    """Argv after ``moneybin``, e.g. ``("reports", "net-worth")``."""
+    mcp: str
+    """The MCP call expression, e.g. ``"reports(report_id='core:net_worth')"``."""
+    verb: str = "Run"
+    """'Run' or 'Rerun' — used by the MCP text only."""
+
+    def for_mcp(self) -> str:
+        """The MCP envelope's ``actions[]`` string."""
+        return f"{self.verb} {self.mcp} for {self.reason}"
+
+
+def next_step_text(action: NextStep | str) -> str:
+    """The MCP-surface text for one action — a `NextStep` or a legacy string."""
+    return action.for_mcp() if isinstance(action, NextStep) else action
 
 
 class UserError(Exception):

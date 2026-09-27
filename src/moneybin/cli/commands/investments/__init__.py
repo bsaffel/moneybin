@@ -423,14 +423,14 @@ def investments_holdings(
         by_ccy = result.market_value_by_currency
         if result.total_market_value is not None:
             total = (
-                f"market_value={format_money(result.total_market_value, 'balance')} "
+                f"market_value={format_money(result.total_market_value, 'balance', minus=policy.minus)} "
                 f"{result.total_market_value_currency}"
             )
             if len(by_ccy) > 1:
                 # A converted total is an inference, so it never appears alone:
                 # the originals it was computed from print beside it.
                 split = " ".join(
-                    f"{code}={format_money(amount, 'balance')}"
+                    f"{code}={format_money(amount, 'balance', minus=policy.minus)}"
                     for code, amount in by_ccy.items()
                 )
                 total += f" (converted from {split})"
@@ -441,7 +441,7 @@ def investments_holdings(
             # tell them apart — an unset home currency wants `moneybin profile
             # set`, a missing rate wants `moneybin refresh`.
             split = " ".join(
-                f"{code}={format_money(amount, 'balance')}"
+                f"{code}={format_money(amount, 'balance', minus=policy.minus)}"
                 for code, amount in by_ccy.items()
             )
             total = (

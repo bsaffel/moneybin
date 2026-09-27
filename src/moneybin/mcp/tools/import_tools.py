@@ -219,6 +219,30 @@ def _created_account_rows(
     ]
 
 
+def sign_assumed_action(sign_assumed: str | None, import_id: str | None) -> str:
+    """The action for an import that guessed its sign convention.
+
+    The import has already committed, so "re-import with --sign" alone would
+    double-load the file: rows without source ids hash the signed amount into
+    their transaction id, and rows with source ids are ignored on re-import.
+    Revert first. The CLI's `_sign_assumed_notice` says the same to a person;
+    this is the agent's copy, naming the tool it can call.
+    """
+    revert = (
+        f"import_revert(import_id='{import_id}')"
+        if import_id
+        else "import_revert(import_id=...)"
+    )
+    return (
+        f"Sign convention assumed: {sign_assumed} (all amounts appear positive). "
+        "Tell the user; if expense amounts look wrong, revert the import with "
+        f"{revert} first — re-importing without reverting double-loads the "
+        "file — then re-run via CLI with `moneybin import files <path> "
+        "--sign negative_is_income`. MCP import_files does not accept a sign "
+        "parameter today."
+    )
+
+
 def accounts_created_action(count: int) -> str | None:
     """Tell the agent an account came into existence, and how to correct it.
 
@@ -548,6 +572,7 @@ def import_files(
                         rows_loaded=one.rows_loaded,
                         import_id=one.import_id,
                         sign_correction_suggested=one.sign_correction_suggested,
+                        sign_assumed=one.sign_assumed,
                         sign_override_replayed=one.sign_override_replayed,
                         accounts_created=one.accounts_created,
                     )
@@ -579,6 +604,7 @@ def import_files(
             hint=r.hint,
             details=r.details,
             sign_correction_suggested=r.sign_correction_suggested,
+            sign_assumed=r.sign_assumed,
             sign_override_replayed=r.sign_override_replayed,
             accounts_created=_created_account_rows(r.accounts_created),
             confirmation_payload=cast(
@@ -634,6 +660,8 @@ def import_files(
             "value) to override. MCP import_files does not accept a "
             "sign parameter today."
         )
+    for assumed in (r for r in batch.per_file if r.sign_assumed):
+        actions.append(sign_assumed_action(assumed.sign_assumed, assumed.import_id))
     if any(r.sign_override_replayed for r in batch.per_file):
         actions.append(
             "One or more statements took their sign convention from a saved "
@@ -2498,6 +2526,8 @@ async def import_confirm_coarse(
             0,
             "Sign convention may be inverted — inspect the imported amounts.",
         )
+    if result is not None and result.sign_assumed:
+        actions.insert(0, sign_assumed_action(result.sign_assumed, import_id))
     return cast(
         ResponseEnvelope[ImportConfirmCoarsePayload],
         build_classified_envelope(

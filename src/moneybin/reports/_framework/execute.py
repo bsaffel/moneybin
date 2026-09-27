@@ -25,7 +25,7 @@ from pydantic import JsonValue
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import RecoveryAction, UserError
+from moneybin.errors import NextStep, RecoveryAction, UserError, next_step_text
 from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
 from moneybin.privacy.sensitivity import tier_to_sensitivity
@@ -78,7 +78,11 @@ class ReportResult:
     tier: Tier
     total_count: int
     truncated: bool
-    actions: list[str] = field(default_factory=list)
+    #: A `NextStep` from a runner or the framework, or a legacy pre-formatted
+    #: string from a dedup caveat (`catalog.py`'s `pending_dedup_caveat`,
+    #: sourced outside this module's allotment) — `next_step_text` renders
+    #: either for the MCP envelope.
+    actions: list[NextStep | str] = field(default_factory=list)
     period: str | None = None
     # Unknown, never a currency: a result built without one has not been told a
     # denomination, and a literal here would speak for every report that never
@@ -122,7 +126,7 @@ class ReportResult:
             total_count=self.total_count,
             returned_count=len(self.records),
             classes_returned=self.classes_returned,
-            actions=self.actions or None,
+            actions=[next_step_text(action) for action in self.actions] or None,
             period=self.period,
             display_currency=self.display_currency,
             degraded=self.degraded,
@@ -161,7 +165,8 @@ class CatalogReportExecution:
     tier: Tier
     total_count: int
     truncated: bool
-    actions: list[str]
+    #: See ``ReportResult.actions`` for the ``NextStep | str`` split.
+    actions: list[NextStep | str]
     period: str | None
     semantics: ReportSemantics
     provenance: tuple[str, ...]
@@ -453,7 +458,7 @@ def build_catalog_result(
     records: list[dict[str, Any]],
     columns: list[str],
     max_rows: int,
-    actions: list[str] | None = None,
+    actions: list[NextStep | str] | None = None,
     period: str | None = None,
 ) -> CatalogReportResult:
     """Redact and truncate tabular rows using the shared report rules."""
@@ -480,7 +485,7 @@ def build_catalog_execution(
     columns: list[str],
     column_types: list[str],
     max_rows: int | None,
-    actions: list[str] | None = None,
+    actions: list[NextStep | str] | None = None,
     period: str | None = None,
     defer_truncation: bool = False,
 ) -> CatalogReportExecution:
@@ -574,30 +579,35 @@ def masked_columns(output_classes: Mapping[str, DataClass]) -> tuple[str, ...]:
     )
 
 
-def inspection_hint(report_id: str, columns: tuple[str, ...]) -> str:
+def inspection_hint(report_id: str, columns: tuple[str, ...]) -> NextStep:
     """R3's masked-output hint — a ``'*****'`` with no explanation is a two-call fix.
 
     Names the CLI command, not an MCP tool: R3 requires the hint bind only to an
     admitted surface, the verify surface has no MCP identity, and pointing an
-    agent at a tool that does not exist is worse than saying nothing.
+    agent at a tool that does not exist is worse than saying nothing — so
+    ``mcp`` carries the same CLI command an MCP-side agent is told to run.
     """
-    return (
-        f"Run `moneybin reports explain {report_id}` to see the derived class of "
-        f"each column and why {', '.join(columns)} "
-        f"{'is' if len(columns) == 1 else 'are'} masked"
+    return NextStep(
+        reason=(
+            f"the derived class of each column and why {', '.join(columns)} "
+            f"{'is' if len(columns) == 1 else 'are'} masked"
+        ),
+        cli=("reports", "explain", report_id),
+        mcp=f"moneybin reports explain {report_id}",
     )
 
 
 #: The unset-home-currency hint. A profile that never chose one — every new
 #: profile — reads a converting report as a NULL total beside an unpriced
 #: count, and nothing else on the response names the setting that fills it.
-HOME_CURRENCY_HINT = (
-    "Run `moneybin profile set home_currency <CODE>` to get converted totals; "
-    "this profile has no usable home currency"
+#: "no usable" rather than "none set": `_conversion_target` falls back to None on
+#: a stored code that fails validation too, so a profile with a malformed setting
+#: reaches this hint with one set. Both states have the same remedy.
+HOME_CURRENCY_HINT = NextStep(
+    reason="converted totals; this profile has no usable home currency",
+    cli=("profile", "set", "home_currency", "<CODE>"),
+    mcp="profile_set(home_currency='<CODE>')",
 )
-# "no usable" rather than "none set": `_conversion_target` falls back to None on
-# a stored code that fails validation too, so a profile with a malformed setting
-# reaches this hint with one set. Both states have the same remedy.
 
 
 def home_basis_columns(columns: Sequence[OutputColumn]) -> set[str]:
