@@ -13,7 +13,8 @@ Tier derivation summary:
   - ``SyncLinkPayload``               → Tier.MEDIUM (link_url = DESCRIPTION —
                                         link is a sensitive one-time credential)
   - ``SyncLinkStatusPayload``         → Tier.MEDIUM (error = DESCRIPTION)
-  - ``SyncDisconnectPayload``         → Tier.LOW (INSTITUTION + TXN_TYPE only)
+  - ``SyncDisconnectPayload``         → Tier.LOW (INSTITUTION + TXN_TYPE +
+                                        RECORD_ID only)
   - ``SyncSchedulePlaceholderPayload``→ Tier.LOW (stub; not-implemented payloads)
 """
 
@@ -131,6 +132,7 @@ class SyncConnectionRow:
     provider: Annotated[str, DataClass.INSTITUTION]
     status: Annotated[str, DataClass.TXN_TYPE]
     last_sync: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    created_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
     error_code: Annotated[str | None, DataClass.TXN_TYPE]
     guidance: Annotated[str | None, DataClass.DESCRIPTION]
 
@@ -259,12 +261,17 @@ SyncStatusCoarsePayload = Annotated[
 class SyncDisconnectPayload:
     """Payload for ``sync_disconnect`` — confirmation of disconnection.
 
-    Both fields are Tier.LOW: ``status`` is a fixed string (TXN_TYPE),
-    ``institution`` is caller-supplied institution name (INSTITUTION).
+    ``status`` is a fixed string (TXN_TYPE), ``institution`` is the
+    caller-supplied institution name (INSTITUTION), ``None`` when the
+    disconnected connection has no name, and ``provider_item_id`` identifies
+    exactly which connection was removed (RECORD_ID) — needed because two
+    same-named connections (e.g. after a relink) share the same
+    ``institution`` value.
     """
 
     status: Annotated[str, DataClass.TXN_TYPE]
-    institution: Annotated[str, DataClass.INSTITUTION]
+    institution: Annotated[str | None, DataClass.INSTITUTION]
+    provider_item_id: Annotated[str, DataClass.RECORD_ID]
 
 
 class SyncInstitutionDisconnectView(BaseModel):
@@ -274,7 +281,8 @@ class SyncInstitutionDisconnectView(BaseModel):
 
     kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
     status: Annotated[Literal["disconnected"], DataClass.TXN_TYPE]
-    institution: Annotated[str, DataClass.INSTITUTION]
+    institution: Annotated[str | None, DataClass.INSTITUTION]
+    provider_item_id: Annotated[str, DataClass.RECORD_ID]
 
 
 class SyncLogoutView(BaseModel):

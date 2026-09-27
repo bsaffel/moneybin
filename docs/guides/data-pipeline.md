@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-17 -->
+<!-- Last reviewed: 2026-09-23 -->
 # Data Pipeline
 
 Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. Each section below takes one layer and gives its writer, its models as they are spelled in the repo, and the surface a consumer reads it from.
@@ -241,24 +241,25 @@ and review. Transfer detection uses `transfer_review_threshold` instead.
 
 ```console
 $ uv run moneybin transactions matches pending
-Using profile: demo
-
-── component bfa2535a3612 (1 edge(s)) ──
+Pending matches
+Scope: Showing 50 of 108 pending matches
+Component: 0040b941401a (1 edge(s))
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━┓
 ┃ match id     ┃ type     ┃ tier ┃ score ┃ type a ┃ type b ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━┩
-│ bfa2535a3612 │ transfer │ -    │ 0.92  │ ofx    │ csv    │
+│ 0040b941401a │ transfer │ -    │ 0.92  │ ofx    │ ofx    │
 └──────────────┴──────────┴──────┴───────┴────────┴────────┘
-
-── component 4fe64d06652c (1 edge(s)) ──
+Component: 04b8894424aa (1 edge(s))
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━┓
 ┃ match id     ┃ type     ┃ tier ┃ score ┃ type a ┃ type b ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━┩
-│ 4fe64d06652c │ transfer │ -    │ 0.92  │ ofx    │ ofx    │
+│ 04b8894424aa │ transfer │ -    │ 0.92  │ ofx    │ csv    │
 └──────────────┴──────────┴──────┴───────┴────────┴────────┘
+More pending matches remain; raise --limit to review them.
+Use 'moneybin transactions matches set <match-id> --status accepted|rejected' to decide a match.
 ```
 
-`--limit` defaults to 50, so this run shows the first 50 pending matches on this profile; the 48 components not shown have the same shape, and every one on this page is `type = transfer`. Raise `--limit` to read the rest of the queue.
+`--limit` defaults to 50, so this run reads the first 50 of 108 pending matches on this profile, and the `Scope:` line says so. The 48 components between the second one and the closing two lines are trimmed above; they have the same shape, and every one of the 50 is `type = transfer`. Raise `--limit` to read the rest of the queue.
 
 Notably **not** part of the comparison: payee fuzzy match (description similarity does the work), merchant ID, category, or any field that the matcher itself is supposed to harmonize downstream. Dedup is identity, not normalization.
 
@@ -296,33 +297,37 @@ Both share the `app.match_decisions` table — `match_type = 'dedup'` versus `ma
 
 `refresh` is the post-load cascade: gsheet → match → investment_match → transform → categorize → identity → rates. Idempotent. Safe to retry. It's the right answer when you want derived state to catch up with new raw data.
 
-Run with no arguments and every stage reports itself, whether or not it found work:
+Run with no arguments and every stage reports itself in the receipt, whether or not it found work. The six lines above the receipt are the stage labels, written to stderr as each stage starts; everything from `✓ Refresh complete` down is the receipt on stdout:
 
 ```console
 $ uv run moneybin refresh
-Using profile: demo
-Running transforms
-Transforms completed in 7.06s
-Account-link backfill wrote 0 new pending decisions
-Merchant linking complete: 0 linked automatically, 0 sent for review.
-Pipeline:
-  Sheets: 0 pulled, 0 rows
-  Matching: 0 merged, 0 to review, 0 transfers to review
-  Transforms: rebuilt
-  Categorization: 0 categorized (0 merchant, 0 rule, 0 provider)
-  Identity: 0 accounts linked, 0 merchants bound
-  Rates: skipped (nothing examined)
-✅ Refresh complete in 7.06s
+Refreshing spreadsheets
+Matching transactions
+Applying reports
+Categorizing transactions
+Resolving identities
+Refreshing exchange rates
+✓ Refresh complete
+Outcome:          Requested refresh steps completed
+gsheet:           Sheets: 0 pulled, 0 rows
+match:            Matching: 0 merged, 0 to review, 0 transfers to review
+investment_match: Investment matching: 0 unique, 0 competing, 0 stale, 0 suppressed
+transform:        Transforms: rebuilt
+categorize:       Categorization: 0 categorized (0 merchant, 0 rule, 0 provider, 0 source map)
+identity:         Identity: 0 accounts linked, 0 merchants bound
+rates:            Rates: skipped (nothing examined)
 ```
 
-`--step` narrows the cascade, and the summary shrinks to the steps that ran:
+The receipt carries no duration. Stage timings are verbose-only, so `--verbose` is where a slow run gets attributed.
+
+`--step` narrows the cascade, and the receipt shrinks to the steps that ran:
 
 ```console
 $ uv run moneybin refresh --step match
-Using profile: demo
-Pipeline:
-  Matching: 0 merged, 0 to review, 0 transfers to review
-✅ Partial refresh complete (steps: match)
+Matching transactions
+✓ Refresh complete
+Outcome: Requested refresh steps completed
+match:   Matching: 0 merged, 0 to review, 0 transfers to review
 ```
 
 `--step` is repeatable and runs its steps in cascade order regardless of the order you pass them. The flag list and every other option live in [`docs/reference/cli/refresh.md`](../reference/cli/refresh.md), generated from the command itself.
@@ -457,11 +462,10 @@ Run through `db query`, one row per (source, month):
 
 ```console
 $ uv run moneybin db query "SELECT source_type, date_trunc('month', transaction_date) AS month, count(*) AS row_count, sum(amount) AS net_amount, sum(amount_absolute) AS gross_amount FROM core.fct_transactions GROUP BY 1, 2 ORDER BY 1, 2;"
-⚠️  Direct DB access — no privacy middleware applies.
+! Direct DB access - no privacy middleware applies.
    Account numbers and sensitive fields are NOT masked here.
    For agent-mediated access with privacy enforcement, use:
      moneybin sql query "<your SQL>"
-Using profile: demo
 +-------------+---------------------+-----------+------------+--------------+
 | source_type |        month        | row_count | net_amount | gross_amount |
 +-------------+---------------------+-----------+------------+--------------+
@@ -474,7 +478,7 @@ Using profile: demo
 +-------------+---------------------+-----------+------------+--------------+
 ```
 
-The full result is 72 rows — two source types over 36 months — and the last 66 are trimmed above. Read `net_amount` per source, not across them: on this profile all 36 CSV months net to `0.00` and none of the 36 OFX months does — a property of this synthetic profile, not a reconciliation result.
+The full result is 72 rows — two source types over 36 months — and the last 66 are trimmed above, along with the DuckDB CLI's `-- Loading resources from <path>` stderr line. Read `net_amount` per source, not across them: on this profile all 36 CSV months net to `0.00` and none of the 36 OFX months does — a property of this synthetic profile, not a reconciliation result.
 
 `source_type` here reflects the canonical (highest-priority) source of each gold row; matched rows count once. To trace the full provenance — including which sources merged into each row and how many contributed — join through `meta.fct_transaction_provenance`:
 
@@ -499,44 +503,51 @@ Compare these counts against your source-file row counts (the per-file totals in
 
 ```console
 $ uv run moneybin import status
-Using profile: demo
-
-Imported Data Summary
-============================================================
-  raw.exchange_rates: 0 rows
-  raw.gsheet_seeds: 0 rows
-  raw.import_preview_snapshots: 0 rows
-  raw.manual_investment_transactions: 0 rows
-  raw.manual_transactions: 0 rows
-  raw.ofx_accounts: 2 rows
-  raw.ofx_balances: 2 rows
-  raw.ofx_institutions: 0 rows
-  raw.ofx_transactions: 1,381 rows  (2023-01-01 to 2025-12-31)
-  raw.pdf_seeds: 0 rows
-  raw.plaid_accounts: 0 rows
-  raw.plaid_balances: 0 rows
-  raw.plaid_transactions: 0 rows
-  raw.tabular_accounts: 2 rows
-  raw.tabular_transactions: 1,505 rows  (2023-01-06 to 2025-12-31)
+Imported data summary
+Tables:   21
+Records:  2,892 rows
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ table                                     ┃ rows ┃ first date ┃ last date  ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ raw.exchange_rates                        │ 0    │ -          │ -          │
+│ raw.gsheet_seeds                          │ 0    │ -          │ -          │
+│ raw.import_preview_snapshots              │ 0    │ -          │ -          │
+│ raw.manual_investment_transactions        │ 0    │ -          │ -          │
+│ raw.manual_transactions                   │ 0    │ -          │ -          │
+│ raw.ofx_accounts                          │ 2    │ -          │ -          │
+│ raw.ofx_balances                          │ 2    │ -          │ -          │
+│ raw.ofx_transactions                      │ 1381 │ 2023-01-01 │ 2025-12-31 │
+│ raw.pdf_seeds                             │ 0    │ -          │ -          │
+│ raw.plaid_accounts                        │ 0    │ -          │ -          │
+│ raw.plaid_balances                        │ 0    │ -          │ -          │
+│ raw.plaid_investment_holding_lots         │ 0    │ -          │ -          │
+│ raw.plaid_investment_holdings             │ 0    │ -          │ -          │
+│ raw.plaid_investment_holdings_snapshots   │ 0    │ -          │ -          │
+│ raw.plaid_investment_transaction_receipts │ 0    │ -          │ -          │
+│ raw.plaid_investment_transactions         │ 0    │ -          │ -          │
+│ raw.plaid_securities                      │ 0    │ -          │ -          │
+│ raw.plaid_transactions                    │ 0    │ -          │ -          │
+│ raw.security_prices                       │ 0    │ -          │ -          │
+│ raw.tabular_accounts                      │ 2    │ -          │ -          │
+│ raw.tabular_transactions                  │ 1505 │ 2023-01-06 │ 2025-12-31 │
+└───────────────────────────────────────────┴──────┴────────────┴────────────┘
 ```
 
-A raw table at `0 rows` is not an error — it is a source this profile has never used. Seven zero-row investment, securities, and price tables are trimmed from the listing above for the same reason.
+A raw table at `0 rows` is not an error — it is a source this profile has never used; 16 of the 21 are in that state here. Three lines are trimmed above: the `Database:` label and the two lines its absolute path wrapped onto.
 
 `system doctor` is the assertion-level check. It reports the number of invariants it ran and the number of transactions it ran them over, and says nothing else when they all hold:
 
 ```console
 $ uv run moneybin system doctor
-Using profile: demo
-
-65 invariants checked across 2,886 transactions — all passing
+67 invariants checked across 2,886 transactions — all passing
 ```
 
 ## What is not built yet
 
-- **No per-step progress from `refresh`.** The command returns when the whole cascade finishes or fails; there is no incremental signal while it runs. Run `moneybin logs cli --follow` in a second terminal if you need to see where a long run is, or drive the stages one at a time with `--step` so each returns its own summary.
+- **Stage labels, not progress, from `refresh`.** The CLI writes one label to stderr as each stage starts — the six lines above the receipt in the transcript earlier on this page — so a long run tells you which stage it is in. There is no count, percentage, or elapsed figure inside a stage, and MCP `refresh_run` returns only when the whole cascade finishes or fails. Run `moneybin logs cli --follow` in a second terminal for more detail, or drive the stages one at a time with `--step` so each returns its own receipt.
 - **`moneybin review --interactive` is not built.** The bare `moneybin review --type matches` reports the count and `--confirm <match_id>` / `--confirm-all` act on it; there is no item-by-item walk. List candidates with `moneybin transactions matches pending` and confirm by id.
 - **Concurrent `refresh` is not supported.** DuckDB is single-writer per file: a second `refresh` against the same database retries on backoff until the 10 s write-lock budget elapses, then raises `DatabaseLockError`. Run one driver at a time; queue imports and let a single `refresh` settle them.
-- **`moneybin refresh --step` cannot select `gsheet`.** The CLI's five selectable steps are `match`, `transform`, `categorize`, `identity`, and `rates`; MCP `refresh_run(steps=[...])` accepts all six. Use `moneybin gsheet pull` to request a sheet pull from the CLI.
+- **`moneybin refresh --step` cannot select `gsheet`.** The CLI's six selectable steps are `match`, `investment_match`, `transform`, `categorize`, `identity`, and `rates`; MCP `refresh_run(steps=[...])` accepts all seven. Use `moneybin gsheet pull` to request a sheet pull from the CLI.
 
 ## Where to go from here
 

@@ -5,7 +5,7 @@ MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Pa
 
 When the same account arrives from more than one source (a QFX and a CSV, history files plus Plaid), MoneyBin collapses them into one canonical account, and stops to ask when the signal is weak. The signal-by-signal breakdown — and what each file format provides — is in [Account Matching](../reference/account-matching.md).
 
-The transcripts below were captured against an isolated profile on 2026-09-22, using three synthetic files: a CSV with a non-obvious column layout, an "Example Bank" OFX, and an unreadable text file. The CSV also exercises an unknown format name. Commands ran from the fixture directory at 100 columns with color disabled and non-interactive input. Where both streams are shown, stdout precedes stderr. Trailing spaces are removed. Trims are noted; `import history` was captured before the forced re-import under [For scripts and agents](#for-scripts-and-agents).
+The transcripts below were captured against an isolated profile on 2026-09-22, using three synthetic files: a CSV with a non-obvious column layout, an "Example Bank" OFX, and an unreadable text file. The CSV also exercises an unknown format name. Commands ran from the fixture directory at 100 columns with color disabled and non-interactive input. Where both streams are shown, stdout precedes stderr. Trims are noted; `import history` was captured before the forced re-import under [For scripts and agents](#for-scripts-and-agents).
 
 ## Before you import
 
@@ -76,12 +76,10 @@ No named format profile. `--format maybe` is refused, naming what does exist:
 ```console
 $ moneybin import files checking.csv --format maybe
 Import incomplete
-Failed: checking.csv — Unknown format 'maybe'. Available: ['everyday-checking', 'mint', 'tiller',
-'ynab']
 Import failed for one file: ValueError
 ```
 
-(`everyday-checking` in that list is a user-saved format this profile picked up earlier in the guide, not a built-in.) Maybe Finance's CSV export goes through the generic tabular path below — omit `--format` and confirm the detected mapping once.
+The `Failed:` line is trimmed above because it wraps at this width; it names the unknown format and the four available ones, `everyday-checking`, `mint`, `tiller`, and `ynab`. (`everyday-checking` is a user-saved format this profile picked up earlier in the guide, not a built-in.) Maybe Finance's CSV export goes through the generic tabular path below — omit `--format` and confirm the detected mapping once.
 
 ### Lunch Money
 

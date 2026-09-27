@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-09-23 -->
 # Direct SQL Access
 
 MoneyBin stores your finances in an encrypted DuckDB file. Any DuckDB client that supplies the encryption key on `ATTACH` reads that file with ordinary SQL, with no MoneyBin process in the path. This guide covers the read-only surface, how to connect from external tools, and the patterns that hold up across releases.
@@ -48,11 +48,10 @@ Output is governed by `-o, --output {text,json}` (only two formats — not `db q
 
 ```console
 $ uv run moneybin db query "SELECT year_month, total_spend FROM reports.spending_trend WHERE category = 'Food & Drink' ORDER BY year_month DESC LIMIT 12" --output json
-⚠️  Direct DB access — no privacy middleware applies.
+! Direct DB access - no privacy middleware applies.
    Account numbers and sensitive fields are NOT masked here.
    For agent-mediated access with privacy enforcement, use:
      moneybin sql query "<your SQL>"
-Using profile: demo
 [{"year_month":"2025-12","total_spend":"967.39"},
 {"year_month":"2025-11","total_spend":"991.80"},
 {"year_month":"2025-10","total_spend":"1058.10"},
@@ -66,6 +65,8 @@ Using profile: demo
 {"year_month":"2025-02","total_spend":"1390.84"},
 {"year_month":"2025-01","total_spend":"876.71"}]
 ```
+
+One line is trimmed above: the DuckDB CLI's own `-- Loading resources from <path>` notice, which names the generated init script's temporary path on stderr.
 
 `DECIMAL` columns — MoneyBin's money type, `DECIMAL(18,2)` on every amount — serialize as JSON **strings**, not numbers: DuckDB's `-json` formatter preserves exact decimal precision rather than risk a double-precision float rounding a cent away. Plain `INTEGER`/`DOUBLE` columns serialize as ordinary JSON numbers. `jq` consumers need `tonumber` before arithmetic on a money column. Dates serialize as `"2026-04-15"`; timestamps serialize space-separated, not `T`-separated (`"2026-04-15 10:23:00"`, not ISO 8601's `"2026-04-15T10:23:00"`). SQL `NULL` serializes as JSON `null` with the key still present. The whole result is buffered before any byte hits stdout — large result sets allocate memory on both DuckDB's side and yours; add an explicit `LIMIT` or stream via `COPY ... TO '/tmp/out.parquet'` from `db shell` for big extracts.
 
@@ -186,7 +187,7 @@ Then point the downstream tool at the Parquet file. **Never share the live encry
 
 | Path | Error surface |
 |---|---|
-| `sql query` | Rejected, unparseable, out-of-scope, unknown-table, or failed queries raise a classified error (`error_codes.SQL_*`): a structured JSON error envelope on stdout with `--output json`, a ❌-prefixed message otherwise. Exit `1` either way. |
+| `sql query` | Rejected, unparseable, out-of-scope, unknown-table, or failed queries raise a classified error (`error_codes.SQL_*`): a structured JSON error envelope on stdout with `--output json`, a `×`-prefixed message on stderr otherwise. Exit `1` either way. |
 | `db query` | DuckDB error to stderr, exit `1`. No JSON envelope on error path. |
 | `db shell` / `db ui` | DuckDB error printed inline in the shell; subprocess exit `1` on hard failure. |
 | External `duckdb` Python | Raises `duckdb.Error` (or specific subclasses like `duckdb.IOException`, `duckdb.InvalidInputException`, `duckdb.CatalogException`, `duckdb.BinderException`). A wrong `ENCRYPTION_KEY` surfaces as a generic decryption / IO error — DuckDB doesn't distinguish bad-key from corrupt-file. |
@@ -248,14 +249,16 @@ The MCP `sql_query` tool and the `moneybin sql query` CLI command are the agent-
 - **Time cap:** `mcp.tool_timeout_seconds` (default **30 s**), applied by the MCP tool decorator only — `moneybin sql query` has no equivalent wall-clock cap. On MCP timeout the active DuckDB statement is interrupted.
 - **Sensitivity tier:** derived per call from the columns your query returns (the max class among them). Every MCP call, and every CLI call made with `--output json`, is recorded to the per-call privacy log (`privacy.log.jsonl`) with the tool name, tier, returned data classes, and row count — **not** the query text and **not** row content. `moneybin sql query` under its default `--output text` writes no privacy event: the text branch returns before the audit write. Pass `--output json` when the query needs to land in the log. CRITICAL columns (account/routing numbers) are masked identically on both surfaces: account identifiers keep the last four digits (`****1234`), routing numbers are masked in full (`*****`, no digits retained). An output column the classifier can't resolve fails closed to the most-sensitive treatment. An output column drawing from more than one source — a `UNION` branch, a `COALESCE`, a `CASE` arm — takes whichever of its inputs masks hardest, so mixing a `prep` column into a `core` projection keeps the value-shape scan on the result. There is no consent-grant requirement today (the consent ledger records but does not gate). See [What the AI Provider Sees](what-the-ai-sees.md).
 
-A `raw` read shows the masking in place. `account_id` is one of the ten declared names, so it comes back as its last four; `routing_number` holds no value on this profile; `account_type` carries no digit run for the value-shape scan to catch and arrives as stored:
+A `raw` read shows the masking in place. `account_id` is one of the nine declared names, so it comes back as its last four; `routing_number` holds no value on this profile and renders as an empty cell; `account_type` carries no digit run for the value-shape scan to catch and arrives as stored:
 
 ```console
 $ uv run moneybin sql query "SELECT account_id, routing_number, account_type FROM raw.ofx_accounts ORDER BY account_id"
-Using profile: demo
-account_id | routing_number | account_type
-****0001 | None | CHECKING
-****0002 | None | SAVINGS
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ account_id ┃ routing_number ┃ account_type ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━┩
+│ ****0001   │                │ CHECKING     │
+│ ****0002   │                │ SAVINGS      │
+└────────────┴────────────────┴──────────────┘
 ```
 
 For schema-aware composition without burning tokens on the full catalog, call `sql_schema(table=None)` first (compact catalog) and then `sql_schema(table='core.fct_transactions')` for the table you need.

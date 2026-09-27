@@ -120,7 +120,7 @@ class TestDBInit:
 
     With null keyring (E2E default), db init stores the generated key
     as a no-op. The Database constructor falls through to the env var
-    MONEYBIN_DATABASE__ENCRYPTION_KEY which we set to a fixed test key.
+    MONEYBIN_PROFILE__INITAUTO__DATABASE__ENCRYPTION_KEY which we set to a fixed test key.
     This tests the init workflow end-to-end without touching the real
     system keychain.
     """
@@ -129,7 +129,7 @@ class TestDBInit:
         env = {
             "MONEYBIN_HOME": str(tmp_path),
             "MONEYBIN_PROFILE": "initauto",
-            "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
+            "MONEYBIN_PROFILE__INITAUTO__DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
         }
         run_cli("profile", "create", "initauto", env=env)
         result = run_cli("db", "init", "--yes", env=env)

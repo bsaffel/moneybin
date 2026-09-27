@@ -16,6 +16,7 @@ from collections.abc import Callable
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
@@ -26,6 +27,7 @@ from moneybin.connectors.sync_models import (
     SyncDataResponse,
 )
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.investments.source_overlap import investment_source_overlap
@@ -105,8 +107,9 @@ class SyncService:
         ``docs/specs/sync-plaid.md`` Req 10 for the latency profile.
         """
         if institution is not None and provider_item_id is not None:
-            raise ValueError(
-                "institution and provider_item_id are mutually exclusive — pass one or neither"
+            raise UserError(
+                "institution and provider_item_id are mutually exclusive — pass one or neither",
+                code=error_codes.MUTATION_INVALID_INPUT,
             )
         if provider_item_id is None and institution is not None:
             provider_item_id = self._resolve_institution(institution)
@@ -454,6 +457,7 @@ class SyncService:
                 provider=i.provider,
                 status=i.status,
                 last_sync=i.last_sync,
+                created_at=i.created_at,
                 error_code=i.error_code,
                 guidance=self._guidance_for(
                     status=i.status,
@@ -464,29 +468,68 @@ class SyncService:
             for i in institutions
         ]
 
-    def disconnect(self, *, institution: str) -> None:
-        """Resolve institution name to connection id and call client.disconnect()."""
-        inst = self.plan_disconnect(institution=institution)
+    def disconnect(
+        self, *, institution: str | None = None, provider_item_id: str | None = None
+    ) -> ConnectedInstitution:
+        """Resolve a target (name or exact item) to a connection and disconnect it."""
+        inst = self.plan_disconnect(
+            institution=institution, provider_item_id=provider_item_id
+        )
         self.client.disconnect(inst.id)
+        return inst
 
-    def plan_disconnect(self, *, institution: str) -> ConnectedInstitution:
-        """Resolve the exact live connection that an institution disconnect targets."""
+    def plan_disconnect(
+        self, *, institution: str | None = None, provider_item_id: str | None = None
+    ) -> ConnectedInstitution:
+        """Resolve the exact live connection that a disconnect targets.
+
+        `provider_item_id` targets one connection exactly — set when an
+        institution has more than one (e.g. after a relink), where
+        `institution` alone is ambiguous and `_find_institution` refuses it.
+        Mutually exclusive with `institution`, mirroring `pull()`'s guard.
+        """
+        if institution is not None and provider_item_id is not None:
+            raise UserError(
+                "institution and provider_item_id are mutually exclusive — "
+                "pass exactly one",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        if provider_item_id is not None:
+            inst = self._find_institution_by_item(provider_item_id)
+            if inst is None:
+                raise UserError(
+                    f"no connected institution with provider_item_id "
+                    f"'{provider_item_id}' — run `moneybin sync status` to "
+                    f"list connected banks",
+                    code=error_codes.MUTATION_NOT_FOUND,
+                )
+            return inst
+        if institution is None:
+            raise UserError(
+                "institution or provider_item_id is required to disconnect — "
+                "run `moneybin sync status` to list connected banks",
+                code=error_codes.SYNC_INSTITUTION_REQUIRED,
+            )
         inst = self._find_institution(institution)
         if inst is None:
-            raise ValueError(
+            raise UserError(
                 f"no connected institution matching '{institution}' — "
-                f"run `moneybin sync status` to list connected banks"
+                f"run `moneybin sync status` to list connected banks",
+                code=error_codes.MUTATION_NOT_FOUND,
             )
         return inst
 
     def disconnect_confirmed(
         self,
         *,
-        institution: str,
+        institution: str | None = None,
+        provider_item_id: str | None = None,
         verify: Callable[[ConnectedInstitution], None],
     ) -> ConnectedInstitution:
         """Verify the live target immediately before deleting the connection."""
-        inst = self.plan_disconnect(institution=institution)
+        inst = self.plan_disconnect(
+            institution=institution, provider_item_id=provider_item_id
+        )
         verify(inst)
         self.client.disconnect(inst.id)
         return inst
@@ -514,8 +557,9 @@ class SyncService:
         """Look up a connected institution by case-insensitive name match.
 
         Returns None when no connection matches (caller decides what to do).
-        Raises ValueError when multiple connections share the name — the name is
-        ambiguous and must be disambiguated by the caller before any action runs.
+        Raises UserError when multiple connections share the name — the name
+        is ambiguous and must be disambiguated by the caller before any
+        action runs.
         """
         institutions = self.client.list_institutions()
         matches = [
@@ -524,13 +568,34 @@ class SyncService:
             if inst.institution_name and inst.institution_name.lower() == name.lower()
         ]
         if len(matches) > 1:
-            ids = ", ".join(m.provider_item_id for m in matches)
-            raise ValueError(
-                f"multiple connected institutions match '{name}' ({ids}). "
-                f"Run `moneybin sync status` to identify them; disambiguate "
-                f"via the matching server-side connection id."
+            candidates = ", ".join(
+                f"{m.provider_item_id} "
+                f"(linked {m.created_at.strftime('%Y-%m-%d %H:%M UTC')})"
+                for m in matches
+            )
+            raise UserError(
+                f"multiple connected institutions match '{name}': {candidates}. "
+                f"Only disconnect can target one of several same-named "
+                f"connections: remove the extra one by provider_item_id "
+                f"(`moneybin sync disconnect --provider-item-id <id>`, or "
+                f"`sync_disconnect` over MCP), then retry.",
+                code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
             )
         return matches[0] if matches else None
+
+    def _find_institution_by_item(
+        self, provider_item_id: str
+    ) -> ConnectedInstitution | None:
+        """Look up a connected institution by its exact provider_item_id.
+
+        Unambiguous by construction — unlike institution name, the server
+        assigns one item id per connection, so this never raises.
+        """
+        institutions = self.client.list_institutions()
+        for inst in institutions:
+            if inst.provider_item_id == provider_item_id:
+                return inst
+        return None
 
     def _resolve_institution(self, name: str) -> str:
         """Map a human-readable institution name to its provider_item_id.
@@ -539,8 +604,9 @@ class SyncService:
         """
         inst = self._find_institution(name)
         if inst is None:
-            raise ValueError(
+            raise UserError(
                 f"no connected institution matching '{name}' — "
-                f"run `moneybin sync status` to list connected banks"
+                f"run `moneybin sync status` to list connected banks",
+                code=error_codes.MUTATION_NOT_FOUND,
             )
         return inst.provider_item_id

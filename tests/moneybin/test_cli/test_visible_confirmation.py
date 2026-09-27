@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,6 +48,7 @@ def test_sync_link_reauth_refuses_when_prompt_output_is_redirected(
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
             guidance=None,
         )
     ]

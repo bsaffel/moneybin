@@ -1,0 +1,1 @@
+`sync status` now shows each connection's link date, and its `--wide` flag adds the connection id; `sync disconnect` accepts `--provider-item-id` (MCP: `provider_item_id`) so a specific connection can be removed when an institution has more than one after a relink.

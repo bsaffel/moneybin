@@ -527,7 +527,12 @@ class TestMCPFirstRunSetup:
         # Remove any inherited encryption key — ProfileService generates one
         # in-process and stores it in the MemoryKeyring. A conflicting env-var
         # key would shadow the generated key and open a different database.
-        env.pop("MONEYBIN_DATABASE__ENCRYPTION_KEY", None)
+        for name in list(env):
+            if name == "MONEYBIN_DATABASE__ENCRYPTION_KEY" or (
+                name.startswith("MONEYBIN_PROFILE__")
+                and name.endswith("__DATABASE__ENCRYPTION_KEY")
+            ):
+                env.pop(name)
         return env
 
     async def test_tools_only_client_gets_setup_envelope(

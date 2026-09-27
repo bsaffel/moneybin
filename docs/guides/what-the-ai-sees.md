@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-09-23 -->
 # What the AI Provider Sees
 
 When you drive MoneyBin with an AI agent, some of your financial data reaches
@@ -95,7 +95,6 @@ not in the renderer:
 
 ```console
 $ uv run moneybin sql query "SELECT display_name, institution_name, last_four, routing_number FROM core.dim_accounts ORDER BY display_name LIMIT 3" --output json
-Using profile: demo
 {"status": "ok", "summary": {"total_count": 3, "returned_count": 3, "has_more": false, "sensitivity": "critical", "display_currency": null}, "data": [{"display_name": "Ally Bank savings \u20260002", "institution_name": "Ally Bank", "last_four": "****0002", "routing_number": null}, {"display_name": "Chase Bank checking \u20260001", "institution_name": "Chase Bank", "last_four": "****0001", "routing_number": null}, {"display_name": "Chase Bank credit card", "institution_name": "Chase Bank", "last_four": null, "routing_number": null}], "actions": []}
 ```
 
@@ -201,9 +200,7 @@ before an agent ever sees one:
 
 ```console
 $ uv run moneybin transactions categorize assist --limit 2 --output json
-Using profile: demo
-audit: tool=transactions_categorize_assist sensitivity=medium metadata={'txn_count': 2, 'account_filter': None}
-{"status": "ok", "summary": {"total_count": 2, "returned_count": 2, "has_more": false, "sensitivity": "medium", "display_currency": null}, "data": {"transactions": [{"transaction_id": "5bbc2331ca753a4b", "description_scrubbed": "TARGET", "memo_scrubbed": "", "source_type": "csv", "transaction_type": null, "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "-"}, {"transaction_id": "8621e03e0d342b35", "description_scrubbed": "ONLINE PAYMENT CHASE CARD", "memo_scrubbed": "", "source_type": "csv", "transaction_type": null, "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "+"}]}, "actions": []}
+{"status": "ok", "summary": {"total_count": 2, "returned_count": 2, "has_more": false, "sensitivity": "medium", "display_currency": null}, "data": {"transactions": [{"transaction_id": "cba9b820cd9d30f9", "description_scrubbed": "TRANSFER TO SAVINGS", "memo_scrubbed": "", "source_type": "ofx", "transaction_type": "XFER", "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "+"}, {"transaction_id": "87bdacd90507c1be", "description_scrubbed": "ONLINE PAYMENT CHASE CARD", "memo_scrubbed": "", "source_type": "ofx", "transaction_type": "XFER", "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "-"}]}, "actions": []}
 ```
 
 There is no `amount`, no `transaction_date`, and no `account_id` field in that
@@ -242,11 +239,13 @@ The provider sees the *results of the queries the agent ran*, not your database:
 
   ```console
   $ uv run moneybin sql query "SELECT source_transaction_id, date_posted, payee, amount FROM raw.ofx_transactions ORDER BY date_posted DESC LIMIT 3"
-  Using profile: demo
-  source_transaction_id | date_posted | payee | amount
-  SYN****...2886 | 2025-12-31 00:00:00 | CAR WASH #3180 BOISE ID | -18.43
-  SYN****...2883 | 2025-12-30 00:00:00 | TARGET #4058 SEATTLE WA | -55.82
-  SYN****...2882 | 2025-12-29 00:00:00 | TRADER JOE'S #9114 CHARLOTTE NC | -42.85
+  ┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
+  ┃ source_transaction_id ┃ date_posted         ┃ payee                           ┃ amount ┃
+  ┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
+  │ SYN****...2886        │ 2025-12-31 00:00:00 │ CAR WASH #3180 BOISE ID         │ -18.43 │
+  │ SYN****...2883        │ 2025-12-30 00:00:00 │ TARGET #4058 SEATTLE WA         │ -55.82 │
+  │ SYN****...2882        │ 2025-12-29 00:00:00 │ TRADER JOE'S #9114 CHARLOTTE NC │ -42.85 │
+  └───────────────────────┴─────────────────────┴─────────────────────────────────┴────────┘
   ```
 
   The digit run inside `source_transaction_id` is masked in place by the value
@@ -342,10 +341,22 @@ each:
 
 ```console
 $ uv run moneybin privacy log --last 2
-Using profile: demo
-2026-09-14T18:59:32.905483+00:00 | tool_call | cli.categorize_assist | sensitivity=medium classes=description,record_id,txn_type rows=2
-2026-09-14T18:59:30.779320+00:00 | tool_call | cli.sql_query | sensitivity=critical classes=institution,institution_account_number,routing_number,user_note rows=3
+Showing last 2 events (all actors; total matching events unknown)
+Returned: 2
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ When                         ┃ Action    ┃ Actor                 ┃ Details                       ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 2026-09-24T03:15:22.071567+0 │ tool_call │ cli.categorize_assist │ sensitivity=medium            │
+│ 0:00                         │           │                       │ classes=description,record_id │
+│                              │           │                       │ ,txn_type rows=2              │
+│ 2026-09-24T03:15:05.059142+0 │ tool_call │ cli.sql_query         │ sensitivity=critical          │
+│ 0:00                         │           │                       │ classes=institution,instituti │
+│                              │           │                       │ on_account_number,routing_num │
+│                              │           │                       │ ber,user_note rows=3          │
+└──────────────────────────────┴───────────┴───────────────────────┴───────────────────────────────┘
 ```
+
+The timestamps and class lists wrap mid-token at this 100-column width: `2026-09-24T03:15:22.071567+00:00` is one value split across two rows, as is `classes=institution,institution_account_number,routing_number,user_note`.
 
 The SQL text, the account names, and the descriptions those calls returned are
 absent — the line carries the tier, the classes, and the row count and nothing

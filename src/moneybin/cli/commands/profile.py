@@ -227,15 +227,13 @@ def profile_delete(
                 [("Result", f"Profile {normalized} was not deleted.")],
             )
             return
-    try:
-        svc.delete(normalized)
+    with handle_cli_errors(cli_actor="profile_delete"):
+        try:
+            svc.delete(normalized)
+        except (ProfileNotFoundError, ValueError) as e:
+            logger.error(str(e))
+            raise typer.Exit(1) from e
         _emit_receipt("Profile deleted", [("Profile", normalized)])
-    except ProfileNotFoundError as e:
-        logger.error(str(e))
-        raise typer.Exit(1) from e
-    except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1) from e
 
 
 def _active_profile_name(svc: ProfileService) -> str | None:

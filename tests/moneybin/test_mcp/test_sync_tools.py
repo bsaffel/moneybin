@@ -86,6 +86,10 @@ async def test_sync_workflow_renders_explicit_auth_variants() -> None:
         "anyOf": [{"type": "string"}, {"type": "null"}],
         "default": None,
     }
+    assert tools["sync_disconnect"].parameters["properties"]["provider_item_id"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "default": None,
+    }
 
 
 @pytest.mark.unit
@@ -163,6 +167,15 @@ async def test_sync_disconnect_logout_rejects_confirmation_token(
     assert envelope.error is not None
     assert envelope.error.code == "sync_confirmation_not_allowed"
     mock_build.return_value.logout.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_sync_disconnect_logout_rejects_provider_item_id() -> None:
+    envelope = await sync_module.sync_disconnect(
+        mode="logout", provider_item_id="item_a"
+    )
+    assert envelope.error is not None
+    assert envelope.error.code == "sync_disconnect_mode_conflict"
 
 
 def test_sync_workflow_registrar_uses_public_privacy_actor_names() -> None:

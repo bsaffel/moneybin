@@ -395,8 +395,8 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             str(exc),
             code=error_codes.INFRA_SETUP_REQUIRED,
             hint=(
-                "💡 No OS keyring backend is available to store secrets. "
-                "Configure one (macOS Keychain, GNOME Keyring, KWallet) and retry."
+                "💡 Configure or unlock a secure OS keychain "
+                "(macOS Keychain, GNOME Keyring, KWallet), then retry."
             ),
         )
     if isinstance(exc, FileNotFoundError):

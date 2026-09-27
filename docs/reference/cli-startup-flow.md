@@ -197,9 +197,12 @@ After the chain returns a profile name, the resolver:
 1. Calls `set_current_profile(name)`.
 2. Checks `<base>/profiles/<normalized>/` exists. If not, emits a hint to `profile list` / `profile create <name>` and exits 1.
 3. Calls `setup_observability(stream="cli", verbose=_flags.verbose, profile=name)` — this is the call that actually opens the profile- and stream-scoped log file at `<base>/profiles/<profile>/logs/cli_<YYYY-MM-DD>.log` (one file per stream per day; see `session_log_path()` in [`src/moneybin/logging/config.py`](../../src/moneybin/logging/config.py)).
-4. Logs `Using profile: X` to the console, and the resolution source
-   (`--profile`, `MONEYBIN_PROFILE`, config file, or first-run wizard) to the
-   log file only — see `.claude/rules/cli.md` → "Keeping the console readable".
+4. Logs `Using profile: X` at INFO, and the resolution source
+   (`--profile`, `MONEYBIN_PROFILE`, config file, or first-run wizard) after
+   it. Both reach the log file; on the CLI stream, INFO records reach the
+   console only under `--verbose`, so a normal run prints neither
+   (`_ConsoleNoiseFilter` in `src/moneybin/logging/config.py`) — see
+   `.claude/rules/cli.md` → "Keeping the console readable".
 
 ### Bare-group invocations and recovery commands
 
@@ -212,12 +215,12 @@ When `ctx.invoked_subcommand` is `"profile"`, `"synthetic"`, or `"demo"`, `main_
 Cold-start does not load the encryption key. The key is only loaded on the first `get_database()` call inside the command body. When that happens, [`SecretStore.get_key`](../../src/moneybin/secrets.py) walks this chain:
 
 1. **OS keychain** — `service="moneybin-<profile>"`, `username="DATABASE__ENCRYPTION_KEY"`. The default mode on macOS/Linux desktops with a working keyring.
-2. **`MONEYBIN_DATABASE__ENCRYPTION_KEY` env var** — fallback when the keychain entry is missing OR no keyring backend is available (headless CI runners, minimal Linux containers, NAS appliances). This is the supported pattern for non-desktop deployments.
-3. **`SecretNotFoundError`** — raised by `SecretStore`, wrapped by `Database` as `DatabaseKeyError` with a recovery message pointing at `moneybin db init` and `MONEYBIN_DATABASE__ENCRYPTION_KEY`.
+2. **Profile-scoped env var** — `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` for `default`; uppercase the normalized profile name and replace hyphens with underscores for another profile. This fallback supports headless deployments when the keychain entry is missing or the backend is unavailable.
+3. **`SecretNotFoundError`** — raised by `SecretStore`, wrapped by `Database` as `DatabaseKeyError` with a recovery message naming the active profile's environment variable.
 
 There is no separate "passphrase mode" at startup — passphrase derivation (Argon2id) happens during `moneybin db init` / `db key rotate` and writes the derived AES-256-GCM key to the keychain. The runtime read path is always "keychain → env var."
 
-The key is cached per-process in `database.py:_cached_encryption_key` after the first successful read; `set_current_profile()` invalidates this cache so profile switches re-fetch.
+The key is cached with its profile identity in `database.py:_cached_encryption_key` after the first successful read; a different profile cannot reuse it. `set_current_profile()` also invalidates this cache so profile switches re-fetch.
 
 Container pattern: inject the key via `--env-file` or Docker secrets and pre-set `MONEYBIN_PROFILE`. Full headless-deployment recipes live in [`docs/guides/database-security.md`](../guides/database-security.md) → "Headless and cron deployments."
 
@@ -229,7 +232,7 @@ The supported headless setup is to pre-resolve profile selection so the wizard n
 
 ```dockerfile
 ENV MONEYBIN_PROFILE=primary
-ENV MONEYBIN_DATABASE__ENCRYPTION_KEY=<hex>
+ENV MONEYBIN_PROFILE__PRIMARY__DATABASE__ENCRYPTION_KEY=<hex>
 ```
 
 …OR mount a pre-initialized `<base>/config.yaml` with `active_profile` set, plus a `<base>/profiles/<name>/` tree created on a machine that had a working keyring.
@@ -254,7 +257,7 @@ Database open happens inside the command body, on the first `get_database()` cal
 
 Two errors are routinely surfaced by `handle_cli_errors()`:
 
-- `DatabaseKeyError` — encryption key not in keychain or env. Recovery: `moneybin db unlock` (or set `MONEYBIN_DATABASE__ENCRYPTION_KEY`).
+- `DatabaseKeyError` — encryption key not in keychain or env. Recovery: `moneybin db unlock` (or set `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY`).
 - `DatabaseNotInitializedError` — the `.duckdb` file does not exist for this profile. Recovery: `moneybin db init`.
 
 Both are classified user-facing errors. Stack traces are not surfaced.
@@ -266,7 +269,7 @@ By the time the leaf command body runs:
 - The profile is resolved (eagerly or lazily) and `_current_profile` is set.
 - `get_settings()` returns a frozen `MoneyBinSettings` for that profile.
 - The first `get_database()` call inside the body opens the encrypted connection.
-- The body typically wraps work in `with handle_cli_errors():` (or `with sqlmesh_command(...)` for SQLMesh-fronted operations) to route classified user errors to the standard `❌`-prefixed log line and `typer.Exit(1)`.
+- The body typically wraps work in `with handle_cli_errors():` (or `with sqlmesh_command(...)` for SQLMesh-fronted operations) to route classified user errors to the standard `×`-prefixed console line and `typer.Exit(1)`.
 
 Output rendering follows the `--output {text,json}` contract from [`.claude/rules/cli.md`](../../.claude/rules/cli.md); JSON output uses the response envelope defined in `moneybin.protocol.envelope`. Diagnostic output goes to stderr; data output goes to stdout. Exit codes follow the docker/kubectl convention (`0` success, `1` runtime error, `2` usage error) — see [`docs/guides/cli-reference.md`](../guides/cli-reference.md) for the full table.
 

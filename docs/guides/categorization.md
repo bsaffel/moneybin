@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-17 -->
+<!-- Last reviewed: 2026-09-23 -->
 # Categorization
 
 How MoneyBin categorizes transactions: deterministic rules and merchant mappings first, LLM-assist as the human helper for what's left, source precedence enforced on every write so your manual choices outrank automation. The same workflow is reachable from CLI (`moneybin transactions categorize ...`) and the bounded MCP categorization tools. Both call the same services; the CLI's `--output json` returns the same response envelope MCP returns.
@@ -121,13 +121,13 @@ kinds together, or only `kind="auto_rule"` items, or only
 
    ```console
    $ moneybin transactions categorize stats
-   Using profile: demo
-   Categorization coverage (excludes transfers, archived and unresolved accounts):
-     Transactions:         2886
-     Categorized:          2473 (85.7%)
-     Uncategorized:        413
-     By merchant_map:  2473
-     Plaid unmapped (no bridge mapping): 0
+   Categorization coverage
+   Transactions:    2,886
+   Categorized:     2,473 (85.7%)
+   Uncategorized:   413
+   By merchant_map: 2,473
+   Plaid unmapped:  0
+   Scope: excludes transfers, archived and unresolved accounts.
    ```
 
    The breakdown keys are `categorized_by` values, with one split: a `rule` write that carries a `merchant_id` but no `rule_id` came from a merchant exemplar, and reports as `merchant_map` so it reconciles against an empty `rules list`.
@@ -150,14 +150,13 @@ kinds together, or only `kind="auto_rule"` items, or only
 
    ```console
    $ moneybin transactions categorize auto review
-   Using profile: demo
-   No pending auto-rule proposals.
+   Result: No pending auto-rule proposals.
+   Next: moneybin transactions categorize auto rules
    $ moneybin transactions categorize auto stats
-   Using profile: demo
-   Auto-rule health:
-     Active auto-rules:        0
-     Pending proposals:        0
-     Transactions auto-ruled:  0
+   Auto-rule health
+   Active auto-rules:        0
+   Pending proposals:        0
+   Transactions categorized: 0
    ```
 
 ## Migrating curated categories
@@ -252,10 +251,10 @@ A top-level JSON array. Each item:
 
   ```console
   $ moneybin transactions categorize run
-  Using profile: demo
-    rules: 0
-    merchants: 0
-  ✅ Applied 0 total
+  Categorization run complete
+  rules:         0
+  merchants:     0
+  Total applied: 0
   ```
 
   That run followed the `--reapply` above, which had already applied every matching rule.
@@ -310,19 +309,23 @@ moneybin transactions categorize rules create "Spotify subscription" \
 ```console
 $ moneybin transactions categorize rules create "Target department store" \
     --pattern "TARGET" --category "Shopping" --subcategory "Department Stores" --reapply
-Using profile: demo
-Categorized 79 pending transactions (0 merchant, 79 rule, 0 plaid)
-✅ Created 1 rule(s); existing 0, skipped 0, conflicts 0
+Rules created
+Created:   1
+Existing:  0
+Skipped:   0
+Conflicts: 0
 $ moneybin transactions categorize stats
-Using profile: demo
-Categorization coverage (excludes transfers, archived and unresolved accounts):
-  Transactions:         2886
-  Categorized:          2552 (88.4%)
-  Uncategorized:        334
-  By merchant_map:  2473
-  By rule:  79
-  Plaid unmapped (no bridge mapping): 0
+Categorization coverage
+Transactions:    2,886
+Categorized:     2,552 (88.4%)
+Uncategorized:   334
+By merchant_map: 2,473
+By rule:         79
+Plaid unmapped:  0
+Scope: excludes transfers, archived and unresolved accounts.
 ```
+
+The create receipt counts rules, not rows: the 79 transactions `--reapply` recategorized appear only in the `By rule:` line of the following `categorize stats`. That line reads as this rule's count only because no other rule was active. `By rule:` totals every rule-sourced categorization and no command reports a per-rule count. `--reapply` re-evaluates every active rule over the uncategorized rows, so on a profile with existing rules even the change in `By rule:` across the create can include rows an older rule newly matched; the count of what one rule touched is not available.
 
 Without `--reapply` the rule is created and nothing is categorized until the next refresh.
 
@@ -330,10 +333,15 @@ Without `--reapply` the rule is created and nothing is categorized until the nex
 
 ```console
 $ moneybin transactions categorize rules create "Store" --pattern "TO" --category "Shopping"
-Using profile: demo
-✅ Created 0 rule(s); existing 0, skipped 1, conflicts 0
-⚠️  Store: Pattern 'TO' is too short to be a 'contains' rule — it would match unrelated merchants (e.g. a 2-char pattern like 'TO' matches STORE, AUTO, TOTAL). Use match_type='exact' for a short pattern, or re-run with allow_broad=True to accept the risk.
+Rules partially created
+Created:   0
+Existing:  0
+Skipped:   1
+Conflicts: 0
+Attention: Store: Pattern 'TO' is too short to be a 'contains' rule — it would match unrelated merchants (e.g. a 2-char pattern like 'TO' matches STORE, AUTO, TOTAL). Use match_type='exact' for a short pattern, or re-run with allow_broad=True to accept the risk.
 ```
+
+The `match_type='exact'` and `allow_broad=True` in that message are the MCP field spellings; the CLI equivalents are `--match-type exact` and `--allow-broad`.
 
 **Match outcome.** The first rule that matches in priority order wins. Tie-break for equal `priority` is `created_at ASC` — older rules win ties. Rules write `categorized_by='rule'` (or `auto_rule` for system-promoted rules); the source-precedence guard means a rule write can replace `auto_rule`, `migration`, `ml`, `provider_native`, and `ai` writes, but never a `user` edit.
 
@@ -350,7 +358,8 @@ creation reports success. MoneyBin refuses that.
   `rule_id` back and nothing is written.
 - **Same matcher, different category or subcategory** → a conflict. No rule is
   activated. The refused proposal is recorded in `app.rule_conflicts`, the CLI
-  prints a `👀` line naming the conflict id, and a call that activated nothing
+  prints an `Attention:` line naming the conflict id, the existing rule, both
+  categories, and the resolve command, and a call that activated nothing
   fails with `taxonomy_rule_conflict` — its `details.conflict_ids` names each
   refusal.
 
@@ -364,26 +373,32 @@ invert what it matches.
 
 **Captured run.** With the `TARGET` rule above already active, proposing the lower-case
 same matcher under a different category is refused — creation, queue, and
-resolution in one pass. One output line is trimmed: the `👀` hint that names `conf_08a909bfc574a4f1` and both categories, which `rules list-conflicts` below repeats.
+resolution in one pass. One output line is trimmed from the first command: the
+`Attention:` line, which names the existing rule `8066f6b1a1e8`, both categories,
+and the conflict id, then offers the three resolutions as a single alternation
+rather than one runnable command —
+`moneybin transactions categorize rules resolve conf_e38b3e951e37141e --replace|--reprioritize N|--cancel` <!-- cli-invocation-ok: quotes the CLI's own alternation hint verbatim -->
+— so nothing is lost by reading the id off `rules list-conflicts` instead.
 
 ```console
 $ moneybin transactions categorize rules create "Target groceries" \
     --pattern "target" --category "Food & Drink" --subcategory "Groceries"
-Using profile: demo
-Recorded 1 categorization rule conflict(s)
-❌ A rule in this batch matches the same transactions as an active rule and assigns a different category.
+× A rule in this batch matches the same transactions as an active rule and assigns a different category.
 $ moneybin transactions categorize rules list-conflicts
-Using profile: demo
-┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
-┃ conflict             ┃ pattern ┃ assigns              ┃ wants                ┃
-┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
-│ conf_08a909bfc574a4f │ target  │ Shopping /           │ Food & Drink /       │
-│ 1                    │         │ Department Stores    │ Groceries            │
-└──────────────────────┴─────────┴──────────────────────┴──────────────────────┘
+Rule conflicts
+Conflicts: 1
+┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ conflict              ┃ pattern ┃ assigns                      ┃ wants                    ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ conf_e38b3e951e37141e │ target  │ Shopping / Department Stores │ Food & Drink / Groceries │
+└───────────────────────┴─────────┴──────────────────────────────┴──────────────────────────┘
 4 of 8 columns shown — --wide for all
-$ moneybin transactions categorize rules resolve conf_08a909bfc574a4f1 --cancel --yes
-Using profile: demo
-✅ Resolved 1 conflict(s); activated 0, superseded 0
+Next: moneybin transactions categorize rules resolve <conflict-id> --replace
+$ moneybin transactions categorize rules resolve conf_e38b3e951e37141e --cancel --yes
+Rule conflicts resolved
+Resolved:   1
+Activated:  0
+Superseded: 0
 ```
 
 The refusal exits 1. Case is not a distinguisher: `target` and `TARGET` are one
@@ -423,7 +438,7 @@ audited, so a resolution is reversible with `moneybin system audit` /
 Two independent guards run on the write/accept path itself — refused before the row lands, not merely flagged in review output, so a caller that skips the review step still cannot push a ledger-wrecking rule through.
 
 - **Specificity floor.** A `contains` pattern shorter than `auto_rule_min_contains_length` (default 4 characters) is refused: a 2-character `contains "TO"` rule matches `STORE`, `AUTO`, and `TOTAL`. Applies to both manually authored rules (`rules create`) and auto-rule proposals at accept time. CLI `rules create --allow-broad` overrides it for a manual rule (use `--match-type exact` instead where possible); the MCP `transactions_categorize_rules_set` tool has no override.
-- **Blast-radius guard (auto-rule proposals only).** `moneybin transactions categorize auto review` flags a proposal broad when its `estimated_match_count` exceeds `auto_rule_broad_match_factor` (default 10) times its `trigger_count` — the pattern would recategorize far more rows than the evidence that produced it. Proposals matching fewer than `auto_rule_broad_match_min` (default 20) transactions are never flagged, however thin the evidence. The review listing marks a flagged proposal `⚠️ BROAD, requires --allow-broad to accept`.
+- **Blast-radius guard (auto-rule proposals only).** `moneybin transactions categorize auto review` flags a proposal broad when its `estimated_match_count` exceeds `auto_rule_broad_match_factor` (default 10) times its `trigger_count` — the pattern would recategorize far more rows than the evidence that produced it. Proposals matching fewer than `auto_rule_broad_match_min` (default 20) transactions are never flagged, however thin the evidence. The review listing marks a flagged proposal `Broad — requires --allow-broad` in its `review` column, against `Ready` for the rest, and repeats `Broad proposals require --allow-broad to accept.` below the table.
 
 `auto accept --allow-broad` (CLI) and `reviews_decide`'s per-decision `allow_broad` field for `kind="auto_rule"` items (MCP) both bypass the specificity floor and the blast-radius guard together for the accepted proposal — there is no way to waive one without the other on that path. Both thresholds live under `MoneyBinSettings.categorization` in `src/moneybin/config.py`.
 
@@ -438,7 +453,7 @@ Two design choices that matter:
 1. **Exact exemplars, not inferred patterns.** Categorizing one `PAYPAL INST XFER` row for YouTube does not category-stamp every other PayPal row — only rows whose normalized `match_text` matches one of the exemplars. If you want a broad pattern like "everything containing COSTCO is Groceries," author it as a rule explicitly. Rules are a user choice; exemplars are evidence.
 2. **Multiple rows under one canonical name merge.** When several rows in the same batch share a `canonical_merchant_name`, they accumulate exemplars on the same merchant rather than spawning per-row merchants.
 
-**Inspecting and pruning.** `moneybin transactions categorize auto stats` reports active auto-rule count, pending proposals, and transactions auto-ruled — it does not report an exemplar count. There is no first-class "list exemplars" or "remove this exemplar from a merchant" CLI today — to surgically remove a bad exemplar you either edit `app.user_merchants` directly via `moneybin db query` (advanced) or hard-delete the merchant and re-categorize the affected rows. Merchant-specific MCP curation is not currently admitted to the standard registry.
+**Inspecting and pruning.** `moneybin transactions categorize auto stats` reports active auto-rule count, pending proposals, and transactions categorized by auto-rules — it does not report an exemplar count. There is no first-class "list exemplars" or "remove this exemplar from a merchant" CLI today — to surgically remove a bad exemplar you either edit `app.user_merchants` directly via `moneybin db query` (advanced) or hard-delete the merchant and re-categorize the affected rows. Merchant-specific MCP curation is not currently admitted to the standard registry.
 
 ## LLM-assist in depth
 
@@ -469,11 +484,11 @@ $ moneybin transactions categorize assist --limit 2 --output json | jq .
   "data": {
     "transactions": [
       {
-        "transaction_id": "cba9b820cd9d30f9",
-        "description_scrubbed": "TRANSFER TO SAVINGS",
+        "transaction_id": "8621e03e0d342b35",
+        "description_scrubbed": "ONLINE PAYMENT CHASE CARD",
         "memo_scrubbed": "",
-        "source_type": "ofx",
-        "transaction_type": "XFER",
+        "source_type": "csv",
+        "transaction_type": null,
         "check_number": null,
         "is_transfer": false,
         "transfer_pair_id": null,
@@ -481,8 +496,8 @@ $ moneybin transactions categorize assist --limit 2 --output json | jq .
         "amount_sign": "+"
       },
       {
-        "transaction_id": "87bdacd90507c1be",
-        "description_scrubbed": "ONLINE PAYMENT CHASE CARD",
+        "transaction_id": "1507f93d05758564",
+        "description_scrubbed": "ONLINE PAYMENT CITI",
         "memo_scrubbed": "",
         "source_type": "ofx",
         "transaction_type": "XFER",

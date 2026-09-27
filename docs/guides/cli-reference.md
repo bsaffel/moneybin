@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-17 -->
+<!-- Last reviewed: 2026-09-23 -->
 # CLI Reference
 
 Run `moneybin` for a short menu of common commands, or `moneybin --help` for
@@ -22,7 +22,7 @@ These flags appear on commands across every group. They are not repeated in the 
 | `-p, --profile <name>` | Global (root) | Pick the profile to operate against. Overrides `MONEYBIN_PROFILE` and the saved default for one invocation. |
 | `-v, --verbose` | Global (root) | Enable debug logging on stderr. |
 | `-o, --output {text,json}` | All read commands | Output format. `text` is human-readable; `json` returns the standard response envelope (same shape as the MCP equivalent). |
-| `-q, --quiet` | All read commands | Suppress informational chatter (status lines, the trailing `✅`). Result rows are never suppressed — they are the data. |
+| `-q, --quiet` | All read commands | Suppress optional status lines and progress. Results, failures, truncation notices, and recovery actions are never suppressed — they are the data. |
 | `--json-fields a,b,c` | Read commands that opt in | Comma-separated field projection. Silently ignored unless `--output json` is active. Available fields are enumerated in the command's `--help`. |
 | `-y, --yes` | Mutating commands with prompts | Skip the confirmation prompt. Required for non-interactive use. |
 

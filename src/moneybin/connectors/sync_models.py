@@ -434,6 +434,7 @@ class SyncConnectionView(BaseModel):
     provider: str
     status: Literal["active", "error", "revoked"]
     last_sync: datetime | None
+    created_at: datetime
     error_code: str | None = Field(
         default=None,
         description="Provider error code (e.g. ITEM_LOGIN_REQUIRED). Advisory — treat as None when absent.",
