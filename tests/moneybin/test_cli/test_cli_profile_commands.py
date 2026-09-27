@@ -275,6 +275,22 @@ class TestProfileDelete:
         result = runner.invoke(app, ["delete", "ghost", "--yes"])
         assert result.exit_code == 1
 
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_delete_denied_cleanup_uses_error_boundary(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from moneybin.secrets import SecretStorageUnavailableError
+
+        mock_cls.return_value.delete.side_effect = SecretStorageUnavailableError(
+            "Unlock the OS keychain and retry."
+        )
+        with caplog.at_level(logging.ERROR):
+            result = runner.invoke(app, ["delete", "alice", "--yes"])
+        assert result.exit_code != 0
+        assert not isinstance(result.exception, SecretStorageUnavailableError)
+        assert "keychain" in (result.output + caplog.text).lower()
+        assert "Profile deleted" not in result.stdout
+
 
 class TestProfileShow:
     """Tests for 'profile show' command."""

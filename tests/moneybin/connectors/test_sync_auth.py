@@ -556,8 +556,16 @@ def test_failed_atomic_write_preserves_prior_collection(
     before = dict(patched_keyring.values)
     patched_keyring.fail_next_write = True
 
-    with pytest.raises(Exception, match="No OS keyring backend"):
+    from moneybin import error_codes
+    from moneybin.errors import classify_user_error
+    from moneybin.secrets import SecretStorageUnavailableError
+
+    with pytest.raises(SecretStorageUnavailableError) as error:
         service.begin()
+    classified = classify_user_error(error.value)
+    assert classified is not None
+    assert classified.code == error_codes.INFRA_SETUP_REQUIRED
+    assert "Unable to store secret" in classified.message
 
     assert patched_keyring.values == before
     assert first.auth_session_id in json.loads(next(iter(before.values())))

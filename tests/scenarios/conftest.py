@@ -23,6 +23,10 @@ def _scenario_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:  # pyrigh
         "MONEYBIN_DATABASE__ENCRYPTION_KEY",
         "scenario-ephemeral-key-tmpdir-only",
     )
+    monkeypatch.setenv(
+        "MONEYBIN_PROFILE__SCENARIO__DATABASE__ENCRYPTION_KEY",
+        "scenario-ephemeral-key-tmpdir-only",
+    )
     for key, value in FAST_ARGON2_ENV.items():
         monkeypatch.setenv(key, value)
 

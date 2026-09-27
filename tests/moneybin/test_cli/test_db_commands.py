@@ -19,7 +19,11 @@ from typer.testing import CliRunner
 
 from moneybin.cli.commands import db as db_commands
 from moneybin.cli.commands.db import app
-from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
+from moneybin.secrets import (
+    SecretNotFoundError,
+    SecretStorageUnavailableError,
+    SecretUnavailableError,
+)
 
 
 def test_unlock_refuses_redirected_passphrase_before_derivation(
@@ -753,7 +757,7 @@ class TestQueryCommand:
 
         assert result.exit_code == 1
         assert "db unlock" in caplog.text
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in caplog.text
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in caplog.text
         assert "db init" not in caplog.text
 
     def test_query_denied_keychain_message_is_confident_not_a_hedge(
@@ -942,6 +946,9 @@ class TestDbUnlockCommand:
 
         mock_store = MagicMock()
         mock_store.get_key.side_effect = SecretNotFoundError("no salt")
+        mock_store.env_var_name.return_value = (
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY"
+        )
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
         existing = tmp_path / "moneybin.duckdb"
         existing.write_bytes(b"")
@@ -952,7 +959,7 @@ class TestDbUnlockCommand:
 
         assert result.exit_code == 1
         assert "already exists" in caplog.text
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in caplog.text
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in caplog.text
 
     def test_unlock_database_not_found_deletes_key_and_exits_1(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -1065,6 +1072,9 @@ class TestDbRotateKeyCommand:
 
         mock_store = MagicMock()
         mock_store.get_key.return_value = "oldkey" * 10  # 60 hex chars
+        mock_store.env_var_name.return_value = (
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY"
+        )
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
 
         mock_conn = MagicMock()
@@ -1149,7 +1159,7 @@ class TestDbRotateKeyCommand:
         assert result.exit_code == 1
         # Recovery key is printed via typer.echo(err=True), which CliRunner
         # captures in result.output (stderr is mixed in by default)
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in result.output
 
     def test_rotate_key_interrupt_after_swap_keeps_recovery_channel(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -1161,7 +1171,7 @@ class TestDbRotateKeyCommand:
         result = runner.invoke(app, ["key", "rotate", "--yes"])
 
         assert result.exit_code == 130
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in result.output
         assert "keychain update is unconfirmed" in result.output
 
     def test_rotate_key_interrupt_after_keychain_update_reports_completed_write(
@@ -1235,7 +1245,7 @@ class TestDbRotateKeyCommand:
         assert str(db_path) in result.output
         assert "original backup requires the old key" in result.output.lower()
         assert "only access a confirmed rotated candidate" in result.output.lower()
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in result.output
         assert synthetic_new_key not in result.stdout
         assert synthetic_new_key in result.stderr
         assert synthetic_new_key not in caplog.text
@@ -1281,7 +1291,7 @@ class TestDbRotateKeyCommand:
         assert "replacement is unconfirmed" in result.output.lower()
         assert "original backup requires the old key" in result.output.lower()
         assert "only access a confirmed rotated candidate" in result.output.lower()
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in result.output
         assert synthetic_new_key not in result.stdout
         assert synthetic_new_key in result.stderr
         assert synthetic_new_key not in caplog.text
@@ -1350,14 +1360,47 @@ class TestDbLockCommand:
 
     def test_lock_already_locked(self, runner: CliRunner, mocker: Any) -> None:
         """Lock command succeeds gracefully when already locked."""
+        import moneybin.database as db_module
         from moneybin.secrets import SecretNotFoundError
 
         mock_store = MagicMock()
         mock_store.delete_key.side_effect = SecretNotFoundError("not found")
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mocker.patch.object(db_module, "_cached_encryption_key", ("test", "cached-key"))
 
         result = runner.invoke(app, ["lock"])
         assert result.exit_code == 0
+        assert db_module._cached_encryption_key is None  # pyright: ignore[reportPrivateUsage]  # lock must clear process key
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [
+            pytest.param(SecretUnavailableError, id="read-denial-subtype"),
+            pytest.param(SecretStorageUnavailableError, id="storage-denial"),
+        ],
+    )
+    def test_lock_denied_delete_keeps_cache_and_reports_failure(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+        error_type: type[Exception],
+    ) -> None:
+        """A denied keychain delete cannot claim the database is locked."""
+        import moneybin.database as db_module
+
+        mock_store = MagicMock()
+        mock_store.delete_key.side_effect = error_type("delete denied")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        cached = ("test", "cached-key")
+        mocker.patch.object(db_module, "_cached_encryption_key", cached)
+
+        result = runner.invoke(app, ["lock"])
+
+        assert result.exit_code == 1
+        assert "Failed to lock" in caplog.text
+        assert "already locked" not in result.output
+        assert db_module._cached_encryption_key == cached  # pyright: ignore[reportPrivateUsage]  # deletion did not succeed
 
 
 class TestDbKeyCommand:

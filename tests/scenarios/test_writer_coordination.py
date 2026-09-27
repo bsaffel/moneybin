@@ -51,7 +51,6 @@ def _worker_env() -> dict[str, str]:
     return {
         **os.environ,
         **FAST_ARGON2_ENV,
-        "MONEYBIN_DATABASE__ENCRYPTION_KEY": "scenario-ephemeral-key-tmpdir-only",
     }
 
 
