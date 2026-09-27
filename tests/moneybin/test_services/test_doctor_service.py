@@ -20,6 +20,8 @@ from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
     FX_RATE_SPINE_ROWS,
+    NET_WORTH_STALE_BALANCE_ACCOUNTS,
+    NET_WORTH_UNANCHORED_ACCOUNTS,
     NET_WORTH_UNPRICED_DATES,
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
@@ -2784,7 +2786,7 @@ def test_unanchored_accounts_fails_naming_each_eligible_account(
         db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [acct])
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "fail"
-    assert result.affected_ids == ["brk", "chk"]
+    assert result.affected_ids == ["account:brk", "account:chk"]
 
 
 @pytest.mark.unit
@@ -2811,7 +2813,7 @@ def test_unanchored_accounts_fails_for_an_account_archived_after_the_spine_ends(
     db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "fail"
-    assert result.affected_ids == ["m2b3_brk"]
+    assert result.affected_ids == ["account:m2b3_brk"]
 
 
 @pytest.mark.unit
@@ -2847,7 +2849,7 @@ def test_unanchored_accounts_dates_eligibility_at_the_latest_net_worth_row(
     db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "fail"
-    assert result.affected_ids == ["m2b3_brk"]
+    assert result.affected_ids == ["account:m2b3_brk"]
 
 
 @pytest.mark.unit
@@ -2861,7 +2863,7 @@ def test_stale_balance_warns_on_an_entirely_stale_profile(
         _observed(db, acct, 45)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.status == "warn"
-    assert result.affected_ids == ["a", "b"]
+    assert result.affected_ids == ["account:a", "account:b"]
 
 
 @pytest.mark.unit
@@ -2875,7 +2877,7 @@ def test_stale_balance_skips_an_excluded_or_archived_account(
     _observed(db, "live", 46)
     _observed(db, "closed", 46)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
-    assert result.affected_ids == ["live"]
+    assert result.affected_ids == ["account:live"]
 
 
 @pytest.mark.unit
@@ -2888,7 +2890,7 @@ def test_stale_balance_threshold_is_exclusive(
     _observed(db, "at_threshold", 30)
     _observed(db, "past_threshold", 31)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
-    assert result.affected_ids == ["past_threshold"]
+    assert result.affected_ids == ["account:past_threshold"]
 
 
 @pytest.mark.unit
@@ -2915,6 +2917,62 @@ def test_stale_balance_is_warn_so_it_never_counts_as_failing(
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.status == "warn"
     assert DoctorReport(invariants=[result], transaction_count=0).failing == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "check", ["net_worth_unanchored_accounts", "net_worth_stale_balance"]
+)
+def test_net_worth_checks_mask_a_source_native_account_id(
+    db: Database, monkeypatch: pytest.MonkeyPatch, check: str
+) -> None:
+    """An unlinked account surfaces its raw source key; affected_ids must mask it."""
+    _net_worth_guard_ddl(db)
+    raw_id = "123456789012"  # synthetic account-number-shaped key
+    _nw_account(db, raw_id)
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [raw_id])
+    _observed(db, raw_id, 45)
+    result = _investment_result(db, monkeypatch, check)
+    assert result.status in ("fail", "warn")
+    assert len(result.affected_ids) == 1
+    assert result.affected_ids[0].startswith("account:")
+    assert raw_id not in result.affected_ids[0]
+
+
+@pytest.mark.unit
+def test_net_worth_checks_set_their_gauges(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both counts are scrape-visible, including a return to zero."""
+    _net_worth_guard_ddl(db)
+    for acct in ("a", "b"):
+        _nw_account(db, acct)
+        db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [acct])
+    _observed(db, "a", 45)
+    _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 2  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+    db.execute("DELETE FROM core.dim_unanchored_accounts")
+    db.execute("DELETE FROM reports.net_worth_accounts")
+    _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+@pytest.mark.unit
+def test_net_worth_checks_leave_their_gauges_when_skipped(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Views absent before the first transform: a scrape reads stale, not zero."""
+    NET_WORTH_UNANCHORED_ACCOUNTS.set(4242)
+    NET_WORTH_STALE_BALANCE_ACCOUNTS.set(4242)
+    for check in ("net_worth_unanchored_accounts", "net_worth_stale_balance"):
+        assert _investment_result(db, monkeypatch, check).status == "skipped"
+    assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
 
 
 @pytest.mark.unit

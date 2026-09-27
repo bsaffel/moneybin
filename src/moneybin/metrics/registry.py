@@ -477,6 +477,19 @@ NET_WORTH_UNPRICED_DATES = Gauge(
     "Dates on which reports.net_worth is null because a held currency has no rate",
 )
 
+NET_WORTH_UNANCHORED_ACCOUNTS = Gauge(
+    "moneybin_net_worth_unanchored_accounts",
+    # Nonzero means the latest reports.net_worth total is NULL (Requirement 14);
+    # set by doctor's net_worth_unanchored_accounts check.
+    "Accounts in net worth holding value with no balance observation",
+)
+
+NET_WORTH_STALE_BALANCE_ACCOUNTS = Gauge(
+    "moneybin_net_worth_stale_balance_accounts",
+    "Accounts in net worth whose latest observed balance is older than "
+    "doctor.balance_staleness_threshold_days",
+)
+
 # ── Categorization ────────────────────────────────────────────────────────────
 
 CATEGORIZATION_AUTO_RATE = Gauge(
@@ -1237,6 +1250,8 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_profile_currencies": "Multi-currency integrity",
     "moneybin_unknown_currency_rows": "Multi-currency integrity",
     "moneybin_net_worth_unpriced_dates": "Multi-currency integrity",
+    "moneybin_net_worth_unanchored_accounts": "Multi-currency integrity",
+    "moneybin_net_worth_stale_balance_accounts": "Multi-currency integrity",
     # Exchange rates
     "moneybin_fx_rate_rows_written": "Exchange rates",
     "moneybin_fx_rate_resolution": "Exchange rates",

@@ -284,7 +284,7 @@ def test_mixed_profile_guard() -> None:
         # Doctor fails naming exactly the three.
         result = _invariant(db, "net_worth_unanchored_accounts")
         assert result.status == "fail"
-        assert set(result.affected_ids) == candidates
+        assert set(result.affected_ids) == {f"account:{c}" for c in candidates}
 
         # S9: archive m2b3_cash before the spine max.
         archived_on = spine_max - timedelta(days=5)
@@ -311,9 +311,9 @@ def test_mixed_profile_guard() -> None:
         )
         cash_rows = [r for r in ranged_span if r["account_id"] == "m2b3_cash"]
         assert [r["balance_date"] for r in cash_rows] == [archived_on]
-        assert set(_invariant(db, "net_worth_unanchored_accounts").affected_ids) == (
-            candidates - {"m2b3_cash"}
-        )
+        assert set(_invariant(db, "net_worth_unanchored_accounts").affected_ids) == {
+            f"account:{c}" for c in candidates - {"m2b3_cash"}
+        }
 
 
 def test_wholly_unanchored_profile_guard() -> None:
@@ -348,7 +348,7 @@ def test_wholly_unanchored_profile_guard() -> None:
 
         result = _invariant(db, "net_worth_unanchored_accounts")
         assert result.status == "fail"
-        assert sorted(result.affected_ids) == ["w_broker", "w_cash"]
+        assert sorted(result.affected_ids) == ["account:w_broker", "account:w_cash"]
 
         # S4/S11: archive both in the past; unranged empties, the range still answers.
         archived_on = today - timedelta(days=40)
@@ -440,7 +440,7 @@ def test_liquidated_investment_accounts_still_fail_the_guard() -> None:
         result = _invariant(db, "net_worth_unanchored_accounts")
         assert result.status == "fail"
         assert sorted(result.affected_ids) == [
-            "liq_checking",
-            "liq_empty",
-            "liq_zero_row",
+            "account:liq_checking",
+            "account:liq_empty",
+            "account:liq_zero_row",
         ]

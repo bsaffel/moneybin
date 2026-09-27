@@ -158,7 +158,8 @@ this spec's to close.
 12. **Observability.** The rate spine's row and coverage counts join the existing
     `FX_RATE_*` family in `src/moneybin/metrics/registry.py:397-445`; the two
     migrated reports keep the report-execution metrics every catalog report
-    already emits.
+    already emits. M2B.3 adds two gauges beside `NET_WORTH_UNPRICED_DATES`
+    (deviation 8).
 13. **A report's id, its view, and its CLI command share one name.** The name
     half of `report_id` is the view's name; `ReportSpec.cli_name` already
     derives the Typer command from it by swapping underscores for hyphens
@@ -2316,6 +2317,17 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
    there and behaviour is unchanged; the expression is kept identical so the
    two views cannot drift. Pinned by
    `test_unranged_reads_date_a_candidate_at_the_latest_eligible_day`.
+8. **Both doctor checks publish a gauge and mask their account ids.** The
+   plan gave the two checks no metric, so a NULL total was visible only by
+   running `system doctor`. `moneybin_net_worth_unanchored_accounts` (nonzero
+   means the latest total is NULL) and `moneybin_net_worth_stale_balance_accounts`
+   are set on every run that reads its view, 0 included, and left untouched
+   when the check skips, so a scrape reads stale rather than a false zero.
+   Both checks also return `affected_ids` through
+   `_masked_account_affected_ids` (`account:<id>`), as `account_archive_intent_ambiguous`
+   does: `core.dim_accounts.account_id` is still the raw source key for an
+   account the resolver has not linked, and `affected_ids` reaches the JSON
+   output and the MCP response unmasked (`.claude/rules/identifiers.md`).
 
 Three controller rulings made while implementing M2B.3, not anticipated by
 the plan above:

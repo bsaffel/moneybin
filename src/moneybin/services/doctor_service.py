@@ -25,6 +25,8 @@ from moneybin.investments.source_overlap import investment_source_overlap
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
     FX_RATE_SPINE_ROWS,
+    NET_WORTH_STALE_BALANCE_ACCOUNTS,
+    NET_WORTH_UNANCHORED_ACCOUNTS,
     NET_WORTH_UNPRICED_DATES,
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
@@ -2138,6 +2140,7 @@ class DoctorService:
                 affected_ids=[],
             )
         unanchored = [str(r[0]) for r in rows]
+        NET_WORTH_UNANCHORED_ACCOUNTS.set(len(unanchored))
         if unanchored:
             return InvariantResult(
                 name=name,
@@ -2150,7 +2153,7 @@ class DoctorService:
                     "with `moneybin accounts set <account_id> --exclude`, then run "
                     "`moneybin refresh` so the total and this check pick it up"
                 ),
-                affected_ids=unanchored,
+                affected_ids=_masked_account_affected_ids(unanchored),
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
@@ -2185,6 +2188,7 @@ class DoctorService:
                 affected_ids=[],
             )
         stale = [str(aid) for aid, age in rows if is_stale(int(age), threshold)]
+        NET_WORTH_STALE_BALANCE_ACCOUNTS.set(len(stale))
         if stale:
             return InvariantResult(
                 name=name,
@@ -2196,7 +2200,7 @@ class DoctorService:
                     "record one with `moneybin accounts balance assert` and run "
                     "`moneybin refresh`"
                 ),
-                affected_ids=stale,
+                affected_ids=_masked_account_affected_ids(stale),
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
