@@ -183,7 +183,7 @@ def accounts_balance_assert(
                     ("Date", str(parsed_date)),
                     (
                         "Balance",
-                        f"{format_money(result.assertion.balance, 'balance')} "
+                        f"{format_money(result.assertion.balance, 'balance', minus=policy.minus)} "
                         f"{currency_label(result.assertion.currency_code)}",
                     ),
                 ],

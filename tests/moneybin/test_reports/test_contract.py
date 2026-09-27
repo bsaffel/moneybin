@@ -502,6 +502,17 @@ def test_numeric_and_money_kind_together_are_refused() -> None:
         )
 
 
+def test_grouped_without_numeric_is_refused() -> None:
+    """Thousands grouping refines a bare-number column; it is not a third state."""
+    with pytest.raises(ValueError, match="grouped"):
+        OutputColumn(
+            name="rows",
+            description="Count.",
+            data_class=DataClass.AGGREGATE,
+            grouped=True,
+        )
+
+
 def test_a_currency_basis_outside_the_vocabulary_is_refused() -> None:
     """The same runtime gate as `money_kind`, for the same reason.
 

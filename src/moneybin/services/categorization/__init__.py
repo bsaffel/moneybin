@@ -442,9 +442,13 @@ class CategorizationService:
         INSERT through ``CategorizationRulesRepo`` (paired audit, Invariant 10).
         When ``reapply=True`` and at least one rule was newly created,
         ``categorize_pending`` runs so the new rules fan out to uncategorized
-        rows immediately, and the result's ``recategorized`` carries that
-        sweep's total (every active rule, not only the ones just created) —
-        ``None`` when no sweep ran. ``actor`` is threaded to the audit rows
+        rows immediately, and the result's ``recategorized`` carries the rows
+        that sweep's *rule* pass categorized (every active rule, not only the
+        ones just created) — ``None`` when no sweep ran. The same sweep also
+        runs the merchant and provider passes; their rows are not counted,
+        because the CLI and MCP present this figure as what rules did, and a
+        merchant match would otherwise make a new rule look effective.
+        ``actor`` is threaded to the audit rows
         (CLI/MCP pass their surface; default ``"system"``).
 
         ``allow_broad`` overrides the unselective-``contains`` refusal (a
@@ -456,7 +460,7 @@ class CategorizationService:
         )
         if reapply and result.created > 0:
             counts = self.categorize_pending()
-            result.recategorized = counts["total"]
+            result.recategorized = counts["rule"]
         return result
 
     def deactivate_rule(

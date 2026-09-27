@@ -94,6 +94,7 @@ _REPORT_ID = "core:net_worth_accounts"
             "Days since the balance was last actually observed; 0 on an observed day.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "reconciliation_delta",

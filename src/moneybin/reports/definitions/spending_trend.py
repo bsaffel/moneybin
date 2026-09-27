@@ -92,7 +92,11 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
         ),
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn(
-            "txn_count", "Outflow transaction count.", DataClass.AGGREGATE, numeric=True
+            "txn_count",
+            "Outflow transaction count.",
+            DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "total_spend",

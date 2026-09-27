@@ -371,6 +371,16 @@ def numeric_columns(spec: ReportSpec) -> tuple[str, ...]:
     return tuple(column.name for column in spec.columns if column.numeric)
 
 
+def grouped_columns(spec: ReportSpec) -> tuple[str, ...]:
+    """The `numeric` columns that are counts, for `build_rows(grouped=...)`.
+
+    A strict subset of :func:`numeric_columns`: `.claude/rules/cli.md` groups
+    a row count by thousands and prints a rate or a per-unit price exactly as
+    stored, so the two are declared apart and never equated here.
+    """
+    return tuple(column.name for column in spec.columns if column.grouped)
+
+
 def render_report_result(
     result: CatalogReportResult,
     output: OutputFormat,
@@ -378,6 +388,7 @@ def render_report_result(
     cli_actor: str,
     money: Mapping[str, Money] | None = None,
     numeric: Sequence[str] | None = None,
+    grouped: Sequence[str] | None = None,
     quiet: bool = False,
     columns: Sequence[str] | None = None,
     fit: bool = False,
@@ -395,7 +406,9 @@ def render_report_result(
 
     ``numeric`` carries the report's bare-number declarations, from
     :func:`numeric_columns` — requirement 9's right-alignment for a column
-    that is a count or a score rather than an amount.
+    that is a count or a score rather than an amount. ``grouped`` is the
+    count subset of it, from :func:`grouped_columns`, that also gets thousands
+    grouping; a rate declared ``numeric`` alone prints as stored.
 
     ``columns`` is the text branch's narrowed view, from
     :func:`visible_columns`. It never reaches the JSON envelope — requirement 8
@@ -431,7 +444,7 @@ def render_report_result(
             ],
             money=money,
             numeric=numeric,
-            grouped=numeric,
+            grouped=grouped,
             total_columns=len(result.columns),
             fit=fit,
             terminal=policy,
@@ -506,6 +519,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 cli_actor=cli_actor,
                 money=money_columns(spec),
                 numeric=numeric_columns(spec),
+                grouped=grouped_columns(spec),
                 quiet=quiet,
                 columns=view.columns,
                 fit=view.fit,

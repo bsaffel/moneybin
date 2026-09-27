@@ -220,7 +220,12 @@ def render_human_text(result: RenderableType, *, terminal: TerminalPolicy) -> st
         color_system="standard" if terminal.style else None,
     )
     renderable = result.table if isinstance(result, _RowsAnswer) else result
-    lines = console.render_lines(renderable, pad=False, new_lines=True)
+    # `render` + `split_lines`, not `render_lines`: the latter crops every
+    # line to the console width, which would silently truncate a `build_code`
+    # token wider than the terminal. Nothing else can exceed the width — a
+    # table is sized to it and prose wraps inside it — so the only wider line
+    # is one that asked to stay whole, and the pager decides how to show it.
+    lines = Segment.split_lines(console.render(renderable, console.options))
     safe_segments = (
         Segment(
             _TERMINAL_CONTROL.sub("", _TERMINAL_ESCAPE.sub("", segment.text)),
@@ -228,15 +233,18 @@ def render_human_text(result: RenderableType, *, terminal: TerminalPolicy) -> st
             segment.control,
         )
         for line in lines
-        for segment in line
+        for segment in (*line, Segment.line())
     )
     with console.capture() as capture:
-        console.print(Segments(safe_segments), end="")
+        # crop=False for the same reason as `render` above: `print` crops to
+        # the console width by default, and would take the tail of the one
+        # line the block deliberately left wider than the terminal.
+        console.print(Segments(safe_segments), end="", crop=False)
     # A `Table.grid()` cell (`build_summary`'s label/value layout) pads a
     # shorter value with spaces to the column's own widest row, so the
     # padding lives inside the table's segments before this function ever
-    # sees them — `render_lines(pad=False)` above controls only padding to
-    # the *console* width and cannot remove it. Stripped per physical line
+    # sees them — `render` above never pads to the *console* width and cannot
+    # remove it either. Stripped per physical line
     # rather than from the joined text so an intentional blank line survives.
     text = "\n".join(line.rstrip(" ") for line in capture.get().split("\n"))
     return (
@@ -820,16 +828,17 @@ def build_summary(
 def build_code(text: str) -> RenderableType:
     """A code block — SQL, a template — carried inside one answer.
 
-    Plain `Text`, so a line longer than the terminal wraps at a space and
-    never inside a token: joining the wrapped lines with single spaces gives
-    the statement back. Not `no_wrap` with `overflow="ignore"`, because
-    `render_human_text` crops every line to the console width and a cropped
-    statement loses its tail with no mark. Not `build_summary`, whose label
-    grid pads and reflows a value as prose.
+    `overflow="ignore"`, which in Rich also means no wrapping: every line
+    reaches the terminal exactly as written. The default `fold` would break
+    an identifier wider than the terminal across two physical lines, and a
+    statement copied back from that no longer parses — a token is the one
+    thing a code block must never split. `render_human_text` does not crop,
+    so a line wider than the terminal is the pager's to show, not lost. Not
+    `build_summary`, whose label grid pads and reflows a value as prose.
     """
     from rich.text import Text
 
-    return Text(text)
+    return Text(text, overflow="ignore")
 
 
 def compose_human_result(

@@ -187,7 +187,9 @@ def reports_run(
     )
     from moneybin.reports._framework.cli_register import (
         column_view,
+        grouped_columns,
         money_columns,
+        numeric_columns,
         render_report_result,
     )
 
@@ -208,6 +210,8 @@ def reports_run(
             # and another through `reports run spending-trend`.
             spec = catalog.resolve(handle)
             money = money_columns(spec)
+            numeric = numeric_columns(spec)
+            grouped = grouped_columns(spec)
             result = catalog.execute(
                 db,
                 report_id=handle,
@@ -227,6 +231,8 @@ def reports_run(
         output,
         cli_actor="reports_run",
         money=money,
+        numeric=numeric,
+        grouped=grouped,
         quiet=quiet,
         columns=view.columns,
         fit=view.fit,

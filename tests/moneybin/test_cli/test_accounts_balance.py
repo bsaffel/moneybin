@@ -213,6 +213,69 @@ class TestAccountsBalanceAssert:
     """Tests for `accounts balance assert`."""
 
     @pytest.mark.unit
+    def test_assert_receipt_uses_the_terminal_minus(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An ASCII terminal gets the policy's `-`, never the Unicode minus."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        assertion = BalanceAssertionRow(
+            account_id="acct_a",
+            assertion_date=date(2026, 1, 31),
+            balance=Decimal("-1234.56"),
+            notes=None,
+            created_at="2026-01-31T00:00:00Z",
+            currency_code="USD",
+        )
+        mock_service = MagicMock(spec=BalanceService)
+        mock_service.assert_balance.return_value = BalanceAssertionPayload(
+            assertion=assertion
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.accounts.balance.get_terminal_policy",
+            lambda: TerminalPolicy(
+                output="text",
+                interactive=False,
+                page=False,
+                color=False,
+                style=False,
+                animate_progress=False,
+                stage_chatter=False,
+                ascii=True,
+                width=80,
+                height=24,
+                symbols=TerminalSymbols(
+                    success="OK", attention="!", failure="X", action=">"
+                ),
+                minus="-",
+            ),
+        )
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.balance.BalanceService",
+                return_value=mock_service,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                # `--` ends option parsing so the negative amount is an argument.
+                [
+                    "accounts",
+                    "balance",
+                    "assert",
+                    "acct_a",
+                    "2026-01-31",
+                    "--",
+                    "-1234.56",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "-1,234.56 USD" in result.stdout
+        assert "\u2212" not in result.stdout
+
+    @pytest.mark.unit
     def test_assert_writes(self, runner: CliRunner) -> None:
         # spec=BalanceService allows "assert_balance" — MagicMock rejects attribute
         # names starting with "assert" unless the mock is spec'd to a real class.

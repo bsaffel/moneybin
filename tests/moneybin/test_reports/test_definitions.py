@@ -990,3 +990,31 @@ def test_every_bare_number_column_declares_numeric() -> None:
     )
 
     assert undeclared == [], f"bare-number columns with no declaration: {undeclared}"
+
+
+#: `numeric` columns that are counts without a `_count` suffix.
+_COUNTS_BY_NAME = frozenset({"active_months", "days_since_observed"})
+
+
+def test_every_count_is_grouped_and_nothing_else_is() -> None:
+    """`.claude/rules/cli.md`: `grouped=` is the count subset of `numeric=`.
+
+    A row count reads `1,381` beside an amount that reads `1,381.00`; a rate
+    at or above 1000 (an IDR or JPY valuation) prints as stored, never
+    `16,000.1234`. Equating the two sets grouped `realized_fx`'s rates once.
+    """
+    numeric = [
+        (spec.name, column)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+        if column.numeric
+    ]
+    grouped = sorted((name, c.name) for name, c in numeric if c.grouped)
+    counts = sorted(
+        (name, c.name)
+        for name, c in numeric
+        if c.name.endswith("_count") or c.name in _COUNTS_BY_NAME
+    )
+
+    assert grouped == counts
+    assert ("realized_fx", "executed_rate") not in grouped

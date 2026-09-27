@@ -84,6 +84,7 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
             "Matching charge count in the observation window.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "avg_amount",

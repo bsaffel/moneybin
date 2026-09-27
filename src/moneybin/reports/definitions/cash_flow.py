@@ -53,6 +53,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
             "Non-transfer transaction count.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "inflow",

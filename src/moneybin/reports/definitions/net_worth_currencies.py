@@ -94,12 +94,14 @@ def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> Non
             "Accounts contributing on this date in this currency.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "carried_forward_count",
             "How many of them are carried forward.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "total_assets",

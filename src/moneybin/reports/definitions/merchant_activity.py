@@ -57,19 +57,25 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
         OutputColumn("first_seen", "Earliest transaction date.", DataClass.TXN_DATE),
         OutputColumn("last_seen", "Latest transaction date.", DataClass.TXN_DATE),
         OutputColumn(
-            "txn_count", "Transaction count.", DataClass.AGGREGATE, numeric=True
+            "txn_count",
+            "Transaction count.",
+            DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "active_months",
             "Distinct active calendar-month count.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "account_count",
             "Distinct account count.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "total_inflow",

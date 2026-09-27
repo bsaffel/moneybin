@@ -236,14 +236,24 @@ class OutputColumn:
     polarity: Polarity | None = None
     """Required when ``money_kind`` is ``"delta"``; refused on the other kinds."""
     numeric: bool = False
-    """A bare number that is not money — a count, a score, an interval in days.
+    """A bare number that is not money — a count, a rate, an interval in days.
 
-    Right-aligned and thousands-grouped like a money column
+    Right-aligned and never folded, like a money column
     (``cli_register.py``'s ``numeric_columns`` feeds ``build_rows(numeric=...)``),
     but through the plain-number path so `format_money` never rounds or signs
-    it. Mutually exclusive with ``money_kind`` per `.claude/rules/cli.md`'s
+    it, and printed exactly as stored — thousands grouping is ``grouped``
+    below. Mutually exclusive with ``money_kind`` per `.claude/rules/cli.md`'s
     "Two declarations": every column holding a bare number declares one or the
     other, never both.
+    """
+    grouped: bool = False
+    """A ``numeric`` column that is a count, grouped by thousands.
+
+    ``1,381`` beside an amount that reads ``1,381.00``. Declared on top of
+    ``numeric`` rather than inferred from the type, because a ``DECIMAL`` FX
+    rate and an integer row count share a Python type but not a convention:
+    `.claude/rules/cli.md` reserves grouping for counts and keeps a rate or a
+    per-unit price out of it. Requires ``numeric``.
     """
     currency_basis: CurrencyBasis | None = None
     """``None`` (default) — this amount is in the row's own currency, the one
@@ -319,6 +329,11 @@ class OutputColumn:
             raise ValueError(
                 f"column {self.name!r} declares both money_kind and numeric; "
                 "a column holding a bare number is one or the other"
+            )
+        if self.grouped and not self.numeric:
+            raise ValueError(
+                f"column {self.name!r} declares grouped without numeric; "
+                "thousands grouping refines a bare-number column"
             )
         if self.currency_basis is not None and self.data_class not in MONEY_CLASSES:
             raise ValueError(

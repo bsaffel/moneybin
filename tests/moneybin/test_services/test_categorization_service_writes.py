@@ -664,6 +664,42 @@ class TestCreateRulesRecategorizedCount:
         assert row == (2,)
 
     @pytest.mark.unit
+    def test_reapply_counts_the_rule_pass_not_the_whole_cascade(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sweep also runs merchant and provider passes; those rows are not rules'.
+
+        Reporting the cascade total made a new rule look effective when only
+        a merchant mapping matched (Codex on #649).
+        """
+        svc = CategorizationService(db)
+
+        def sweep(*, include_provider_native: bool = True) -> dict[str, int]:
+            return {
+                "rule": 1,
+                "merchant": 3,
+                "plaid": 0,
+                "source_category_map": 0,
+                "total": 4,
+            }
+
+        monkeypatch.setattr(
+            svc._orchestrator,  # pyright: ignore[reportPrivateUsage]  # the sweep's counts, not the insert, are under test
+            "categorize_pending",
+            sweep,
+        )
+        items = [
+            CategorizationRuleInput(
+                name="Amazon", merchant_pattern="AMAZON", category="Shopping"
+            )
+        ]
+
+        result = svc.create_rules(items, reapply=True)
+
+        assert result.created == 1
+        assert result.recategorized == 1
+
+    @pytest.mark.unit
     def test_recategorized_is_none_without_reapply(self, db: Database) -> None:
         items = [
             CategorizationRuleInput(

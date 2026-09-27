@@ -154,18 +154,21 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "Accounts contributing on this date, across every currency.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "carried_forward_count",
             "How many of them are carried forward rather than observed.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "currency_count",
             "Distinct currencies held on this date; unknown counts as one.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "unpriced_currency_count",
@@ -173,6 +176,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "below are complete.",
             DataClass.AGGREGATE,
             numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "total_assets",

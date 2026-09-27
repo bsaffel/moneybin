@@ -35,6 +35,8 @@ from moneybin.cli.render import (
     Style,
     _fit_columns,  # pyright: ignore[reportPrivateUsage]  # the fit is a property, not a rendering
     _table_width,  # pyright: ignore[reportPrivateUsage]  # so the check agrees with it on "fits"
+    build_code,
+    build_rows,
     build_summary,
     color_enabled,
     format_money,
@@ -1948,3 +1950,54 @@ def test_every_curated_default_fits_eighty_columns_on_headers_alone() -> None:
         if _table_width([len(name) for name in default]) > 80
     }
     assert too_wide == {}
+
+
+def test_a_code_block_never_splits_a_token_wider_than_the_terminal() -> None:
+    """`build_code` output is the statement, byte for byte.
+
+    Rich's default `fold` breaks an identifier wider than the terminal across
+    two physical lines, and a statement copied back from that no longer
+    parses. The block neither wraps nor folds, and `render_human_text` does
+    not crop it, so the whole token reaches the pager.
+    """
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    narrow = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=20,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+    statement = "SELECT this_is_a_very_long_identifier_name, b\nFROM t"
+
+    rendered = render_human_text(build_code(statement), terminal=narrow)
+
+    assert rendered == statement + "\n"
+
+
+def test_build_rows_groups_only_the_declared_count_subset() -> None:
+    """A rate declared `numeric` alone prints as stored beside a grouped count."""
+    policy = _ascii_terminal_policy()
+
+    rendered = render_human_text(
+        build_rows(
+            ["txn_count", "valuation_rate"],
+            [(1381, Decimal("16000.1234"))],
+            numeric=["txn_count", "valuation_rate"],
+            grouped=["txn_count"],
+            terminal=policy,
+        ),
+        terminal=policy,
+    )
+
+    assert "1,381" in rendered
+    assert "16000.1234" in rendered
+    assert "16,000.1234" not in rendered

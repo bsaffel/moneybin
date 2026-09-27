@@ -1658,8 +1658,9 @@ def test_explain_prints_sql_verbatim_never_reflowed() -> None:
 
     Long identifiers used to break mid-token when the SQL went through
     `build_summary`'s label grid the same way a long path did. As a code
-    block inside the one paged answer it wraps only at a space, so joining
-    the wrapped lines gives the statement back exactly.
+    block inside the one paged answer it is printed verbatim — neither
+    wrapped, folded, nor cropped at the terminal width — so the statement
+    comes back exactly.
     """
     long_sql = (
         "SELECT core.dim_accounts.account_id_with_a_very_long_column_alias_name "
