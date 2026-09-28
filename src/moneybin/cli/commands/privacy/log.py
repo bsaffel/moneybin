@@ -64,7 +64,16 @@ def privacy_log(
     emit_human_result(
         compose_human_result([
             build_summary([("Returned", str(len(payload.events)))], title=heading),
-            build_rows(["When", "Action", "Actor", "Details"], rows),
+            build_rows(
+                ["When", "Action", "Actor", "Details"],
+                rows,
+                # `When`, `Action`, and `Actor` are each one unbroken token
+                # (a timestamp, `consent.grant`, `cli.privacy_log`) with no
+                # space to fold on; `Details` is the one column built from
+                # `key=value` pairs joined by spaces, so it is the column
+                # that should give way in a narrow terminal.
+                nowrap=("When", "Action", "Actor"),
+            ),
         ]),
         policy=get_terminal_policy(no_pager=no_pager),
         finite_read=True,

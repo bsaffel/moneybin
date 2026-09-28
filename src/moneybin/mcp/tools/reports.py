@@ -9,7 +9,7 @@ from pydantic import Field, JsonValue
 
 from moneybin import error_codes
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import UserError, next_step_text
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.reports import ReportsPayload
 from moneybin.privacy.sensitivity import Sensitivity, get_max_rows, tier_to_sensitivity
@@ -94,7 +94,7 @@ def reports(
         total_count=result.total_count,
         returned_count=len(payload.rows),
         classes_returned=result.classes_returned,
-        actions=result.actions or None,
+        actions=[next_step_text(action) for action in result.actions] or None,
         period=result.period,
         display_currency=result.display_currency,
         degraded=result.degraded,

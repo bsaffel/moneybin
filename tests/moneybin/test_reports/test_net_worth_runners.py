@@ -470,11 +470,13 @@ def test_net_worth_default_columns_pin_the_fail_closed_guard_both_ways() -> None
     )
 
     assert _default_columns({}) == (
+        "home_currency_code",
         "balance_date",
         "unpriced_currency_count",
         "net_worth",
     )
     assert _default_columns({"interval": "monthly"}) == (
+        "home_currency_code",
         "balance_date",
         "unpriced_currency_count",
         "net_worth",

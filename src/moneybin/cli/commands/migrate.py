@@ -13,7 +13,7 @@ from moneybin.cli.output import (
     quiet_option,
 )
 from moneybin.cli.progress import operation_progress
-from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import classify_user_error
@@ -37,11 +37,16 @@ def _emit_migration_text(
     no_pager: bool = False,
 ) -> None:
     """Render one migration answer or receipt through the shared boundary."""
+    policy = get_terminal_policy(no_pager=no_pager)
     emit_human_result(
         compose_human_result([
-            build_summary([(key, str(value)) for key, value in pairs], title=title)
+            build_summary(
+                [(key, str(value)) for key, value in pairs],
+                title=title,
+                terminal=policy,
+            )
         ]),
-        policy=get_terminal_policy(no_pager=no_pager),
+        policy=policy,
         finite_read=finite_read,
         no_pager=no_pager,
         receipt=not finite_read,
@@ -245,22 +250,6 @@ def migrate_status(
                 ("Pending migrations", len(pending)),
             ]
             pairs.extend(
-                (
-                    "Applied",
-                    (
-                        f"V{migration.version:03d} {migration.filename} "
-                        f"({'success' if migration.success else 'failed'})"
-                        + (
-                            f", {migration.execution_ms}ms"
-                            if migration.execution_ms is not None
-                            else ""
-                        )
-                        + f", {migration.applied_at}"
-                    ),
-                )
-                for migration in applied
-            )
-            pairs.extend(
                 ("Pending", f"{migration.filename} ({migration.file_type})")
                 for migration in pending
             )
@@ -271,6 +260,46 @@ def migrate_status(
                 (f"Version {component}", version)
                 for component, version in sorted(versions.items())
             )
-            _emit_migration_text(
-                "Migration status", pairs, finite_read=True, no_pager=no_pager
+            policy = get_terminal_policy(no_pager=no_pager)
+            parts: list[object] = [
+                build_summary(
+                    [(key, str(value)) for key, value in pairs],
+                    title="Migration status",
+                    terminal=policy,
+                )
+            ]
+            if applied:
+                # A table, not one `Applied:` summary pair per migration: the
+                # pair form printed an unbounded `applied_at` timestamp beside
+                # a long filename, wrapping mid-token at 100 columns.
+                # `nowrap=` keeps the timestamp whole; a table also stops the
+                # per-row label repeating "Applied" N times.
+                parts.append(
+                    build_rows(
+                        ["id", "applied at", "name"],
+                        [
+                            (
+                                f"V{migration.version:03d}",
+                                str(migration.applied_at),
+                                (
+                                    f"{migration.filename} "
+                                    f"({'success' if migration.success else 'failed'})"
+                                    + (
+                                        f", {migration.execution_ms}ms"
+                                        if migration.execution_ms is not None
+                                        else ""
+                                    )
+                                ),
+                            )
+                            for migration in applied
+                        ],
+                        nowrap=("applied at",),
+                        terminal=policy,
+                    )
+                )
+            emit_human_result(
+                compose_human_result(parts),
+                policy=policy,
+                finite_read=True,
+                no_pager=no_pager,
             )

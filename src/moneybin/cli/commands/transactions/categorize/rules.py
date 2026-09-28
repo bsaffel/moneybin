@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
@@ -25,7 +26,12 @@ from moneybin.cli.render import (
     compose_human_result,
     render_note,
 )
-from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    abort_cli_error,
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.limits import RULE_PRIORITY_MAX, RULE_PRIORITY_MIN
@@ -149,7 +155,9 @@ def rules_apply() -> None:
     )
 
 
-def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
+def _warn_rule_create_rows(
+    result: "RuleCreationResult", *, carry: Sequence[str] = ()
+) -> None:
     """Report each failed and each refused row on stderr.
 
     Per-row warnings always surface — they're diagnostic, not informational —
@@ -157,19 +165,58 @@ def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
     than the logger: each names the rule its author named, and the log pipeline
     persists to disk where `SanitizedLogFormatter` cannot recognize
     user-authored text.
+
+    The exact-match rerun carries the refused row's own scoping
+    (`account_id`, amount bounds, a non-default `priority`), read from the
+    row itself so a `--from-file` batch keeps each rule's constraints, plus
+    ``carry`` — the caller's command-level flags (`--reapply`) — so the
+    suggested command creates the rule that was refused, not a broader one:
+    an account-scoped proposal must not come back account-agnostic.
     """
     for err in result.error_details:
         render_note(
             f"Attention: {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
             warn=True,
         )
+        pattern = err.get("merchant_pattern")
+        category = err.get("category")
+        if pattern is not None and category is not None:
+            args: list[object] = [
+                "transactions",
+                "categorize",
+                "rules",
+                "create",
+                err.get("name", ""),
+                "--pattern",
+                pattern,
+                "--category",
+                category,
+            ]
+            subcategory = err.get("subcategory")
+            if subcategory:
+                args.extend(["--subcategory", subcategory])
+            args.extend(["--match-type", "exact"])
+            if account_id := err.get("account_id"):
+                args.extend(["--account-id", account_id])
+            if min_amount := err.get("min_amount"):
+                args.extend(["--min-amount", min_amount])
+            if max_amount := err.get("max_amount"):
+                args.extend(["--max-amount", max_amount])
+            if (priority := err.get("priority")) and priority != "100":
+                args.extend(["--priority", priority])
+            args.extend(carry)
+            render_note(
+                f"› Rerun with an exact match: {generated_cli_command(*args)}",
+                warn=True,
+            )
     for conflict in result.conflict_details:
-        render_note(
-            f"Attention: {conflict.name}: {conflict.reason} "
-            f"Decide it with `moneybin transactions categorize rules resolve "
-            f"{conflict.conflict_id} --replace|--reprioritize N|--cancel`.",
-            warn=True,
+        render_note(f"Attention: {conflict.name}: {conflict.reason}", warn=True)
+        resolve_cmd = generated_cli_command(
+            "transactions", "categorize", "rules", "resolve", conflict.conflict_id
         )
+        render_note(f"› Decide it: {resolve_cmd} --replace", warn=True)
+        render_note(f"› Or: {resolve_cmd} --reprioritize <N>", warn=True)
+        render_note(f"› Or: {resolve_cmd} --cancel", warn=True)
 
 
 @app.command("create")
@@ -309,6 +356,10 @@ def rules_create(
                 validated, reapply=reapply, actor="cli", allow_broad=allow_broad
             )
         result.merge_parse_errors(parse_errors)
+        # The command-level flag a refused rule's exact-match rerun keeps. Its
+        # scoping (account, amounts, priority) rides on the refused row itself,
+        # so a --from-file batch keeps each rule's own.
+        carry: list[str] = ["--reapply"] if reapply else []
         if result.conflicts > 0 and result.created == 0:
             # An error promises the call changed nothing. This batch routes
             # each row independently, so one call can create a rule *and*
@@ -318,7 +369,7 @@ def rules_create(
             # The notes go out first: the refusal below names no rule — a rule
             # name is its author's text and this message reaches the logger —
             # so they carry the conflict id the resolve command needs.
-            _warn_rule_create_rows(result)
+            _warn_rule_create_rows(result, carry=carry)
             raise UserError(
                 "A rule in this batch matches the same transactions as an "
                 "active rule and assigns a different category.",
@@ -350,28 +401,41 @@ def rules_create(
         )
         render_or_json(envelope, output, cli_actor="rules_create")
     else:
+        policy = get_terminal_policy()
+        refused = bool(result.skipped or result.conflicts)
+        if result.created > 0 and not refused:
+            title = f"{policy.symbols.success} Rules created"
+        elif result.created > 0:
+            title = f"{policy.symbols.attention} Rules partially created"
+        elif not refused and result.existing > 0:
+            # Every submitted rule already exists and nothing was refused:
+            # re-running the same create is an idempotent success, not a
+            # failure, and the command exits 0.
+            title = f"{policy.symbols.success} Rules already exist"
+        else:
+            # A conflict-only zero-created batch already raised UserError
+            # above, so reaching here means every proposed rule was refused
+            # (or the batch was empty).
+            title = f"{policy.symbols.failure} No rules created"
+        summary_pairs = [
+            ("Created", str(result.created)),
+            ("Existing", str(result.existing)),
+            ("Skipped", str(result.skipped)),
+            ("Conflicts", str(result.conflicts)),
+        ]
+        if result.recategorized is not None:
+            summary_pairs.append((
+                "Recategorized",
+                f"{result.recategorized:,} rows (every active rule, not just this one)",
+            ))
         emit_human_result(
-            compose_human_result([
-                build_summary(
-                    [
-                        ("Created", str(result.created)),
-                        ("Existing", str(result.existing)),
-                        ("Skipped", str(result.skipped)),
-                        ("Conflicts", str(result.conflicts)),
-                    ],
-                    title=(
-                        "Rules partially created"
-                        if result.skipped or result.conflicts
-                        else "Rules created"
-                    ),
-                )
-            ]),
-            policy=get_terminal_policy(),
+            compose_human_result([build_summary(summary_pairs, title=title)]),
+            policy=policy,
             finite_read=False,
             receipt=True,
         )
 
-    _warn_rule_create_rows(result)
+    _warn_rule_create_rows(result, carry=carry)
 
     if result.skipped > 0:
         raise typer.Exit(1)
