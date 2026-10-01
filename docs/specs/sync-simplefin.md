@@ -227,9 +227,10 @@ retire its old wire version only through a separately accepted contract change.
 
 The broker owns all upstream request scheduling, including manual pulls.
 Bridge requests are limited to 90-day ranges, with a five-day overlap on
-successive windows. Use complete UTC days: each exclusive end is midnight
-at the start of the current day. Initial and forced retrieval request the
-latest 90 complete days. An explicit `history_start` requests older recovery,
+successive windows. Use complete UTC days: every boundary is UTC midnight, and
+no exclusive end is later than the start of the current day. Initial and
+forced retrieval request the latest 90 complete days. An explicit
+`history_start` requests older recovery,
 including UTC midnight on that date; reject future dates and conflicting
 `force`/`history_start` inputs. Ordinary incremental work advances from the
 acknowledged forward watermark minus the overlap. Recovery processes recent
@@ -238,6 +239,17 @@ start or job budget is reached. Persist a separate acknowledged backward
 coverage boundary and requested target; a resumed job continues the oldest
 uncompleted window. Forward freshness must not erase unfinished backfill.
 History availability varies; an empty oldest window is not proof of full history.
+
+After a long gap, the latest successful window may be disconnected from the
+older acknowledged interval. Store its two UTC-day boundaries as a second
+contiguous, account-scoped recovery interval. Later jobs refresh that interval
+and descend from its oldest boundary, with five-day overlap, until a successful
+window joins the older interval. Merge the intervals only on receipt-backed ack;
+failed, absent or unacknowledged windows cannot fill the gap. A further long
+pause can create a third island: retain the primary interval and requested
+history target, replace only the disconnected recovery credit with the latest
+acknowledged island, and re-fetch the uncredited middle days. Raw observations
+remain available, but this conservative reset can spend extra requests.
 
 Normal use is one pull per day. Persist a rolling request budget per grant,
 never exceeding 24 account-data requests in 24 hours; retries and backfill count.
