@@ -31,7 +31,11 @@ from moneybin.privacy.payloads.categorize import (
     CategorizeStatsPayload,
     RuleRow,
 )
-from moneybin.services.categorization._shared import plaid_bridge_match_predicate
+from moneybin.services.categorization._shared import (
+    did_you_mean,
+    plaid_bridge_match_predicate,
+    source_category_bridge_match_predicate,
+)
 from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
@@ -105,12 +109,149 @@ class CategorizationStats:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class UnmappedSourceTerm:
+    """One imported category-vocabulary term with no ``app.category_source_map`` row.
+
+    The decision unit for curation is the *term* — the distinct
+    ``(source_origin, category, subcategory)`` triple — not the transaction:
+    many rows can carry the same imported text. ``transaction_count`` is how
+    many transactions mapping this term would categorize on the next sweep;
+    ``suggestions`` are up to 3 ``did_you_mean`` guesses against active
+    MoneyBin category names, for a curator choosing where to map it.
+    """
+
+    source_origin: str
+    category: str
+    subcategory: str | None
+    transaction_count: int
+    suggestions: list[str]
+
+
 class CategorizationQueries:
     """Read-only reporting queries against the categorization tables."""
 
     def __init__(self, db: Database) -> None:
         """Bind the queries collaborator to a database connection."""
         self._db = db
+
+    def _active_category_names(self) -> list[str]:
+        """Distinct active MoneyBin category names, for ``did_you_mean`` suggestions."""
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT category
+                FROM {CATEGORIES.full_name}
+                WHERE is_active = true AND category IS NOT NULL
+                """  # TableRef constant
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        return sorted({str(row[0]) for row in rows})
+
+    def list_unmapped_source_terms(
+        self, *, namespace: str | None = None
+    ) -> list[UnmappedSourceTerm]:
+        """Enumerate distinct imported vocabulary terms with no bridge mapping.
+
+        Reads ``prep.int_transactions__matched`` — the row-grain, pre-merge
+        layer that carries each source row's own ``source_origin`` +
+        ``category``/``subcategory`` — mirroring
+        ``CategorizationOrchestrator._source_category_bridge_candidates``'s
+        choice of layer. A term is unmapped when no
+        ``core.bridge_category_source_map`` row matches it, tested with the
+        same shared predicate the apply path and ``plaid_unmapped`` use, so
+        this enumeration can never disagree with what actually gets applied.
+
+        ``category IS NULL`` or ``source_origin IS NULL`` rows are excluded,
+        matching the apply path's own guards. ``''`` and ``NULL``
+        subcategory collapse into one term via ``COALESCE(..., '')`` in the
+        ``GROUP BY`` — the same sentinel the write side
+        (``CategorySourceMapRepo.upsert``) and read side
+        (``source_category_bridge_match_predicate``) already share, so a
+        term enumerated here binds correctly when resolved.
+
+        ``transaction_count`` counts only what the apply path would write:
+        distinct gold transactions not yet categorized by any source and not
+        already covered by another member's mapping. A transaction carrying
+        two unmapped terms counts under each, since either mapping alone
+        would resolve it. A term with nothing left to resolve is omitted.
+
+        It joins ``transaction_id`` directly rather than resolving
+        ``app.transaction_id_aliases``: ids are forwarded at re-key and never
+        resolved on read (``matching/aliasing.py``), so this live view serves
+        only current ids and every categorization already sits on one. The
+        apply path resolves only because a write must land on a live id.
+
+        ``namespace`` optionally filters to one ``source_origin``. Results
+        are ordered by that count descending, then the term itself, so the
+        biggest wins surface first — per the owner's ruling, curation
+        answers ~17 term-questions, not ~879 row-questions.
+
+        Degrades to an empty list when ``prep.int_transactions__matched``
+        isn't materialized yet, mirroring
+        ``_source_category_bridge_candidates``.
+        """
+        sql = f"""
+            WITH mapped AS (
+                SELECT DISTINCT m.transaction_id
+                FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                    ON {
+            source_category_bridge_match_predicate(
+                "m.source_origin", "m.category", "m.subcategory"
+            )
+        }
+                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
+            )
+            SELECT
+                m.source_origin,
+                m.category,
+                COALESCE(m.subcategory, '') AS subcategory,
+                COUNT(DISTINCT m.transaction_id) AS transaction_count
+            FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
+                ON tc.transaction_id = m.transaction_id
+            WHERE m.category IS NOT NULL
+                AND m.source_origin IS NOT NULL
+                AND tc.transaction_id IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM mapped WHERE mapped.transaction_id = m.transaction_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                    WHERE {
+            source_category_bridge_match_predicate(
+                "m.source_origin", "m.category", "m.subcategory"
+            )
+        }
+                )
+        """  # TableRef constants + code-constant bridge predicate; no user input
+        params: list[object] = []
+        if namespace is not None:
+            sql += " AND m.source_origin = ?"
+            params.append(namespace)
+        sql += """
+            GROUP BY m.source_origin, m.category, COALESCE(m.subcategory, '')
+            ORDER BY transaction_count DESC, m.source_origin, m.category,
+                COALESCE(m.subcategory, '')
+        """
+        try:
+            rows = self._db.execute(sql, params).fetchall()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            return []
+
+        valid_categories = self._active_category_names()
+        return [
+            UnmappedSourceTerm(
+                source_origin=str(source_origin),
+                category=str(category),
+                subcategory=str(subcategory) if subcategory else None,
+                transaction_count=int(transaction_count),
+                suggestions=did_you_mean(str(category), valid_categories),
+            )
+            for source_origin, category, subcategory, transaction_count in rows
+        ]
 
     def _fct_transactions_exists(self) -> bool:
         """Return True if core.fct_transactions is queryable.
