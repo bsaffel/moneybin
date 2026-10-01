@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Data Pipeline
 
 Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. Each section below takes one layer and gives its writer, its models as they are spelled in the repo, and the surface a consumer reads it from.
@@ -542,7 +542,7 @@ $ uv run moneybin system doctor
 ! net_worth_stale_balance — 4 account(s) in net worth have no balance observed in the last 30 days,
 so their balances are carried forward — import a recent statement, sync, or record one with
 `moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
-   Affected: SYN00420001, SYN00420002, SYN00420003, SYN00420004
+   Affected: account:****0001, account:****0002, account:****0003, account:****0004
 
 69 invariants checked across 2,886 transactions — 68 passing, 1 warn, 0 skipped
 ```

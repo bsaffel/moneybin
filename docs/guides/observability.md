@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Observability
 
 What MoneyBin records about itself, how to read it, and what's intentionally NOT recorded. Three surfaces: structured logs (per-profile log files + stderr), persisted metrics (in the `app.metrics` table), and the `system doctor` integrity sweep. The privacy threat model lives in [`threat-model.md`](threat-model.md); this guide is operational.
@@ -187,14 +187,15 @@ A clean sweep prints one line. On the family demo profile, immediately after `mo
 
 ```console
 $ uv run moneybin system doctor
-
 ! net_worth_stale_balance — 4 account(s) in net worth have no balance observed in the last 30 days,
 so their balances are carried forward — import a recent statement, sync, or record one with
 `moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
-   Affected: SYN00420001, SYN00420002, SYN00420003, SYN00420004
+   Affected: account:****0001, account:****0002, account:****0003, account:****0004
 
 69 invariants checked across 2,886 transactions — 68 passing, 1 warn, 0 skipped
 ```
+
+`Affected` prints each account as `account:` and the last four digits of its id (`SYN00420001` shows as `****0001`), so the line identifies the account without printing the id. The trailing HTML comment on the `refresh` line is not CLI output: the docs gate needs it on any transcript line that quotes two commands.
 
 `--verbose` names each invariant that ran, plus the affected IDs on anything failing:
 

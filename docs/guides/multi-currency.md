@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Multi-currency
 
 Every transaction, balance, and investment event keeps the currency it arrived
@@ -147,7 +147,7 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --from-date 2
 ┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
 │ USD                │ 2025-12-27   │                       0 │ 106,066.73 │
 └────────────────────┴──────────────┴─────────────────────────┴────────────┘
-4 of 9 columns shown — --wide for all
+4 of 10 columns shown — --wide for all
 
 › The currency-level breakdown: moneybin --profile cli-ux-international reports net-worth-currencies
 $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
@@ -208,7 +208,7 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --interval mo
 │ USD                │ 2025-11-30   │                       4 │          - │          - │
 │ USD                │ 2025-12-27   │                       0 │ 106,066.73 │          - │
 └────────────────────┴──────────────┴─────────────────────────┴────────────┴────────────┘
-5 of 11 columns shown — --wide for all
+5 of 12 columns shown — --wide for all
 ```
 
 The three next-step hints, five lines at this width, are trimmed above.

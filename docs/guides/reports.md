@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Reports
 
 Ten built-in reports answer the standing questions — what am I worth, where
@@ -69,12 +69,12 @@ $ uv run moneybin reports net-worth --interval monthly --from-date 2025-01-01 --
 │ USD                │ 2025-06-30   │                       0 │ 352,756.07 │ +10,691.70 │
 │ USD                │ 2025-07-31   │                       0 │ 362,791.60 │ +10,035.53 │
 │ USD                │ 2025-08-31   │                       0 │ 381,166.67 │ +18,375.07 │
-│ USD                │ 2025-09-30   │                       0 │ 390,658.51 │  +9,491.84 │
-│ USD                │ 2025-10-31   │                       0 │ 400,802.98 │ +10,144.47 │
+│ USD                │ 2025-09-30   │                       0 │ 390,621.39 │  +9,454.72 │
+│ USD                │ 2025-10-31   │                       0 │ 400,802.98 │ +10,181.59 │
 │ USD                │ 2025-11-30   │                       0 │ 410,815.53 │ +10,012.55 │
 │ USD                │ 2025-12-31   │                       0 │ 420,080.77 │  +9,265.24 │
 └────────────────────┴──────────────┴─────────────────────────┴────────────┴────────────┘
-5 of 11 columns shown — --wide for all
+5 of 12 columns shown — --wide for all
 
 › The single latest-day total: moneybin reports net-worth
 › The account-level breakdown: moneybin reports net-worth-accounts

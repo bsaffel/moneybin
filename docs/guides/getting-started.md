@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Getting started
 
 From a clean machine to a first report and a first question to your AI assistant, in eight steps: install from source, try the synthetic demo, create a profile, import one bank file, check what landed, read the first reports, categorize, and wire the MCP server into a client. Budget about an hour, most of it on your bank's download page.
@@ -136,20 +136,19 @@ The display name is institution, account type, and last four. The account-number
 ```console
 $ uv run moneybin system doctor
 ! categorization_coverage — 100% of the transactions needing a category are uncategorized
-   › [suggested] transactions_categorize_run arguments: {"methods": ["rules", "merchants"]} — Run
-the deterministic categorization cascade (rules + merchants) to raise coverage above the 50%
-threshold. Suggested (not certain) because the cascade applies 0 rows when no active rules or
-merchant mappings match the remaining uncategorized transactions — re-run the doctor after to
-verify.
+   › Consider Run the deterministic categorization cascade (rules + merchants) to raise coverage
+above the 50% threshold. Suggested (not certain) because the cascade applies 0 rows when no active
+rules or merchant mappings match the remaining uncategorized transactions — re-run the doctor after
+to verify.: moneybin transactions categorize run --methods rules,merchants
 ! net_worth_stale_balance — 1 account(s) in net worth have no balance observed in the last 30 days,
 so their balances are carried forward — import a recent statement, sync, or record one with
 `moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
-   Affected: cc9cc9bbd736
+   Affected: account:****0084
 
 69 invariants checked across 20 transactions — 67 passing, 2 warn, 0 skipped
 ```
 
-The one warning is expected on a first import and is step 7; a warn alone keeps the exit status at 0. A `›` line is a next action: the reason first, then a `moneybin` command you can paste into the shell, documented on each command's [reference page](../reference/cli/README.md). A report that masked one of its columns points at `moneybin reports explain` the same way.
+Two warnings are expected on a first import: `categorization_coverage` is step 7, and `net_worth_stale_balance` fires because this statement's balance is already more than 30 days old by the time you read this guide — importing a fresher statement later clears it. `Affected` prints the account as `account:****0084`, the last four digits of its twelve-character id `b640f08f4bdc`, not the id itself. A warn alone keeps the exit status at 0. A `›` line is a next action: the reason first, then a `moneybin` command you can paste into the shell, documented on each command's [reference page](../reference/cli/README.md). A report that masked one of its columns points at `moneybin reports explain` the same way.
 
 ## 6. First reports
 

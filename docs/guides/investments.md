@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Investments
 
 One ledger of investment events is the source of truth. Tax lots, positions, and realized gain or loss are derived from it on every refresh, under one of four cost-basis methods, and nothing derived is ever stored as authoritative. Prices come from the broker's own closes, from Tiingo and CoinGecko, from the trades you recorded, or from a mark you set by hand, and a position with no usable price says so rather than reporting zero.
@@ -250,7 +250,7 @@ The same sale now draws all 50 March shares and 70 of the January 100. Total rea
 
 ## Net worth
 
-`reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and the report reads the assertion only after a rebuild; until both, it is absent from net worth entirely:
+`reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and the report reads the assertion only after a rebuild; until both, it appears on `reports net-worth-accounts` with an empty balance and `reports net-worth` prints no total:
 
 ```console
 $ uv run moneybin accounts balance assert 1b22019bee00 2025-12-31 17125.00 --notes "year-end statement: cash plus positions" --yes
