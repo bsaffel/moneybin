@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Categorization
 
 How MoneyBin categorizes transactions: deterministic rules and merchant mappings first, LLM-assist as the human helper for what's left, source precedence enforced on every write so your manual choices outrank automation. The same workflow is reachable from CLI (`moneybin transactions categorize ...`) and the bounded MCP categorization tools. Both call the same services; the CLI's `--output json` returns the same response envelope MCP returns.
@@ -309,11 +309,12 @@ moneybin transactions categorize rules create "Spotify subscription" \
 ```console
 $ moneybin transactions categorize rules create "Target department store" \
     --pattern "TARGET" --category "Shopping" --subcategory "Department Stores" --reapply
-Rules created
-Created:   1
-Existing:  0
-Skipped:   0
-Conflicts: 0
+✓ Rules created
+Created:       1
+Existing:      0
+Skipped:       0
+Conflicts:     0
+Recategorized: 79 rows (every active rule, not just this one)
 $ moneybin transactions categorize stats
 Categorization coverage
 Transactions:    2,886
@@ -325,7 +326,7 @@ Plaid unmapped:  0
 Scope: excludes transfers, archived and unresolved accounts.
 ```
 
-The create receipt counts rules, not rows: the 79 transactions `--reapply` recategorized appear only in the `By rule:` line of the following `categorize stats`. That line reads as this rule's count only because no other rule was active. `By rule:` totals every rule-sourced categorization and no command reports a per-rule count. `--reapply` re-evaluates every active rule over the uncategorized rows, so on a profile with existing rules even the change in `By rule:` across the create can include rows an older rule newly matched; the count of what one rule touched is not available.
+`Recategorized: 79 rows` counts the whole rule pass, not this rule: it is what the deterministic cascade wrote over the uncategorized rows with every active rule in play, which is why the receipt says so on the line. It equals the following `categorize stats` `By rule:` line here only because no other rule was active. `By rule:` totals every rule-sourced categorization and no command reports a per-rule count. `--reapply` re-evaluates every active rule over the uncategorized rows, so on a profile with existing rules even the change in `By rule:` across the create can include rows an older rule newly matched; the count of what one rule touched is not available.
 
 Without `--reapply` the rule is created and nothing is categorized until the next refresh.
 
@@ -333,15 +334,16 @@ Without `--reapply` the rule is created and nothing is categorized until the nex
 
 ```console
 $ moneybin transactions categorize rules create "Store" --pattern "TO" --category "Shopping"
-Rules partially created
+× No rules created
 Created:   0
 Existing:  0
 Skipped:   1
 Conflicts: 0
-Attention: Store: Pattern 'TO' is too short to be a 'contains' rule — it would match unrelated merchants (e.g. a 2-char pattern like 'TO' matches STORE, AUTO, TOTAL). Use match_type='exact' for a short pattern, or re-run with allow_broad=True to accept the risk.
+Attention: Store: Pattern 'TO' is too short to be a 'contains' rule — it would match unrelated merchants (e.g. a 2-char pattern like 'TO' matches STORE, AUTO, TOTAL). Use an exact match for a short pattern, or allow a broad match explicitly to accept the risk.
+› Rerun with an exact match: moneybin transactions categorize rules create Store --pattern TO --category Shopping --match-type exact
 ```
 
-The `match_type='exact'` and `allow_broad=True` in that message are the MCP field spellings; the CLI equivalents are `--match-type exact` and `--allow-broad`.
+The `›` line is the same command with `--match-type exact` appended, so the exact-match rule can be created without retyping it. `--allow-broad` is the other way out and is not offered as a command: taking the risk is a decision, not a rerun.
 
 **Match outcome.** The first rule that matches in priority order wins. Tie-break for equal `priority` is `created_at ASC` — older rules win ties. Rules write `categorized_by='rule'` (or `auto_rule` for system-promoted rules); the source-precedence guard means a rule write can replace `auto_rule`, `migration`, `ml`, `provider_native`, and `ai` writes, but never a `user` edit.
 
@@ -358,10 +360,10 @@ creation reports success. MoneyBin refuses that.
   `rule_id` back and nothing is written.
 - **Same matcher, different category or subcategory** → a conflict. No rule is
   activated. The refused proposal is recorded in `app.rule_conflicts`, the CLI
-  prints an `Attention:` line naming the conflict id, the existing rule, both
-  categories, and the resolve command, and a call that activated nothing
-  fails with `taxonomy_rule_conflict` — its `details.conflict_ids` names each
-  refusal.
+  prints an `Attention:` line naming the existing rule and both categories
+  followed by one runnable `rules resolve` command per resolution, and a call
+  that activated nothing fails with `taxonomy_rule_conflict` — its
+  `details.conflict_ids` names each refusal.
 
 Sameness is canonical, so a case variant of an existing pattern is the same
 rule, not a second one. It mirrors the matcher exactly, which is why
@@ -373,16 +375,18 @@ invert what it matches.
 
 **Captured run.** With the `TARGET` rule above already active, proposing the lower-case
 same matcher under a different category is refused — creation, queue, and
-resolution in one pass. One output line is trimmed from the first command: the
-`Attention:` line, which names the existing rule `8066f6b1a1e8`, both categories,
-and the conflict id, then offers the three resolutions as a single alternation
-rather than one runnable command —
-`moneybin transactions categorize rules resolve conf_e38b3e951e37141e --replace|--reprioritize N|--cancel` <!-- cli-invocation-ok: quotes the CLI's own alternation hint verbatim -->
-— so nothing is lost by reading the id off `rules list-conflicts` instead.
+resolution in one pass. Nothing is trimmed. The first command names the existing
+rule `9d03925e5ad7` and both categories, then prints one runnable command per
+resolution, so the conflict id need not be read off `rules list-conflicts`
+first. All five of its lines go to stderr.
 
 ```console
 $ moneybin transactions categorize rules create "Target groceries" \
     --pattern "target" --category "Food & Drink" --subcategory "Groceries"
+Attention: Target groceries: Rule 9d03925e5ad7 already matches this pattern and assigns Shopping / Department Stores; the proposal assigns Food & Drink / Groceries.
+› Decide it: moneybin transactions categorize rules resolve conf_055b6a74d03b5ebf --replace
+› Or: moneybin transactions categorize rules resolve conf_055b6a74d03b5ebf --reprioritize <N>
+› Or: moneybin transactions categorize rules resolve conf_055b6a74d03b5ebf --cancel
 × A rule in this batch matches the same transactions as an active rule and assigns a different category.
 $ moneybin transactions categorize rules list-conflicts
 Rule conflicts
@@ -390,11 +394,11 @@ Conflicts: 1
 ┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ conflict              ┃ pattern ┃ assigns                      ┃ wants                    ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ conf_e38b3e951e37141e │ target  │ Shopping / Department Stores │ Food & Drink / Groceries │
+│ conf_055b6a74d03b5ebf │ target  │ Shopping / Department Stores │ Food & Drink / Groceries │
 └───────────────────────┴─────────┴──────────────────────────────┴──────────────────────────┘
 4 of 8 columns shown — --wide for all
 Next: moneybin transactions categorize rules resolve <conflict-id> --replace
-$ moneybin transactions categorize rules resolve conf_e38b3e951e37141e --cancel --yes
+$ moneybin transactions categorize rules resolve conf_055b6a74d03b5ebf --cancel --yes
 Rule conflicts resolved
 Resolved:   1
 Activated:  0
@@ -484,20 +488,20 @@ $ moneybin transactions categorize assist --limit 2 --output json | jq .
   "data": {
     "transactions": [
       {
-        "transaction_id": "8621e03e0d342b35",
-        "description_scrubbed": "ONLINE PAYMENT CHASE CARD",
+        "transaction_id": "47fe2c55c4b683a4",
+        "description_scrubbed": "WAL-MART",
         "memo_scrubbed": "",
-        "source_type": "csv",
-        "transaction_type": null,
+        "source_type": "ofx",
+        "transaction_type": "DEBIT",
         "check_number": null,
         "is_transfer": false,
         "transfer_pair_id": null,
         "payment_channel": null,
-        "amount_sign": "+"
+        "amount_sign": "-"
       },
       {
-        "transaction_id": "1507f93d05758564",
-        "description_scrubbed": "ONLINE PAYMENT CITI",
+        "transaction_id": "cba9b820cd9d30f9",
+        "description_scrubbed": "TRANSFER TO SAVINGS",
         "memo_scrubbed": "",
         "source_type": "ofx",
         "transaction_type": "XFER",
@@ -505,7 +509,7 @@ $ moneybin transactions categorize assist --limit 2 --output json | jq .
         "is_transfer": false,
         "transfer_pair_id": null,
         "payment_channel": null,
-        "amount_sign": "-"
+        "amount_sign": "+"
       }
     ]
   },

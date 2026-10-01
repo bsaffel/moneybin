@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Investments
 
 One ledger of investment events is the source of truth. Tax lots, positions, and realized gain or loss are derived from it on every refresh, under one of four cost-basis methods, and nothing derived is ever stored as authoritative. Prices come from the broker's own closes, from Tiingo and CoinGecko, from the trades you recorded, or from a mark you set by hand, and a position with no usable price says so rather than reporting zero.
@@ -25,17 +25,17 @@ A bare Date, Description, Amount file names no account, so the import stops twic
 
 ```console
 $ uv run moneybin import confirm brokerage-cash.csv --accept --account-name Brokerage --account-binding '@0=new' --account-meta '@0:account_subtype=brokerage'
-⚠️  Sign convention is ambiguous (all amounts appear positive). Proceeding with 'negative_is_expense' — use --sign to override if expense amounts look wrong.
-Import complete
+✓ Import complete
 File:         brokerage-cash.csv
 Saved:        2 rows
-Import:       962464c5-4069-4216-9cb4-7db10d27687b
+Import:       53d9c2ba-49e4-410b-9807-12184942788e
 Derived data: Run 'moneybin transform apply' to rebuild derived tables
-! Created account: Brokerage (3413a05bad01)
+! Created account: Brokerage (1b22019bee00)
    Rename with 'moneybin accounts set <account_id> --display-name <name>'; if it duplicates an account you already have, 'moneybin accounts links run' proposes the merge — and if that proposes nothing, the pair shares no signal, so name it yourself with 'moneybin accounts links run <account_id> <candidate_account_id>'.
+! Sign convention assumed: negative_is_expense (all amounts appear positive). If expense amounts look wrong, revert it with 'moneybin import revert 53d9c2ba-49e4-410b-9807-12184942788e' and re-import the file with --sign negative_is_income.
 ```
 
-The first `import files brokerage-cash.csv` and the `import confirm brokerage-cash.csv --accept --account-name Brokerage` that raised the account question are cut above; each stops on a confirmation, names the next command, and exits 1. The [data import guide](data-import.md#by-file-format) has the whole ladder.
+The first `import files brokerage-cash.csv` and the `import confirm brokerage-cash.csv --accept --account-name Brokerage` that raised the account question are cut above; each stops on a confirmation, names the next command, and exits 1. The [data import guide](data-import.md#by-file-format) has the whole ladder. The closing `!` line records the assumption the file forced: with no negative amount to read, MoneyBin took `negative_is_expense` and names the revert command for the other reading.
 
 One more step this file forces. It carries no currency column, so the account has no currency, and `moneybin system doctor` fails `currency_integrity` naming it rather than assuming USD: every event recorded into the account would inherit that unknown, and its amounts would sit outside every total. The import left the derived tables stale, so rebuild them first — `accounts set` resolves the account id from `core.dim_accounts` and reports `Account not found` until it does — then assign the currency once:
 
@@ -44,10 +44,11 @@ $ uv run moneybin transform apply
 Applying transforms
 Transforms applied
 Outcome: Derived tables rebuilt
-$ uv run moneybin accounts set 3413a05bad01 --currency USD
+$ uv run moneybin accounts set 1b22019bee00 --currency USD
 Account settings updated
-Account ID:     3413a05bad01
+Account ID:     1b22019bee00
 Updated fields: currency_code
+! Reports read this after a rebuild: moneybin refresh --step transform
 ```
 
 A brokerage that arrives through OFX or Plaid states its currency and skips this. The [multi-currency guide](multi-currency.md#where-a-currency-comes-from) has the resolution order.
@@ -59,18 +60,18 @@ The catalog is yours to maintain by hand; a Plaid sync mints entries into it as 
 ```console
 $ uv run moneybin investments securities add --name "Northwind Industries" --type equity --ticker NWND --exchange NYSE
 Security added
-Security: f4e997b61241
+Security: db8dabffef48
 $ uv run moneybin investments securities add --name "Broad Market Index ETF" --type etf --ticker BMKT --method average
 Security added
-Security: 5df04e35a5c5
+Security: 4b07a5a4ad74
 $ uv run moneybin investments securities list
 Securities
 Scope: the catalog
 ┏━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
 ┃ security     ┃ ticker ┃ name                   ┃ type   ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
-│ 5df04e35a5c5 │ BMKT   │ Broad Market Index ETF │ etf    │
-│ f4e997b61241 │ NWND   │ Northwind Industries   │ equity │
+│ 4b07a5a4ad74 │ BMKT   │ Broad Market Index ETF │ etf    │
+│ db8dabffef48 │ NWND   │ Northwind Industries   │ equity │
 └──────────────┴────────┴────────────────────────┴────────┘
 ```
 
@@ -90,7 +91,7 @@ uv run moneybin investments add --account Brokerage --type sell --date 2025-02-1
 uv run moneybin investments add --account Brokerage --type buy --date 2025-08-01 --security NWND --quantity 30 --price 48.00 --amount -1440.00
 ```
 
-Each prints `✓ Recorded <id>` with the event's id; the sale's, `4176672c2e91f1a2`, is used below. A `reinvest` is the one event that writes two rows, the acquisition and its paired income, so it prints two ids, income reports sum only income-typed rows, and a reinvested dividend is never counted twice. `--currency` denominates an event in something other than the account's currency, `--acquired` and `--basis` carry the original date and cost on a `transfer_in` so the holding period travels with the shares, and `split` takes the multiplier in `--quantity`: `2` for 2-for-1, `0.5` for a 1-for-2 reverse. There is no edit and no delete for a recorded event; each write is its own import batch, so `import revert <import_id>` is the undo.
+Each prints `✓ Recorded <id>` with the event's id; the sale's, `6660d226002f3cff`, is used below. A `reinvest` is the one event that writes two rows, the acquisition and its paired income, so it prints two ids, income reports sum only income-typed rows, and a reinvested dividend is never counted twice. `--currency` denominates an event in something other than the account's currency, `--acquired` and `--basis` carry the original date and cost on a `transfer_in` so the holding period travels with the shares, and `split` takes the multiplier in `--quantity`: `2` for 2-for-1, `0.5` for a 1-for-2 reverse. There is no edit and no delete for a recorded event; each write is its own import batch, so `import revert <import_id>` is the undo.
 
 The ledger is the only authored surface; lots, holdings, and gains are rebuilt from it by `moneybin refresh`. A `--step transform` request always runs `investment_match` first, because the transforms read the matched events, so the receipt lists both steps:
 
@@ -103,16 +104,16 @@ investment_match: Investment matching: 0 unique, 0 competing, 0 stale, 0 suppres
 transform:        Transforms: rebuilt
 $ uv run moneybin investments list
 ┏━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ date       ┃ type     ┃ security     ┃ quantity        ┃    amount ┃ currency ┃
+┃ date       ┃ type     ┃ security     ┃        quantity ┃    amount ┃ currency ┃
 ┡━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━┩
-│ 2024-01-08 │ buy      │ f4e997b61241 │ 100.0000000000  │ −4,200.00 │ USD      │
-│ 2024-03-15 │ buy      │ f4e997b61241 │ 50.0000000000   │ −2,500.00 │ USD      │
-│ 2024-06-20 │ buy      │ 5df04e35a5c5 │ 40.0000000000   │ −8,400.00 │ USD      │
-│ 2024-09-30 │ dividend │ f4e997b61241 │                 │    +60.00 │ USD      │
-│ 2024-12-16 │ reinvest │ 5df04e35a5c5 │ 1.5000000000    │   −330.00 │ USD      │
-│ 2024-12-16 │ dividend │ 5df04e35a5c5 │                 │   +330.00 │ USD      │
-│ 2025-02-10 │ sell     │ f4e997b61241 │ -120.0000000000 │ +6,595.00 │ USD      │
-│ 2025-08-01 │ buy      │ f4e997b61241 │ 30.0000000000   │ −1,440.00 │ USD      │
+│ 2024-01-08 │ buy      │ db8dabffef48 │  100.0000000000 │ −4,200.00 │ USD      │
+│ 2024-03-15 │ buy      │ db8dabffef48 │   50.0000000000 │ −2,500.00 │ USD      │
+│ 2024-06-20 │ buy      │ 4b07a5a4ad74 │   40.0000000000 │ −8,400.00 │ USD      │
+│ 2024-09-30 │ dividend │ db8dabffef48 │                 │    +60.00 │ USD      │
+│ 2024-12-16 │ reinvest │ 4b07a5a4ad74 │    1.5000000000 │   −330.00 │ USD      │
+│ 2024-12-16 │ dividend │ 4b07a5a4ad74 │                 │   +330.00 │ USD      │
+│ 2025-02-10 │ sell     │ db8dabffef48 │ -120.0000000000 │ +6,595.00 │ USD      │
+│ 2025-08-01 │ buy      │ db8dabffef48 │   30.0000000000 │ −1,440.00 │ USD      │
 └────────────┴──────────┴──────────────┴─────────────────┴───────────┴──────────┘
 ```
 
@@ -125,12 +126,12 @@ Each acquisition opens a lot; each disposal consumes lots in the order the elect
 ```console
 $ uv run moneybin investments lots list
 ┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┓
-┃ lot                  ┃ security     ┃ acquired   ┃ remaining     ┃    basis ┃ note ┃
+┃ lot                  ┃ security     ┃ acquired   ┃     remaining ┃    basis ┃ note ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━┩
-│ lot_bbb1b3d040b1677f │ f4e997b61241 │ 2024-03-15 │ 30.0000000000 │ 1,500.00 │      │
-│ lot_f6dc24d853932873 │ 5df04e35a5c5 │ 2024-06-20 │ 40.0000000000 │ 8,414.46 │      │
-│ lot_4f52125af14d6988 │ 5df04e35a5c5 │ 2024-12-16 │ 1.5000000000  │   315.54 │      │
-│ lot_2f0b9b89cd9b16b6 │ f4e997b61241 │ 2025-08-01 │ 30.0000000000 │ 1,440.00 │      │
+│ lot_e276e4d090a2acf2 │ db8dabffef48 │ 2024-03-15 │ 30.0000000000 │ 1,500.00 │      │
+│ lot_9c6f5a70735fabcf │ 4b07a5a4ad74 │ 2024-06-20 │ 40.0000000000 │ 8,414.46 │      │
+│ lot_ce153778c518e3c6 │ 4b07a5a4ad74 │ 2024-12-16 │  1.5000000000 │   315.54 │      │
+│ lot_c567f4e7a7e8546c │ db8dabffef48 │ 2025-08-01 │ 30.0000000000 │ 1,440.00 │      │
 └──────────────────────┴──────────────┴────────────┴───────────────┴──────────┴──────┘
 6 of 9 columns shown — --wide for all
 ```
@@ -142,16 +143,16 @@ Holdings are the open lots summed per position, valued at the most recent close 
 ```console
 $ uv run moneybin investments holdings
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
-┃ security     ┃ quantity      ┃ market value ┃ unrealized ┃ currency ┃ status          ┃
+┃ security     ┃      quantity ┃ market value ┃ unrealized ┃ currency ┃ status          ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
-│ 5df04e35a5c5 │ 41.5000000000 │     9,130.00 │    +400.00 │ USD      │ carried_forward │
-│ f4e997b61241 │ 60.0000000000 │     2,880.00 │     −60.00 │ USD      │ carried_forward │
+│ 4b07a5a4ad74 │ 41.5000000000 │     9,130.00 │    +400.00 │ USD      │ carried_forward │
+│ db8dabffef48 │ 60.0000000000 │     2,880.00 │     −60.00 │ USD      │ carried_forward │
 └──────────────┴───────────────┴──────────────┴────────────┴──────────┴─────────────────┘
 6 of 9 columns shown — --wide for all
-portfolio market_value=12,010.00 USD max_days_since_observed=646
+portfolio market_value=12,010.00 USD max_days_since_observed=650
 ```
 
-No price has been fetched or set, yet both positions carry a value, because an executed trade is itself a price observation: the 60 shares are valued at the 48.00 paid on 2025-08-01, the ETF at the 220.00 of the December reinvestment. The closing line says how stale that is, 646 days for the ETF, and the `status` column says `carried_forward` because the close used predates today. A position with no observation at all reads `-` with status `unpriced`; a known-wrong share count or lots that disagree on currency read `withheld`; an account whose ledger arrives from two sources at once reads `source_overlap`. All three are `-` and never zero, since zero and unknown would otherwise be the same figure in every total.
+No price has been fetched or set, yet both positions carry a value, because an executed trade is itself a price observation: the 60 shares are valued at the 48.00 paid on 2025-08-01, the ETF at the 220.00 of the December reinvestment. The closing line says how stale that is, 650 days for the ETF, and the `status` column says `carried_forward` because the close used predates today. A position with no observation at all reads `-` with status `unpriced`; a known-wrong share count or lots that disagree on currency read `withheld`; an account whose ledger arrives from two sources at once reads `source_overlap`. All three are `-` and never zero, since zero and unknown would otherwise be the same figure in every total.
 
 ## Prices
 
@@ -160,24 +161,24 @@ Five sources compete for each date, in precedence order: a mark you set by hand,
 ```console
 $ uv run moneybin investments prices set NWND 2026-09-10 52.25 --note "closing price from the broker statement"
 Price mark saved
-Security: f4e997b61241
+Security: db8dabffef48
 Price:    52.25 USD
 Date:     2026-09-10
 Prices will value holdings after moneybin refresh.
 $ uv run moneybin investments prices set BMKT 2026-09-10 231.40 --note "closing price from the broker statement" --refresh
 Price mark saved
-Security: 5df04e35a5c5
+Security: 4b07a5a4ad74
 Price:    231.40 USD
 Date:     2026-09-10
 $ uv run moneybin investments holdings
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
-┃ security     ┃ quantity      ┃ market value ┃ unrealized ┃ currency ┃ status          ┃
+┃ security     ┃      quantity ┃ market value ┃ unrealized ┃ currency ┃ status          ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
-│ 5df04e35a5c5 │ 41.5000000000 │     9,603.10 │    +873.10 │ USD      │ carried_forward │
-│ f4e997b61241 │ 60.0000000000 │     3,135.00 │    +195.00 │ USD      │ carried_forward │
+│ 4b07a5a4ad74 │ 41.5000000000 │     9,603.10 │    +873.10 │ USD      │ carried_forward │
+│ db8dabffef48 │ 60.0000000000 │     3,135.00 │    +195.00 │ USD      │ carried_forward │
 └──────────────┴───────────────┴──────────────┴────────────┴──────────┴─────────────────┘
 6 of 9 columns shown — --wide for all
-portfolio market_value=12,738.10 USD max_days_since_observed=13
+portfolio market_value=12,738.10 USD max_days_since_observed=17
 ```
 
 `prices list` shows the resolved series, one winner per date with its source, which is how a figure on the holdings page is tied back to the observation behind it:
@@ -185,9 +186,9 @@ portfolio market_value=12,738.10 USD max_days_since_observed=13
 ```console
 $ uv run moneybin investments prices list NWND
 Prices
-Security: f4e997b61241
+Security: db8dabffef48
 ┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━┓
-┃ date       ┃ close         ┃ currency ┃ source        ┃ basis ┃
+┃ date       ┃         close ┃ currency ┃ source        ┃ basis ┃
 ┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━┩
 │ 2026-09-10 │ 52.2500000000 │ USD      │ override      │ raw   │
 │ 2025-08-01 │ 48.0000000000 │ USD      │ trade_implied │ raw   │
@@ -208,8 +209,8 @@ $ uv run moneybin investments gains
 ┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┓
 ┃ disposed   ┃ security     ┃ proceeds ┃      gain ┃ currency ┃ term  ┃
 ┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━┩
-│ 2025-02-10 │ f4e997b61241 │ 1,099.17 │    +99.17 │ USD      │ short │
-│ 2025-02-10 │ f4e997b61241 │ 5,495.83 │ +1,295.83 │ USD      │ long  │
+│ 2025-02-10 │ db8dabffef48 │ 1,099.17 │    +99.17 │ USD      │ short │
+│ 2025-02-10 │ db8dabffef48 │ 5,495.83 │ +1,295.83 │ USD      │ long  │
 └────────────┴──────────────┴──────────┴───────────┴──────────┴───────┘
 6 of 9 columns shown — --wide for all
 ```
@@ -221,14 +222,14 @@ $ uv run moneybin investments gains
 Four methods are computations over the same lots: FIFO consumes oldest first, HIFO highest basis first, average cost pools the basis, and specific identification consumes the lots you name and falls back to FIFO for any remainder. Only specific identification reads a lot selection, so the selection is refused until the security elects it, and the refusal names the command:
 
 ```console
-$ uv run moneybin investments lots select 4176672c2e91f1a2 --lot lot_bbb1b3d040b1677f:50 --lot lot_a3d0f93074125ae2:70
+$ uv run moneybin investments lots select 6660d226002f3cff --lot lot_e276e4d090a2acf2:50 --lot lot_fedc7ccc5158e3d5:70
 × This disposal replays under 'fifo' cost basis, which ignores lot selections; only 'specific' identification consumes them.
-› Elect specific identification first — 'moneybin investments securities set f4e997b61241 --method specific' (MCP: investments_securities_set) — then retry the selection.
-$ uv run moneybin investments securities set f4e997b61241 --method specific
+Elect specific identification first — 'moneybin investments securities set db8dabffef48 --method specific' — then retry the selection.
+$ uv run moneybin investments securities set db8dabffef48 --method specific
 Security updated
-Security: f4e997b61241
-$ uv run moneybin investments lots select 4176672c2e91f1a2 --lot lot_bbb1b3d040b1677f:50 --lot lot_a3d0f93074125ae2:70
-Lot selection saved for 4176672c2e91f1a2: 2 lots.
+Security: db8dabffef48
+$ uv run moneybin investments lots select 6660d226002f3cff --lot lot_e276e4d090a2acf2:50 --lot lot_fedc7ccc5158e3d5:70
+Lot selection saved for 6660d226002f3cff: 2 lots.
 $ uv run moneybin refresh --step transform
 Applying reports
 ✓ Refresh complete
@@ -239,8 +240,8 @@ $ uv run moneybin investments gains
 ┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┓
 ┃ disposed   ┃ security     ┃ proceeds ┃    gain ┃ currency ┃ term  ┃
 ┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━┩
-│ 2025-02-10 │ f4e997b61241 │ 2,747.92 │ +247.92 │ USD      │ short │
-│ 2025-02-10 │ f4e997b61241 │ 3,847.08 │ +907.08 │ USD      │ long  │
+│ 2025-02-10 │ db8dabffef48 │ 2,747.92 │ +247.92 │ USD      │ short │
+│ 2025-02-10 │ db8dabffef48 │ 3,847.08 │ +907.08 │ USD      │ long  │
 └────────────┴──────────────┴──────────┴─────────┴──────────┴───────┘
 6 of 9 columns shown — --wide for all
 ```
@@ -249,14 +250,15 @@ The same sale now draws all 50 March shares and 70 of the January 100. Total rea
 
 ## Net worth
 
-`reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and the report reads the assertion only after a rebuild; until both, it is absent from net worth entirely:
+`reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and the report reads the assertion only after a rebuild; until both, it appears on `reports net-worth-accounts` with an empty balance and `reports net-worth` prints no total:
 
 ```console
-$ uv run moneybin accounts balance assert 3413a05bad01 2025-12-31 17125.00 --notes "year-end statement: cash plus positions" --yes
+$ uv run moneybin accounts balance assert 1b22019bee00 2025-12-31 17125.00 --notes "year-end statement: cash plus positions" --yes
 Balance asserted
-Account: 3413a05bad01
+Account: 1b22019bee00
 Date:    2025-12-31
-Balance: 17125.00 USD
+Balance: 17,125.00 USD
+! Reports read this after a rebuild: moneybin refresh --step transform
 $ uv run moneybin refresh --step transform
 Applying reports
 ✓ Refresh complete
@@ -275,11 +277,11 @@ $ uv run moneybin reports net-worth-accounts
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+› The single home-currency total: moneybin reports net-worth
+› The currency-level breakdown: moneybin reports net-worth-currencies
 ```
 
-The brokerage row carries the asserted 17,125.00 on and after 2025-12-31; the other four rows are the demo's own accounts. Two lines are trimmed above: the report's third hint, which points to `moneybin profile set home_currency` because the demo profile has none. The asserted figure is what the statement says the account is worth on that date, cash and positions together; MoneyBin does not derive it from the ledger, and the ledger's own cash legs are not transactions, so `reports balance-drift` compares the assertion against the two deposits alone. Folding market value into net worth without counting a brokerage twice is designed and not built; see below.
+The brokerage row carries the asserted 17,125.00 on and after 2025-12-31; the other four rows are the demo's own accounts. Two lines are trimmed above: the report's third hint, which points to `moneybin profile set home_currency` because the demo profile has none and wraps onto a second line at 100 columns. The asserted figure is what the statement says the account is worth on that date, cash and positions together; MoneyBin does not derive it from the ledger, and the ledger's own cash legs are not transactions, so `reports balance-drift` compares the assertion against the two deposits alone. Folding market value into net worth without counting a brokerage twice is designed and not built; see below.
 
 ## From an AI client
 

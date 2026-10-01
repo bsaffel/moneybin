@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Database & Security
 
 MoneyBin encrypts every profile database at rest by default. This guide covers the encryption model, key lifecycle, headless and multi-machine deployments, backup and restore, disaster recovery, and what a stolen laptop or synced folder actually reveals. There is no unencrypted mode — every `.duckdb` file MoneyBin creates is AES-256-GCM encrypted from the moment it exists.
@@ -57,18 +57,35 @@ File size:      14.3 MB
 Encryption:     AES-256-GCM (always on)
 Key mode:       auto
 Lock state:     unlocked
-Tables:         81
+Tables:         20 of 81 shown, largest first — --limit 0 for all
 DuckDB version: v1.5.5
-┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┓
-┃ schema         ┃ table                                         ┃ rows ┃
-┡━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━┩
-│ app            │ audit_log                                     │ 2699 │
-│ app            │ metrics                                       │ 43   │
-│ app            │ transaction_categories                        │ 2473 │
-└────────────────┴───────────────────────────────────────────────┴──────┘
+┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓
+┃ schema         ┃ table                                      ┃  rows ┃
+┡━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━┩
+│ sqlmesh__core  │ core__fct_balances_daily__360401849        │ 4,376 │
+│ synthetic      │ ground_truth                               │ 2,886 │
+│ app            │ audit_log                                  │ 2,699 │
+│ app            │ transaction_categories                     │ 2,473 │
+│ raw            │ tabular_transactions                       │ 1,505 │
+│ raw            │ ofx_transactions                           │ 1,381 │
+│ sqlmesh__core  │ core__fct_exchange_rates_daily__3761139714 │ 1,097 │
+│ app            │ user_merchants                             │   118 │
+│ sqlmesh__seeds │ seeds__categories__3159909450              │   112 │
+│ app            │ match_decisions                            │   108 │
+│ sqlmesh__seeds │ seeds__category_source_map__3398480081     │    97 │
+│ app            │ schema_migrations                          │    65 │
+│ sqlmesh__seeds │ seeds__exchange_mic_map__2145957513        │    48 │
+│ sqlmesh__seeds │ seeds__account_type_map__1855698420        │    19 │
+│ app            │ seed_source_priority                       │    10 │
+│ sqlmesh__seeds │ seeds__institutions__644297854             │     5 │
+│ sqlmesh__seeds │ seeds__price_source_map__1154198268        │     5 │
+│ sqlmesh__core  │ core__dim_accounts__581404330              │     4 │
+│ app            │ versions                                   │     2 │
+│ raw            │ ofx_accounts                               │     2 │
+└────────────────┴────────────────────────────────────────────┴───────┘
 ```
 
-Three lines are cut: the `Database:` label and the two lines its path wrapped onto (`<base>/profiles/demo/moneybin.duckdb`). So are 78 of the 81 table rows.
+Three lines are cut: the `Database:` label and the two lines its path wrapped onto (`<base>/profiles/demo/moneybin.duckdb`). No table rows are cut. `db info` lists the 20 largest tables and discloses the cap on the `Tables:` line; `--limit 0` prints all 81, `--limit N` prints the N largest.
 
 `db key show` prints the warning on stderr and the key on stdout. The 64-character hex key line is cut from the block below; the warning is what the block shows:
 
@@ -286,15 +303,19 @@ $ uv run moneybin db migrate status
 Migration status
 Applied migrations: 65
 Pending migrations: 0
-Applied:            V002 V002__backfill_gold_keys.sql (success), 11ms, 2026-09-23 23:05:57.937270
-Applied:            V007 V007__transaction_curation.py (success), 4ms, 2026-09-23 23:05:57.978962
-Applied:            V017 V017__drop_w2_forms.sql (success), 0ms, 2026-09-23 23:05:58.067910
-Applied:            V064 V064__drop_ofx_institutions.py (success), 1ms, 2026-09-23 23:05:58.364624
 Version moneybin:   0.1.0
 Version sqlmesh:    0.236.2
+┏━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ id   ┃ applied at                 ┃ name                                                         ┃
+┡━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ V002 │ 2026-09-27 11:53:54.393900 │ V002__backfill_gold_keys.sql (success), 2ms                  │
+│ V007 │ 2026-09-27 11:53:54.409043 │ V007__transaction_curation.py (success), 2ms                 │
+│ V017 │ 2026-09-27 11:53:54.433083 │ V017__drop_w2_forms.sql (success), 0ms                       │
+│ V064 │ 2026-09-27 11:53:54.505368 │ V064__drop_ofx_institutions.py (success), 0ms                │
+└──────┴────────────────────────────┴──────────────────────────────────────────────────────────────┘
 ```
 
-61 of the 65 `Applied:` rows are cut; each has the same shape. The four shown are rows short enough to print on one line at 100 columns — a longer file name wraps the timestamp onto a second line. Numbering is not contiguous — a purged migration leaves its number unused.
+61 of the 65 table rows are cut; each has the same shape. The four shown are rows short enough to print on one line at 100 columns — a longer file name wraps onto a second line in the `name` column, and the timestamp is never split. Numbering is not contiguous — a purged migration leaves its number unused.
 
 Behavior:
 
@@ -336,10 +357,10 @@ Processes: No other processes have moneybin.duckdb open
 
   ```console
   $ uv run moneybin db key import  # <!-- cli-invocation-ok: shown bare on purpose, exits 2 for the missing path -->
-  Usage: moneybin db key import [OPTIONS] ENVELOPE
+  Usage: moneybin db key import [OPTIONS] {envelope}
   Try 'moneybin db key import --help' for help.
   ╭─ Error ──────────────────────────────────────────────────────────────────────────────────────────╮
-  │ Missing argument 'ENVELOPE'.                                                                     │
+  │ Missing argument 'envelope'.                                                                     │
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   ```
 
