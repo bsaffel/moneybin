@@ -2,13 +2,13 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-draft
+ready
 
 **Address:** M1G.5. **Release:** Early Access.
 
-The mediated trust boundary is selected. This proposed contributor-facing
-contract specifies the client and broker changes for review; implementation
-and live acceptance have not started.
+The mediated trust boundary and contributor-facing contract were approved on
+2026-10-01. The implementation plan is prepared for review; implementation and
+live acceptance have not started.
 
 ## Outcome and scope
 
