@@ -777,6 +777,31 @@ class TestResolveSourceTerm:
         assert (mapping.category, mapping.subcategory) == row
 
     @pytest.mark.unit
+    def test_padded_source_origin_is_stored_and_returned_trimmed(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _carry_term(db, "chase_credit", "Dining")
+        category_id = CategorizationService(db).create_category(
+            "Origin Trim Target", actor="test"
+        )
+
+        mapping = CategorizationService(db).resolve_source_term(
+            source_origin="  chase_credit  ",
+            category="Dining",
+            subcategory=None,
+            category_id=category_id,
+            actor="test",
+        )
+
+        row = db.execute(
+            "SELECT source_type FROM app.category_source_map "
+            "WHERE source_category_code = 'Dining'"
+        ).fetchone()
+        assert row == ("chase_credit",)
+        assert mapping.source_origin == "chase_credit"
+
+    @pytest.mark.unit
     def test_outcome_counter_tells_added_from_updated(self, db: Database) -> None:
         refresh_views(db)
         _carry_term(db, "chase_credit", "Counted Term")

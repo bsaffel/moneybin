@@ -392,7 +392,7 @@ class SourceTermMapping:
 
 def _normalized_source_term(
     source_origin: str, category: str, subcategory: str | None
-) -> tuple[str, str | None]:
+) -> tuple[str, str, str | None]:
     """Return the term as staging stores it; refuse a blank part.
 
     Staging trims category text with a class equal to ``str.strip()`` and
@@ -401,14 +401,15 @@ def _normalized_source_term(
     parts, and :meth:`MatchApplier.resolve_source_term` accepts only a term
     already in the database, which bounds it by construction.
     """
+    source_origin = source_origin.strip()
     category = category.strip()
     subcategory = subcategory.strip() if subcategory is not None else None
-    if not source_origin.strip() or not category or subcategory == "":
+    if not source_origin or not category or subcategory == "":
         raise UserError(
             "source_origin, category, and any subcategory must be non-blank",
             code=error_codes.MUTATION_INVALID_INPUT,
         )
-    return category, subcategory
+    return source_origin, category, subcategory
 
 
 class MatchApplier:
@@ -1450,7 +1451,7 @@ class MatchApplier:
                 ``new_category`` collides with an existing category name.
         """
         try:
-            category, subcategory = _normalized_source_term(
+            source_origin, category, subcategory = _normalized_source_term(
                 source_origin, category, subcategory
             )
             if (category_id is None) == (new_category is None):
@@ -1480,8 +1481,8 @@ class MatchApplier:
                             f"Category {resolved_category_id} not found",
                             code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
                         )
-                    # An inactive category takes no new categorizations; the
-                    # review-decision writer refuses one as a target too.
+                    # set refuses an inactive category as a target, as the
+                    # review-decision writer does.
                     if not target[0]:
                         raise UserError(
                             f"Category {resolved_category_id} is inactive; "
@@ -1655,7 +1656,11 @@ class MatchApplier:
                 (PROPOSED_RULES, ("proposed_rule_id",), "proposed_rules"),
                 (
                     CATEGORY_SOURCE_MAP,
-                    ("source_type", "source_category_code"),
+                    (
+                        "source_type",
+                        "source_category_code",
+                        "source_subcategory_code",
+                    ),
                     "source_mappings",
                 ),
             )
