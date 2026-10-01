@@ -62,6 +62,7 @@ _DAY_COLUMNS = (
     "carried_forward_count",
     "currency_count",
     "unpriced_currency_count",
+    "unanchored_account_count",
     "total_assets",
     "total_liabilities",
     "net_worth",
@@ -142,6 +143,7 @@ def _install_net_worth_sources(db: Database) -> None:
             published_date DATE
         )
     """)
+    db.execute("CREATE TABLE core.dim_unanchored_accounts (account_id VARCHAR)")
 
 
 def _balance(
@@ -194,6 +196,11 @@ def _account(
         """,
         [account_id, name, account_type, currency, archived, include, archived_at],
     )
+
+
+def _unanchored(db: Database, account_id: str) -> None:
+    """Mark one account as carrying evidence of holding value and no balance row."""
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [account_id])
 
 
 def _rate(
@@ -1006,3 +1013,305 @@ def test_day_rung_measures_are_decimal_18_2_not_widened(model_db: Database) -> N
     assert types_by_column["total_assets"] == "DECIMAL(18,2)"
     assert types_by_column["total_liabilities"] == "DECIMAL(18,2)"
     assert types_by_column["net_worth"] == "DECIMAL(18,2)"
+
+
+def _day_rows(db: Database) -> list[dict[str, object]]:
+    cur = db.execute(
+        f"SELECT {', '.join(_DAY_COLUMNS)} FROM reports.net_worth ORDER BY balance_date"  # noqa: S608  # static column list
+    )
+    return [dict(zip(_DAY_COLUMNS, r, strict=True)) for r in cur.fetchall()]
+
+
+def test_net_worth_unanchored_candidate_nulls_every_row_and_counts(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(model_db, "brk", "Brokerage", "USD", account_type="investment")
+    _balance(model_db, "chk", "2026-01-01", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-01", "1", source="identity")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth")
+
+    rows = _day_rows(model_db)
+
+    assert len(rows) == 1
+    assert rows[0]["unanchored_account_count"] == 1
+    assert rows[0]["unpriced_currency_count"] == 0
+    assert rows[0]["net_worth"] is None
+    assert rows[0]["total_assets"] is None
+    assert rows[0]["total_liabilities"] is None
+
+
+def test_net_worth_excluded_candidate_does_not_null_the_total(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(model_db, "brk", "Brokerage", "USD", include=False)
+    _balance(model_db, "chk", "2026-01-01", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-01", "1", source="identity")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth")
+
+    (row,) = _day_rows(model_db)
+    assert row["unanchored_account_count"] == 0
+    assert row["net_worth"] == Decimal("100.00")
+
+
+def test_net_worth_candidate_counts_only_through_its_archive_date(
+    model_db: Database,
+) -> None:
+    """Requirement 9 at each row's own balance_date."""
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(
+        model_db, "brk", "Brokerage", "USD", archived=True, archived_at="2026-01-02"
+    )
+    for day in ("2026-01-01", "2026-01-02", "2026-01-03"):
+        _balance(model_db, "chk", day, "100.00", "USD")
+        _rate(model_db, "USD", "USD", day, "1", source="identity")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth")
+
+    counts = {
+        str(r["balance_date"]): r["unanchored_account_count"]
+        for r in _day_rows(model_db)
+    }
+    assert counts == {"2026-01-01": 1, "2026-01-02": 1, "2026-01-03": 0}
+
+
+def test_net_worth_wholly_unanchored_profile_gets_one_current_date_row(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "a", "A", "USD")
+    _account(model_db, "b", "B", "USD")
+    _unanchored(model_db, "a")
+    _unanchored(model_db, "b")
+    _install_report(model_db, "net_worth")
+    today = model_db.execute("SELECT CURRENT_DATE").fetchone()[0]  # type: ignore[index]
+
+    (row,) = _day_rows(model_db)
+
+    assert row["balance_date"] == today
+    assert row["account_count"] == 0
+    assert row["unanchored_account_count"] == 2
+    assert row["net_worth"] is None
+    assert row["home_currency_code"] == "USD"
+
+
+def test_net_worth_empty_profile_publishes_no_row(model_db: Database) -> None:
+    """A count of zero never synthesizes: an empty profile is not an incomplete one."""
+    _install_net_worth_sources(model_db)
+    _install_report(model_db, "net_worth")
+    assert _day_rows(model_db) == []
+
+
+def test_net_worth_wholly_unanchored_archived_candidate_publishes_no_row(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "a", "A", "USD", archived=True, archived_at="2025-01-01")
+    _unanchored(model_db, "a")
+    _install_report(model_db, "net_worth")
+    assert _day_rows(model_db) == []
+
+
+def _account_rows(db: Database) -> list[dict[str, object]]:
+    cur = db.execute(
+        f"SELECT {', '.join(_COLUMNS)} FROM reports.net_worth_accounts "  # noqa: S608  # static column list
+        "ORDER BY balance_date, account_id"
+    )
+    return [dict(zip(_COLUMNS, r, strict=True)) for r in cur.fetchall()]
+
+
+def test_accounts_view_dates_a_candidate_at_the_spine_max(model_db: Database) -> None:
+    """Never at CURRENT_DATE while a spine exists: that would move MAX(balance_date)."""
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(model_db, "brk", "Brokerage", "EUR", account_type="investment")
+    _balance(model_db, "chk", "2026-01-01", "100.00", "USD")
+    _balance(model_db, "chk", "2026-01-05", "90.00", "USD", observed=False)
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+
+    brk = [r for r in _account_rows(model_db) if r["account_id"] == "brk"]
+
+    assert len(brk) == 1
+    row = brk[0]
+    assert str(row["balance_date"]) == "2026-01-05"
+    assert row["is_observed"] is False
+    assert row["currency_code"] == "EUR"
+    assert row["account_type"] == "investment"
+    assert row["account_name"] == "Brokerage"
+    assert row["home_currency_code"] == "USD"
+    for col in (
+        "observation_source",
+        "rate_source",
+        "rate_published_date",
+        "days_since_observed",
+        "reconciliation_delta",
+        "account_balance",
+        "account_balance_home",
+    ):
+        assert row[col] is None, col
+
+
+def test_accounts_view_dates_a_candidate_today_when_the_spine_is_empty(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "brk", "Brokerage", "USD")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+    today = model_db.execute("SELECT CURRENT_DATE").fetchone()[0]  # type: ignore[index]
+    (row,) = _account_rows(model_db)
+    assert row["balance_date"] == today
+
+
+def test_accounts_view_omits_a_candidate_archived_before_the_spine_max(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "chk", "Checking", "USD")
+    _account(
+        model_db, "brk", "Brokerage", "USD", archived=True, archived_at="2026-01-03"
+    )
+    _balance(model_db, "chk", "2026-01-05", "100.00", "USD")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+    assert [r["account_id"] for r in _account_rows(model_db)] == ["chk"]
+
+
+def test_accounts_view_keeps_a_candidate_archived_after_the_spine_max(
+    model_db: Database,
+) -> None:
+    """Still eligible at the spine max, so it appears there, not at its archive date."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "chk", "Checking", "USD")
+    _account(
+        model_db, "brk", "Brokerage", "USD", archived=True, archived_at="2026-01-10"
+    )
+    _balance(model_db, "chk", "2026-01-05", "100.00", "USD")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+
+    brk = [r for r in _account_rows(model_db) if r["account_id"] == "brk"]
+
+    assert [str(r["balance_date"]) for r in brk] == ["2026-01-05"]
+    assert brk[0]["account_balance"] is None
+
+
+def test_accounts_view_omits_an_excluded_candidate(model_db: Database) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "brk", "Brokerage", "USD", include=False)
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+    assert _account_rows(model_db) == []
+
+
+def test_accounts_view_emits_a_candidate_with_unknown_currency(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "brk", "Brokerage", None)
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+    (row,) = _account_rows(model_db)
+    assert row["account_id"] == "brk"
+    assert row["currency_code"] is None
+
+
+def _excluded_spine_with_unanchored_candidate(
+    db: Database, *, archived_at: str | None = None
+) -> None:
+    """Spine to 2026-01-05 from an excluded account; m2b3_brk has no balance row."""
+    _install_net_worth_sources(db)
+    _home(db, "USD")
+    _account(db, "m2b3_excl", "Excluded", "USD", include=False)
+    _account(
+        db,
+        "m2b3_brk",
+        "Brokerage",
+        "USD",
+        archived=archived_at is not None,
+        archived_at=archived_at,
+    )
+    _balance(db, "m2b3_excl", "2026-01-01", "100.00", "USD")
+    _balance(db, "m2b3_excl", "2026-01-05", "100.00", "USD", observed=False)
+    _unanchored(db, "m2b3_brk")
+    _install_report(db, "net_worth")
+    _install_report(db, "net_worth_accounts")
+
+
+def test_both_rungs_date_the_no_balance_fallback_at_the_spine_max(
+    model_db: Database,
+) -> None:
+    """No eligible balance row, spine ends before today: both rungs pick its end."""
+    _excluded_spine_with_unanchored_candidate(model_db)
+
+    (day,) = _day_rows(model_db)
+    (acct,) = _account_rows(model_db)
+
+    assert str(day["balance_date"]) == "2026-01-05"
+    assert day["unanchored_account_count"] == 1
+    assert day["net_worth"] is None
+    assert acct["account_id"] == "m2b3_brk"
+    assert str(acct["balance_date"]) == "2026-01-05"
+
+
+def test_both_rungs_keep_a_candidate_archived_after_the_spine_max(
+    model_db: Database,
+) -> None:
+    """Archived between the spine's end and today: eligible at the spine max in both."""
+    _excluded_spine_with_unanchored_candidate(model_db, archived_at="2026-01-10")
+
+    (day,) = _day_rows(model_db)
+    (acct,) = _account_rows(model_db)
+
+    assert str(day["balance_date"]) == "2026-01-05"
+    assert day["unanchored_account_count"] == 1
+    assert day["total_assets"] is None
+    assert day["total_liabilities"] is None
+    assert day["net_worth"] is None
+    assert acct["account_id"] == "m2b3_brk"
+    assert str(acct["balance_date"]) == "2026-01-05"
+
+
+def test_unranged_reads_date_a_candidate_at_the_latest_eligible_day(
+    model_db: Database,
+) -> None:
+    """An excluded account's later balances must not hide the real latest day."""
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "m2b3_a", "Checking", "USD")
+    _account(model_db, "m2b3_x", "Excluded", "USD", include=False)
+    _account(model_db, "m2b3_b", "Brokerage", "USD")
+    _balance(model_db, "m2b3_a", "2026-01-05", "100.00", "USD")
+    _balance(model_db, "m2b3_x", "2026-01-05", "50.00", "USD")
+    _balance(model_db, "m2b3_x", "2026-01-09", "50.00", "USD", observed=False)
+    _rate(model_db, "USD", "USD", "2026-01-05", "1", source="identity")
+    _unanchored(model_db, "m2b3_b")
+    _install_report(model_db, "net_worth")
+    _install_report(model_db, "net_worth_accounts")
+
+    latest = model_db.execute(
+        "SELECT account_id, balance_date FROM reports.net_worth_accounts "
+        "WHERE balance_date = (SELECT MAX(balance_date) "
+        "FROM reports.net_worth_accounts) ORDER BY account_id"
+    ).fetchall()
+    day = _day_rows(model_db)[-1]
+
+    assert [(a, str(d)) for a, d in latest] == [
+        ("m2b3_a", "2026-01-05"),
+        ("m2b3_b", "2026-01-05"),
+    ]
+    assert str(day["balance_date"]) == "2026-01-05"
+    assert day["unanchored_account_count"] == 1
+    assert day["net_worth"] is None

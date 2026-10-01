@@ -477,6 +477,19 @@ NET_WORTH_UNPRICED_DATES = Gauge(
     "Dates on which reports.net_worth is null because a held currency has no rate",
 )
 
+NET_WORTH_UNANCHORED_ACCOUNTS = Gauge(
+    "moneybin_net_worth_unanchored_accounts",
+    # Nonzero means the latest reports.net_worth total is NULL (Requirement 14);
+    # set by doctor's net_worth_unanchored_accounts check.
+    "Accounts in net worth holding value with no balance observation",
+)
+
+NET_WORTH_STALE_BALANCE_ACCOUNTS = Gauge(
+    "moneybin_net_worth_stale_balance_accounts",
+    "Accounts in net worth whose latest observed balance is older than "
+    "doctor.balance_staleness_threshold_days",
+)
+
 # ── Categorization ────────────────────────────────────────────────────────────
 
 CATEGORIZATION_AUTO_RATE = Gauge(
@@ -545,6 +558,14 @@ CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
     "source_type label; trigger='backfill' is the explicit "
     "improve_ai_categories upgrade pass over categorized_by='ai' rows.",
     ["source_type", "trigger"],
+)
+
+CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL = Counter(
+    "moneybin_category_source_mapping_outcomes_total",
+    "Outcomes of curating one imported category term into "
+    "app.category_source_map via resolve_source_term.",
+    # outcome: added | updated | refused
+    ["outcome"],
 )
 
 AUTO_RULE_PATTERN_DOWNGRADED_TOTAL = Counter(
@@ -1237,6 +1258,8 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_profile_currencies": "Multi-currency integrity",
     "moneybin_unknown_currency_rows": "Multi-currency integrity",
     "moneybin_net_worth_unpriced_dates": "Multi-currency integrity",
+    "moneybin_net_worth_unanchored_accounts": "Multi-currency integrity",
+    "moneybin_net_worth_stale_balance_accounts": "Multi-currency integrity",
     # Exchange rates
     "moneybin_fx_rate_rows_written": "Exchange rates",
     "moneybin_fx_rate_resolution": "Exchange rates",
@@ -1255,6 +1278,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_categorize_match_outcome": "Categorization",
     "moneybin_categorize_write_skipped_precedence": "Categorization",
     "moneybin_categorize_provider_native": "Categorization",
+    "moneybin_category_source_mapping_outcomes": "Categorization",
     "moneybin_auto_rule_pattern_downgraded": "Categorization",
     "moneybin_auto_rule_broad_pending": "Categorization",
     "moneybin_auto_rule_broad_accept_blocked": "Categorization",

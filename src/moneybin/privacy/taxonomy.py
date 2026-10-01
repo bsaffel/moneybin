@@ -942,6 +942,28 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "provider_reported_as_of": DataClass.TIMESTAMP_OBSERVABILITY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("core", "dim_holdings_broker_reported"): {
+        "account_id": DataClass.RECORD_ID,
+        # A boolean flag: every boolean in this taxonomy takes TXN_TYPE
+        # (fct_investment_lots.is_open is the closest analogue).
+        "has_position": DataClass.TXN_TYPE,
+        # The date has_position holds true as of — the same "state asserted as
+        # of this date" shape as app.balance_assertions.as_of
+        # (BalanceAssertionStatePayload.as_of, DataClass.TXN_DATE): both name a
+        # date on which a state (present/absent, has-position) is claimed to
+        # hold, not pure pipeline telemetry. Column-name consistency
+        # (database.md) then settles it: every "as_of" in the codebase is this
+        # same concept, so it takes the same class throughout.
+        "as_of": DataClass.TXN_DATE,
+    },
+    ("core", "dim_unanchored_accounts"): {
+        "account_id": DataClass.RECORD_ID,
+        # Evidence flags — booleans take TXN_TYPE.
+        "has_holdings": DataClass.TXN_TYPE,
+        "has_broker_position": DataClass.TXN_TYPE,
+        "has_transactions": DataClass.TXN_TYPE,
+        "has_investment_transactions": DataClass.TXN_TYPE,
+    },
     ("core", "dim_merchants"): {
         "canonical_name": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,

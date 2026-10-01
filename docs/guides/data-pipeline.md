@@ -535,11 +535,16 @@ Records:  2,892 rows
 
 A raw table at `0 rows` is not an error — it is a source this profile has never used; 16 of the 21 are in that state here. Three lines are trimmed above: the `Database:` label and the two lines its absolute path wrapped onto.
 
-`system doctor` is the assertion-level check. It reports the number of invariants it ran and the number of transactions it ran them over, and says nothing else when they all hold:
+`system doctor` is the assertion-level check. It reports the number of invariants it ran and the number of transactions it ran them over, and says nothing else when they all hold. The family demo's synthetic history ends 2025-12-31, so a run more than 30 days past that date turns up a stale-balance warning instead of a silent pass:
 
 ```console
 $ uv run moneybin system doctor
-67 invariants checked across 2,886 transactions — all passing
+! net_worth_stale_balance — 4 account(s) in net worth have no balance observed in the last 30 days,
+so their balances are carried forward — import a recent statement, sync, or record one with
+`moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
+   Affected: SYN00420001, SYN00420002, SYN00420003, SYN00420004
+
+69 invariants checked across 2,886 transactions — 68 passing, 1 warn, 0 skipped
 ```
 
 ## What is not built yet

@@ -564,6 +564,28 @@ class TestDBReadOnlyCommands:
         assert "decisions" in envelope["data"]
         assert isinstance(envelope["data"]["decisions"], list)
 
+    # ── categories mappings (read-only) ──────────────────────────────────
+
+    def test_categories_mappings_pending(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin categories mappings pending` exits 0 on a fresh profile."""
+        result = run_cli("categories", "mappings", "pending", env=e2e_profile)
+        result.assert_success()
+
+    def test_categories_mappings_pending_json(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
+        """`moneybin categories mappings pending --output json` returns an envelope with terms[]."""
+        import json
+
+        result = run_cli(
+            "categories", "mappings", "pending", "--output", "json", env=e2e_profile
+        )
+        result.assert_success()
+        envelope = json.loads(result.stdout)
+        assert "data" in envelope
+        assert "terms" in envelope["data"]
+        assert isinstance(envelope["data"]["terms"], list)
+
     # ── investments prices (read-only) ─────────────────────────────────────
 
     def test_investments_prices_list_unknown_security_exits_nonzero(

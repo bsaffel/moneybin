@@ -136,12 +136,17 @@ The display name is institution, account type, and last four. The account-number
 ```console
 $ uv run moneybin system doctor
 ! categorization_coverage — 100% of the transactions needing a category are uncategorized
-   › Consider Run the deterministic categorization cascade (rules + merchants) to raise coverage
-above the 50% threshold. Suggested (not certain) because the cascade applies 0 rows when no active
-rules or merchant mappings match the remaining uncategorized transactions — re-run the doctor after
-to verify.: moneybin transactions categorize run --methods rules,merchants
+   › [suggested] transactions_categorize_run arguments: {"methods": ["rules", "merchants"]} — Run
+the deterministic categorization cascade (rules + merchants) to raise coverage above the 50%
+threshold. Suggested (not certain) because the cascade applies 0 rows when no active rules or
+merchant mappings match the remaining uncategorized transactions — re-run the doctor after to
+verify.
+! net_worth_stale_balance — 1 account(s) in net worth have no balance observed in the last 30 days,
+so their balances are carried forward — import a recent statement, sync, or record one with
+`moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
+   Affected: cc9cc9bbd736
 
-67 invariants checked across 20 transactions — 66 passing, 1 warn, 0 skipped
+69 invariants checked across 20 transactions — 67 passing, 2 warn, 0 skipped
 ```
 
 The one warning is expected on a first import and is step 7; a warn alone keeps the exit status at 0. A `›` line is a next action: the reason first, then a `moneybin` command you can paste into the shell, documented on each command's [reference page](../reference/cli/README.md). A report that masked one of its columns points at `moneybin reports explain` the same way.
