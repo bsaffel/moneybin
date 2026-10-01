@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from moneybin.connectors.sync_models import SyncDataResponse, SyncTriggerResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse, SyncTriggerResponse
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.sync_service import SyncService
@@ -25,7 +25,7 @@ FIXTURE = (
 def test_full_sync_pipeline_to_core(db: Database) -> None:
     """Sync data → raw → staging → core, with sign flip verified at core."""
     with FIXTURE.open() as f:
-        sync_data = SyncDataResponse.model_validate(yaml.safe_load(f))
+        sync_data = PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
     client = MagicMock()
     client.trigger_sync.return_value = SyncTriggerResponse(

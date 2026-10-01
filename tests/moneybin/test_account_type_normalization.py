@@ -512,7 +512,7 @@ def test_display_name_honors_a_user_subtype_override(
 def test_genuinely_null_plaid_type_stays_null(account_type_cases: Database) -> None:
     """A NULL Plaid account_type is distinct from an unmapped one — both stay NULL.
 
-    `SyncAccount.account_type` is `str | None`, so NULL is reachable rather than
+    `PlaidSyncAccount.account_type` is `str | None`, so NULL is reachable rather than
     hypothetical. Defaulting it to any placeholder would let the balance pass
     fct_balances' `NOT account_type IS NULL` guard and book un-negated as an
     asset. Pairs with test_unmapped_plaid_type_resolves_to_null_not_a_default:

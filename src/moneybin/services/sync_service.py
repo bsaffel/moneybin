@@ -22,9 +22,9 @@ from moneybin.connectors.sync_models import (
     ConnectedInstitution,
     LinkInitiateResponse,
     LinkResult,
+    PlaidSyncDataResponse,
     PullResult,
     SyncConnectionView,
-    SyncDataResponse,
 )
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -283,7 +283,7 @@ class SyncService:
                 result.opening_bootstrap_rows = self._count_bootstrap_rows()
         return result
 
-    def _resolve_accounts(self, sync_data: SyncDataResponse) -> None:
+    def _resolve_accounts(self, sync_data: PlaidSyncDataResponse) -> None:
         """Resolve each synced account to a canonical id, populating app.account_links.
 
         The Plaid native key is the source ``account_id`` token already stamped

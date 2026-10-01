@@ -2,13 +2,13 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+in-progress
 
 **Address:** M1G.5. **Release:** Early Access.
 
 The mediated trust boundary and contributor-facing contract were approved on
-2026-10-01. The implementation plan is prepared for review; implementation and
-live acceptance have not started.
+2026-10-01. The implementation plan was approved for subagent-driven execution.
+Implementation is in progress; non-author live acceptance remains open.
 
 ## Outcome and scope
 
@@ -200,6 +200,12 @@ broker. Credentials and HTTP transport metadata never enter payloads.
 
 Each outcome identifies its connection/account scope, requested window,
 `complete|partial|failed|deferred`, safe error code, and optional retry time.
+Its native scope is tagged: a v1 organization record (including optional `id`),
+a v2 `conn_id`, or a Plaid item ID, separate from the native account ID and the
+broker connection UUID. Account-scoped SimpleFIN outcomes require that native
+scope; unscoped errors carry neither native scope nor account ID. The scope tag
+must agree with the source provider and protocol. This prevents repeated native
+account IDs in different institutions from sharing an outcome or checkpoint.
 `complete` means the requested retrieval succeeded without a known scope error;
 it does not certify that the institution supplies all historical activity.
 Omitted accounts and unscoped errors prevent an all-accounts completeness claim.

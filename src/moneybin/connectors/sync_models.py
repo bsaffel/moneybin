@@ -7,11 +7,13 @@ related types live together.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal, Self, cast
+from uuid import UUID
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -150,7 +152,7 @@ class SyncAckResponse(BaseModel):
     status: Literal["acked"]
 
 
-class SyncAccount(BaseModel):
+class PlaidSyncAccount(BaseModel):
     """One account entry in GET /sync/data response.
 
     Every field the broker sends must be declared here. Pydantic's default
@@ -171,7 +173,7 @@ class SyncAccount(BaseModel):
     mask: str | None = Field(default=None, max_length=8)
 
 
-class SyncTransaction(BaseModel):
+class PlaidSyncTransaction(BaseModel):
     """One transaction in GET /sync/data response.
 
     NOTE: amount preserves Plaid convention (positive = expense). The sign
@@ -207,11 +209,11 @@ class SyncTransaction(BaseModel):
     category_confidence: str | None = None
 
 
-class SyncBalance(BaseModel):
+class PlaidSyncBalance(BaseModel):
     """One balance snapshot in GET /sync/data response.
 
     Every field the broker sends must be declared here, for the reason
-    :class:`SyncAccount` states above. ``margin_loan_amount`` is the one that
+    :class:`PlaidSyncAccount` states above. ``margin_loan_amount`` is the one that
     carries money: Plaid reports an investment account's ``current_balance`` as
     the total value of *assets*, with the funds borrowed against them in a
     separate field, so ``core.fct_balances`` has to net the two. While the field
@@ -347,12 +349,12 @@ class SyncMetadata(BaseModel):
     institutions: list[InstitutionResult]
 
 
-class SyncDataResponse(BaseModel):
+class PlaidSyncDataResponse(BaseModel):
     """Full response shape from GET /sync/data."""
 
-    accounts: list[SyncAccount]
-    transactions: list[SyncTransaction]
-    balances: list[SyncBalance]
+    accounts: list[PlaidSyncAccount]
+    transactions: list[PlaidSyncTransaction]
+    balances: list[PlaidSyncBalance]
     removed_transactions: list[RemovedTransactionId]
     securities: list[SyncSecurity] = Field(default_factory=list)
     investment_transactions: list[SyncInvestmentTransaction] = Field(
@@ -360,6 +362,155 @@ class SyncDataResponse(BaseModel):
     )
     investment_holdings: list[SyncHolding] = Field(default_factory=list)
     metadata: SyncMetadata
+
+
+JobTerminalStatus = Literal["completed", "partial", "failed", "deferred"]
+
+
+class _ContractModel(BaseModel):
+    """Reject undeclared broker fields instead of silently dropping them."""
+
+    model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
+
+
+class UTCWindow(_ContractModel):
+    """Requested half-open UTC interval."""
+
+    start: AwareDatetime
+    end: AwareDatetime
+
+    @model_validator(mode="after")
+    def _validate_utc_window(self) -> Self:
+        if self.start.utcoffset() != timedelta(0) or self.end.utcoffset() != timedelta(
+            0
+        ):
+            raise ValueError("Window boundaries must be UTC")
+        if self.start >= self.end:
+            raise ValueError("Window end must be after start")
+        return self
+
+
+class ProviderBatch(_ContractModel):
+    """One immutable provider-native result for a requested window."""
+
+    batch_id: UUID
+    fetched_at: AwareDatetime
+    window: UTCWindow
+    payload: dict[str, object]
+
+
+class PlaidItemScope(_ContractModel):
+    """Native Plaid item containing an account outcome."""
+
+    kind: Literal["plaid_item"]
+    provider_item_id: str = Field(min_length=1)
+
+
+class SimpleFINV1Organization(_ContractModel):
+    """Version-1 organization fields retained as native identity evidence."""
+
+    sfin_url: str = Field(alias="sfin-url", min_length=1)
+    id: str | None = None
+    domain: str | None = None
+    name: str | None = None
+    url: str | None = None
+
+    @model_validator(mode="after")
+    def _require_label(self) -> Self:
+        if not self.domain and not self.name:
+            raise ValueError("Organization requires domain or name")
+        return self
+
+
+class SimpleFINV1OrgScope(_ContractModel):
+    """Version-1 organization containing an account outcome."""
+
+    kind: Literal["simplefin_v1_org"]
+    org: SimpleFINV1Organization
+
+
+class SimpleFINV2ConnectionScope(_ContractModel):
+    """Version-2 upstream connection containing an account outcome."""
+
+    kind: Literal["simplefin_v2_connection"]
+    conn_id: str = Field(min_length=1)
+
+
+NativeScope = Annotated[
+    PlaidItemScope | SimpleFINV1OrgScope | SimpleFINV2ConnectionScope,
+    Field(discriminator="kind"),
+]
+
+
+class ScopeOutcome(_ContractModel):
+    """Retrieval result for one native account or an unscoped error."""
+
+    account_id: str | None
+    native_scope: NativeScope | None
+    window: UTCWindow
+    status: Literal["complete", "partial", "failed", "deferred"]
+    error_code: str | None
+    retry_at: AwareDatetime | None = None
+
+
+class PlaidSource(_ContractModel):
+    """Plaid source with its existing provider-native wire values."""
+
+    provider: Literal["plaid"]
+    connection_id: UUID
+    credential_generation: int = Field(gt=0)
+    batches: list[ProviderBatch]
+    outcomes: list[ScopeOutcome]
+
+    @model_validator(mode="after")
+    def _validate_outcome_scopes(self) -> Self:
+        for outcome in self.outcomes:
+            scope = outcome.native_scope
+            if scope is None and outcome.account_id is not None:
+                raise ValueError("Account outcome requires native scope")
+            if scope is not None and not isinstance(scope, PlaidItemScope):
+                raise ValueError("Plaid outcome requires Plaid item scope")
+        return self
+
+
+class SimpleFINSource(_ContractModel):
+    """SimpleFIN source with its pinned upstream protocol version."""
+
+    provider: Literal["simplefin"]
+    connection_id: UUID
+    credential_generation: int = Field(gt=0)
+    protocol_version: Literal["1.0.7", "2.0.0-draft"]
+    batches: list[ProviderBatch]
+    outcomes: list[ScopeOutcome]
+
+    @model_validator(mode="after")
+    def _validate_outcome_scopes(self) -> Self:
+        scope_type = (
+            SimpleFINV1OrgScope
+            if self.protocol_version == "1.0.7"
+            else SimpleFINV2ConnectionScope
+        )
+        for outcome in self.outcomes:
+            scope = outcome.native_scope
+            if scope is None and outcome.account_id is not None:
+                raise ValueError("Account outcome requires native scope")
+            if scope is not None and not isinstance(scope, scope_type):
+                raise ValueError("SimpleFIN outcome scope does not match protocol")
+        return self
+
+
+ProviderSource = Annotated[
+    PlaidSource | SimpleFINSource, Field(discriminator="provider")
+]
+
+
+class SyncEnvelopeV2(_ContractModel):
+    """Completed broker result, independent of upstream protocol version."""
+
+    job_id: UUID
+    contract_version: Literal[2]
+    status: JobTerminalStatus
+    sources: list[ProviderSource]
 
 
 class ConnectedInstitution(BaseModel):

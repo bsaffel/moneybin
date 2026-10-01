@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from moneybin.connectors.sync_models import (
-    SyncDataResponse,
+    PlaidSyncDataResponse,
     SyncTriggerResponse,
 )
 from moneybin.database import Database
@@ -68,7 +68,7 @@ def test_sync_pull_makes_new_accounts_visible_in_dim_accounts(
     db = _build_db(tmp_path, monkeypatch)
 
     with FIXTURE.open() as f:
-        sync_data = SyncDataResponse.model_validate(yaml.safe_load(f))
+        sync_data = PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
     client = MagicMock()
     client.trigger_sync.return_value = SyncTriggerResponse(
@@ -119,7 +119,7 @@ def test_sync_pull_no_refresh_leaves_dim_accounts_empty(
     db = _build_db(tmp_path, monkeypatch)
 
     with FIXTURE.open() as f:
-        sync_data = SyncDataResponse.model_validate(yaml.safe_load(f))
+        sync_data = PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
     client = MagicMock()
     client.trigger_sync.return_value = SyncTriggerResponse(

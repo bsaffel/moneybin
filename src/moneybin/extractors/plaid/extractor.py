@@ -21,13 +21,13 @@ import polars as pl
 
 from moneybin.connectors.sync_models import (
     InstitutionResult,
-    SyncAccount,
-    SyncBalance,
-    SyncDataResponse,
+    PlaidSyncAccount,
+    PlaidSyncBalance,
+    PlaidSyncDataResponse,
+    PlaidSyncTransaction,
     SyncHolding,
     SyncInvestmentTransaction,
     SyncSecurity,
-    SyncTransaction,
 )
 from moneybin.database import Database
 from moneybin.extractors._types import ExtractionResult, ProviderSource, SyncResponse
@@ -322,7 +322,7 @@ class PlaidExtractor:
         schema_dir = Path(__file__).parent / "schema"
         return sorted(schema_dir.glob("raw_plaid_*.sql"))
 
-    def load(self, sync_data: SyncDataResponse, job_id: str) -> LoadResult:
+    def load(self, sync_data: PlaidSyncDataResponse, job_id: str) -> LoadResult:
         """Load accounts, transactions, balances from one sync response.
 
         Returns per-table counts. Does NOT handle removed_transactions —
@@ -419,7 +419,9 @@ class PlaidExtractor:
                     "the opening-lot bootstrap cannot classify lots without it"
                 )
 
-    def build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
+    def build_account_to_item_map(
+        self, sync_data: PlaidSyncDataResponse
+    ) -> dict[str, str]:
         """Map each account_id to its provider_item_id (its ``source_origin``).
 
         Public so the sync service can attribute each account to the same
@@ -516,7 +518,7 @@ class PlaidExtractor:
 
     def _load_accounts(
         self,
-        accounts: list[SyncAccount],
+        accounts: list[PlaidSyncAccount],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,
@@ -548,7 +550,7 @@ class PlaidExtractor:
 
     def _load_transactions(
         self,
-        transactions: list[SyncTransaction],
+        transactions: list[PlaidSyncTransaction],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,
@@ -578,7 +580,7 @@ class PlaidExtractor:
 
     def _load_balances(
         self,
-        balances: list[SyncBalance],
+        balances: list[PlaidSyncBalance],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,

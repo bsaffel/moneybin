@@ -6,9 +6,9 @@ from typing import Any
 
 from moneybin.connectors.sync_models import (
     DeviceAuthorizationChallenge,
-    SyncAccount,
-    SyncBalance,
-    SyncDataResponse,
+    PlaidSyncAccount,
+    PlaidSyncBalance,
+    PlaidSyncDataResponse,
     SyncHolding,
     SyncInvestmentTransaction,
     SyncSecurity,
@@ -49,7 +49,7 @@ def test_account_keeps_persistent_account_id_and_name() -> None:
     first Plaid sync release (#134) and the change that declared it. Asserting
     the wire keys survive is the only signal this layer offers.
     """
-    account = SyncAccount.model_validate({
+    account = PlaidSyncAccount.model_validate({
         "account_id": "acc_1",
         "persistent_account_id": "ppa_survives_reconnect",
         "account_type": "credit",
@@ -65,7 +65,7 @@ def test_account_keeps_persistent_account_id_and_name() -> None:
 
 def test_account_without_the_new_fields_still_validates() -> None:
     """A broker predating the field must not start failing validation."""
-    account = SyncAccount.model_validate({"account_id": "acc_1"})
+    account = PlaidSyncAccount.model_validate({"account_id": "acc_1"})
 
     assert account.persistent_account_id is None
     assert account.name is None
@@ -81,7 +81,7 @@ def test_account_blank_identity_fields_normalise_to_none() -> None:
     arrives as null rather than ``""`` — ``prep.stg_plaid__accounts`` wraps
     every free-text Plaid column in ``NULLIF(TRIM(...), '')`` for that reason.
     """
-    account = SyncAccount.model_validate({
+    account = PlaidSyncAccount.model_validate({
         "account_id": "acc_1",
         "persistent_account_id": "   ",
         "name": "",
@@ -99,7 +99,7 @@ def test_account_blank_display_fields_normalise_to_none() -> None:
     account surfaces under a name that renders empty. ``institution_name``
     reaches the resolver's own ``institution`` field by the same route.
     """
-    account = SyncAccount.model_validate({
+    account = PlaidSyncAccount.model_validate({
         "account_id": "acc_1",
         "official_name": "   ",
         "institution_name": "",
@@ -123,7 +123,7 @@ def test_balance_keeps_every_wire_field_the_broker_sends() -> None:
     limit on ``app.account_settings`` — a different fact from the one the
     institution reports.
     """
-    balance = SyncBalance.model_validate({
+    balance = PlaidSyncBalance.model_validate({
         "account_id": "acc_1",
         "balance_date": "2026-06-14",
         "current_balance": 4321.00,
@@ -142,7 +142,7 @@ def test_balance_keeps_every_wire_field_the_broker_sends() -> None:
 
 def test_balance_without_the_new_fields_still_validates() -> None:
     """A broker predating the fields must not start failing validation."""
-    balance = SyncBalance.model_validate({
+    balance = PlaidSyncBalance.model_validate({
         "account_id": "acc_1",
         "balance_date": "2026-06-14",
     })
@@ -153,7 +153,7 @@ def test_balance_without_the_new_fields_still_validates() -> None:
 
 
 def test_payload_without_investment_arrays_validates() -> None:
-    resp = SyncDataResponse.model_validate(_BASE)
+    resp = PlaidSyncDataResponse.model_validate(_BASE)
     assert resp.securities == []
     assert resp.investment_transactions == []
     assert resp.investment_holdings == []
@@ -223,7 +223,7 @@ def test_investment_arrays_parse_wire_names() -> None:
             }
         ],
     }
-    resp = SyncDataResponse.model_validate(payload)
+    resp = PlaidSyncDataResponse.model_validate(payload)
     sec = resp.securities[0]
     assert isinstance(sec, SyncSecurity)
     assert sec.security_name == "Apple Inc."

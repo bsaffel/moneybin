@@ -23,7 +23,7 @@ from moneybin.connectors.sync_errors import (
     SyncLinkError,
     SyncTimeoutError,
 )
-from moneybin.connectors.sync_models import SyncAckResponse, SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse, SyncAckResponse
 
 
 @pytest.fixture
@@ -549,7 +549,7 @@ def test_get_data_returns_parsed_sync_data(sync_client: SyncClient) -> None:
         )
     )
     result = sync_client.get_data("job-abc")
-    assert isinstance(result, SyncDataResponse)
+    assert isinstance(result, PlaidSyncDataResponse)
     assert result.metadata.job_id == "job-abc"
     assert len(result.transactions) == 1
 

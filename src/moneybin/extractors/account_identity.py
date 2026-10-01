@@ -373,7 +373,7 @@ class SourceAccount:
     def __post_init__(self) -> None:
         """Canonicalize a blank last four to None — they mean the same thing.
 
-        ``SyncAccount.mask`` declares only a maximum length, so the sync server
+        ``PlaidSyncAccount.mask`` declares only a maximum length, so the sync server
         can send ``""`` or ``"  "``; a source that writes an empty column
         produces the same. All answer the last4 rung with silence, but the
         resolver asks whether that answer is missing in two conventions — ``is

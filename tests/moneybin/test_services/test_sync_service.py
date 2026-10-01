@@ -17,7 +17,7 @@ from moneybin.connectors.sync_models import (
     ConnectedInstitution,
     LinkInitiateResponse,
     LinkStatusResponse,
-    SyncDataResponse,
+    PlaidSyncDataResponse,
     SyncTriggerResponse,
 )
 from moneybin.database import Database
@@ -43,9 +43,9 @@ INVESTMENTS_FIXTURE = (
 
 
 @pytest.fixture
-def sync_data() -> SyncDataResponse:
+def sync_data() -> PlaidSyncDataResponse:
     with FIXTURE.open() as f:
-        return SyncDataResponse.model_validate(yaml.safe_load(f))
+        return PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
 
 @pytest.fixture
@@ -54,7 +54,7 @@ def loader(db: Database) -> PlaidExtractor:
 
 
 @pytest.fixture
-def mock_client(sync_data: SyncDataResponse) -> MagicMock:
+def mock_client(sync_data: PlaidSyncDataResponse) -> MagicMock:
     client = MagicMock()
     client.trigger_sync.return_value = SyncTriggerResponse(
         job_id=sync_data.metadata.job_id,
@@ -66,13 +66,13 @@ def mock_client(sync_data: SyncDataResponse) -> MagicMock:
 
 
 @pytest.fixture
-def investments_sync_data() -> SyncDataResponse:
+def investments_sync_data() -> PlaidSyncDataResponse:
     with INVESTMENTS_FIXTURE.open() as f:
-        return SyncDataResponse.model_validate(yaml.safe_load(f))
+        return PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
 
 @pytest.fixture
-def mock_investments_client(investments_sync_data: SyncDataResponse) -> MagicMock:
+def mock_investments_client(investments_sync_data: PlaidSyncDataResponse) -> MagicMock:
     client = MagicMock()
     client.trigger_sync.return_value = SyncTriggerResponse(
         job_id=investments_sync_data.metadata.job_id,
@@ -93,9 +93,9 @@ def mock_sync_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sync_service, "_refresh", fake_refresh)
 
 
-def _payload(accounts: list[dict[str, Any]], *, item_id: str) -> SyncDataResponse:
+def _payload(accounts: list[dict[str, Any]], *, item_id: str) -> PlaidSyncDataResponse:
     """A minimal one-institution /sync/data response carrying only accounts."""
-    return SyncDataResponse.model_validate({
+    return PlaidSyncDataResponse.model_validate({
         "accounts": accounts,
         "transactions": [],
         "balances": [],
@@ -115,7 +115,7 @@ def _payload(accounts: list[dict[str, Any]], *, item_id: str) -> SyncDataRespons
     })
 
 
-def _relinked_payload() -> SyncDataResponse:
+def _relinked_payload() -> PlaidSyncDataResponse:
     """The same card after a relink: new account_id, new item, same persistent id."""
     return _payload(
         [
@@ -134,7 +134,7 @@ def _relinked_payload() -> SyncDataResponse:
     )
 
 
-def _payload_with_shared_official_name() -> SyncDataResponse:
+def _payload_with_shared_official_name() -> PlaidSyncDataResponse:
     """Two Chase cards whose official_name is the same product label."""
     return _payload(
         [
@@ -163,7 +163,7 @@ def _payload_with_shared_official_name() -> SyncDataResponse:
     )
 
 
-def _payload_with_and_without_a_nickname() -> SyncDataResponse:
+def _payload_with_and_without_a_nickname() -> PlaidSyncDataResponse:
     """One account with a holder-set nickname, one with none at all."""
     return _payload(
         [
@@ -197,7 +197,7 @@ def test_pull_happy_path(
     mock_client: MagicMock,
     db: Database,
     loader: PlaidExtractor,
-    sync_data: SyncDataResponse,
+    sync_data: PlaidSyncDataResponse,
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
     result = service.pull()
@@ -225,7 +225,7 @@ def test_pull_acks_after_successful_load(
     mock_client: MagicMock,
     db: Database,
     loader: PlaidExtractor,
-    sync_data: SyncDataResponse,
+    sync_data: PlaidSyncDataResponse,
 ) -> None:
     """A successful pull acks the broker so it advances cursors.
 
@@ -373,7 +373,7 @@ def test_pull_resolves_raw_securities_left_unbound_by_an_earlier_pull(
     mock_client: MagicMock,
     db: Database,
     loader: PlaidExtractor,
-    sync_data: SyncDataResponse,
+    sync_data: PlaidSyncDataResponse,
 ) -> None:
     """Self-heal: an empty securities delta must not skip resolution.
 
@@ -489,7 +489,7 @@ def test_holdings_only_pull_flags_manual_overlap(
     db: Database,
     loader: PlaidExtractor,
     mock_investments_client: MagicMock,
-    investments_sync_data: SyncDataResponse,
+    investments_sync_data: PlaidSyncDataResponse,
 ) -> None:
     holdings_only = investments_sync_data.model_copy(
         update={"investment_transactions": []}
@@ -523,7 +523,7 @@ def test_link_new_institution_auto_pulls(
     mock_client: MagicMock,
     db: Database,
     loader: PlaidExtractor,
-    sync_data: SyncDataResponse,
+    sync_data: PlaidSyncDataResponse,
 ) -> None:
     mock_client.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_x",
@@ -1130,7 +1130,7 @@ class TestPullAutoRefreshes:
         self,
         db: Database,
         loader: PlaidExtractor,
-        sync_data: SyncDataResponse,
+        sync_data: PlaidSyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """No raw rows landed → nothing to refresh."""
@@ -1166,7 +1166,7 @@ class TestPullAutoRefreshes:
         self,
         db: Database,
         loader: PlaidExtractor,
-        sync_data: SyncDataResponse,
+        sync_data: PlaidSyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Snapshot-receipt-only sync: a broker reporting NOTHING is a state change.
@@ -1236,7 +1236,7 @@ class TestPullAutoRefreshes:
         self,
         db: Database,
         loader: PlaidExtractor,
-        sync_data: SyncDataResponse,
+        sync_data: PlaidSyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A price-only write is a durable raw write and must gate the refresh.
@@ -1320,7 +1320,7 @@ class TestPullAutoRefreshes:
         self,
         db: Database,
         loader: PlaidExtractor,
-        sync_data: SyncDataResponse,
+        sync_data: PlaidSyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Self-heal-only sync: a binding the resolver lands is a state change.
@@ -1388,7 +1388,7 @@ class TestPullAutoRefreshes:
         self,
         db: Database,
         loader: PlaidExtractor,
-        sync_data: SyncDataResponse,
+        sync_data: PlaidSyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The converse: a re-resolve that writes nothing must NOT refresh.
@@ -1452,7 +1452,7 @@ class TestPullAutoRefreshes:
         self,
         db: Database,
         loader: PlaidExtractor,
-        sync_data: SyncDataResponse,
+        sync_data: PlaidSyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Removal-only sync: deletions are a state change too.
@@ -1555,7 +1555,7 @@ class TestPullResolvesAccounts:
         mock_client: MagicMock,
         db: Database,
         loader: PlaidExtractor,
-        sync_data: SyncDataResponse,
+        sync_data: PlaidSyncDataResponse,
     ) -> None:
         """Each Plaid account yields an accepted source_native link.
 

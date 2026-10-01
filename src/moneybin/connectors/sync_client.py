@@ -45,8 +45,8 @@ from moneybin.connectors.sync_models import (
     LinkInitiateResponse,
     LinkStatusResponse,
     LoginPollResult,
+    PlaidSyncDataResponse,
     SyncAckResponse,
-    SyncDataResponse,
     SyncTriggerResponse,
 )
 from moneybin.metrics.registry import SYNC_AUTH_REFRESH_OUTCOMES
@@ -457,7 +457,7 @@ class SyncClient:
         )
         return SyncTriggerResponse.model_validate(resp.json())
 
-    def get_data(self, job_id: str) -> SyncDataResponse:
+    def get_data(self, job_id: str) -> PlaidSyncDataResponse:
         """GET /sync/data — re-readable until ack or the broker's hold TTL expires.
 
         Reading does not advance cursors or drop the window; the broker holds the
@@ -468,7 +468,7 @@ class SyncClient:
             "/sync/data",
             params={"job_id": job_id},
         )
-        return SyncDataResponse.model_validate(resp.json())
+        return PlaidSyncDataResponse.model_validate(resp.json())
 
     def ack(self, job_id: str) -> SyncAckResponse:
         """POST /sync/ack — confirm durable load so the broker advances cursors.

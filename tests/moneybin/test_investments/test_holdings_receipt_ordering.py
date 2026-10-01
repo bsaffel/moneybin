@@ -6,7 +6,7 @@ import yaml
 from sqlglot import exp
 from sqlmesh.core.dialect import parse
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database
 from moneybin.extractors.plaid.extractor import PlaidExtractor
 
@@ -28,7 +28,7 @@ def test_first_snapshot_is_account_scoped_and_stable_when_timestamps_tie(
     fixture = Path(
         "tests/moneybin/test_extractors/fixtures/plaid_investments_sync_response.yaml"
     )
-    payload = SyncDataResponse.model_validate(yaml.safe_load(fixture.read_text()))
+    payload = PlaidSyncDataResponse.model_validate(yaml.safe_load(fixture.read_text()))
     provider = PlaidExtractor(db)
     first = payload.model_copy(deep=True)
     first.investment_holdings = [

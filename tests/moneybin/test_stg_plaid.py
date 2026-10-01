@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
@@ -29,7 +29,7 @@ FIXTURE = (
 @pytest.fixture
 def db_with_data(db: Database) -> Database:
     with FIXTURE.open() as f:
-        sync_data = SyncDataResponse.model_validate(yaml.safe_load(f))
+        sync_data = PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
     loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
     # Populate app.account_links for each Plaid account so the staging
