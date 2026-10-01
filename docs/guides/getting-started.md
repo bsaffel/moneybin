@@ -138,11 +138,15 @@ the deterministic categorization cascade (rules + merchants) to raise coverage a
 threshold. Suggested (not certain) because the cascade applies 0 rows when no active rules or
 merchant mappings match the remaining uncategorized transactions — re-run the doctor after to
 verify.
+! net_worth_stale_balance — 1 account(s) in net worth have no balance observed in the last 30 days,
+so their balances are carried forward — import a recent statement, sync, or record one with
+`moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
+   Affected: cc9cc9bbd736
 
-67 invariants checked across 20 transactions — 66 passing, 1 warn, 0 skipped
+69 invariants checked across 20 transactions — 67 passing, 2 warn, 0 skipped
 ```
 
-The one warning is expected on a first import and is step 7; a warn alone keeps the exit status at 0. The `›` lines under a doctor check or a report name the MCP tool call an assistant would make next, with the equivalent flag on each command's [reference page](../reference/cli/README.md); the one exception is a report that masked one of its columns, which points at `moneybin reports explain` instead, and elsewhere a `›` line is a plain hint, such as the command to run next.
+Two warnings are expected on a first import: `categorization_coverage` is step 7, and `net_worth_stale_balance` fires because this statement's balance is already more than 30 days old by the time you read this guide — importing a fresher statement later clears it. A warn alone keeps the exit status at 0. The `›` lines under a doctor check or a report name the MCP tool call an assistant would make next, with the equivalent flag on each command's [reference page](../reference/cli/README.md); the one exception is a report that masked one of its columns, which points at `moneybin reports explain` instead, and elsewhere a `›` line is a plain hint, such as the command to run next.
 
 ## 6. First reports
 

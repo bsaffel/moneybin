@@ -175,12 +175,17 @@ Two details of that line are worth reading precisely:
 
 A read-only sweep that asks: is the pipeline internally consistent right now?
 
-A clean sweep prints one line. On the family demo profile, immediately after `moneybin refresh`:
+A clean sweep prints one line. On the family demo profile, immediately after `moneybin refresh`, the synthetic history's fixed end date (2025-12-31) is now more than 30 days in the past, so it warns instead:
 
 ```console
 $ uv run moneybin system doctor
 
-67 invariants checked across 2,886 transactions — all passing
+! net_worth_stale_balance — 4 account(s) in net worth have no balance observed in the last 30 days,
+so their balances are carried forward — import a recent statement, sync, or record one with
+`moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
+   Affected: SYN00420001, SYN00420002, SYN00420003, SYN00420004
+
+69 invariants checked across 2,886 transactions — 68 passing, 1 warn, 0 skipped
 ```
 
 `--verbose` names each invariant that ran, plus the affected IDs on anything failing:
@@ -196,7 +201,7 @@ $ uv run moneybin system doctor --verbose
 ✓ transform_model_presence
 ```
 
-The other 60 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
+The other 62 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
 
 What it audits, via `DoctorService`:
 
@@ -227,9 +232,9 @@ $ uv run moneybin system doctor --output json | jq .
     "display_currency": null
   },
   "data": {
-    "passing": 67,
+    "passing": 68,
     "failing": 0,
-    "warning": 0,
+    "warning": 1,
     "skipped": 0,
     "transaction_count": 2886,
     "invariants": [
@@ -253,7 +258,7 @@ $ uv run moneybin system doctor --output json | jq .
 }
 ```
 
-The 65 `invariants` entries between the first and the last are cut; this command writes nothing to stderr. `summary.total_count` counts the sweep, not its invariants — the per-invariant tallies are `data.passing` and `data.failing`.
+The 67 `invariants` entries between the first and the last are cut; this command writes nothing to stderr. `summary.total_count` counts the sweep, not its invariants — the per-invariant tallies are `data.passing` and `data.failing`.
 
 On failure (exit `1`), the top-level `status` flips to `"error"`, an `error` object appears (`{"code": "audit_invariant_failure", "message": "N invariant(s) failing"}`), and the offending entries in `data.invariants[]` carry `"status": "fail"` with `detail` set to `"N violation(s)"`. Match on `data.invariants[].status == "fail"` (or top-level `status == "error"`) to drive alerts. `affected_ids` is populated only when `--verbose` is passed.
 

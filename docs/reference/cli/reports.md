@@ -384,7 +384,7 @@ Usage: `moneybin reports net-worth-currencies [OPTIONS]`
 
 Net worth per account per day: the account-grain rung of the ladder.
 
-One row per (account_id, balance_date), in the account's own currency_code and in the profile's home currency. Defaults to the latest available day when no range is given.
+One row per (account_id, balance_date), in the account's own currency_code and in the profile's home currency. Defaults to the latest available day when no range is given. On an explicit range, an eligible unanchored candidate missing from the range gets its own synthesized row, dated independently per candidate rather than gated on the whole result being empty.
 
 Usage: `moneybin reports net-worth-accounts [OPTIONS]`
 
@@ -392,8 +392,8 @@ Usage: `moneybin reports net-worth-accounts [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. |
-| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. |
+| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. An eligible account holding value with no balance observation still gets one row dated inside the range, with null balances. |
+| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. An eligible account holding value with no balance observation still gets one row dated inside the range, with null balances. |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
@@ -416,8 +416,8 @@ Usage: `moneybin reports net-worth [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. |
-| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. |
+| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. An explicit range with no balance rows, while an eligible account holding value has no balance observation, returns one row dated inside the range with null measures and unanchored_account_count set. |
+| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. An explicit range with no balance rows, while an eligible account holding value has no balance observation, returns one row dated inside the range with null measures and unanchored_account_count set. |
 | `--interval` | one of `daily`, `weekly`, `monthly` |  | daily \| weekly \| monthly — buckets the range into one row per bucket with change_abs/change_pct. Weekly buckets are ISO weeks starting Monday. Omitted returns the plain day-grain rows with no change columns. |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
