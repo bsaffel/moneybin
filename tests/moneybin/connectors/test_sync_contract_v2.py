@@ -97,7 +97,15 @@ def test_v2_rejects_unsupported_simplefin_version() -> None:
 
 
 @pytest.mark.parametrize(
-    "missing", ["connection_id", "credential_generation", "batches", "outcomes"]
+    "missing",
+    [
+        "provider",
+        "protocol_version",
+        "connection_id",
+        "credential_generation",
+        "batches",
+        "outcomes",
+    ],
 )
 def test_v2_rejects_missing_source_fields(missing: str) -> None:
     original = json.loads((FIXTURES / "simplefin_v2.json").read_text())
@@ -116,7 +124,9 @@ def test_v2_rejects_missing_batch_fields(missing: str) -> None:
         _validate_envelope(original)
 
 
-@pytest.mark.parametrize("missing", ["account_id", "window", "status", "error_code"])
+@pytest.mark.parametrize(
+    "missing", ["account_id", "native_scope", "window", "status", "error_code"]
+)
 def test_v2_rejects_missing_outcome_fields(missing: str) -> None:
     original = json.loads((FIXTURES / "simplefin_v2.json").read_text())
     del original["sources"][0]["outcomes"][0][missing]
@@ -256,3 +266,37 @@ def test_plaid_wire_models_have_explicit_internal_names() -> None:
         "PlaidSyncDataResponse",
     ):
         assert hasattr(sync_models, name), f"missing {name}"
+
+
+@pytest.mark.parametrize("collection", ["batches", "outcomes"])
+def test_plaid_requires_null_window(collection: str) -> None:
+    """Cursor data and snapshots cannot claim one requested date window."""
+    original = json.loads((FIXTURES / "plaid.json").read_text())
+    original["sources"][0][collection][0]["window"] = {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z",
+    }
+    with pytest.raises(ValidationError):
+        _validate_envelope(original)
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize("collection", ["batches", "outcomes"])
+def test_simplefin_requires_requested_window(name: str, collection: str) -> None:
+    """Null cannot authorize SimpleFIN history coverage."""
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    original["sources"][0][collection][0]["window"] = None
+    with pytest.raises(ValidationError):
+        _validate_envelope(original)
+
+
+def test_plaid_null_window_preserves_investment_metadata() -> None:
+    """The investment date range remains native metadata beside cursor cash."""
+    original = json.loads((FIXTURES / "plaid.json").read_text())
+    payload = original["sources"][0]["batches"][0]["payload"]
+    payload["metadata"]["investment_start_date"] = "2026-06-01"
+    payload["metadata"]["investment_end_date"] = "2026-09-30"
+    payload["investment_transactions"] = [{"amount": "-7.125", "date": "2026-06-02"}]
+    envelope = _validate_envelope(original)
+    assert envelope.sources[0].batches[0].window is None
+    assert envelope.sources[0].batches[0].payload == payload

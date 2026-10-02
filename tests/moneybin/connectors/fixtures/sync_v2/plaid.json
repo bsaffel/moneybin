@@ -11,10 +11,7 @@
         {
           "batch_id": "33333333-3333-4333-8333-333333333333",
           "fetched_at": "2026-09-30T12:00:00Z",
-          "window": {
-            "start": "2026-09-01T00:00:00Z",
-            "end": "2026-10-01T00:00:00Z"
-          },
+          "window": null,
           "payload": {
             "accounts": [
               {
@@ -56,10 +53,7 @@
       "outcomes": [
         {
           "account_id": "plaid-account-1",
-          "window": {
-            "start": "2026-09-01T00:00:00Z",
-            "end": "2026-10-01T00:00:00Z"
-          },
+          "window": null,
           "status": "complete",
           "error_code": null,
           "native_scope": {

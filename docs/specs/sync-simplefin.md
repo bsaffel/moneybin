@@ -192,13 +192,21 @@ Broker envelope version and SimpleFIN protocol version are independent.
 Version 2 returns `job_id`, `contract_version`, terminal `status`, and `sources`.
 Each source contains `provider`, `connection_id`, `credential_generation`,
 `protocol_version` where applicable, and `batches` plus `outcomes`.
-Each batch carries an immutable `batch_id`, fetch time, requested UTC window,
+Each batch carries an immutable `batch_id`, fetch time, required nullable `window`,
 and a provider-specific `payload`. SimpleFIN payloads retain the Account Set;
 Plaid payloads retain today's wire values and semantics. No sign conversion,
 account classification, categorization, or cross-source matching runs in the
 broker. Credentials and HTTP transport metadata never enter payloads.
 
-Each outcome identifies its connection/account scope, requested window,
+The source validates `window` on every batch and outcome: SimpleFIN requires a
+requested UTC interval; Plaid requires explicit null because cursor cash data,
+date-based investment transactions, and snapshots share its native payload.
+Null means no single requested interval and supplies no history-coverage evidence.
+Plaid investment metadata and its independent `investments_synced_through` cursor
+remain unchanged. Validate the complete source/envelope before SimpleFIN ingestion;
+a standalone shared batch does not establish date validity.
+
+Each outcome identifies its connection/account scope, required nullable window,
 `complete|partial|failed|deferred`, safe error code, and optional retry time.
 Its native scope is tagged: a v1 organization record (including optional `id`),
 a v2 `conn_id`, or a Plaid item ID, separate from the native account ID and the

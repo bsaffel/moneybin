@@ -395,7 +395,7 @@ class ProviderBatch(_ContractModel):
 
     batch_id: UUID
     fetched_at: AwareDatetime
-    window: UTCWindow
+    window: UTCWindow | None
     payload: dict[str, object]
 
 
@@ -447,7 +447,7 @@ class ScopeOutcome(_ContractModel):
 
     account_id: str | None
     native_scope: NativeScope | None
-    window: UTCWindow
+    window: UTCWindow | None
     status: Literal["complete", "partial", "failed", "deferred"]
     error_code: str | None
     retry_at: AwareDatetime | None = None
@@ -464,6 +464,8 @@ class PlaidSource(_ContractModel):
 
     @model_validator(mode="after")
     def _validate_outcome_scopes(self) -> Self:
+        if any(item.window is not None for item in [*self.batches, *self.outcomes]):
+            raise ValueError("Plaid results require a null window")
         for outcome in self.outcomes:
             scope = outcome.native_scope
             if scope is None and outcome.account_id is not None:
@@ -485,6 +487,8 @@ class SimpleFINSource(_ContractModel):
 
     @model_validator(mode="after")
     def _validate_outcome_scopes(self) -> Self:
+        if any(item.window is None for item in [*self.batches, *self.outcomes]):
+            raise ValueError("SimpleFIN results require a requested window")
         scope_type = (
             SimpleFINV1OrgScope
             if self.protocol_version == "1.0.7"
