@@ -274,7 +274,9 @@ WITH ofx_balance_currency AS (
 SELECT
   w.account_id, /* Canonical account identifier; opaque and stable across imports; foreign key in fct_transactions */
   w.routing_number, /* ABA bank routing number; merged first-non-null by source strength then recency; NULL when no source provided it */
-  w.account_type, /* Canonical account classification, normalized across all sources via seeds.account_type_map: depository, credit, loan, investment, other. NULL when the source spelling is unrecognized — the finer source distinction is preserved in account_subtype */
+  COALESCE(s.account_type, w.account_type) AS account_type, /* Effective canonical type: user override else merged source evidence; subtype is independent */
+  s.account_type AS account_type_override, /* User canonical type override; NULL means selected source evidence supplies the effective type */
+  w.account_type AS source_account_type, /* Selected merged source or confirmed-link type evidence before override; original observations remain in Raw */
   w.institution_name, /* Human-readable name of the financial institution */
   w.institution_slug, /* Canonical institution slug used to match accounts across sources; institution_name is for display only and does not slugify back to this */
   w.institution_fid, /* OFX financial institution identifier; NULL for tabular/plaid sources */
@@ -333,12 +335,12 @@ SELECT
       WHEN REGEXP_MATCHES(w.account_label, '\p{L}') AND w.account_label <> 'Unnamed account'
       THEN w.account_label
     END,
-    w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
+    w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, s.account_type, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
-    w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type),
+    w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, s.account_type, w.account_type),
     w.institution_name,
-    COALESCE(s.account_subtype, w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
-    COALESCE(s.account_subtype, w.account_subtype, w.account_type),
+    COALESCE(s.account_subtype, w.account_subtype, s.account_type, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
+    COALESCE(s.account_subtype, w.account_subtype, s.account_type, w.account_type),
     '…' || COALESCE(s.last_four, w.last_four_derived),
     'Unnamed account' /* Nothing left to name it by: no institution, subtype, type or last four.
        The id is not a fallback name — for an account with no accepted link it

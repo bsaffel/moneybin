@@ -151,10 +151,11 @@ def _undo_action(
     )
 
 
-def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
-    """Return whether undo changed FX inputs and whether Account currency changed."""
+def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool, bool]:
+    """Return whether undo changed FX inputs, account currency, or account type."""
     needs_restatement = False
     account_currency_changed = False
+    account_type_changed = False
     for event in events:
         if event.target_schema != "app":
             continue
@@ -196,6 +197,9 @@ def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
             continue
         before = event.before_value or {}
         after = event.after_value or {}
+        if before.get("account_type") != after.get("account_type"):
+            needs_restatement = True
+            account_type_changed = True
         if before.get("currency_code") != after.get("currency_code"):
             needs_restatement = True
             account_currency_changed = True
@@ -203,7 +207,7 @@ def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
             "default_cost_basis_method"
         ):
             needs_restatement = True
-    return needs_restatement, account_currency_changed
+    return needs_restatement, account_currency_changed, account_type_changed
 
 
 class UndoService:
@@ -340,9 +344,11 @@ class UndoService:
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
         )
-        needs_fx_restatement, account_currency_changed = _fx_restatement_requirement(
-            undone
-        )
+        (
+            needs_fx_restatement,
+            account_currency_changed,
+            account_type_changed,
+        ) = _fx_restatement_requirement(undone)
         if needs_fx_restatement:
             from moneybin.services.fx_accounting_refresh import (
                 restate_fx_accounting,
@@ -352,6 +358,7 @@ class UndoService:
                 self._db,
                 account_currency_changed=account_currency_changed,
                 committed_change="undo",
+                **({"account_type_changed": True} if account_type_changed else {}),
             )
         return UndoResult(
             undo_operation_id=undo_op,

@@ -216,6 +216,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
     "official_name",
     "last_four",
     "account_subtype",
+    "account_type",
     "holder_category",
     "currency_code",
     "credit_limit",
@@ -230,6 +231,7 @@ def accounts_set(
     official_name: str | None = None,
     last_four: str | None = None,
     account_subtype: str | None = None,
+    account_type: str | None = None,
     holder_category: str | None = None,
     currency_code: str | None = None,
     credit_limit: float | None = None,
@@ -247,7 +249,9 @@ def accounts_set(
 
     Structural fields (Plaid-parity metadata):
       ``official_name``, ``last_four``, ``account_subtype``, ``holder_category``,
-      ``currency_code``, ``credit_limit``.
+      ``currency_code``, ``credit_limit``. ``account_type`` overrides the canonical
+      type (depository, credit, loan, investment, other), preserving subtype and
+      source evidence; clear it to restore that evidence.
 
     Behavioral fields:
       ``display_name`` — text override for the account's resolved name.
@@ -260,7 +264,7 @@ def accounts_set(
 
     Pass ``None`` to leave a field unchanged. To explicitly clear a text field
     back to NULL, include its name in ``clear_fields``. Valid clearable names:
-    ``"official_name"``, ``"last_four"``, ``"account_subtype"``,
+    ``"official_name"``, ``"last_four"``, ``"account_subtype"``, ``"account_type"``,
     ``"holder_category"``, ``"currency_code"``, ``"credit_limit"``,
     ``"display_name"``, ``"default_cost_basis_method"``. Booleans
     (``include_in_net_worth``, ``is_archived``) are not clearable — pass the
@@ -282,6 +286,7 @@ def accounts_set(
         "official_name": official_name,
         "last_four": last_four,
         "account_subtype": account_subtype,
+        "account_type": account_type,
         "holder_category": holder_category,
         "currency_code": currency_code,
         "credit_limit": Decimal(str(credit_limit))
@@ -315,6 +320,7 @@ def accounts_set(
         official_name=d.get("official_name"),  # type: ignore[arg-type]
         last_four=d.get("last_four"),  # type: ignore[arg-type]
         account_subtype=d.get("account_subtype"),  # type: ignore[arg-type]
+        account_type=d.get("account_type"),  # type: ignore[arg-type]
         holder_category=d.get("holder_category"),  # type: ignore[arg-type]
         currency_code=d.get("currency_code"),  # type: ignore[arg-type]
         credit_limit=d.get("credit_limit"),  # type: ignore[arg-type]
@@ -1789,22 +1795,19 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_set,
         "accounts_set",
-        "Partial update of an account's settings. Behavioral fields: "
-        "display_name, default_cost_basis_method (fifo/hifo/specific/average; "
-        "invalid values raise mutation_invalid_input), include_in_net_worth, "
-        "is_archived. Structural fields: "
-        "official_name, last_four, account_subtype, holder_category, "
-        "currency_code, credit_limit. Pass None to leave a field "
-        "unchanged; include a text field's name in clear_fields to clear it "
-        "(booleans are not clearable). is_archived and include_in_net_worth "
-        "are independent: archiving today excludes the account from net "
-        "worth entirely (history included); archived_at is recorded for a "
-        "future date-scoped release, not yet applied. "
-        "include_in_net_worth=False excludes an account regardless of "
-        "archived status. "
-        "Writes app.account_settings; revert by calling again with the prior "
-        "values (no built-in undo). "
-        "Amounts are in the currency named by `summary.display_currency`.",
+        "Update an account's settings. None leaves fields unchanged; clear_fields "
+        "resets nullable fields, never booleans. account_type accepts "
+        "depository/credit/loan/investment/other without changing subtype; clear "
+        "it to restore source evidence. account_subtype and holder_category allow "
+        "noncanonical values with warnings. default_cost_basis_method accepts "
+        "fifo/hifo/specific/average; invalid types or methods raise "
+        "mutation_invalid_input. Other fields: display_name, official_name, "
+        "last_four, currency_code, credit_limit. is_archived and "
+        "include_in_net_worth are independent: archiving excludes all net-worth "
+        "history; archived_at is not yet date-scoped. include_in_net_worth=False "
+        "also excludes active accounts. Writes audited app.account_settings; "
+        "restore prior values or use system_audit_undo. Amounts use "
+        "summary.display_currency.",
     )
     register(
         mcp,

@@ -197,6 +197,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "status": DataClass.TXN_TYPE,
     },
     ("app", "account_settings"): {
+        "account_type": DataClass.TXN_TYPE,
         "account_id": DataClass.RECORD_ID,
         "account_subtype": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
@@ -867,6 +868,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "dim_accounts"): {
+        "account_type_override": DataClass.TXN_TYPE,
+        "source_account_type": DataClass.TXN_TYPE,
         # Opaque minted canonical surrogate (spec D6) — not PII. PII lives in
         # app.account_links.ref_value (ACCOUNT_IDENTIFIER).
         "account_id": DataClass.RECORD_ID,

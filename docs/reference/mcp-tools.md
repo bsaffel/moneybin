@@ -11,7 +11,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`accounts_balance_assert`](#accounts_balance_assert) | Declare a manual balance assertion present or absent for one resolved account and date. | write, destructive, idempotent | at least `medium` |
 | [`accounts_balances`](#accounts_balances) | Return balances by date, history, assertions, or reconciliation deltas. | read-only, idempotent | up to `high` |
 | [`accounts_links_run`](#accounts_links_run) | Propose account merges: sweep for duplicates, or link two accounts by id. | write, not idempotent | at least `low` |
-| [`accounts_set`](#accounts_set) | Partial update of an account's settings. | write, idempotent | at least `critical` |
+| [`accounts_set`](#accounts_set) | Update an account's settings. | write, idempotent | at least `critical` |
 | [`export_run`](#export_run) | Publish one canonical bundle or registered report to a named local or Sheets destination. | write, not idempotent, open world | at least `medium` |
 | [`exports_set`](#exports_set) | Assert one named export destination's local or Sheets target state. | write, destructive, idempotent, open world | at least `medium` |
 | [`gsheet`](#gsheet) | Read connections or connection health. | read-only, idempotent | up to `medium` |
@@ -117,7 +117,7 @@ Access: write, not idempotent. Sensitivity: at least `low`.
 
 ### accounts_set
 
-Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving today excludes the account from net worth entirely (history included); archived_at is recorded for a future date-scoped release, not yet applied. include_in_net_worth=False excludes an account regardless of archived status. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.
+Update an account's settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type accepts depository/credit/loan/investment/other without changing subtype; clear it to restore source evidence. account_subtype and holder_category allow noncanonical values with warnings. default_cost_basis_method accepts fifo/hifo/specific/average; invalid types or methods raise mutation_invalid_input. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not yet date-scoped. include_in_net_worth=False also excludes active accounts. Writes audited app.account_settings; restore prior values or use system_audit_undo. Amounts use summary.display_currency.
 
 Access: write, idempotent. Sensitivity: at least `critical`.
 
@@ -127,6 +127,7 @@ Access: write, idempotent. Sensitivity: at least `critical`.
 | `official_name` | string |  |  |
 | `last_four` | string |  |  |
 | `account_subtype` | string |  |  |
+| `account_type` | string |  |  |
 | `holder_category` | string |  |  |
 | `currency_code` | string |  |  |
 | `credit_limit` | number |  |  |

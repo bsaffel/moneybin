@@ -1995,3 +1995,24 @@ async def test_links_run_does_not_promise_a_safe_retry() -> None:
 
     assert tool.annotations is not None
     assert tool.annotations.idempotent_hint is False
+
+
+@pytest.mark.unit
+async def test_type_override_normalizes_and_clears_through_mcp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", MagicMock()
+    )
+    result = await accounts_set(account_id="ACC001", account_type="  CREDIT  ")
+    assert result.to_dict()["data"]["account_type"] == "credit"
+    cleared = await accounts_set(
+        account_id="ACC001", account_type="loan", clear_fields=["account_type"]
+    )
+    assert cleared.to_dict()["data"]["account_type"] is None
+
+
+@pytest.mark.unit
+async def test_type_alias_is_rejected_through_mcp() -> None:
+    result = await accounts_set(account_id="ACC001", account_type="checking")
+    assert result.to_dict()["error"]["code"] == "mutation_invalid_input"

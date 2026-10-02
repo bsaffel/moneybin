@@ -23,16 +23,26 @@ _RATE_SPINE_ROOT_MODEL = "core.fct_exchange_rates_daily"
 CommittedChange = Literal["setting", "exchange rate", "match decision", "undo"]
 
 
-def _committed_refresh_error(*, committed_change: CommittedChange) -> UserError:
+def _committed_refresh_error(
+    *, committed_change: CommittedChange, account_type_changed: bool = False
+) -> UserError:
     verb = (
         "was saved"
         if committed_change in ("setting", "exchange rate")
         else "was committed"
     )
+    projection = (
+        "account projections" if account_type_changed else "derived FX accounting"
+    )
+    hint = (
+        "Run 'moneybin refresh' before relying on account classifications or totals."
+        if account_type_changed
+        else "Run 'moneybin refresh' before relying on FX lots or gains."
+    )
     return UserError(
-        f"The {committed_change} {verb}, but derived FX accounting could not be rebuilt.",
+        f"The {committed_change} {verb}, but {projection} could not be rebuilt.",
         code=error_codes.REFRESH_MODEL_FAILED,
-        hint="Run 'moneybin refresh' before relying on FX lots or gains.",
+        hint=hint,
     )
 
 
@@ -40,11 +50,14 @@ def restate_fx_accounting(
     db: Database,
     *,
     account_currency_changed: bool = False,
+    account_type_changed: bool = False,
     committed_change: CommittedChange = "setting",
 ) -> None:
-    """Rebuild FX accounting after a relevant committed App mutation."""
+    """Rebuild affected account and FX projections after a committed App mutation."""
     roots = [
-        _ACCOUNT_ROOT_MODEL if account_currency_changed else _FX_ACCOUNTING_ROOT_MODEL
+        _ACCOUNT_ROOT_MODEL
+        if account_currency_changed or account_type_changed
+        else _FX_ACCOUNTING_ROOT_MODEL
     ]
     if committed_change == "exchange rate":
         # A fetched rate changes the spine the net-worth rungs join. It is
@@ -53,7 +66,9 @@ def restate_fx_accounting(
     try:
         presence = sqlmesh_registry.model_presence(db)
     except UserError as exc:
-        raise _committed_refresh_error(committed_change=committed_change) from exc
+        raise _committed_refresh_error(
+            committed_change=committed_change, account_type_changed=account_type_changed
+        ) from exc
     if presence.never_built:
         return
 
@@ -61,7 +76,9 @@ def restate_fx_accounting(
     if result.applied:
         return
 
-    raise _committed_refresh_error(committed_change=committed_change)
+    raise _committed_refresh_error(
+        committed_change=committed_change, account_type_changed=account_type_changed
+    )
 
 
 def _has_transfer_decision(db: Database, match_ids: Sequence[str]) -> bool:

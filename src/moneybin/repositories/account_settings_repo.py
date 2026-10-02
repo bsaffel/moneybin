@@ -12,7 +12,9 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from moneybin import error_codes
 from moneybin.database import has_column
+from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_SETTINGS
@@ -31,6 +33,7 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "include_in_net_worth",
     "default_cost_basis_method",
     "updated_at",
+    "account_type",
 )
 
 
@@ -75,10 +78,12 @@ class AccountSettingsRepo(BaseRepo):
     ) -> dict[str, Any] | None:
         if has_archived_at is None:
             has_archived_at = self._archived_at_supported()
-        columns = (
-            _ACCOUNT_SETTINGS_COLUMNS
-            if has_archived_at
-            else tuple(c for c in _ACCOUNT_SETTINGS_COLUMNS if c != "archived_at")
+        has_account_type = has_column(self._db, ACCOUNT_SETTINGS, "account_type")
+        columns = tuple(
+            c
+            for c in _ACCOUNT_SETTINGS_COLUMNS
+            if (has_archived_at or c != "archived_at")
+            and (has_account_type or c != "account_type")
         )
         return self._fetch_one(ACCOUNT_SETTINGS, columns, "account_id", account_id)
 
@@ -98,6 +103,7 @@ class AccountSettingsRepo(BaseRepo):
         include_in_net_worth: bool,
         default_cost_basis_method: str | None,
         actor: str,
+        account_type: str | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
         context: dict[str, Any] | None = None,
@@ -120,6 +126,13 @@ class AccountSettingsRepo(BaseRepo):
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             has_archived_at = self._archived_at_supported()
+            has_account_type = has_column(self._db, ACCOUNT_SETTINGS, "account_type")
+            if account_type is not None and not has_account_type:
+                raise UserError(
+                    "Account type overrides require a database upgrade.",
+                    code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
+                    hint="Run 'moneybin db migrate apply' before setting account type.",
+                )
             before = self._fetch_row(account_id, has_archived_at=has_archived_at)
 
             values_by_column: dict[str, Any] = {
@@ -128,6 +141,7 @@ class AccountSettingsRepo(BaseRepo):
                 "official_name": official_name,
                 "last_four": last_four,
                 "account_subtype": account_subtype,
+                "account_type": account_type,
                 "holder_category": holder_category,
                 "currency_code": currency_code,
                 "credit_limit": credit_limit,
@@ -137,7 +151,10 @@ class AccountSettingsRepo(BaseRepo):
                 "default_cost_basis_method": default_cost_basis_method,
             }
             columns = [
-                c for c in values_by_column if has_archived_at or c != "archived_at"
+                c
+                for c in values_by_column
+                if (has_archived_at or c != "archived_at")
+                and (has_account_type or c != "account_type")
             ]
             col_sql = ", ".join(columns)
             placeholders = ", ".join("?" for _ in columns)
@@ -205,6 +222,11 @@ class AccountSettingsRepo(BaseRepo):
                 if live_row is not None and live_row[0] is not None
                 else None
             )
+        if "account_type" not in row and has_column(
+            self._db, ACCOUNT_SETTINGS, "account_type"
+        ):
+            live = self._fetch_row(str(row["account_id"]))
+            row["account_type"] = live["account_type"] if live is not None else None
         super()._delete_by_pk(row)
 
     def _insert_row(self, row: dict[str, Any]) -> None:
@@ -242,6 +264,8 @@ class AccountSettingsRepo(BaseRepo):
             and self._archived_at_supported()
         ):
             row["archived_at"] = date.today().isoformat()
+        if has_column(self._db, ACCOUNT_SETTINGS, "account_type"):
+            row.setdefault("account_type", None)
         super()._insert_row(row)
 
     def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
@@ -296,6 +320,14 @@ class AccountSettingsRepo(BaseRepo):
         misleading "not reversible" error. A post-V063 capture always carries
         the key and takes the base-class path unchanged.
         """
+        # Legacy omission preserves the live override; explicit null clears it.
+        if "account_type" not in before and has_column(
+            self._db, ACCOUNT_SETTINGS, "account_type"
+        ):
+            live = self._fetch_row(str(locate["account_id"]))
+            value = live["account_type"] if live is not None else None
+            before["account_type"] = value
+            locate["account_type"] = value
         super()._restore_row(before=before, locate=locate)
         if "archived_at" in before:
             return

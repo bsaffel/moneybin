@@ -42,6 +42,7 @@
     default_cost_basis_method: TEXT
     updated_at: TIMESTAMPNTZ
     archived_at: DATE
+    account_type: TEXT
 - name: '"moneybin"."app"."audit_log"'
   columns:
     audit_id: TEXT

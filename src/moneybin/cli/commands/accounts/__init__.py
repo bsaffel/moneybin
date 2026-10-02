@@ -287,6 +287,11 @@ def accounts_set(
     last_four: str | None = typer.Option(
         None, "--last-four", help="Last 4 digits of account number"
     ),
+    account_type: str | None = typer.Option(
+        None,
+        "--type",
+        help="Canonical type override: depository, credit, loan, investment, other",
+    ),
     subtype: str | None = typer.Option(
         None,
         "--subtype",
@@ -325,6 +330,7 @@ def accounts_set(
     clear_official_name: bool = typer.Option(False, "--clear-official-name"),
     clear_last_four: bool = typer.Option(False, "--clear-last-four"),
     clear_subtype: bool = typer.Option(False, "--clear-subtype"),
+    clear_type: bool = typer.Option(False, "--clear-type"),
     clear_holder_category: bool = typer.Option(False, "--clear-holder-category"),
     clear_currency: bool = typer.Option(False, "--clear-currency"),
     clear_credit_limit: bool = typer.Option(False, "--clear-credit-limit"),
@@ -341,7 +347,7 @@ def accounts_set(
 ) -> None:
     """Update account settings (structural + behavioral fields).
 
-    Structural: --official-name, --last-four, --subtype, --holder-category,
+    Structural: --official-name, --last-four, --type, --subtype, --holder-category,
     --currency, --credit-limit, --default-cost-basis-method (each clearable
     via --clear-FIELD). --default-cost-basis-method must be one of fifo,
     hifo, specific, average — an invalid value is rejected before any write.
@@ -365,6 +371,7 @@ def accounts_set(
     _add("official_name", official_name, clear_official_name)
     _add("last_four", last_four, clear_last_four)
     _add("account_subtype", subtype, clear_subtype)
+    _add("account_type", account_type, clear_type)
     _add("holder_category", holder_category, clear_holder_category)
     _add("currency_code", currency, clear_currency)
     _add("display_name", display_name, clear_display_name)

@@ -1,5 +1,5 @@
 {
-  "sha256": "0115c5cf92dbc353d48892a37824639c07b42aaf8f338401df6860c7056f933d",
+  "sha256": "bcbdd74faa3a3c4b78e0464bf0752a86bd4634764a49ce8462ad994c83642208",
   "tool_count": 50,
   "tools": [
     {
@@ -406,7 +406,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving today excludes the account from net worth entirely (history included); archived_at is recorded for a future date-scoped release, not yet applied. include_in_net_worth=False excludes an account regardless of archived status. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.",
+        "description": "Update an account's settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type accepts depository/credit/loan/investment/other without changing subtype; clear it to restore source evidence. account_subtype and holder_category allow noncanonical values with warnings. default_cost_basis_method accepts fifo/hifo/specific/average; invalid types or methods raise mutation_invalid_input. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not yet date-scoped. include_in_net_worth=False also excludes active accounts. Writes audited app.account_settings; restore prior values or use system_audit_undo. Amounts use summary.display_currency.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -414,6 +414,17 @@
               "type": "string"
             },
             "account_subtype": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "account_type": {
               "anyOf": [
                 {
                   "type": "string"
@@ -546,12 +557,12 @@
         "name": "accounts_set",
         "title": "Accounts Set"
       },
-      "description_bytes": 889,
-      "input_schema_bytes": 1006,
+      "description_bytes": 825,
+      "input_schema_bytes": 1082,
       "name": "accounts_set",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 2110
+      "total_bytes": 2122
     },
     {
       "annotation_bytes": 90,
@@ -5312,5 +5323,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 64284
+  "total_bytes": 64296
 }

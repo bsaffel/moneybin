@@ -73,7 +73,7 @@ Usage: `moneybin accounts get [OPTIONS] {account_id}`
 
 Update account settings (structural + behavioral fields).
 
-Structural: --official-name, --last-four, --subtype, --holder-category,
+Structural: --official-name, --last-four, --type, --subtype, --holder-category,
 --currency, --credit-limit, --default-cost-basis-method (each clearable
 via --clear-FIELD). --default-cost-basis-method must be one of fifo,
 hifo, specific, average — an invalid value is rejected before any write.
@@ -100,6 +100,7 @@ Usage: `moneybin accounts set [OPTIONS] {account_id}`
 |---|---|---|---|
 | `--official-name` | text |  | Institution's formal account name |
 | `--last-four` | text |  | Last 4 digits of account number |
+| `--type` | text |  | Canonical type override: depository, credit, loan, investment, other |
 | `--subtype` | text |  | Plaid-style account subtype (e.g., checking, savings, credit card) |
 | `--holder-category` | text |  | Account holder type (personal/business/joint) |
 | `--currency` | text |  | ISO-4217 currency code (e.g., USD) |
@@ -111,6 +112,7 @@ Usage: `moneybin accounts set [OPTIONS] {account_id}`
 | `--clear-official-name` | flag |  |  |
 | `--clear-last-four` | flag |  |  |
 | `--clear-subtype` | flag |  |  |
+| `--clear-type` | flag |  |  |
 | `--clear-holder-category` | flag |  |  |
 | `--clear-currency` | flag |  |  |
 | `--clear-credit-limit` | flag |  |  |

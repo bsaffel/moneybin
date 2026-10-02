@@ -1132,3 +1132,43 @@ class TestAccountsResolve:
         assert "No accounts match 'zzz'." in result.stdout
         assert "Try: moneybin accounts list" in result.stdout
         assert result.stderr == ""
+
+
+@pytest.mark.unit
+def test_type_override_normalizes_and_clears_through_cli(
+    db: object, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import nullcontext
+
+    from moneybin.database import Database
+    from moneybin.services.account_service import AccountService
+    from tests.moneybin.db_helpers import create_core_tables
+
+    assert isinstance(db, Database)
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, source_type) "
+        "VALUES ('task8_cli', 'ofx')"
+    )
+
+    def database_context(*, read_only: bool) -> nullcontext[Database]:
+        assert read_only is False
+        return nullcontext(db)
+
+    monkeypatch.setattr("moneybin.cli.commands.accounts.get_database", database_context)
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", MagicMock()
+    )
+    result = runner.invoke(app, ["accounts", "set", "task8_cli", "--type", " CREDIT "])
+    assert result.exit_code == 0, result.output
+    settings = AccountService(db)._load_settings("task8_cli")  # pyright: ignore[reportPrivateUsage]
+    assert settings is not None and settings.to_dict()["account_type"] == "credit"
+    cleared = runner.invoke(
+        app, ["accounts", "set", "task8_cli", "--type", "loan", "--clear-type"]
+    )
+    assert cleared.exit_code == 0, cleared.output
+    settings = AccountService(db)._load_settings("task8_cli")  # pyright: ignore[reportPrivateUsage]
+    assert settings is not None and settings.to_dict()["account_type"] is None
+    invalid = runner.invoke(app, ["accounts", "set", "task8_cli", "--type", "checking"])
+    assert invalid.exit_code != 0
+    assert "Invalid account type" in invalid.output
