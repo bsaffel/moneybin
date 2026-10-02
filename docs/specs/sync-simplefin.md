@@ -332,6 +332,26 @@ staging selects the latest validated observation by broker fetch order. An older
 delayed job cannot overwrite a newer observation. Balances remain timestamped
 observations; distinct values at one timestamp remain auditable revisions.
 
+Raw observations have immutable batch-observation grain: a content value returning
+A → B → A has three batch associations and two distinct content digests. The
+latest selector orders by broker `fetched_at`, then immutable `batch_id` and
+content digest for deterministic ties; the tie rule does not establish provider
+chronology. Reusing a batch ID with different immutable content is rejected.
+
+`raw.simplefin_sync_receipts` records one immutable job/connection observation,
+including zero-batch terminal failures or deferrals without fabricating a provider
+response. It retains credential generation, protocol, authenticated terminal job
+status and start/completion timestamps, batch IDs, receipt observation time,
+complete accepted source metadata excluding duplicated batch payloads, and safe
+local validation outcomes. Original source metadata and JSON records are protected
+as whole composite identifiers. Job start order and completion evidence remain
+distinct from provider freshness and local arrival time. An identical job/source
+replay is idempotent; conflicting content is rejected. The loader requires the
+authenticated job context and participates in the caller's job transaction without
+beginning or committing it. Future accepted broker history metadata survives in
+the source receipt; locally fetched windows do not establish acknowledged history.
+
+
 No deletion is inferred from absence, partial results, empty windows, a
 disconnected grant, or a missing account. A corrected native transaction is
 projected once through its stable event reference. Provider deletions without

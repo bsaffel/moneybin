@@ -48,6 +48,7 @@ _EXTRACTORS_DIR = Path(__file__).resolve().parent / "extractors"
 _PROVIDER_SCHEMA_DIRS: list[Path] = [
     _EXTRACTORS_DIR / "ofx" / "schema",
     _EXTRACTORS_DIR / "plaid" / "schema",
+    _EXTRACTORS_DIR / "simplefin" / "schema",
     _EXTRACTORS_DIR / "tabular" / "schema",
 ]
 

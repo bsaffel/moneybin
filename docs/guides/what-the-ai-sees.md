@@ -226,7 +226,7 @@ The provider sees the *results of the queries the agent ran*, not your database:
   statement returns their values.
 - **`raw` and `prep` are readable, and masked differently.** An agent can read
   what an importer produced — the point is answering "did my import land
-  correctly?" without an operator shell. 33 columns across 16 tables carry an
+  correctly?" without an operator shell. 58 columns across 24 tables carry an
   explicit CRITICAL declaration; every other value is scanned at read time and
   masked when it looks like an SSN or an unbroken run of 8 or more digits. A
   4-to-7 digit account number, one written `1234-5678`, or one stored as a

@@ -26,6 +26,13 @@ class TableRef(NamedTuple):
         return f"{self.schema}.{self.name}"
 
 
+SIMPLEFIN_ACCOUNTS = TableRef("raw", "simplefin_accounts")
+SIMPLEFIN_TRANSACTIONS = TableRef("raw", "simplefin_transactions")
+SIMPLEFIN_BALANCES = TableRef("raw", "simplefin_balances")
+SIMPLEFIN_RESPONSES = TableRef("raw", "simplefin_responses")
+SIMPLEFIN_SYNC_RECEIPTS = TableRef("raw", "simplefin_sync_receipts")
+
+
 # -- Core layer (canonical tables built by SQLMesh transforms) --
 DIM_ACCOUNTS = TableRef("core", "dim_accounts", audience="interface")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions", audience="interface")

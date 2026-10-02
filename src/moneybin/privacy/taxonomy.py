@@ -1295,6 +1295,47 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
 # partial-masking transform, so the choice sets the label's accuracy, not the
 # masking. ROUTING_NUMBER masks WHOLE and is not interchangeable with either.
 INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
+    ("prep", "stg_simplefin__accounts"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("prep", "stg_simplefin__transactions"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("prep", "stg_simplefin__balances"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_accounts"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_transactions"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_balances"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_responses"): {
+        "original_payload": DataClass.COMPOSITE_IDENTIFIER,
+        "source_errors": DataClass.COMPOSITE_IDENTIFIER,
+    },
+    ("raw", "simplefin_sync_receipts"): {
+        "source_metadata": DataClass.COMPOSITE_IDENTIFIER,
+        "local_outcomes": DataClass.COMPOSITE_IDENTIFIER,
+    },
     # --- OFX: `account_id` is the `<ACCTID>` element, i.e. the institution's
     # own account number (raw_ofx_accounts.sql). `source_account_key` is that
     # same column re-aliased by every stg_ofx__* model.
