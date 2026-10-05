@@ -890,6 +890,9 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "institution_fid": DataClass.INSTITUTION,
         "institution_name": DataClass.INSTITUTION,
         "institution_slug": DataClass.INSTITUTION,
+        # Same classification as the app.account_settings entries above.
+        "investment_source_type": DataClass.TXN_TYPE,
+        "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "official_name": DataClass.INSTITUTION,

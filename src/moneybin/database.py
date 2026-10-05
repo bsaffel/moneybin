@@ -379,6 +379,8 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "archived",
         "archived_at",
         "include_in_net_worth",
+        "investment_source_type",
+        "investment_source_type_changed_at",
     }),
     # src/moneybin/sqlmesh/models/core/fct_balances_daily.py — kind FULL
     "core.fct_balances_daily": frozenset({

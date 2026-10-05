@@ -88,7 +88,9 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     credit_limit DECIMAL(18, 2),
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE,
-    archived_at DATE
+    archived_at DATE,
+    investment_source_type VARCHAR,
+    investment_source_type_changed_at TIMESTAMP
 );
 """
 

@@ -361,7 +361,9 @@ SELECT
   s.credit_limit, /* User-asserted credit limit on credit cards / lines */
   COALESCE(s.archived, FALSE) AS archived, /* Hides account from default list and from reports.net_worth */
   COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth, /* Whether this account contributes to reports.net_worth */
-  s.archived_at /* The date the account stopped being part of the position; NULL while active. Lets a stock-measure report exclude the account only for dates after this one, instead of retroactively */
+  s.archived_at, /* The date the account stopped being part of the position; NULL while active. Lets a stock-measure report exclude the account only for dates after this one, instead of retroactively */
+  s.investment_source_type, /* The source type whose investment rows feed this account's ledger (manual or plaid); NULL means every source. Read by core.fct_investment_transactions; see docs/specs/investment-source-choice.md */
+  s.investment_source_type_changed_at /* When investment_source_type last changed, including a clear and an undo; folded into the investment ledger's and dim_holdings' updated_at so rows that re-enter the ledger do not rewind it */
 FROM merged AS w
 LEFT JOIN app.account_settings AS s
   ON w.account_id = s.account_id
