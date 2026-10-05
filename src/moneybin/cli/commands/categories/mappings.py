@@ -54,8 +54,8 @@ def mappings_pending(
 ) -> None:
     """List imported category-vocabulary terms with no curated mapping.
 
-    Each term is a distinct (namespace, category, subcategory) triple pulled
-    from imported transaction data — the decision unit is the term, not the
+    Each term is a distinct (source type, namespace, category, subcategory)
+    tuple pulled from imported transaction data — the decision unit is the term, not the
     transaction, so a handful of terms can stand behind many transactions.
     Shows how many uncategorized transactions mapping each term would
     categorize, and up to 3 suggested MoneyBin categories.
@@ -92,6 +92,7 @@ def mappings_pending(
         parts.append(
             build_rows(
                 [
+                    "source_type",
                     "namespace",
                     "category",
                     "subcategory",
@@ -100,6 +101,7 @@ def mappings_pending(
                 ],
                 [
                     (
+                        t.source_type,
                         t.source_origin,
                         t.category,
                         t.subcategory or "-",
@@ -116,8 +118,8 @@ def mappings_pending(
         parts.append(build_summary([("Result", "No unmapped terms.")]))
     disclosures: tuple[str, ...] = (
         (
-            "Next: moneybin categories mappings set --namespace <namespace> "
-            "--category <text> --into <category-id>",
+            "Next: moneybin categories mappings set --source-type <source_type> "
+            "--namespace <namespace> --category <text> --into <category-id>",
         )
         if payload.terms and not quiet
         else ()
@@ -134,6 +136,11 @@ def mappings_pending(
 def mappings_set(
     namespace: str = typer.Option(
         ..., "--namespace", help="Term's source_origin (e.g. an exporter slug)"
+    ),
+    source_type: str | None = typer.Option(
+        None,
+        "--source-type",
+        help="Term's source type (csv, excel, ...); derived when only one carries it",
     ),
     category: str = typer.Option(
         ..., "--category", help="Term's imported category text"
@@ -156,7 +163,10 @@ def mappings_set(
     """Map one imported category-vocabulary term to a MoneyBin category.
 
     Identify the term with --namespace, --category, and (if applicable)
-    --subcategory — the exact triple `categories mappings pending` reported.
+    --subcategory — the exact term `categories mappings pending` reported.
+    --source-type is optional: when omitted it is derived from the imported
+    rows and mappings carrying the term, and refused if several types do
+    (the same origin exported as csv and as excel is two vocabularies).
     A term no imported transaction carries, and that has no mapping yet, is
     refused. Pass exactly one of:
       --into <category_id>   map to this existing category
@@ -186,6 +196,7 @@ def mappings_set(
     with handle_cli_errors():
         with get_database(read_only=False) as db:
             mapping = CategorizationService(db).resolve_source_term(
+                source_type=source_type,
                 source_origin=namespace,
                 category=category,
                 subcategory=subcategory,
@@ -197,6 +208,7 @@ def mappings_set(
     # Echo the term as stored (trimmed), not as typed, so the receipt names
     # the row a later `set` on the same term would address.
     payload = CategoryMappingSetPayload(
+        source_type=mapping.source_type,
         source_origin=mapping.source_origin,
         category=mapping.category,
         subcategory=mapping.subcategory,
@@ -212,7 +224,11 @@ def mappings_set(
             cli_actor="categories_mappings_set",
         )
         return
-    receipt = [("Namespace", payload.source_origin), ("Category", payload.category)]
+    receipt = [
+        ("Source type", payload.source_type),
+        ("Namespace", payload.source_origin),
+        ("Category", payload.category),
+    ]
     if payload.subcategory:
         receipt.append(("Subcategory", payload.subcategory))
     receipt.append(("Mapped to", payload.category_id))

@@ -1523,9 +1523,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("MappedCat")
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, code_level, category_id) "
-            "VALUES (?, ?, ?, ?)",
-            ["plaid", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
+            "(source_type, source_origin, source_category_code, code_level, "
+            "category_id) VALUES (?, ?, ?, ?, ?)",
+            ["plaid", "", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
@@ -1690,9 +1690,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("MappedForceCat")
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, code_level, category_id) "
-            "VALUES (?, ?, ?, ?)",
-            ["plaid", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
+            "(source_type, source_origin, source_category_code, code_level, "
+            "category_id) VALUES (?, ?, ?, ?, ?)",
+            ["plaid", "", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
         )
         svc.delete_category(cat_id, force=True)
 
@@ -1819,15 +1819,17 @@ class TestDeleteCategory:
         cat_id = CategorizationService(db).create_category("SharedCodeCat")
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, source_subcategory_code, "
-            " code_level, category_id) VALUES (?, ?, ?, 'detailed', ?)",
-            ["plaid", "INCOME", "SALARY", cat_id],
+            "(source_type, source_origin, source_category_code, "
+            " source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, 'detailed', ?)",
+            ["plaid", "", "INCOME", "SALARY", cat_id],
         )
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, source_subcategory_code, "
-            " code_level, category_id) VALUES (?, ?, ?, 'detailed', ?)",
-            ["plaid", "INCOME", "BONUS", cat_id],
+            "(source_type, source_origin, source_category_code, "
+            " source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, 'detailed', ?)",
+            ["plaid", "", "INCOME", "BONUS", cat_id],
         )
 
         plan = applier.plan_category_delete(cat_id, force=True)
@@ -1850,6 +1852,27 @@ class TestDeleteCategory:
             [cat_id],
         ).fetchall()
         assert rows == [("BONUS",), ("SALARY",)]
+
+    @pytest.mark.unit
+    def test_delete_plan_source_mappings_differing_only_by_origin_stay_distinct(
+        self, db: Database, applier: MatchApplier
+    ) -> None:
+        """Same type, term, and subcategory under two origins keep separate identities."""
+        cat_id = CategorizationService(db).create_category("SharedTermCat")
+        for origin in ("chase_credit", "amex_gold"):
+            db.execute(
+                "INSERT INTO app.category_source_map "
+                "(source_type, source_origin, source_category_code, "
+                " source_subcategory_code, code_level, category_id) "
+                "VALUES ('csv', ?, 'Coffee Shops', '', 'detailed', ?)",
+                [origin, cat_id],
+            )
+
+        plan = applier.plan_category_delete(cat_id, force=True)
+        source_group = next(
+            group for group in plan.references if group.label == "source_mappings"
+        )
+        assert len({row.target_id for row in source_group.rows}) == 2
 
 
 class TestWriteCategorizationSourceType:

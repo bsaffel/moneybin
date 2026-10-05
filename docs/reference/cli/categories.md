@@ -110,8 +110,8 @@ Usage: `moneybin categories mappings [OPTIONS] COMMAND [ARGS]...`
 
 List imported category-vocabulary terms with no curated mapping.
 
-Each term is a distinct (namespace, category, subcategory) triple pulled
-from imported transaction data — the decision unit is the term, not the
+Each term is a distinct (source type, namespace, category, subcategory)
+tuple pulled from imported transaction data — the decision unit is the term, not the
 transaction, so a handful of terms can stand behind many transactions.
 Shows how many uncategorized transactions mapping each term would
 categorize, and up to 3 suggested MoneyBin categories.
@@ -133,7 +133,10 @@ Usage: `moneybin categories mappings pending [OPTIONS]`
 Map one imported category-vocabulary term to a MoneyBin category.
 
 Identify the term with --namespace, --category, and (if applicable)
---subcategory — the exact triple `categories mappings pending` reported.
+--subcategory — the exact term `categories mappings pending` reported.
+--source-type is optional: when omitted it is derived from the imported
+rows and mappings carrying the term, and refused if several types do
+(the same origin exported as csv and as excel is two vocabularies).
 A term no imported transaction carries, and that has no mapping yet, is
 refused. Pass exactly one of:
 
@@ -156,6 +159,7 @@ Usage: `moneybin categories mappings set [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--namespace` | text |  | Required. Term's source_origin (e.g. an exporter slug) |
+| `--source-type` | text |  | Term's source type (csv, excel, ...); derived when only one carries it |
 | `--category` | text |  | Required. Term's imported category text |
 | `--subcategory` | text |  | Term's imported subcategory text, if any |
 | `--into` | text |  | Map the term to this existing category_id |

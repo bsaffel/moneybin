@@ -328,7 +328,9 @@ terms with no curated mapping (grouped by term, not by transaction) with
 `--into <category_id>` or `--new <name>`. `set` accepts a term only when an
 imported transaction carries it or it is already mapped, so a mistyped term is
 refused rather than stored as a mapping that never matches. It also refuses an
-inactive `--into` category. Commands:
+inactive `--into` category. A term belongs to one source type (`csv`, `excel`,
+…), shown by `pending`; `set` derives it, and asks for `--source-type` when the
+same term arrives in more than one. Commands:
 [`reference/cli/categories.md`](../reference/cli/categories.md).
 
 ### `merchants`

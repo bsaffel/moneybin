@@ -110,6 +110,9 @@ from moneybin.tables import (
 
 logger = logging.getLogger(__name__)
 
+# The one provider whose vocabulary is seeded; `set` curates imported terms only.
+_PROVIDER_SOURCE_TYPE = "plaid"
+
 
 def _normalized_taxonomy_text(value: str | None) -> str | None:
     """Return the stable natural-key form used by taxonomy resolution."""
@@ -384,6 +387,7 @@ class TaxonomyTargetResult:
 class SourceTermMapping:
     """One imported term as ``app.category_source_map`` stored it, and its target."""
 
+    source_type: str
     source_origin: str
     category: str
     subcategory: str | None
@@ -391,25 +395,31 @@ class SourceTermMapping:
 
 
 def _normalized_source_term(
-    source_origin: str, category: str, subcategory: str | None
-) -> tuple[str, str, str | None]:
-    """Return the term as staging stores it; refuse a blank part.
+    source_type: str | None,
+    source_origin: str,
+    category: str,
+    subcategory: str | None,
+) -> tuple[str | None, str, str, str | None]:
+    """Return the term as staging stores it; refuse a blank category or type.
 
     Staging trims category text with a class equal to ``str.strip()`` and
     NULLs a blank, so an untrimmed key would store and never match, and a
-    blank one names nothing. No length cap: imports bound none of the three
-    parts, and :meth:`MatchApplier.resolve_source_term` accepts only a term
-    already in the database, which bounds it by construction.
+    blank one names nothing. An origin that trims to ``''`` is a real value
+    (an import whose account label slugs to nothing), not a missing one. No
+    length cap: imports bound none of the parts, and
+    :meth:`MatchApplier.resolve_source_term` accepts only a term already in
+    the database, which bounds it by construction.
     """
+    source_type = source_type.strip() if source_type is not None else None
     source_origin = source_origin.strip()
     category = category.strip()
     subcategory = subcategory.strip() if subcategory is not None else None
-    if not source_origin or not category or subcategory == "":
+    if source_type == "" or not category or subcategory == "":
         raise UserError(
-            "source_origin, category, and any subcategory must be non-blank",
+            "source_type, category, and any subcategory must be non-blank",
             code=error_codes.MUTATION_INVALID_INPUT,
         )
-    return source_origin, category, subcategory
+    return source_type, source_origin, category, subcategory
 
 
 class MatchApplier:
@@ -1407,6 +1417,7 @@ class MatchApplier:
     def resolve_source_term(
         self,
         *,
+        source_type: str | None = None,
         source_origin: str,
         category: str,
         subcategory: str | None,
@@ -1416,10 +1427,14 @@ class MatchApplier:
     ) -> SourceTermMapping:
         """Map one imported vocabulary term to a MoneyBin category.
 
-        ``(source_origin, category, subcategory)`` identifies the term being
-        resolved — an imported category/subcategory string pair, never
-        displayed as a category, only ever used to match or mint one (the
-        owner's ruling on this curation surface). Exactly one of
+        ``(source_type, source_origin, category, subcategory)`` identifies the
+        term being resolved — the row's own type and origin plus an imported
+        category/subcategory string pair, never displayed as a category, only
+        ever used to match or mint one (the owner's ruling on this curation
+        surface). ``source_type`` may be omitted when the imported rows and
+        mappings carrying the rest of the term name exactly one type;
+        several is refused, never guessed. ``plaid`` is refused: provider
+        vocabularies are not curated here. Exactly one of
         ``category_id`` (bind to an existing category) or ``new_category``
         (create a category named ``new_category``, then bind) must be given.
 
@@ -1441,8 +1456,11 @@ class MatchApplier:
 
         Raises:
             UserError(code=error_codes.MUTATION_INVALID_INPUT): neither or
-                both of ``category_id`` / ``new_category`` were given, or a
-                part of the term is blank.
+                both of ``category_id`` / ``new_category`` were given, a
+                part of the term is blank, or ``source_type`` is ``plaid``.
+            UserError(code=error_codes.MUTATION_AMBIGUOUS): ``source_type``
+                was omitted and several types carry the term; the candidates
+                are in ``details``.
             UserError(code=error_codes.MUTATION_NOT_FOUND): no imported row
                 carries the term and it has no mapping to change.
             UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND):
@@ -1451,8 +1469,8 @@ class MatchApplier:
                 ``new_category`` collides with an existing category name.
         """
         try:
-            source_origin, category, subcategory = _normalized_source_term(
-                source_origin, category, subcategory
+            source_type, source_origin, category, subcategory = _normalized_source_term(
+                source_type, source_origin, category, subcategory
             )
             if (category_id is None) == (new_category is None):
                 raise UserError(
@@ -1460,7 +1478,18 @@ class MatchApplier:
                     code=error_codes.MUTATION_INVALID_INPUT,
                 )
             with self._transaction():
-                if not self._is_known_source_term(source_origin, category, subcategory):
+                if source_type is None:
+                    source_type = self._derive_source_type(
+                        source_origin, category, subcategory
+                    )
+                elif source_type == _PROVIDER_SOURCE_TYPE:
+                    raise UserError(
+                        "Provider category vocabularies are not curated here",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                if not self._is_known_source_term(
+                    source_type, source_origin, category, subcategory
+                ):
                     raise UserError(
                         "No imported transaction carries this term, and it has "
                         "no mapping to change",
@@ -1490,7 +1519,8 @@ class MatchApplier:
                             code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
                         )
                 event = self._category_source_map.upsert(
-                    source_type=source_origin,
+                    source_type=source_type,
+                    source_origin=source_origin,
                     category=category,
                     subcategory=subcategory,
                     category_id=resolved_category_id,
@@ -1505,14 +1535,65 @@ class MatchApplier:
             outcome="added" if event.before_value is None else "updated"
         ).inc()
         return SourceTermMapping(
+            source_type=source_type,
             source_origin=source_origin,
             category=category,
             subcategory=subcategory,
             category_id=resolved_category_id,
         )
 
-    def _is_known_source_term(
+    def _derive_source_type(
         self, source_origin: str, category: str, subcategory: str | None
+    ) -> str:
+        """Name the one imported source type carrying the term, or refuse.
+
+        Reads the types of imported rows and existing mappings that carry
+        ``(source_origin, category, subcategory)``; provider rows are not
+        candidates. None is the not-found refusal; several is ambiguous.
+        """
+        params = [source_origin, category, subcategory or ""]
+        rows = self._db.execute(
+            f"""
+            SELECT source_type FROM {CATEGORY_SOURCE_MAP.full_name}
+            WHERE source_origin = ? AND source_category_code = ?
+                AND source_subcategory_code = ?
+            """,  # TableRef constant
+            params,
+        ).fetchall()
+        try:
+            rows += self._db.execute(
+                f"""
+                SELECT DISTINCT source_type FROM {INT_TRANSACTIONS_MATCHED.full_name}
+                WHERE source_origin = ? AND category = ?
+                    AND COALESCE(subcategory, '') = ?
+                """,  # TableRef constant
+                params,
+            ).fetchall()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Nothing imported yet: prep.int_transactions__matched is absent.
+            pass
+        candidates = sorted({str(row[0]) for row in rows} - {_PROVIDER_SOURCE_TYPE})
+        if not candidates:
+            raise UserError(
+                "No imported transaction carries this term, and it has "
+                "no mapping to change",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        if len(candidates) > 1:
+            raise UserError(
+                "Several source types carry this term "
+                f"({', '.join(candidates)}); pass source_type to choose one",
+                code=error_codes.MUTATION_AMBIGUOUS,
+                details={"candidate_source_types": candidates},
+            )
+        return candidates[0]
+
+    def _is_known_source_term(
+        self,
+        source_type: str,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
     ) -> bool:
         """Whether an imported row carries the term, or it is already mapped.
 
@@ -1520,11 +1601,12 @@ class MatchApplier:
         accepts exactly the terms the sweep can apply. An existing mapping is
         accepted too, so a mapping whose rows have since gone can still change.
         """
-        params = [source_origin, category, subcategory or ""]
+        params = [source_type, source_origin, category, subcategory or ""]
         mapped = self._db.execute(
             f"""
             SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name}
             WHERE source_type = ?
+                AND source_origin = ?
                 AND source_category_code = ?
                 AND source_subcategory_code = ?
             """,  # TableRef constant
@@ -1538,13 +1620,17 @@ class MatchApplier:
                 SELECT EXISTS (
                     SELECT 1
                     FROM (
-                        SELECT ? AS source_type, ? AS source_category_code,
+                        SELECT ? AS source_type, ? AS source_origin,
+                            ? AS source_category_code,
                             ? AS source_subcategory_code
                     ) AS b
                     JOIN {INT_TRANSACTIONS_MATCHED.full_name} AS m
                         ON {
                     source_category_bridge_match_predicate(
-                        "m.source_origin", "m.category", "m.subcategory"
+                        "m.source_type",
+                        "m.source_origin",
+                        "m.category",
+                        "m.subcategory",
                     )
                 }
                 )
@@ -1658,6 +1744,7 @@ class MatchApplier:
                     CATEGORY_SOURCE_MAP,
                     (
                         "source_type",
+                        "source_origin",
                         "source_category_code",
                         "source_subcategory_code",
                     ),

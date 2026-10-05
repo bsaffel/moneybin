@@ -46,8 +46,8 @@ PROPOSED_ON_BLANK = "prp-onblank001"
 PROPOSED_APPROVED_ON_DELETED_RULE = "prp-onrule0001"
 PROPOSED_NORMAL = "prp-normal0001"
 
-SOURCE_MAP_ON_BLANK = ("plaid", "BLANK_CODE")
-SOURCE_MAP_NORMAL = ("plaid", "FOOD_AND_DRINK")
+SOURCE_MAP_ON_BLANK = ("plaid", "", "BLANK_CODE")
+SOURCE_MAP_NORMAL = ("plaid", "", "FOOD_AND_DRINK")
 
 _CATEGORY_COLUMNS = ("category_id", "category", "subcategory")
 _MERCHANT_COLUMNS = (
@@ -96,7 +96,12 @@ _PROPOSED_COLUMNS = (
     "category_id",
     "rule_id",
 )
-_SOURCE_MAP_COLUMNS = ("source_type", "source_category_code", "category_id")
+_SOURCE_MAP_COLUMNS = (
+    "source_type",
+    "source_origin",
+    "source_category_code",
+    "category_id",
+)
 
 
 @pytest.fixture()
@@ -506,7 +511,8 @@ class TestV056RemovesTheBlankTaxonomyRows:
         run_migration(v056_db, migrate)
         row = v056_db.execute(
             "SELECT 1 FROM app.category_source_map "
-            "WHERE source_type = ? AND source_category_code = ?",
+            "WHERE source_type = ? AND source_origin = ? "
+            "AND source_category_code = ?",
             list(SOURCE_MAP_ON_BLANK),
         ).fetchone()
         assert row is None
@@ -515,7 +521,8 @@ class TestV056RemovesTheBlankTaxonomyRows:
         run_migration(v056_db, migrate)
         row = v056_db.execute(
             "SELECT 1 FROM app.category_source_map "
-            "WHERE source_type = ? AND source_category_code = ?",
+            "WHERE source_type = ? AND source_origin = ? "
+            "AND source_category_code = ?",
             list(SOURCE_MAP_NORMAL),
         ).fetchone()
         assert row is not None
