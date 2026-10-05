@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -40,6 +40,8 @@ def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "archived_at": None,
         "include_in_net_worth": True,
         "default_cost_basis_method": None,
+        "investment_source_type": None,
+        "investment_source_type_changed_at": None,
         "actor": "cli",
     }
     kwargs.update(overrides)
@@ -109,6 +111,30 @@ def test_set_persists_default_cost_basis_method(db: Database) -> None:
         ["acct_a"],
     ).fetchone()
     assert row == ("average",)
+
+
+def test_set_round_trips_investment_source_fields_and_audits_them(
+    db: Database,
+) -> None:
+    repo = AccountSettingsRepo(db)
+    changed_at = datetime(2026, 10, 1, 12, 30, 0)
+    event = _set(
+        repo,
+        investment_source_type="manual",
+        investment_source_type_changed_at=changed_at,
+    )
+
+    row = db.conn.execute(
+        "SELECT investment_source_type, investment_source_type_changed_at "
+        "FROM app.account_settings WHERE account_id = ?",
+        ["acct_a"],
+    ).fetchone()
+    assert row == ("manual", changed_at)
+    assert event.after_value is not None
+    assert event.after_value["investment_source_type"] == "manual"
+    assert (
+        event.after_value["investment_source_type_changed_at"] == changed_at.isoformat()
+    )
 
 
 def test_set_invalid_default_cost_basis_method_raises_constraint_exception(
@@ -771,3 +797,57 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
             ).fetchone()
             is None
         )
+
+
+class TestPreV068SchemaToleranceOnAccountSettingsWrite:
+    """A write-mode open must tolerate account_settings predating V068.
+
+    Same shape as the pre-V063 grid above: ``no_auto_upgrade=True`` never
+    applies the migration, so the live table lacks both investment-source
+    columns and every other settings read/write must keep working.
+    """
+
+    @pytest.fixture()
+    def pre_v068_rw_db(
+        self, db: Database, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        """A real write-mode Database reopened over the pre-V068 table shape."""
+        db.execute(
+            "ALTER TABLE app.account_settings "
+            "DROP COLUMN investment_source_type_changed_at"
+        )
+        db.execute(
+            "ALTER TABLE app.account_settings DROP COLUMN investment_source_type"
+        )
+        db_path = db.path
+        db.close()
+        rw_db = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+        yield rw_db
+        rw_db.close()
+
+    def test_set_with_null_source_fields_succeeds_and_omits_keys(
+        self, pre_v068_rw_db: Database
+    ) -> None:
+        repo = AccountSettingsRepo(pre_v068_rw_db)
+        event = _set(repo, account_id="acct_pre_v068")
+        assert event.after_value is not None
+        assert event.after_value["display_name"] == "Checking"
+        assert "investment_source_type" not in event.after_value
+        assert "investment_source_type_changed_at" not in event.after_value
+
+        update = _set(repo, account_id="acct_pre_v068", display_name="Renamed")
+        assert update.before_value is not None
+        assert "investment_source_type" not in update.before_value
+
+    def test_live_columns_excludes_the_missing_pair(
+        self, pre_v068_rw_db: Database
+    ) -> None:
+        live = AccountSettingsRepo(pre_v068_rw_db)._live_columns()  # pyright: ignore[reportPrivateUsage]  # probe under test
+        assert "archived_at" in live
+        assert "investment_source_type" not in live
+        assert "investment_source_type_changed_at" not in live

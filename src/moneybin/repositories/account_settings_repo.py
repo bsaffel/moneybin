@@ -8,11 +8,10 @@ composes this instead of raw SQL; reads (``load``) stay in the service.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from moneybin.database import has_column
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_SETTINGS
@@ -30,6 +29,8 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "archived_at",
     "include_in_net_worth",
     "default_cost_basis_method",
+    "investment_source_type",
+    "investment_source_type_changed_at",
     "updated_at",
 )
 
@@ -41,6 +42,23 @@ class AccountSettingsRepo(BaseRepo):
 
     table_ref = ACCOUNT_SETTINGS
     pk_columns = ("account_id",)
+
+    def _live_columns(self) -> frozenset[str]:
+        """The settings columns the live catalog has.
+
+        A profile opened with ``no_auto_upgrade=True`` skips migrations, so a
+        column a later migration added may be absent. One probe feeds
+        ``_fetch_row`` and ``set()``, so reads and writes agree on the set.
+        """
+        rows = self._db.execute(
+            """
+            SELECT column_name FROM duckdb_columns()
+            WHERE schema_name = ? AND table_name = ?
+            """,
+            [ACCOUNT_SETTINGS.schema, ACCOUNT_SETTINGS.name],
+        ).fetchall()
+        live = {str(r[0]) for r in rows}
+        return frozenset(c for c in _ACCOUNT_SETTINGS_COLUMNS if c in live)
 
     def _archived_at_supported(self) -> bool:
         """True when the live ``app.account_settings`` catalog has ``archived_at``.
@@ -68,18 +86,14 @@ class AccountSettingsRepo(BaseRepo):
         gated by this probe may overwrite a value that a migrated catalog
         actually holds.
         """
-        return has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
+        return "archived_at" in self._live_columns()
 
     def _fetch_row(
-        self, account_id: str, *, has_archived_at: bool | None = None
+        self, account_id: str, *, live: frozenset[str] | None = None
     ) -> dict[str, Any] | None:
-        if has_archived_at is None:
-            has_archived_at = self._archived_at_supported()
-        columns = (
-            _ACCOUNT_SETTINGS_COLUMNS
-            if has_archived_at
-            else tuple(c for c in _ACCOUNT_SETTINGS_COLUMNS if c != "archived_at")
-        )
+        if live is None:
+            live = self._live_columns()
+        columns = tuple(c for c in _ACCOUNT_SETTINGS_COLUMNS if c in live)
         return self._fetch_one(ACCOUNT_SETTINGS, columns, "account_id", account_id)
 
     def set(
@@ -97,6 +111,8 @@ class AccountSettingsRepo(BaseRepo):
         archived_at: date | None,
         include_in_net_worth: bool,
         default_cost_basis_method: str | None,
+        investment_source_type: str | None,
+        investment_source_type_changed_at: datetime | None,
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
@@ -109,18 +125,20 @@ class AccountSettingsRepo(BaseRepo):
         refreshes ``updated_at`` in the ``DO UPDATE`` clause: DuckDB parses
         ``CURRENT_TIMESTAMP`` as an identifier in that position, not a call.
 
-        The INSERT/ON CONFLICT column list drops ``archived_at`` when the live
-        catalog lacks it (pre-V063, ``no_auto_upgrade=True`` -- see
-        ``_archived_at_supported``): there is no column to write the caller's
-        value into, so it is silently not persisted rather than raising a raw
-        ``duckdb.BinderException``.
+        The INSERT/ON CONFLICT column list drops every column the live catalog
+        lacks (``archived_at`` pre-V063, the investment-source pair pre-V068,
+        ``no_auto_upgrade=True`` -- see ``_live_columns``): there is no column
+        to write the caller's value into, so it is silently not persisted
+        rather than raising a raw ``duckdb.BinderException``. A caller that
+        needs the value persisted (``AccountService`` for a source choice)
+        checks the column itself and refuses first.
 
         ``context`` rides the audit row's ``context_json`` (caller-intent the
         full-row snapshot cannot carry).
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            has_archived_at = self._archived_at_supported()
-            before = self._fetch_row(account_id, has_archived_at=has_archived_at)
+            live = self._live_columns()
+            before = self._fetch_row(account_id, live=live)
 
             values_by_column: dict[str, Any] = {
                 "account_id": account_id,
@@ -135,10 +153,10 @@ class AccountSettingsRepo(BaseRepo):
                 "archived_at": archived_at,
                 "include_in_net_worth": include_in_net_worth,
                 "default_cost_basis_method": default_cost_basis_method,
+                "investment_source_type": investment_source_type,
+                "investment_source_type_changed_at": investment_source_type_changed_at,
             }
-            columns = [
-                c for c in values_by_column if has_archived_at or c != "archived_at"
-            ]
+            columns = [c for c in values_by_column if c in live]
             col_sql = ", ".join(columns)
             placeholders = ", ".join("?" for _ in columns)
             update_sql = ", ".join(
@@ -154,7 +172,7 @@ class AccountSettingsRepo(BaseRepo):
                 """,  # noqa: S608  # TableRef + allowlisted literal column names + parameterized values
                 [values_by_column[c] for c in columns],
             )
-            after = self._fetch_row(account_id, has_archived_at=has_archived_at)
+            after = self._fetch_row(account_id, live=live)
             return self._emit_audit(
                 action="account_settings.set",
                 target=(*self._audit_target, account_id),

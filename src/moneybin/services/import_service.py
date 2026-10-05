@@ -2177,6 +2177,8 @@ class ImportService:
             archived_at=settings.archived_at,
             include_in_net_worth=settings.include_in_net_worth,
             default_cost_basis_method=settings.default_cost_basis_method,
+            investment_source_type=None,
+            investment_source_type_changed_at=None,
             actor="import",
             in_outer_txn=in_outer_txn,
         )

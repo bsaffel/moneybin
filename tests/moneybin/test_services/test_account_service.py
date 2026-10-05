@@ -263,6 +263,8 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
             archived_at=None,
             include_in_net_worth=True,
             default_cost_basis_method=None,
+            investment_source_type=None,
+            investment_source_type_changed_at=None,
             actor="cli",
         )
         loaded = AccountService(pre_v063_rw_db)._load_settings("acct_a")
@@ -486,6 +488,8 @@ def _seed_blank_settings_row(db: Database) -> None:
         archived_at=None,
         include_in_net_worth=True,
         default_cost_basis_method=None,
+        investment_source_type=None,
+        investment_source_type_changed_at=None,
         actor="test",
     )
 
@@ -928,6 +932,8 @@ class TestSettingsUpdateExtended:
             archived_at=None,
             include_in_net_worth=True,
             default_cost_basis_method=None,
+            investment_source_type=None,
+            investment_source_type_changed_at=None,
             actor="test",
         )
         loaded = AccountService(test_db)._load_settings("acct_a")

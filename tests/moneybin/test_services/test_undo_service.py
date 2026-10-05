@@ -207,6 +207,8 @@ class TestUndo:
                 archived_at=None,
                 include_in_net_worth=True,
                 default_cost_basis_method="average",
+                investment_source_type=None,
+                investment_source_type_changed_at=None,
                 actor="test",
             )
             ExchangeRateOverridesRepo(db).set(
