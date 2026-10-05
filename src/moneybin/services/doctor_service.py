@@ -24,6 +24,7 @@ from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerpr
 from moneybin.investments.source_overlap import (
     investment_source_choice_counts,
     investment_source_overlap,
+    stale_source_choice_accounts,
 )
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
@@ -1550,8 +1551,11 @@ class DoctorService:
     def _run_investment_source_overlap(self) -> InvariantResult:
         """Detect transaction or holdings overlap before any transform runs.
 
-        Accounts with an ``investment_source_type`` choice are already excluded
-        by the detector. Also refreshes the per-choice account gauge.
+        Unresolved overlaps come from the raw-scope detector, which excludes
+        chosen accounts. Chosen accounts whose built ledger still holds the
+        other source (a restate that failed after the choice was saved) fail
+        too: the ledger double-counts exactly like an unresolved overlap.
+        Also refreshes the per-choice account gauge.
         """
         name = "investment_source_overlap"
         try:
@@ -1564,18 +1568,26 @@ class DoctorService:
                 affected_ids=[],
             )
         try:
+            stale = stale_source_choice_accounts(self._db)
+        except Exception as e:  # ledger unreadable: report it, don't pass blind
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"investment ledger unavailable: {e}",
+                affected_ids=[],
+            )
+        try:
             for source_type, count in investment_source_choice_counts(self._db).items():
                 INVESTMENT_SOURCE_CHOICE_ACCOUNTS.labels(
                     investment_source_type=source_type
                 ).set(count)
         except Exception:  # telemetry never fails a check
             logger.warning("! Could not refresh the investment source choice gauge")
-        if accounts:
-            many = len(accounts) != 1
-            return InvariantResult(
-                name=name,
-                status="fail",
-                detail=(
+        if accounts or stale:
+            parts: list[str] = []
+            if accounts:
+                many = len(accounts) != 1
+                parts.append(
                     f"{len(accounts)} account{'s' if many else ''} "
                     f"{'have' if many else 'has'} investment history from two "
                     "sources (recorded and synced). Lots and gains double-count "
@@ -1583,8 +1595,20 @@ class DoctorService:
                     "each account keeps: moneybin accounts set <account> "
                     "--investment-source-type manual|plaid. Choosing deletes "
                     "nothing, and clearing the setting brings both back"
-                ),
-                affected_ids=_masked_account_affected_ids(accounts),
+                )
+            if stale:
+                many = len(stale) != 1
+                parts.append(
+                    f"{len(stale)} account{'s' if many else ''} "
+                    f"{'have' if many else 'has'} a source chosen but the "
+                    "investment ledger has not been rebuilt since, so it still "
+                    "holds both sources; run `moneybin refresh`"
+                )
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=". ".join(parts),
+                affected_ids=_masked_account_affected_ids([*accounts, *stale]),
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

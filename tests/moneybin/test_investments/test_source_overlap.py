@@ -15,8 +15,10 @@ from moneybin.investments.source_overlap import (
     investment_source_choice_counts,
     investment_source_evidence,
     investment_source_overlap,
+    stale_source_choice_accounts,
     trade_count_phrase,
 )
+from tests.moneybin.db_helpers import CORE_FCT_INVESTMENT_TRANSACTIONS_DDL
 
 
 def _manual_row(db: Database, *, account_id: str, txn_id: str, trade_date: str) -> None:
@@ -170,6 +172,71 @@ def test_unchosen_settings_row_does_not_hide_the_overlap(db: Database) -> None:
     )
 
     assert investment_source_overlap(db) == ["canonical_x"]
+
+
+def _ledger_row(db: Database, *, account_id: str, source_type: str, n: int) -> None:
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions "
+        "(investment_transaction_id, account_id, source_type) VALUES (?, ?, ?)",
+        [f"itx_{source_type}_{n}", account_id, source_type],
+    )
+
+
+def _choose(db: Database, account_id: str, choice: str | None) -> None:
+    db.execute(
+        "INSERT INTO app.account_settings (account_id, investment_source_type) "
+        "VALUES (?, ?)",
+        [account_id, choice],
+    )
+
+
+def test_stale_choice_reported_while_ledger_holds_the_other_source(
+    db: Database,
+) -> None:
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _choose(db, "canonical_x", "manual")
+    _ledger_row(db, account_id="canonical_x", source_type="manual", n=1)
+    _ledger_row(db, account_id="canonical_x", source_type="plaid", n=1)
+
+    assert stale_source_choice_accounts(db) == ["canonical_x"]
+
+
+def test_choice_is_not_stale_once_ledger_holds_only_the_chosen_source(
+    db: Database,
+) -> None:
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _choose(db, "canonical_x", "manual")
+    _ledger_row(db, account_id="canonical_x", source_type="manual", n=1)
+    # An unchosen account may legitimately hold both sources.
+    _ledger_row(db, account_id="canonical_y", source_type="manual", n=1)
+    _ledger_row(db, account_id="canonical_y", source_type="plaid", n=1)
+
+    assert stale_source_choice_accounts(db) == []
+
+
+def test_cleared_choice_is_not_stale(db: Database) -> None:
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _choose(db, "canonical_x", None)
+    _ledger_row(db, account_id="canonical_x", source_type="plaid", n=1)
+
+    assert stale_source_choice_accounts(db) == []
+
+
+def test_stale_detector_is_empty_before_the_ledger_is_built(db: Database) -> None:
+    _choose(db, "canonical_x", "manual")
+
+    assert stale_source_choice_accounts(db) == []
+
+
+def test_stale_detector_survives_an_unmigrated_catalog(db: Database) -> None:
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _ledger_row(db, account_id="canonical_x", source_type="plaid", n=1)
+    db.execute(
+        "ALTER TABLE app.account_settings DROP COLUMN investment_source_type_changed_at"
+    )
+    db.execute("ALTER TABLE app.account_settings DROP COLUMN investment_source_type")
+
+    assert stale_source_choice_accounts(db) == []
 
 
 def test_detector_survives_an_unmigrated_catalog(db: Database) -> None:

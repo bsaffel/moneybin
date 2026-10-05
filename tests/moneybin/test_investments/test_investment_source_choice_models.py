@@ -12,6 +12,10 @@ from datetime import date, datetime
 import pytest
 
 from moneybin.database import Database
+from moneybin.investments.source_overlap import (
+    investment_source_overlap,
+    stale_source_choice_accounts,
+)
 from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.investment_service import InvestmentService
 from moneybin.services.mutation_context import operation
@@ -246,6 +250,34 @@ def test_clear_returns_rows_with_a_newer_watermark(db: Database) -> None:
     assert holding is not None
     assert holding[0] >= changed_at
     assert _status(db) == "source_overlap", "clearing should bring the overlap back"
+
+
+def test_failed_restate_leaves_a_stale_choice_until_refresh(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The choice commits before the restate, so a failed restate must stay visible."""
+    _seed_overlap(db)
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("restate failed")
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_investment_ledger", _fail
+    )
+    with pytest.raises(RuntimeError, match="restate failed"):
+        AccountService(db).settings_update(
+            _ACCOUNT, actor="test", investment_source_type="manual"
+        )
+
+    assert investment_source_overlap(db) == [], "a chosen account is not offered"
+    assert stale_source_choice_accounts(db) == [_ACCOUNT]
+    assert _ledger(db) == [("manual", None), ("plaid", None)]
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform failed: {result.error}"
+
+    assert stale_source_choice_accounts(db) == []
+    assert _ledger(db) == [("manual", None)]
 
 
 def test_undo_of_a_choice_advances_the_account_watermark(db: Database) -> None:

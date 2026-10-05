@@ -8,6 +8,9 @@ visible"); each rationale carries that source's trade count and date range
 instead of a recommendation. Choosing deletes nothing, and clearing the
 setting restores both histories (investment-source-choice.md).
 
+A choice that was saved but never reached the ledger (the restate failed)
+adds one ``refresh_run`` action in total, not one per account.
+
 The audit's ``affected_ids`` are masked, so this recipe re-runs the detector
 for the raw ids. An id that masking or sanitizing would alter becomes the
 ``<account_id>`` placeholder, the same rule ``_command_account_id`` applies to
@@ -23,6 +26,7 @@ from moneybin.investments.source_overlap import (
     history_phrase,
     investment_source_evidence,
     investment_source_overlap,
+    stale_source_choice_accounts,
 )
 
 _PLACEHOLDER = "<account_id>"
@@ -32,7 +36,7 @@ def recipe(
     affected_ids: list[str],  # masked; the recipe re-queries for raw ids
     context: RecipeContext,
 ) -> list[RecoveryAction]:
-    """Offer one source choice per source present on each overlapping account."""
+    """Offer a source choice per overlapping account, one refresh for stale choices."""
     if context.db is None:
         return []
     # Lazy: doctor_service imports the recipe registry at module load.
@@ -75,4 +79,18 @@ def recipe(
                     idempotent=True,
                 )
             )
+    if stale_source_choice_accounts(context.db):
+        actions.append(
+            RecoveryAction(
+                tool="refresh_run",
+                arguments={},
+                rationale=(
+                    "A source choice was saved but the investment ledger was "
+                    "not rebuilt after it, so it still holds both sources; "
+                    "refreshing rebuilds it from the saved choice"
+                ),
+                confidence="suggested",
+                idempotent=True,
+            )
+        )
     return actions

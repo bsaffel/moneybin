@@ -41,6 +41,7 @@ from moneybin.services.doctor_service import (
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import (
     CORE_FCT_EXCHANGE_RATES_DAILY_DDL,
+    CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
     create_core_tables,
 )
 
@@ -1856,6 +1857,73 @@ def test_source_overlap_pass_when_only_one_source(
         ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
         """  # test input, not user data
     )
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def _seed_stale_choice(
+    db: Database, account_id: str, *, ledger_sources: tuple[str, ...]
+) -> None:
+    """A manual choice saved on an account; the ledger holds *ledger_sources*."""
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    db.execute(
+        "INSERT INTO app.account_settings (account_id, investment_source_type) "
+        "VALUES (?, 'manual')",
+        [account_id],
+    )
+    for n, source in enumerate(ledger_sources):
+        db.execute(
+            "INSERT INTO core.fct_investment_transactions "
+            "(investment_transaction_id, account_id, source_type) "
+            "VALUES (?, ?, ?)",
+            [f"itx_{n}", account_id, source],
+        )
+
+
+@pytest.mark.unit
+def test_source_overlap_fails_on_a_stale_choice_with_one_refresh_action(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved choice the ledger has not caught up with double-counts like an overlap."""
+    _seed_stale_choice(db, "acct-55551234", ledger_sources=("manual", "plaid"))
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "1 account has a source chosen" in detail
+    assert "moneybin refresh" in detail
+    assert result.affected_ids == ["account:acct-****1234"]
+    assert "55551234" not in " ".join(result.affected_ids)
+    assert result.recovery_actions is not None
+    assert [a.tool for a in result.recovery_actions] == ["refresh_run"]
+    assert result.recovery_actions[0].idempotent is True
+
+
+@pytest.mark.unit
+def test_source_overlap_reports_both_stale_and_unresolved_accounts(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_overlap_account(db, "ACC1")
+    _seed_stale_choice(db, "ACC2", ledger_sources=("manual", "plaid"))
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "investment-source-type" in detail
+    assert "moneybin refresh" in detail
+    assert sorted(result.affected_ids) == ["account:ACC1", "account:ACC2"]
+    assert result.recovery_actions is not None
+    assert [a.tool for a in result.recovery_actions] == [
+        "accounts_set",
+        "accounts_set",
+        "refresh_run",
+    ]
+
+
+@pytest.mark.unit
+def test_source_overlap_passes_once_the_ledger_holds_only_the_chosen_source(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_stale_choice(db, "ACC1", ledger_sources=("manual",))
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "pass"
     assert result.affected_ids == []

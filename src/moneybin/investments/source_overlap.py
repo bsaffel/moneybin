@@ -10,6 +10,7 @@ from moneybin.investments.identity import manual_identity_sql
 from moneybin.tables import (
     ACCOUNT_LINKS,
     ACCOUNT_SETTINGS,
+    FCT_INVESTMENT_TRANSACTIONS,
     MANUAL_INVESTMENT_TRANSACTIONS,
     PLAID_INVESTMENT_HOLDINGS,
     PLAID_INVESTMENT_TRANSACTION_RECEIPTS,
@@ -76,9 +77,9 @@ def investment_source_overlap(db: Database) -> list[str]:
     """Accounts with manual history and Plaid evidence, minus chosen accounts.
 
     An account whose ``investment_source_type`` is set has settled the overlap:
-    its ledger carries one source, so neither the sync warning nor the doctor
-    reports it. Reads ``app.account_settings`` directly because it runs before
-    any transform.
+    its choice needs no offering. Whether the ledger has caught up with the
+    choice is ``stale_source_choice_accounts``'s question. Reads
+    ``app.account_settings`` directly because it runs before any transform.
     """
     unchosen = ""
     if has_column(db, ACCOUNT_SETTINGS, "investment_source_type"):
@@ -100,6 +101,34 @@ def investment_source_overlap(db: Database) -> list[str]:
         ) {unchosen}
         ORDER BY p.account_id
         """,  # noqa: S608  # TableRef constants
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def stale_source_choice_accounts(db: Database) -> list[str]:
+    """Chosen accounts whose built ledger still holds another source's rows.
+
+    The choice is committed before the ledger restates, so a failed restate
+    leaves it saved while ``core.fct_investment_transactions`` still
+    double-counts. Empty before the ledger exists (its first build applies the
+    filter) and on a catalog without the choice column.
+    """
+    if not has_column(db, ACCOUNT_SETTINGS, "investment_source_type") or not has_column(
+        db, FCT_INVESTMENT_TRANSACTIONS, "source_type"
+    ):
+        return []
+    rows = db.execute(
+        f"""
+        SELECT s.account_id
+        FROM {ACCOUNT_SETTINGS.full_name} AS s
+        WHERE s.investment_source_type IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS f
+            WHERE f.account_id = s.account_id
+              AND f.source_type <> s.investment_source_type
+          )
+        ORDER BY s.account_id
+        """  # noqa: S608  # TableRef constants
     ).fetchall()
     return [str(row[0]) for row in rows]
 
