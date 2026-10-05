@@ -2064,6 +2064,17 @@ class TestInvestmentSourceConfirmation:
         assert AccountService(test_db).investment_source_confirmation("acct_a") is None
 
     @pytest.mark.unit
+    def test_choice_set_before_any_rows_still_names_the_choice(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._evidence(monkeypatch)
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", actor="cli", investment_source_type="plaid")
+        assert svc.investment_source_confirmation("acct_a") == (
+            "Using synced trades (none yet)"
+        )
+
+    @pytest.mark.unit
     def test_holdings_only_plaid_is_a_snapshot_not_a_trade_count(
         self, test_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:

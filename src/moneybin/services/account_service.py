@@ -518,13 +518,15 @@ class AccountService:
         return None if row is None else row[0]
 
     def investment_source_confirmation(self, account_id: str) -> str | None:
-        """What the ledger uses and ignores for this account; ``None`` without trades."""
+        """What the ledger uses and ignores; ``None`` with no trades and no choice."""
         evidence = investment_source_evidence(self._db, [account_id]).get(
             account_id, []
         )
-        if not evidence:
-            return None
         choice = self.investment_source_type(account_id)
+        if not evidence:
+            if choice is None:
+                return None
+            return f"Using {source_adjective(choice)} trades (none yet)"
         if choice is None:
             return "Using every source: " + ", ".join(
                 trade_count_phrase(e) for e in evidence

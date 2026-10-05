@@ -837,6 +837,30 @@ class TestAccountsSet:
         assert "Using 2 recorded trades; ignoring 3 synced trades" in result.output
 
     @pytest.mark.unit
+    def test_set_choice_before_any_rows_prints_the_choice_not_every_source(
+        self, runner: CliRunner
+    ) -> None:
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.settings_update.return_value = (MagicMock(), [])
+            mock_service.investment_source_confirmation.return_value = (
+                "Using synced trades (none yet)"
+            )
+            result = runner.invoke(
+                app,
+                ["accounts", "set", "acct_a", "--investment-source-type", "plaid"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Using synced trades (none yet)" in result.output
+        assert "every source" not in result.output
+
+    @pytest.mark.unit
     def test_set_clear_investment_source_type_passes_clear(
         self, runner: CliRunner
     ) -> None:
