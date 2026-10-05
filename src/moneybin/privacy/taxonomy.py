@@ -210,6 +210,10 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "holder_category": DataClass.TXN_TYPE,
         "default_cost_basis_method": DataClass.TXN_TYPE,
         "include_in_net_worth": DataClass.TXN_TYPE,
+        # A closed source-type vocabulary (manual | plaid), like source_type.
+        "investment_source_type": DataClass.TXN_TYPE,
+        # When the choice last moved; ledger-freshness bookkeeping, like updated_at.
+        "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,

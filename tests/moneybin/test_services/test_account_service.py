@@ -739,6 +739,177 @@ class TestAccountServiceMutators:
         assert svc._load_settings("acct_a") is None
 
 
+class TestInvestmentSourceChoice:
+    """``investment_source_type`` on ``settings_update`` (investment-source-choice.md)."""
+
+    @pytest.fixture()
+    def restate_ledger(self, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+        restate = MagicMock()
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            restate,
+        )
+        return restate
+
+    @pytest.fixture()
+    def pre_v068_rw_db(
+        self, test_db: Database, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        """A write-mode Database over account_settings missing the V068 pair."""
+        test_db.execute(
+            "ALTER TABLE app.account_settings "
+            "DROP COLUMN investment_source_type_changed_at"
+        )
+        test_db.execute(
+            "ALTER TABLE app.account_settings DROP COLUMN investment_source_type"
+        )
+        db_path = test_db.path
+        test_db.close()
+        rw_db = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+        yield rw_db
+        rw_db.close()
+
+    def test_set_saves_and_stamps_change_time(
+        self, test_db: Database, restate_ledger: MagicMock
+    ) -> None:
+        updated, _ = AccountService(test_db).settings_update(
+            "acct_a", actor="cli", investment_source_type="manual"
+        )
+
+        assert updated.investment_source_type == "manual"
+        assert updated.investment_source_type_changed_at is not None
+        loaded = AccountService(test_db)._load_settings("acct_a")
+        assert loaded is not None
+        assert loaded.investment_source_type == "manual"
+        assert loaded.investment_source_type_changed_at is not None
+        restate_ledger.assert_called_once_with(test_db)
+
+    def test_setting_the_same_source_again_keeps_the_change_time(
+        self, test_db: Database, restate_ledger: MagicMock
+    ) -> None:
+        svc = AccountService(test_db)
+        first, _ = svc.settings_update(
+            "acct_a", actor="cli", investment_source_type="manual"
+        )
+        second, _ = svc.settings_update(
+            "acct_a", actor="cli", investment_source_type="manual"
+        )
+
+        assert second.investment_source_type_changed_at is not None
+        assert (
+            second.investment_source_type_changed_at
+            == first.investment_source_type_changed_at
+        )
+        restate_ledger.assert_called_once()
+
+    def test_clear_advances_the_change_time(
+        self, test_db: Database, restate_ledger: MagicMock
+    ) -> None:
+        svc = AccountService(test_db)
+        first, _ = svc.settings_update(
+            "acct_a", actor="cli", investment_source_type="plaid"
+        )
+        cleared, _ = svc.settings_update(
+            "acct_a", actor="cli", investment_source_type=CLEAR
+        )
+
+        assert cleared.investment_source_type is None
+        assert first.investment_source_type_changed_at is not None
+        assert cleared.investment_source_type_changed_at is not None
+        assert (
+            cleared.investment_source_type_changed_at
+            >= first.investment_source_type_changed_at
+        )
+        assert restate_ledger.call_count == 2
+
+    def test_clearing_an_unset_source_changes_nothing(
+        self, test_db: Database, restate_ledger: MagicMock
+    ) -> None:
+        updated, _ = AccountService(test_db).settings_update(
+            "acct_a", actor="cli", investment_source_type=CLEAR
+        )
+
+        assert updated.investment_source_type is None
+        assert updated.investment_source_type_changed_at is None
+        restate_ledger.assert_not_called()
+
+    @pytest.mark.parametrize("value", ["ofx", "MANUAL", ""])
+    def test_unknown_or_uppercase_source_is_refused(
+        self, test_db: Database, restate_ledger: MagicMock, value: str
+    ) -> None:
+        svc = AccountService(test_db)
+        with pytest.raises(UserError) as caught:
+            svc.settings_update("acct_a", actor="cli", investment_source_type=value)
+
+        assert caught.value.code == "mutation_invalid_input"
+        assert "manual, plaid" in str(caught.value)
+        assert svc._load_settings("acct_a") is None
+        restate_ledger.assert_not_called()
+
+    def test_source_choice_on_unmigrated_catalog_is_refused(
+        self, pre_v068_rw_db: Database, restate_ledger: MagicMock
+    ) -> None:
+        svc = AccountService(pre_v068_rw_db)
+        with pytest.raises(UserError) as caught:
+            svc.settings_update("acct_a", actor="cli", investment_source_type="manual")
+
+        assert caught.value.code == "infra_database_upgrade_required"
+        assert svc._load_settings("acct_a") is None
+        # Every other settings write keeps working on the same catalog.
+        renamed, _ = svc.settings_update("acct_a", actor="cli", display_name="Renamed")
+        assert renamed.display_name == "Renamed"
+        assert renamed.investment_source_type is None
+        restate_ledger.assert_not_called()
+
+    def test_source_change_restates_from_dim_accounts_not_fx(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        restate_ledger = MagicMock()
+        restate_fx = MagicMock()
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            restate_ledger,
+        )
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            restate_fx,
+        )
+
+        AccountService(test_db).settings_update(
+            "acct_a",
+            actor="cli",
+            investment_source_type="manual",
+            currency_code="EUR",
+        )
+
+        restate_ledger.assert_called_once()
+        restate_fx.assert_not_called()
+
+    def test_investment_source_type_reader(
+        self, test_db: Database, restate_ledger: MagicMock
+    ) -> None:
+        svc = AccountService(test_db)
+        assert svc.investment_source_type("acct_a") is None
+
+        svc.settings_update("acct_a", actor="cli", investment_source_type="plaid")
+
+        assert svc.investment_source_type("acct_a") == "plaid"
+
+    def test_reader_is_none_on_unmigrated_catalog(
+        self, pre_v068_rw_db: Database
+    ) -> None:
+        AccountService(pre_v068_rw_db).settings_update(
+            "acct_a", actor="cli", display_name="Renamed"
+        )
+
+        assert AccountService(pre_v068_rw_db).investment_source_type("acct_a") is None
+
+
 class TestSettingsUpdateExtended:
     """Tests for the Group 13 settings_update extension.
 

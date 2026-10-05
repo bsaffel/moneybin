@@ -9,6 +9,11 @@ from moneybin.tables import (
     PLAID_INVESTMENT_TRANSACTIONS,
 )
 
+#: The source types core.fct_investment_transactions unions, and so the only
+#: values app.account_settings.investment_source_type accepts. No DDL CHECK:
+#: a new investment importer becomes choosable by adding its source type here.
+INVESTMENT_SOURCE_TYPES: frozenset[str] = frozenset({"manual", "plaid"})
+
 
 def investment_source_overlap(db: Database) -> list[str]:
     """Accounts with manual history and Plaid transaction or holdings evidence."""

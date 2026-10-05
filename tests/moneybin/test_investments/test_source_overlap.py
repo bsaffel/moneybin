@@ -1,9 +1,15 @@
 """Overlap follows the latest received transaction revision before transforms."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 from moneybin.database import Database
-from moneybin.investments.source_overlap import investment_source_overlap
+from moneybin.investments.source_overlap import (
+    INVESTMENT_SOURCE_TYPES,
+    investment_source_overlap,
+)
 
 
 @pytest.mark.parametrize("returned_to_original", [False, True])
@@ -57,3 +63,18 @@ def test_overlap_uses_current_receipt_after_account_correction(
     assert db.execute(
         "SELECT COUNT(*) FROM raw.plaid_investment_transactions"
     ).fetchone() == (2,)
+
+
+def test_investment_source_types_match_the_ledger_branches() -> None:
+    """Every ledger union branch is a source type; a new one must be choosable."""
+    model = (
+        Path(__file__).parents[3]
+        / "src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql"
+    ).read_text()
+    branches = set(re.findall(r"FROM\s+(prep\.\w+)", model))
+    assert branches == {
+        "prep.stg_manual__investment_transactions",
+        "prep.stg_plaid__investment_transactions",
+        "prep.stg_plaid__opening_lots",
+    }, "a new ledger branch means a new source type; update INVESTMENT_SOURCE_TYPES"
+    assert frozenset({"manual", "plaid"}) == INVESTMENT_SOURCE_TYPES

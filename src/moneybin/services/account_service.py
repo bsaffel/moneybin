@@ -20,6 +20,7 @@ from moneybin import error_codes
 from moneybin.database import Database, has_column
 from moneybin.errors import UserError
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
+from moneybin.investments.source_overlap import INVESTMENT_SOURCE_TYPES
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
@@ -497,6 +498,20 @@ class AccountService:
             ),  # type: ignore[arg-type]
         )
 
+    def investment_source_type(self, account_id: str) -> str | None:
+        """The account's chosen investment source; ``None`` when none is set.
+
+        Also ``None`` on a catalog that predates V068 (no column to read).
+        """
+        if not has_column(self._db, ACCOUNT_SETTINGS, "investment_source_type"):
+            return None
+        row = self._db.execute(
+            f"SELECT investment_source_type FROM {ACCOUNT_SETTINGS.full_name} "  # TableRef constant
+            "WHERE account_id = ?",
+            [account_id],
+        ).fetchone()
+        return None if row is None else row[0]
+
     def list_accounts(
         self,
         *,
@@ -752,6 +767,7 @@ class AccountService:
         credit_limit: Decimal | None | object = None,
         display_name: str | None | object = None,
         default_cost_basis_method: str | None | object = None,
+        investment_source_type: str | None | object = None,
         include_in_net_worth: bool | None = None,
         archived: bool | None = None,
     ) -> tuple[AccountSettings, list[dict[str, str]]]:
@@ -777,6 +793,15 @@ class AccountService:
         non-None value outside :data:`COST_BASIS_METHODS` raises ``UserError``
         (code ``mutation_invalid_input``) before the DB write. The column's
         ``CHECK`` constraint is the backstop, not the primary contract.
+
+        ``investment_source_type`` is hard-validated against
+        :data:`INVESTMENT_SOURCE_TYPES` (lowercase only; ``CLEAR`` uses every
+        source again). A real change stamps
+        ``investment_source_type_changed_at`` and restates from
+        ``core.dim_accounts`` before returning; repeating the current value is a
+        no-op for this field. A catalog that predates V068 refuses the field
+        (``infra_database_upgrade_required``) while every other setting keeps
+        working. See docs/specs/investment-source-choice.md.
         """
         self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
@@ -809,6 +834,7 @@ class AccountService:
         _resolve("credit_limit", credit_limit)
         _resolve("display_name", display_name)
         _resolve("default_cost_basis_method", default_cost_basis_method)
+        _resolve("investment_source_type", investment_source_type)
         # Non-null booleans: pass-through when set, no CLEAR semantics.
         if include_in_net_worth is not None:
             diff["include_in_net_worth"] = include_in_net_worth
@@ -853,6 +879,31 @@ class AccountService:
                 code=error_codes.MUTATION_INVALID_INPUT,
                 hint=f"Valid methods: {valid}.",
             )
+
+        # Same hard validation for the investment source, plus a guard for a
+        # catalog that predates V068: the repo would silently drop the value
+        # there, and a source choice that is not persisted must not look saved.
+        if "investment_source_type" in diff:
+            if not has_column(self._db, ACCOUNT_SETTINGS, "investment_source_type"):
+                raise UserError(
+                    "This database predates the investment source setting.",
+                    code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
+                    hint="Run 'moneybin db migrate apply' and try again.",
+                )
+            source = diff["investment_source_type"]
+            if source is not None and source not in INVESTMENT_SOURCE_TYPES:
+                valid = ", ".join(sorted(INVESTMENT_SOURCE_TYPES))
+                raise UserError(
+                    f"Invalid investment source type: {source!r}. Valid: {valid}.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint=f"Valid investment source types: {valid}.",
+                )
+            if source == current.investment_source_type:
+                del diff["investment_source_type"]
+            else:
+                diff["investment_source_type_changed_at"] = self._db.execute(
+                    "SELECT NOW()::TIMESTAMP"
+                ).fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
 
         # Reserved vocabulary: core shows this exact label for an account it
         # could not name, and `is_a_name` reads it that way everywhere. Taking
@@ -901,7 +952,13 @@ class AccountService:
         logger.info(
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )
-        if diff.keys() & {"currency_code", "default_cost_basis_method"}:
+        if "investment_source_type" in diff:
+            from moneybin.services.fx_accounting_refresh import (
+                restate_investment_ledger,
+            )
+
+            restate_investment_ledger(self._db)
+        elif diff.keys() & {"currency_code", "default_cost_basis_method"}:
             from moneybin.services.fx_accounting_refresh import (
                 restate_fx_accounting,
             )
