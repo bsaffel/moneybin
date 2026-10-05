@@ -396,6 +396,13 @@ class SyncCompletenessService:
                 latest = max(stamp for stamp, _ in observations)
                 for stamp, outcome in observations:
                     if stamp == latest and outcome.status in _RETRIEVAL:
+                        if scope == general and self._general_failure_resolved(
+                            stamp,
+                            outcome,
+                            candidates,
+                            observed_scopes.get(connection, set()),
+                        ):
+                            continue
                         add(_RETRIEVAL[outcome.status], scope)
             if not histories:
                 for scope in observed_scopes.get(connection) or {general}:
@@ -429,6 +436,33 @@ class SyncCompletenessService:
                         add("history_unknown", scope)
                     elif len(account.acknowledged_intervals) > 1:
                         add("history_gap", scope)
+
+    def _general_failure_resolved(
+        self,
+        failed_at: datetime,
+        failed: ScopeOutcome,
+        candidates: list[_Receipt],
+        required_scopes: set[_Scope],
+    ) -> bool:
+        if failed.window is None:
+            return False
+        for receipt in candidates:
+            if receipt.started_at <= failed_at or not receipt.source.outcomes:
+                continue
+            if any(outcome.status != "complete" for outcome in receipt.source.outcomes):
+                continue
+            covered = {
+                self._outcome_scope(receipt.source, outcome)
+                for outcome in receipt.source.outcomes
+                if outcome.account_id is not None
+                and outcome.native_scope is not None
+                and outcome.window is not None
+                and outcome.window.start <= failed.window.start
+                and outcome.window.end >= failed.window.end
+            }
+            if covered and required_scopes <= covered:
+                return True
+        return False
 
     def _local_hold_resolved(
         self,

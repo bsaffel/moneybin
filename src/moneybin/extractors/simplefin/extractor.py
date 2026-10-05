@@ -503,7 +503,15 @@ class SimpleFINExtractor:
             return None
         try:
             if source.protocol_version == "1.0.7":
-                org = SimpleFINV1Organization.model_validate(record.get("org"))
+                native_org = record.get("org")
+                if not isinstance(native_org, dict):
+                    return None
+                # Native records are extensible; the broker scope envelope is closed.
+                org = SimpleFINV1Organization.model_validate({
+                    field: native_org[field]
+                    for field in ("sfin-url", "id", "domain", "name", "url")
+                    if field in native_org
+                })
                 native = org.model_dump(mode="json", by_alias=True, exclude_none=True)
                 scope = SimpleFINV1OrgScope(kind="simplefin_v1_org", org=org)
             else:

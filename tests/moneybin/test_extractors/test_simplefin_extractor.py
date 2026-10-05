@@ -511,3 +511,75 @@ def test_absent_optional_transacted_instant_is_valid(db: Database) -> None:
     assert db.execute(
         "SELECT validation_error, transacted_at FROM raw.simplefin_transactions"
     ).fetchone() == (None, None)
+
+
+def test_paired_v1_organization_extension_keeps_identity_children_and_originals(
+    db: Database,
+) -> None:
+    """Native org extensions are lossless Raw, not closed scope-envelope fields."""
+    from copy import deepcopy
+    from pathlib import Path
+
+    from pydantic import ValidationError
+
+    from moneybin.connectors.sync_models import SyncEnvelopeV2
+
+    fixture = (
+        Path(__file__).parents[1]
+        / "connectors/fixtures/sync_v2/simplefin_v1_org_extension.json"
+    )
+    original = json.loads(fixture.read_text())
+    extended = SyncEnvelopeV2.model_validate(original).sources[0]
+    assert isinstance(extended, SimpleFINSource)
+    baseline = deepcopy(original)
+    baseline["sources"][0]["batches"][0]["payload"]["accounts"][0]["org"].pop(
+        "extension"
+    )
+    plain = SyncEnvelopeV2.model_validate(baseline).sources[0]
+    assert isinstance(plain, SimpleFINSource)
+    load(db, plain)
+    before = db.execute(
+        "SELECT source_origin, account_id, transaction_reference FROM raw.simplefin_transactions ORDER BY source_origin"
+    ).fetchall()
+    extended.batches[0].batch_id = UUID(int=2)
+    result = load(db, extended, job=2)
+    assert (result.accounts, result.transactions, result.balances) == (2, 2, 2)
+    after = db.execute(
+        "SELECT source_origin, account_id, transaction_reference FROM raw.simplefin_transactions WHERE batch_id=? ORDER BY source_origin",
+        [str(UUID(int=2))],
+    ).fetchall()
+    assert before == after
+    raw = db.execute(
+        "SELECT original_payload FROM raw.simplefin_responses WHERE batch_id=?",
+        [str(UUID(int=2))],
+    ).fetchone()
+    assert raw is not None
+    assert json.loads(raw[0]) == original["sources"][0]["batches"][0]["payload"]
+    record = db.execute(
+        "SELECT original_record FROM raw.simplefin_accounts WHERE batch_id=? AND json_extract(original_record, '$.org.extension') IS NOT NULL",
+        [str(UUID(int=2))],
+    ).fetchone()
+    assert record is not None
+    original_accounts = original["sources"][0]["batches"][0]["payload"]["accounts"]
+    assert json.loads(record[0]) == {
+        key: value
+        for key, value in original_accounts[0].items()
+        if key != "transactions"
+    }
+    children = db.execute(
+        "SELECT original_record FROM raw.simplefin_transactions WHERE batch_id=?",
+        [str(UUID(int=2))],
+    ).fetchall()
+    assert sorted(
+        json.dumps(json.loads(row[0]), sort_keys=True) for row in children
+    ) == sorted(
+        json.dumps(child, sort_keys=True)
+        for account in original_accounts
+        for child in account["transactions"]
+    )
+    invalid_envelope = deepcopy(original)
+    invalid_envelope["sources"][0]["outcomes"][0]["native_scope"]["org"][
+        "extension"
+    ] = "forbidden"
+    with pytest.raises(ValidationError):
+        SyncEnvelopeV2.model_validate(invalid_envelope)

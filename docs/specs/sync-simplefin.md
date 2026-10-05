@@ -269,7 +269,22 @@ time and resumable checkpoint, without spinning or silently skipping windows.
 Force repeats the standard 90-day lookback; older recovery uses `history_start`.
 Neither bypasses the budget or disables overlap.
 Respect a valid provider retry delay and apply bounded backoff to retryable GET
-failures. Authentication/payment errors stop retries until user action.
+failures. Persist provider retry deadlines on the current credential generation;
+new jobs and broker restarts cannot bypass them. Transient health errors remain
+retryable after the deadline. Authentication/payment errors stop new attempts
+until the user remediates access/subscription and completes the existing hosted
+replacement/relink flow. Replacement clears attention/backoff while preserving
+the rolling request charges. Delayed old-generation responses cannot change
+current health; older attempts cannot overwrite newer health evidence.
+
+Version-2 synchronous triggers share one monotonic budget across sources:
+`SYNC_TRIGGER_TIMEOUT_SECONDS` defaults to 90 seconds and cannot exceed 100.
+Upstream requests and waits use the remaining budget with time reserved for
+result publication; exhausted work returns a stored deferred job. The client
+trigger transport allows 120 seconds and the explicit MCP `sync_pull` operation
+allows 180. Local ingestion/refresh is not guaranteed to finish within that
+operation; durable phase/job recovery remains available. Never wait after the
+last permitted upstream attempt.
 
 No new daemon or scheduler subsystem is required. A documented daily invocation
 of the existing pull command provides scheduled use; user cron/service timers
@@ -480,11 +495,30 @@ and do not prove safe minted-ID provenance. NULL alone is not an unresolved
 account signal. Internal accepted bindings still govern resolution/completion;
 public completion and recovery guidance convey the actual work remaining.
 `scope_kind` identifies only the fixed general/connection/account outcome
-category. A pre-ack snapshot,
+category. Deferred outcomes retain the broker's aware `retry_at` timestamp as
+observability metadata in typed CLI/MCP receipts and human guidance. A future
+deadline directs the caller to wait rather than immediately trigger again.
+Disconnect confirmations and receipts mask native account numbers in labels,
+while their generation/scope binding retains the exact native catalog.
+A pre-ack snapshot,
 confirmed post-ack snapshot and current listing observation remain distinct;
 missing historical snapshots are unknown. Empty discovery still preserves an
 outstanding history target. Neither a fetched window nor a missing target
-certifies global history completeness.
+certifies global history completeness. Connection `last_sync` records accepted
+acknowledgement of at least one valid SimpleFIN checkpoint candidate; partial
+scope credit qualifies, zero credit does not. It is distinct from provider
+balance age and global history completeness.
+
+A newer same-generation successful retrieval clears an earlier unscoped failure
+only when its complete outcomes cover the failed window and known scopes.
+Insufficient windows, partial results and older delayed responses retain the
+failure. Local skipped-child holds remain independent. Changing, clearing or
+undoing account subtype settings rebuilds materialized account and financial
+projections through the same path as broad type changes.
+
+Native v1 organization extensions remain untouched in original Raw JSON. Only
+the known identity fields enter the closed broker scope metadata; extensions
+do not invalidate otherwise supported account, balance or transaction children.
 
 Map failures to safe broker codes: authentication/revocation, payment required,
 rate limited, upstream unavailable, unsupported protocol, invalid payload,

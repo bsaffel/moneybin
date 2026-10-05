@@ -639,6 +639,7 @@ class SyncScopeView(BaseModel):
     status: str
     error_code: str | None
     window: UTCWindow | None
+    retry_at: AwareDatetime | None = None
 
 
 class SyncSourceView(BaseModel):

@@ -512,3 +512,75 @@ def test_legacy_v1_missing_safe_institution_label_does_not_fall_back_to_raw(
         ).fetchall()
         == before
     )
+
+
+def test_sequential_type_then_subtype_rebuilds_materialized_financial_outputs(
+    db: Database,
+) -> None:
+    from moneybin.services.account_service import AccountService
+
+    load(db, source())
+    bind_account(db, subtype=None)
+    db.execute(
+        "UPDATE app.account_settings SET account_type=NULL WHERE account_id='canonical'"
+    )
+    materialize(db)
+    service = AccountService(db)
+    service.settings_update("canonical", actor="cli", account_type="depository")
+    assert db.execute(
+        "SELECT count(*) FROM core.fct_transactions WHERE account_id='canonical'"
+    ).fetchone() == (0,)
+    service.settings_update("canonical", actor="cli", account_subtype="checking")
+    assert db.execute(
+        "SELECT account_type, account_subtype FROM core.dim_accounts WHERE account_id='canonical'"
+    ).fetchone() == ("depository", "checking")
+    assert db.execute(
+        "SELECT amount FROM core.fct_transactions WHERE account_id='canonical'"
+    ).fetchall() == [(Decimal("-12.30"),)]
+    assert db.execute(
+        "SELECT count(*) FROM core.fct_balances WHERE account_id='canonical'"
+    ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("change", ["unsupported", "clear", "undo-redo"])
+def test_subtype_removal_and_restoration_rebuilds_materialized_money(
+    db: Database, change: str
+) -> None:
+    from moneybin.services.account_service import CLEAR, AccountService
+    from moneybin.services.mutation_context import operation
+    from moneybin.services.undo_service import UndoService
+
+    load(db, source())
+    bind_account(db)
+    materialize(db)
+    service = AccountService(db)
+    with operation() as operation_id:
+        service.settings_update(
+            "canonical",
+            actor="cli",
+            account_subtype="brokerage" if change == "unsupported" else CLEAR,
+        )
+    if change == "undo-redo":
+        # Isolate undo detection even when the settings-write trigger is broken.
+        from moneybin.services.fx_accounting_refresh import restate_fx_accounting
+
+        restate_fx_accounting(db, account_type_changed=True)
+        undone = UndoService(db).undo(operation_id, actor="cli")
+        assert db.execute(
+            "SELECT account_subtype FROM core.dim_accounts WHERE account_id='canonical'"
+        ).fetchone() == ("checking",)
+        assert db.execute(
+            "SELECT count(*) FROM core.fct_transactions WHERE account_id='canonical'"
+        ).fetchone() == (1,)
+        UndoService(db).undo(undone.undo_operation_id, actor="cli")
+    expected = "brokerage" if change == "unsupported" else None
+    assert db.execute(
+        "SELECT account_subtype FROM core.dim_accounts WHERE account_id='canonical'"
+    ).fetchone() == (expected,)
+    for table in ("core.fct_transactions", "core.fct_balances"):
+        assert db.execute(
+            f"SELECT count(*) FROM {table} WHERE account_id='canonical'"  # noqa: S608  # fixed test table names
+        ).fetchone() == (0,)
+    assert db.execute("SELECT count(*) FROM raw.simplefin_transactions").fetchone() == (
+        1,
+    )

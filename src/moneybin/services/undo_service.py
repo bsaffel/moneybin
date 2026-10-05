@@ -197,7 +197,10 @@ def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool, b
             continue
         before = event.before_value or {}
         after = event.after_value or {}
-        if before.get("account_type") != after.get("account_type"):
+        if any(
+            before.get(field) != after.get(field)
+            for field in ("account_type", "account_subtype")
+        ):
             needs_restatement = True
             account_type_changed = True
         if before.get("currency_code") != after.get("currency_code"):

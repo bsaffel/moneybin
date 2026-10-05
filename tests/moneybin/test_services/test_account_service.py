@@ -561,7 +561,14 @@ class TestAccountServiceMutators:
         assert second.archived_at == first.archived_at
 
     @pytest.mark.unit
-    def test_settings_update_partial(self, test_db: Database) -> None:
+    def test_settings_update_partial(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        refresh = MagicMock(return_value=MagicMock(applied=True))
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.restate_models",
+            refresh,
+        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a",
@@ -577,6 +584,7 @@ class TestAccountServiceMutators:
         assert loaded is not None
         assert loaded.account_subtype == "checking"
         assert loaded.credit_limit == Decimal("5000.00")
+        refresh.assert_called_once_with(["core.dim_accounts"])
 
     @pytest.mark.unit
     def test_settings_update_clears_with_clear_sentinel(
@@ -588,7 +596,14 @@ class TestAccountServiceMutators:
         assert updated.credit_limit is None
 
     @pytest.mark.unit
-    def test_settings_update_soft_validation_warning(self, test_db: Database) -> None:
+    def test_settings_update_soft_validation_warning(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        refresh = MagicMock(return_value=MagicMock(applied=True))
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.restate_models",
+            refresh,
+        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a", actor="cli", account_subtype="chequing"
@@ -598,6 +613,7 @@ class TestAccountServiceMutators:
         assert warnings[0]["field"] == "account_subtype"
         assert "chequing" in warnings[0]["message"]
         assert warnings[0]["suggestion"] == "checking"
+        refresh.assert_called_once_with(["core.dim_accounts"])
 
     @pytest.mark.unit
     def test_settings_update_holder_category_warning(self, test_db: Database) -> None:
@@ -611,7 +627,7 @@ class TestAccountServiceMutators:
 
     @pytest.mark.unit
     def test_a_padded_canonical_value_warns_about_nothing(
-        self, test_db: Database
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The warning has to describe the value that actually gets stored.
 
@@ -620,12 +636,18 @@ class TestAccountServiceMutators:
         raw caller value instead reports that MoneyBin does not know a subtype
         it just recognized, normalized, and stored.
         """
+        refresh = MagicMock(return_value=MagicMock(applied=True))
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.restate_models",
+            refresh,
+        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a", actor="cli", account_subtype="  checking  "
         )
         assert updated.account_subtype == "checking"
         assert warnings == []
+        refresh.assert_called_once_with(["core.dim_accounts"])
 
     @pytest.mark.unit
     def test_a_padded_unknown_value_is_reported_by_its_stored_spelling(
@@ -1940,3 +1962,24 @@ def test_type_undo_refresh_failure_reports_committed_restore(
     refresh.assert_called_once_with(["core.dim_accounts"])
     restored = service._load_settings("acct_a")
     assert restored is not None and restored.to_dict()["account_type"] == "credit"
+
+
+def test_subtype_refresh_failure_reports_durably_saved_setting(
+    test_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.sqlmesh_registry.model_presence",
+        MagicMock(return_value=MagicMock(never_built=False)),
+    )
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.TransformService.restate_models",
+        MagicMock(return_value=MagicMock(applied=False)),
+    )
+    with pytest.raises(UserError, match="saved") as error:
+        AccountService(test_db).settings_update(
+            "acct_a", actor="cli", account_subtype="checking"
+        )
+    assert error.value.code == "refresh_model_failed"
+    assert test_db.execute(
+        "SELECT account_subtype FROM app.account_settings WHERE account_id='acct_a'"
+    ).fetchone() == ("checking",)

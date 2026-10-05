@@ -604,3 +604,59 @@ def test_replacement_generation_retains_local_hold_until_covering_fetch(
     load(db, repaired, job=4, day=4)
 
     assert "invalid_observation" not in _kinds(_assess(db, {"canonical"}))
+
+
+@pytest.mark.parametrize(
+    "recovery", ["covering", "short-window", "partial", "older", "skipped-child"]
+)
+def test_general_failure_requires_newer_covering_success(
+    db: Database, recovery: str
+) -> None:
+    """A newer full response resolves transport failure, without erasing local holds."""
+    load(db, source())
+    _bind(db)
+    failed = source(batch=2, day=2)
+    failed.outcomes = [
+        ScopeOutcome(
+            account_id=None,
+            native_scope=None,
+            window=failed.batches[0].window,
+            status="failed",
+            error_code="upstream_unavailable",
+        )
+    ]
+    failed.batches = []
+    load(db, failed, job=2, day=2, status="failed")
+    recovered = source(batch=3, day=3)
+    recovered.history = _history(3)
+    window = recovered.batches[0].window
+    assert window is not None
+    if recovery == "short-window":
+        window = window.model_copy(update={"start": window.start + timedelta(days=1)})
+        recovered.batches[0].window = window
+    recovered.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=recovered.history.accounts[0].native_scope,
+            window=window,
+            status="partial" if recovery == "partial" else "complete",
+            error_code="provider_error" if recovery == "partial" else None,
+        )
+    ]
+    if recovery == "skipped-child":
+        accounts = cast(list[dict[str, Any]], recovered.batches[0].payload["accounts"])
+        accounts[0]["transactions"] = "malformed child"
+    _confirmed_job(
+        db,
+        recovered,
+        job=3,
+        day=1 if recovery == "older" else 3,
+        confirmed_history=_history(3),
+    )
+    kinds = _kinds(_assess(db))
+    if recovery in {"covering", "skipped-child"}:
+        assert "retrieval_failed" not in kinds
+    else:
+        assert "retrieval_failed" in kinds
+    if recovery == "skipped-child":
+        assert "invalid_observation" in kinds

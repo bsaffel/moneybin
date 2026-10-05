@@ -69,6 +69,7 @@ class SyncScopeRow:
     status: Annotated[str, DataClass.TXN_TYPE]
     error_code: Annotated[str | None, DataClass.TXN_TYPE]
     window: SyncCoverageInterval | None
+    retry_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY] = None
 
 
 @row_set(NO_ROW_SET)

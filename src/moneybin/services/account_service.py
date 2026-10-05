@@ -949,12 +949,17 @@ class AccountService:
         logger.info(
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )
-        if diff.keys() & {"currency_code", "default_cost_basis_method", "account_type"}:
+        if diff.keys() & {
+            "currency_code",
+            "default_cost_basis_method",
+            "account_type",
+            "account_subtype",
+        }:
             from moneybin.services.fx_accounting_refresh import (
                 restate_fx_accounting,
             )
 
-            if "account_type" in diff:
+            if diff.keys() & {"account_type", "account_subtype"}:
                 restate_fx_accounting(
                     self._db,
                     account_currency_changed="currency_code" in diff,

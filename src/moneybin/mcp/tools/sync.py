@@ -23,6 +23,7 @@ from moneybin.adapters.refresh_adapters import (
 )
 from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.adapters.sync_adapters import (
+    sync_account_label,
     sync_link_envelope,
     sync_link_status_actions,
     sync_link_status_envelope,
@@ -393,7 +394,7 @@ def sync_link_coarse(
     )
 
 
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
+@mcp_tool(read_only=False, idempotent=False, open_world=True, timeout_seconds=180.0)
 def sync_pull_coarse(
     institution: str | None = None,
     provider: Literal["plaid", "simplefin"] | None = None,
@@ -458,7 +459,7 @@ def _sync_disconnect_message(connection: ConnectedInstitution) -> str:
     """
     name = connection.institution_name or "this institution"
     accounts = (
-        ", ".join(account.name or "Unnamed account" for account in connection.accounts)
+        ", ".join(sync_account_label(account.name) for account in connection.accounts)
         or "No discovered accounts"
     )
     remote = (
@@ -609,7 +610,7 @@ async def sync_disconnect(
             connection_id=disconnected.id,
             remote_revocation=disconnected.remote_revocation,
             affected_accounts=[
-                account.name or "Unnamed account" for account in disconnected.accounts
+                sync_account_label(account.name) for account in disconnected.accounts
             ],
         ),
         actions=sync_disconnect_actions(

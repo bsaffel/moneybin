@@ -27,7 +27,7 @@ Related code: `src/moneybin/mcp/` (tool registration and dispatch), `src/moneybi
    continue to natural return; timeout is not transactional cancellation.
 6. The configured cap defaults to 30 seconds. The decorator supports explicit,
    code-reviewed per-tool overrides; the shipped 180-second overrides are
-   `gsheet_connect`, `gsheet_disconnect`, `sync_disconnect`,
+   `gsheet_connect`, `gsheet_disconnect`, `sync_disconnect`, `sync_pull`,
    `identity_links_decide`, `import_confirm`, and `import_revert`.
 7. Tools that already complete in well under the cap are unchanged in behavior; the timeout is invisible on the happy path.
 8. **The cap bounds machine work, not human deliberation.** Time a call spends
@@ -76,7 +76,10 @@ No schema changes. Two configuration fields:
 - **One configurable default with bounded overrides.** The 30-second setting
   covers ordinary calls. Long-running connector, identity-decision, confirm,
   and revert workflows opt into 180 seconds in their decorators; overrides are
-  code constants, not user-configurable registry sprawl.
+  code constants, not user-configurable registry sprawl. The explicit sync pull
+  allows the broker's bounded synchronous retrieval before local ingestion and
+  refresh; it does not guarantee arbitrary local processing finishes within 180
+  seconds. Committed job/phase recovery remains available after a timeout.
 - **Cancellation must reach DuckDB.** Naive `asyncio.wait_for` cancels the future but leaves the worker thread running and the connection held. The dispatch layer must (a) hold a reference to the active `DuckDBPyConnection`, (b) call `interrupt()` on timeout, and (c) force-close the connection in a `finally` block so the lock is released even if `interrupt()` is a no-op for the current statement (e.g., mid-`COPY`).
 - **Connection-per-call as the cleanup fallback.** Each tool dispatch acquires a fresh connection from the connection manager. On timeout, that connection is closed, which aborts the transaction and releases the lock. Long-lived shared connections are not used in the MCP path.
 - **Worker-thread limitation is explicit.** `asyncio.timeout()` returns the

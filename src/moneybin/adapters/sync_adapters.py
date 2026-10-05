@@ -11,9 +11,14 @@ tools and the CLI names commands.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from moneybin.adapters.refresh_adapters import refresh_steps_fields
+from moneybin.extractors.account_identity import (
+    UNNAMED_ACCOUNT_LABEL,
+    mask_embedded_account_number,
+)
 from moneybin.privacy.payloads.sync import (
     SyncConnectionRow,
     SyncCoverageInterval,
@@ -43,6 +48,11 @@ if TYPE_CHECKING:
         SyncSourceView,
     )
     from moneybin.errors import RecoveryAction
+
+
+def sync_account_label(name: str) -> str:
+    """Mask native labels only for display, leaving confirmation identity intact."""
+    return mask_embedded_account_number(name.strip()) or UNNAMED_ACCOUNT_LABEL
 
 
 def _history_payload(history: SyncHistoryView | None) -> SyncHistoryPayload | None:
@@ -90,6 +100,9 @@ def _source_row(source: SyncSourceView) -> SyncSourceRow:
                 scope_kind=outcome.scope_kind,
                 status=outcome.status,
                 error_code=outcome.error_code,
+                retry_at=outcome.retry_at.isoformat()
+                if outcome.retry_at is not None
+                else None,
                 window=SyncCoverageInterval(
                     start=outcome.window.start.isoformat(),
                     end=outcome.window.end.isoformat(),
@@ -344,6 +357,22 @@ def sync_repair_actions(result: PullResult, *, cli: bool = False) -> list[str]:
         else f"sync_pull(job_id='{result.job_id}', local_only=true)"
     )
     actions = sync_job_recovery_actions(result, cli=cli)
+    now = datetime.now(UTC)
+    waiting = {
+        source.connection_id: max(deadlines)
+        for source in result.sources
+        if (
+            deadlines := [
+                outcome.retry_at
+                for outcome in source.outcomes
+                if outcome.retry_at is not None and outcome.retry_at > now
+            ]
+        )
+    }
+    for connection_id, retry_at in waiting.items():
+        actions.append(
+            f"Wait until {retry_at.isoformat()} before requesting another pull for connection {connection_id}."
+        )
     if (
         result.ack_state == "unavailable"
         or result.job_status in {"partial", "failed"}
@@ -357,6 +386,8 @@ def sync_repair_actions(result: PullResult, *, cli: bool = False) -> list[str]:
             "The original job cannot repair unavailable acknowledgement or missing upstream retrieval. Committed ingestion is preserved; choose a new pull explicitly."
         )
         for source in result.sources:
+            if source.connection_id in waiting:
+                continue
             command = (
                 f"moneybin sync pull --connection-id {source.connection_id}"
                 if cli
@@ -372,7 +403,7 @@ def sync_repair_actions(result: PullResult, *, cli: bool = False) -> list[str]:
             actions.append(
                 "History coverage is unknown; inspect sync status. This is not confirmed complete history."
             )
-        elif (
+        elif source.connection_id not in waiting and (
             source.history.replay_required
             or source.history.discovery_history_target is not None
             or any(

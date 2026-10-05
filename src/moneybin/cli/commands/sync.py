@@ -10,6 +10,7 @@ import typer
 
 from moneybin import error_codes
 from moneybin.adapters.sync_adapters import (
+    sync_account_label,
     sync_link_status_actions,
     sync_repair_actions,
 )
@@ -765,7 +766,7 @@ def sync_disconnect(
                 target = terminal_safe_text(plan.institution_name or plan.id)
                 accounts = (
                     ", ".join(
-                        terminal_safe_text(account.name or "Unnamed account")
+                        terminal_safe_text(sync_account_label(account.name))
                         for account in plan.accounts
                     )
                     or "No discovered accounts"
@@ -818,7 +819,7 @@ def sync_disconnect(
                 connection_id=disconnected.id,
                 remote_revocation=disconnected.remote_revocation,
                 affected_accounts=[
-                    account.name or "Unnamed account"
+                    sync_account_label(account.name)
                     for account in disconnected.accounts
                 ],
                 actions=revocation_actions,
@@ -834,6 +835,14 @@ def sync_disconnect(
                 ("Provider item ID", disconnected.provider_item_id or "-"),
                 ("Outcome", "Disconnected"),
                 ("Remote revocation", disconnected.remote_revocation),
+                (
+                    "Affected accounts",
+                    ", ".join(
+                        sync_account_label(account.name)
+                        for account in disconnected.accounts
+                    )
+                    or "No discovered accounts",
+                ),
                 (
                     "Next action",
                     " ".join(revocation_actions),

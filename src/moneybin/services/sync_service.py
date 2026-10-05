@@ -805,6 +805,7 @@ class SyncService:
                         status=outcome.status,
                         error_code=_safe_error_code(outcome.error_code),
                         window=outcome.window,
+                        retry_at=outcome.retry_at,
                     )
                 )
             projected.append(
@@ -1239,7 +1240,7 @@ class SyncService:
         if status != "error":
             return None
         if error_code == "payment_required":
-            return "this connection requires attention to the SimpleFIN Bridge subscription before another pull."
+            return f"Resolve the SimpleFIN Bridge subscription, then use `{link}` to relink this connection before another pull."
         if error_code in {"RATE_LIMIT_EXCEEDED", "rate_limited", "request_budget"}:
             return "this connection is rate limited. Wait before explicitly requesting another pull."
         if error_code in {
