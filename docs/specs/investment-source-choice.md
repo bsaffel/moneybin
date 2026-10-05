@@ -49,7 +49,7 @@ is the one the user wants. There is no remedy that goes the other way:
   holdings rows, so the overlap would come back even if no trade did.
 - **Disconnecting doesn't fit.** `sync_disconnect` is remote only and keeps
   every pulled row. It also acts on the whole connection, not one account.
-  A purge-on-disconnect like `gsheet_disconnect(purge=True)` would throw away
+  A disconnect that also purged the connection's rows would throw away
   cash transactions and balances for every account on the connection, can't
   be undone, and loses history older than the provider's window.
 
@@ -325,8 +325,8 @@ instead of "0 trades".
   - `import_revert` is no longer offered. It still works as a deliberate
     delete, but as the suggested fix it was a destructive answer to a question
     the setting answers without loss.
-- The CLI's `_recovery_command` maps
-  `accounts_set(account_id, investment_source_type)` to
+- The CLI's `_recovery_command` maps an `accounts_set` fix carrying
+  `account_id` and `investment_source_type` to
   `moneybin accounts set <id> --investment-source-type <value>`. With two fixes
   per account, the CLI's existing five-fix cap shows fixes for at most two
   overlapping accounts. The JSON output and MCP list every fix.
