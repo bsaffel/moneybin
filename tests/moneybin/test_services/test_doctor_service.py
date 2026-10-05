@@ -1919,6 +1919,37 @@ def test_source_overlap_reports_both_stale_and_unresolved_accounts(
     ]
 
 
+def _raise_ledger_unreadable(_db: Database) -> list[str]:
+    raise RuntimeError("ledger unreadable")
+
+
+@pytest.mark.unit
+def test_source_overlap_still_fails_when_the_stale_query_errors(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable ledger must not hide an overlap the raw detector found."""
+    _seed_overlap_account(db, "ACC1")
+    monkeypatch.setattr(
+        "moneybin.services.doctor_service.stale_source_choice_accounts",
+        _raise_ledger_unreadable,
+    )
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:ACC1"]
+
+
+@pytest.mark.unit
+def test_source_overlap_skips_when_only_the_stale_query_errors(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.services.doctor_service.stale_source_choice_accounts",
+        _raise_ledger_unreadable,
+    )
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "skipped"
+
+
 @pytest.mark.unit
 def test_source_overlap_passes_once_the_ledger_holds_only_the_chosen_source(
     db: Database, monkeypatch: pytest.MonkeyPatch

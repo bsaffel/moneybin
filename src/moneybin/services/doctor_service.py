@@ -1567,15 +1567,11 @@ class DoctorService:
                 detail=f"raw tables unavailable: {e}",
                 affected_ids=[],
             )
+        stale_error: Exception | None = None
         try:
             stale = stale_source_choice_accounts(self._db)
-        except Exception as e:  # ledger unreadable: report it, don't pass blind
-            return InvariantResult(
-                name=name,
-                status="skipped",
-                detail=f"investment ledger unavailable: {e}",
-                affected_ids=[],
-            )
+        except Exception as e:  # ledger unreadable; a found overlap still fails
+            stale, stale_error = [], e
         try:
             for source_type, count in investment_source_choice_counts(self._db).items():
                 INVESTMENT_SOURCE_CHOICE_ACCOUNTS.labels(
@@ -1609,6 +1605,13 @@ class DoctorService:
                 status="fail",
                 detail=". ".join(parts),
                 affected_ids=_masked_account_affected_ids([*accounts, *stale]),
+            )
+        if stale_error is not None:  # don't pass blind on an unread ledger
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"investment ledger unavailable: {stale_error}",
+                affected_ids=[],
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

@@ -1802,8 +1802,9 @@ class InvestmentService:
             "two ledgers interleave, so these figures double-count and their "
             "cost basis mixes two accountings. Choose one source for the "
             "account with 'moneybin accounts set <account> "
-            "--investment-source-type manual|plaid', then run 'moneybin "
-            "system doctor' to confirm."
+            "--investment-source-type manual|plaid' (if one is already "
+            "chosen, run 'moneybin refresh'), then run 'moneybin system "
+            "doctor' to confirm."
         )
 
     def _source_overlap_degradation(
