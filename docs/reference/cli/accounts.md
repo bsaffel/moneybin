@@ -74,9 +74,13 @@ Usage: `moneybin accounts get [OPTIONS] {account_id}`
 Update account settings (structural + behavioral fields).
 
 Structural: --official-name, --last-four, --subtype, --holder-category,
---currency, --credit-limit, --default-cost-basis-method (each clearable
-via --clear-FIELD). --default-cost-basis-method must be one of fifo,
-hifo, specific, average — an invalid value is rejected before any write.
+--currency, --credit-limit, --default-cost-basis-method,
+--investment-source-type (each clearable via --clear-FIELD).
+--default-cost-basis-method must be one of fifo, hifo, specific, average
+and --investment-source-type one of manual, plaid — an invalid value is
+rejected before any write. --investment-source-type picks which
+investment history feeds the account's ledger when it has both recorded
+and synced trades; the other history is kept, not deleted.
 Behavioral: --display-name, --include/--exclude, --archive/--unarchive.
 --archive/--unarchive and --include/--exclude are independent flags with
 different jobs. --archive today excludes the account from net worth
@@ -106,6 +110,7 @@ Usage: `moneybin accounts set [OPTIONS] {account_id}`
 | `--credit-limit` | text |  | Credit limit (for credit cards / lines) |
 | `--display-name` | text |  | Custom display name override (use --clear-display-name to clear) |
 | `--default-cost-basis-method` | text |  | Per-account cost-basis default: fifo, hifo, specific, or average (NULL falls back to the global FIFO default) |
+| `--investment-source-type` | text |  | Which investment history feeds this account's ledger: manual (recorded trades) or plaid (synced). Nothing is deleted; --clear-investment-source-type uses both again |
 | `--include / --exclude` | flag |  | Include or exclude this account from net worth |
 | `--archive / --unarchive` | flag |  | Archive or unarchive this account (does not change --include/--exclude) |
 | `--clear-official-name` | flag |  |  |
@@ -116,6 +121,7 @@ Usage: `moneybin accounts set [OPTIONS] {account_id}`
 | `--clear-credit-limit` | flag |  |  |
 | `--clear-display-name` | flag |  |  |
 | `--clear-default-cost-basis-method` | flag |  |  |
+| `--clear-investment-source-type` | flag |  |  |
 | `--yes, -y` | flag |  | Skip soft-validation prompt for non-canonical values |
 
 ## moneybin accounts resolve

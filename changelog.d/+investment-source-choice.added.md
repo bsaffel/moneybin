@@ -1,0 +1,1 @@
+Choose which investment history an account keeps when it has both recorded and synced trades: `moneybin accounts set <account> --investment-source-type manual|plaid` (or `accounts_set`). Nothing is deleted, holdings are valued again, and `system doctor` now offers this choice instead of reverting an import.

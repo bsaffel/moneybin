@@ -1,7 +1,7 @@
 # Investment Source Choice
 
-> Last updated: 2026-10-01
-> Status: draft
+> Last updated: 2026-10-04
+> Status: implemented
 > Address: M1J.8 (Investments — per-account investment source choice)
 > Type: Feature
 > Owns: the per-account `investment_source_type` setting, the ledger filter it
@@ -122,15 +122,18 @@ id and figures below are synthetic:
 ```
 
 Running either command saves the setting and rebuilds the ledger before it
-returns:
+returns, with the standard settings receipt carrying an "Investment source"
+row:
 
 ```
-✓ Updated investment source for acct_7f3a9c: manual
-  Using 412 recorded trades; ignoring 96 synced trades (kept, not deleted)
+Account settings updated
+Account ID:         acct_7f3a9c
+Updated fields:     investment_source_type
+Investment source:  Using 412 recorded trades; ignoring 96 synced trades (kept, not deleted)
 ```
 
 After the rebuild the doctor passes, holdings show values again, and the next
-sync doesn't bring the warning back. `moneybin accounts show` lists the
+sync doesn't bring the warning back. `moneybin accounts get` lists the
 setting. `--clear-investment-source-type` goes back to using both sources;
 until M1J.7 acceptance ships, that brings the overlap and its warning back.
 
@@ -273,7 +276,9 @@ The same module gains the evidence that the doctor's fix needs:
 @dataclass(frozen=True)
 class SourceEvidence:
     source_type: str  # 'manual' | 'plaid'
-    trade_count: int  # ledger-eligible rows, opening_bootstrap excluded
+    trade_count: (
+        int  # current raw observations; review routing happens later in staging
+    )
     first_trade_date: date | None
     last_trade_date: date | None
     holdings_only: bool  # plaid evidence is a holdings snapshot with no trades
@@ -288,7 +293,10 @@ Counts come from the same raw scope the detector already uses: the current
 Plaid receipts, and manual rows resolved through
 `prep.int_manual__investment_identity`. They don't come from the ledger,
 because the doctor has to describe an account that hasn't been transformed
-yet. A holdings-only Plaid source reads as "a holdings snapshot, no trades"
+yet. They count current raw observations, not ledger rows: staging may later
+route a Plaid row to review instead of the ledger, and the opening-lot
+bootstrap rows exist only in the ledger, so a count can differ from the ledger
+by those rows. A holdings-only Plaid source reads as "a holdings snapshot, no trades"
 instead of "0 trades".
 
 ### Doctor: `investment_source_overlap`
@@ -337,11 +345,13 @@ instead of "0 trades".
 
 A check that reports on rows the choice excluded skips them:
 
-- `investment_staging_rejects`, `investment_unmodeled_legs`,
-  `investment_unresolved_securities` and `investment_opening_lot_review` read
-  Plaid staging or bootstrap rows. Each one skips Plaid rows in an account set
-  to `manual`. A check that reads the ledger rather than staging needs no
-  change, and the plan confirms which is which.
+- `investment_staging_rejects` and `investment_opening_lot_review` read Plaid
+  staging or bootstrap rows directly. Each one skips Plaid rows in an account
+  set to `manual`. On a `core.dim_accounts` that predates the column (migrated
+  but not yet refreshed) no choice is readable, so both run without the filter,
+  as the match planner does.
+- `investment_unmodeled_legs` and `investment_unresolved_securities` read the
+  ledger, so they inherit the filter and need no change.
 - `investment_holdings_divergence`, `investment_unreported_holdings` and
   `investment_phantom_holdings` compare the ledger to the broker's snapshot.
   They are unchanged and keep running under both choices. Under `manual`,
@@ -382,8 +392,8 @@ change of mind restores them without a re-pull.
 |---|---|
 | `accounts set` (CLI) | `--investment-source-type {manual,plaid}`, `--clear-investment-source-type` |
 | `accounts_set` (MCP) | `investment_source_type` parameter; `"investment_source_type"` added to `_CLEARABLE_FIELDS`; tool description gains one sentence |
-| `accounts show` / `accounts_get` | the setting appears in `AccountSettingsPayload` |
-| Confirmation (CLI + MCP) | the per-source counts after the rebuild: trades used and trades ignored |
+| `accounts get` / `accounts_get` | the setting appears in `AccountDetail`; the `accounts_set` result carries it in `AccountSettingsPayload` |
+| Confirmation (CLI + MCP) | the per-source counts after the rebuild, trades used and trades ignored: an "Investment source" row in the CLI receipt, and the single `actions[]` entry of the MCP envelope |
 
 The CLI flag accepts the value lowercase only, matching how
 `--default-cost-basis-method` validates. An unknown value fails with
