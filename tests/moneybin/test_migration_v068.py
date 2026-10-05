@@ -89,6 +89,83 @@ def test_v068_is_a_no_op_on_a_fresh_install(db: Database) -> None:
     assert db.execute("SELECT COUNT(*) FROM app.category_source_map").fetchone() == (0,)
 
 
+def _seed_imported_mappings(db: Database) -> None:
+    """Add old-shape imported mappings: the origin slug sits in source_type."""
+    db.execute("""
+        INSERT INTO app.category_source_map
+            (source_type, source_category_code, source_subcategory_code,
+             code_level, category_id)
+        VALUES
+            ('chase_credit', 'Coffee Shops', '', 'detailed', 'cat-coffee'),
+            ('chase_credit', 'Travel', 'Air', 'detailed', 'cat-air'),
+            ('user', 'Lunch', '', 'detailed', 'cat-lunch'),
+            ('gone_exporter', 'Rent', '', 'detailed', 'cat-rent')
+    """)
+
+
+def _seed_raw_tabular_row(
+    db: Database, transaction_id: str, source_type: str, source_origin: str
+) -> None:
+    db.execute(
+        "INSERT INTO raw.tabular_transactions "
+        "(transaction_id, account_id, transaction_date, amount, source_file, "
+        "source_type, source_origin, import_id) "
+        "VALUES (?, 'acct-1', '2026-01-05', -4.50, ?, ?, ?, 'imp-1')",
+        [transaction_id, f"{transaction_id}.csv", source_type, source_origin],
+    )
+
+
+def _imported_keys(db: Database) -> list[tuple[str, str, str, str, str]]:
+    return db.execute(
+        "SELECT source_type, source_origin, source_category_code, "
+        "source_subcategory_code, category_id FROM app.category_source_map "
+        "WHERE source_type <> 'plaid' "
+        "ORDER BY source_origin, source_category_code, source_type"
+    ).fetchall()
+
+
+def test_v068_rekeys_an_imported_mapping_per_carrying_source_type(
+    db: Database,
+) -> None:
+    """The old key applied to every type of an origin, so each type keeps it."""
+    _seed_v067_shape(db)
+    _seed_imported_mappings(db)
+    _seed_raw_tabular_row(db, "t1", "csv", "chase_credit")
+    _seed_raw_tabular_row(db, "t2", "csv", "chase_credit")
+    _seed_raw_tabular_row(db, "t3", "excel", "chase_credit")
+    _seed_raw_tabular_row(db, "t4", "csv", "other_exporter")
+    db.execute(
+        "INSERT INTO raw.manual_transactions "
+        "(source_transaction_id, import_id, account_id, transaction_date, "
+        "amount, description, created_by) "
+        "VALUES ('manual_1', 'imp-2', 'acct-1', '2026-01-06', -9.00, 'x', 'cli')"
+    )
+
+    run_migration(db, migrate)
+
+    assert _imported_keys(db) == [
+        ("csv", "chase_credit", "Coffee Shops", "", "cat-coffee"),
+        ("excel", "chase_credit", "Coffee Shops", "", "cat-coffee"),
+        ("csv", "chase_credit", "Travel", "Air", "cat-air"),
+        ("excel", "chase_credit", "Travel", "Air", "cat-air"),
+        ("manual", "user", "Lunch", "", "cat-lunch"),
+    ]
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.category_source_map WHERE source_type = 'plaid'"
+    ).fetchone() == (3,)
+
+
+def test_v068_drops_an_imported_mapping_no_raw_row_carries(db: Database) -> None:
+    """With no row of that origin there is no source type to key it under."""
+    _seed_v067_shape(db)
+    _seed_imported_mappings(db)
+
+    run_migration(db, migrate)
+
+    assert _imported_keys(db) == []
+    assert db.execute("SELECT COUNT(*) FROM app.category_source_map").fetchone() == (3,)
+
+
 def test_v068_idempotent_on_second_run(db: Database) -> None:
     _seed_v067_shape(db)
 

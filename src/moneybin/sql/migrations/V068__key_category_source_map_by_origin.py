@@ -8,8 +8,12 @@ source_subcategory_code)`` and ``source_type`` holds the transaction row's own
 ``source_type``. A blank ``source_origin`` marks a provider-wide row, like a
 blank subcategory marks "none".
 
-No shipped code before this version wrote the table (only delete), so every
-existing row is a provider row and backfills ``source_origin = ''``.
+A ``plaid`` row is a provider row and backfills ``source_origin = ''``. Any
+other row is an imported mapping whose old ``source_type`` is really an origin
+slug; the old key applied it to every row of that origin, so it is re-keyed
+once per source type the raw tables hold for that origin. An imported mapping
+whose origin no raw row carries has no source type to take and is dropped —
+its term returns to the pending inbox if those rows are imported again.
 
 DuckDB cannot ``ALTER`` a primary key, so the table is rebuilt via a tmp-table
 snapshot, mirroring V067.
@@ -39,18 +43,17 @@ CREATE TABLE app.category_source_map (
 )
 """
 
-# Explicit column list (not `SELECT *`) so the two shapes can't silently
+_TMP = "app.category_source_map__v068_tmp"
+
+# Explicit column lists (not `SELECT *`) so the two shapes can't silently
 # misalign — same reason as V067.
-_OLD_COLUMNS = (
-    "source_type",
-    "source_category_code",
-    "source_subcategory_code",
-    "code_level",
-    "category_id",
-    "source_taxonomy_version",
-    "created_at",
-    "updated_at",
+_CARRIED_COLUMNS = (
+    "source_category_code, source_subcategory_code, code_level, category_id, "
+    "source_taxonomy_version, created_at, updated_at"
 )
+
+# Raw tables that hold imported rows carrying their own category text.
+_IMPORTED_RAW_TABLES = ("tabular_transactions", "manual_transactions")
 
 
 def migrate(conn: object) -> None:
@@ -67,15 +70,38 @@ def migrate(conn: object) -> None:
 
     logger.debug("V068: rebuild app.category_source_map keyed by source_origin")
     conn.execute(  # type: ignore[attr-defined]
-        "CREATE TABLE app.category_source_map__v068_tmp AS "
-        "SELECT * FROM app.category_source_map"
+        f"CREATE TABLE {_TMP} AS SELECT * FROM app.category_source_map"  # noqa: S608  # module constant, no user input
     )
     conn.execute("DROP TABLE app.category_source_map")  # type: ignore[attr-defined]
     conn.execute(_CREATE_TABLE)  # type: ignore[attr-defined]
-    column_list = ", ".join(_OLD_COLUMNS)
-    conn.execute(  # type: ignore[attr-defined]  # allowlisted literal, no user input
-        f"INSERT INTO app.category_source_map ({column_list}, source_origin) "  # noqa: S608  # column_list built from the hardcoded _OLD_COLUMNS tuple, not user input
-        f"SELECT {column_list}, '' FROM app.category_source_map__v068_tmp"
+    conn.execute(  # type: ignore[attr-defined]
+        f"""
+        INSERT INTO app.category_source_map
+            (source_type, source_origin, {_CARRIED_COLUMNS})
+        SELECT source_type, '', {_CARRIED_COLUMNS}
+        FROM {_TMP}
+        WHERE source_type = 'plaid'
+        """  # noqa: S608  # module constants, no user input
     )
-    conn.execute("DROP TABLE app.category_source_map__v068_tmp")  # type: ignore[attr-defined]
+
+    present: list[tuple[str]] = conn.execute(  # type: ignore[attr-defined]
+        "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'raw'"
+    ).fetchall()
+    carriers = " UNION ".join(
+        f"SELECT source_type, source_origin FROM raw.{table}"  # noqa: S608  # hardcoded table names, no user input
+        for table in _IMPORTED_RAW_TABLES
+        if (table,) in present
+    )
+    if carriers:
+        conn.execute(  # type: ignore[attr-defined]
+            f"""
+            INSERT INTO app.category_source_map
+                (source_type, source_origin, {_CARRIED_COLUMNS})
+            SELECT r.source_type, t.source_type, {_CARRIED_COLUMNS}
+            FROM {_TMP} AS t
+            JOIN ({carriers}) AS r ON r.source_origin = t.source_type
+            WHERE t.source_type <> 'plaid'
+            """  # noqa: S608  # module constants, no user input
+        )
+    conn.execute(f"DROP TABLE {_TMP}")  # type: ignore[attr-defined]
     logger.debug("V068: keyed app.category_source_map by source_origin")
