@@ -336,8 +336,8 @@ instead of "0 trades".
 - The CLI's `_recovery_command` maps an `accounts_set` fix carrying
   `account_id` and `investment_source_type` to
   `moneybin accounts set <id> --investment-source-type <value>`. With two fixes
-  per account, the CLI's existing five-fix cap shows fixes for at most two
-  overlapping accounts. The JSON output and MCP list every fix.
+  per account, the CLI lists both fixes for every overlapping account. The
+  JSON output and MCP list the same fixes.
 - The recipe-round-trip test covers the new actions, so each one is a
   runnable call.
 

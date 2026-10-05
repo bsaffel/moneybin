@@ -201,9 +201,8 @@ def doctor_command(
         lines.append(line)
         if result.status != "pass" and result.affected_ids:
             lines.append(f"   Affected: {', '.join(result.affected_ids)}")
-        # Affected IDs and recovery actions remain visible for non-pass checks;
-        # the five-action cap bounds guidance for checks with many affected rows.
-        # Quiet preserves recovery guidance needed to act on a failed check.
+        # Affected IDs and every recovery action remain visible for non-pass
+        # checks; quiet preserves the guidance needed to act on a failed check.
         recovery = result.recovery_actions or []
         for action in recovery:
             rationale = action.rationale
