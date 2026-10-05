@@ -1196,7 +1196,7 @@ def test_staging_rejects_skip_a_manual_account(
     )
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
-        "('itx_skip', 'acc_manual', 'split_underivable')"
+        "('itx_skip', 'acc_manual', 'unmapped_subtype')"
     )
     skipped = _investment_result(db, monkeypatch, "investment_staging_rejects")
     assert skipped.status == "pass"
@@ -1208,6 +1208,29 @@ def test_staging_rejects_skip_a_manual_account(
     warned = _investment_result(db, monkeypatch, "investment_staging_rejects")
     assert warned.status == "warn"
     assert warned.affected_ids == ["itx_warn"]
+
+
+@pytest.mark.unit
+def test_staging_rejects_keep_a_split_reject_in_a_manual_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dim_holdings withholds per security, so a split reject stays explained."""
+    create_core_tables(db)
+    _seed_choice_account(db, "acc_manual", "manual")
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_split', 'acc_manual', 'split_underivable'), "
+        "('itx_other', 'acc_manual', 'unmapped_subtype')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert result.status == "warn"
+    assert result.affected_ids == ["itx_split"]
 
 
 @pytest.mark.unit

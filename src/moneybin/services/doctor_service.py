@@ -1303,23 +1303,24 @@ class DoctorService:
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
-    def _unchosen_plaid_filter(self) -> str:
+    def _unchosen_plaid_filter(self, *, keep_split_rejects: bool = False) -> str:
         """Predicate dropping staging rows (alias ``s``) in a non-Plaid account.
 
         Empty when ``core.dim_accounts`` predates the column (migrated, not yet
         refreshed): no choice is readable, so every row counts, as in the match
-        planner.
+        planner. ``keep_split_rejects`` exempts ``split_underivable`` rows.
         """
         if not has_column(self._db, DIM_ACCOUNTS, "investment_source_type"):
             return ""
-        return f"""
-                  AND NOT EXISTS (
+        unchosen = f"""NOT EXISTS (
                       SELECT 1 FROM {DIM_ACCOUNTS.full_name} AS a
                       WHERE a.account_id = s.account_id
                         AND a.investment_source_type IS NOT NULL
                         AND a.investment_source_type <> 'plaid'
-                  )
-        """  # TableRef constant, no user input
+                  )"""  # TableRef constant, no user input
+        if keep_split_rejects:
+            unchosen = f"(s.review_reason = 'split_underivable' OR {unchosen})"
+        return f"AND {unchosen}"
 
     def _run_investment_staging_rejects(self) -> InvariantResult:
         """Plaid investment rows staging routed to review instead of the ledger.
@@ -1333,8 +1334,9 @@ class DoctorService:
         they surface. The query is deliberately open (``review_reason IS NOT
         NULL``), so a NEW reason added upstream surfaces here without a code
         change; only this list needs the follow-up. Skips Plaid rows in an
-        account whose investment source is set to another source; those rows
-        never reach its ledger.
+        account whose investment source is set to another source, except
+        ``split_underivable``: ``core.dim_holdings`` withholds a position per
+        security, so that reject still explains a withhold in any account.
         """
         name = "investment_staging_rejects"
         try:
@@ -1343,7 +1345,7 @@ class DoctorService:
                 SELECT s.investment_transaction_id, s.review_reason
                 FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name} AS s
                 WHERE s.review_reason IS NOT NULL
-                  {self._unchosen_plaid_filter()}
+                  {self._unchosen_plaid_filter(keep_split_rejects=True)}
                 ORDER BY s.investment_transaction_id
                 """  # TableRef constants, no user input
             ).fetchall()
