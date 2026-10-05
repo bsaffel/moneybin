@@ -480,3 +480,10 @@ account labels, trade descriptions, or amounts.
   decides whether a chosen account can opt back into matching without
   clearing the setting first. Until then, clear the setting to return the
   account to matching.
+- **A choice does not follow an account merge.** When an account link merges
+  the account holding the choice into another account, the setting stays under
+  the absorbed id. The survivor then shows no choice, both histories return,
+  and `investment_source_overlap` fails again until the choice is set on the
+  survivor. Every other `app.account_settings` field has the same gap today.
+  [#655](https://github.com/bsaffel/moneybin/issues/655) makes settings follow
+  a merge under one conflict rule.
