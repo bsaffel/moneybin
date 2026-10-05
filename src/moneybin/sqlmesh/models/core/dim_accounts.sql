@@ -282,7 +282,7 @@ SELECT
   w.source_file, /* Path to the source file from which the winning record was loaded */
   w.extracted_at, /* Latest time the data was parsed from a contributing source */
   w.loaded_at, /* Latest time a contributing record was written to the raw table */
-  GREATEST(w.loaded_at, s.updated_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
+  GREATEST(w.loaded_at, s.updated_at, s.investment_source_type_changed_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Folds investment_source_type_changed_at because an undo restores the settings row's own updated_at from the old image and advances only the change time. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
     CASE

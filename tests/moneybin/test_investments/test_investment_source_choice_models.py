@@ -14,7 +14,9 @@ import pytest
 from moneybin.database import Database
 from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.investment_service import InvestmentService
+from moneybin.services.mutation_context import operation
 from moneybin.services.transform_service import TransformService
+from moneybin.services.undo_service import UndoService
 
 pytestmark = pytest.mark.integration
 
@@ -244,6 +246,37 @@ def test_clear_returns_rows_with_a_newer_watermark(db: Database) -> None:
     assert holding is not None
     assert holding[0] >= changed_at
     assert _status(db) == "source_overlap", "clearing should bring the overlap back"
+
+
+def test_undo_of_a_choice_advances_the_account_watermark(db: Database) -> None:
+    """Undo restores the settings row's own updated_at from the old image.
+
+    Only the source change time moves forward, so dim_accounts' updated_at must
+    fold it in, or the undone choice reads as an unchanged account.
+    """
+    _seed_overlap(db)
+    # An earlier unrelated write, so the undo restores the row rather than
+    # deleting it (deleting a row that held a choice is refused).
+    AccountService(db).settings_update(
+        _ACCOUNT, actor="test", display_name="Synthetic Brokerage"
+    )
+    with operation() as op:
+        AccountService(db).settings_update(
+            _ACCOUNT, actor="test", investment_source_type="manual"
+        )
+    UndoService(db).undo(op, actor="test")
+
+    row = db.execute(
+        """
+        SELECT investment_source_type, investment_source_type_changed_at, updated_at
+        FROM core.dim_accounts WHERE account_id = ?
+        """,
+        [_ACCOUNT],
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None, "the undo did not clear the choice"
+    assert isinstance(row[1], datetime)
+    assert row[2] >= row[1]
 
 
 def test_row_without_a_dim_accounts_match_stays(db: Database) -> None:
