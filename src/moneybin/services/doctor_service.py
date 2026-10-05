@@ -14,7 +14,7 @@ from sqlglot import exp
 from moneybin.audits import recipes as recipe_registry
 from moneybin.audits.runner import run_standalone_audits
 from moneybin.config import get_settings
-from moneybin.database import Database
+from moneybin.database import Database, has_column
 from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.account_identity import (
     UNNAMED_ACCOUNT_LABEL,
@@ -1303,6 +1303,24 @@ class DoctorService:
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
+    def _unchosen_plaid_filter(self) -> str:
+        """Predicate dropping staging rows (alias ``s``) in a non-Plaid account.
+
+        Empty when ``core.dim_accounts`` predates the column (migrated, not yet
+        refreshed): no choice is readable, so every row counts, as in the match
+        planner.
+        """
+        if not has_column(self._db, DIM_ACCOUNTS, "investment_source_type"):
+            return ""
+        return f"""
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {DIM_ACCOUNTS.full_name} AS a
+                      WHERE a.account_id = s.account_id
+                        AND a.investment_source_type IS NOT NULL
+                        AND a.investment_source_type <> 'plaid'
+                  )
+        """  # TableRef constant, no user input
+
     def _run_investment_staging_rejects(self) -> InvariantResult:
         """Plaid investment rows staging routed to review instead of the ledger.
 
@@ -1325,12 +1343,7 @@ class DoctorService:
                 SELECT s.investment_transaction_id, s.review_reason
                 FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name} AS s
                 WHERE s.review_reason IS NOT NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM {DIM_ACCOUNTS.full_name} AS a
-                      WHERE a.account_id = s.account_id
-                        AND a.investment_source_type IS NOT NULL
-                        AND a.investment_source_type <> 'plaid'
-                  )
+                  {self._unchosen_plaid_filter()}
                 ORDER BY s.investment_transaction_id
                 """  # TableRef constants, no user input
             ).fetchall()
@@ -1378,12 +1391,8 @@ class DoctorService:
                        COALESCE(s.security_id, s.source_security_key) AS security_key,
                        s.reason
                 FROM {STG_PLAID_OPENING_LOT_REVIEW.full_name} AS s
-                WHERE NOT EXISTS (
-                      SELECT 1 FROM {DIM_ACCOUNTS.full_name} AS a
-                      WHERE a.account_id = s.account_id
-                        AND a.investment_source_type IS NOT NULL
-                        AND a.investment_source_type <> 'plaid'
-                  )
+                WHERE TRUE
+                  {self._unchosen_plaid_filter()}
                 ORDER BY s.account_id, security_key
                 """  # TableRef constants, no user input
             ).fetchall()

@@ -1305,6 +1305,57 @@ def test_opening_lot_review_unbound_security_shows_provider_key(
     assert result.affected_ids == ["acc1:plaid_sec_unbound (short_or_nonpositive)"]
 
 
+def _drop_dim_source_choice_columns(db: Database) -> None:
+    """Leave `core.dim_accounts` as it was before V068 (migrated, not yet refreshed)."""
+    db.execute(
+        "ALTER TABLE core.dim_accounts DROP COLUMN investment_source_type_changed_at"
+    )
+    db.execute("ALTER TABLE core.dim_accounts DROP COLUMN investment_source_type")
+
+
+@pytest.mark.unit
+def test_staging_rejects_run_on_a_dim_accounts_without_the_choice_column(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No column means no choice: the check runs unfiltered, not `skipped`."""
+    create_core_tables(db)
+    _drop_dim_source_choice_columns(db)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'split_underivable')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert result.status == "warn"
+    assert result.affected_ids == ["itx_1"]
+
+
+@pytest.mark.unit
+def test_opening_lot_review_runs_on_a_dim_accounts_without_the_choice_column(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_core_tables(db)
+    _drop_dim_source_choice_columns(db)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__opening_lot_review "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__opening_lot_review VALUES "
+        "('acc1', 'sec1', 'k1', 'short_or_nonpositive')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:sec1 (short_or_nonpositive)"]
+
+
 @pytest.mark.unit
 def test_conflicting_security_refs_warn(
     db: Database, monkeypatch: pytest.MonkeyPatch
