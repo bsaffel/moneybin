@@ -113,6 +113,7 @@ Transaction matching and dedup configuration.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
+| `MONEYBIN_DOCTOR__BALANCE_STALENESS_THRESHOLD_DAYS` | int (≥ 1) | `30` | Warn when an included account's latest balance observation is older than this many days. |
 | `MONEYBIN_DOCTOR__AUDIT_COVERAGE_LOOKBACK_DAYS` | int (≥ 1) | `7` | Audit-coverage checks only inspect protected app.* rows mutated within this many days. Bounds the cost on large profiles and lets users suppress pre-migration noise by lowering it after rollout. |
 | `MONEYBIN_DOCTOR__AUDIT_COVERAGE_SAMPLE_CAP` | int (≥ 1) | `1000` | Maximum rows sampled per table for the audit-coverage check. `moneybin system doctor --full` bypasses the cap and scans every row. |
 | `MONEYBIN_DOCTOR__DUPLICATE_ACCOUNT_OVERLAP_RATIO` | float (> 0.0, ≤ 1.0) | `0.5` | duplicate_account_overlap warns when this fraction of one account's transactions have a same-amount counterpart within the matcher's date window on a sibling account at the same institution. Below it, the shared rows read as coincidence. |

@@ -10,7 +10,10 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import resolve_date_range
+from moneybin.reports.definitions._shared import (
+    net_worth_sync_scope,
+    resolve_date_range,
+)
 from moneybin.tables import REPORTS_NET_WORTH_ACCOUNTS
 
 _REPORT_ID = "core:net_worth_accounts"
@@ -209,4 +212,12 @@ def net_worth_accounts(
         "Run reports(report_id='core:net_worth') for the single home-currency total",
         "Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown",
     ]
-    return ReportQuery(sql, rng.params, actions=actions, period=rng.period)
+    return ReportQuery(
+        sql,
+        rng.params,
+        actions=actions,
+        period=rng.period,
+        sync_scope=net_worth_sync_scope(
+            from_date, to_date, view=REPORTS_NET_WORTH_ACCOUNTS
+        ),
+    )

@@ -13,6 +13,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
@@ -113,6 +114,17 @@ def bound_class(binding: object) -> DataClass:
 
 
 @dataclass(frozen=True, slots=True)
+class SyncReportScope:
+    """The runner's resolved source-coverage scope, independent of returned rows."""
+
+    account_ids: tuple[str, ...] | None = None
+    net_worth: bool = True
+    include_archived: bool = False
+    from_date: date | None = None
+    latest_date_relation: TableRef | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReportQuery:
     """A parameterized read-only SELECT that a report runner returns.
 
@@ -137,6 +149,7 @@ class ReportQuery:
     this repo is not checked against this contract."""
     actions: Sequence[str] = ()
     period: str | None = None
+    sync_scope: SyncReportScope | None = None
 
 
 @dataclass(frozen=True, slots=True)

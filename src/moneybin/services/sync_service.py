@@ -61,10 +61,13 @@ from moneybin.metrics.observations import MetricObservations
 from moneybin.metrics.registry import (
     ACCOUNT_LINK_OUTCOMES_TOTAL,
     SYNC_CONNECT_OUTCOMES,
+    SYNC_INGESTION_OUTCOMES_TOTAL,
     SYNC_INSTITUTION_ERRORS_TOTAL,
+    SYNC_PARTIAL_SCOPES_TOTAL,
     SYNC_PULL_DURATION_SECONDS,
     SYNC_PULL_OUTCOMES_TOTAL,
     SYNC_PULL_TRANSACTIONS_LOADED,
+    SYNC_REFRESH_OUTCOMES_TOTAL,
 )
 from moneybin.orchestration.refresh import refresh as _refresh
 from moneybin.orchestration.refresh import step_outcome as _step_outcome
@@ -382,10 +385,11 @@ class SyncService:
         if progress is not None:
             progress(ProgressEvent("Loading synced data"))
         receipt_writes = 0
+        repo = SyncJobStateRepo(self.db)
+        new_job = repo.get(job_id, self.consumer_id) is None
         observations = MetricObservations()
         previous_observations = self.loader.observations
         self.loader.observations = observations
-        repo = SyncJobStateRepo(self.db)
         references: list[SyncJobSource] = []
         self.db.begin()
         try:
@@ -487,9 +491,25 @@ class SyncService:
         except BaseException:
             self.db.rollback()
             observations.flush("rollback")
+            if new_job:
+                for name in counts:
+                    SYNC_INGESTION_OUTCOMES_TOTAL.labels(
+                        provider=name, status="failed"
+                    ).inc()
             raise
         finally:
             self.loader.observations = previous_observations
+        if new_job:
+            for name in counts:
+                SYNC_INGESTION_OUTCOMES_TOTAL.labels(
+                    provider=name, status="committed"
+                ).inc()
+            for source in result.source_results:
+                for outcome in source.outcomes:
+                    if outcome.status in {"partial", "failed", "deferred"}:
+                        SYNC_PARTIAL_SCOPES_TOTAL.labels(
+                            provider=source.provider, status=outcome.status
+                        ).inc()
         observations.flush()
         finished = self._finish_job(
             state, refresh=refresh, progress=progress, recover=False
@@ -656,6 +676,10 @@ class SyncService:
                 result.refresh_state = "failed"
                 result.transforms_error = "Local refresh failed; retry this job locally"
                 logger.warning(f"Sync local refresh requires repair (job_id={job_id})")
+            for name in {item.source.provider for item in state.details.sources}:
+                SYNC_REFRESH_OUTCOMES_TOTAL.labels(
+                    provider=name, status=result.refresh_state
+                ).inc()
             self._save_recovery(repo, state)
         result.inspection_error_code = None
         sources: list[SyncSourceView] = []

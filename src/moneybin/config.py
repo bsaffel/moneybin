@@ -574,6 +574,12 @@ class DoctorSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    balance_staleness_threshold_days: int = Field(
+        default=30,
+        ge=1,
+        description="Warn when an included account's latest balance observation is older than this many days.",
+    )
+
     audit_coverage_lookback_days: int = Field(
         default=7,
         ge=1,

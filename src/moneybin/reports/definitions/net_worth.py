@@ -16,7 +16,10 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import resolve_date_range
+from moneybin.reports.definitions._shared import (
+    net_worth_sync_scope,
+    resolve_date_range,
+)
 from moneybin.tables import REPORTS_NET_WORTH
 
 _REPORT_ID = "core:net_worth"
@@ -315,7 +318,13 @@ def net_worth(
             "Run reports(report_id='core:net_worth_currencies') for the "
             "currency-level breakdown",
         ]
-        return ReportQuery(sql, rng.params, actions=actions, period=rng.period)
+        return ReportQuery(
+            sql,
+            rng.params,
+            actions=actions,
+            period=rng.period,
+            sync_scope=net_worth_sync_scope(from_date, to_date, view=REPORTS_NET_WORTH),
+        )
 
     rng = resolve_date_range(
         from_date,
@@ -352,4 +361,12 @@ def net_worth(
         "Set from_date to bound a recent window — rows return oldest-first, "
         "so a row limit keeps the earliest buckets, not the most recent",
     ]
-    return ReportQuery(sql, rng.params, actions=actions, period=rng.period)
+    return ReportQuery(
+        sql,
+        rng.params,
+        actions=actions,
+        period=rng.period,
+        sync_scope=net_worth_sync_scope(
+            from_date, to_date, view=REPORTS_NET_WORTH, default_latest=False
+        ),
+    )

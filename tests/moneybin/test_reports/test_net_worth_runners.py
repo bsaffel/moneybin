@@ -49,6 +49,59 @@ model_db = _model_db
 pytestmark = pytest.mark.unit
 
 
+def test_unprojected_account_makes_total_incomplete(
+    model_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.connectors.sync_client import SyncClient
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+
+    def forbidden_broker(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("A report must not construct a broker client")
+
+    monkeypatch.setattr(SyncClient, "__init__", forbidden_broker)
+    _install_net_worth_sources(model_db)
+    _account(model_db, "visible", "Synthetic checking", "USD")
+    _balance(model_db, "visible", "2026-09-20", "100.00", "USD")
+    _home(model_db, "USD")
+    _rate(model_db, "USD", "USD", "2026-09-20", "1.00")
+    _install_report(model_db, "net_worth")
+    load(model_db, source())
+
+    result = get_report_catalog().execute(
+        model_db, report_id="core:net_worth", parameters={}, limit=10
+    )
+
+    assert result.records[0]["unpriced_currency_count"] == 0
+    assert result.records[0]["net_worth"] == Decimal("100.00")
+    summary = result.to_envelope().to_dict()["summary"]
+    coverage = summary.get("sync_completeness")
+    assert coverage is not None, (
+        "A fully priced visible subtotal must disclose the missing source account"
+    )
+    assert coverage["complete"] is False
+    assert any(r["kind"] == "unresolved_identity" for r in coverage["reasons"])
+    assert result.degraded is True
+    assert "native-connection" not in result.to_envelope().to_json()
+
+
+def test_profile_without_sync_evidence_has_no_source_completeness_claim(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "visible", "Synthetic checking", "USD")
+    _balance(model_db, "visible", "2026-09-20", "100.00", "USD")
+    _home(model_db, "USD")
+    _rate(model_db, "USD", "USD", "2026-09-20", "1.00")
+    _install_report(model_db, "net_worth")
+
+    result = get_report_catalog().execute(
+        model_db, report_id="core:net_worth", parameters={}, limit=10
+    )
+
+    assert "sync_completeness" not in result.to_envelope().to_dict()["summary"]
+    assert result.degraded is False
+
+
 def _run(db: Database, rq: ReportQuery) -> list[dict[str, object]]:
     """Execute a runner's query and return rows as name-keyed dicts."""
     params = rq.params
@@ -668,3 +721,127 @@ def test_net_worth_runner_mirrors_declared_column_order(model_db: Database) -> N
         limit=100,
     )
     assert bucketed.columns == declared
+
+
+def test_balance_drift_without_sync_evidence_preserves_existing_contract(
+    model_db: Database,
+) -> None:
+    _install_balance_drift(model_db)
+
+    result = get_report_catalog().execute(
+        model_db,
+        report_id="core:balance_drift",
+        parameters={"account": "Beta"},
+        limit=10,
+    )
+
+    assert len(result.records) == 1
+    assert result.records[0]["account_id"] == "A2"
+    assert "sync_completeness" not in result.to_envelope().to_dict()["summary"]
+
+
+@pytest.mark.parametrize("name", ["net_worth_accounts", "net_worth_currencies"])
+def test_net_worth_variants_disclose_unprojected_scope(
+    model_db: Database, name: str
+) -> None:
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+
+    _install_net_worth_sources(model_db)
+    _account(model_db, "visible", "Synthetic checking", "USD")
+    _balance(model_db, "visible", "2026-09-20", "100.00", "USD")
+    _install_report(model_db, name)
+    load(model_db, source())
+
+    result = get_report_catalog().execute(
+        model_db, report_id=f"core:{name}", parameters={}, limit=10
+    )
+
+    assert result.records
+    coverage = result.to_envelope().to_dict()["summary"]["sync_completeness"]
+    assert coverage["complete"] is False
+    assert "unresolved_identity" in {reason["kind"] for reason in coverage["reasons"]}
+
+
+def test_source_metadata_survives_fx_fallback_drift_and_truncation(
+    model_db: Database,
+) -> None:
+    from moneybin.reports._framework.catalog import ReportCatalog, ReportStatus
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+
+    _install_net_worth_sources(model_db)
+    _account(model_db, "visible-usd", "Synthetic USD", "USD")
+    _account(model_db, "visible-eur", "Synthetic EUR", "EUR")
+    _balance(model_db, "visible-usd", "2026-09-20", "100.00", "USD")
+    _balance(model_db, "visible-eur", "2026-09-20", "200.00", "EUR")
+    _install_report(model_db, "net_worth_accounts")
+    load(model_db, source())
+    spec = get_report_catalog().resolve("core:net_worth_accounts")
+    catalog = ReportCatalog(
+        [spec],
+        status={
+            spec.report_id: ReportStatus(
+                degraded=True, degraded_reason="Synthetic saved definition drift"
+            )
+        },
+    )
+
+    result = catalog.execute(
+        model_db,
+        report_id=spec.report_id,
+        parameters={},
+        display_currency="GBP",
+        limit=1,
+    )
+
+    assert len(result.records) == 1
+    assert result.truncated is True
+    assert result.degraded is True
+    assert result.degraded_reason is not None
+    assert "Synthetic saved definition drift" in result.degraded_reason
+    assert "unresolved_identity" in result.degraded_reason
+    assert "no stored" in result.degraded_reason and "GBP" in result.degraded_reason
+    assert (
+        result.to_envelope().to_dict()["summary"]["sync_completeness"]["complete"]
+        is False
+    )
+
+
+def test_balance_drift_resolved_filter_excludes_unrelated_held_scope(
+    model_db: Database,
+) -> None:
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+    from tests.moneybin.test_services.test_sync_completeness import (
+        _bind,  # pyright: ignore[reportPrivateUsage]
+        _history,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    data = source()
+    data.batches.extend(
+        source(batch=2, account_changes={"id": "held", "balance": "100.001"}).batches
+    )
+    data.history = _history(2)
+    data.history.accounts.append(
+        data.history.accounts[0].model_copy(update={"account_id": "held"})
+    )
+    load(model_db, data)
+    _bind(model_db, canonical_id="selected")
+    _bind(model_db, "held", "unrelated")
+    model_db.execute("""UPDATE core.dim_accounts SET display_name = 'Selected account'
+        WHERE account_id = 'selected'""")
+    model_db.execute("""INSERT INTO app.balance_assertions
+        (account_id, assertion_date, balance)
+        VALUES ('selected', DATE '2026-09-20', 100.25)""")
+    _install_report(model_db, "balance_drift")
+
+    result = get_report_catalog().execute(
+        model_db,
+        report_id="core:balance_drift",
+        parameters={"account": "Selected account"},
+        limit=10,
+    )
+
+    assert len(result.records) == 1
+    assert result.records[0]["account_id"] == "selected"
+    coverage = result.to_envelope().to_dict()["summary"]["sync_completeness"]
+    assert coverage["complete"] is True
+    assert coverage["reasons"] == []

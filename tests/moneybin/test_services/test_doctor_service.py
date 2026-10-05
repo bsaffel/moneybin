@@ -899,8 +899,12 @@ def test_run_all_returns_expected_invariants(
     # + investment_match_decisions audit coverage for durable review Proposals.
     # + account_archive_intent_ambiguous (M2B.2: cascade-written exclusions
     # V063 could not tell from a chosen one).
-    assert len(report.invariants) == 64
+    # + sync_completeness + sync_health + net_worth_stale_balance (MB-86).
+    assert len(report.invariants) == 67
     names = [r.name for r in report.invariants]
+    assert "sync_completeness" in names
+    assert "sync_health" in names
+    assert "net_worth_stale_balance" in names
     assert "app_audit_coverage_investment_match_decisions" in names
     assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names

@@ -495,12 +495,70 @@ and stale balances. A successful network call with an old provider timestamp is
 still stale. Reuse the balance-freshness policy already used by reports; broker
 unreachability is reported as unknown current health, not a cached active claim.
 
+The three built-in net-worth reports and `core:balance_drift` attach typed
+`summary.sync_completeness` for their resolved account scope. This is local
+SimpleFIN evidence, including unprojected native accounts and zero-batch
+receipts; it is not a claim about every provider, all historical activity, or
+agreement with statements. Absent evidence omits the attachment. Arbitrary
+saved SQL does not infer an account universe or acquire a completeness claim.
+Existing FX, duplicate-transaction, saved-definition drift and truncation
+disclosures remain independent and are preserved alongside attached metadata.
+
+Each reason identifies its diagnostic `kind` (separate from UserError codes)
+and reports `affected_account_count` (unique resolved targets after
+account filters) and `unresolved_scope_count` (unbound scopes).
+`affected_account_ids` is always empty: accepted links can target legacy native
+IDs, and the database does not persist evidence that an ID was minted by
+MoneyBin. These diagnostics therefore withhold all IDs rather than guess from
+their shape. This costs direct account targeting; existing account and review
+surfaces remain the place to resolve the reported gaps.
+
+Source outcomes determine scoped retrieval failures; a whole-job partial result
+does not taint an explicitly complete source or an excluded account. Without
+source outcomes the terminal receipt remains conservative unknown-scope
+evidence. History uses credential generation and broker observation time;
+confirmed acknowledgements supplement immutable pre-ack receipts without
+rewriting them. Missing account history remains unknown, and successful fetches
+do not discharge an initial history target. No source-level ignore or inferred
+sign-verification state is introduced.
+
+Scoped local errors that skipped Raw children (malformed transactions, missing
+transaction identity or duplicate account/transaction identity) remain holds
+until a strictly newer complete outcome covers the same native scope and the
+entire held UTC window without another scoped skipped-child error. Unrelated
+scopes or windows cannot clear them; missing windows remain conservative.
+These local holds survive credential replacement: all retained receipts remain
+evidence, while broker history and retrieval status use the current generation.
+Balance validation uses the latest revision per source, account and provider
+balance instant before eligibility filtering. A newer observation at another
+instant cannot clear an older malformed correction; a valid correction at the
+same instant can. Invalid or missing instants remain a separate unresolved
+NULL grain.
+
+Warehouse freshness also scans `raw.simplefin_sync_receipts.loaded_at` as an
+explicit operational input consumed by `SyncCompletenessService`. A new
+zero-batch receipt therefore makes an already-built warehouse pending until a
+refresh, while replaying an immutable receipt does not. This declaration is
+separate from the exact registry of Raw tables read by SQLMesh models; local
+landing time is used only for refresh freshness, never provider chronology.
+
 Reuse sync duration/outcome/row-count metrics with bounded provider/status labels.
 Add counters for claim outcomes, deferred requests and partial scopes only where
 the existing registry lacks coverage. No per-account, per-user, token, host or
 connection labels. Broker metrics cover upstream operations; client metrics
 cover durable ingestion and refresh, so a transform failure is distinguishable
 from a fetch failure.
+
+Client counters are `moneybin_sync_ingestion_outcomes_total` (committed/failed),
+`moneybin_sync_refresh_outcomes_total` (complete/failed), and
+`moneybin_sync_partial_scopes_total` (partial/failed/deferred), each with bounded
+provider/status labels. Ingestion and partial-scope counters publish after the
+new job's database commit, before acknowledgement/setup/refresh. Failed
+ingestion attempts count separately. Replayed or recovered committed jobs do
+not count another ingestion or partial-scope event; an actual retried refresh
+does count its outcome. These process metrics are not an exactly-once durable
+audit: a process crash between database commit and metric publication can lose
+an increment. Raw receipts remain the audit evidence.
 
 ## Disconnect, limits, and verification
 

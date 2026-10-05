@@ -67,3 +67,68 @@ def test_balance_revision_return_and_immutable_tie_use_broker_order(
         "SELECT balance FROM core.fct_balances WHERE source_type='simplefin'"
     ).fetchall() == [(Decimal("100.25"),)]
     assert db.execute("SELECT count(*) FROM raw.simplefin_balances").fetchone() == (3,)
+
+
+def test_historical_report_retains_malformed_balance_correction(db: Database) -> None:
+    from moneybin.reports._framework.catalog import get_report_catalog
+    from moneybin.services.transform_service import TransformService
+    from tests.moneybin.test_services.test_sync_completeness import (
+        _history,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    original_instant = 1789862400
+    for number, amount, instant in (
+        (1, "100.00", original_instant),
+        (2, "not-money", original_instant),
+        (3, "125.00", original_instant + 3 * 86400),
+    ):
+        data = source(
+            batch=number,
+            day=number,
+            account_changes={
+                "balance": amount,
+                "balance-date": instant,
+                "transactions": [],
+            },
+        )
+        data.history = _history(number)
+        load(db, data, job=number, day=number)
+    bind_account(db)
+    materialize(db)
+    parameters = {"from_date": "2026-09-20", "to_date": "2026-09-20"}
+
+    result = get_report_catalog().execute(
+        db,
+        report_id="core:net_worth_accounts",
+        parameters=parameters,
+        limit=10,
+    )
+
+    assert result.records[0]["account_balance"] == Decimal("100.00")
+    coverage = result.to_envelope().to_dict()["summary"]["sync_completeness"]
+    assert coverage["complete"] is False
+    assert "invalid_observation" in {reason["kind"] for reason in coverage["reasons"]}
+
+    correction = source(
+        batch=4,
+        day=4,
+        account_changes={
+            "balance": "105.00",
+            "balance-date": original_instant,
+            "transactions": [],
+        },
+    )
+    correction.history = _history(4)
+    load(db, correction, job=4, day=4)
+    TransformService(db).restate_models(["core.fct_balances_daily"])
+    corrected = get_report_catalog().execute(
+        db,
+        report_id="core:net_worth_accounts",
+        parameters=parameters,
+        limit=10,
+    )
+    assert corrected.records[0]["account_balance"] == Decimal("105.00")
+    assert (
+        corrected.to_envelope().to_dict()["summary"]["sync_completeness"]["complete"]
+        is True
+    )

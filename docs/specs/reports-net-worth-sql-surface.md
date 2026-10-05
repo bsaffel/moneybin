@@ -1633,6 +1633,18 @@ keeps its full prior row state indefinitely.
 
 ### `moneybin system doctor`: balance staleness — `M2B.3`
 
+The shared 30-day warning and setting are implemented by the SimpleFIN
+completeness work, reading observed rows from `core.fct_balances_daily` (the
+input to `reports.net_worth_accounts`) with current inclusion/archive settings.
+This closes only the balance-age check; the unanchored-account guard and the
+rest of `M2B.3` remain separate work.
+
+The implemented warning reports the affected-account count with empty
+`affected_ids`. Accepted account links can target legacy native IDs, and no
+persisted mint provenance distinguishes them from opaque MoneyBin IDs. The
+count preserves diagnosis without disclosing those identifiers; direct
+account targeting requires the existing account surfaces.
+
 Requirement 14 defers this check to the same work item as the unanchored-account
 guard rather than stating its shape there. This is that shape, specified at the
 same level of detail as Requirement 5's rate-window bound and Requirement 7's
@@ -2301,8 +2313,8 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
   (`reports.net_worth_accounts.is_observed = TRUE`) is 45 days before
   `CURRENT_DATE` — old enough that `core.fct_balances_daily`'s spine ends
   more than a threshold-length ago and no row is dated `CURRENT_DATE` at
-  all — asserts `net_worth_stale_balance` returns one `warn` entry per
-  stale account, `affected_ids` naming every one. This is the regression
+  all — asserts `net_worth_stale_balance` returns a `warn` with the exact
+  stale-account count and empty `affected_ids`. This is the regression
   §"`moneybin system doctor`: balance staleness" names directly: a check
   written against a shared `balance_date = CURRENT_DATE` filter instead of
   each account's own latest row finds nothing and passes silently on this

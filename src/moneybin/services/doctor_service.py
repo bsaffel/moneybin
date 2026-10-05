@@ -14,7 +14,7 @@ from sqlglot import exp
 from moneybin.audits import recipes as recipe_registry
 from moneybin.audits.runner import run_standalone_audits
 from moneybin.config import get_settings
-from moneybin.database import Database
+from moneybin.database import Database, has_column
 from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.account_identity import (
     UNNAMED_ACCOUNT_LABEL,
@@ -54,6 +54,7 @@ from moneybin.tables import (
     DIM_SECURITIES,
     EXCHANGE_RATE_OVERRIDES,
     FCT_BALANCES,
+    FCT_BALANCES_DAILY,
     FCT_EXCHANGE_RATES_DAILY,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
@@ -638,10 +639,164 @@ class DoctorService:
             *app_integrity,
             orphan_app_state,
             archive_intent,
+            self._run_sync_completeness(),
+            self._run_sync_health(),
+            self._run_net_worth_stale_balance(),
             *investment_checks,
         ]
         invariants = [self._apply_recipe(r) for r in raw_invariants]
         return DoctorReport(invariants=invariants, transaction_count=transaction_count)
+
+    def _run_sync_completeness(self) -> InvariantResult:
+        from moneybin.services.sync_completeness import SyncCompletenessService
+
+        name = "sync_completeness"
+        actions = [
+            RecoveryAction(
+                tool="sync_status",
+                arguments={},
+                rationale="Inspect local source coverage and resolve account setup or pending reviews.",
+                confidence="suggested",
+                idempotent=True,
+            )
+        ]
+        try:
+            result = SyncCompletenessService(self._db).assess()
+        except Exception:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail="Local sync coverage is unknown; evidence could not be read.",
+                affected_ids=[],
+                recovery_actions=actions,
+            )
+        if not result.applicable:
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail="No local sync evidence.",
+                affected_ids=[],
+            )
+        if result.complete:
+            return InvariantResult(
+                name=name,
+                status="pass",
+                detail="No known gaps in local sync evidence.",
+                affected_ids=[],
+            )
+        return InvariantResult(
+            name=name,
+            status="warn",
+            detail="Local sync coverage is incomplete: "
+            + "; ".join(
+                f"{reason.kind} ({reason.affected_account_count} affected accounts, "
+                f"{reason.unresolved_scope_count} unresolved scopes)"
+                for reason in result.reasons
+            ),
+            affected_ids=[],
+            recovery_actions=actions,
+        )
+
+    def _run_sync_health(self) -> InvariantResult:
+        from moneybin.connectors.sync_client import SyncClient
+
+        name = "sync_health"
+        settings = get_settings()
+        if not settings.sync.server_url:
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail="Sync is not configured.",
+                affected_ids=[],
+            )
+        actions = [
+            RecoveryAction(
+                tool="sync_status",
+                arguments={},
+                rationale="Check the configured broker connection and existing login session, then rerun doctor.",
+                confidence="suggested",
+                idempotent=True,
+            )
+        ]
+        # Diagnostics must neither create a broker identity nor launch login.
+        try:
+            profile_id = (settings.profile_dir / "profile_id").read_text().strip()
+            if not profile_id:
+                raise ValueError("No existing sync profile identity")
+            institutions = SyncClient(
+                settings.sync.server_url, profile_id=profile_id
+            ).list_institutions()
+        except Exception:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail="Current broker health is unknown; the configured session could not be read.",
+                affected_ids=[],
+                recovery_actions=actions,
+            )
+        if any(item.status != "active" for item in institutions):
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail="The broker reports unavailable or revoked connections.",
+                affected_ids=[],
+                recovery_actions=actions,
+            )
+        return InvariantResult(
+            name=name,
+            status="pass",
+            detail="Broker connection listing is reachable; local history coverage is checked separately.",
+            affected_ids=[],
+        )
+
+    def _run_net_worth_stale_balance(self) -> InvariantResult:
+        name = "net_worth_stale_balance"
+        if not has_column(self._db, FCT_BALANCES_DAILY, "is_observed"):
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail="Balance observations have not been transformed.",
+                affected_ids=[],
+            )
+        threshold = get_settings().doctor.balance_staleness_threshold_days
+        try:
+            rows = self._db.execute(
+                f"""SELECT b.account_id
+                    FROM {FCT_BALANCES_DAILY.full_name} AS b
+                    JOIN {DIM_ACCOUNTS.full_name} AS a USING (account_id)
+                    LEFT JOIN {ACCOUNT_SETTINGS.full_name} AS s USING (account_id)
+                    WHERE b.is_observed
+                        AND COALESCE(s.include_in_net_worth, a.include_in_net_worth, TRUE)
+                        AND NOT COALESCE(s.archived, a.archived, FALSE)
+                    GROUP BY b.account_id
+                    HAVING CURRENT_DATE - MAX(b.balance_date) > ?
+                    ORDER BY b.account_id""",  # trusted TableRefs; threshold bound
+                [threshold],
+            ).fetchall()
+        except Exception:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail="Balance observation age is unknown; local evidence could not be read.",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=f"{len(rows)} included accounts have balance observations older than {threshold} days; their values remain in totals.",
+                affected_ids=[],
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="sync_pull",
+                        arguments={},
+                        rationale="Refresh the source or import a newer statement, then refresh local reports.",
+                        confidence="suggested",
+                        idempotent=False,
+                    )
+                ],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _apply_recipe(self, result: InvariantResult) -> InvariantResult:
         """Populate ``recovery_actions`` from the recipe registry, if a recipe exists.
