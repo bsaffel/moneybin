@@ -33,6 +33,8 @@ from moneybin.audits.recipes import (
     orphan_app_state,
     registry,
 )
+from moneybin.database import Database
+from moneybin.mcp.tools.accounts import accounts_set
 from moneybin.mcp.tools.import_tools import import_revert_coarse
 from moneybin.mcp.tools.refresh import refresh_run
 from moneybin.mcp.tools.system import system_status_coarse
@@ -48,6 +50,7 @@ _TOOLS: dict[str, Callable[..., Any]] = {
     "refresh_run": refresh_run,
     "system_status": system_status_coarse,
     "import_revert": import_revert_coarse,
+    "accounts_set": accounts_set,
 }
 
 
@@ -215,46 +218,90 @@ def test_dedup_reconciliation_requests_full_doctor_detail() -> None:
     }
 
 
-def test_source_overlap_offers_only_a_remedy_that_clears_it() -> None:
-    """Every offered action must be able to end the state it is offered for.
+def _seed_overlap(db: Database, account_id: str) -> None:
+    """Two manual trades and three Plaid trades on one resolved account."""
+    db.execute(
+        """
+        INSERT INTO app.account_links (
+            link_id, account_id, ref_kind, ref_value, source_type,
+            source_origin, status, decided_by, decided_at
+        ) VALUES ('link_native', ?, 'source_native', 'native_x', 'plaid', 'item',
+                  'accepted', 'user', CURRENT_TIMESTAMP)
+        """,
+        [account_id],
+    )
+    for n, day in enumerate(("2019-03-04", "2025-11-21")):
+        db.execute(
+            """
+            INSERT INTO raw.manual_investment_transactions (
+                source_transaction_id, import_id, account_id, type, trade_date,
+                created_by
+            ) VALUES (?, 'manual_import', ?, 'buy', ?::DATE, 'cli')
+            """,
+            [f"m{n}", account_id, day],
+        )
+    for n, day in enumerate(("2024-09-03", "2025-01-15", "2026-09-30")):
+        db.execute(
+            """
+            INSERT INTO raw.plaid_investment_transactions (
+                investment_transaction_id, account_id, transaction_date,
+                amount, observation_version, source_origin
+            ) VALUES (?, 'native_x', ?::DATE, 100, 'v1', 'item')
+            """,
+            [f"p{n}", day],
+        )
+        db.execute(
+            """
+            INSERT INTO raw.plaid_investment_transaction_receipts (
+                investment_transaction_id, source_origin, source_file,
+                observation_version, ingestion_sequence, extracted_at
+            ) VALUES (?, 'item', 'sync_1', 'v1', 1, '2026-01-02')
+            """,
+            [f"p{n}"],
+        )
 
-    ``sync_disconnect`` cannot. It is a remote operation — ``SyncService.
-    disconnect_confirmed`` calls ``client.disconnect`` and deletes nothing
-    locally, and the tool's own confirmation says "Previously pulled local rows
-    remain". Both readers of the overlap keep reading exactly those rows: the
-    check joins ``raw.plaid_investment_transactions``, and
-    ``core.dim_holdings``'s ``source_overlap_accounts`` counts the ledger they
-    feed. A user who followed it would permanently lose the connection AND keep
-    the failing check and the withheld holdings.
 
-    ``import_revert`` really does clear it: ``REVERT_TABLES['manual']`` includes
-    ``raw.manual_investment_transactions``, so the batch's rows are deleted and
-    the account is left with one ledger.
-    """
+def test_source_overlap_offers_one_choice_per_source(db: Database) -> None:
+    """The remedy is a choice only the user can make, so both are suggested."""
+    _seed_overlap(db, "acc_choice")
+
     actions = investment_source_overlap.recipe(
-        ["acc_1"], registry.RecipeContext(db=None)
+        ["account:acc_choice"], registry.RecipeContext(db=db)
     )
 
-    assert [a.tool for a in actions] == ["import_revert"]
-    assert all(a.confidence == "suggested" for a in actions)
-    assert not any(a.idempotent for a in actions)
-    (revert,) = actions
-    # The audit carries account ids, not an import_id, so the missing argument
-    # is named in the rationale rather than guessed.
-    assert "import_id" not in revert.arguments
-    assert "import_id" in revert.rationale
+    assert [a.tool for a in actions] == ["accounts_set", "accounts_set"]
+    assert all(a.confidence == "suggested" and a.idempotent for a in actions)
+    assert [a.arguments for a in actions] == [
+        {"account_id": "acc_choice", "investment_source_type": "manual"},
+        {"account_id": "acc_choice", "investment_source_type": "plaid"},
+    ]
+    # sig.bind against accounts_set joins this test when the tool gains its
+    # investment_source_type parameter (Task 9).
+    for action in actions:
+        assert "import_revert" not in action.rationale
+        assert "nothing is deleted" in action.rationale
+        # Both sides' counts and ranges ride in every rationale.
+        assert "2 trades, 2019-03-04 → 2025-11-21" in action.rationale
+        assert "3 trades, 2024-09-03 → 2026-09-30" in action.rationale
 
 
-def test_source_overlap_says_a_disconnect_does_not_clear_it() -> None:
-    """Dropping the action must not drop the fact a user needs to act on.
+def test_source_overlap_recipe_uses_a_placeholder_for_an_altered_id(
+    db: Database,
+) -> None:
+    """A 5+ digit id masks, and a masked id names no account, so it is a placeholder."""
+    _seed_overlap(db, "acct-55551234")
 
-    Someone whose file import is the ledger they want will reach for
-    ``sync_disconnect`` on their own. The remedy prose is where they find out
-    that it stops future pulls without removing the rows already pulled — the
-    one thing that keeps this check red.
-    """
-    (revert,) = investment_source_overlap.recipe(
-        ["acc_1"], registry.RecipeContext(db=None)
+    actions = investment_source_overlap.recipe([], registry.RecipeContext(db=db))
+
+    assert actions
+    for action in actions:
+        assert action.arguments["account_id"] == "<account_id>"
+        assert "moneybin accounts list" in action.rationale
+        assert "55551234" not in action.rationale
+
+
+def test_source_overlap_recipe_without_a_database_is_empty() -> None:
+    assert (
+        investment_source_overlap.recipe(["acc_1"], registry.RecipeContext(db=None))
+        == []
     )
-
-    assert "sync_disconnect" in revert.rationale

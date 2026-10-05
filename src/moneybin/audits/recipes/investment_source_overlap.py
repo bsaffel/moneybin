@@ -1,61 +1,76 @@
 """Recipe for the ``investment_source_overlap`` audit (fail).
 
-One investment account fed by two sources at once has no single ledger: the
-imported rows and the synced rows interleave, so lots double-count and cost
-basis mixes two accountings. ``core.dim_holdings`` withholds every figure for
-such a position (``valuation_status = 'source_overlap'``), and nothing the
-pipeline can re-run will clear it — the fix is to remove one of the two feeds.
+One investment account fed by two sources at once has no single ledger, so
+``core.dim_holdings`` withholds every figure for it. The remedy is a choice
+only the user can make: which history to keep. One ``accounts_set`` action per
+source present, both ``suggested`` (design-principles.md, "Magic stays
+visible"); each rationale carries that source's trade count and date range
+instead of a recommendation. Choosing deletes nothing, and clearing the
+setting restores both histories (investment-source-choice.md).
 
-**One action, because MoneyBin can only remove one of the two feeds.**
-``import_revert`` deletes the batch's rows outright
-(``REVERT_TABLES['manual']`` covers ``raw.manual_investment_transactions``), so
-the account is left with one ledger and both readers of the overlap go quiet.
-There is no counterpart for the synced feed: ``sync_disconnect`` is a remote
-operation — ``SyncService.disconnect_confirmed`` calls ``client.disconnect``
-and deletes nothing locally, which the tool's own confirmation states
-("Previously pulled local rows remain"). Both readers keep reading exactly
-those retained rows: this check joins ``raw.plaid_investment_transactions``,
-and ``dim_holdings``'s ``source_overlap_accounts`` counts the ledger they feed.
-Offered as a recovery it would cost a user their connection *permanently* and
-leave the check failing and the holdings withheld — worse than no suggestion,
-because a ``RecoveryAction`` is a claim that running it fixes the failure.
-
-The fact still has to reach the user, because someone whose file import is the
-ledger they want will reach for a disconnect on their own. It is named in the
-rationale below as a caveat rather than offered as an exit.
-
-The one action ships without the argument that identifies its target — the
-audit carries account ids, not an ``import_id`` — so it names its missing
-argument in the rationale, which is the shape ``RecoveryAction`` prescribes for
-a value unknown at construction time (``moneybin/errors.py``). Guessing it
-would be worse than leaving it out: the tool destroys state and is gated on a
-payload-bound confirmation that a wrong target would bind to the wrong rows.
+The audit's ``affected_ids`` are masked, so this recipe re-runs the detector
+for the raw ids. An id that masking or sanitizing would alter becomes the
+``<account_id>`` placeholder, the same rule ``_command_account_id`` applies to
+every published command.
 """
 
 from __future__ import annotations
 
 from moneybin.audits.recipes.registry import RecipeContext
 from moneybin.errors import RecoveryAction
+from moneybin.investments.source_overlap import (
+    evidence_phrase,
+    history_phrase,
+    investment_source_evidence,
+    investment_source_overlap,
+)
+
+_PLACEHOLDER = "<account_id>"
 
 
 def recipe(
-    affected_ids: list[str],  # the remedy is per-source, not per-account
-    context: RecipeContext,  # pure recipe
+    affected_ids: list[str],  # masked; the recipe re-queries for raw ids
+    context: RecipeContext,
 ) -> list[RecoveryAction]:
-    """Emit the one remedy that can leave a single ledger on the account."""
-    return [
-        RecoveryAction(
-            tool="import_revert",
-            arguments={},
-            rationale=(
-                "Drop the imported investment batch that duplicates the synced "
-                "ledger. Supply import_id — read it from import_status; this "
-                "deletes the only copy of those rows and has no undo. Keeping "
-                "the import instead is not yet a remedy MoneyBin can run: "
-                "sync_disconnect stops future pulls but leaves every row "
-                "already pulled, which is what this check reads."
-            ),
-            confidence="suggested",
-            idempotent=False,
-        ),
-    ]
+    """Offer one source choice per source present on each overlapping account."""
+    if context.db is None:
+        return []
+    # Lazy: doctor_service imports the recipe registry at module load.
+    from moneybin.services.doctor_service import (
+        _command_account_id,  # pyright: ignore[reportPrivateUsage]  # one placeholder rule for every published command
+    )
+
+    accounts = investment_source_overlap(context.db)
+    evidence = investment_source_evidence(context.db, accounts)
+    actions: list[RecoveryAction] = []
+    for account_id in accounts:
+        sources = evidence.get(account_id, [])
+        command_id = _command_account_id(account_id, _PLACEHOLDER)
+        for keep in sources:
+            others = [e for e in sources if e.source_type != keep.source_type]
+            ignored = "; ".join(
+                f"{history_phrase(o.source_type)} ({evidence_phrase(o)})"
+                for o in others
+            )
+            rationale = (
+                f"keeping {history_phrase(keep.source_type)} "
+                f"({evidence_phrase(keep)}) and ignoring {ignored}; nothing is "
+                "deleted and clearing the setting restores both"
+            )
+            if command_id == _PLACEHOLDER:
+                rationale += (
+                    ". Supply account_id — read it from `moneybin accounts list`"
+                )
+            actions.append(
+                RecoveryAction(
+                    tool="accounts_set",
+                    arguments={
+                        "account_id": command_id,
+                        "investment_source_type": keep.source_type,
+                    },
+                    rationale=rationale,
+                    confidence="suggested",
+                    idempotent=True,
+                )
+            )
+    return actions

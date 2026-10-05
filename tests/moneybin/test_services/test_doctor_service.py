@@ -1136,14 +1136,16 @@ def _investment_result(
 
 @pytest.mark.unit
 def test_staging_rejects_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__investment_transactions "
-        "(investment_transaction_id VARCHAR, review_reason VARCHAR)"
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
     )
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
-        "('itx_1', 'split_underivable'), ('itx_2', NULL)"
+        "('itx_1', 'acc1', 'split_underivable'), ('itx_2', 'acc1', NULL)"
     )
     result = _investment_result(db, monkeypatch, "investment_staging_rejects")
     assert result.status == "warn"
@@ -1154,21 +1156,113 @@ def test_staging_rejects_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
 def test_staging_rejects_pass_when_no_review_reasons(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__investment_transactions "
-        "(investment_transaction_id VARCHAR, review_reason VARCHAR)"
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
     )
     db.execute(
-        "INSERT INTO prep.stg_plaid__investment_transactions VALUES ('itx_1', NULL)"
+        "INSERT INTO prep.stg_plaid__investment_transactions "
+        "VALUES ('itx_1', 'acc1', NULL)"
     )
     result = _investment_result(db, monkeypatch, "investment_staging_rejects")
     assert result.status == "pass"
     assert result.affected_ids == []
 
 
+def _seed_choice_account(db: Database, account_id: str, choice: str | None) -> None:
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, investment_source_type) "
+        "VALUES (?, ?)",
+        [account_id, choice],
+    )
+
+
+@pytest.mark.unit
+def test_staging_rejects_skip_a_manual_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plaid rows in an account choosing `manual` never reach its ledger."""
+    create_core_tables(db)
+    _seed_choice_account(db, "acc_manual", "manual")
+    _seed_choice_account(db, "acc_open", None)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_skip', 'acc_manual', 'split_underivable')"
+    )
+    skipped = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert skipped.status == "pass"
+
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_warn', 'acc_open', 'split_underivable')"
+    )
+    warned = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert warned.status == "warn"
+    assert warned.affected_ids == ["itx_warn"]
+
+
+@pytest.mark.unit
+def test_staging_rejects_still_warn_for_a_plaid_choice(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `plaid` choice keeps Plaid rows in the ledger, so their rejects count."""
+    create_core_tables(db)
+    _seed_choice_account(db, "acc_plaid", "plaid")
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc_plaid', 'split_underivable')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert result.status == "warn"
+
+
+@pytest.mark.unit
+def test_opening_lot_review_skips_a_manual_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_core_tables(db)
+    _seed_choice_account(db, "acc_manual", "manual")
+    _seed_choice_account(db, "acc_open", None)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__opening_lot_review "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__opening_lot_review VALUES "
+        "('acc_manual', 'sec1', 'k1', 'short_or_nonpositive')"
+    )
+    skipped = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert skipped.status == "pass"
+
+    db.execute(
+        "INSERT INTO prep.stg_plaid__opening_lot_review VALUES "
+        "('acc_open', 'sec2', 'k2', 'short_or_nonpositive')"
+    )
+    warned = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert warned.status == "warn"
+    assert warned.affected_ids == ["acc_open:sec2 (short_or_nonpositive)"]
+
+
 @pytest.mark.unit
 def test_opening_lot_review_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__opening_lot_review "
@@ -1195,6 +1289,7 @@ def test_opening_lot_review_unbound_security_shows_provider_key(
     stays addressable when the canonical id never resolved — the same
     fallback ``_run_investment_unreported_holdings`` already applies.
     """
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__opening_lot_review "
@@ -1286,6 +1381,7 @@ def test_opening_lot_review_pass_when_nothing_needs_review(
     life in. Without this, a query that silently matched everything would look
     identical to one that correctly matched nothing.
     """
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__opening_lot_review "
@@ -1552,13 +1648,95 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
     )
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "fail"
-    assert result.affected_ids == ["ACC1"]
+    assert result.affected_ids == ["account:ACC1"]
     assert result.recovery_actions is not None
-    # Only the action that can actually leave one ledger behind. A disconnect
-    # is a remote-only operation — the rows it already pulled stay local, and
-    # this check reads exactly those rows — so offering it would hand the user
-    # a permanent disconnection and an unchanged failure.
-    assert [a.tool for a in result.recovery_actions] == ["import_revert"]
+    # One choice per source present; none deletes anything.
+    assert [a.tool for a in result.recovery_actions] == ["accounts_set"] * 2
+    assert [a.arguments["investment_source_type"] for a in result.recovery_actions] == [
+        "manual",
+        "plaid",
+    ]
+
+
+def _seed_overlap_account(db: Database, account_id: str) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_transactions (
+            investment_transaction_id, account_id, transaction_date, amount,
+            observation_version, source_origin
+        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
+        """  # test input, not user data
+    )
+    db.execute("""
+        INSERT INTO raw.plaid_investment_transaction_receipts (
+            investment_transaction_id, source_origin, source_file,
+            observation_version, extracted_at
+        ) VALUES ('p1', 'item1', 'sync_fixture', 'plaid_fixture', '2026-01-01')
+    """)
+    db.execute(
+        """
+        INSERT INTO app.account_links (
+            link_id, account_id, ref_kind, ref_value, source_type, source_origin,
+            status, decided_by, decided_at
+        ) VALUES ('lnk1', ?, 'source_native', 'plaid_acc1', 'plaid', 'item1',
+                   'accepted', 'auto', CURRENT_TIMESTAMP)
+        """,  # test input, not user data
+        [account_id],
+    )
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, type, trade_date, created_by
+        ) VALUES ('manual_1', 'imp1', ?, 'buy', '2026-01-02', 'cli')
+        """,  # test input, not user data
+        [account_id],
+    )
+
+
+@pytest.mark.unit
+def test_source_overlap_masks_affected_ids(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An account-number-shaped id reaches affected_ids masked, never raw."""
+    _seed_overlap_account(db, "acct-55551234")
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:acct-****1234"]
+    assert "55551234" not in " ".join(result.affected_ids)
+
+
+@pytest.mark.unit
+def test_source_overlap_detail_names_the_setting(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_overlap_account(db, "ACC1")
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    detail = result.detail or ""
+    assert "investment-source-type" in detail
+    assert "deletes nothing" in detail
+    assert "Revert" not in detail
+    assert "1 account has" in detail
+
+
+@pytest.mark.unit
+def test_source_choice_gauge_reports_each_choice(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for account_id, choice in (("a1", "manual"), ("a2", "manual"), ("a3", "plaid")):
+        db.execute(
+            "INSERT INTO app.account_settings (account_id, investment_source_type) "
+            "VALUES (?, ?)",
+            [account_id, choice],
+        )
+    _investment_result(db, monkeypatch, "investment_source_overlap")
+    for source_type, expected in (("manual", 2.0), ("plaid", 1.0)):
+        assert (
+            REGISTRY.get_sample_value(
+                "moneybin_investment_source_choice_accounts",
+                {"investment_source_type": source_type},
+            )
+            == expected
+        )
 
 
 def test_source_overlap_detects_holdings_before_bootstrap_transform(
@@ -1586,7 +1764,7 @@ def test_source_overlap_detects_holdings_before_bootstrap_transform(
     """)
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "fail"
-    assert result.affected_ids == ["ACC_HOLDINGS"]
+    assert result.affected_ids == ["account:ACC_HOLDINGS"]
     assert db.execute(
         "SELECT COUNT(*) FROM raw.plaid_investment_transactions"
     ).fetchone() == (0,)
