@@ -12,6 +12,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_SETTINGS
@@ -206,7 +208,22 @@ class AccountSettingsRepo(BaseRepo):
         that method's invariant: on a pre-V063, ``no_auto_upgrade=True``
         catalog there is no ``archived_at`` column to read, and the SELECT
         below would raise.
+
+        Refuses outright when the row being deleted holds an investment source
+        choice: the delete would drop ``investment_source_type_changed_at``
+        with the row, so ledger rows that re-enter would report their old
+        ``created_at`` and rewind an incremental reader's watermark.
         """
+        if row.get("investment_source_type") is not None:
+            raise UserError(
+                "Undoing this would delete the account's settings together with "
+                "its investment source choice.",
+                code=error_codes.RECOVERY_NO_PATH,
+                hint=(
+                    "Clear the choice instead: moneybin accounts set <account> "
+                    "--clear-investment-source-type"
+                ),
+            )
         if (
             row.get("archived") is True
             and "archived_at" not in row
@@ -253,6 +270,10 @@ class AccountSettingsRepo(BaseRepo):
         backfill into, and adding the key here would make the generic
         ``BaseRepo._insert_row`` (which inserts every key ``row`` holds) try
         to write a column that does not exist.
+
+        A re-inserted row that holds a source choice also gets a fresh
+        ``investment_source_type_changed_at``: its ledger rows re-enter the
+        ledger now, so the stored time must not be older than that.
         """
         if (
             row.get("archived") is True
@@ -260,7 +281,38 @@ class AccountSettingsRepo(BaseRepo):
             and self._archived_at_supported()
         ):
             row["archived_at"] = date.today().isoformat()
+        if (
+            row.get("investment_source_type") is not None
+            and "investment_source_type_changed_at" in self._live_columns()
+        ):
+            row["investment_source_type_changed_at"] = self._now().isoformat()
         super()._insert_row(row)
+
+    def _now(self) -> datetime:
+        return self._db.execute("SELECT NOW()::TIMESTAMP").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+
+    def _stamp_source_change(
+        self, *, before: dict[str, Any], locate: dict[str, Any]
+    ) -> None:
+        """Advance the change time when an undo moves ``investment_source_type``.
+
+        Undoing the setting changes the ledger's rows just as setting it did, so
+        the restored change time must move forward, never back to the old value
+        ``before`` carries. Mutates ``before`` in place: ``undo_event`` emits its
+        audit row from these same dicts (same reason as the archived_at paths).
+        """
+        if "investment_source_type_changed_at" not in self._live_columns():
+            return
+        if before.get("investment_source_type") == locate.get("investment_source_type"):
+            return
+        changed_at = self._now()
+        where, where_params = self._pk_where(locate)
+        self._db.execute(
+            f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
+            f"SET investment_source_type_changed_at = ? WHERE {where}",
+            [changed_at, *where_params],
+        )
+        before["investment_source_type_changed_at"] = changed_at.isoformat()
 
     def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
         """Restore, deriving ``archived_at`` when a legacy capture omits it.
@@ -315,6 +367,7 @@ class AccountSettingsRepo(BaseRepo):
         the key and takes the base-class path unchanged.
         """
         super()._restore_row(before=before, locate=locate)
+        self._stamp_source_change(before=before, locate=locate)
         if "archived_at" in before:
             return
         if not self._archived_at_supported():

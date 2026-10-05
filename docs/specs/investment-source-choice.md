@@ -252,6 +252,10 @@ setting changes the ledger just as setting it did. If the restate fails, the
 setting stays saved, and the error says so and names `moneybin refresh` as the
 retry. That matches how the cost-basis setting handles a failed restate.
 
+Undoing the account's first-ever settings write would delete the row and its
+change time with it, so that one undo is refused with `recovery_no_path` and
+names `--clear-investment-source-type`.
+
 ### Detection skips a chosen account
 
 `moneybin.investments.source_overlap.investment_source_overlap` excludes every
@@ -428,6 +432,7 @@ account labels, trade descriptions, or amounts.
 | set `manual` | clear | ledger is the union again; re-entered rows' `updated_at` ≥ the clear; doctor `fail` again |
 | set `plaid` | `investments add` | refused, `investment_source_excluded`, nothing written |
 | set `manual` | undo the set | restated; `investment_source_type_changed_at` advanced; overlap back |
+| set `manual` as the account's first-ever settings write | undo the set | refused, `recovery_no_path`, naming `--clear-investment-source-type`; nothing changes |
 | Manual trades + Plaid holdings only | doctor | `fail`; Plaid side reads "holdings snapshot, no trades" |
 | No overlap | set `plaid` up front | accepted; later recorded trades refused; later sync never warns |
 | Unknown value | `accounts set … --investment-source-type ofx` | `mutation_invalid_input` naming `manual`, `plaid` |
