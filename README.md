@@ -36,9 +36,8 @@ the ChatGPT desktop app, and other clients. Every surface reads the same tables.
 <!-- markdownlint-enable MD033 -->
 
 Local only. No telemetry. No vendor account for file import, the CLI, or SQL —
-the Plaid sync login and the Google Sheets authorization are the two opt-in
-exceptions. Account and routing numbers in
-typed fields leave the machine only as masked placeholders (`****1234`) — no
+broker-backed sync and Google Sheets authorization are opt-in network paths.
+Account and routing numbers in typed fields leave the machine only as masked placeholders (`****1234`) — no
 consent tier unlocks the real value, and what free text can carry is
 [documented](docs/guides/what-the-ai-sees.md), not hand-waved. Every one of
 those claims is verifiable in source — AGPL-3.0.

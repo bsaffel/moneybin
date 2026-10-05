@@ -1,4 +1,4 @@
-"""Public history keeps provenance while exposing only accepted local account refs."""
+"""Public history keeps coverage and labels without disclosing account targets."""
 
 import json
 from copy import deepcopy
@@ -64,7 +64,9 @@ def test_post_ack_public_history_does_not_rewrite_pre_ack_raw(db: Database) -> N
         "SELECT account_id FROM app.account_links WHERE source_type='simplefin' AND ref_kind='source_native'"
     ).fetchone()
     assert canonical is not None
-    assert row["history"]["accounts"][0]["account_id"] == canonical[0]
+    assert result.sources[0].history is not None
+    assert result.sources[0].history.accounts[0].account_id == canonical[0]
+    assert row["history"]["accounts"][0]["account_id"] is None
     assert row["history"]["accounts"][0]["history_target"] == "2026-07-01"
     assert payload.complete is False
     receipt = db.execute(
@@ -139,9 +141,11 @@ def test_status_scope_mapping_never_leaks_unresolved_native_identity(
     )
     client = _client(_envelope())
     client.list_institutions.return_value = [connection]
-    result = sync_status_envelope(
-        _service(db, client).list_connections(), actions=[]
-    ).to_dict()
+    connections = _service(db, client).list_connections()
+    assert connections[0].safe_history is not None
+    assert connections[0].safe_history.accounts[0].account_id == "canonical-account"
+    assert connections[0].safe_history.accounts[1].account_id is None
+    result = sync_status_envelope(connections, actions=[]).to_dict()
     encoded = json.dumps(result)
     assert "private-native" not in encoded and "credential.invalid" not in encoded
     assert "native-connection" not in encoded
@@ -151,7 +155,7 @@ def test_status_scope_mapping_never_leaks_unresolved_native_identity(
     assert row["provider_balance_at"] is None
     assert row["setup_state"] == "unknown" and row["refresh_state"] == "unknown"
     entries = row["history"]["accounts"]
-    assert entries[0]["account_id"] == "canonical-account"
+    assert entries[0]["account_id"] is None
     assert entries[1]["account_id"] is None
     assert entries[1]["display_name"] == "Unresolved account"
     assert entries[1]["history_target"] == "2026-07-01"

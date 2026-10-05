@@ -8,7 +8,8 @@ in-progress
 
 The mediated trust boundary and contributor-facing contract were approved on
 2026-10-01. The implementation plan was approved for subagent-driven execution.
-Implementation is in progress; non-author live acceptance remains open.
+Implementation and synthetic joint acceptance are locally verified. Final
+delivery review, deployment and non-author live acceptance remain open.
 
 ## Outcome and scope
 
@@ -313,6 +314,11 @@ The v1 fallback is weaker evidence and never authorizes automatic account mergin
 Duplicate/ambiguous native tuples in a response fail the affected scope instead
 of overwriting one another. Preserve original identifiers separately.
 
+Credential generation is receipt/checkpoint authorization, not an account or
+event identity component. A credential replacement retains stable source and
+transaction identity when the broker connection, pinned protocol and native
+scope are unchanged; it does not grant old receipts new-generation credit.
+
 Construct MoneyBin's source transaction reference from the framed tuple
 `(source_origin, native_account_id, native_transaction_id)` using a deterministic
 SHA-256 digest with a `simplefin_` prefix. Use the same reference throughout
@@ -337,6 +343,14 @@ A → B → A has three batch associations and two distinct content digests. The
 latest selector orders by broker `fetched_at`, then immutable `batch_id` and
 content digest for deterministic ties; the tie rule does not establish provider
 chronology. Reusing a batch ID with different immutable content is rejected.
+
+Both protocol versions derive display-ready institution labels with the shared
+account-number masker. Whitespace-only institution names become NULL. Original
+Account Sets, native scopes and account records remain unchanged. Historical
+observations missing a safe derived label remain NULL until a new observation
+arrives; replay does not backfill or mutate existing Raw rows. Account labels
+remain independent from institution labels, so a named account retains its own
+display name when institution evidence is absent.
 
 `raw.simplefin_sync_receipts` records one immutable job/connection observation,
 including zero-batch terminal failures or deferrals without fabricating a provider
@@ -459,11 +473,14 @@ acknowledgement, setup and refresh facts. The bounded
 `local_inspection_failed` code makes the outcome incomplete and directs local
 repair; a successful local inspection clears it. It never authorizes refetch.
 
-Public history uses accepted canonical account IDs and existing account display
-privacy. Unresolved accounts have null IDs and fixed labels, retaining each
-interval and target until local setup/review resolves identity. Public fields
-never contain provider-native identifiers or scopes. `scope_kind` identifies
-only the fixed general/connection/account outcome category. A pre-ack snapshot,
+Public history and outcomes retain the existing safe account display labels,
+coverage intervals/targets and bounded result codes. Their optional `account_id`
+is withheld as NULL because accepted bindings can target legacy native identifiers
+and do not prove safe minted-ID provenance. NULL alone is not an unresolved
+account signal. Internal accepted bindings still govern resolution/completion;
+public completion and recovery guidance convey the actual work remaining.
+`scope_kind` identifies only the fixed general/connection/account outcome
+category. A pre-ack snapshot,
 confirmed post-ack snapshot and current listing observation remain distinct;
 missing historical snapshots are unknown. Empty discovery still preserves an
 outstanding history target. Neither a fetched window nor a missing target
@@ -588,6 +605,7 @@ Setup documentation must identify the user's SimpleFIN subscription responsibili
 actual privacy route, supported account classes/protocol versions, historical
 coverage and daily cadence, required account review, reconnect behavior and
 disconnect-versus-revoke distinction. No guarantee of all institutions/history.
+See [SimpleFIN setup and recovery](../guides/data-import.md#simplefin-sync).
 
 | Verification group | Required evidence |
 |---|---|

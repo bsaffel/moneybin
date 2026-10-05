@@ -149,7 +149,8 @@ def _institution_label(native: dict[str, Any], payload: dict[str, Any]) -> str |
             if name is not None:
                 institutions.add(name)
         institution = next(iter(institutions)) if len(institutions) == 1 else None
-    return mask_embedded_account_number(institution.strip()) if institution else None
+    institution = institution.strip() if institution else None
+    return mask_embedded_account_number(institution) if institution else None
 
 
 class SimpleFINExtractor:
@@ -325,11 +326,7 @@ class SimpleFINExtractor:
                         if isinstance(record.get("name"), str)
                         else None
                     ),
-                    "institution_label": (
-                        _institution_label(native_scope, payload)
-                        if source.protocol_version == "2.0.0-draft"
-                        else None
-                    ),
+                    "institution_label": _institution_label(native_scope, payload),
                     "currency": _text(record.get("currency")),
                 })
                 balance, balance_error = _money(record.get("balance"))

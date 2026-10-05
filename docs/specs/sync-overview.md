@@ -16,9 +16,9 @@ Sync is MoneyBin's framework for pulling financial data from external providers 
 
 Three commitments, in order:
 
-1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The client never knows which aggregator backs a connection — that's a server implementation detail.
+1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The broker owns upstream requests and credentials; the client consumes the negotiated provider-tagged response for provider-native Raw ingestion.
 2. **Provider-specific raw schemas.** Each provider gets its own raw tables that preserve the provider's native data shape. No generic "sync schema" that forces every provider into a least-common-denominator format. The data warehouse layers (prep → core) handle homogenization through staging views and `UNION ALL`.
-3. **Financial-grade security.** E2E encryption is designed into the protocol from day one. v1 ships with TLS + encrypted-at-rest (acceptable baseline). v2 adds full zero-knowledge encryption where the server cannot read financial data, even under subpoena. The `EncryptionBackend` abstraction supports algorithm upgrades (X25519 → hybrid post-quantum) without protocol changes.
+3. **Financial-grade security.** Current broker contracts use JSON over TLS and encryption at rest; the broker can read credentials and financial payloads while processing them. Broker envelope `contract_version=2` adds provider batches and acknowledgement semantics, not E2E encryption. The E2E/`EncryptionBackend` material below remains the unimplemented Phase 3 design; its legacy “v2” labels describe that future encryption phase, not the current broker envelope version.
 
 ## Target users
 
@@ -57,7 +57,7 @@ Server behavior is documented in the moneybin-sync project. The client treats th
 - Staging views and core model integration per provider
 - Provider-specific testing strategies (e.g., Plaid Sandbox)
 
-These live in provider child specs: [`sync-plaid.md`](sync-plaid.md) (first provider), [SimpleFIN](sync-simplefin.md) (ready), future `sync-mx.md`, etc.
+These live in provider child specs: [`sync-plaid.md`](sync-plaid.md) (first provider), [SimpleFIN](sync-simplefin.md) (in-progress), future `sync-mx.md`, etc.
 
 ---
 
@@ -358,6 +358,11 @@ No additional sync-specific read tools are needed. Once data is pulled and trans
 
 ## E2E encryption design
 
+This is the unimplemented Phase 3 design. Its legacy “v2” labels describe a
+future encryption phase, separate from the current broker envelope
+`contract_version=2`, which uses JSON over TLS and encryption at rest while
+remaining readable by the broker.
+
 ### Threat model
 
 | Layer | Protects against | Limitation |
@@ -612,7 +617,7 @@ The client's response models in `src/moneybin/connectors/sync_models.py` are nam
 
 The names suggest provider-agnostic; the contents don't.
 
-**SimpleFIN decision.** [M1G.5](sync-simplefin.md) retains the mediated boundary and selects Option B with an explicitly negotiated broker envelope, provider-specific batches, and durable per-scope acknowledgement. Its detailed contract was approved on 2026-10-01; the code remains Plaid-shaped until that work lands.
+**SimpleFIN decision.** [M1G.5](sync-simplefin.md) retains the mediated boundary and selects Option B with an explicitly negotiated broker envelope, provider-specific batches, and durable per-scope acknowledgement. The implementation uses explicitly negotiated contract-v2 provider batches, provider-owned Raw ingestion and local completeness evidence; deployment and non-author live acceptance remain separate gates in the child spec.
 
 **Two paths when provider #2 lands.**
 
@@ -740,7 +745,7 @@ Phase 1 of this spec maps to **M1G — Plaid Transactions sync** in [`docs/roadm
 | Provider | Child spec | Status | Notes |
 |---|---|---|---|
 | Plaid | [`sync-plaid.md`](sync-plaid.md) | implemented | First provider. Transactions product shipped; investments is a separate implemented child. Liabilities remains a separate future child. |
-| SimpleFIN | [sync-simplefin.md](sync-simplefin.md) | Ready | M1G.5: mediated cash/credit sync, explicit protocol versions, bounded history and partial-data outcomes; Early Access acceptance required. |
+| SimpleFIN | [sync-simplefin.md](sync-simplefin.md) | In-progress | M1G.5: mediated cash/credit sync, pinned protocol versions, bounded history, durable acknowledgement and visible partial coverage; deployment and Early Access live acceptance remain open. |
 | MX | `sync-mx.md` | Planned | Enterprise-grade aggregator. Potential alternative to Plaid for hosted tier. |
 
 Adding a provider requires a child spec, the four artifacts from the

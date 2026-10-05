@@ -412,3 +412,103 @@ def test_shared_timestamps_keep_utc_naive_contract_in_non_utc_session(
         ).fetchone()
         == ("TIMESTAMP WITH TIME ZONE",) * 3
     )
+
+
+@pytest.mark.parametrize(
+    ("institution", "expected"),
+    [("Bank 12345", "Bank ****2345"), ("Bank 123456789012", "Bank ****9012")],
+)
+def test_v1_institution_masks_embedded_number_without_changing_raw(
+    db: Database, institution: str, expected: str
+) -> None:
+    data = source(
+        account_changes={
+            "name": "",
+            "org": {
+                "id": "synthetic-org",
+                "name": institution,
+                "sfin-url": "https://example.invalid/simplefin",
+            },
+        }
+    )
+    data.protocol_version = "1.0.7"
+    load(db, data)
+    assert db.execute(
+        "SELECT original_payload ->> '$.accounts[0].org.name' FROM raw.simplefin_responses"
+    ).fetchone() == (institution,)
+    assert db.execute(
+        "SELECT native_scope ->> '$.name', original_record ->> '$.org.name' FROM raw.simplefin_accounts"
+    ).fetchone() == (institution, institution)
+    account = SimpleFINExtractor(db).source_accounts(data)[0]
+    assert account.institution == expected
+    bind_account(db)
+    materialize(db)
+    assert db.execute(
+        "SELECT institution_name, institution_slug, display_name FROM core.dim_accounts WHERE account_id='canonical'"
+    ).fetchone() == (expected, expected, f"{expected} checking")
+
+
+@pytest.mark.parametrize("name", ["", " ", "\t\n"])
+def test_v2_whitespace_institution_is_null_without_changing_raw(
+    db: Database, name: str
+) -> None:
+    data = source(account_changes={"name": "Synthetic account"})
+    data.batches[0].payload["connections"] = [
+        {"conn_id": "native-connection", "name": name}
+    ]
+    load(db, data)
+    assert db.execute(
+        "SELECT original_payload ->> '$.connections[0].name' FROM raw.simplefin_responses"
+    ).fetchone() == (name,)
+    account = SimpleFINExtractor(db).source_accounts(data)[0]
+    assert account.institution is None
+    bind_account(db)
+    materialize(db)
+    assert db.execute(
+        "SELECT institution_name, institution_slug, display_name FROM core.dim_accounts WHERE account_id='canonical'"
+    ).fetchone() == (None, None, "Synthetic account")
+
+
+def test_legacy_v1_missing_safe_institution_label_does_not_fall_back_to_raw(
+    db: Database,
+) -> None:
+    import importlib
+
+    from tests.moneybin.migration_helpers import run_migration
+
+    db.execute("DROP TABLE raw.simplefin_accounts")
+    run_migration(
+        db,
+        importlib.import_module(
+            "moneybin.sql.migrations.V068__add_simplefin_raw"
+        ).migrate,
+    )
+    db.execute("""INSERT INTO raw.simplefin_accounts
+        (batch_id, source_origin, account_id, native_scope, identity_strength,
+         observation_version, original_record, fetched_at, source_file, name, currency)
+        VALUES ('00000000-0000-0000-0000-000000000001', 'legacy-origin', 'acct',
+            '{"id":"synthetic-org","name":"Bank 123456789012","sfin-url":"https://example.invalid/simplefin"}',
+            'strong', 'revision', '{"name":"Synthetic account","org":{"name":"Bank 123456789012"}}',
+            TIMESTAMPTZ '2026-09-21T00:00:00Z', 'old-batch', 'Synthetic account', 'USD')""")
+    for module in (
+        "moneybin.sql.migrations.V070__add_simplefin_account_label",
+        "moneybin.sql.migrations.V071__add_simplefin_institution_label",
+    ):
+        run_migration(db, importlib.import_module(module).migrate)
+    before = db.execute(
+        "SELECT native_scope, original_record, institution_label FROM raw.simplefin_accounts"
+    ).fetchall()
+    assert before[0][2] is None
+    bind_account(db)
+    materialize(db)
+    row = db.execute(
+        "SELECT institution_name, institution_slug, display_name FROM core.dim_accounts WHERE account_id='canonical'"
+    ).fetchone()
+    assert row is not None and row[:2] == (None, None)
+    assert "123456789012" not in str(row)
+    assert (
+        db.execute(
+            "SELECT native_scope, original_record, institution_label FROM raw.simplefin_accounts"
+        ).fetchall()
+        == before
+    )

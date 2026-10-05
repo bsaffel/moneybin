@@ -98,11 +98,22 @@ Plaid is the upstream banking provider. When you use sync:
 
 If "Plaid sees my transactions" is incompatible with your threat model, use file-based imports (OFX/QFX/QBO/CSV/PDF) only. MoneyBin opens no network connection on those paths. One caveat, and it is not a MoneyBin network call: when an **agent** drives a PDF import and the deterministic extractor can't crack the layout, MoneyBin hands the statement's verbatim text to that agent for parsing, and the MCP client forwards it to its model provider. Import from the CLI to avoid it entirely — see [PDF privacy posture](data-import.md#pdf-native-text).
 
+### SimpleFIN and the broker
+
+The SimpleFIN path sends the setup token to the broker-hosted claim page. The
+broker claims and stores the resulting Access URL encrypted at rest, then uses
+it to fetch Account Sets. Its operator can access the credential and financial
+payloads while processing them; local database encryption does not hide data
+from that operator. MoneyBin receives credential-free provider data from the
+broker and never needs the Access URL. Self-hosting changes who operates this
+boundary. Disconnect preserves local history and requires separate provider-side
+revocation in Bridge. See [setup and recovery](data-import.md#simplefin-sync).
+
 ### `moneybin-sync` (broker) compromise
 
-`moneybin-sync` is the thin broker that holds your Plaid `access_token` and runs sync pulls on your behalf. If you use a hosted broker, that operator sees:
+`moneybin-sync` is the broker that holds your Plaid `access_token` or SimpleFIN Access URL and runs sync pulls on your behalf. If you use a hosted broker, that operator sees:
 
-- Your long-lived Plaid `access_token` (stored server-side, encrypted at rest, but readable to anyone who controls the server).
+- Your long-lived Plaid `access_token` or SimpleFIN Access URL (stored server-side, encrypted at rest, but readable to anyone who controls the server).
 - Transaction payloads transiently during the pull, then in a short-TTL store until your client fetches them.
 
 See [Self-hosted moneybin-sync trust delta](#self-hosted-moneybin-sync-trust-delta) below for what self-hosting changes and what it doesn't, and the [server API contract](../reference/server-api-contract.md) for the data-flow table that maps which secret lives where.
@@ -201,7 +212,7 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 | OFX / QFX / QBO / CSV / PDF imports | None | Pure file path; never reads `sync.server_url`. An agent-driven PDF import can still egress *through the MCP client* when extraction escalates to the agent — outbound from the client, not from MoneyBin. See [PDF privacy posture](data-import.md#pdf-native-text). |
 | `moneybin mcp serve` startup / local tools | None | stdio JSON-RPC only; no listening port; no telemetry. Explicit connector tool calls follow the rows below. |
 | `moneybin db ...`, `moneybin transform apply`, `moneybin reports ...` | None | All local. |
-| `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — the user supplies the broker URL via env / config. Set to your self-hosted instance or to the hosted broker if you choose one. |
+| `moneybin sync ...` (Plaid/SimpleFIN paths) | `sync.server_url` only | Default is `None` — the user supplies the broker URL via env / config. Set to your self-hosted instance or to the hosted broker if you choose one. |
 | `moneybin gsheet ...` / `gsheet_*` | Google OAuth and Sheets APIs | Only when the user invokes the connector; credentials remain in `SecretStore`. |
 | `moneybin export bundle\|report --to sheets:<name>` / `export_run` | Google Sheets API | Only when the user explicitly selects a saved Sheets export destination; export data is written to its managed tabs. |
 | Categorization assist (MCP tool) | None | The LLM call originates in the MCP client process, not in MoneyBin. |

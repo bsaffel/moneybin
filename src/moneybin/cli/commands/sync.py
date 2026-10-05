@@ -867,7 +867,10 @@ def sync_pull(
         help="Repair local setup/reports without broker access; requires --job-id.",
     ),
     force: bool = typer.Option(
-        False, "--force", "-f", help="Reset cursor and re-fetch full history."
+        False,
+        "--force",
+        "-f",
+        help="Repeat provider retrieval: Plaid cursor reset; SimpleFIN bounded lookback.",
     ),
     refresh: bool = typer.Option(
         True,

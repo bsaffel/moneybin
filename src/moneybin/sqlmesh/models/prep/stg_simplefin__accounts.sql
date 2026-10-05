@@ -22,13 +22,7 @@ SELECT
   a.source_origin,
   a.observation_version,
   a.account_label,
-  CASE
-    WHEN (
-      a.native_scope ->> '$.conn_id'
-    ) IS NULL
-    THEN a.native_scope ->> '$.name'
-    ELSE a.institution_label
-  END AS institution_name,
+  a.institution_label AS institution_name,
   NULL::TEXT AS account_type,
   NULL::TEXT AS account_subtype,
   a.currency AS currency_code,

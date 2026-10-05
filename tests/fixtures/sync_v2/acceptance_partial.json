@@ -1,0 +1,31 @@
+{
+  "job_id": "78787878-7878-4878-8878-787878787878",
+  "contract_version": 2,
+  "status": "partial",
+  "sources": [{
+    "provider": "simplefin",
+    "connection_id": "34343434-3434-4434-8434-343434343434",
+    "credential_generation": 1,
+    "protocol_version": "2.0.0-draft",
+    "batches": [{
+      "batch_id": "90909090-9090-4090-8090-909090909090",
+      "fetched_at": "2026-10-01T11:00:00Z",
+      "window": {"start": "2026-07-03T00:00:00Z", "end": "2026-10-01T00:00:00Z"},
+      "payload": {
+        "errlist": [{"code": "act.missingdata", "msg": "Synthetic incomplete account evidence", "conn_id": "acceptance-native", "account_id": "credit"}],
+        "connections": [{"conn_id": "acceptance-native", "name": "Synthetic Acceptance Bank", "org_id": "synthetic-acceptance", "sfin_url": "https://example.invalid/simplefin"}],
+        "accounts": [
+          {"id": "cash", "conn_id": "acceptance-native", "name": "Synthetic Cash", "currency": "USD", "balance": "+100.0000", "available-balance": "95.00", "balance-date": 1788998400,
+           "transactions": [{"id": "cash-expense", "posted": 1788998400, "amount": "-20.00", "description": "Synthetic original expense", "pending": false, "extra": {"revision": "original"}}],
+           "extra": {"synthetic_optional_field": "preserved"}},
+          {"id": "credit", "conn_id": "acceptance-native", "name": "Synthetic Credit", "currency": "USD", "balance": "-50.00", "balance-date": 1788998400,
+           "transactions": [{"id": "credit-charge", "posted": 1788998400, "amount": "-50.00", "description": "Synthetic charge", "pending": false}]}
+        ]
+      }
+    }],
+    "outcomes": [
+      {"account_id": "cash", "native_scope": {"kind": "simplefin_v2_connection", "conn_id": "acceptance-native"}, "window": {"start": "2026-07-03T00:00:00Z", "end": "2026-10-01T00:00:00Z"}, "status": "complete", "error_code": null},
+      {"account_id": "credit", "native_scope": {"kind": "simplefin_v2_connection", "conn_id": "acceptance-native"}, "window": {"start": "2026-07-03T00:00:00Z", "end": "2026-10-01T00:00:00Z"}, "status": "partial", "error_code": "provider_error"}
+    ]
+  }]
+}

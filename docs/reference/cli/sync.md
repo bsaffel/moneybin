@@ -113,7 +113,7 @@ Usage: `moneybin sync pull [OPTIONS]`
 | `--history-start` | text |  | Request history from this ISO date. |
 | `--job-id` | text |  | Repair an already ingested job without fetching provider data. |
 | `--local-only` | flag |  | Repair local setup/reports without broker access; requires --job-id. |
-| `--force, -f` | flag |  | Reset cursor and re-fetch full history. |
+| `--force, -f` | flag |  | Repeat provider retrieval: Plaid cursor reset; SimpleFIN bounded lookback. |
 | `--refresh / --no-refresh` | flag | `true` | Run the post-load refresh pipeline (matching + transforms + categorization) after a successful pull so core.* models (dim_accounts, etc.) reflect the new data before this command returns. Default: on. Pass --no-refresh to defer; transforms dominates pull latency, so high-frequency callers should defer and run refresh on a separate schedule. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |

@@ -56,7 +56,8 @@ def _history_payload(history: SyncHistoryView | None) -> SyncHistoryPayload | No
         else None,
         accounts=[
             SyncHistoryAccountRow(
-                account_id=account.account_id,
+                # Accepted legacy targets do not prove safe minted-ID provenance.
+                account_id=None,
                 display_name=account.display_name,
                 acknowledged_intervals=[
                     SyncCoverageInterval(
@@ -83,7 +84,8 @@ def _source_row(source: SyncSourceView) -> SyncSourceRow:
         history=_history_payload(source.history),
         outcomes=[
             SyncScopeRow(
-                account_id=outcome.account_id,
+                # Accepted legacy targets do not prove safe minted-ID provenance.
+                account_id=None,
                 display_name=outcome.display_name,
                 scope_kind=outcome.scope_kind,
                 status=outcome.status,
