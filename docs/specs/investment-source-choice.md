@@ -256,8 +256,12 @@ setting stays saved, and the error says so and names `moneybin refresh` as the
 retry. That matches how the cost-basis setting handles a failed restate.
 
 Undoing the account's first-ever settings write would delete the row and its
-change time with it, so that one undo is refused with `recovery_no_path` and
-names `--clear-investment-source-type`.
+change time with it. The refusal reads the live row, not the write's audit
+image: it covers any account whose settings row has ever carried a source
+choice (a non-NULL `investment_source_type_changed_at`, which a cleared or
+undone choice keeps). That undo is refused with `recovery_no_path`, and the hint
+says the row must stay and to change the other fields instead. An account that
+never had a choice still deletes the row as before.
 
 ### Detection skips a chosen account
 
@@ -442,7 +446,7 @@ account labels, trade descriptions, or amounts.
 | set `manual` | clear | ledger is the union again; re-entered rows' `updated_at` ≥ the clear; doctor `fail` again |
 | set `plaid` | `investments add` | refused, `investment_source_excluded`, nothing written |
 | set `manual` | undo the set | restated; `investment_source_type_changed_at` advanced; overlap back |
-| set `manual` as the account's first-ever settings write | undo the set | refused, `recovery_no_path`, naming `--clear-investment-source-type`; nothing changes |
+| an account whose settings row has ever carried a source choice (set, then cleared or undone) | undo the row's first-ever settings write | refused, `recovery_no_path`, row and change time kept; nothing changes |
 | Manual trades + Plaid holdings only | doctor | `fail`; Plaid side reads "holdings snapshot, no trades" |
 | No overlap | set `plaid` up front | accepted; later recorded trades refused; later sync never warns |
 | Unknown value | `accounts set … --investment-source-type ofx` | `mutation_invalid_input` naming `manual`, `plaid` |

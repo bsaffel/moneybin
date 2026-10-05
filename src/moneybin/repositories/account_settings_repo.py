@@ -209,21 +209,30 @@ class AccountSettingsRepo(BaseRepo):
         catalog there is no ``archived_at`` column to read, and the SELECT
         below would raise.
 
-        Refuses outright when the row being deleted holds an investment source
-        choice: the delete would drop ``investment_source_type_changed_at``
+        Refuses outright when the LIVE row carries an investment source change
+        time (``row`` is the original insert's image, which can predate a
+        later choice): the delete would drop ``investment_source_type_changed_at``
         with the row, so ledger rows that re-enter would report their old
-        ``created_at`` and rewind an incremental reader's watermark.
+        ``created_at`` and rewind an incremental reader's watermark. A cleared
+        or undone choice keeps its change time, so the live row is the test.
         """
-        if row.get("investment_source_type") is not None:
-            raise UserError(
-                "Undoing this would delete the account's settings together with "
-                "its investment source choice.",
-                code=error_codes.RECOVERY_NO_PATH,
-                hint=(
-                    "Clear the choice instead: moneybin accounts set <account> "
-                    "--clear-investment-source-type"
-                ),
-            )
+        if "investment_source_type_changed_at" in self._live_columns():
+            where, where_params = self._pk_where(row)
+            stamp_row = self._db.execute(
+                f"SELECT investment_source_type_changed_at "  # noqa: S608  # TableRef + sqlglot-quoted pk
+                f"FROM {self.table_ref.full_name} WHERE {where}",
+                where_params,
+            ).fetchone()
+            if stamp_row is not None and stamp_row[0] is not None:
+                raise UserError(
+                    "Undoing this would delete the account's settings, which "
+                    "carry its investment source history.",
+                    code=error_codes.RECOVERY_NO_PATH,
+                    hint=(
+                        "The settings row must stay. Change the other fields "
+                        "instead: moneybin accounts set <account> ..."
+                    ),
+                )
         if (
             row.get("archived") is True
             and "archived_at" not in row

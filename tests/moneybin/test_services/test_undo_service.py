@@ -793,9 +793,44 @@ class TestUndoOfInvestmentSourceChoice:
 
         assert caught.value.code == error_codes.RECOVERY_NO_PATH
         assert caught.value.hint is not None
-        assert "--clear-investment-source-type" in caught.value.hint
         assert _source_row(db) == ("manual", _SOURCE_SET_AT)
         restate.assert_not_called()
+
+    def test_undo_that_would_drop_an_established_change_time_is_refused(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            MagicMock(),
+        )
+        with operation() as op_a:
+            _settings_set(db, display_name="Brokerage")
+        with operation() as op_b:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                investment_source_type="plaid",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+        UndoService(db).undo(op_b, actor="test")
+        source, stamped = _source_row(db) or (None, None)
+        assert source is None and stamped is not None
+
+        with pytest.raises(UserError) as caught:
+            UndoService(db).undo(op_a, actor="test")
+
+        assert caught.value.code == error_codes.RECOVERY_NO_PATH
+        assert _source_row(db) == (None, stamped)
+
+    def test_undo_of_a_never_chosen_first_write_still_deletes_the_row(
+        self, db: Database
+    ) -> None:
+        with operation() as op:
+            _settings_set(db, display_name="Brokerage")
+
+        UndoService(db).undo(op, actor="test")
+
+        assert _source_row(db) is None
 
 
 class TestHistory:
