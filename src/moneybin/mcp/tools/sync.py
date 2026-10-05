@@ -186,8 +186,9 @@ def _pull_actions(result: PullResult) -> list[str]:
         actions.append(
             f"{len(result.investment_source_overlap_accounts)} account(s) have "
             "both manual and Plaid investment history — lots and gains "
-            "double-count until one source is chosen per account "
-            "(see system_status(sections=['doctor']))."
+            "double-count until one source is chosen per account with "
+            "accounts_set(investment_source_type=...); "
+            "system_status(sections=['doctor']) shows each source's trade counts."
         )
     actions.extend(refresh_rate_gap_hints(result.refresh_steps))
     actions.append("Use sync_status to see connection health going forward.")

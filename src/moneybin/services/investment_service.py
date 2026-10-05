@@ -85,6 +85,7 @@ if TYPE_CHECKING:
     # Type-only: `currency_service` imports polars and this module sits on the
     # CLI's eager import chain (tests/moneybin/test_cli/test_cold_start.py), so
     # the runtime import stays deferred inside `_portfolio_total`.
+    from moneybin.services.account_service import AccountService
     from moneybin.services.currency_service import ResolvedRate
 
 logger = logging.getLogger(__name__)
@@ -928,7 +929,9 @@ class InvestmentService:
         # Resolve free-text at the boundary; both may raise UserError-family.
         from moneybin.services.account_service import AccountService
 
-        account_id = AccountService(self._db).resolve_strict(account_ref)
+        account_svc = AccountService(self._db)
+        account_id = account_svc.resolve_strict(account_ref)
+        self._refuse_excluded_source(account_svc, account_id)
         currency_code = _blank_to_none(currency_code)
         security_id = (
             self.resolve_security(security_ref) if security_ref is not None else None
@@ -953,6 +956,24 @@ class InvestmentService:
         )
         return self._write_rows(
             account_id=account_id, type_=type_, rows=rows, actor=actor
+        )
+
+    def _refuse_excluded_source(
+        self, account_svc: AccountService, account_id: str
+    ) -> None:
+        """Refuse a recorded trade the account's ledger would never include."""
+        choice = account_svc.investment_source_type(account_id)
+        if choice is None or choice == "manual":
+            return
+        raise UserError(
+            f"This account's investment history comes from {choice} "
+            "(investment_source_type), so a recorded trade would not reach its "
+            "ledger.",
+            code=error_codes.INVESTMENT_SOURCE_EXCLUDED,
+            hint=(
+                "To record trades here: moneybin accounts set <account> "
+                "--investment-source-type manual"
+            ),
         )
 
     def record_events(
@@ -1007,6 +1028,7 @@ class InvestmentService:
                 security_ref=security_ref,
             )
             account_id = account_svc.resolve_strict(ev["account_ref"])
+            self._refuse_excluded_source(account_svc, account_id)
             # SOFT: an unresolved/ambiguous security skips just this event.
             try:
                 security_id = (
@@ -1778,8 +1800,10 @@ class InvestmentService:
             f"{SOURCE_OVERLAP_CODE}: {count} {noun} sit in an account "
             "whose investment ledger arrives from two sources at once — the "
             "two ledgers interleave, so these figures double-count and their "
-            "cost basis mixes two accountings. Revert the redundant import "
-            "batch, then run 'moneybin system doctor' to confirm."
+            "cost basis mixes two accountings. Choose one source for the "
+            "account with 'moneybin accounts set <account> "
+            "--investment-source-type manual|plaid', then run 'moneybin "
+            "system doctor' to confirm."
         )
 
     def _source_overlap_degradation(

@@ -177,9 +177,10 @@ def _render_sync_pull_receipt(
             f"{awaiting_identity:,} securities awaiting identity review",
         ))
     if result.investment_source_overlap_accounts:
+        n = len(result.investment_source_overlap_accounts)
         attention.append((
             "Investment sources",
-            f"{len(result.investment_source_overlap_accounts):,} accounts have "
+            f"{n:,} account{'s' if n != 1 else ''} {'have' if n != 1 else 'has'} "
             "both manual and Plaid history",
         ))
     if attention:
@@ -197,7 +198,7 @@ def _render_sync_pull_receipt(
             f"{terminal.symbols.action} moneybin investments securities links pending"
         )
     if result.investment_source_overlap_accounts:
-        typer.echo(f"{terminal.symbols.action} moneybin doctor")
+        typer.echo(f"{terminal.symbols.action} moneybin system doctor")
 
 
 def _build_sync_client():
