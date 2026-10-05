@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-27 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <picture>
@@ -89,7 +89,7 @@ History:            2023-01-01 through 2025-12-31
 Accounts saved:     2
 Transactions saved: 995
 Categorized:        859
-Net worth:          211,413.05
+Net worth (USD):    211,413.05
 Doctor:             Clean
 Try next:
   moneybin reports spending-trend
@@ -108,30 +108,31 @@ $ uv run moneybin reports net-worth-accounts
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth') for the single home-currency total
-› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+› The single home-currency total: moneybin reports net-worth
+› The currency-level breakdown: moneybin reports net-worth-currencies
 
 $ uv run moneybin sql query "
     SELECT category, COUNT(*) AS txns, SUM(amount) AS total
     FROM core.fct_transactions
     WHERE amount < 0 AND category IS NOT NULL
     GROUP BY 1 ORDER BY total ASC LIMIT 5"
-┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━━┓
-┃ category            ┃ txns ┃ total     ┃
-┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━━━┩
-│ Housing & Utilities │ 144  │ -62676.66 │
-│ Food & Drink        │ 304  │ -14353.58 │
-│ Services            │ 36   │ -5112.00  │
-│ Shopping            │ 88   │ -4889.37  │
-│ Transportation      │ 113  │ -3609.95  │
-└─────────────────────┴──────┴───────────┘
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━━━┓
+┃ category            ┃ txns ┃      total ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━━━━┩
+│ Housing & Utilities │  144 │ -62,676.66 │
+│ Food & Drink        │  304 │ -14,353.58 │
+│ Services            │   36 │  -5,112.00 │
+│ Shopping            │   88 │  -4,889.37 │
+│ Transportation      │  113 │  -3,609.95 │
+└─────────────────────┴──────┴────────────┘
 ```
 
 The transcript is stdout, trimmed by whole lines only: the five diagnostic
 lines `demo` writes to stderr (two SQLMesh notices about reseeded tables, a
 two-line pandas `FutureWarning` a dependency emits, and one naming the merchant
-patterns it skipped because two categories claim them), and a third next-step hint
-pointing at `profile set home_currency <CODE>` for converted totals.
+patterns it skipped because two categories claim them), and the two lines of a
+third next-step hint pointing at `profile set home_currency <CODE>` for
+converted totals.
 
 The demo is deterministic synthetic data pushed through the real pipeline —
 import, transform, dedup, categorization, integrity checks. Its window is the
