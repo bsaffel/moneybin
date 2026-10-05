@@ -25,6 +25,12 @@ from moneybin.connectors.sync_models import (
     UTCWindow,
 )
 from moneybin.database import Database
+from moneybin.extractors.account_identity import (
+    UNNAMED_ACCOUNT_LABEL,
+    AccountNameFacts,
+    SourceAccount,
+    mask_embedded_account_number,
+)
 from moneybin.extractors.simplefin.identity import (
     scope_identity_strength,
     source_origin,
@@ -112,6 +118,15 @@ def _instant(
     return timestamp, None
 
 
+def _validation_error(*errors: str | None) -> str | None:
+    """Structural failures dominate validated but financially ineligible values."""
+    holds = {"unsupported_precision", "pending", "nonpositive_posted"}
+    return next(
+        (error for error in errors if error and error not in holds),
+        next((error for error in errors if error), None),
+    )
+
+
 def _record(value: object) -> dict[str, Any] | None:
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
@@ -120,12 +135,73 @@ def _text(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _institution_label(native: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    institution = _text(native.get("name"))
+    if native.get("conn_id"):
+        value = payload.get("connections")
+        connections = cast(list[object], value) if isinstance(value, list) else []
+        institutions: set[str] = set()
+        for value in connections:
+            item = _record(value)
+            if item is None or item.get("conn_id") != native["conn_id"]:
+                continue
+            name = _text(item.get("name"))
+            if name is not None:
+                institutions.add(name)
+        institution = next(iter(institutions)) if len(institutions) == 1 else None
+    return mask_embedded_account_number(institution.strip()) if institution else None
+
+
 class SimpleFINExtractor:
     """Retain batch evidence losslessly without controlling transaction lifetime."""
 
     def __init__(self, db: Database) -> None:
         """Use the caller-owned warehouse connection."""
         self.db = db
+
+    def source_accounts(self, source: SimpleFINSource) -> list[SourceAccount]:
+        """Build resolver inputs from retained scopes touched by this delivery."""
+        if not source.batches:
+            return []
+        rows = self.db.execute(
+            f"""SELECT a.source_origin, a.account_id, a.name, a.native_scope,
+                       r.original_payload, a.source_file
+                FROM {SIMPLEFIN_ACCOUNTS.full_name} AS a
+                JOIN {SIMPLEFIN_RESPONSES.full_name} AS r USING (batch_id)
+                WHERE (a.source_origin, a.account_id) IN (
+                    SELECT source_origin, account_id
+                    FROM {SIMPLEFIN_ACCOUNTS.full_name}
+                    WHERE batch_id IN (SELECT UNNEST(?::UUID[]))
+                )
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY a.source_origin, a.account_id
+                    ORDER BY a.fetched_at DESC, a.batch_id DESC,
+                             a.observation_version DESC
+                ) = 1
+                ORDER BY a.source_origin, a.account_id""",  # noqa: S608  # trusted TableRef constants, bound batch IDs
+            [[str(batch.batch_id) for batch in source.batches]],
+        ).fetchall()
+        accounts: list[SourceAccount] = []
+        for origin, native_id, name, native_json, payload_json, source_file in rows:
+            native = json.loads(native_json)
+            institution = _institution_label(native, json.loads(payload_json))
+            label = mask_embedded_account_number(name.strip()) if name else None
+            accounts.append(
+                SourceAccount(
+                    source_type="simplefin",
+                    source_origin=origin,
+                    source_account_key=native_id,
+                    account_name=label or UNNAMED_ACCOUNT_LABEL,
+                    account_name_is_user_set=bool(label),
+                    institution=institution,
+                    source_file=source_file,
+                    name_facts=AccountNameFacts(
+                        source_label=label,
+                        institution_name=institution,
+                    ),
+                )
+            )
+        return accounts
 
     def _write(self, table: TableRef, rows: list[dict[str, Any]]) -> int:
         if not rows:
@@ -244,6 +320,16 @@ class SimpleFINExtractor:
                     "original_record": _json(original),
                     "validation_error": account_error,
                     "name": _text(record.get("name")),
+                    "account_label": (
+                        mask_embedded_account_number(record["name"].strip())
+                        if isinstance(record.get("name"), str)
+                        else None
+                    ),
+                    "institution_label": (
+                        _institution_label(native_scope, payload)
+                        if source.protocol_version == "2.0.0-draft"
+                        else None
+                    ),
                     "currency": _text(record.get("currency")),
                 })
                 balance, balance_error = _money(record.get("balance"))
@@ -255,8 +341,8 @@ class SimpleFINExtractor:
                 balance_at, timestamp_error = _instant(
                     record.get("balance-date"), batch.fetched_at
                 )
-                error = (
-                    account_error or balance_error or available_error or timestamp_error
+                error = _validation_error(
+                    account_error, balance_error, available_error, timestamp_error
                 )
                 balance_record = {
                     key: value
@@ -330,15 +416,18 @@ class SimpleFINExtractor:
                         else (None, None)
                     )
                     pending = transaction.get("pending")
-                    error = (
-                        account_error
-                        or amount_error
-                        or posted_error
-                        or transacted_error
-                        or ("pending" if pending is True else None)
+                    error = _validation_error(
+                        account_error,
+                        amount_error,
+                        posted_error,
+                        transacted_error,
+                        ("pending" if pending is True else None),
+                        (
+                            "invalid_pending"
+                            if pending is not None and not isinstance(pending, bool)
+                            else None
+                        ),
                     )
-                    if pending is not None and not isinstance(pending, bool):
-                        error = error or "invalid_pending"
                     transactions.append({
                         **common,
                         "transaction_id": native_id,

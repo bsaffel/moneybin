@@ -443,3 +443,71 @@ def test_oversized_exponent_retains_raw_with_typed_rejection(db: Database) -> No
     assert db.execute(
         "SELECT count(*) FROM raw.simplefin_sync_receipts"
     ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    ("account_changes", "transaction_changes", "table", "expected"),
+    [
+        (
+            {},
+            {"amount": "-1.001", "posted": 9999999999},
+            "transactions",
+            "future_timestamp",
+        ),
+        (
+            {},
+            {"amount": "-1.001", "pending": "invalid"},
+            "transactions",
+            "invalid_pending",
+        ),
+        (
+            {"balance": "-1.001", "available-balance": "invalid"},
+            {},
+            "balances",
+            "invalid_amount",
+        ),
+        (
+            {"balance": "-1.001", "balance-date": 9999999999},
+            {},
+            "balances",
+            "future_timestamp",
+        ),
+    ],
+)
+def test_structural_error_is_not_hidden_by_financial_hold(
+    db: Database,
+    account_changes: dict[str, Any],
+    transaction_changes: dict[str, Any],
+    table: str,
+    expected: str,
+) -> None:
+    load(
+        db,
+        source(
+            account_changes=account_changes, transaction_changes=transaction_changes
+        ),
+    )
+    row = db.execute(f"SELECT validation_error FROM raw.simplefin_{table}").fetchone()  # noqa: S608  # fixed test parameter table names
+    assert row == (expected,)
+
+
+@pytest.mark.parametrize("transacted", [None, "invalid", 9999999999])
+def test_malformed_optional_transacted_instant_is_structural(
+    db: Database, transacted: object
+) -> None:
+    load(
+        db,
+        source(transaction_changes={"amount": "-1.001", "transacted_at": transacted}),
+    )
+    assert db.execute(
+        "SELECT validation_error FROM raw.simplefin_transactions"
+    ).fetchone() == (
+        "future_timestamp" if transacted == 9999999999 else "invalid_timestamp",
+    )
+
+
+def test_absent_optional_transacted_instant_is_valid(db: Database) -> None:
+    load(db, source())
+    assert db.execute(
+        "SELECT validation_error, transacted_at FROM raw.simplefin_transactions"
+    ).fetchone() == (None, None)

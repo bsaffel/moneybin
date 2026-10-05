@@ -41,7 +41,13 @@ from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type st
     model,
 )
 
-_SOURCE_PRECEDENCE = {"assertion": 3, "ofx": 2, "plaid": 2, "tabular": 1}
+_SOURCE_PRECEDENCE = {
+    "assertion": 3,
+    "ofx": 2,
+    "plaid": 2,
+    "simplefin": 2,
+    "tabular": 1,
+}
 
 
 def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:

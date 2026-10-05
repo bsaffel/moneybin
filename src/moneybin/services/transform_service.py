@@ -50,6 +50,9 @@ _RAW_LANDING_COLUMNS: dict[str, str] = {
     "plaid_securities": "loaded_at",
     "plaid_transactions": "loaded_at",
     "security_prices": "loaded_at",
+    "simplefin_accounts": "loaded_at",
+    "simplefin_transactions": "loaded_at",
+    "simplefin_balances": "loaded_at",
     "tabular_accounts": "loaded_at",
     "tabular_transactions": "loaded_at",
     # The two manual-entry tables record their insert as `created_at` and have

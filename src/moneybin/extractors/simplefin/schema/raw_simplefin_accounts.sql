@@ -14,5 +14,7 @@ CREATE TABLE IF NOT EXISTS raw.simplefin_accounts (
     loaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Local observation time
     name VARCHAR, -- Provider account name
     currency VARCHAR, -- Original provider currency
+    account_label VARCHAR, -- Display-ready name using the shared account-number masker; original name retained
+    institution_label VARCHAR, -- Display-ready institution using the shared masker; response remains original
     PRIMARY KEY (batch_id, source_origin, account_id)
 );

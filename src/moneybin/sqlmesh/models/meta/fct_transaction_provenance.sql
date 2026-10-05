@@ -8,7 +8,7 @@ MODEL (
    Matched groups have one row per contributing source. */
 SELECT
   m.transaction_id, /* FK to gold record in core.fct_transactions */
-  m.source_transaction_id, /* Source-native ID, joinable to raw/prep */
+  m.source_transaction_id, /* Stable source event reference, joinable to Raw/staging; SimpleFIN retains native IDs separately */
   m.source_type, /* Import pathway / origin system */
   m.source_origin, /* Institution/connection/format that produced this row */
   m.source_file, /* File that produced this source row */

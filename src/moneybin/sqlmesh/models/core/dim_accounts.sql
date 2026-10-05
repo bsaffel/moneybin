@@ -173,6 +173,36 @@ WITH ofx_balance_currency AS (
     ON ia.alias = REGEXP_REPLACE(LOWER(a.institution_name), '[^a-z0-9]', '', 'g')
   LEFT JOIN plaid_balance_currency AS c
     ON c.source_account_key = a.source_account_key AND c.source_origin = a.source_origin
+), simplefin_accounts AS (
+  SELECT
+    a.account_id,
+    a.source_account_key,
+    NULL::TEXT AS routing_number,
+    a.account_type,
+    a.institution_name,
+    COALESCE(ia.slug, a.institution_name) AS institution_slug,
+    NOT ia.slug IS NULL AS institution_slug_resolved,
+    NULL::TEXT AS institution_fid,
+    a.source_type,
+    a.source_file,
+    (
+      a.extracted_at AT TIME ZONE 'UTC'
+    ) AS extracted_at,
+    (
+      a.loaded_at AT TIME ZONE 'UTC'
+    ) AS loaded_at,
+    NULL::TEXT AS official_name,
+    a.account_label,
+    a.account_subtype,
+    NULL::TEXT AS last_four_raw,
+    c.currency_code AS source_currency
+  FROM prep.stg_simplefin__accounts AS a
+  LEFT JOIN institution_alias AS ia
+    ON ia.alias = REGEXP_REPLACE(LOWER(a.institution_name), '[^a-z0-9]', '', 'g')
+  LEFT JOIN seeds.iso_currencies AS c
+    ON c.currency_code = a.currency_code AND NOT c.minor_unit IS NULL
+  WHERE
+    NOT a.account_id IS NULL
 ), all_accounts AS (
   SELECT
     *
@@ -185,6 +215,10 @@ WITH ofx_balance_currency AS (
   SELECT
     *
   FROM plaid_accounts
+  UNION ALL
+  SELECT
+    *
+  FROM simplefin_accounts
 ), ranked AS (
   /* grain_key: account_id is the CANONICAL opaque id when the account has an
      accepted app.account_links row, and the source-native key when it does not.
@@ -201,7 +235,15 @@ WITH ofx_balance_currency AS (
   SELECT
     *,
     COALESCE(account_id, source_account_key) AS grain_key,
-    CASE source_type WHEN 'ofx' THEN 0 WHEN 'plaid' THEN 1 ELSE 2 END AS source_rank
+    CASE source_type
+      WHEN 'ofx'
+      THEN 0
+      WHEN 'plaid'
+      THEN 1
+      WHEN 'simplefin'
+      THEN 3
+      ELSE 2
+    END AS source_rank
   FROM all_accounts
 ), merged AS (
   /* Per-field COALESCE-across-group merge (Decision 4), replacing last-write-wins.

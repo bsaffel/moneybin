@@ -571,3 +571,67 @@
     forward_only: BOOLEAN
     dev_version: TEXT
     fingerprint: TEXT
+
+- name: '"moneybin"."raw"."simplefin_accounts"'
+  columns:
+    batch_id: UUID
+    source_origin: TEXT
+    account_id: TEXT
+    native_scope: JSON
+    identity_strength: TEXT
+    observation_version: TEXT
+    original_record: JSON
+    validation_error: TEXT
+    fetched_at: TIMESTAMPTZ
+    source_file: TEXT
+    source_type: TEXT
+    loaded_at: TIMESTAMPTZ
+    name: TEXT
+    currency: TEXT
+    account_label: TEXT
+    institution_label: TEXT
+
+- name: '"moneybin"."raw"."simplefin_transactions"'
+  columns:
+    batch_id: UUID
+    source_origin: TEXT
+    account_id: TEXT
+    native_scope: JSON
+    identity_strength: TEXT
+    observation_version: TEXT
+    original_record: JSON
+    validation_error: TEXT
+    fetched_at: TIMESTAMPTZ
+    source_file: TEXT
+    source_type: TEXT
+    loaded_at: TIMESTAMPTZ
+    transaction_id: TEXT
+    transaction_reference: TEXT
+    amount: DECIMAL(18,2)
+    amount_original: TEXT
+    posted_at: TIMESTAMPTZ
+    transacted_at: TIMESTAMPTZ
+    pending: BOOLEAN
+    description: TEXT
+    currency: TEXT
+
+- name: '"moneybin"."raw"."simplefin_balances"'
+  columns:
+    batch_id: UUID
+    source_origin: TEXT
+    account_id: TEXT
+    native_scope: JSON
+    identity_strength: TEXT
+    observation_version: TEXT
+    original_record: JSON
+    validation_error: TEXT
+    fetched_at: TIMESTAMPTZ
+    source_file: TEXT
+    source_type: TEXT
+    loaded_at: TIMESTAMPTZ
+    balance: DECIMAL(18,2)
+    balance_original: TEXT
+    available_balance: DECIMAL(18,2)
+    available_balance_original: TEXT
+    balance_at: TIMESTAMPTZ
+    currency: TEXT

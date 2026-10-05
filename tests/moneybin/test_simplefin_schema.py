@@ -34,5 +34,15 @@ def test_simplefin_schema_and_migration_equivalence(db: Database) -> None:
     )
     run_migration(db, migration.migrate)
     run_migration(db, migration.migrate)
+    label_migration = importlib.import_module(
+        "moneybin.sql.migrations.V070__add_simplefin_account_label"
+    )
+    run_migration(db, label_migration.migrate)
+    run_migration(db, label_migration.migrate)
+    institution_migration = importlib.import_module(
+        "moneybin.sql.migrations.V071__add_simplefin_institution_label"
+    )
+    run_migration(db, institution_migration.migrate)
+    run_migration(db, institution_migration.migrate)
     assert db.execute(query).fetchall() == before
     assert db.execute(constraints_query).fetchall() == before_constraints
