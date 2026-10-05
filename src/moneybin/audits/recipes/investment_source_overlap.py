@@ -38,6 +38,7 @@ def recipe(
     # Lazy: doctor_service imports the recipe registry at module load.
     from moneybin.services.doctor_service import (
         _command_account_id,  # pyright: ignore[reportPrivateUsage]  # one placeholder rule for every published command
+        _publishable_account_id,  # pyright: ignore[reportPrivateUsage]  # the masked form the doctor's affected_ids use
     )
 
     accounts = investment_source_overlap(context.db)
@@ -59,7 +60,8 @@ def recipe(
             )
             if command_id == _PLACEHOLDER:
                 rationale += (
-                    ". Supply account_id — read it from `moneybin accounts list`"
+                    f". Supply account_id for {_publishable_account_id(account_id)}"
+                    " — read it from `moneybin accounts list`"
                 )
             actions.append(
                 RecoveryAction(

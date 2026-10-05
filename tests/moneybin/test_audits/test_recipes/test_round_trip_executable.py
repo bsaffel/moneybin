@@ -218,17 +218,17 @@ def test_dedup_reconciliation_requests_full_doctor_detail() -> None:
     }
 
 
-def _seed_overlap(db: Database, account_id: str) -> None:
+def _seed_overlap(db: Database, account_id: str, native: str = "native_x") -> None:
     """Two manual trades and three Plaid trades on one resolved account."""
     db.execute(
         """
         INSERT INTO app.account_links (
             link_id, account_id, ref_kind, ref_value, source_type,
             source_origin, status, decided_by, decided_at
-        ) VALUES ('link_native', ?, 'source_native', 'native_x', 'plaid', 'item',
+        ) VALUES (?, ?, 'source_native', ?, 'plaid', 'item',
                   'accepted', 'user', CURRENT_TIMESTAMP)
         """,
-        [account_id],
+        [f"link_{native}", account_id, native],
     )
     for n, day in enumerate(("2019-03-04", "2025-11-21")):
         db.execute(
@@ -238,7 +238,7 @@ def _seed_overlap(db: Database, account_id: str) -> None:
                 created_by
             ) VALUES (?, 'manual_import', ?, 'buy', ?::DATE, 'cli')
             """,
-            [f"m{n}", account_id, day],
+            [f"m{native}{n}", account_id, day],
         )
     for n, day in enumerate(("2024-09-03", "2025-01-15", "2026-09-30")):
         db.execute(
@@ -246,9 +246,9 @@ def _seed_overlap(db: Database, account_id: str) -> None:
             INSERT INTO raw.plaid_investment_transactions (
                 investment_transaction_id, account_id, transaction_date,
                 amount, observation_version, source_origin
-            ) VALUES (?, 'native_x', ?::DATE, 100, 'v1', 'item')
+            ) VALUES (?, ?, ?::DATE, 100, 'v1', 'item')
             """,
-            [f"p{n}", day],
+            [f"p{native}{n}", native, day],
         )
         db.execute(
             """
@@ -257,7 +257,7 @@ def _seed_overlap(db: Database, account_id: str) -> None:
                 observation_version, ingestion_sequence, extracted_at
             ) VALUES (?, 'item', 'sync_1', 'v1', 1, '2026-01-02')
             """,
-            [f"p{n}"],
+            [f"p{native}{n}"],
         )
 
 
@@ -303,6 +303,26 @@ def test_source_overlap_recipe_uses_a_placeholder_for_an_altered_id(
         assert action.arguments["account_id"] == "<account_id>"
         assert "moneybin accounts list" in action.rationale
         assert "55551234" not in action.rationale
+
+
+def test_source_overlap_placeholder_actions_name_each_account_by_its_mask(
+    db: Database,
+) -> None:
+    """Identical placeholder arguments must still say which account they target."""
+    _seed_overlap(db, "acct_100001234", "native_a")
+    _seed_overlap(db, "acct_200005678", "native_b")
+
+    actions = investment_source_overlap.recipe([], registry.RecipeContext(db=db))
+
+    assert len(actions) == 4
+    assert {a.arguments["account_id"] for a in actions} == {"<account_id>"}
+    first = [a.rationale for a in actions if "1234" in a.rationale]
+    second = [a.rationale for a in actions if "5678" in a.rationale]
+    assert len(first) == len(second) == 2
+    assert set(first).isdisjoint(second)
+    for action in actions:
+        assert "100001234" not in action.rationale
+        assert "200005678" not in action.rationale
 
 
 def test_source_overlap_recipe_without_a_database_is_empty() -> None:
