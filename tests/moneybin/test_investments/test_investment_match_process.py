@@ -53,6 +53,61 @@ with Database(Path(sys.argv[1]), secret_store=store, read_only=True, no_auto_upg
     assert len(rows[0]["legs"]) == 2
 
 
+def _choose_source(db: Database, account_id: str, choice: str | None) -> None:
+    """Set an account's investment source choice on the fixture dim_accounts."""
+    columns = {
+        row[0]
+        for row in db.execute(
+            "SELECT column_name FROM duckdb_columns() "
+            "WHERE schema_name = 'core' AND table_name = 'dim_accounts'"
+        ).fetchall()
+    }
+    if "investment_source_type" not in columns:
+        db.execute(
+            "ALTER TABLE core.dim_accounts ADD COLUMN investment_source_type VARCHAR"
+        )
+    if db.execute(
+        "SELECT COUNT(*) FROM core.dim_accounts WHERE account_id = ?", [account_id]
+    ).fetchone() == (0,):
+        db.execute(
+            "INSERT INTO core.dim_accounts (account_id, currency_code) "
+            "VALUES (?, 'USD')",
+            [account_id],
+        )
+    db.execute(
+        "UPDATE core.dim_accounts SET investment_source_type = ? WHERE account_id = ?",
+        [choice, account_id],
+    )
+
+
+def test_a_source_choice_takes_the_account_out_of_planning(
+    comparison_db: Database,
+) -> None:
+    """A chosen account has one ledger source, so a proposal there is noise."""
+    seed_manual_event(comparison_db, "manual")
+    seed_plaid_event(comparison_db, "native")
+    install_comparison_models(comparison_db)
+    service = InvestmentMatchingService(comparison_db)
+    assert service.run().proposed == 1
+    assert len(service.pending()) == 1
+
+    # Negative: a choice on some other account leaves this proposal alone.
+    _choose_source(comparison_db, "unrelated_account", "manual")
+    assert service.run().stale == 0
+    assert len(service.pending()) == 1
+
+    _choose_source(comparison_db, "account", "manual")
+    result = service.run()
+    assert result.stale == 1
+    assert result.proposed == 0
+    assert service.pending() == []
+
+    # Clearing the choice returns the account to the planner.
+    _choose_source(comparison_db, "account", None)
+    assert service.run().proposed == 1
+    assert len(service.pending()) == 1
+
+
 def test_unrelated_event_rows_do_not_cross_into_python_planning(
     comparison_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
