@@ -127,7 +127,7 @@ Nine checks covering the Plaid investment ledger. They split into two families: 
 | `investment_unreported_holdings` | Broker-reported positions with no `core.dim_holdings` row — the opposite direction, and the more dangerous one. |
 | `investment_phantom_holdings` | Open lots MoneyBin holds that the broker's newest snapshot no longer reports. Keyed on the per-pull holdings-snapshot receipt (below), not on the presence of holdings rows. |
 | `investment_unresolved_securities` | Ledger rows whose provider security key never resolved to a canonical security. These are dropped from cost basis entirely, so they must not stay silent. |
-| `investment_source_overlap` | Accounts carrying both manual and Plaid investment history and no `investment_source_type` choice. **The one investment check that `fail`s** — see below. |
+| `investment_source_overlap` | Accounts carrying both manual and Plaid investment history and no `investment_source_type` choice, plus accounts with a choice whose built ledger still holds the other source (a restate that failed after the choice was saved; the fix is `moneybin refresh`). **The one investment check that `fail`s** — see below. |
 | `investment_conflicting_security_refs` | One provider security bound to two different canonical securities. The resolver refuses to repoint either binding on its own — a repoint is a reviewed merge, never a sync-time side effect — so it logs and moves on, which made the conflict visible only to whoever was reading server logs. |
 
 **`investment_source_overlap` is the only investment check that `fail`s, and

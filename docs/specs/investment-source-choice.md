@@ -255,6 +255,12 @@ setting changes the ledger just as setting it did. If the restate fails, the
 setting stays saved, and the error says so and names `moneybin refresh` as the
 retry. That matches how the cost-basis setting handles a failed restate.
 
+Until a refresh succeeds, the saved choice and the built ledger disagree:
+`core.fct_investment_transactions` still holds both sources' rows, so lots and
+gains double-count and holdings are withheld. The doctor reports that state
+(see "Detection skips a chosen account" and the doctor section below), so a
+failed restate never reads as resolved.
+
 Undoing the account's first-ever settings write would delete the row and its
 change time with it. The refusal reads the live row, not the write's audit
 image: it covers any account whose settings row has ever carried a source
@@ -273,6 +279,24 @@ the choice, and a later pull doesn't raise it again. The detector reads
 `app.account_settings` directly because it runs before any transform, which is
 also why it reads raw. The setting is user state, not derived state, so there
 is no `core` copy to wait on.
+
+A chosen account is excluded because it needs no choice offered, not because
+its ledger is known to be right. The same module therefore carries a sibling
+detector, `stale_source_choice_accounts(db) -> list[str]`: the accounts with a
+non-NULL choice for which the built `core.fct_investment_transactions` still
+holds a row whose `source_type` differs from the choice. This is the state a
+failed restate leaves behind. It reads the materialized ledger, so it returns
+`[]` when the ledger isn't built yet (the first transform applies the filter)
+and when `app.account_settings` has no `investment_source_type` column.
+
+The consumers split by what they report:
+
+- The doctor check reports both sets (below).
+- The sync warning keeps reporting unchosen overlaps only. It never calls a
+  chosen account resolved, and the pull's own refresh rebuilds the ledger from
+  the saved choice, so a stale choice there is already being repaired.
+- `InvestmentService`'s `source_overlap` degradation reads the ledger, not the
+  detector, so a stale account is already withheld and caveated there.
 
 The same module gains the evidence that the doctor's fix needs:
 
@@ -344,6 +368,14 @@ instead of "0 trades".
   JSON output and MCP list the same fixes.
 - The recipe-round-trip test covers the new actions, so each one is a
   runnable call.
+- The check also fails while `stale_source_choice_accounts` is non-empty: a
+  stale ledger double-counts exactly like an unresolved overlap. `detail` names
+  each count plainly (N accounts need a source chosen; N accounts have one
+  chosen but the ledger has not been rebuilt since, run `moneybin refresh`),
+  and `affected_ids` carry both sets masked. For stale accounts the recipe adds
+  one `refresh_run` action in total (`suggested`, idempotent), which the CLI
+  maps to `moneybin refresh`. Re-running `accounts set` with the same value is
+  not a fix: it changes nothing, so it doesn't restate.
 
 ### Other doctor checks
 
@@ -442,6 +474,7 @@ account labels, trade descriptions, or amounts.
 | Manual + Plaid trades, no choice | doctor | `fail`; two `accounts_set` actions with correct counts and ranges |
 | same | set `manual` | ledger has only manual rows; positions `valued` (or `withheld` where the share count disagrees with the snapshot); doctor `investment_source_overlap` `pass` |
 | same | set `plaid` | ledger has Plaid rows plus the opening bootstrap; doctor `pass` |
+| Manual + Plaid trades, no choice | set `manual`, restate fails | choice stays saved; `refresh_model_failed` names `moneybin refresh`; doctor `fail` with one `refresh_run` action until `moneybin refresh` succeeds, then `pass` |
 | set `manual` | `sync pull` re-delivers the same window | no overlap warning; Plaid raw rows refreshed; ledger unchanged |
 | set `manual` | clear | ledger is the union again; re-entered rows' `updated_at` ≥ the clear; doctor `fail` again |
 | set `plaid` | `investments add` | refused, `investment_source_excluded`, nothing written |
