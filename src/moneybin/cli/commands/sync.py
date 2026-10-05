@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING
 import typer
 
 from moneybin import error_codes
+from moneybin.adapters.sync_adapters import (
+    sync_link_status_actions,
+    sync_repair_actions,
+)
 from moneybin.cli.output import (
     OutputFormat,
     emit_human_result,
@@ -32,10 +36,15 @@ from moneybin.cli.utils import (
     emit_json_failure,
     get_terminal_policy,
     handle_cli_errors,
+    terminal_safe_text,
     warn_refresh_steps,
     warn_transfers_retired,
 )
-from moneybin.connectors.sync_models import LinkInitiateResponse, PullResult
+from moneybin.connectors.sync_models import (
+    ConnectedInstitution,
+    LinkInitiateResponse,
+    PullResult,
+)
 from moneybin.errors import UserError
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 from moneybin.progress import ProgressEvent
@@ -59,12 +68,7 @@ logger = logging.getLogger(__name__)
 
 def _sync_pull_has_incomplete_work(result: PullResult) -> bool:
     """Whether the receipt must not describe the requested pull as complete."""
-    return bool(
-        any(inst.status == "failed" for inst in result.institutions)
-        or result.transforms_error
-        or result.security_resolution_error
-        or (result.refresh_steps is not None and result.refresh_steps.has_failure)
-    )
+    return not result.complete
 
 
 def _render_sync_pull_receipt(
@@ -81,10 +85,18 @@ def _render_sync_pull_receipt(
         if incomplete and completed:
             title = f"{terminal.symbols.attention} Sync partially completed"
         elif incomplete:
-            title = f"{terminal.symbols.failure} Sync failed"
+            title = f"{terminal.symbols.attention} Sync ingested; work remains"
         else:
             title = f"{terminal.symbols.success} Sync complete"
     typer.echo(title)
+    render_summary([
+        ("Ingestion", result.ingestion_state),
+        ("Acknowledgement", result.ack_state),
+        ("Local setup", result.setup_state),
+        ("Refresh", result.refresh_state),
+    ])
+    for action in sync_repair_actions(result, cli=True):
+        typer.echo(action)
 
     institution_word = "institution" if len(completed) == 1 else "institutions"
     render_summary([
@@ -229,16 +241,21 @@ def _emit_sync_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
 
 
 @contextmanager
-def _build_sync_service():
+def _build_sync_service(*, local_only: bool = False):
     """Yield a SyncService with an active Database connection (per ADR-010)."""
+    from moneybin.config import get_settings
     from moneybin.database import get_database
     from moneybin.extractors.plaid import PlaidExtractor
     from moneybin.services.sync_service import SyncService
+    from moneybin.utils.user_config import get_or_create_profile_id
 
-    client = _build_sync_client()
+    client = None if local_only else _build_sync_client()
+    consumer_id = (
+        get_or_create_profile_id(get_settings().profile_dir) if local_only else None
+    )
     with get_database(read_only=False) as db:
         loader = PlaidExtractor(db)
-        yield SyncService(client=client, db=db, loader=loader)
+        yield SyncService(client=client, db=db, loader=loader, consumer_id=consumer_id)
 
 
 @app.command("login")
@@ -292,6 +309,10 @@ def sync_link(
         "--institution",
         help="Re-authenticate this connected institution, or a label for a new one.",
     ),
+    provider: str | None = typer.Option(None, "--provider", help="plaid or simplefin"),
+    connection_id: str | None = typer.Option(
+        None, "--connection-id", help="Exact existing connection UUID"
+    ),
     no_pull: bool = typer.Option(
         False,
         "--no-pull",
@@ -322,7 +343,7 @@ def sync_link(
     try:
         with handle_cli_errors(cli_actor="sync_link"):
             with _build_sync_service() as service:
-                if institution is None:
+                if institution is None and provider is None and connection_id is None:
                     connections = service.list_connections()
                     error_state = [c for c in connections if c.status == "error"]
                     if len(error_state) == 1:
@@ -393,7 +414,11 @@ def sync_link(
                         sync_link_envelope,
                     )
 
-                    initiate = service.initiate_link(institution=institution)
+                    initiate = service.initiate_link(
+                        institution=institution,
+                        provider=provider,
+                        connection_id=connection_id,
+                    )
                     render_or_json(
                         sync_link_envelope(
                             initiate,
@@ -418,6 +443,8 @@ def sync_link(
                     result = service.link(
                         institution=institution,
                         auto_pull=not no_pull,
+                        provider=provider,
+                        connection_id=connection_id,
                         on_initiate=_on_initiate,
                     )
     except KeyboardInterrupt:
@@ -464,6 +491,18 @@ def sync_link(
             )
         raise typer.Exit(130) from None
 
+    if result.status != "linked":
+        _emit_sync_receipt(
+            "Link requires attention",
+            [
+                ("Status", result.status),
+                (
+                    "Next action",
+                    "Disable this token directly in SimpleFIN Bridge and start a new link with a fresh token. Do not retry the original claim.",
+                ),
+            ],
+        )
+        raise typer.Exit(1)
     if result.pull_result is not None:
         pr = result.pull_result
         incomplete = _sync_pull_has_incomplete_work(pr)
@@ -533,7 +572,7 @@ def sync_link_status(
         render_or_json(
             sync_link_status_envelope(
                 result,
-                actions=["Run 'moneybin sync pull' once the status is 'linked'"],
+                actions=sync_link_status_actions(result, cli=True),
             ),
             output,
             cli_actor="sync_link_status",
@@ -546,6 +585,11 @@ def sync_link_status(
                 [
                     ("Status", result.status),
                     ("Institution", result.institution_name or "(no name)"),
+                    ("Connection", result.connection_id or "Unknown"),
+                    (
+                        "Next action",
+                        " ".join(sync_link_status_actions(result, cli=True)),
+                    ),
                 ],
                 title="Link status",
             )
@@ -588,6 +632,8 @@ def sync_connect_alias(  # Typer-registered alias; referenced by decorator
     )
     sync_link(
         institution=institution,
+        provider=None,
+        connection_id=None,
         no_pull=no_pull,
         no_browser=no_browser,
         yes=yes,
@@ -634,6 +680,9 @@ def sync_disconnect(
             "Mutually exclusive with --institution."
         ),
     ),
+    connection_id: str | None = typer.Option(
+        None, "--connection-id", help="Exact grant UUID from sync status"
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -643,7 +692,13 @@ def sync_disconnect(
     output: OutputFormat = output_option,
 ) -> None:
     """Remove a bank connection."""
-    if institution is not None and provider_item_id is not None:
+    if (
+        sum(
+            value is not None
+            for value in (institution, provider_item_id, connection_id)
+        )
+        > 1
+    ):
         message = (
             "--institution and --provider-item-id are mutually exclusive — "
             "pass exactly one."
@@ -660,7 +715,7 @@ def sync_disconnect(
         else:
             typer.echo(message, err=True)
         raise typer.Exit(2)
-    if institution is None and provider_item_id is None:
+    if institution is None and provider_item_id is None and connection_id is None:
         message = (
             "One of --institution or --provider-item-id is required to disconnect."
         )
@@ -697,32 +752,60 @@ def sync_disconnect(
             if yes:
                 # No prompt to diverge from — resolving directly here is safe.
                 disconnected = service.disconnect(
-                    institution=institution, provider_item_id=provider_item_id
+                    institution=institution,
+                    provider_item_id=provider_item_id,
+                    connection_id=connection_id,
                 )
             else:
                 plan = service.plan_disconnect(
-                    institution=institution, provider_item_id=provider_item_id
+                    institution=institution,
+                    provider_item_id=provider_item_id,
+                    connection_id=connection_id,
                 )
-                target = plan.institution_name or plan.provider_item_id
+                target = terminal_safe_text(plan.institution_name or plan.id)
+                accounts = (
+                    ", ".join(
+                        terminal_safe_text(account.name or "Unnamed account")
+                        for account in plan.accounts
+                    )
+                    or "No discovered accounts"
+                )
                 if not typer.confirm(
-                    f"Disconnect {target} (provider_item_id={plan.provider_item_id})?",
+                    f"Disconnect {target} (connection_id={plan.id})? Affected accounts: {accounts}. Previously pulled local rows remain.",
                     default=False,
                 ):
                     _emit_sync_receipt(
                         "Disconnect cancelled",
                         [
                             ("Institution", plan.institution_name or "-"),
-                            ("Provider item ID", plan.provider_item_id),
+                            ("Provider item ID", plan.provider_item_id or "-"),
                             ("Outcome", "No connection was removed"),
                         ],
                     )
                     raise typer.Exit(0)
+
                 # Delete exactly the connection the prompt named, not whatever
                 # `institution` now resolves to — it may have been removed or
                 # relinked while the prompt was open.
-                disconnected = service.disconnect(
-                    provider_item_id=plan.provider_item_id
+                def verify(live: ConnectedInstitution) -> None:
+                    if (live.id, live.credential_generation, live.accounts) != (
+                        plan.id,
+                        plan.credential_generation,
+                        plan.accounts,
+                    ):
+                        raise UserError(
+                            "Connection changed after confirmation; inspect status and confirm again",
+                            code=error_codes.MUTATION_INVALID_INPUT,
+                        )
+
+                disconnected = service.disconnect_confirmed(
+                    connection_id=plan.id, verify=verify
                 )
+    from moneybin.adapters.sync_adapters import sync_disconnect_actions
+
+    revocation_actions = sync_disconnect_actions(
+        disconnected.provider, disconnected.remote_revocation
+    )
     if output == OutputFormat.JSON:
         from moneybin.adapters.sync_adapters import (
             sync_disconnect_envelope,
@@ -732,7 +815,13 @@ def sync_disconnect(
             sync_disconnect_envelope(
                 institution=disconnected.institution_name,
                 provider_item_id=disconnected.provider_item_id,
-                actions=["Use 'moneybin sync link' to reconnect an institution"],
+                connection_id=disconnected.id,
+                remote_revocation=disconnected.remote_revocation,
+                affected_accounts=[
+                    account.name or "Unnamed account"
+                    for account in disconnected.accounts
+                ],
+                actions=revocation_actions,
             ),
             output,
             cli_actor="sync_disconnect",
@@ -742,8 +831,13 @@ def sync_disconnect(
             "Disconnect complete",
             [
                 ("Institution", disconnected.institution_name or "-"),
-                ("Provider item ID", disconnected.provider_item_id),
+                ("Provider item ID", disconnected.provider_item_id or "-"),
                 ("Outcome", "Disconnected"),
+                ("Remote revocation", disconnected.remote_revocation),
+                (
+                    "Next action",
+                    " ".join(revocation_actions),
+                ),
             ],
         )
 
@@ -752,6 +846,25 @@ def sync_disconnect(
 def sync_pull(
     institution: str | None = typer.Option(
         None, "--institution", help="Sync specific institution by name."
+    ),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Select plaid or simplefin."
+    ),
+    connection_id: str | None = typer.Option(
+        None, "--connection-id", help="Select one exact broker connection."
+    ),
+    history_start: str | None = typer.Option(
+        None, "--history-start", help="Request history from this ISO date."
+    ),
+    job_id: str | None = typer.Option(
+        None,
+        "--job-id",
+        help="Repair an already ingested job without fetching provider data.",
+    ),
+    local_only: bool = typer.Option(
+        False,
+        "--local-only",
+        help="Repair local setup/reports without broker access; requires --job-id.",
     ),
     force: bool = typer.Option(
         False, "--force", "-f", help="Reset cursor and re-fetch full history."
@@ -775,14 +888,36 @@ def sync_pull(
     terminal = get_terminal_policy()
     try:
         with handle_cli_errors():
-            with _build_sync_service() as service:
+            from moneybin.services.sync_service import validate_pull_selectors
+
+            history = validate_pull_selectors(
+                institution=institution,
+                provider=provider,
+                connection_id=connection_id,
+                history_start=history_start,
+                job_id=job_id,
+                local_only=local_only,
+                force=force,
+            )
+            with _build_sync_service(local_only=local_only) as service:
                 with operation_progress(terminal, quiet=quiet) as report:
-                    result = service.pull(
-                        institution=institution,
-                        force=force,
-                        refresh=refresh,
-                        progress=report,
-                    )
+                    if job_id is not None:
+                        result = service.recover(
+                            job_id,
+                            local_only=local_only,
+                            refresh=refresh,
+                            progress=report,
+                        )
+                    else:
+                        result = service.pull(
+                            institution=institution,
+                            provider=provider,
+                            connection_id=connection_id,
+                            history_start=history,
+                            force=force,
+                            refresh=refresh,
+                            progress=report,
+                        )
     except KeyboardInterrupt:
         if output == OutputFormat.TEXT:
             typer.echo("! Sync cancelled")
@@ -819,8 +954,9 @@ def sync_pull(
         render_or_json(
             sync_pull_envelope(
                 result,
-                actions=[
-                    "Run 'moneybin sync status' to see connection health going forward",
+                actions=sync_repair_actions(result, cli=True)
+                or [
+                    "Run 'moneybin sync status' to see connection health going forward"
                 ],
             ),
             output,
@@ -879,6 +1015,7 @@ def sync_status(
     with handle_cli_errors():
         with _build_sync_service() as service:
             connections = service.list_connections()
+            recovery_jobs = service.recovery_jobs()
 
     if output == OutputFormat.JSON:
         from moneybin.adapters.sync_adapters import (
@@ -891,6 +1028,8 @@ def sync_status(
         render_or_json(
             sync_status_envelope(
                 connections,
+                recovery_jobs=recovery_jobs,
+                cli=True,
                 actions=["Use 'moneybin sync pull' to fetch new transactions"],
             ),
             output,
@@ -926,6 +1065,52 @@ def sync_status(
                 terminal=policy,
             )
         )
+        for connection in connections:
+            if connection.provider != "simplefin":
+                continue
+            history = connection.safe_history
+            history_rows: list[tuple[str, str]] = [
+                ("Connection", connection.id),
+                (
+                    "Acknowledged sync",
+                    connection.last_sync.isoformat()
+                    if connection.last_sync
+                    else "Unknown",
+                ),
+                (
+                    "Provider balance",
+                    connection.provider_balance_at.isoformat()
+                    if connection.provider_balance_at
+                    else "Unknown",
+                ),
+                ("History", connection.history_phase),
+                ("Local setup", connection.setup_state),
+                ("Refresh", connection.refresh_state),
+            ]
+            if history is not None:
+                history_rows.extend([
+                    ("History observed", history.observed_at.isoformat()),
+                    ("Replay required", "Yes" if history.replay_required else "No"),
+                    (
+                        "Discovery history target",
+                        str(history.discovery_history_target)
+                        if history.discovery_history_target
+                        else "None requested",
+                    ),
+                ])
+                for account in history.accounts:
+                    intervals = (
+                        "; ".join(
+                            f"[{window.start.isoformat()}, {window.end.isoformat()})"
+                            for window in account.acknowledged_intervals
+                        )
+                        or "No acknowledged intervals"
+                    )
+                    history_rows.append((
+                        account.display_name,
+                        f"{intervals}; older target={account.history_target or 'none requested'}",
+                    ))
+            parts.append(build_summary(history_rows, title="History and local work"))
         guidance = [
             (c.institution_name or "Institution", c.guidance)
             for c in connections
@@ -933,6 +1118,26 @@ def sync_status(
         ]
         if guidance:
             parts.append(build_summary(guidance, title="Needs attention"))
+    if recovery_jobs:
+        from moneybin.adapters.sync_adapters import sync_job_recovery_actions
+
+        for job in recovery_jobs:
+            parts.append(
+                build_summary(
+                    [
+                        ("Job", job.job_id),
+                        ("Ingestion", job.ingestion_state),
+                        ("Acknowledgement", job.ack_state),
+                        ("Local setup", job.setup_state),
+                        ("Refresh", job.refresh_state),
+                        *(
+                            ("Recovery", action)
+                            for action in sync_job_recovery_actions(job, cli=True)
+                        ),
+                    ],
+                    title="Local recovery",
+                )
+            )
     emit_human_result(
         compose_human_result(parts),
         policy=policy,

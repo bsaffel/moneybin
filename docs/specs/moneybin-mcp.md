@@ -100,10 +100,10 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch or delete a saved format | Confirmed destructive / at least low — rollback is permanent with no undo; format deletion is audited and `system_audit_undo`-recoverable |
 | `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / at least critical |
 | `import_labels_set` | `import_id`, `labels` | Import-label target state | Audited write / at least medium |
-| `sync_link` | `institution`, `mode` | Start mediated provider linking | Credential flow / at least medium |
+| `sync_link` | `connection_id`, `institution`, `mode`, `provider` | Start mediated provider linking | Credential flow / at least medium |
 | `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / up to medium / session-derived |
-| `sync_pull` | `institution` | Pull linked-provider data | External mutation / at least medium |
-| `sync_disconnect` | `confirmation_token`, `institution`, `mode`, `provider_item_id` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / at least low |
+| `sync_pull` | `connection_id`, `force`, `history_start`, `institution`, `job_id`, `local_only`, `provider`, `refresh` | Pull linked-provider data | External mutation / at least medium |
+| `sync_disconnect` | `confirmation_token`, `connection_id`, `institution`, `mode`, `provider_item_id` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / at least medium |
 | `gsheet` | `connection_id`, `view` | Google Sheets connections | Read / dynamic / up to medium / connection-derived |
 | `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `url` | Bind user-controlled storage | Credential flow / dynamic / up to medium / connection-derived |
 | `gsheet_pull` | `connection_id` | Pull sheet data | External mutation / at least medium |

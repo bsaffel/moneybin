@@ -423,8 +423,8 @@ never ask the user or model to invent it. Default new links remain Plaid; unqual
 version-2 pulls cover supported connected grants. An ambiguous institution name
 returns candidate opaque IDs instead of choosing the first match.
 
-CLI: `sync link --provider simplefin`, `sync pull --connection <id>`, existing
-`sync status`, and `sync disconnect --connection <id>`. MCP extends the existing
+CLI: `sync link --provider simplefin`, `sync pull --connection-id <id>`, existing
+`sync status`, and `sync disconnect --connection-id <id>`. MCP extends the existing
 tools with the equivalent selectors; no additional registered tool. Validate
 metadata budget, capability fixtures, selection/argument/safety evaluations,
 and human/agent parity before admitting changed schemas.
@@ -435,6 +435,39 @@ outcomes with partial/deferred scopes and recovery actions. Keep row counts
 and refresh stages; a nonempty result must not imply a complete result. CLI
 partial/failed outcomes use its existing incomplete-run exit behavior; MCP
 returns explicit completeness and actions rather than a success-only summary.
+
+The client records operational phases in `app.sync_job_state`, scoped to the
+persistent local profile identity. Its protected `job_details` JSON retains
+the source and acknowledgement evidence. `sync pull --job-id <uuid>` (MCP
+`sync_pull(job_id=...)`) resumes status/ack confirmation and local repair using
+retained Raw evidence; it never triggers or downloads another provider job.
+`--local-only` (`local_only=true`) excludes broker construction/authentication
+and limits refresh to local matching, transformation, categorization and
+identity steps. Unknown or pending acknowledgement remains visible during
+offline repair. A terminal unavailable job cannot regain acknowledgement or
+missing retrieval through this repair path; a new exact-connection pull is an
+explicit separate action. Already committed ingestion remains intact.
+Status includes `recovery_jobs` from this profile's persisted operational state,
+with job UUIDs, bounded phase facts and the existing same-job recovery actions.
+Older unfinished jobs remain discoverable after restart, even if a newer job
+completed or the original remote grant was removed or replaced. These records
+make no assertion about current remote health. Terminal unavailable ack alone
+is not a recoverable obligation; independent local work remains recoverable.
+
+Failure while inspecting a committed result retains the actual ingestion,
+acknowledgement, setup and refresh facts. The bounded
+`local_inspection_failed` code makes the outcome incomplete and directs local
+repair; a successful local inspection clears it. It never authorizes refetch.
+
+Public history uses accepted canonical account IDs and existing account display
+privacy. Unresolved accounts have null IDs and fixed labels, retaining each
+interval and target until local setup/review resolves identity. Public fields
+never contain provider-native identifiers or scopes. `scope_kind` identifies
+only the fixed general/connection/account outcome category. A pre-ack snapshot,
+confirmed post-ack snapshot and current listing observation remain distinct;
+missing historical snapshots are unknown. Empty discovery still preserves an
+outstanding history target. Neither a fetched window nor a missing target
+certifies global history completeness.
 
 Map failures to safe broker codes: authentication/revocation, payment required,
 rate limited, upstream unavailable, unsupported protocol, invalid payload,
@@ -472,10 +505,23 @@ from a fetch failure.
 ## Disconnect, limits, and verification
 
 Confirmation lists every institution/account affected by removing the grant.
+The mediated `DELETE /connections/{connection_id}` request requires the confirmed
+positive `credential_generation` and `accounts` catalog in its JSON body.
+The broker checks generation and the native account identity set under its
+existing publication/connection locks before changing custody or jobs. Display
+labels and ordering do not change that set. A changed confirmation returns a
+fixed 409 refusal; the client requires reinspection and reconfirmation without
+automatically retrying. A missing precondition is invalid (422). The response
+identifies the removed generation and its actual account catalog, which the
+client validates before projecting labels. These native fields stay inside
+broker transport; no public native-identity selector is added. The legacy
+`DELETE /institutions/{id}` contract remains unchanged.
+
 Disconnect stops requests, deletes broker credential custody, invalidates its
 jobs and preserves imported warehouse history. SimpleFIN defines no standard
 programmatic revocation endpoint: return `remote_revocation="user_action_required"`
-and direct the user to disable the token in Bridge. Never claim provider access
+and direct the user to disable the token in Bridge. If Plaid revocation fails,
+direct the user to Plaid or the institution's connected-app access controls. Never claim provider access
 has been revoked merely because the broker forgot it. Logout only ends broker
 authentication; profile deletion must explain any surviving remote connection.
 Pending disconnect races cannot acknowledge or restore deleted credentials.

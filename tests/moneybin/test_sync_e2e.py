@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 import yaml
 
-from moneybin.connectors.sync_models import PlaidSyncDataResponse, SyncTriggerResponse
+from moneybin.connectors.sync_models import (
+    PlaidSyncDataResponse,
+    SyncAckV2Response,
+    SyncEnvelopeV2,
+    SyncStatusV2Response,
+    SyncTriggerV2Response,
+)
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.sync_service import SyncService
@@ -28,12 +36,66 @@ def test_full_sync_pipeline_to_core(db: Database) -> None:
         sync_data = PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
     client = MagicMock()
-    client.trigger_sync.return_value = SyncTriggerResponse(
-        job_id=sync_data.metadata.job_id,
+    client.consumer_id = "test-consumer"
+    job_id = uuid5(NAMESPACE_URL, f"sync-job:{sync_data.metadata.job_id}")
+    source = {
+        "provider": "plaid",
+        "connection_id": uuid5(NAMESPACE_URL, "sync-connection:e2e"),
+        "credential_generation": 1,
+        "batches": [
+            {
+                "batch_id": uuid5(NAMESPACE_URL, "sync-batch:e2e"),
+                "fetched_at": datetime(2026, 4, 8, tzinfo=UTC),
+                "window": None,
+                "payload": sync_data.model_dump(mode="json"),
+            }
+        ],
+        "outcomes": [
+            {
+                "account_id": None,
+                "native_scope": {
+                    "kind": "plaid_item",
+                    "provider_item_id": item.provider_item_id,
+                },
+                "window": None,
+                "status": "complete",
+                "error_code": None,
+            }
+            for item in sync_data.metadata.institutions
+        ],
+    }
+    envelope = SyncEnvelopeV2.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "completed",
+        "sources": [source],
+    })
+    results = [item.model_dump(exclude={"batches"}) for item in envelope.sources]
+    client.trigger_sync.return_value = SyncTriggerV2Response(
+        job_id=job_id,
+        contract_version=2,
         status="completed",
         transaction_count=len(sync_data.transactions),
     )
-    client.get_data.return_value = sync_data
+    client.get_data.return_value = envelope
+    client.get_status.return_value = SyncStatusV2Response.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "completed",
+        "transaction_count": len(sync_data.transactions),
+        "error": None,
+        "started_at": datetime(2026, 4, 8, tzinfo=UTC),
+        "completed_at": datetime(2026, 4, 8, 0, 1, tzinfo=UTC),
+        "acked_at": None,
+        "results": results,
+    })
+    client.ack.return_value = SyncAckV2Response.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "acked",
+        "acked_at": datetime(2026, 4, 8, 0, 2, tzinfo=UTC),
+        "results": results,
+    })
     client.list_institutions.return_value = []
 
     loader = PlaidExtractor(db)

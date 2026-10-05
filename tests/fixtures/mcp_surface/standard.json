@@ -1,5 +1,5 @@
 {
-  "sha256": "bcbdd74faa3a3c4b78e0464bf0752a86bd4634764a49ce8462ad994c83642208",
+  "sha256": "5f89cbb6e86c7b67178c41fe5fdb9ac100f2a80e5e0052cf7cc0002275771e14",
   "tool_count": 50,
   "tools": [
     {
@@ -3390,6 +3390,17 @@
               ],
               "default": null
             },
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "institution": {
               "anyOf": [
                 {
@@ -3427,11 +3438,11 @@
         "title": "Sync Disconnect"
       },
       "description_bytes": 393,
-      "input_schema_bytes": 379,
+      "input_schema_bytes": 456,
       "name": "sync_disconnect",
       "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 995
+      "total_bytes": 1072
     },
     {
       "annotation_bytes": 90,
@@ -3451,6 +3462,17 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "institution": {
               "anyOf": [
                 {
@@ -3469,6 +3491,21 @@
                 "login"
               ],
               "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "plaid",
+                    "simplefin"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "type": "object"
@@ -3477,11 +3514,11 @@
         "title": "Sync Link"
       },
       "description_bytes": 214,
-      "input_schema_bytes": 216,
+      "input_schema_bytes": 394,
       "name": "sync_link",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 639
+      "total_bytes": 817
     },
     {
       "annotation_bytes": 90,
@@ -3501,6 +3538,32 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "force": {
+              "default": false,
+              "type": "boolean"
+            },
+            "history_start": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "institution": {
               "anyOf": [
                 {
@@ -3511,6 +3574,40 @@
                 }
               ],
               "default": null
+            },
+            "job_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "local_only": {
+              "default": false,
+              "type": "boolean"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "plaid",
+                    "simplefin"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "refresh": {
+              "default": true,
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -3519,11 +3616,11 @@
         "title": "Sync Pull"
       },
       "description_bytes": 221,
-      "input_schema_bytes": 136,
+      "input_schema_bytes": 596,
       "name": "sync_pull",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 566
+      "total_bytes": 1026
     },
     {
       "annotation_bytes": 89,
@@ -5323,5 +5420,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 64296
+  "total_bytes": 65011
 }

@@ -55,6 +55,8 @@ Usage: `moneybin sync link [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--institution` | text |  | Re-authenticate this connected institution, or a label for a new one. |
+| `--provider` | text |  | plaid or simplefin |
+| `--connection-id` | text |  | Exact existing connection UUID |
 | `--no-pull` | flag |  | Skip the auto-pull after connecting. |
 | `--no-browser` | flag |  | Print URL only; don't try to open a browser. |
 | `--yes, -y` | flag |  | Skip re-auth confirmation prompt. |
@@ -91,6 +93,7 @@ Usage: `moneybin sync disconnect [OPTIONS]`
 |---|---|---|---|
 | `--institution` | text |  | Institution name to disconnect. Ambiguous when it has more than one connection (e.g. after a relink) — use --provider-item-id instead. |
 | `--provider-item-id` | text |  | Exact connection to disconnect, from `moneybin sync status`. Mutually exclusive with --institution. |
+| `--connection-id` | text |  | Exact grant UUID from sync status |
 | `--yes, -y` | flag |  | Skip confirmation prompt. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
@@ -105,6 +108,11 @@ Usage: `moneybin sync pull [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--institution` | text |  | Sync specific institution by name. |
+| `--provider` | text |  | Select plaid or simplefin. |
+| `--connection-id` | text |  | Select one exact broker connection. |
+| `--history-start` | text |  | Request history from this ISO date. |
+| `--job-id` | text |  | Repair an already ingested job without fetching provider data. |
+| `--local-only` | flag |  | Repair local setup/reports without broker access; requires --job-id. |
 | `--force, -f` | flag |  | Reset cursor and re-fetch full history. |
 | `--refresh / --no-refresh` | flag | `true` | Run the post-load refresh pipeline (matching + transforms + categorization) after a successful pull so core.* models (dim_accounts, etc.) reflect the new data before this command returns. Default: on. Pass --no-refresh to defer; transforms dominates pull latency, so high-frequency callers should defer and run refresh on a separate schedule. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

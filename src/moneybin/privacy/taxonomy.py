@@ -393,6 +393,17 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     # INTERNAL_CRITICAL). `app` is not floored, so every column needs an
     # explicit class now — an undeclared one fails closed to UNRESOLVED and
     # whole-masks, silently hiding a column that used to display.
+    ("app", "sync_job_state"): {
+        "job_id": DataClass.RECORD_ID,
+        "consumer_id": DataClass.RECORD_ID,
+        "ingested_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "ack_state": DataClass.TXN_TYPE,
+        "acked_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "setup_state": DataClass.TXN_TYPE,
+        "refresh_state": DataClass.TXN_TYPE,
+        "job_details": DataClass.COMPOSITE_IDENTIFIER,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "import_log"): {
         "account_names": (
             # Same value as raw.tabular_accounts.account_name / the OFX

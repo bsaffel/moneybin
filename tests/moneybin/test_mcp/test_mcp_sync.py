@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -15,10 +16,15 @@ from moneybin.connectors.sync_models import (
     LinkInitiateResponse,
     PullResult,
     SyncConnectionView,
+    SyncDisconnectResult,
 )
 from moneybin.errors import UserError
 from moneybin.mcp.tools.sync import register_sync_tools
 from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
+
+
+def _disconnected(connection: ConnectedInstitution) -> SyncDisconnectResult:
+    return SyncDisconnectResult(**connection.model_dump(), remote_revocation="revoked")
 
 
 @pytest.mark.unit
@@ -227,18 +233,18 @@ async def test_sync_status_returns_low_sensitivity(mock_build: MagicMock) -> Non
 
 
 @pytest.mark.unit
-@patch("moneybin.mcp.tools.sync._build_sync_client")
+@patch("moneybin.mcp.tools.sync._build_sync_service")
 async def test_sync_link_returns_link_url_with_medium_sensitivity(
-    mock_client_builder: MagicMock,
+    mock_build: MagicMock,
 ) -> None:
-    client = MagicMock()
-    client.initiate_link.return_value = LinkInitiateResponse(
+    service = MagicMock()
+    service.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_abc",
         link_url="https://hosted.plaid.com/link/xyz",
         link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    mock_client_builder.return_value = client
+    mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_link
 
     envelope = sync_link()
@@ -247,6 +253,9 @@ async def test_sync_link_returns_link_url_with_medium_sensitivity(
     assert envelope.data.link_url == "https://hosted.plaid.com/link/xyz"
     # Agent should know about expiration to decide when to give up polling
     assert envelope.data.expiration is not None
+    service.initiate_link.assert_called_once_with(
+        institution=None, provider=None, connection_id=None
+    )
 
 
 @pytest.mark.unit
@@ -313,12 +322,14 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution == "Chase"
         assert provider_item_id is None
-        verify(connection)  # type: ignore[operator]
-        return connection
+        assert connection_id is None
+        verify(connection)
+        return _disconnected(connection)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -337,9 +348,9 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
     )
 
     service.disconnect_confirmed.assert_called_once()
-    # SyncInstitutionDisconnectView has only TXN_TYPE + INSTITUTION + RECORD_ID
-    # fields → Tier.LOW derived sensitivity
-    assert envelope.summary.sensitivity == "low"
+    # Affected account names are USER_NOTE, so the disconnect view is medium.
+    assert envelope.summary.sensitivity == "medium"
+    assert envelope.data.remote_revocation == "revoked"
 
 
 @pytest.mark.unit
@@ -363,12 +374,14 @@ async def test_sync_disconnect_refuses_confirmation_after_live_target_changes(
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution == "Chase"
         assert provider_item_id is None
-        verify(changed)  # type: ignore[operator]
-        return changed
+        assert connection_id is None
+        verify(changed)
+        return _disconnected(changed)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -408,12 +421,14 @@ async def test_sync_disconnect_by_provider_item_id_threads_through_to_service(
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution is None
         assert provider_item_id == "item_b"
-        verify(connection)  # type: ignore[operator]
-        return connection
+        assert connection_id is None
+        verify(connection)
+        return _disconnected(connection)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -421,7 +436,7 @@ async def test_sync_disconnect_by_provider_item_id_threads_through_to_service(
 
     required = await sync_disconnect(provider_item_id="item_b")
     service.plan_disconnect.assert_called_once_with(
-        institution=None, provider_item_id="item_b"
+        institution=None, provider_item_id="item_b", connection_id=None
     )
     assert required.error is not None
 
@@ -459,12 +474,14 @@ async def test_sync_disconnect_keeps_nameless_institution_null(
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution is None
         assert provider_item_id == "item_c"
-        verify(connection)  # type: ignore[operator]
-        return connection
+        assert connection_id is None
+        verify(connection)
+        return _disconnected(connection)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -509,10 +526,14 @@ async def test_sync_disconnect_result_distinguishes_same_named_connections(
             *,
             institution: str | None,
             provider_item_id: str | None,
-            verify: object,
-        ) -> ConnectedInstitution:
-            verify(target)  # type: ignore[operator]
-            return target
+            connection_id: str | None,
+            verify: Callable[[ConnectedInstitution], None],
+        ) -> SyncDisconnectResult:
+            assert institution is None
+            assert provider_item_id == target.provider_item_id
+            assert connection_id is None
+            verify(target)
+            return _disconnected(target)
 
         service.disconnect_confirmed.side_effect = disconnect_confirmed
         mock_build.return_value.__enter__.return_value = service
@@ -586,12 +607,14 @@ async def test_sync_disconnect_both_selectors_retry_does_not_consume_token(
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution is None
         assert provider_item_id == "item_x"
-        verify(connection)  # type: ignore[operator]
-        return connection
+        assert connection_id is None
+        verify(connection)
+        return _disconnected(connection)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service

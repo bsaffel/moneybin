@@ -110,6 +110,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_transaction_tags.sql",
     "app_transaction_splits.sql",
     "app_import_log.sql",
+    "app_sync_job_state.sql",
     "app_imports.sql",
     "app_import_previews.sql",
     "raw_import_preview_snapshots.sql",

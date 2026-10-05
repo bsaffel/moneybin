@@ -229,6 +229,9 @@ def profile_delete(
             return
     try:
         svc.delete(normalized)
+        typer.echo(
+            "Local profile deleted. Remote grants remain; disconnect them before deletion or revoke SimpleFIN grants directly in Bridge."
+        )
         _emit_receipt("Profile deleted", [("Profile", normalized)])
     except ProfileNotFoundError as e:
         logger.error(str(e))

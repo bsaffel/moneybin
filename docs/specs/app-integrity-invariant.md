@@ -20,6 +20,16 @@ implemented
 > control-flow bindings conservatively, and preserves the caller and table
 > exemptions in Requirements 7–8.
 
+> **MB-86 sync recovery bookkeeping.** `app.sync_job_state` follows the
+> operational `app.import_log` boundary: `SyncJobStateRepo` owns every runtime
+> mutation, and its `TableRef` makes it subject to the same mutation-routing
+> guard. Its job/consumer identity and acknowledgement, setup and refresh phases
+> are system-written bookkeeping, not user decisions or undoable financial
+> changes. It therefore does not subclass `BaseRepo` or emit paired audit rows.
+> Its protected JSON retains recovery evidence; provider-native observations
+> and immutable source receipts remain in Raw. The initial pending row commits
+> atomically with the whole accepted job, before broker acknowledgement.
+
 > **MB-255 reconciliation (2026-09-17).** Resolved Decision 2 below said
 > `raw.import_log` sits outside Invariant 10 "by design (the schema boundary
 > is load-bearing)." MB-255 moved the table to `app.import_log` —

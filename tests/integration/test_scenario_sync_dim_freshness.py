@@ -11,15 +11,20 @@ the headline staleness bug on the Plaid path.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 import yaml
 
 from moneybin.connectors.sync_models import (
     PlaidSyncDataResponse,
-    SyncTriggerResponse,
+    SyncAckV2Response,
+    SyncEnvelopeV2,
+    SyncStatusV2Response,
+    SyncTriggerV2Response,
 )
 from moneybin.database import Database
 from moneybin.extractors.plaid import PlaidExtractor
@@ -51,6 +56,70 @@ def _build_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Database:
     return db
 
 
+def _set_v2_job(client: MagicMock, native: PlaidSyncDataResponse) -> None:
+    """Serve the native Plaid fixture through one accepted broker v2 job."""
+    client.consumer_id = "test-consumer"
+    job_id = uuid5(NAMESPACE_URL, f"sync-freshness-job:{native.metadata.job_id}")
+    source = {
+        "provider": "plaid",
+        "connection_id": uuid5(NAMESPACE_URL, "sync-freshness-connection"),
+        "credential_generation": 1,
+        "batches": [
+            {
+                "batch_id": uuid5(NAMESPACE_URL, "sync-freshness-batch"),
+                "fetched_at": datetime(2026, 4, 8, tzinfo=UTC),
+                "window": None,
+                "payload": native.model_dump(mode="json"),
+            }
+        ],
+        "outcomes": [
+            {
+                "account_id": None,
+                "native_scope": {
+                    "kind": "plaid_item",
+                    "provider_item_id": item.provider_item_id,
+                },
+                "window": None,
+                "status": "failed" if item.status == "failed" else "complete",
+                "error_code": item.error_code,
+            }
+            for item in native.metadata.institutions
+        ],
+    }
+    envelope = SyncEnvelopeV2.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "completed",
+        "sources": [source],
+    })
+    results = [item.model_dump(exclude={"batches"}) for item in envelope.sources]
+    client.trigger_sync.return_value = SyncTriggerV2Response(
+        job_id=job_id,
+        contract_version=2,
+        status="completed",
+        transaction_count=len(native.transactions),
+    )
+    client.get_data.return_value = envelope
+    client.get_status.return_value = SyncStatusV2Response.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "completed",
+        "transaction_count": len(native.transactions),
+        "error": None,
+        "started_at": datetime(2026, 4, 8, tzinfo=UTC),
+        "completed_at": datetime(2026, 4, 8, 0, 1, tzinfo=UTC),
+        "acked_at": None,
+        "results": results,
+    })
+    client.ack.return_value = SyncAckV2Response.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "acked",
+        "acked_at": datetime(2026, 4, 8, 0, 2, tzinfo=UTC),
+        "results": results,
+    })
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 def test_sync_pull_makes_new_accounts_visible_in_dim_accounts(
@@ -71,12 +140,7 @@ def test_sync_pull_makes_new_accounts_visible_in_dim_accounts(
         sync_data = PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
     client = MagicMock()
-    client.trigger_sync.return_value = SyncTriggerResponse(
-        job_id=sync_data.metadata.job_id,
-        status="completed",
-        transaction_count=len(sync_data.transactions),
-    )
-    client.get_data.return_value = sync_data
+    _set_v2_job(client, sync_data)
 
     loader = PlaidExtractor(db)
     service = SyncService(client=client, db=db, loader=loader)
@@ -122,12 +186,7 @@ def test_sync_pull_no_refresh_leaves_dim_accounts_empty(
         sync_data = PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
     client = MagicMock()
-    client.trigger_sync.return_value = SyncTriggerResponse(
-        job_id=sync_data.metadata.job_id,
-        status="completed",
-        transaction_count=len(sync_data.transactions),
-    )
-    client.get_data.return_value = sync_data
+    _set_v2_job(client, sync_data)
 
     loader = PlaidExtractor(db)
     service = SyncService(client=client, db=db, loader=loader)

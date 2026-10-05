@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 import yaml
@@ -18,7 +19,12 @@ from moneybin.connectors.sync_models import (
     LinkInitiateResponse,
     LinkStatusResponse,
     PlaidSyncDataResponse,
-    SyncTriggerResponse,
+    SyncAccountScope,
+    SyncAckV2Response,
+    SyncDisconnectResponse,
+    SyncEnvelopeV2,
+    SyncStatusV2Response,
+    SyncTriggerV2Response,
 )
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -41,6 +47,9 @@ INVESTMENTS_FIXTURE = (
     / "plaid_investments_sync_response.yaml"
 )
 
+DISCONNECT_A_ID = str(uuid5(NAMESPACE_URL, "sync-disconnect:a"))
+DISCONNECT_B_ID = str(uuid5(NAMESPACE_URL, "sync-disconnect:b"))
+
 
 @pytest.fixture
 def sync_data() -> PlaidSyncDataResponse:
@@ -53,15 +62,86 @@ def loader(db: Database) -> PlaidExtractor:
     return PlaidExtractor(db)
 
 
+def _set_v2_job(
+    client: MagicMock,
+    native: PlaidSyncDataResponse,
+    *,
+    job_label: str | None = None,
+) -> None:
+    """Serve one native Plaid payload through the accepted broker v2 job."""
+    client.consumer_id = "test-consumer"
+    label = job_label or native.metadata.job_id
+    job_id = uuid5(NAMESPACE_URL, f"sync-job:{label}")
+    source = {
+        "provider": "plaid",
+        "connection_id": uuid5(NAMESPACE_URL, f"sync-connection:{label}"),
+        "credential_generation": 1,
+        "batches": [
+            {
+                "batch_id": uuid5(NAMESPACE_URL, f"sync-batch:{label}"),
+                "fetched_at": datetime(2026, 4, 8, tzinfo=UTC),
+                "window": None,
+                "payload": native.model_dump(mode="json"),
+            }
+        ],
+        "outcomes": [
+            {
+                "account_id": None,
+                "native_scope": {
+                    "kind": "plaid_item",
+                    "provider_item_id": item.provider_item_id,
+                },
+                "window": None,
+                "status": "failed" if item.status == "failed" else "complete",
+                "error_code": item.error_code,
+            }
+            for item in native.metadata.institutions
+        ],
+    }
+    envelope = SyncEnvelopeV2.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "completed",
+        "sources": [source],
+    })
+    results = [item.model_dump(exclude={"batches"}) for item in envelope.sources]
+    client.trigger_sync.return_value = SyncTriggerV2Response(
+        job_id=job_id,
+        contract_version=2,
+        status="completed",
+        transaction_count=len(native.transactions),
+    )
+    client.get_data.return_value = envelope
+    client.get_status.return_value = SyncStatusV2Response.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "completed",
+        "transaction_count": len(native.transactions),
+        "error": None,
+        "started_at": datetime(2026, 4, 8, tzinfo=UTC),
+        "completed_at": datetime(2026, 4, 8, 0, 1, tzinfo=UTC),
+        "acked_at": None,
+        "results": results,
+    })
+    client.ack.return_value = SyncAckV2Response.model_validate({
+        "job_id": job_id,
+        "contract_version": 2,
+        "status": "acked",
+        "acked_at": datetime(2026, 4, 8, 0, 2, tzinfo=UTC),
+        "results": results,
+    })
+    client.disconnect.return_value = SyncDisconnectResponse(
+        connection_id=UUID(DISCONNECT_A_ID),
+        credential_generation=1,
+        accounts=[],
+        remote_revocation="revoked",
+    )
+
+
 @pytest.fixture
 def mock_client(sync_data: PlaidSyncDataResponse) -> MagicMock:
     client = MagicMock()
-    client.trigger_sync.return_value = SyncTriggerResponse(
-        job_id=sync_data.metadata.job_id,
-        status="completed",
-        transaction_count=3,
-    )
-    client.get_data.return_value = sync_data
+    _set_v2_job(client, sync_data)
     return client
 
 
@@ -74,12 +154,7 @@ def investments_sync_data() -> PlaidSyncDataResponse:
 @pytest.fixture
 def mock_investments_client(investments_sync_data: PlaidSyncDataResponse) -> MagicMock:
     client = MagicMock()
-    client.trigger_sync.return_value = SyncTriggerResponse(
-        job_id=investments_sync_data.metadata.job_id,
-        status="completed",
-        transaction_count=0,
-    )
-    client.get_data.return_value = investments_sync_data
+    _set_v2_job(client, investments_sync_data)
     return client
 
 
@@ -87,7 +162,7 @@ def mock_investments_client(investments_sync_data: PlaidSyncDataResponse) -> Mag
 def mock_sync_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep pull tests focused on sync orchestration, not SQLMesh execution."""
 
-    def fake_refresh(_db: Database) -> RefreshResult:
+    def fake_refresh(_db: Database, **_kwargs: object) -> RefreshResult:
         return RefreshResult(applied=True, duration_seconds=0.0)
 
     monkeypatch.setattr(sync_service, "_refresh", fake_refresh)
@@ -205,11 +280,15 @@ def test_pull_happy_path(
     mock_client.trigger_sync.assert_called_once_with(
         provider_item_id=None,
         reset_cursor=False,
+        provider=None,
+        connection_id=None,
+        history_start=None,
     )
-    mock_client.get_data.assert_called_once_with(sync_data.metadata.job_id)
+    job_id = str(mock_client.trigger_sync.return_value.job_id)
+    mock_client.get_data.assert_called_once_with(job_id)
     # Canonical happy-path witness also asserts the ack, so an accidental removal
     # of the cursor-ack call is caught here, not only in the dedicated ack test.
-    mock_client.ack.assert_called_once_with(sync_data.metadata.job_id)
+    mock_client.ack.assert_called_once_with(job_id)
     assert result.transactions_loaded == 3
     assert result.accounts_loaded == 2
     assert result.balances_loaded == 2
@@ -235,7 +314,9 @@ def test_pull_acks_after_successful_load(
     """
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.pull()
-    mock_client.ack.assert_called_once_with(sync_data.metadata.job_id)
+    mock_client.ack.assert_called_once_with(
+        str(mock_client.trigger_sync.return_value.job_id)
+    )
 
 
 @pytest.mark.usefixtures("mock_sync_refresh")
@@ -245,12 +326,11 @@ def test_pull_ack_failure_does_not_fail_the_pull(
     loader: PlaidExtractor,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """An ack failure soft-fails: raw data stays loaded, pull succeeds.
+    """An ack failure leaves committed Raw and an explicit recovery obligation.
 
     Ack is best-effort post-load: the data is already durable, so a broker
-    blip just leaves the cursor un-advanced and the next pull re-pulls and
-    dedups — loss-free. The failure must not flip the pull's success
-    accounting or raise.
+    blip leaves the cursor un-advanced. The result must report uncertainty
+    without hiding durable ingestion or raising after the commit.
     """
     mock_client.ack.side_effect = SyncAPIError("broker unreachable")
     service = SyncService(client=mock_client, db=db, loader=loader)
@@ -260,11 +340,14 @@ def test_pull_ack_failure_does_not_fail_the_pull(
     assert result.transactions_loaded == 3
     assert result.accounts_loaded == 2
     assert result.balances_loaded == 2
+    assert result.ingestion_state == "committed"
+    assert result.ack_state == "unknown"
+    assert result.complete is False
     assert any("ack" in r.message.lower() for r in caplog.records)
 
 
 @pytest.mark.usefixtures("mock_sync_refresh")
-def test_pull_with_institution_resolves_to_provider_item_id(
+def test_pull_with_institution_resolves_to_connection_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.list_institutions.return_value = [
@@ -280,8 +363,11 @@ def test_pull_with_institution_resolves_to_provider_item_id(
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.pull(institution="Chase")
     mock_client.trigger_sync.assert_called_once_with(
-        provider_item_id="item_chase_abc",
+        provider_item_id=None,
         reset_cursor=False,
+        provider=None,
+        connection_id="u1",
+        history_start=None,
     )
 
 
@@ -290,7 +376,7 @@ def test_pull_with_unknown_institution_raises(
 ) -> None:
     mock_client.list_institutions.return_value = []
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(UserError, match="no connected institution") as exc_info:
+    with pytest.raises(UserError, match="Connection not found") as exc_info:
         service.pull(institution="UnknownBank")
     assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
 
@@ -305,6 +391,9 @@ def test_pull_with_provider_item_id_skips_resolution(
     mock_client.trigger_sync.assert_called_once_with(
         provider_item_id="item_direct",
         reset_cursor=False,
+        provider=None,
+        connection_id=None,
+        history_start=None,
     )
 
 
@@ -312,7 +401,7 @@ def test_pull_rejects_both_institution_and_provider_item_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(UserError, match="mutually exclusive") as exc_info:
+    with pytest.raises(UserError, match="Choose one institution") as exc_info:
         service.pull(institution="Chase", provider_item_id="item_x")
     assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
 
@@ -326,6 +415,9 @@ def test_pull_with_force_passes_reset_cursor(
     mock_client.trigger_sync.assert_called_once_with(
         provider_item_id=None,
         reset_cursor=True,
+        provider=None,
+        connection_id=None,
+        history_start=None,
     )
 
 
@@ -407,26 +499,17 @@ def test_pull_resolves_raw_securities_left_unbound_by_an_earlier_pull(
     assert bound is not None
 
 
-def test_pull_security_resolution_failure_reports_error_without_failing_the_pull(
+def test_pull_security_resolution_failure_reports_setup_error_after_commit(
     db: Database,
     loader: PlaidExtractor,
     mock_investments_client: MagicMock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A resolver failure keeps raw rows durable but must be REPORTED, not swallowed.
+    """A resolver failure keeps Raw durable and reports failed local setup.
 
-    Mirrors the established best-effort pattern for account resolution
-    (`_resolve_accounts`) ONLY in that the SERVICE call itself must not raise
-    or roll back the pull's success accounting — the load already committed,
-    and retrying the pull is idempotent. But unlike account resolution, which
-    has a staging COALESCE fallback that keeps an unresolved account usable
-    in core, there is NO such fallback for securities: an unresolved
-    security_id reaches core.fct_investment_transactions as NULL and the
-    cost-basis engine silently drops every event carrying it, understating
-    lots and gains with no other signal anywhere. So `security_resolution_error`
-    must be populated (not swallowed into an indistinguishable empty dict) —
-    the CLI turns it into a warning and a non-zero exit, exactly like
-    `transforms_error` (see test_cli_sync.py).
+    Securities cannot safely enter cost-basis calculations without identity.
+    The durable phase state must expose this recovery obligation while the
+    service keeps the already committed provider rows available.
     """
     with patch(
         "moneybin.services.sync_service.SecurityResolver",
@@ -438,8 +521,11 @@ def test_pull_security_resolution_failure_reports_error_without_failing_the_pull
 
     assert result.securities_loaded == 3
     assert result.security_resolution == {}
-    assert result.security_resolution_error == "boom"
-    assert any("Security resolution failed" in r.message for r in caplog.records)
+    assert result.ingestion_state == "committed"
+    assert result.setup_state == "failed"
+    assert result.setup_error_code == "local_setup_failed"
+    assert result.complete is False
+    assert any("local setup requires repair" in r.message for r in caplog.records)
     count = db.execute("SELECT COUNT(*) FROM raw.plaid_securities").fetchone()
     assert count is not None and count[0] == 3
 
@@ -494,7 +580,7 @@ def test_holdings_only_pull_flags_manual_overlap(
     holdings_only = investments_sync_data.model_copy(
         update={"investment_transactions": []}
     )
-    mock_investments_client.get_data.return_value = holdings_only
+    _set_v2_job(mock_investments_client, holdings_only)
     service = SyncService(client=mock_investments_client, db=db, loader=loader)
     service.pull(refresh=False)
     link = db.execute("""
@@ -547,6 +633,9 @@ def test_link_new_institution_auto_pulls(
     mock_client.trigger_sync.assert_called_once_with(
         provider_item_id="item_chase_abc",
         reset_cursor=False,
+        provider=None,
+        connection_id=None,
+        history_start=None,
     )
 
 
@@ -633,6 +722,7 @@ def test_link_re_auth_resolves_institution_name(
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.link(institution="Chase", auto_pull=False)
     mock_client.initiate_link.assert_called_once_with(
+        provider="plaid",
         provider_item_id="item_existing",
         return_to=None,
     )
@@ -664,6 +754,7 @@ def test_link_falls_through_to_new_when_institution_not_matched(
     service.link(institution="Wells Fargo", auto_pull=False)
     # provider_item_id is None — new-connection flow, not update mode
     mock_client.initiate_link.assert_called_once_with(
+        provider="plaid",
         provider_item_id=None,
         return_to=None,
     )
@@ -702,10 +793,8 @@ def test_resolve_institution_raises_on_ambiguous_name(
 ) -> None:
     """Two connections sharing institution_name must not silently map to one.
 
-    The message must be self-sufficient: it names both candidate ids and both
-    linked timestamps, and points at the one caller (disconnect) that can
-    actually target a single connection by provider_item_id — `pull`,
-    `initiate_link`, and `plan_disconnect` itself have no way to accept one.
+    The message must be self-sufficient: it names both connection ids and
+    linked timestamps, then points to an exact connection selector.
     """
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
@@ -726,20 +815,13 @@ def test_resolve_institution_raises_on_ambiguous_name(
         ),
     ]
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(
-        UserError, match="multiple connected institutions match"
-    ) as exc_info:
+    with pytest.raises(UserError, match="Multiple connections match") as exc_info:
         service.pull(institution="Chase")
     assert exc_info.value.code == error_codes.SYNC_INSTITUTION_AMBIGUOUS
     message = str(exc_info.value)
-    assert "item_a (linked 2026-01-05 09:00 UTC)" in message
-    assert "item_b (linked 2026-02-10 14:30 UTC)" in message
-    assert (
-        "Only disconnect can target one of several same-named connections: "
-        "remove the extra one by provider_item_id "
-        "(`moneybin sync disconnect --provider-item-id <id>`, or "
-        "`sync_disconnect` over MCP), then retry."
-    ) in message
+    assert "u1 (linked 2026-01-05)" in message
+    assert "u2 (linked 2026-02-10)" in message
+    assert "--connection-id or connection_id" in message
 
 
 def test_list_connections_returns_views_with_guidance(
@@ -771,7 +853,8 @@ def test_list_connections_returns_views_with_guidance(
     assert chase.guidance is None
     assert chase.error_code is None
     assert schwab.guidance is not None
-    assert "Schwab" in schwab.guidance
+    assert "this connection" in schwab.guidance
+    assert "Schwab" not in schwab.guidance
     assert "sync link" in schwab.guidance
 
 
@@ -807,7 +890,8 @@ def test_list_connections_threads_error_code(
     assert bank_a.error_code == "ITEM_LOGIN_REQUIRED"
     # Known error code should trigger specific guidance (not the generic fallback)
     assert bank_a.guidance is not None
-    assert "BankA" in bank_a.guidance
+    assert "re-authentication" in bank_a.guidance
+    assert "BankA" not in bank_a.guidance
 
     assert bank_b.error_code is None
     # Unknown/absent error code falls back to generic guidance
@@ -834,7 +918,8 @@ def test_list_connections_unrecognized_error_code_falls_back_to_generic_guidance
     views = service.list_connections()
     bank_a = views[0]
 
-    assert bank_a.error_code == "WEIRD_NEW_CODE"
+    assert bank_a.error_code == "provider_error"
+    assert "WEIRD_NEW_CODE" not in bank_a.model_dump_json()
     assert bank_a.guidance is not None
     assert "sync link" in bank_a.guidance
 
@@ -842,26 +927,41 @@ def test_list_connections_unrecognized_error_code_falls_back_to_generic_guidance
 def test_disconnect_resolves_institution_and_calls_client(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
+    account = SyncAccountScope.model_validate({
+        "account_id": "account_a",
+        "native_scope": {"kind": "plaid_item", "provider_item_id": "item_a"},
+        "name": "Checking",
+    })
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
-            id="conn_uuid",
+            id=DISCONNECT_A_ID,
             provider_item_id="item_a",
             provider="plaid",
             institution_name="Chase",
             status="active",
             created_at=datetime(2026, 3, 15, tzinfo=UTC),
+            credential_generation=2,
+            accounts=[account],
         ),
     ]
+    mock_client.disconnect.return_value = SyncDisconnectResponse(
+        connection_id=UUID(DISCONNECT_A_ID),
+        credential_generation=2,
+        accounts=[account],
+        remote_revocation="revoked",
+    )
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.disconnect(institution="Chase")
-    mock_client.disconnect.assert_called_once_with("conn_uuid")
+    mock_client.disconnect.assert_called_once_with(
+        DISCONNECT_A_ID, credential_generation=2, accounts=[account]
+    )
 
 
 def test_disconnect_confirmed_verifies_live_connection_before_client_delete(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     connection = ConnectedInstitution(
-        id="conn_uuid",
+        id=DISCONNECT_A_ID,
         provider_item_id="item_a",
         provider="plaid",
         institution_name="Chase",
@@ -878,9 +978,13 @@ def test_disconnect_confirmed_verifies_live_connection_before_client_delete(
 
     result = service.disconnect_confirmed(institution="Chase", verify=verify)
 
-    assert result == connection
+    assert result.id == connection.id
+    assert result.provider_item_id == connection.provider_item_id
+    assert result.remote_revocation == "revoked"
     assert verified == [connection]
-    mock_client.disconnect.assert_called_once_with("conn_uuid")
+    mock_client.disconnect.assert_called_once_with(
+        DISCONNECT_A_ID, credential_generation=1, accounts=[]
+    )
 
 
 def test_disconnect_confirmed_does_not_delete_when_live_verification_fails(
@@ -888,7 +992,7 @@ def test_disconnect_confirmed_does_not_delete_when_live_verification_fails(
 ) -> None:
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
-            id="conn_uuid",
+            id=DISCONNECT_A_ID,
             provider_item_id="item_a",
             provider="plaid",
             institution_name="Chase",
@@ -921,7 +1025,7 @@ def _two_items_same_institution() -> list[ConnectedInstitution]:
     """Two connections sharing an institution name (post-relink), one per item."""
     return [
         ConnectedInstitution(
-            id="conn_a",
+            id=DISCONNECT_A_ID,
             provider_item_id="item_a",
             provider="plaid",
             institution_name="Chase",
@@ -929,7 +1033,7 @@ def _two_items_same_institution() -> list[ConnectedInstitution]:
             created_at=datetime(2026, 1, 5, tzinfo=UTC),
         ),
         ConnectedInstitution(
-            id="conn_b",
+            id=DISCONNECT_B_ID,
             provider_item_id="item_b",
             provider="plaid",
             institution_name="Chase",
@@ -948,7 +1052,7 @@ def test_plan_disconnect_by_provider_item_id_resolves_among_duplicates(
 
     resolved = service.plan_disconnect(provider_item_id="item_b")
 
-    assert resolved.id == "conn_b"
+    assert resolved.id == DISCONNECT_B_ID
     assert resolved.provider_item_id == "item_b"
 
 
@@ -961,8 +1065,10 @@ def test_disconnect_by_provider_item_id_deletes_the_correct_internal_id(
 
     result = service.disconnect(provider_item_id="item_a")
 
-    assert result.id == "conn_a"
-    mock_client.disconnect.assert_called_once_with("conn_a")
+    assert result.id == DISCONNECT_A_ID
+    mock_client.disconnect.assert_called_once_with(
+        DISCONNECT_A_ID, credential_generation=1, accounts=[]
+    )
 
 
 def test_plan_disconnect_unknown_provider_item_id_raises(
@@ -996,13 +1102,13 @@ def test_plan_disconnect_requires_institution_or_provider_item_id(
     assert exc_info.value.code == error_codes.SYNC_INSTITUTION_REQUIRED
 
 
-def test_ambiguous_institution_error_names_provider_item_id(
+def test_ambiguous_institution_error_names_connection_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     """The dead-end message must name a parameter the caller can actually use."""
     mock_client.list_institutions.return_value = _two_items_same_institution()
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(UserError, match="provider_item_id") as exc_info:
+    with pytest.raises(UserError, match="connection_id") as exc_info:
         service.plan_disconnect(institution="Chase")
     assert exc_info.value.code == error_codes.SYNC_INSTITUTION_AMBIGUOUS
 
@@ -1028,7 +1134,7 @@ class TestPullAutoRefreshes:
 
         calls = 0
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             nonlocal calls
             calls += 1
             return RefreshResult(applied=True, duration_seconds=0.05)
@@ -1060,7 +1166,7 @@ class TestPullAutoRefreshes:
         from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             return RefreshResult(
                 applied=True, duration_seconds=0.05, transfers_retired=2
             )
@@ -1083,7 +1189,9 @@ class TestPullAutoRefreshes:
 
         received: list[object] = []
 
-        def fake_refresh(_db: object, *, progress: object) -> RefreshResult:
+        def fake_refresh(
+            _db: object, *, progress: object, **_kwargs: object
+        ) -> RefreshResult:
             received.append(progress)
             return RefreshResult(applied=True, duration_seconds=0.05)
 
@@ -1112,7 +1220,7 @@ class TestPullAutoRefreshes:
 
         calls = 0
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             nonlocal calls
             calls += 1
             return RefreshResult(applied=True, duration_seconds=0.0)
@@ -1139,7 +1247,7 @@ class TestPullAutoRefreshes:
 
         calls = 0
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             nonlocal calls
             calls += 1
             return RefreshResult(applied=True, duration_seconds=0.0)
@@ -1147,13 +1255,10 @@ class TestPullAutoRefreshes:
         monkeypatch.setattr(mod, "_refresh", fake_refresh)
 
         empty_client = MagicMock()
-        empty_client.trigger_sync.return_value = SyncTriggerResponse(
-            job_id="job_empty", status="completed", transaction_count=0
-        )
         empty_data = sync_data.model_copy(
             update={"accounts": [], "transactions": [], "balances": []}
         )
-        empty_client.get_data.return_value = empty_data
+        _set_v2_job(empty_client, empty_data, job_label="job_empty")
 
         service = SyncService(client=empty_client, db=db, loader=loader)
         result = service.pull()
@@ -1184,7 +1289,7 @@ class TestPullAutoRefreshes:
 
         calls = 0
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             nonlocal calls
             calls += 1
             return RefreshResult(applied=True, duration_seconds=0.0)
@@ -1215,10 +1320,7 @@ class TestPullAutoRefreshes:
             }
         )
         client = MagicMock()
-        client.trigger_sync.return_value = SyncTriggerResponse(
-            job_id="job_liquidated", status="completed", transaction_count=0
-        )
-        client.get_data.return_value = receipt_only
+        _set_v2_job(client, receipt_only, job_label="job_liquidated")
 
         service = SyncService(client=client, db=db, loader=loader)
         result = service.pull()
@@ -1255,7 +1357,7 @@ class TestPullAutoRefreshes:
 
         calls = 0
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             nonlocal calls
             calls += 1
             return RefreshResult(applied=True, duration_seconds=0.0)
@@ -1284,10 +1386,7 @@ class TestPullAutoRefreshes:
             }
         )
         client = MagicMock()
-        client.trigger_sync.return_value = SyncTriggerResponse(
-            job_id="job_prices", status="completed", transaction_count=0
-        )
-        client.get_data.return_value = price_only
+        _set_v2_job(client, price_only, job_label="job_prices")
 
         service = SyncService(client=client, db=db, loader=loader)
         result = service.pull()
@@ -1343,7 +1442,7 @@ class TestPullAutoRefreshes:
 
         calls = 0
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             nonlocal calls
             calls += 1
             return RefreshResult(applied=True, duration_seconds=0.0)
@@ -1362,10 +1461,7 @@ class TestPullAutoRefreshes:
         )
 
         empty_client = MagicMock()
-        empty_client.trigger_sync.return_value = SyncTriggerResponse(
-            job_id="job_selfheal", status="completed", transaction_count=0
-        )
-        empty_client.get_data.return_value = sync_data.model_copy(
+        empty_data = sync_data.model_copy(
             update={
                 "accounts": [],
                 "transactions": [],
@@ -1376,6 +1472,7 @@ class TestPullAutoRefreshes:
                 "investment_holdings": [],
             }
         )
+        _set_v2_job(empty_client, empty_data, job_label="job_selfheal")
 
         service = SyncService(client=empty_client, db=db, loader=loader)
         result = service.pull()
@@ -1404,7 +1501,7 @@ class TestPullAutoRefreshes:
 
         calls = 0
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             nonlocal calls
             calls += 1
             return RefreshResult(applied=True, duration_seconds=0.0)
@@ -1433,16 +1530,14 @@ class TestPullAutoRefreshes:
             }
         )
         empty_client = MagicMock()
-        empty_client.trigger_sync.return_value = SyncTriggerResponse(
-            job_id="job_selfheal", status="completed", transaction_count=0
-        )
-        empty_client.get_data.return_value = empty_payload
+        _set_v2_job(empty_client, empty_payload, job_label="job_selfheal")
 
         service = SyncService(client=empty_client, db=db, loader=loader)
         service.pull()  # first pull binds it
         assert calls == 1, "bad setup: the binding pull must refresh"
 
-        result = service.pull()  # second pull re-derives the same binding
+        _set_v2_job(empty_client, empty_payload, job_label="job_selfheal_second")
+        result = service.pull()  # a new job re-derives the same binding
 
         assert result.security_resolution == {"adopted": 1}
         assert calls == 1, "re-resolving an already-bound security wrote nothing"
@@ -1467,7 +1562,7 @@ class TestPullAutoRefreshes:
 
         calls = 0
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             nonlocal calls
             calls += 1
             return RefreshResult(applied=True, duration_seconds=0.04)
@@ -1479,10 +1574,7 @@ class TestPullAutoRefreshes:
         # returns 0 and the gate stays closed for legitimate reasons.
         seed_data = sync_data.model_copy(update={"removed_transactions": []})
         seed_client = MagicMock()
-        seed_client.trigger_sync.return_value = SyncTriggerResponse(
-            job_id="job_seed", status="completed", transaction_count=3
-        )
-        seed_client.get_data.return_value = seed_data
+        _set_v2_job(seed_client, seed_data, job_label="job_seed")
         seed_service = SyncService(client=seed_client, db=db, loader=loader)
         seed_service.pull(refresh=False)
         calls = 0  # reset after seeding
@@ -1498,10 +1590,7 @@ class TestPullAutoRefreshes:
             }
         )
         removal_client = MagicMock()
-        removal_client.trigger_sync.return_value = SyncTriggerResponse(
-            job_id="job_removal", status="completed", transaction_count=0
-        )
-        removal_client.get_data.return_value = removal_data
+        _set_v2_job(removal_client, removal_data, job_label="job_removal")
         service = SyncService(client=removal_client, db=db, loader=loader)
         result = service.pull()
 
@@ -1522,11 +1611,11 @@ class TestPullAutoRefreshes:
         loader: PlaidExtractor,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Refresh soft-fails — the SQLMesh error must reach the envelope."""
+        """Refresh failure preserves Raw and returns safe local recovery state."""
         from moneybin.orchestration.refresh import RefreshResult
         from moneybin.services import sync_service as mod
 
-        def fake_refresh(_db: object) -> RefreshResult:
+        def fake_refresh(_db: object, **_kwargs: object) -> RefreshResult:
             return RefreshResult(
                 applied=False, duration_seconds=0.12, error="SQLMeshError"
             )
@@ -1538,7 +1627,10 @@ class TestPullAutoRefreshes:
         assert result.transactions_loaded == 3
         assert result.transforms_applied is False
         assert result.transforms_duration_seconds == 0.12
-        assert result.transforms_error == "SQLMeshError"
+        assert result.transforms_error == "Local refresh failed; retry this job locally"
+        assert result.refresh_state == "failed"
+        assert result.ingestion_state == "committed"
+        assert result.complete is False
 
 
 class TestPullResolvesAccounts:
@@ -1635,7 +1727,7 @@ class TestPullResolvesAccounts:
         ).fetchone()
         assert before is not None
 
-        mock_client.get_data.return_value = _relinked_payload()
+        _set_v2_job(mock_client, _relinked_payload())
         service.pull(refresh=False)
 
         after = db.execute(
@@ -1680,11 +1772,15 @@ class TestPullResolvesAccounts:
             def __init__(self, *_a: object, **_kw: object) -> None:
                 pass
 
-            def resolve(self, src: object) -> object:
+            def accepted_native_account_id(self, src: object) -> None:
+                return None
+
+            def resolve(self, src: object, *, in_outer_txn: bool) -> object:
+                assert in_outer_txn is True
                 captured.append(src)
                 return SimpleNamespace(account_id="acct_1", outcome="minted_new")
 
-        mock_client.get_data.return_value = _payload_with_shared_official_name()
+        _set_v2_job(mock_client, _payload_with_shared_official_name())
         with patch("moneybin.services.sync_service.AccountResolver", _Capturing):
             service = SyncService(client=mock_client, db=db, loader=loader)
             service.pull(refresh=False)
@@ -1711,11 +1807,15 @@ class TestPullResolvesAccounts:
             def __init__(self, *_a: object, **_kw: object) -> None:
                 pass
 
-            def resolve(self, src: object) -> object:
+            def accepted_native_account_id(self, src: object) -> None:
+                return None
+
+            def resolve(self, src: object, *, in_outer_txn: bool) -> object:
+                assert in_outer_txn is True
                 captured.append(src)
                 return SimpleNamespace(account_id="acct_1", outcome="minted_new")
 
-        mock_client.get_data.return_value = _payload_with_and_without_a_nickname()
+        _set_v2_job(mock_client, _payload_with_and_without_a_nickname())
         with patch("moneybin.services.sync_service.AccountResolver", _Capturing):
             service = SyncService(client=mock_client, db=db, loader=loader)
             service.pull(refresh=False)
@@ -1735,11 +1835,10 @@ class TestPullResolvesAccounts:
         loader: PlaidExtractor,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A resolver failure soft-fails: raw data stays loaded, pull succeeds.
+        """A resolver failure preserves Raw and reports local setup failure.
 
-        The account-links population is best-effort post-load metadata — a
-        failure must not corrupt the pull's success accounting (raw rows are
-        already durable), mirroring the refresh / auto-pull soft-fail pattern.
+        The service must expose the recovery obligation without losing the
+        already durable provider rows.
         """
         from moneybin.services import sync_service as mod
 
@@ -1756,3 +1855,6 @@ class TestPullResolvesAccounts:
 
         assert result.accounts_loaded == 2
         assert result.transactions_loaded == 3
+        assert result.ingestion_state == "committed"
+        assert result.setup_state == "failed"
+        assert result.complete is False
