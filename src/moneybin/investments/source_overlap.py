@@ -197,9 +197,14 @@ def evidence_phrase(evidence: SourceEvidence) -> str:
     return phrase
 
 
+def source_adjective(source_type: str) -> str:
+    """The user-facing word for a source's trades, e.g. ``recorded``."""
+    return _ADJECTIVES.get(source_type, source_type)
+
+
 def trade_count_phrase(evidence: SourceEvidence) -> str:
     """Count in the user's words, e.g. ``412 recorded trades``."""
-    adjective = _ADJECTIVES.get(evidence.source_type, evidence.source_type)
+    adjective = source_adjective(evidence.source_type)
     if evidence.holdings_only:
         return f"a {adjective} holdings snapshot"
     return _trades(evidence.trade_count).replace(" trade", f" {adjective} trade")

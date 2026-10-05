@@ -2086,7 +2086,7 @@ class TestInvestmentSourceConfirmation:
         svc = AccountService(test_db)
         svc.settings_update("acct_a", actor="cli", investment_source_type="plaid")
         assert svc.investment_source_confirmation("acct_a") == (
-            "Using no plaid trades yet; ignoring 2 recorded trades (kept, not deleted)"
+            "Using synced trades (none yet); ignoring 2 recorded trades (kept, not deleted)"
         )
 
     @pytest.mark.unit

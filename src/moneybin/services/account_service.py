@@ -23,6 +23,7 @@ from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.investments.source_overlap import (
     INVESTMENT_SOURCE_TYPES,
     investment_source_evidence,
+    source_adjective,
     trade_count_phrase,
 )
 from moneybin.privacy.payloads.accounts import (
@@ -532,7 +533,7 @@ class AccountService:
             ", ".join(
                 trade_count_phrase(e) for e in evidence if e.source_type == choice
             )
-            or f"no {choice} trades yet"
+            or f"{source_adjective(choice)} trades (none yet)"
         )
         ignored = ", ".join(
             trade_count_phrase(e) for e in evidence if e.source_type != choice
