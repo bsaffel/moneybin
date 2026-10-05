@@ -206,8 +206,10 @@ unchanged; only the reverse-lookup key and code shape are new:
   backfills `source_origin = ''`. An imported mapping written under the old
   key held its origin slug in `source_type` and applied to every row of that
   origin, so it is re-keyed once per source type the raw tables hold for the
-  origin. One whose origin no raw row carries has no source type to take and
-  is dropped; its term returns to `pending` if those rows are imported again.
+  origin. A `plaid` row is also copied to an import whose origin is `plaid`,
+  because the old key matched both and cannot say which was meant. A mapping
+  whose origin no raw row carries has no source type to take and is dropped;
+  its term returns to `pending` if those rows are imported again.
 
 PR1 shipped the engine only (repo write method + orchestrator leg, wired into
 `categorize_pending`). PR2 adds the authoring surface:

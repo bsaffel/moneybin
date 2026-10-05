@@ -8,12 +8,14 @@ source_subcategory_code)`` and ``source_type`` holds the transaction row's own
 ``source_type``. A blank ``source_origin`` marks a provider-wide row, like a
 blank subcategory marks "none".
 
-A ``plaid`` row is a provider row and backfills ``source_origin = ''``. Any
-other row is an imported mapping whose old ``source_type`` is really an origin
-slug; the old key applied it to every row of that origin, so it is re-keyed
-once per source type the raw tables hold for that origin. An imported mapping
-whose origin no raw row carries has no source type to take and is dropped —
-its term returns to the pending inbox if those rows are imported again.
+A ``plaid`` row backfills ``source_origin = ''`` as a provider row. Every old
+row's ``source_type`` may also be an import's origin slug; the old key applied
+it to every row of that origin, so it is re-keyed once per source type the raw
+tables hold for that origin. That includes a ``plaid`` row when an import's
+origin is ``plaid``: the old key cannot say which it was meant as and matched
+both, so both are kept. An imported mapping whose origin no raw row carries
+has no source type to take and is dropped — its term returns to the pending
+inbox if those rows are imported again.
 
 DuckDB cannot ``ALTER`` a primary key, so the table is rebuilt via a tmp-table
 snapshot, mirroring V067.
@@ -100,7 +102,6 @@ def migrate(conn: object) -> None:
             SELECT r.source_type, t.source_type, {_CARRIED_COLUMNS}
             FROM {_TMP} AS t
             JOIN ({carriers}) AS r ON r.source_origin = t.source_type
-            WHERE t.source_type <> 'plaid'
             """  # noqa: S608  # module constants, no user input
         )
     conn.execute(f"DROP TABLE {_TMP}")  # type: ignore[attr-defined]

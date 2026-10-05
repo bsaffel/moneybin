@@ -155,6 +155,21 @@ def test_v068_rekeys_an_imported_mapping_per_carrying_source_type(
     ).fetchone() == (3,)
 
 
+def test_v068_keeps_a_plaid_row_for_an_import_whose_origin_is_plaid(
+    db: Database,
+) -> None:
+    """The old key matched both Plaid rows and a `plaid`-origin import."""
+    _seed_v067_shape(db)
+    _seed_raw_tabular_row(db, "t1", "csv", "plaid")
+
+    run_migration(db, migrate)
+
+    assert db.execute(
+        "SELECT source_type, source_origin, COUNT(*) FROM app.category_source_map "
+        "GROUP BY ALL ORDER BY source_type"
+    ).fetchall() == [("csv", "plaid", 3), ("plaid", "", 3)]
+
+
 def test_v068_drops_an_imported_mapping_no_raw_row_carries(db: Database) -> None:
     """With no row of that origin there is no source type to key it under."""
     _seed_v067_shape(db)
