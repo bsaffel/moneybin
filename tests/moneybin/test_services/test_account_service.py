@@ -18,6 +18,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
+from moneybin.investments.source_overlap import SourceEvidence
 from moneybin.privacy.payloads.accounts import AccountListPayload
 from moneybin.protocol.envelope import build_envelope
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
@@ -1996,3 +1997,120 @@ def test_settings_update_leaves_no_marker_when_flag_untouched(
     service.settings_update("ACC001", display_name="Renamed", actor="cli")
     service.settings_update("ACC001", archived=True, actor="cli")
     assert _settings_audit_contexts(account_db, "ACC001") == [None, None]
+
+
+class TestInvestmentSourceConfirmation:
+    """``investment_source_confirmation`` words what the ledger now uses and ignores."""
+
+    @pytest.fixture(autouse=True)
+    def _no_restate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            MagicMock(),
+        )
+
+    @staticmethod
+    def _evidence(
+        monkeypatch: pytest.MonkeyPatch, *found: SourceEvidence, account: str = "acct_a"
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.account_service.investment_source_evidence",
+            MagicMock(return_value={account: list(found)} if found else {}),
+        )
+
+    @staticmethod
+    def _both() -> tuple[SourceEvidence, SourceEvidence]:
+        return (
+            SourceEvidence("manual", 2, date(2024, 1, 2), date(2024, 6, 3), False),
+            SourceEvidence("plaid", 3, date(2024, 2, 2), date(2024, 7, 3), False),
+        )
+
+    @pytest.mark.unit
+    def test_manual_choice_names_recorded_used_and_synced_ignored(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._evidence(monkeypatch, *self._both())
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", actor="cli", investment_source_type="manual")
+        assert svc.investment_source_confirmation("acct_a") == (
+            "Using 2 recorded trades; ignoring 3 synced trades (kept, not deleted)"
+        )
+
+    @pytest.mark.unit
+    def test_plaid_choice_names_synced_used_and_recorded_ignored(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._evidence(monkeypatch, *self._both())
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", actor="cli", investment_source_type="plaid")
+        assert svc.investment_source_confirmation("acct_a") == (
+            "Using 3 synced trades; ignoring 2 recorded trades (kept, not deleted)"
+        )
+
+    @pytest.mark.unit
+    def test_no_choice_names_every_source(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._evidence(monkeypatch, *self._both())
+        assert AccountService(test_db).investment_source_confirmation("acct_a") == (
+            "Using every source: 2 recorded trades, 3 synced trades"
+        )
+
+    @pytest.mark.unit
+    def test_no_evidence_has_nothing_to_say(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._evidence(monkeypatch)
+        assert AccountService(test_db).investment_source_confirmation("acct_a") is None
+
+    @pytest.mark.unit
+    def test_holdings_only_plaid_is_a_snapshot_not_a_trade_count(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manual, _ = self._both()
+        snapshot = SourceEvidence("plaid", 0, None, None, True)
+        self._evidence(monkeypatch, manual, snapshot)
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", actor="cli", investment_source_type="manual")
+        assert svc.investment_source_confirmation("acct_a") == (
+            "Using 2 recorded trades; ignoring a synced holdings snapshot "
+            "(kept, not deleted)"
+        )
+
+    @pytest.mark.unit
+    def test_chosen_source_with_no_rows_says_none_yet(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manual, _ = self._both()
+        self._evidence(monkeypatch, manual)
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", actor="cli", investment_source_type="plaid")
+        assert svc.investment_source_confirmation("acct_a") == (
+            "Using no plaid trades yet; ignoring 2 recorded trades (kept, not deleted)"
+        )
+
+    @pytest.mark.unit
+    def test_get_account_reports_the_chosen_source(self, extended_db: Database) -> None:
+        _insert_dim_account(extended_db, "acct_get2")
+        extended_db.execute(
+            "UPDATE core.dim_accounts SET investment_source_type = 'plaid' "
+            "WHERE account_id = 'acct_get2'"
+        )
+        detail = AccountService(extended_db).get_account("acct_get2")
+        assert detail is not None
+        assert detail.investment_source_type == "plaid"
+
+    @pytest.mark.unit
+    def test_get_account_without_the_dim_column_reports_none(
+        self, extended_db: Database
+    ) -> None:
+        _insert_dim_account(extended_db, "acct_get3")
+        extended_db.execute(
+            "ALTER TABLE core.dim_accounts DROP COLUMN investment_source_type_changed_at"
+        )
+        extended_db.execute(
+            "ALTER TABLE core.dim_accounts DROP COLUMN investment_source_type"
+        )
+        detail = AccountService(extended_db).get_account("acct_get3")
+        assert detail is not None
+        assert detail.investment_source_type is None

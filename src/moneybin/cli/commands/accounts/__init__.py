@@ -231,6 +231,8 @@ def accounts_get(
         ("Included in net worth", "yes" if record.include_in_net_worth else "no"),
         ("Status", "archived" if record.archived else "active"),
     ]
+    if record.investment_source_type:
+        pairs.append(("Investment source", record.investment_source_type))
     emit_human_result(
         compose_human_result([build_summary(pairs, title="Account")]),
         policy=get_terminal_policy(no_pager=no_pager),
@@ -318,6 +320,13 @@ def accounts_set(
         help="Per-account cost-basis default: fifo, hifo, specific, or average "
         "(NULL falls back to the global FIFO default)",
     ),
+    investment_source_type: str | None = typer.Option(
+        None,
+        "--investment-source-type",
+        help="Which investment history feeds this account's ledger: manual "
+        "(recorded trades) or plaid (synced). Nothing is deleted; "
+        "--clear-investment-source-type uses both again",
+    ),
     include_in_net_worth: bool | None = typer.Option(
         None,
         "--include/--exclude",
@@ -338,6 +347,9 @@ def accounts_set(
     clear_default_cost_basis_method: bool = typer.Option(
         False, "--clear-default-cost-basis-method"
     ),
+    clear_investment_source_type: bool = typer.Option(
+        False, "--clear-investment-source-type"
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -348,9 +360,13 @@ def accounts_set(
     """Update account settings (structural + behavioral fields).
 
     Structural: --official-name, --last-four, --subtype, --holder-category,
-    --currency, --credit-limit, --default-cost-basis-method (each clearable
-    via --clear-FIELD). --default-cost-basis-method must be one of fifo,
-    hifo, specific, average — an invalid value is rejected before any write.
+    --currency, --credit-limit, --default-cost-basis-method,
+    --investment-source-type (each clearable via --clear-FIELD).
+    --default-cost-basis-method must be one of fifo, hifo, specific, average
+    and --investment-source-type one of manual, plaid — an invalid value is
+    rejected before any write. --investment-source-type picks which
+    investment history feeds the account's ledger when it has both recorded
+    and synced trades; the other history is kept, not deleted.
     Behavioral: --display-name, --include/--exclude, --archive/--unarchive.
     --archive/--unarchive and --include/--exclude are independent flags with
     different jobs. --archive today excludes the account from net worth
@@ -379,6 +395,7 @@ def accounts_set(
         default_cost_basis_method,
         clear_default_cost_basis_method,
     )
+    _add("investment_source_type", investment_source_type, clear_investment_source_type)
     if include_in_net_worth is not None:
         diff["include_in_net_worth"] = include_in_net_worth
     if is_archived is not None:
@@ -428,17 +445,23 @@ def accounts_set(
                 actor="cli",
                 **diff,  # type: ignore[arg-type]  # dynamic settings_update kwargs
             )
+            source_confirmation = (
+                AccountService(db).investment_source_confirmation(account_id)
+                if "investment_source_type" in diff
+                else None
+            )
+    summary_pairs = [
+        ("Account ID", account_id),
+        ("Updated fields", ", ".join(sorted(diff))),
+    ]
+    if "investment_source_type" in diff:
+        summary_pairs.append((
+            "Investment source",
+            source_confirmation or "every source",
+        ))
     emit_human_result(
         compose_human_result(
-            [
-                build_summary(
-                    [
-                        ("Account ID", account_id),
-                        ("Updated fields", ", ".join(sorted(diff))),
-                    ],
-                    title="Account settings updated",
-                )
-            ],
+            [build_summary(summary_pairs, title="Account settings updated")],
             disclosures=[str(w.get("message", w)) for w in warnings],
         ),
         policy=get_terminal_policy(),

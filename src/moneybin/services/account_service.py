@@ -20,7 +20,11 @@ from moneybin import error_codes
 from moneybin.database import Database, has_column
 from moneybin.errors import UserError
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
-from moneybin.investments.source_overlap import INVESTMENT_SOURCE_TYPES
+from moneybin.investments.source_overlap import (
+    INVESTMENT_SOURCE_TYPES,
+    investment_source_evidence,
+    trade_count_phrase,
+)
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
@@ -512,6 +516,31 @@ class AccountService:
         ).fetchone()
         return None if row is None else row[0]
 
+    def investment_source_confirmation(self, account_id: str) -> str | None:
+        """What the ledger uses and ignores for this account; ``None`` without trades."""
+        evidence = investment_source_evidence(self._db, [account_id]).get(
+            account_id, []
+        )
+        if not evidence:
+            return None
+        choice = self.investment_source_type(account_id)
+        if choice is None:
+            return "Using every source: " + ", ".join(
+                trade_count_phrase(e) for e in evidence
+            )
+        kept = (
+            ", ".join(
+                trade_count_phrase(e) for e in evidence if e.source_type == choice
+            )
+            or f"no {choice} trades yet"
+        )
+        ignored = ", ".join(
+            trade_count_phrase(e) for e in evidence if e.source_type != choice
+        )
+        if not ignored:
+            return f"Using {kept}"
+        return f"Using {kept}; ignoring {ignored} (kept, not deleted)"
+
     def list_accounts(
         self,
         *,
@@ -597,6 +626,8 @@ class AccountService:
         # archived_at is projected only when the live core.dim_accounts
         # catalog has it -- see the matching comment in list_accounts.
         has_archived_at = has_column(self._db, DIM_ACCOUNTS, "archived_at")
+        # Same drift guard for the V068 column on a dim_accounts not yet rebuilt.
+        has_source_choice = has_column(self._db, DIM_ACCOUNTS, "investment_source_type")
         fields = [
             "account_id",
             "display_name",
@@ -610,6 +641,7 @@ class AccountService:
             "archived",
             *(["archived_at"] if has_archived_at else []),
             "include_in_net_worth",
+            *(["investment_source_type"] if has_source_choice else []),
             "source_type",
             "routing_number",
             "official_name",
@@ -641,6 +673,7 @@ class AccountService:
             archived=bool(r["archived"]),
             archived_at=r.get("archived_at"),  # type: ignore[arg-type]
             include_in_net_worth=bool(r["include_in_net_worth"]),
+            investment_source_type=r.get("investment_source_type"),  # type: ignore[arg-type]
             source_type=r["source_type"],  # type: ignore[arg-type]
         )
 

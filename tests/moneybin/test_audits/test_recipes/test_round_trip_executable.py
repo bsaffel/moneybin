@@ -275,9 +275,14 @@ def test_source_overlap_offers_one_choice_per_source(db: Database) -> None:
         {"account_id": "acc_choice", "investment_source_type": "manual"},
         {"account_id": "acc_choice", "investment_source_type": "plaid"},
     ]
-    # sig.bind against accounts_set joins this test when the tool gains its
-    # investment_source_type parameter (Task 9).
+    sig = inspect.signature(_underlying(_TOOLS["accounts_set"]))
+    members = _literal_members(
+        get_type_hints(_underlying(_TOOLS["accounts_set"]))["investment_source_type"]
+    )
+    assert members is not None
     for action in actions:
+        sig.bind(**action.arguments)
+        assert action.arguments["investment_source_type"] in members
         assert "import_revert" not in action.rationale
         assert "nothing is deleted" in action.rationale
         # Both sides' counts and ranges ride in every rationale.
