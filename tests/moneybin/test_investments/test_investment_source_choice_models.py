@@ -280,6 +280,53 @@ def test_failed_restate_leaves_a_stale_choice_until_refresh(
     assert _ledger(db) == [("manual", None)]
 
 
+def test_a_built_choice_is_not_stale(db: Database) -> None:
+    """No false positive from the dim and ledger timestamps the models stamp."""
+    _seed_overlap(db)
+    service = AccountService(db)
+
+    service.settings_update(_ACCOUNT, actor="test", investment_source_type="manual")
+    assert stale_source_choice_accounts(db) == []
+
+    service.settings_update(_ACCOUNT, actor="test", investment_source_type=CLEAR)
+    assert stale_source_choice_accounts(db) == []
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform failed: {result.error}"
+    assert stale_source_choice_accounts(db) == []
+
+
+def test_failed_restate_after_a_clear_is_stale_until_refresh(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clearing a choice only adds rows back, so no wrong-source row exists to see."""
+    _seed_overlap(db)
+    AccountService(db).settings_update(
+        _ACCOUNT, actor="test", investment_source_type="manual"
+    )
+    assert _ledger(db) == [("manual", None)]
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("restate failed")
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_investment_ledger", _fail
+    )
+    with pytest.raises(RuntimeError, match="restate failed"):
+        AccountService(db).settings_update(
+            _ACCOUNT, actor="test", investment_source_type=CLEAR
+        )
+
+    assert _ledger(db) == [("manual", None)], "the failed restate built nothing"
+    assert stale_source_choice_accounts(db) == [_ACCOUNT]
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform failed: {result.error}"
+
+    assert stale_source_choice_accounts(db) == []
+    assert _ledger(db) == [("manual", None), ("plaid", None)]
+
+
 def test_undo_of_a_choice_advances_the_account_watermark(db: Database) -> None:
     """Undo restores the settings row's own updated_at from the old image.
 

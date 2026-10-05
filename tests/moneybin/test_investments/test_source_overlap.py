@@ -18,7 +18,10 @@ from moneybin.investments.source_overlap import (
     stale_source_choice_accounts,
     trade_count_phrase,
 )
-from tests.moneybin.db_helpers import CORE_FCT_INVESTMENT_TRANSACTIONS_DDL
+from tests.moneybin.db_helpers import (
+    CORE_DIM_ACCOUNTS_DDL,
+    CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
+)
 
 
 def _manual_row(db: Database, *, account_id: str, txn_id: str, trade_date: str) -> None:
@@ -174,26 +177,60 @@ def test_unchosen_settings_row_does_not_hide_the_overlap(db: Database) -> None:
     assert investment_source_overlap(db) == ["canonical_x"]
 
 
-def _ledger_row(db: Database, *, account_id: str, source_type: str, n: int) -> None:
+_CHANGED = "2026-03-01 10:00:00"
+_BEFORE = "2026-02-01 10:00:00"
+_AFTER = "2026-03-01 10:00:05"
+
+
+def _built_tables(db: Database) -> None:
+    db.execute(CORE_DIM_ACCOUNTS_DDL)
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+
+
+def _ledger_row(
+    db: Database,
+    *,
+    account_id: str,
+    source_type: str,
+    n: int,
+    updated_at: str | None = None,
+) -> None:
     db.execute(
         "INSERT INTO core.fct_investment_transactions "
-        "(investment_transaction_id, account_id, source_type) VALUES (?, ?, ?)",
-        [f"itx_{source_type}_{n}", account_id, source_type],
+        "(investment_transaction_id, account_id, source_type, updated_at) "
+        "VALUES (?, ?, ?, ?::TIMESTAMP)",
+        [f"itx_{source_type}_{n}", account_id, source_type, updated_at],
     )
 
 
-def _choose(db: Database, account_id: str, choice: str | None) -> None:
+def _choose(
+    db: Database,
+    account_id: str,
+    choice: str | None,
+    *,
+    changed_at: str | None = None,
+    dim_choice: str | None = None,
+    dim_changed_at: str | None = None,
+) -> None:
+    """A settings row, plus the dim_accounts row the last build projected."""
     db.execute(
-        "INSERT INTO app.account_settings (account_id, investment_source_type) "
-        "VALUES (?, ?)",
-        [account_id, choice],
+        "INSERT INTO app.account_settings "
+        "(account_id, investment_source_type, investment_source_type_changed_at) "
+        "VALUES (?, ?, ?::TIMESTAMP)",
+        [account_id, choice, changed_at],
+    )
+    db.execute(
+        "INSERT INTO core.dim_accounts "
+        "(account_id, investment_source_type, investment_source_type_changed_at) "
+        "VALUES (?, ?, ?::TIMESTAMP)",
+        [account_id, dim_choice, dim_changed_at],
     )
 
 
 def test_stale_choice_reported_while_ledger_holds_the_other_source(
     db: Database,
 ) -> None:
-    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _built_tables(db)
     _choose(db, "canonical_x", "manual")
     _ledger_row(db, account_id="canonical_x", source_type="manual", n=1)
     _ledger_row(db, account_id="canonical_x", source_type="plaid", n=1)
@@ -204,32 +241,112 @@ def test_stale_choice_reported_while_ledger_holds_the_other_source(
 def test_choice_is_not_stale_once_ledger_holds_only_the_chosen_source(
     db: Database,
 ) -> None:
-    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _built_tables(db)
     _choose(db, "canonical_x", "manual")
     _ledger_row(db, account_id="canonical_x", source_type="manual", n=1)
     # An unchosen account may legitimately hold both sources.
+    _choose(db, "canonical_y", None)
     _ledger_row(db, account_id="canonical_y", source_type="manual", n=1)
     _ledger_row(db, account_id="canonical_y", source_type="plaid", n=1)
 
     assert stale_source_choice_accounts(db) == []
 
 
-def test_cleared_choice_is_not_stale(db: Database) -> None:
-    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
-    _choose(db, "canonical_x", None)
-    _ledger_row(db, account_id="canonical_x", source_type="plaid", n=1)
+def test_cleared_choice_is_stale_while_dim_shows_the_old_choice(db: Database) -> None:
+    _built_tables(db)
+    _choose(
+        db,
+        "canonical_x",
+        None,
+        changed_at=_CHANGED,
+        dim_choice="manual",
+        dim_changed_at=_BEFORE,
+    )
+    _ledger_row(
+        db, account_id="canonical_x", source_type="manual", n=1, updated_at=_BEFORE
+    )
+
+    assert stale_source_choice_accounts(db) == ["canonical_x"]
+
+
+def test_cleared_choice_is_stale_while_a_ledger_row_predates_the_change(
+    db: Database,
+) -> None:
+    _built_tables(db)
+    _choose(
+        db,
+        "canonical_x",
+        None,
+        changed_at=_CHANGED,
+        dim_changed_at=_CHANGED,
+    )
+    _ledger_row(
+        db, account_id="canonical_x", source_type="manual", n=1, updated_at=_BEFORE
+    )
+
+    assert stale_source_choice_accounts(db) == ["canonical_x"]
+
+
+def test_switch_with_an_empty_ledger_is_stale_while_dim_lags(db: Database) -> None:
+    _built_tables(db)
+    _choose(
+        db,
+        "canonical_x",
+        "plaid",
+        changed_at=_CHANGED,
+        dim_choice="manual",
+        dim_changed_at=_BEFORE,
+    )
+
+    assert stale_source_choice_accounts(db) == ["canonical_x"]
+
+
+@pytest.mark.parametrize("choice", ["manual", None])
+def test_caught_up_ledger_is_not_stale(db: Database, choice: str | None) -> None:
+    _built_tables(db)
+    _choose(
+        db,
+        "canonical_x",
+        choice,
+        changed_at=_CHANGED,
+        dim_choice=choice,
+        dim_changed_at=_CHANGED,
+    )
+    _ledger_row(
+        db, account_id="canonical_x", source_type="manual", n=1, updated_at=_CHANGED
+    )
+    _ledger_row(
+        db, account_id="canonical_x", source_type="manual", n=2, updated_at=_AFTER
+    )
+
+    assert stale_source_choice_accounts(db) == []
+
+
+def test_settings_account_without_a_dim_row_is_not_stale(db: Database) -> None:
+    _built_tables(db)
+    db.execute(
+        "INSERT INTO app.account_settings "
+        "(account_id, investment_source_type, investment_source_type_changed_at) "
+        "VALUES ('canonical_x', 'manual', ?::TIMESTAMP)",
+        [_CHANGED],
+    )
 
     assert stale_source_choice_accounts(db) == []
 
 
 def test_stale_detector_is_empty_before_the_ledger_is_built(db: Database) -> None:
-    _choose(db, "canonical_x", "manual")
+    db.execute(
+        "INSERT INTO app.account_settings "
+        "(account_id, investment_source_type, investment_source_type_changed_at) "
+        "VALUES ('canonical_x', 'manual', ?::TIMESTAMP)",
+        [_CHANGED],
+    )
 
     assert stale_source_choice_accounts(db) == []
 
 
 def test_stale_detector_survives_an_unmigrated_catalog(db: Database) -> None:
-    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _built_tables(db)
     _ledger_row(db, account_id="canonical_x", source_type="plaid", n=1)
     db.execute(
         "ALTER TABLE app.account_settings DROP COLUMN investment_source_type_changed_at"

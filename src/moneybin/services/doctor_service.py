@@ -1552,9 +1552,9 @@ class DoctorService:
         """Detect transaction or holdings overlap before any transform runs.
 
         Unresolved overlaps come from the raw-scope detector, which excludes
-        chosen accounts. Chosen accounts whose built ledger still holds the
-        other source (a restate that failed after the choice was saved) fail
-        too: the ledger double-counts exactly like an unresolved overlap.
+        chosen accounts. Accounts whose built ledger does not reflect their saved
+        choice (a restate that failed after it was saved or cleared) fail too:
+        the ledger can double-count or drop rows like an unresolved overlap.
         Also refreshes the per-choice account gauge.
         """
         name = "investment_source_overlap"
@@ -1596,9 +1596,9 @@ class DoctorService:
                 many = len(stale) != 1
                 parts.append(
                     f"{len(stale)} account{'s' if many else ''} "
-                    f"{'have' if many else 'has'} a source chosen but the "
-                    "investment ledger has not been rebuilt since, so it still "
-                    "holds both sources; run `moneybin refresh`"
+                    f"{'have' if many else 'has'} a saved source choice the "
+                    "investment ledger does not reflect yet; run "
+                    "`moneybin refresh`"
                 )
             return InvariantResult(
                 name=name,

@@ -85,9 +85,8 @@ def recipe(
                 tool="refresh_run",
                 arguments={},
                 rationale=(
-                    "A source choice was saved but the investment ledger was "
-                    "not rebuilt after it, so it still holds both sources; "
-                    "refreshing rebuilds it from the saved choice"
+                    "A saved source choice is not reflected in the investment "
+                    "ledger yet; refreshing rebuilds it from the saved choice"
                 ),
                 confidence="suggested",
                 idempotent=True,

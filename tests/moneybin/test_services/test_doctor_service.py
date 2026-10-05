@@ -40,6 +40,7 @@ from moneybin.services.doctor_service import (
 )
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import (
+    CORE_DIM_ACCOUNTS_DDL,
     CORE_FCT_EXCHANGE_RATES_DAILY_DDL,
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
     create_core_tables,
@@ -1866,7 +1867,9 @@ def _seed_stale_choice(
     db: Database, account_id: str, *, ledger_sources: tuple[str, ...]
 ) -> None:
     """A manual choice saved on an account; the ledger holds *ledger_sources*."""
+    db.execute(CORE_DIM_ACCOUNTS_DDL)
     db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    db.execute("INSERT INTO core.dim_accounts (account_id) VALUES (?)", [account_id])
     db.execute(
         "INSERT INTO app.account_settings (account_id, investment_source_type) "
         "VALUES (?, 'manual')",
@@ -1890,7 +1893,7 @@ def test_source_overlap_fails_on_a_stale_choice_with_one_refresh_action(
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "fail"
     detail = result.detail or ""
-    assert "1 account has a source chosen" in detail
+    assert "1 account has a saved source choice" in detail
     assert "moneybin refresh" in detail
     assert result.affected_ids == ["account:acct-****1234"]
     assert "55551234" not in " ".join(result.affected_ids)

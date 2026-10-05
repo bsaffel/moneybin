@@ -282,12 +282,18 @@ is no `core` copy to wait on.
 
 A chosen account is excluded because it needs no choice offered, not because
 its ledger is known to be right. The same module therefore carries a sibling
-detector, `stale_source_choice_accounts(db) -> list[str]`: the accounts with a
-non-NULL choice for which the built `core.fct_investment_transactions` still
-holds a row whose `source_type` differs from the choice. This is the state a
-failed restate leaves behind. It reads the materialized ledger, so it returns
-`[]` when the ledger isn't built yet (the first transform applies the filter)
-and when `app.account_settings` has no `investment_source_type` column.
+detector, `stale_source_choice_accounts(db) -> list[str]`: the accounts whose built
+tables don't reflect the saved choice. This is the state a failed restate
+leaves behind, and it covers a cleared choice and a switch from an empty ledger,
+which leave no wrong-source row to see. An account that has ever carried a
+choice (non-NULL `investment_source_type_changed_at`) is stale when its
+`core.dim_accounts` row carries a different choice or change time than the
+settings row, or when a `core.fct_investment_transactions` row for it has an
+`updated_at` before that change time. Independently, an account with a non-NULL
+choice is stale while the ledger still holds a row whose `source_type` differs
+from it. The detector reads the materialized tables, so it returns `[]` when
+they aren't built yet (the first transform applies the filter) and when
+`app.account_settings` lacks the choice columns.
 
 The consumers split by what they report:
 
@@ -371,7 +377,7 @@ instead of "0 trades".
 - The check also fails while `stale_source_choice_accounts` is non-empty: a
   stale ledger double-counts exactly like an unresolved overlap. `detail` names
   each count plainly (N accounts need a source chosen; N accounts have one
-  chosen but the ledger has not been rebuilt since, run `moneybin refresh`),
+  chosen but the ledger doesn't reflect it yet, run `moneybin refresh`),
   and `affected_ids` carry both sets masked. For stale accounts the recipe adds
   one `refresh_run` action in total (`suggested`, idempotent), which the CLI
   maps to `moneybin refresh`. Re-running `accounts set` with the same value is
@@ -474,7 +480,7 @@ account labels, trade descriptions, or amounts.
 | Manual + Plaid trades, no choice | doctor | `fail`; two `accounts_set` actions with correct counts and ranges |
 | same | set `manual` | ledger has only manual rows; positions `valued` (or `withheld` where the share count disagrees with the snapshot); doctor `investment_source_overlap` `pass` |
 | same | set `plaid` | ledger has Plaid rows plus the opening bootstrap; doctor `pass` |
-| Manual + Plaid trades, no choice | set `manual`, restate fails | choice stays saved; `refresh_model_failed` names `moneybin refresh`; doctor `fail` with one `refresh_run` action until `moneybin refresh` succeeds, then `pass` |
+| Manual + Plaid trades, no choice | set `manual`, restate fails | choice stays saved; `refresh_model_failed` names `moneybin refresh`; doctor `fail` with one `refresh_run` action until `moneybin refresh` succeeds, then `pass`; the same holds for a failed restate after clearing a choice or switching it |
 | set `manual` | `sync pull` re-delivers the same window | no overlap warning; Plaid raw rows refreshed; ledger unchanged |
 | set `manual` | clear | ledger is the union again; re-entered rows' `updated_at` ≥ the clear; doctor `fail` again |
 | set `plaid` | `investments add` | refused, `investment_source_excluded`, nothing written |

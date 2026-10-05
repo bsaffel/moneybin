@@ -10,6 +10,7 @@ from moneybin.investments.identity import manual_identity_sql
 from moneybin.tables import (
     ACCOUNT_LINKS,
     ACCOUNT_SETTINGS,
+    DIM_ACCOUNTS,
     FCT_INVESTMENT_TRANSACTIONS,
     MANUAL_INVESTMENT_TRANSACTIONS,
     PLAID_INVESTMENT_HOLDINGS,
@@ -106,26 +107,46 @@ def investment_source_overlap(db: Database) -> list[str]:
 
 
 def stale_source_choice_accounts(db: Database) -> list[str]:
-    """Chosen accounts whose built ledger still holds another source's rows.
+    """Accounts whose built ledger does not reflect their saved source choice.
 
-    The choice is committed before the ledger restates, so a failed restate
-    leaves it saved while ``core.fct_investment_transactions`` still
-    double-counts. Empty before the ledger exists (its first build applies the
-    filter) and on a catalog without the choice column.
+    The choice (or its clearing) commits before the ledger restates, so a failed
+    restate leaves the settings ahead of the tables. Three signals: the dim row
+    lags the settings, a ledger row predates the change, or a row of another
+    source remains. Empty before the models are built or on an unmigrated catalog.
     """
-    if not has_column(db, ACCOUNT_SETTINGS, "investment_source_type") or not has_column(
-        db, FCT_INVESTMENT_TRANSACTIONS, "source_type"
+    if not (
+        has_column(db, ACCOUNT_SETTINGS, "investment_source_type")
+        and has_column(db, ACCOUNT_SETTINGS, "investment_source_type_changed_at")
+        and has_column(db, DIM_ACCOUNTS, "investment_source_type")
+        and has_column(db, DIM_ACCOUNTS, "investment_source_type_changed_at")
+        and has_column(db, FCT_INVESTMENT_TRANSACTIONS, "source_type")
+        and has_column(db, FCT_INVESTMENT_TRANSACTIONS, "updated_at")
     ):
         return []
     rows = db.execute(
         f"""
         SELECT s.account_id
         FROM {ACCOUNT_SETTINGS.full_name} AS s
-        WHERE s.investment_source_type IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS f
-            WHERE f.account_id = s.account_id
-              AND f.source_type <> s.investment_source_type
+        JOIN {DIM_ACCOUNTS.full_name} AS d USING (account_id)
+        WHERE (
+            s.investment_source_type_changed_at IS NOT NULL
+            AND (
+                d.investment_source_type IS DISTINCT FROM s.investment_source_type
+                OR d.investment_source_type_changed_at
+                    IS DISTINCT FROM s.investment_source_type_changed_at
+                OR EXISTS (
+                    SELECT 1 FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS f
+                    WHERE f.account_id = s.account_id
+                      AND f.updated_at < s.investment_source_type_changed_at
+                )
+            )
+          ) OR (
+            s.investment_source_type IS NOT NULL
+            AND EXISTS (
+                SELECT 1 FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS f
+                WHERE f.account_id = s.account_id
+                  AND f.source_type <> s.investment_source_type
+            )
           )
         ORDER BY s.account_id
         """  # noqa: S608  # TableRef constants
