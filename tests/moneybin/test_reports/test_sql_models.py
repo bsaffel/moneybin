@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Generator
 from datetime import date, datetime
 from decimal import Decimal
@@ -13,26 +12,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import SQLMESH_ROOT, Database
+from tests.moneybin.sqlmesh_model_helpers import load_model, rendered_model_sql
 
 _REPORT_MODELS = SQLMESH_ROOT / "models" / "reports"
 
 
-def _model_body(name: str) -> str:
-    """Return a report model's executable SQL without its MODEL header."""
-    raw = (_REPORT_MODELS / f"{name}.sql").read_text()
-    return re.sub(
-        r"^.*?MODEL\s*\(.*?\);\s*",
-        "",
-        raw,
-        count=1,
-        flags=re.DOTALL,
-    ).strip()
-
-
 def _install_report(db: Database, name: str) -> None:
+    """Install a report model as SQLMesh renders it, macros expanded."""
+    body = rendered_model_sql(_REPORT_MODELS / f"{name}.sql")
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(  # test-selected shipped model name
-        f"CREATE OR REPLACE VIEW reports.{name} AS {_model_body(name)}"
+        f"CREATE OR REPLACE VIEW reports.{name} AS {body}"
     )
 
 
@@ -858,6 +848,79 @@ def test_recurring_subscriptions_does_not_interleave_two_currency_streams(
         """
     ).fetchall()
     assert rows == [("EUR", "monthly", 4), ("USD", "monthly", 4)]
+
+
+_ELIGIBILITY_MACRO_CALLERS = (
+    "cash_flow",
+    "large_transactions",
+    "merchant_activity",
+    "recurring_subscriptions",
+    "spending_trend",
+)
+# These read balances, not transactions, so they write their own archive rule.
+_BALANCE_REPORT_MODELS = frozenset({
+    "balance_drift",
+    "net_worth",
+    "net_worth_accounts",
+    "net_worth_currencies",
+})
+
+
+def test_report_models_take_eligibility_from_the_shared_macro() -> None:
+    """No report model hand-writes the transfer/archive filter the macro owns."""
+    from sqlglot import exp
+    from sqlmesh.core.model import SqlModel
+
+    for path in sorted(_REPORT_MODELS.glob("*.sql")):
+        owned = {"is_transfer", "archived"}
+        if path.stem in _BALANCE_REPORT_MODELS:
+            owned = {"is_transfer"}
+        model = load_model(path)
+        assert isinstance(model, SqlModel)
+        assert isinstance(model.query, exp.Query)
+        calls_macro = "report_eligible_transaction" in model.python_env
+        assert calls_macro == (path.stem in _ELIGIBILITY_MACRO_CALLERS), (
+            f"{path.name}: calls @report_eligible_transaction = {calls_macro}; "
+            "update _ELIGIBILITY_MACRO_CALLERS if that is intended"
+        )
+        handwritten = {c.name for c in model.query.find_all(exp.Column)} & owned
+        assert not handwritten, (
+            f"{path.name} reads {sorted(handwritten)} directly; call "
+            "@report_eligible_transaction instead"
+        )
+
+
+@pytest.mark.parametrize("report", _ELIGIBILITY_MACRO_CALLERS)
+def test_transaction_reports_drop_transfers_and_archived_accounts(
+    model_db: Database, report: str
+) -> None:
+    """The shared eligibility predicate excludes both, in every model calling it."""
+    _install_transaction_sources(model_db)
+    for index in range(1, 5):
+        _add_transaction(
+            model_db,
+            transaction_id=f"t{index}",
+            date=_months_ago(index).isoformat(),
+            amount="-20",
+            currency="USD",
+        )
+    _install_report(model_db, report)
+
+    def row_count() -> int:
+        row = model_db.execute(
+            f"SELECT COUNT(*) FROM reports.{report}"  # noqa: S608  # parametrized shipped model name
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    assert row_count() > 0
+
+    model_db.execute("UPDATE core.fct_transactions SET is_transfer = TRUE")
+    assert row_count() == 0
+
+    model_db.execute("UPDATE core.fct_transactions SET is_transfer = FALSE")
+    model_db.execute("UPDATE core.dim_accounts SET archived = TRUE")
+    assert row_count() == 0
 
 
 def test_balance_drift_withholds_a_drift_across_two_currencies(
