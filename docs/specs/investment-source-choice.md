@@ -390,8 +390,7 @@ A check that reports on rows the choice excluded skips them:
 - `investment_staging_rejects` and `investment_opening_lot_review` read Plaid
   staging or bootstrap rows directly. Each one skips Plaid rows in an account
   set to `manual`. On a `core.dim_accounts` that predates the column (migrated
-  but not yet refreshed) no choice is readable, so both run without the filter,
-  as the match planner does.
+  but not yet refreshed) no choice is readable, so both run without the filter.
 - `investment_unmodeled_legs` and `investment_unresolved_securities` read the
   ledger, so they inherit the filter and need no change.
 - `investment_holdings_divergence`, `investment_unreported_holdings` and
@@ -405,7 +404,9 @@ The review-only matching planner skips accounts with a choice set and
 proposes no matches there. A proposal on an account whose ledger has one
 source is noise, and when acceptance ships, accepting a match on such an
 account would conflict with the user's choice. Clearing the setting brings the
-account back into the planner. Existing pending proposals for a newly chosen
+account back into the planner. The planner reads the saved setting in
+`app.account_settings`, not `core.dim_accounts`, because matching runs before
+the transform. Existing pending proposals for a newly chosen
 account go stale under the planner's existing freshness rules. This spec
 deletes none of them.
 

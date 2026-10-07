@@ -54,7 +54,17 @@ with Database(Path(sys.argv[1]), secret_store=store, read_only=True, no_auto_upg
 
 
 def _choose_source(db: Database, account_id: str, choice: str | None) -> None:
-    """Set an account's investment source choice on the fixture dim_accounts."""
+    """Save an account's investment source choice in app.account_settings."""
+    db.execute(
+        "INSERT INTO app.account_settings (account_id, investment_source_type) "
+        "VALUES (?, ?) ON CONFLICT (account_id) DO UPDATE SET "
+        "investment_source_type = EXCLUDED.investment_source_type",
+        [account_id, choice],
+    )
+
+
+def _show_built_choice(db: Database, account_id: str, choice: str | None) -> None:
+    """Set the choice the built core.dim_accounts shows, independent of settings."""
     columns = {
         row[0]
         for row in db.execute(
@@ -65,14 +75,6 @@ def _choose_source(db: Database, account_id: str, choice: str | None) -> None:
     if "investment_source_type" not in columns:
         db.execute(
             "ALTER TABLE core.dim_accounts ADD COLUMN investment_source_type VARCHAR"
-        )
-    if db.execute(
-        "SELECT COUNT(*) FROM core.dim_accounts WHERE account_id = ?", [account_id]
-    ).fetchone() == (0,):
-        db.execute(
-            "INSERT INTO core.dim_accounts (account_id, currency_code) "
-            "VALUES (?, 'USD')",
-            [account_id],
         )
     db.execute(
         "UPDATE core.dim_accounts SET investment_source_type = ? WHERE account_id = ?",
@@ -104,6 +106,29 @@ def test_a_source_choice_takes_the_account_out_of_planning(
 
     # Clearing the choice returns the account to the planner.
     _choose_source(comparison_db, "account", None)
+    assert service.run().proposed == 1
+    assert len(service.pending()) == 1
+
+
+def test_the_saved_choice_wins_over_a_dim_that_has_not_been_rebuilt(
+    comparison_db: Database,
+) -> None:
+    """Matching runs before the transform, so the saved setting is authoritative."""
+    seed_manual_event(comparison_db, "manual")
+    seed_plaid_event(comparison_db, "native")
+    install_comparison_models(comparison_db)
+    service = InvestmentMatchingService(comparison_db)
+
+    # Saved but not yet restated: the dim still shows no choice.
+    _choose_source(comparison_db, "account", "manual")
+    _show_built_choice(comparison_db, "account", None)
+    result = service.run()
+    assert result.proposed == 0
+    assert service.pending() == []
+
+    # Reverse: the dim is stale with a choice, but the setting was cleared.
+    _choose_source(comparison_db, "account", None)
+    _show_built_choice(comparison_db, "account", "manual")
     assert service.run().proposed == 1
     assert len(service.pending()) == 1
 

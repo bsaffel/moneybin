@@ -18,7 +18,7 @@ from moneybin.repositories.investment_match_decisions_repo import (
     InvestmentMatchDecisionsRepo,
 )
 from moneybin.tables import (
-    DIM_ACCOUNTS,
+    ACCOUNT_SETTINGS,
     INVESTMENT_EVENT_EVIDENCE,
     INVESTMENT_EVENT_HEADERS,
     INVESTMENT_EVENT_LEGS,
@@ -56,6 +56,8 @@ class InvestmentMatchingService:
         A chosen account's ledger has one source, so a proposal there is noise;
         existing pending proposals go stale under the existing rules. Reserved
         rows of accepted decisions are kept so locked components stay whole.
+        The saved setting is read, not the built dim, because matching runs
+        before the transform.
         """
         evidence = INVESTMENT_EVENT_EVIDENCE.full_name
         legs = INVESTMENT_EVENT_LEGS.full_name
@@ -66,11 +68,11 @@ class InvestmentMatchingService:
                 reserved += " OR (source_type = ? AND source_origin = ? AND native_reference = ?)"
                 parameters.extend(row)
         candidate = "is_candidate"
-        if has_column(self._db, DIM_ACCOUNTS, "investment_source_type"):
+        if has_column(self._db, ACCOUNT_SETTINGS, "investment_source_type"):
             chosen = f"""
                 SELECT source_event_key FROM {legs}
                 WHERE account_id IN (
-                    SELECT account_id FROM {DIM_ACCOUNTS.full_name}
+                    SELECT account_id FROM {ACCOUNT_SETTINGS.full_name}
                     WHERE investment_source_type IS NOT NULL
                 )
             """  # fixed TableRefs
