@@ -23,12 +23,24 @@ in the PR description for internal-only work. A `release-preparation` label
 identifies a PR that assembles notes and permits editing `CHANGELOG.md`.
 Reviewers verify the exemption reason and release scope; labels are not a
 substitute for that review. Even exempt PRs validate pending fragment names
-and rendering. Add the label in GitHub if it does not yet exist.
+and rendering. Add the label in GitHub if it does not yet exist. The one
+exemption that needs no per-PR reason is the standing one below.
 
-Dependabot's GitHub Actions bumps arrive with `skip-changelog` already applied
-(`.github/dependabot.yml`): an action version is never user-visible. Its Python
-bumps do not — decide each one, and add a fragment when the bump changes
-behavior or fixes a vulnerability.
+### Standing exemption: Dependabot's GitHub Actions bumps
+
+One class of PR is exempt without a per-PR reason. `.github/dependabot.yml`
+applies `skip-changelog` to Dependabot's GitHub Actions bumps when it opens
+them. The reason is recorded once, here: that ecosystem edits only the `uses:`
+version pins in workflow files, which change how CI runs and nothing a MoneyBin
+user can observe.
+
+The exemption waives the fragment and the written reason. It does not waive the
+review: a human still reviews and merges each bump, and removes the label if
+the PR changes anything besides an action version. This is the only automatic
+exemption; adding another means editing this section.
+
+Dependabot's Python bumps get no label. Decide each one, and add a fragment
+when the bump changes behavior or fixes a vulnerability.
 
 ## Prepare a release
 
