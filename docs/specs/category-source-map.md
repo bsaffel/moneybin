@@ -348,6 +348,16 @@ is stored and how many categorizations were withdrawn, and the hint names
 `moneybin refresh --step categorize`, which runs the same sweep and finishes
 the change. The original exception is chained, not shown.
 
+**Known limit: another term's categorization is not displaced.** The sweep
+only considers transactions with no categorization, and withdrawal removes
+only what this term's previous mapping produced. So when a merged transaction
+has two imported members carrying different terms, the term mapped first
+keeps the transaction even if the second term's member has the higher source
+priority and is mapped (or un-ignored) later. The result depends on the order
+the two terms were mapped, where a sweep from scratch would pick the
+higher-priority member. This predates follow-through and is not changed by
+it; it needs two imports of one real transaction from different exporters.
+
 **Not delivered: a CLI path to ignore a provider code.** The engine honours
 an ignored Plaid row, and `CategorySourceMapRepo.upsert` writes one, but
 `set` still refuses `source_type = 'plaid'` (see above). Admitting it is a
