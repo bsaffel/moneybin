@@ -100,7 +100,7 @@ FROM   core.bridge_category_source_map
 WHERE  source_type = ?                       -- 'plaid' | 'mx' | 'simplefin' | …
   AND  source_origin = ''                   -- provider-wide rows
   AND  source_category_code IN (?, ?)        -- (detailed, primary)
-ORDER  BY code_level = 'detailed' DESC        -- detailed match first
+ORDER  BY source_category_code = ? DESC     -- the detailed code's row first
 LIMIT  1;
 ```
 
