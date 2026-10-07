@@ -619,8 +619,9 @@ class CategorizationService:
             raise UserError(
                 "The mapping is stored, but the categorize sweep that follows "
                 f"it failed. {mapping.recategorized} earlier categorization(s) "
-                "from this term were withdrawn and stay uncategorized until "
-                "the sweep runs; running it again finishes the change.",
+                "from this term were withdrawn, and the sweep may have "
+                "re-categorized only some of them before it stopped; running "
+                "it again finishes the change.",
                 code=error_codes.REFRESH_CATEGORIZE_FAILED,
                 hint="💡 Run 'moneybin refresh --step categorize' to finish it.",
             ) from exc

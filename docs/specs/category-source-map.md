@@ -339,7 +339,9 @@ in `--output json`:
 
 Setting a term to the category it already has withdraws nothing. The sweep
 runs after the commit, so a sweep failure leaves the mapping stored and the
-withdrawn rows pending for the next sweep, as `create_rules`' reapply does.
+withdrawn rows the sweep had not yet reached pending for the next sweep, as
+`create_rules`' reapply does. Passes that finished before the failure keep
+their writes.
 `set` then
 fails with `refresh_categorize_failed`: the message states that the mapping
 is stored and how many categorizations were withdrawn, and the hint names
