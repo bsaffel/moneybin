@@ -17,7 +17,7 @@ WITH monthly AS (
   INNER JOIN core.dim_accounts AS a
     ON t.account_id = a.account_id
   WHERE
-    t.amount < 0 AND NOT t.is_transfer AND NOT a.archived
+    t.amount < 0 AND @report_eligible_transaction(t, a)
   GROUP BY
     DATE_TRUNC('MONTH', t.transaction_date),
     t.category,

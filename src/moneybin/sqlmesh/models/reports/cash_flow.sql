@@ -19,7 +19,7 @@ FROM core.fct_transactions AS t
 INNER JOIN core.dim_accounts AS a
   ON t.account_id = a.account_id
 WHERE
-  NOT t.is_transfer AND NOT a.archived
+  @report_eligible_transaction(t, a)
 GROUP BY
   DATE_TRUNC('MONTH', t.transaction_date),
   t.account_id,
