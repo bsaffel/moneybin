@@ -14,7 +14,8 @@ def test_upsert_inserts_category_and_subcategory_as_the_real_key(
     repo = CategorySourceMapRepo(db)
 
     event = repo.upsert(
-        source_type="chase_credit",
+        source_type="csv",
+        source_origin="chase_credit",
         category="Groceries",
         subcategory="Produce",
         category_id="cat-groceries",
@@ -23,18 +24,21 @@ def test_upsert_inserts_category_and_subcategory_as_the_real_key(
 
     assert event.action == "category_source_map.upsert"
     row = db.execute(
-        "SELECT source_type, source_category_code, source_subcategory_code, "
-        "code_level, category_id FROM app.category_source_map"
+        "SELECT source_type, source_origin, source_category_code, "
+        "source_subcategory_code, code_level, category_id "
+        "FROM app.category_source_map"
     ).fetchone()
     assert row is not None
     (
         source_type,
+        source_origin,
         source_category_code,
         source_subcategory_code,
         code_level,
         category_id,
     ) = row
-    assert source_type == "chase_credit"
+    assert source_type == "csv"
+    assert source_origin == "chase_credit"
     assert source_category_code == "Groceries"
     assert source_subcategory_code == "Produce"
     assert code_level == "detailed"
@@ -48,7 +52,8 @@ def test_upsert_normalizes_a_missing_subcategory_to_the_empty_sentinel(
     repo = CategorySourceMapRepo(db)
 
     repo.upsert(
-        source_type="mint",
+        source_type="csv",
+        source_origin="mint",
         category="Rent",
         subcategory=None,
         category_id="cat-rent",
@@ -57,16 +62,17 @@ def test_upsert_normalizes_a_missing_subcategory_to_the_empty_sentinel(
 
     row = db.execute(
         "SELECT source_category_code, source_subcategory_code "
-        "FROM app.category_source_map WHERE source_type = 'mint'"
+        "FROM app.category_source_map WHERE source_type = 'csv' AND source_origin = 'mint'"
     ).fetchone()
     assert row == ("Rent", "")
 
 
 def test_upsert_is_idempotent_and_updates_category_id(db: Database) -> None:
-    """A second upsert on the same (source_type, category, subcategory) updates in place."""
+    """A second upsert on the same (source_type, source_origin, category, subcategory) updates in place."""
     repo = CategorySourceMapRepo(db)
     repo.upsert(
-        source_type="tiller",
+        source_type="csv",
+        source_origin="tiller",
         category="Dining",
         subcategory=None,
         category_id="cat-old",
@@ -74,7 +80,8 @@ def test_upsert_is_idempotent_and_updates_category_id(db: Database) -> None:
     )
 
     event = repo.upsert(
-        source_type="tiller",
+        source_type="csv",
+        source_origin="tiller",
         category="Dining",
         subcategory=None,
         category_id="cat-new",
@@ -88,7 +95,7 @@ def test_upsert_is_idempotent_and_updates_category_id(db: Database) -> None:
     assert event.after_value["category_id"] == "cat-new"
     rows = db.execute(
         "SELECT category_id, source_taxonomy_version FROM app.category_source_map "
-        "WHERE source_type = 'tiller'"
+        "WHERE source_type = 'csv' AND source_origin = 'tiller'"
     ).fetchall()
     assert rows == [("cat-new", "v2")]
 
@@ -96,13 +103,14 @@ def test_upsert_is_idempotent_and_updates_category_id(db: Database) -> None:
 def test_upsert_treats_distinct_subcategories_as_distinct_keys(db: Database) -> None:
     """Two subcategories under the same (source_type, category) are separate rows.
 
-    The key is the full (source_type, source_category_code,
-    source_subcategory_code) triple — a second upsert with a different
+    The key is the full (source_type, source_origin, source_category_code,
+    source_subcategory_code) tuple — a second upsert with a different
     subcategory must not collide with or overwrite the first.
     """
     repo = CategorySourceMapRepo(db)
     repo.upsert(
-        source_type="chase_credit",
+        source_type="csv",
+        source_origin="chase_credit",
         category="Auto",
         subcategory="Gas",
         category_id="cat-gas",
@@ -110,7 +118,8 @@ def test_upsert_treats_distinct_subcategories_as_distinct_keys(db: Database) -> 
     )
 
     repo.upsert(
-        source_type="chase_credit",
+        source_type="csv",
+        source_origin="chase_credit",
         category="Auto",
         subcategory="Repair",
         category_id="cat-repair",
@@ -119,7 +128,7 @@ def test_upsert_treats_distinct_subcategories_as_distinct_keys(db: Database) -> 
 
     rows = db.execute(
         "SELECT source_subcategory_code, category_id FROM app.category_source_map "
-        "WHERE source_type = 'chase_credit' ORDER BY source_subcategory_code"
+        "WHERE source_origin = 'chase_credit' ORDER BY source_subcategory_code"
     ).fetchall()
     assert rows == [("Gas", "cat-gas"), ("Repair", "cat-repair")]
 
@@ -128,7 +137,8 @@ def test_upsert_is_audited_and_undoable(db: Database) -> None:
     repo = CategorySourceMapRepo(db)
 
     event = repo.upsert(
-        source_type="chase_credit",
+        source_type="csv",
+        source_origin="chase_credit",
         category="Coffee",
         subcategory=None,
         category_id="cat-coffee",
@@ -145,9 +155,10 @@ def test_delete_by_category_is_audited_and_undoable(db: Database) -> None:
     db.execute(
         """
         INSERT INTO app.category_source_map
-            (source_type, source_category_code, source_subcategory_code,
-             code_level, category_id, source_taxonomy_version)
-        VALUES ('plaid', 'FOOD_AND_DRINK', '', 'detailed', 'cat-task6', 'v2')
+            (source_type, source_origin, source_category_code,
+             source_subcategory_code, code_level, category_id,
+             source_taxonomy_version)
+        VALUES ('plaid', '', 'FOOD_AND_DRINK', '', 'detailed', 'cat-task6', 'v2')
         """
     )
     repo = CategorySourceMapRepo(db)
@@ -157,7 +168,7 @@ def test_delete_by_category_is_audited_and_undoable(db: Database) -> None:
     assert len(events) == 1
     event = events[0]
     assert event.action == "category_source_map.delete"
-    assert event.target_id == "plaid:FOOD_AND_DRINK:"
+    assert event.target_id == "plaid::FOOD_AND_DRINK:"
     assert event.before_value is not None
     assert event.before_value["source_taxonomy_version"] == "v2"
     assert db.execute(
@@ -168,6 +179,57 @@ def test_delete_by_category_is_audited_and_undoable(db: Database) -> None:
     owner.undo_event(event, actor="mcp")
 
     assert db.execute(
-        "SELECT source_type, source_category_code, category_id "
+        "SELECT source_type, source_origin, source_category_code, category_id "
         "FROM app.category_source_map"
-    ).fetchall() == [("plaid", "FOOD_AND_DRINK", "cat-task6")]
+    ).fetchall() == [("plaid", "", "FOOD_AND_DRINK", "cat-task6")]
+
+
+def test_upsert_keys_one_term_separately_per_type_and_origin(db: Database) -> None:
+    """The same term under another source_type or origin is its own row."""
+    repo = CategorySourceMapRepo(db)
+    keys = [("csv", "chase_credit"), ("excel", "chase_credit"), ("csv", "mint")]
+    for index, (source_type, source_origin) in enumerate(keys):
+        repo.upsert(
+            source_type=source_type,
+            source_origin=source_origin,
+            category="Coffee Shops",
+            subcategory=None,
+            category_id=f"cat-{index}",
+            actor="test",
+        )
+
+    rows = db.execute(
+        "SELECT source_type, source_origin, category_id FROM app.category_source_map "
+        "ORDER BY category_id"
+    ).fetchall()
+    assert rows == [
+        ("csv", "chase_credit", "cat-0"),
+        ("excel", "chase_credit", "cat-1"),
+        ("csv", "mint", "cat-2"),
+    ]
+
+
+def test_delete_removes_only_the_full_key(db: Database) -> None:
+    """Deleting one (type, origin) mapping leaves its same-term siblings."""
+    repo = CategorySourceMapRepo(db)
+    for source_type in ("csv", "excel"):
+        repo.upsert(
+            source_type=source_type,
+            source_origin="chase_credit",
+            category="Coffee Shops",
+            subcategory=None,
+            category_id=f"cat-{source_type}",
+            actor="test",
+        )
+
+    event = repo.delete(
+        source_type="csv",
+        source_origin="chase_credit",
+        source_category_code="Coffee Shops",
+        actor="test",
+    )
+
+    assert event.target_id == "csv:chase_credit:Coffee Shops:"
+    assert db.execute("SELECT source_type FROM app.category_source_map").fetchall() == [
+        ("excel",)
+    ]

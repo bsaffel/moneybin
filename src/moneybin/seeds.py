@@ -207,8 +207,9 @@ def refresh_views(db: Database) -> None:
 
     # Build the two-tier category-source bridge. Mirrors
     # src/moneybin/sqlmesh/models/core/bridge_category_source_map.sql — a user row for
-    # (source_type, source_category_code, source_subcategory_code) always
-    # wins over the seed default.
+    # (source_type, source_origin, source_category_code,
+    # source_subcategory_code) always wins over the seed default; seed rows
+    # are provider-wide, so their source_origin is ''.
     #
     # The seed table is SQLMesh-managed, so _ensure_seed_tables_exist's CREATE
     # TABLE IF NOT EXISTS is a no-op on an existing database and the column
@@ -231,6 +232,7 @@ def refresh_views(db: Database) -> None:
         CREATE OR REPLACE VIEW {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS
         SELECT
             s.source_type,
+            '' AS source_origin,
             s.source_category_code,
             {seed_subcategory_expr} AS source_subcategory_code,
             s.code_level,
@@ -241,12 +243,14 @@ def refresh_views(db: Database) -> None:
         WHERE NOT EXISTS (
             SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name} a
             WHERE a.source_type = s.source_type
+            AND a.source_origin = ''
             AND a.source_category_code = s.source_category_code
             AND a.source_subcategory_code = {seed_subcategory_expr}
         )
         UNION ALL
         SELECT
             source_type,
+            source_origin,
             source_category_code,
             source_subcategory_code,
             code_level,

@@ -54,8 +54,8 @@ extensions/overrides in `app`, one resolved view in `core`.
 ```mermaid
 flowchart TD
     seed["seeds.category_source_map<br/>PK (source_type, source_category_code, source_subcategory_code)<br/>+ code_level, category_id, source_taxonomy_version"]
-    app["app.category_source_map<br/>PK (source_type, source_category_code, source_subcategory_code)<br/>+ code_level, category_id, source_taxonomy_version, created_at, updated_at"]
-    view["core.bridge_category_source_map (VIEW)<br/>source_type · source_category_code · source_subcategory_code · code_level · category_id · source_taxonomy_version · is_default"]
+    app["app.category_source_map<br/>PK (source_type, source_origin, source_category_code, source_subcategory_code)<br/>+ code_level, category_id, source_taxonomy_version, created_at, updated_at"]
+    view["core.bridge_category_source_map (VIEW)<br/>source_type · source_origin · source_category_code · source_subcategory_code · code_level · category_id · source_taxonomy_version · is_default"]
     dim["core.dim_categories<br/>+ class (income/expense/transfer/debt)"]
     seed -- "anti-join: seed MINUS overridden" --> view
     app -- "UNION ALL (user wins per key)" --> view
@@ -63,16 +63,18 @@ flowchart TD
 ```
 
 **Precedence uses an anti-join, not `UNION`.** A user row and a seed row for
-the same `(source_type, source_category_code, source_subcategory_code)` may
+the same `(source_type, source_origin, source_category_code,
+source_subcategory_code)` may
 point at *different* `category_id`s; `UNION` would keep both and re-break the
-one-row-per-key guarantee. The view is therefore: seed rows whose
-`(source_type, source_category_code, source_subcategory_code)` is **not**
-present in `app`, `UNION ALL` all `app` rows. This preserves
+one-row-per-key guarantee. The view is therefore: seed rows whose key is
+**not** present in `app`, `UNION ALL` all `app` rows. A seed row is
+provider-wide, so the view gives it `source_origin = ''` and only an `app`
+row with a blank origin overrides it. This preserves
 exactly-one-row-per-key across the union.
 
 ### Grain: canonical-by-primary-key
 
-The bridge is keyed **`(source_type, source_category_code,
+The bridge is keyed **`(source_type, source_origin, source_category_code,
 source_subcategory_code)`**. Exactly one canonical MoneyBin category per key
 is guaranteed by the primary key itself — there is no `is_canonical` flag
 that could go two-TRUE or zero-TRUE. The ambiguous-mapping winner is a
@@ -96,6 +98,7 @@ match and falls back to the primary:
 SELECT category_id
 FROM   core.bridge_category_source_map
 WHERE  source_type = ?                       -- 'plaid' | 'mx' | 'simplefin' | …
+  AND  source_origin = ''                   -- provider-wide rows
   AND  source_category_code IN (?, ?)        -- (detailed, primary)
 ORDER  BY code_level = 'detailed' DESC        -- detailed match first
 LIMIT  1;
@@ -110,7 +113,8 @@ falling through to rules/AI.
 
 | Column | Type | Notes |
 |---|---|---|
-| `source_type` | `VARCHAR` | Taxonomy namespace: whose vocabulary the code belongs to. Two suppliers today — a provider tag (`plaid`, future `mx`/`simplefin`) for provider-native codes, and a `source_origin` slug (`chase_credit`, `mint`) for imported mappings (see "Extension" below). Closed-vocabulary discriminator (not an entity reference); deliberately not tied to the import vector — the same institution arriving as a PDF statement and as a CSV can resolve to one namespace value, so a future normalization layer can map several vectors onto one namespace without changing this column's meaning. |
+| `source_type` | `VARCHAR` | The transaction row's own `source_type` — the same values the column holds everywhere else: `plaid` for provider-native codes (future `mx`/`simplefin`), and `csv`, `tsv`, `excel`, `parquet`, `feather`, `pdf`, or `manual` for imported mappings (see "Extension" below). Never a provider alias and never an origin slug. Closed-vocabulary discriminator, not an entity reference. |
+| `source_origin` | `VARCHAR` | The row's own `source_origin` for an imported mapping (`chase_credit`, `mint`). `''` on a provider row means provider-wide. An import whose account label slugs to nothing also carries `''`; its `source_type` keeps it apart from provider rows. App table and view only — the seed table holds provider rows, and the view supplies their blank origin. |
 | `source_category_code` | `VARCHAR` | The provider's code, stored verbatim (source-provided ID, `.claude/rules/identifiers.md` strategy 1). |
 | `source_subcategory_code` | `VARCHAR` | Second half of the source's (category, subcategory) key. `''` is the sentinel for "no subcategory" — DuckDB primary keys reject NULL, so an absent subcategory cannot be stored as one; never a distinct real value. |
 | `code_level` | `VARCHAR` | `'detailed'` \| `'primary'` — the tier this code sits at for the provider. |
@@ -152,17 +156,22 @@ existing bridge above, never a passed-through value. The engine leg
 reuses `app.category_source_map` / `core.bridge_category_source_map`
 unchanged; only the reverse-lookup key and code shape are new:
 
-- **Keyed on `source_origin`, not the generic `source_type` ('tabular').**
-  The primary key is `(source_type, source_category_code,
-  source_subcategory_code)`; storing a concrete `source_origin` value
-  (`chase_credit`, `mint`, `tiller`) in the `source_type` column — instead of
-  Plaid's provider tag — lets two exporters map an identical category string
-  to two different MoneyBin categories. This reframes rather than
-  contradicts "Multi-aggregator and free-text boundary" above: a single
-  exporter's own category list IS a closed vocabulary from that exporter's
-  perspective, even though the generic `tabular`/`manual` discriminator is
-  not — SimpleFIN's genuinely arbitrary free text is a different case and
-  still falls through as documented.
+- **Keyed on the row's own `(source_type, source_origin)`.** An imported
+  mapping stores the pair exactly as the transaction row carries it —
+  `('csv', 'chase_credit')`, `('excel', 'mint')` — and matching is exact
+  equality on both, with no precedence rule. Two exporters can therefore
+  map an identical category string to two different MoneyBin categories.
+  Provider rows are `('plaid', '')`, so an import whose origin slug
+  happens to be `plaid` cannot collide with Plaid's vocabulary in either
+  direction: the type differs. An earlier version stored the origin slug
+  in the `source_type` column, which gave one column two meanings and
+  made that collision possible; `V068` rebuilt the key. The accepted cost:
+  one origin exported as CSV and as Excel is two vocabularies, mapped
+  separately. This reframes rather than contradicts "Multi-aggregator and
+  free-text boundary" above: a single exporter's own category list IS a
+  closed vocabulary from that exporter's perspective — SimpleFIN's
+  genuinely arbitrary free text is a different case and still falls
+  through as documented.
 - **Real second key column, not a composite code.** An imported row carries
   `category` and `subcategory` independently. An earlier version of this
   extension packed both into `source_category_code` via
@@ -185,18 +194,28 @@ unchanged; only the reverse-lookup key and code shape are new:
   merchant — so every match writes `confidence=1.0`.
 - **Row grain, not merge grain.** Reads `prep.int_transactions__matched`
   (row-grain, pre-merge — carries the gold `transaction_id` alongside each
-  source row's own `source_origin`/`category`/`subcategory`), not
+  source row's own `source_type`/`source_origin`/`category`/`subcategory`), not
   `prep.int_transactions__merged` (which resolves one winning value per
   transaction but drops which member contributed it).
 - **Schema widening: `V067__add_source_subcategory_code.py`.** Adds
   `source_subcategory_code` and rebuilds the table's primary key (DuckDB
   cannot `ALTER` a primary key), replacing the JSON-encoded composite code
   described above.
+- **Schema widening: `V068__key_category_source_map_by_origin.py`.** Adds
+  `source_origin` to the primary key by the same rebuild. A `plaid` row
+  backfills `source_origin = ''`. An imported mapping written under the old
+  key held its origin slug in `source_type` and applied to every row of that
+  origin, so it is re-keyed once per source type the raw tables hold for the
+  origin. A `plaid` row is also copied to an import whose origin is `plaid`,
+  because the old key matched both and cannot say which was meant. A mapping
+  whose origin no raw row carries has no source type to take and is dropped;
+  its term returns to `pending` if those rows are imported again.
 
 PR1 shipped the engine only (repo write method + orchestrator leg, wired into
 `categorize_pending`). PR2 adds the authoring surface:
 `CategorizationQueries.list_unmapped_source_terms` enumerates distinct
-unmapped `(source_origin, category, subcategory)` terms — the decision unit
+unmapped `(source_type, source_origin, category, subcategory)` terms — the
+decision unit
 is the term, not the transaction, since one curated mapping resolves every
 row carrying that text — with up to 3 `did_you_mean` suggestions against
 active MoneyBin category names; `MatchApplier.resolve_source_term` maps one
@@ -218,8 +237,16 @@ sweep's own `source_category_bridge_match_predicate`, so it accepts exactly
 the terms the sweep can apply — or when the term is already mapped, so a
 mapping outlives a reverted import and can still be changed. Anything else is
 refused with `mutation_not_found` instead of being stored as a mapping that
-never matches. The term carries no length cap: imports bound none of its three
+never matches. The term carries no length cap: imports bound none of its
 parts, and a value that must already exist in the database is bounded by it.
+
+`pending` reports each term's `source_type`. `set` takes it as an optional
+argument: omitted, it is derived from the imported rows and mappings that
+carry the rest of the term, and when several types carry it the write is
+refused with `mutation_ambiguous` and the candidate types, never guessed.
+`set` accepts a blank `source_origin`, because an import whose account label
+slugs to nothing carries one, and refuses `source_type = 'plaid'`: provider
+vocabularies are not curated through this surface.
 
 PR2 is CLI-only. The MCP surface, decided after PR2 opened, extends two
 existing tools instead of adding one: an unmapped term is a

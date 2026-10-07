@@ -74,6 +74,7 @@
 - name: '"moneybin"."app"."category_source_map"'
   columns:
     source_type: TEXT
+    source_origin: TEXT
     source_category_code: TEXT
     source_subcategory_code: TEXT
     code_level: TEXT

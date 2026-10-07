@@ -18,6 +18,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
+from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization import (
@@ -29,6 +30,7 @@ from moneybin.services.categorization import (
     validate_rule_items,
 )
 from moneybin.services.categorization.applier import MatchApplier
+from moneybin.services.undo_dispatch import repo_for
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
@@ -1521,9 +1523,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("MappedCat")
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, code_level, category_id) "
-            "VALUES (?, ?, ?, ?)",
-            ["plaid", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
+            "(source_type, source_origin, source_category_code, code_level, "
+            "category_id) VALUES (?, ?, ?, ?, ?)",
+            ["plaid", "", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
@@ -1688,9 +1690,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("MappedForceCat")
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, code_level, category_id) "
-            "VALUES (?, ?, ?, ?)",
-            ["plaid", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
+            "(source_type, source_origin, source_category_code, code_level, "
+            "category_id) VALUES (?, ?, ?, ?, ?)",
+            ["plaid", "", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
         )
         svc.delete_category(cat_id, force=True)
 
@@ -1801,6 +1803,76 @@ class TestDeleteCategory:
             ).fetchall()
             == []
         )
+
+    @pytest.mark.unit
+    def test_delete_plan_source_mappings_sharing_code_are_each_restorable(
+        self, db: Database, applier: MatchApplier
+    ) -> None:
+        """Two mappings sharing source_type/source_category_code stay distinct.
+
+        Regression guard: the cascade-delete snapshot's key columns
+        previously omitted ``source_subcategory_code`` — the table's actual
+        third primary-key column — so both mappings collapsed to one
+        ``target_id`` in the plan's ``source_mappings`` reference group,
+        leaving the confirmation preview unable to tell them apart.
+        """
+        cat_id = CategorizationService(db).create_category("SharedCodeCat")
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_origin, source_category_code, "
+            " source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, 'detailed', ?)",
+            ["plaid", "", "INCOME", "SALARY", cat_id],
+        )
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_origin, source_category_code, "
+            " source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, 'detailed', ?)",
+            ["plaid", "", "INCOME", "BONUS", cat_id],
+        )
+
+        plan = applier.plan_category_delete(cat_id, force=True)
+        source_group = next(
+            group for group in plan.references if group.label == "source_mappings"
+        )
+        target_ids = {row.target_id for row in source_group.rows}
+        assert len(target_ids) == 2, "each subcategory must keep its own identity"
+
+        repo = CategorySourceMapRepo(db)
+        events = repo.delete_by_category(cat_id, actor="test")
+        assert len(events) == 2
+        owner = repo_for("app", "category_source_map", db)
+        for event in events:
+            owner.undo_event(event, actor="test")
+
+        rows = db.execute(
+            "SELECT source_subcategory_code FROM app.category_source_map "
+            "WHERE category_id = ? ORDER BY source_subcategory_code",
+            [cat_id],
+        ).fetchall()
+        assert rows == [("BONUS",), ("SALARY",)]
+
+    @pytest.mark.unit
+    def test_delete_plan_source_mappings_differing_only_by_origin_stay_distinct(
+        self, db: Database, applier: MatchApplier
+    ) -> None:
+        """Same type, term, and subcategory under two origins keep separate identities."""
+        cat_id = CategorizationService(db).create_category("SharedTermCat")
+        for origin in ("chase_credit", "amex_gold"):
+            db.execute(
+                "INSERT INTO app.category_source_map "
+                "(source_type, source_origin, source_category_code, "
+                " source_subcategory_code, code_level, category_id) "
+                "VALUES ('csv', ?, 'Coffee Shops', '', 'detailed', ?)",
+                [origin, cat_id],
+            )
+
+        plan = applier.plan_category_delete(cat_id, force=True)
+        source_group = next(
+            group for group in plan.references if group.label == "source_mappings"
+        )
+        assert len({row.target_id for row in source_group.rows}) == 2
 
 
 class TestWriteCategorizationSourceType:

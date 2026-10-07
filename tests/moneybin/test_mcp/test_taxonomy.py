@@ -252,8 +252,8 @@ async def test_taxonomy_force_delete_cascades_and_undoes_one_operation() -> None
         )
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, category_id) "
-            "VALUES ('task6', 'cascade', ?)",
+            "(source_type, source_origin, source_category_code, category_id) "
+            "VALUES ('task6', '', 'cascade', ?)",
             [category_id],
         )
 

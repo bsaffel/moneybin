@@ -200,11 +200,12 @@ Logical grain key: `category_id`.
 
 ### `core.bridge_category_source_map`
 
-Resolved provider-code → canonical-category bridge. Grain: one row per `(source_type, source_category_code, source_subcategory_code)`. `VIEW` that unions the `seeds.category_source_map` defaults with `app.category_source_map` user overrides — a user row for a given key always wins over the seed default. This is the reverse-lookup key for turning an aggregator's category code (e.g. Plaid PFC) or an imported row's own category text into a MoneyBin `category_id`, with no schema change per new aggregator.
+Resolved provider-code → canonical-category bridge. Grain: one row per `(source_type, source_origin, source_category_code, source_subcategory_code)`. `VIEW` that unions the `seeds.category_source_map` defaults with `app.category_source_map` user overrides — a user row for a given key always wins over the seed default. This is the reverse-lookup key for turning an aggregator's category code (e.g. Plaid PFC) or an imported row's own category text into a MoneyBin `category_id`, with no schema change per new aggregator.
 
 | Column | Type | Description |
 |---|---|---|
-| `source_type` | VARCHAR | Taxonomy namespace: a provider tag (e.g. `plaid`) or a `source_origin` slug for imported mappings. |
+| `source_type` | VARCHAR | The row's own `source_type`: `plaid` for provider rows; `csv`, `tsv`, `excel`, `parquet`, `feather`, `pdf`, or `manual` for imported mappings. |
+| `source_origin` | VARCHAR | The row's own `source_origin` for an imported mapping (e.g. `chase_credit`). `''` on a provider row means provider-wide. |
 | `source_category_code` | VARCHAR | The provider's category code (e.g. `FOOD_AND_DRINK_COFFEE`) or an imported row's own category text. |
 | `source_subcategory_code` | VARCHAR | Second half of the source key. `''` is the sentinel for "no subcategory" (DuckDB primary keys reject NULL). |
 | `code_level` | VARCHAR | `detailed` \| `primary`. Detailed wins over primary on reverse lookup. |
@@ -864,7 +865,7 @@ Tables here capture state that cannot be re-derived from raw sources: categoriza
 | `app.user_merchants` | One row per `merchant_id` | Mutable merchant entries. Surfaced via `core.dim_merchants`. |
 | `app.user_categories` | One row per `category_id` | User-created categories. Combined with seeds via `core.dim_categories`. |
 | `app.category_overrides` | One row per `category_id` | User soft-deletions on seed categories. |
-| `app.category_source_map` | One row per `(source_type, source_category_code, source_subcategory_code)` | User overrides for provider-code → `category_id` mappings. Combined with `seeds.category_source_map` via `core.bridge_category_source_map`. |
+| `app.category_source_map` | One row per `(source_type, source_origin, source_category_code, source_subcategory_code)` | Curated imported-term mappings and user overrides for provider-code → `category_id` mappings. Combined with `seeds.category_source_map` via `core.bridge_category_source_map`. |
 | `app.budgets` | One row per `budget_id` | Monthly spending targets by category over a `start_month`–`end_month` window. |
 | `app.imports` | One row per labeled `import_id` | User-applied labels on import batches. FK → `app.import_log.import_id`. |
 | `app.audit_log` | One row per mutation | Unified audit log; emitted synchronously in the same transaction as the mutation. |

@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 class UnmappedSourceTermRow:
     """One imported vocabulary term with no ``app.category_source_map`` row."""
 
+    source_type: Annotated[str, DataClass.TXN_TYPE]
     source_origin: Annotated[str, DataClass.TXN_TYPE]
     category: Annotated[str, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
@@ -50,6 +51,7 @@ class UnmappedSourceTermRow:
     def from_domain(cls, term: UnmappedSourceTerm) -> UnmappedSourceTermRow:
         """Map a service ``UnmappedSourceTerm`` into the payload row."""
         return cls(
+            source_type=term.source_type,
             source_origin=term.source_origin,
             category=term.category,
             subcategory=term.subcategory,
@@ -82,6 +84,7 @@ class CategoryMappingsPendingPayload:
 class CategoryMappingSetPayload:
     """Payload for ``categories_mappings_set`` — mapping confirmation."""
 
+    source_type: Annotated[str, DataClass.TXN_TYPE]
     source_origin: Annotated[str, DataClass.TXN_TYPE]
     category: Annotated[str, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
