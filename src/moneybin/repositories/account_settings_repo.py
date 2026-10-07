@@ -128,7 +128,7 @@ class AccountSettingsRepo(BaseRepo):
         ``CURRENT_TIMESTAMP`` as an identifier in that position, not a call.
 
         The INSERT/ON CONFLICT column list drops every column the live catalog
-        lacks (``archived_at`` pre-V063, the investment-source pair pre-V068,
+        lacks (``archived_at`` pre-V063, the investment-source pair pre-V069,
         ``no_auto_upgrade=True`` -- see ``_live_columns``): there is no column
         to write the caller's value into, so it is silently not persisted
         rather than raising a raw ``duckdb.BinderException``. A caller that

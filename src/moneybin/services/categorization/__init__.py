@@ -565,8 +565,8 @@ class CategorizationService:
     ) -> list[UnmappedSourceTerm]:
         """List distinct imported vocabulary terms with no bridge mapping.
 
-        ``namespace`` optionally filters to one ``source_origin`` (a
-        provider tag or an exporter slug). See
+        ``namespace`` optionally filters to one ``source_origin`` (an
+        exporter slug). See
         :meth:`CategorizationQueries.list_unmapped_source_terms`.
         """
         return self._queries.list_unmapped_source_terms(namespace=namespace)
@@ -574,6 +574,7 @@ class CategorizationService:
     def resolve_source_term(
         self,
         *,
+        source_type: str | None = None,
         source_origin: str,
         category: str,
         subcategory: str | None,
@@ -584,9 +585,11 @@ class CategorizationService:
         """Map one imported vocabulary term to a MoneyBin category.
 
         See :meth:`MatchApplier.resolve_source_term` for the write contract
-        (exactly one of ``category_id`` / ``new_category``, atomic commit).
+        (exactly one of ``category_id`` / ``new_category``, atomic commit,
+        ``source_type`` derived when omitted).
         """
         return self._applier.resolve_source_term(
+            source_type=source_type,
             source_origin=source_origin,
             category=category,
             subcategory=subcategory,

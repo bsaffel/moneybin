@@ -20,7 +20,7 @@ def _insert_seed_row(
     # source_subcategory_code is explicit '' (not omitted): the app-table
     # override below relies on app.category_source_map's schema DEFAULT ''
     # to match this seed row's key exactly, and NULL != '' would let the
-    # anti-join's extended (source_type, source_category_code,
+    # anti-join's extended (source_type, source_origin, source_category_code,
     # source_subcategory_code) correlation fail to suppress this seed row.
     db.execute(
         "INSERT INTO seeds.category_source_map "
@@ -73,9 +73,9 @@ def test_user_override_wins(db: Database) -> None:
 
     db.execute(
         "INSERT INTO app.category_source_map "
-        "(source_type, source_category_code, code_level, category_id, "
-        "source_taxonomy_version) "
-        "VALUES ('plaid', 'FOOD_AND_DRINK_FAST_FOOD', 'detailed', "
+        "(source_type, source_origin, source_category_code, code_level, "
+        "category_id, source_taxonomy_version) "
+        "VALUES ('plaid', '', 'FOOD_AND_DRINK_FAST_FOOD', 'detailed', "
         "'u_custom0001', 'plaid_pfc_v2')"
     )
     # The bridge is a live view — no refresh_views() re-run needed for the
@@ -89,6 +89,30 @@ def test_user_override_wins(db: Database) -> None:
     ).fetchall()
 
     assert rows == [("u_custom0001", False)]
+
+
+def test_origin_scoped_row_does_not_override_a_provider_seed(db: Database) -> None:
+    """A row under origin 'plaid' is imported-scoped, so the provider-wide seed stays."""
+    refresh_views(db)  # ensures seeds.category_source_map exists
+    _insert_seed_row(db, "FOOD_AND_DRINK_FAST_FOOD", "detailed", "FND-FST")
+    db.execute(
+        "INSERT INTO app.category_source_map "
+        "(source_type, source_origin, source_category_code, code_level, "
+        "category_id) "
+        "VALUES ('plaid', 'plaid', 'FOOD_AND_DRINK_FAST_FOOD', 'detailed', "
+        "'u_scoped0001')"
+    )
+
+    rows = db.execute(
+        """
+        SELECT source_origin, category_id, is_default
+        FROM core.bridge_category_source_map
+        WHERE source_category_code = 'FOOD_AND_DRINK_FAST_FOOD'
+        ORDER BY source_origin
+        """
+    ).fetchall()
+
+    assert rows == [("", "FND-FST", True), ("plaid", "u_scoped0001", False)]
 
 
 def test_refresh_views_survives_a_seed_table_without_the_subcategory_column(

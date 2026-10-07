@@ -1,9 +1,9 @@
-<!-- Last reviewed: 2026-09-22 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Synthetic Data
 
 MoneyBin ships a synthetic-data generator that builds a multi-year transaction history from a declared persona. It reads no real statement: every input is a persona YAML file shipped in the repo. This guide covers what the generator produces, how to drive it from the CLI, and how it stays isolated from any real data on the same machine.
 
-The examples were captured against an isolated synthetic profile at 80 columns. Profile paths are normalized to `<MONEYBIN_HOME>`; a third-party SQLMesh warning and path-bearing initialization trace are omitted.
+The examples were captured against an isolated synthetic profile at 80 columns. Every line carrying an absolute path is trimmed, as are the two SQLMesh `Target data object ... dropping it` lines, a third-party SQLMesh `FutureWarning`, and the DuckDB initialization trace. Each trim is named beside its block.
 
 ## What it generates
 
@@ -66,8 +66,11 @@ missing profile the command exits 1 without writing anything (see Limitations).
 $ moneybin profile create bob --no-init-inbox
 Profile created
 Profile:  bob
-Location: <MONEYBIN_HOME>/profiles/bob
 ```
+
+Three lines are trimmed above the closing fence: the `Location:` label and the two
+lines its absolute path wrapped onto. Two SQLMesh `Target data object ... dropping
+it` lines above `Profile created` are trimmed as well.
 
 Then generate. The command writes raw rows, then runs SQLMesh to build core and reports.
 
@@ -134,7 +137,8 @@ $ moneybin --profile bob reports net-worth-accounts
 4 of 14 columns shown — --wide for all
 ```
 
-The three trailing next-step hints are trimmed above. `account_balance_home` is `-`
+A blank line and three trailing next-step hints, which wrap onto five lines at
+this width, are trimmed above. `account_balance_home` is `-`
 because the profile has no home currency yet. `reports net-worth-accounts` shows
 each generated account's latest balance; `reports cash-flow`
 rolls up monthly inflow, outflow, and net, grouped by account, category, or both;
@@ -172,6 +176,9 @@ $ moneybin --profile bob db query "SELECT COUNT(*) AS ground_truth_rows FROM syn
 | 2886              |
 +-------------------+
 ```
+
+The four-line privacy notice and the initialization trace, both shown in the
+previous block, are trimmed above.
 
 The ground-truth row count matches the receipt's `Transactions saved: 2886`: one
 ground-truth row per generated transaction.

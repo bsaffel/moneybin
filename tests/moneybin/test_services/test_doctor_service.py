@@ -1331,7 +1331,7 @@ def test_opening_lot_review_unbound_security_shows_provider_key(
 
 
 def _drop_dim_source_choice_columns(db: Database) -> None:
-    """Leave `core.dim_accounts` as it was before V068 (migrated, not yet refreshed)."""
+    """Leave `core.dim_accounts` as it was before V069 (migrated, not yet refreshed)."""
     db.execute(
         "ALTER TABLE core.dim_accounts DROP COLUMN investment_source_type_changed_at"
     )

@@ -10,6 +10,7 @@ from moneybin.tables import CATEGORY_SOURCE_MAP
 
 _COLUMNS = (
     "source_type",
+    "source_origin",
     "source_category_code",
     "source_subcategory_code",
     "code_level",
@@ -25,38 +26,51 @@ class CategorySourceMapRepo(BaseRepo):
 
     repository = "category_source_map"
     table_ref = CATEGORY_SOURCE_MAP
-    pk_columns = ("source_type", "source_category_code", "source_subcategory_code")
+    pk_columns = (
+        "source_type",
+        "source_origin",
+        "source_category_code",
+        "source_subcategory_code",
+    )
 
     def _fetch_row(
         self,
         source_type: str,
+        source_origin: str,
         source_category_code: str,
         source_subcategory_code: str,
     ) -> dict[str, Any] | None:
         row = self._db.execute(
             f"""
-            SELECT source_type, source_category_code, source_subcategory_code,
-                   code_level, category_id, source_taxonomy_version,
-                   created_at, updated_at
+            SELECT source_type, source_origin, source_category_code,
+                   source_subcategory_code, code_level, category_id,
+                   source_taxonomy_version, created_at, updated_at
             FROM {CATEGORY_SOURCE_MAP.full_name}
-            WHERE source_type = ? AND source_category_code = ?
-                AND source_subcategory_code = ?
+            WHERE source_type = ? AND source_origin = ?
+                AND source_category_code = ? AND source_subcategory_code = ?
             """,  # noqa: S608  # TableRef + parameterized values
-            [source_type, source_category_code, source_subcategory_code],
+            [source_type, source_origin, source_category_code, source_subcategory_code],
         ).fetchone()
         return dict(zip(_COLUMNS, row, strict=True)) if row is not None else None
 
     @staticmethod
     def _target_id(
-        source_type: str, source_category_code: str, source_subcategory_code: str
+        source_type: str,
+        source_origin: str,
+        source_category_code: str,
+        source_subcategory_code: str,
     ) -> str:
         """Flatten the composite primary key for audit targeting."""
-        return f"{source_type}:{source_category_code}:{source_subcategory_code}"
+        return (
+            f"{source_type}:{source_origin}:"
+            f"{source_category_code}:{source_subcategory_code}"
+        )
 
     def _row_target_id(self, row: dict[str, Any]) -> str:
         """Mirror the forward mutation's composite audit target."""
         return self._target_id(
             str(row["source_type"]),
+            str(row["source_origin"]),
             str(row["source_category_code"]),
             str(row["source_subcategory_code"]),
         )
@@ -65,6 +79,7 @@ class CategorySourceMapRepo(BaseRepo):
         self,
         *,
         source_type: str,
+        source_origin: str,
         category: str,
         subcategory: str | None,
         category_id: str,
@@ -74,7 +89,7 @@ class CategorySourceMapRepo(BaseRepo):
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
-        """Upsert one provider/exporter category-code mapping.
+        """Upsert one source category-code mapping.
 
         ``category`` becomes ``source_category_code`` verbatim;
         ``subcategory`` becomes ``source_subcategory_code``, normalized to
@@ -86,26 +101,30 @@ class CategorySourceMapRepo(BaseRepo):
         ``COALESCE(subcategory_expr, '')``), or a curated mapping silently
         stops matching instead of raising.
 
-        ``source_type`` holds a provider's own vocabulary tag for Plaid-style
-        rows (``'plaid'``) but a ``source_origin`` value for an imported
-        mapping (``'chase_credit'``, ``'mint'``) per the owner's ruling —
-        two exporters must be free to map the same category string to two
-        different MoneyBin categories.
+        ``(source_type, source_origin)`` is the transaction row's own pair:
+        ``('plaid', '')`` for a provider-wide row (blank origin), or e.g.
+        ``('csv', 'chase_credit')`` for an imported mapping — two exporters,
+        or one exporter in two formats, are free to map the same category
+        string to different MoneyBin categories.
         """
         source_category_code = category
         source_subcategory_code = subcategory or ""
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(
-                source_type, source_category_code, source_subcategory_code
+                source_type,
+                source_origin,
+                source_category_code,
+                source_subcategory_code,
             )
             self._db.execute(
                 f"""
                 INSERT INTO {CATEGORY_SOURCE_MAP.full_name}
-                    (source_type, source_category_code, source_subcategory_code,
-                     code_level, category_id, source_taxonomy_version,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT (source_type, source_category_code, source_subcategory_code)
+                    (source_type, source_origin, source_category_code,
+                     source_subcategory_code, code_level, category_id,
+                     source_taxonomy_version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (source_type, source_origin, source_category_code,
+                             source_subcategory_code)
                 DO UPDATE SET
                     code_level = EXCLUDED.code_level,
                     category_id = EXCLUDED.category_id,
@@ -114,6 +133,7 @@ class CategorySourceMapRepo(BaseRepo):
                 """,  # noqa: S608  # TableRef + parameterized values
                 [
                     source_type,
+                    source_origin,
                     source_category_code,
                     source_subcategory_code,
                     code_level,
@@ -122,14 +142,20 @@ class CategorySourceMapRepo(BaseRepo):
                 ],
             )
             after = self._fetch_row(
-                source_type, source_category_code, source_subcategory_code
+                source_type,
+                source_origin,
+                source_category_code,
+                source_subcategory_code,
             )
             return self._emit_audit(
                 action="category_source_map.upsert",
                 target=(
                     *self._audit_target,
                     self._target_id(
-                        source_type, source_category_code, source_subcategory_code
+                        source_type,
+                        source_origin,
+                        source_category_code,
+                        source_subcategory_code,
                     ),
                 ),
                 before=self._serialize_for_audit(before),
@@ -142,6 +168,7 @@ class CategorySourceMapRepo(BaseRepo):
         self,
         *,
         source_type: str,
+        source_origin: str,
         source_category_code: str,
         source_subcategory_code: str = "",
         actor: str,
@@ -151,25 +178,39 @@ class CategorySourceMapRepo(BaseRepo):
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(
                 self._fetch_row(
-                    source_type, source_category_code, source_subcategory_code
+                    source_type,
+                    source_origin,
+                    source_category_code,
+                    source_subcategory_code,
                 ),
                 "source mapping",
                 self._target_id(
-                    source_type, source_category_code, source_subcategory_code
+                    source_type,
+                    source_origin,
+                    source_category_code,
+                    source_subcategory_code,
                 ),
             )
             self._db.execute(
                 f"DELETE FROM {CATEGORY_SOURCE_MAP.full_name} "  # noqa: S608  # TableRef + parameterized values
-                "WHERE source_type = ? AND source_category_code = ? "
-                "AND source_subcategory_code = ?",
-                [source_type, source_category_code, source_subcategory_code],
+                "WHERE source_type = ? AND source_origin = ? "
+                "AND source_category_code = ? AND source_subcategory_code = ?",
+                [
+                    source_type,
+                    source_origin,
+                    source_category_code,
+                    source_subcategory_code,
+                ],
             )
             return self._emit_audit(
                 action="category_source_map.delete",
                 target=(
                     *self._audit_target,
                     self._target_id(
-                        source_type, source_category_code, source_subcategory_code
+                        source_type,
+                        source_origin,
+                        source_category_code,
+                        source_subcategory_code,
                     ),
                 ),
                 before=self._serialize_for_audit(before),
@@ -187,13 +228,15 @@ class CategorySourceMapRepo(BaseRepo):
         """Delete every provider mapping using one category, with per-row audit."""
         with self._transaction(in_outer_txn=in_outer_txn):
             keys = [
-                (str(row[0]), str(row[1]), str(row[2]))
+                (str(row[0]), str(row[1]), str(row[2]), str(row[3]))
                 for row in self._db.execute(
                     f"""
-                    SELECT source_type, source_category_code, source_subcategory_code
+                    SELECT source_type, source_origin, source_category_code,
+                           source_subcategory_code
                     FROM {CATEGORY_SOURCE_MAP.full_name}
                     WHERE category_id = ?
-                    ORDER BY source_type, source_category_code, source_subcategory_code
+                    ORDER BY source_type, source_origin, source_category_code,
+                             source_subcategory_code
                     """,  # noqa: S608  # TableRef + parameterized value
                     [category_id],
                 ).fetchall()
@@ -201,10 +244,16 @@ class CategorySourceMapRepo(BaseRepo):
             return [
                 self.delete(
                     source_type=source_type,
+                    source_origin=source_origin,
                     source_category_code=source_category_code,
                     source_subcategory_code=source_subcategory_code,
                     actor=actor,
                     in_outer_txn=True,
                 )
-                for source_type, source_category_code, source_subcategory_code in keys
+                for (
+                    source_type,
+                    source_origin,
+                    source_category_code,
+                    source_subcategory_code,
+                ) in keys
             ]

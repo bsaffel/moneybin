@@ -753,10 +753,10 @@ class TestInvestmentSourceChoice:
         return restate
 
     @pytest.fixture()
-    def pre_v068_rw_db(
+    def pre_v069_rw_db(
         self, test_db: Database, mock_secret_store: MagicMock
     ) -> Generator[Database, None, None]:
-        """A write-mode Database over account_settings missing the V068 pair."""
+        """A write-mode Database over account_settings missing the V069 pair."""
         test_db.execute(
             "ALTER TABLE app.account_settings "
             "DROP COLUMN investment_source_type_changed_at"
@@ -853,9 +853,9 @@ class TestInvestmentSourceChoice:
         restate_ledger.assert_not_called()
 
     def test_source_choice_on_unmigrated_catalog_is_refused(
-        self, pre_v068_rw_db: Database, restate_ledger: MagicMock
+        self, pre_v069_rw_db: Database, restate_ledger: MagicMock
     ) -> None:
-        svc = AccountService(pre_v068_rw_db)
+        svc = AccountService(pre_v069_rw_db)
         with pytest.raises(UserError) as caught:
             svc.settings_update("acct_a", actor="cli", investment_source_type="manual")
 
@@ -902,13 +902,13 @@ class TestInvestmentSourceChoice:
         assert svc.investment_source_type("acct_a") == "plaid"
 
     def test_reader_is_none_on_unmigrated_catalog(
-        self, pre_v068_rw_db: Database
+        self, pre_v069_rw_db: Database
     ) -> None:
-        AccountService(pre_v068_rw_db).settings_update(
+        AccountService(pre_v069_rw_db).settings_update(
             "acct_a", actor="cli", display_name="Renamed"
         )
 
-        assert AccountService(pre_v068_rw_db).investment_source_type("acct_a") is None
+        assert AccountService(pre_v069_rw_db).investment_source_type("acct_a") is None
 
 
 class TestSettingsUpdateExtended:

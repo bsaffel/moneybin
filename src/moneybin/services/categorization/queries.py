@@ -114,13 +114,14 @@ class UnmappedSourceTerm:
     """One imported category-vocabulary term with no ``app.category_source_map`` row.
 
     The decision unit for curation is the *term* — the distinct
-    ``(source_origin, category, subcategory)`` triple — not the transaction:
+    ``(source_type, source_origin, category, subcategory)`` tuple — not the transaction:
     many rows can carry the same imported text. ``transaction_count`` is how
     many transactions mapping this term would categorize on the next sweep;
     ``suggestions`` are up to 3 ``did_you_mean`` guesses against active
     MoneyBin category names, for a curator choosing where to map it.
     """
 
+    source_type: str
     source_origin: str
     category: str
     subcategory: str | None
@@ -199,12 +200,13 @@ class CategorizationQueries:
                 JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     ON {
             source_category_bridge_match_predicate(
-                "m.source_origin", "m.category", "m.subcategory"
+                "m.source_type", "m.source_origin", "m.category", "m.subcategory"
             )
         }
                 JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
             )
             SELECT
+                m.source_type,
                 m.source_origin,
                 m.category,
                 COALESCE(m.subcategory, '') AS subcategory,
@@ -222,7 +224,7 @@ class CategorizationQueries:
                     SELECT 1 FROM {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     WHERE {
             source_category_bridge_match_predicate(
-                "m.source_origin", "m.category", "m.subcategory"
+                "m.source_type", "m.source_origin", "m.category", "m.subcategory"
             )
         }
                 )
@@ -232,8 +234,10 @@ class CategorizationQueries:
             sql += " AND m.source_origin = ?"
             params.append(namespace)
         sql += """
-            GROUP BY m.source_origin, m.category, COALESCE(m.subcategory, '')
-            ORDER BY transaction_count DESC, m.source_origin, m.category,
+            GROUP BY m.source_type, m.source_origin, m.category,
+                COALESCE(m.subcategory, '')
+            ORDER BY transaction_count DESC, m.source_type, m.source_origin,
+                m.category,
                 COALESCE(m.subcategory, '')
         """
         try:
@@ -244,13 +248,14 @@ class CategorizationQueries:
         valid_categories = self._active_category_names()
         return [
             UnmappedSourceTerm(
+                source_type=str(source_type),
                 source_origin=str(source_origin),
                 category=str(category),
                 subcategory=str(subcategory) if subcategory else None,
                 transaction_count=int(transaction_count),
                 suggestions=did_you_mean(str(category), valid_categories),
             )
-            for source_origin, category, subcategory, transaction_count in rows
+            for source_type, source_origin, category, subcategory, transaction_count in rows
         ]
 
     def _fct_transactions_exists(self) -> bool:

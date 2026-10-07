@@ -1,11 +1,11 @@
-<!-- Last reviewed: 2026-09-22 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Data Import
 
 MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Parquet, Feather, OFX/QFX/QBO, native-text PDF) and from Plaid-connected banks. Every file lands in `raw.*`, flows through the SQLMesh pipeline into `core.fct_transactions` / `core.dim_accounts`, and is queryable by the CLI, MCP server, and any DuckDB client. This guide walks through the entry points by source tool and by file format, plus the housekeeping commands you'll reach for after the first import.
 
 When the same account arrives from more than one source (a QFX and a CSV, history files plus Plaid), MoneyBin collapses them into one canonical account, and stops to ask when the signal is weak. The signal-by-signal breakdown — and what each file format provides — is in [Account Matching](../reference/account-matching.md).
 
-The transcripts below were captured against an isolated profile on 2026-09-22, using three synthetic files: a CSV with a non-obvious column layout, an "Example Bank" OFX, and an unreadable text file. The CSV also exercises an unknown format name. Commands ran from the fixture directory at 100 columns with color disabled and non-interactive input. Where both streams are shown, stdout precedes stderr. Trims are noted; `import history` was captured before the forced re-import under [For scripts and agents](#for-scripts-and-agents).
+The transcripts below were captured against an isolated profile on 2026-09-27, using three synthetic files: a CSV with a non-obvious column layout, an "Example Bank" OFX, and an unreadable text file. The CSV also exercises an unknown format name. Commands ran from the fixture directory at 100 columns with color disabled and non-interactive input. Where both streams are shown, stdout precedes stderr. Trims are noted; `import history` was captured before the forced re-import under [For scripts and agents](#for-scripts-and-agents).
 
 ## Before you import
 
@@ -76,10 +76,13 @@ No named format profile. `--format maybe` is refused, naming what does exist:
 ```console
 $ moneybin import files checking.csv --format maybe
 Import incomplete
+Files:  0 of 1 imported
+Failed: checking.csv — Unknown format 'maybe'. Available: ['everyday-checking', 'mint', 'tiller',
+'ynab']
 Import failed for one file: ValueError
 ```
 
-The `Failed:` line is trimmed above because it wraps at this width; it names the unknown format and the four available ones, `everyday-checking`, `mint`, `tiller`, and `ynab`. (`everyday-checking` is a user-saved format this profile picked up earlier in the guide, not a built-in.) Maybe Finance's CSV export goes through the generic tabular path below — omit `--format` and confirm the detected mapping once.
+Nothing is trimmed; the `Failed:` line wraps at this width. `everyday-checking` is a user-saved format this profile picked up earlier in the guide, not a built-in. The last line is the only one on stderr. Maybe Finance's CSV export goes through the generic tabular path below — omit `--format` and confirm the detected mapping once.
 
 ### Lunch Money
 
@@ -158,12 +161,13 @@ The bridge tables (`core.bridge_*`) record which source contributed each row, so
 
 ## How long this takes
 
-The refresh pipeline, not the file, sets the floor. In this capture, a 3-transaction OFX imported after one 7-row CSV batch took 31.7s wall-clock, including transforms:
+The refresh pipeline, not the file, sets the floor. In this capture, a 3-transaction OFX imported after one 7-row CSV batch took 18.8s wall-clock, including transforms:
 
 ```console
 $ moneybin import files savings.ofx
-Import complete
-Saved:        savings.ofx — 3 rows loaded
+✓ Import complete
+Files:        1 of 1 imported
+Saved:        savings.ofx — 3 rows loaded (import d73d7107-0451-44ce-becf-a606355cff48)
 Derived data: Core tables rebuilt
 ```
 
@@ -171,7 +175,7 @@ Only stdout is shown above. Stderr contained a SQLMesh dependency warning and th
 
 Read that as a cost per batch, not per row: the refresh runs once at the end of the batch however many rows it carried, so chaining twelve monthly files into one command costs it once rather than twelve times. Pass `--no-refresh` to defer the SQLMesh apply when chaining many imports, and finish with one `moneybin transform apply`.
 
-The text receipt summarizes saved rows and whether derived data was rebuilt. In `--output json`, `data.transforms_duration_seconds` is populated only for a multi-file batch; a single-file invocation reports `null` there. Per-batch row counts are in `moneybin import history`.
+The text receipt summarizes how many of the batch's files imported, the rows each saved with its import id, and whether derived data was rebuilt. In `--output json`, `data.transforms_duration_seconds` is populated only for a multi-file batch; a single-file invocation reports `null` there. Per-batch row counts are in `moneybin import history`.
 
 ## By file format
 
@@ -214,7 +218,8 @@ You almost never need step 4 — only if your bank uses a non-standard FID the i
 ```console
 $ moneybin import files savings.ofx
 Import incomplete
-Failed: savings.ofx — File already imported (import_id bb0f02ef...). Use --force to re-import.
+Files:  0 of 1 imported
+Failed: savings.ofx — File already imported (import_id d73d7107...). Use --force to re-import.
 Import failed for one file: ValueError
 ```
 
@@ -285,10 +290,10 @@ That proposal is wrong in a way worth reading closely: it mapped `amount` to `Ru
 $ moneybin import confirm checking.csv --accept --account-name "Everyday Checking" \
     --mapping debit_amount="Debit Amt" --mapping credit_amount="Credit Amt" \
     --sign split_debit_credit
-Import complete
+✓ Import complete
 File:         checking.csv
 Saved:        7 rows
-Import:       a07ad3c1-4569-47c2-b42e-1a42e0b0474c
+Import:       ad2a730f-e0b5-4599-b536-fc5b691b9a9a
 Derived data: Run 'moneybin transform apply' to rebuild derived tables
 ```
 
@@ -306,17 +311,17 @@ The loaded amounts carry the sign convention, not the file's raw columns:
 
 ```console
 $ moneybin sql query "SELECT transaction_date, description, amount FROM raw.tabular_transactions ORDER BY transaction_date"
-┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ transaction_date ┃ description      ┃ amount   ┃
-┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
-│ 2026-01-04       │ COFFEE STAND     │ -4.75    │
-│ 2026-01-06       │ GROCERY MARKET   │ -82.40   │
-│ 2026-01-10       │ PAYROLL DEPOSIT  │ 2400.00  │
-│ 2026-01-14       │ ELECTRIC UTILITY │ -118.60  │
-│ 2026-01-19       │ BOOKSHOP         │ -26.10   │
-│ 2026-01-23       │ PHARMACY         │ -41.05   │
-│ 2026-01-28       │ RENT PAYMENT     │ -1450.00 │
-└──────────────────┴──────────────────┴──────────┘
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ transaction_date ┃ description      ┃    amount ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ 2026-01-04       │ COFFEE STAND     │     -4.75 │
+│ 2026-01-06       │ GROCERY MARKET   │    -82.40 │
+│ 2026-01-10       │ PAYROLL DEPOSIT  │  2,400.00 │
+│ 2026-01-14       │ ELECTRIC UTILITY │   -118.60 │
+│ 2026-01-19       │ BOOKSHOP         │    -26.10 │
+│ 2026-01-23       │ PHARMACY         │    -41.05 │
+│ 2026-01-28       │ RENT PAYMENT     │ -1,450.00 │
+└──────────────────┴──────────────────┴───────────┘
 ```
 
 **Supported formats:**
@@ -337,7 +342,7 @@ $ moneybin sql query "SELECT transaction_date, description, amount FROM raw.tabu
 | `negative_is_income` | Negative = income (inverted) | Some credit cards |
 | `split_debit_credit` | Separate debit and credit columns | Citi, many European banks |
 
-On first contact with a tabular format, an inference of `negative_is_income` blocks the import instead of silently flipping every amount — MoneyBin asks a person to confirm this really is a credit-card-shaped ledger. Re-run with `--confirm-sign` to ratify, or `--sign negative_is_expense` to override; either way the saved format remembers the choice, so later imports of the same layout replay without asking again. Separately, if the running balance in the file doesn't reconcile with the detected signs, MoneyBin prints a `⚠️` warning after import rather than blocking — re-run with `--sign` if amounts look wrong.
+On first contact with a tabular format, an inference of `negative_is_income` blocks the import instead of silently flipping every amount — MoneyBin asks a person to confirm this really is a credit-card-shaped ledger. Re-run with `--confirm-sign` to ratify, or `--sign negative_is_expense` to override; either way the saved format remembers the choice, so later imports of the same layout replay without asking again. Separately, if the running balance in the file doesn't reconcile with the detected signs, MoneyBin prints an `Attention:` line on stderr after the import rather than blocking — re-run with `--sign` if amounts look wrong. A file whose amounts are all positive gets the same treatment under a different line: the assumed convention is named, and because the rows are already committed the line says to revert that import id before re-importing with `--sign negative_is_income`. `--output json` carries both as `sign_correction_suggested` and `sign_assumed` per file.
 
 **Number formats.** Specify with `--number-format` when needed: `us` (`1,234.56`), `european` (`1.234,56`), `swiss_french` (`1'234.56`), `zero_decimal` (`123456` cents).
 
@@ -532,8 +537,8 @@ $ moneybin import history
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┓
 ┃ import                               ┃ status   ┃ imported ┃ rejected ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━┩
-│ bb0f02ef-f169-4a45-92cc-4fae7d66c3a6 │ complete │ 5        │ 0        │
-│ a07ad3c1-4569-47c2-b42e-1a42e0b0474c │ complete │ 7        │ 0        │
+│ d73d7107-0451-44ce-becf-a606355cff48 │ complete │        5 │        0 │
+│ ad2a730f-e0b5-4599-b536-fc5b691b9a9a │ complete │        7 │        0 │
 └──────────────────────────────────────┴──────────┴──────────┴──────────┘
 4 of 5 columns shown — --wide for all
 Scope: Latest 2 import(s); total beyond --limit is unknown
@@ -616,7 +621,7 @@ $ moneybin import files savings.ofx broken.txt --force --output json 2>/dev/null
     "confirmation_required_count": 0,
     "total_count": 2,
     "transforms_applied": true,
-    "transforms_duration_seconds": 18.622117083054036,
+    "transforms_duration_seconds": 12.379053874872625,
     "transfers_retired": 0,
     "files": [
       {
@@ -624,8 +629,9 @@ $ moneybin import files savings.ofx broken.txt --force --output json 2>/dev/null
         "status": "imported",
         "source_type": "ofx",
         "rows_loaded": 3,
-        "import_id": "5dedfcc1-e8d2-4396-ab2d-4cc066251b90",
+        "import_id": "24e63915-7596-4f9f-af25-b531c3cdd5a0",
         "sign_correction_suggested": false,
+        "sign_assumed": null,
         "sign_override_replayed": false
       },
       {
@@ -635,6 +641,7 @@ $ moneybin import files savings.ofx broken.txt --force --output json 2>/dev/null
         "rows_loaded": 0,
         "import_id": null,
         "sign_correction_suggested": false,
+        "sign_assumed": null,
         "sign_override_replayed": false,
         "error": "No data rows found in broken.txt",
         "error_code": "infra_invalid_input"

@@ -799,8 +799,8 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
         )
 
 
-class TestPreV068SchemaToleranceOnAccountSettingsWrite:
-    """A write-mode open must tolerate account_settings predating V068.
+class TestPreV069SchemaToleranceOnAccountSettingsWrite:
+    """A write-mode open must tolerate account_settings predating V069.
 
     Same shape as the pre-V063 grid above: ``no_auto_upgrade=True`` never
     applies the migration, so the live table lacks both investment-source
@@ -808,10 +808,10 @@ class TestPreV068SchemaToleranceOnAccountSettingsWrite:
     """
 
     @pytest.fixture()
-    def pre_v068_rw_db(
+    def pre_v069_rw_db(
         self, db: Database, mock_secret_store: MagicMock
     ) -> Generator[Database, None, None]:
-        """A real write-mode Database reopened over the pre-V068 table shape."""
+        """A real write-mode Database reopened over the pre-V069 table shape."""
         db.execute(
             "ALTER TABLE app.account_settings "
             "DROP COLUMN investment_source_type_changed_at"
@@ -831,23 +831,23 @@ class TestPreV068SchemaToleranceOnAccountSettingsWrite:
         rw_db.close()
 
     def test_set_with_null_source_fields_succeeds_and_omits_keys(
-        self, pre_v068_rw_db: Database
+        self, pre_v069_rw_db: Database
     ) -> None:
-        repo = AccountSettingsRepo(pre_v068_rw_db)
-        event = _set(repo, account_id="acct_pre_v068")
+        repo = AccountSettingsRepo(pre_v069_rw_db)
+        event = _set(repo, account_id="acct_pre_v069")
         assert event.after_value is not None
         assert event.after_value["display_name"] == "Checking"
         assert "investment_source_type" not in event.after_value
         assert "investment_source_type_changed_at" not in event.after_value
 
-        update = _set(repo, account_id="acct_pre_v068", display_name="Renamed")
+        update = _set(repo, account_id="acct_pre_v069", display_name="Renamed")
         assert update.before_value is not None
         assert "investment_source_type" not in update.before_value
 
     def test_live_columns_excludes_the_missing_pair(
-        self, pre_v068_rw_db: Database
+        self, pre_v069_rw_db: Database
     ) -> None:
-        live = AccountSettingsRepo(pre_v068_rw_db)._live_columns()  # pyright: ignore[reportPrivateUsage]  # probe under test
+        live = AccountSettingsRepo(pre_v069_rw_db)._live_columns()  # pyright: ignore[reportPrivateUsage]  # probe under test
         assert "archived_at" in live
         assert "investment_source_type" not in live
         assert "investment_source_type_changed_at" not in live

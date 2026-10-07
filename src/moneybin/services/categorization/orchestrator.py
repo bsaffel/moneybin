@@ -1122,11 +1122,11 @@ class CategorizationOrchestrator:
 
         Reverse-looks-up each still-uncategorized imported row's OWN
         ``category``/``subcategory`` text against
-        core.bridge_category_source_map, keyed by that row's ``source_origin``
-        (docs/specs/category-source-map.md's "Multi-aggregator and free-text
-        boundary" — extended here: a single exporter's own category list is a
-        closed vocabulary from that exporter's perspective, even though the
-        generic ``source_type`` discriminator (``tabular``/``manual``) is not).
+        core.bridge_category_source_map, keyed by that row's own
+        ``(source_type, source_origin)`` (docs/specs/category-source-map.md's
+        "Multi-aggregator and free-text boundary" — extended here: a single
+        exporter's own category list, in one file format, is a closed
+        vocabulary from that exporter's perspective).
         No confidence gate: unlike Plaid's ML-classifier confidence, a curated
         mapping row is a deterministic assertion — the same footing as a rule
         or merchant — so every match writes at ``confidence=1.0``. Writes
@@ -1225,7 +1225,10 @@ class CategorizationOrchestrator:
                 JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     ON {
                     source_category_bridge_match_predicate(
-                        "m.source_origin", "m.category", "m.subcategory"
+                        "m.source_type",
+                        "m.source_origin",
+                        "m.category",
+                        "m.subcategory",
                     )
                 }
                 JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id

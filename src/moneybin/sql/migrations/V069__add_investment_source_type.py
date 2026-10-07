@@ -1,4 +1,4 @@
-"""V068: add app.account_settings.investment_source_type and its change time.
+"""V069: add app.account_settings.investment_source_type and its change time.
 
 docs/specs/investment-source-choice.md. Appended last because DuckDB's ALTER
 TABLE ADD COLUMN always appends, and init_schemas() must produce the same
@@ -34,4 +34,4 @@ def migrate(conn: object) -> None:
         "undo; NULL if it never changed. Folded into the investment ledger''s "
         "updated_at so re-entered rows do not rewind it'"
     )
-    logger.debug("V068: added investment_source_type columns to app.account_settings")
+    logger.debug("V069: added investment_source_type columns to app.account_settings")

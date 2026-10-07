@@ -23,8 +23,8 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.sql.migrations.V063__add_account_settings_archived_at import migrate
-from moneybin.sql.migrations.V068__add_investment_source_type import (
-    migrate as migrate_v068,
+from moneybin.sql.migrations.V069__add_investment_source_type import (
+    migrate as migrate_v069,
 )
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
@@ -579,8 +579,8 @@ def test_v063_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
     db.execute("ALTER TABLE app._pre_v063_account_settings RENAME TO account_settings")
 
     run_migration(db, migrate)
-    # V068 appends after archived_at, so a fresh-order comparison needs it applied.
-    run_migration(db, migrate_v068)
+    # V069 appends after archived_at, so a fresh-order comparison needs it applied.
+    run_migration(db, migrate_v069)
 
     upgraded_schema = [
         (row[1], row[2])

@@ -1696,6 +1696,7 @@ class TestCategoriesMappingsMutating:
         payload = json.loads(result.stdout)
         assert payload["data"]["action"] == "mapped"
         assert payload["data"]["category_id"]
+        assert payload["data"]["source_type"] == term["source_type"]
 
     def test_categories_mappings_set_unknown_term_is_refused(
         self, _mutating_profile_template: Path, tmp_path: Path

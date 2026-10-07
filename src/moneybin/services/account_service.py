@@ -451,7 +451,7 @@ class AccountService:
         the moment any settings write (``accounts set``) reaches this read.
         """
         has_archived_at = has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
-        # Same drift guard for the V068 pair: absent on a no_auto_upgrade profile.
+        # Same drift guard for the V069 pair: absent on a no_auto_upgrade profile.
         source_fields = [
             c
             for c in ("investment_source_type", "investment_source_type_changed_at")
@@ -506,7 +506,7 @@ class AccountService:
     def investment_source_type(self, account_id: str) -> str | None:
         """The account's chosen investment source; ``None`` when none is set.
 
-        Also ``None`` on a catalog that predates V068 (no column to read).
+        Also ``None`` on a catalog that predates V069 (no column to read).
         """
         if not has_column(self._db, ACCOUNT_SETTINGS, "investment_source_type"):
             return None
@@ -629,7 +629,7 @@ class AccountService:
         # archived_at is projected only when the live core.dim_accounts
         # catalog has it -- see the matching comment in list_accounts.
         has_archived_at = has_column(self._db, DIM_ACCOUNTS, "archived_at")
-        # Same drift guard for the V068 column on a dim_accounts not yet rebuilt.
+        # Same drift guard for the V069 column on a dim_accounts not yet rebuilt.
         has_source_choice = has_column(self._db, DIM_ACCOUNTS, "investment_source_type")
         fields = [
             "account_id",
@@ -835,7 +835,7 @@ class AccountService:
         source again). A real change stamps
         ``investment_source_type_changed_at`` and restates from
         ``core.dim_accounts`` before returning; repeating the current value is a
-        no-op for this field. A catalog that predates V068 refuses the field
+        no-op for this field. A catalog that predates V069 refuses the field
         (``infra_database_upgrade_required``) while every other setting keeps
         working. See docs/specs/investment-source-choice.md.
         """
@@ -917,7 +917,7 @@ class AccountService:
             )
 
         # Same hard validation for the investment source, plus a guard for a
-        # catalog that predates V068: the repo would silently drop the value
+        # catalog that predates V069: the repo would silently drop the value
         # there, and a source choice that is not persisted must not look saved.
         if "investment_source_type" in diff:
             if not has_column(self._db, ACCOUNT_SETTINGS, "investment_source_type"):

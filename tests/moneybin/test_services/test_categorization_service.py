@@ -3142,22 +3142,20 @@ def _seed_bridge_mapping(
     category: str,
     subcategory: str | None,
     source_type: str = "plaid",
+    source_origin: str = "",
     source_subcategory_code: str = "",
 ) -> None:
     """Seed one core.bridge_category_source_map row, real mechanism.
 
-    Inserts into ``seeds.category_source_map`` (the bridge's seed tier —
-    mirrors ``test_bridge_category_source_map.py``'s ``_insert_seed_row``)
-    plus a matching ``seeds.categories`` row so
-    ``core.dim_categories``/``core.bridge_category_source_map`` — both real
-    views, not stubs — resolve ``category_id`` to a ``(category,
-    subcategory)`` pair the same way production does. Callers must call
-    ``refresh_views(db)`` first so the seed tables exist.
+    A provider row (blank ``source_origin``, the default) goes into
+    ``seeds.category_source_map`` — the bridge's seed tier, mirroring
+    ``test_bridge_category_source_map.py``'s ``_insert_seed_row``. An imported
+    mapping (``source_type='csv'``, ``source_origin='chase_credit'``) goes into
+    ``app.category_source_map``, where curation writes it. Either way a matching
+    ``seeds.categories`` row lets ``core.dim_categories`` resolve ``category_id``
+    as production does. Callers must call ``refresh_views(db)`` first so the
+    seed tables exist.
 
-    ``source_type`` defaults to ``'plaid'`` for the existing Plaid-bridge
-    tests; the imported-category-text tests (``TestApplySourceCategoryMap``)
-    pass an exporter's ``source_origin`` value instead (``'chase_credit'``,
-    ``'manual'``) — that column holds either, per the owner's ruling.
     ``source_subcategory_code`` defaults to ``''`` (the "no subcategory"
     sentinel) — Plaid's own predicate never reads this column, so the
     Plaid-bridge tests are indifferent to it; the imported-category-text
@@ -3170,19 +3168,35 @@ def _seed_bridge_mapping(
     (``NULL``) rather than assuming a name or position for a column this
     test doesn't exercise.
     """
-    db.execute(
-        "INSERT INTO seeds.category_source_map "
-        "(source_type, source_category_code, source_subcategory_code, "
-        "code_level, category_id, source_taxonomy_version) "
-        "VALUES (?, ?, ?, ?, ?, 'plaid_pfc_v2')",
-        [
-            source_type,
-            source_category_code,
-            source_subcategory_code,
-            code_level,
-            category_id,
-        ],
-    )
+    if source_origin:
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_origin, source_category_code, "
+            "source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                source_type,
+                source_origin,
+                source_category_code,
+                source_subcategory_code,
+                code_level,
+                category_id,
+            ],
+        )
+    else:
+        db.execute(
+            "INSERT INTO seeds.category_source_map "
+            "(source_type, source_category_code, source_subcategory_code, "
+            "code_level, category_id, source_taxonomy_version) "
+            "VALUES (?, ?, ?, ?, ?, 'plaid_pfc_v2')",
+            [
+                source_type,
+                source_category_code,
+                source_subcategory_code,
+                code_level,
+                category_id,
+            ],
+        )
     db.execute(
         "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
         "VALUES (?, ?, ?, 'test category')",
@@ -3411,12 +3425,13 @@ class TestApplySourceCategoryMap:
             category_id="cat-groceries",
             category="Food & Dining",
             subcategory="Groceries",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t1",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Groceries",
             subcategory="Produce",
@@ -3430,7 +3445,7 @@ class TestApplySourceCategoryMap:
             "SELECT category_id, categorized_by, source_type, confidence "
             "FROM app.transaction_categories WHERE transaction_id='t1'"
         ).fetchone()
-        assert row == ("cat-groceries", "provider_native", "tabular", Decimal("1.00"))
+        assert row == ("cat-groceries", "provider_native", "csv", Decimal("1.00"))
 
     @pytest.mark.unit
     def test_matches_with_no_subcategory(self, db: Database) -> None:
@@ -3444,12 +3459,13 @@ class TestApplySourceCategoryMap:
             category="Housing",
             subcategory="Rent",
             source_type="manual",
+            source_origin="user",
         )
         _insert_matched_txn(
             db,
             "t2",
             source_type="manual",
-            source_origin="manual",
+            source_origin="user",
             category="Rent",
             subcategory=None,
         )
@@ -3468,13 +3484,12 @@ class TestApplySourceCategoryMap:
     def test_two_exporters_map_the_same_text_to_different_categories(
         self, db: Database
     ) -> None:
-        """Keying on source_origin, not source_type, lets exporters disagree.
+        """Keying on source_origin within a source_type lets exporters disagree.
 
         Both rows carry the SAME category string ("Auto") from the SAME
-        generic ``source_type`` ('tabular'), but two different exporters
+        ``source_type`` ('csv'), but two different exporters
         (``chase_credit`` vs ``amex_gold``) map it to two different
-        MoneyBin categories — proving the bridge is keyed per-exporter, not
-        per the generic tabular discriminator.
+        MoneyBin categories.
         """
         refresh_views(db)
         _seed_bridge_mapping(
@@ -3484,22 +3499,23 @@ class TestApplySourceCategoryMap:
             category_id="cat-transportation",
             category="Transportation",
             subcategory=None,
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
-        db.execute(
-            "INSERT INTO seeds.category_source_map "
-            "(source_type, source_category_code, source_subcategory_code, "
-            "code_level, category_id, source_taxonomy_version) VALUES "
-            "('amex_gold', 'Auto', '', 'detailed', 'cat-insurance', 'na')"
-        )
-        db.execute(
-            "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
-            "VALUES ('cat-insurance', 'Insurance', 'Auto', 'test category')"
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Auto",
+            code_level="detailed",
+            category_id="cat-insurance",
+            category="Insurance",
+            subcategory="Auto",
+            source_type="csv",
+            source_origin="amex_gold",
         )
         _insert_matched_txn(
             db,
             "t3",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Auto",
             subcategory=None,
@@ -3507,7 +3523,7 @@ class TestApplySourceCategoryMap:
         _insert_matched_txn(
             db,
             "t4",
-            source_type="tabular",
+            source_type="csv",
             source_origin="amex_gold",
             category="Auto",
             subcategory=None,
@@ -3539,12 +3555,13 @@ class TestApplySourceCategoryMap:
             category_id="cat-coffee",
             category="Food & Dining",
             subcategory="Coffee Shops",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t5",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Coffee",
             subcategory=None,
@@ -3571,7 +3588,7 @@ class TestApplySourceCategoryMap:
         _insert_matched_txn(
             db,
             "t6",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Some Unmapped Category",
             subcategory=None,
@@ -3618,12 +3635,13 @@ class TestApplySourceCategoryMap:
             category_id="cat-groceries",
             category="Food & Dining",
             subcategory="Groceries",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t_mixed",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Groceries",
             subcategory="Produce",
@@ -3656,7 +3674,8 @@ class TestApplySourceCategoryMap:
             "description) VALUES ('cat-utilities', 'Utilities', NULL, 'test category')"
         )
         CategorySourceMapRepo(db).upsert(
-            source_type="amex_gold",
+            source_type="csv",
+            source_origin="amex_gold",
             category="Electric",
             subcategory=None,
             category_id="cat-utilities",
@@ -3665,7 +3684,7 @@ class TestApplySourceCategoryMap:
         _insert_matched_txn(
             db,
             "t_no_subcat",
-            source_type="tabular",
+            source_type="csv",
             source_origin="amex_gold",
             category="Electric",
             subcategory=None,
@@ -3704,12 +3723,13 @@ class TestApplySourceCategoryMap:
             category_id="cat-gas",
             category="Auto",
             subcategory="Gas",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t_superseded",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Gas",
             subcategory=None,
@@ -3721,13 +3741,13 @@ class TestApplySourceCategoryMap:
             "VALUES ('t_superseded', 't_live', CURRENT_TIMESTAMP)"
         )
         before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-            source_type="tabular", trigger="sweep"
+            source_type="csv", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_source_category_map(db)
 
         after = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-            source_type="tabular", trigger="sweep"
+            source_type="csv", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 1
         assert after == before + 1, "a superseded id dropped its metric increment"
@@ -3751,12 +3771,13 @@ class TestCategorizePendingSourceCategoryMapPass:
             category_id="cat-groceries",
             category="Food & Dining",
             subcategory="Groceries",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t7",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Groceries",
             subcategory=None,
@@ -3765,7 +3786,7 @@ class TestCategorizePendingSourceCategoryMapPass:
             "INSERT INTO core.fct_transactions "
             "(transaction_id, account_id, transaction_date, amount, "
             "description, source_type) VALUES "
-            "('t7', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'tabular')"
+            "('t7', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'csv')"
         )
 
         result = categorize_pending(db)
@@ -3791,12 +3812,13 @@ class TestCategorizePendingSourceCategoryMapPass:
             category_id="cat-groceries",
             category="Food & Dining",
             subcategory="Groceries",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t8",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Groceries",
             subcategory=None,
@@ -3805,7 +3827,7 @@ class TestCategorizePendingSourceCategoryMapPass:
             "INSERT INTO core.fct_transactions "
             "(transaction_id, account_id, transaction_date, amount, "
             "description, source_type) VALUES "
-            "('t8', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'tabular')"
+            "('t8', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'csv')"
         )
 
         result = CategorizationService(db).categorize_run()
