@@ -857,8 +857,8 @@ _ELIGIBILITY_MACRO_CALLERS = (
     "recurring_subscriptions",
     "spending_trend",
 )
-# These scope an archived account by date, so they write their own archive rule.
-_DATE_SCOPED_ARCHIVE_MODELS = frozenset({
+# These read balances, not transactions, so they write their own archive rule.
+_BALANCE_REPORT_MODELS = frozenset({
     "balance_drift",
     "net_worth",
     "net_worth_accounts",
@@ -872,8 +872,9 @@ def test_report_models_take_eligibility_from_the_shared_macro() -> None:
     from sqlmesh.core.model import SqlModel
 
     for path in sorted(_REPORT_MODELS.glob("*.sql")):
-        if path.stem in _DATE_SCOPED_ARCHIVE_MODELS:
-            continue
+        owned = {"is_transfer", "archived"}
+        if path.stem in _BALANCE_REPORT_MODELS:
+            owned = {"is_transfer"}
         model = load_model(path)
         assert isinstance(model, SqlModel)
         assert isinstance(model.query, exp.Query)
@@ -882,10 +883,7 @@ def test_report_models_take_eligibility_from_the_shared_macro() -> None:
             f"{path.name}: calls @report_eligible_transaction = {calls_macro}; "
             "update _ELIGIBILITY_MACRO_CALLERS if that is intended"
         )
-        handwritten = {c.name for c in model.query.find_all(exp.Column)} & {
-            "is_transfer",
-            "archived",
-        }
+        handwritten = {c.name for c in model.query.find_all(exp.Column)} & owned
         assert not handwritten, (
             f"{path.name} reads {sorted(handwritten)} directly; call "
             "@report_eligible_transaction instead"

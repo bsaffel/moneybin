@@ -15,7 +15,7 @@ def report_eligible_transaction(
     """Transactions a spending or cash-flow report counts.
 
     Takes the model's aliases for ``core.fct_transactions`` and
-    ``core.dim_accounts``. The net-worth and balance-drift models scope archived
-    accounts by date instead and must not call this.
+    ``core.dim_accounts``. The net-worth and balance-drift models read balances,
+    not transactions, so they keep their own archive rule and must not call this.
     """
     return f"NOT {transactions}.is_transfer AND NOT {accounts}.archived"
