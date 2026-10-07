@@ -332,7 +332,7 @@ class TestMappingsSet:
         assert result.exit_code == 0
         assert "categorized 4, recategorized 1" in result.output
 
-    def test_set_requires_into_or_new(self) -> None:
+    def test_set_requires_into_new_or_ignore(self) -> None:
         result = runner.invoke(
             app,
             ["set", "--namespace", "chase_credit", "--category", "Groceries"],

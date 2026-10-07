@@ -202,7 +202,8 @@ EXAMPLES: dict[str, list[Example]] = {
     "core.bridge_category_source_map": [
         Example(
             question="Resolve a Plaid category code to a MoneyBin category "
-            "(substitute YOUR_DETAILED_CODE and YOUR_PRIMARY_CODE)",
+            "(substitute YOUR_DETAILED_CODE and YOUR_PRIMARY_CODE; a NULL "
+            "category_id means the code is ignored and categorizes nothing)",
             sql="""
                 SELECT category_id FROM core.bridge_category_source_map
                 WHERE source_type = 'plaid' AND source_origin = ''

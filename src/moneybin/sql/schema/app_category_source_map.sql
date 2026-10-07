@@ -1,4 +1,4 @@
-/* Category-source mapping → canonical MoneyBin category, or to nothing when the term is ignored. User curations and provider overrides;seed defaults live in seeds.category_source_map, unioned via core.bridge_category_source_map. */
+/* Category-source mapping → canonical MoneyBin category, or to nothing when the term is ignored. User curations and provider overrides; seed defaults live in seeds.category_source_map, unioned via core.bridge_category_source_map. */
 CREATE TABLE IF NOT EXISTS app.category_source_map (
     source_type VARCHAR NOT NULL, -- The transaction row's own source_type: plaid for provider rows; csv, tsv, excel, parquet, feather, pdf, or manual for imported rows. Never a provider alias or an origin slug
     source_origin VARCHAR NOT NULL, -- The row's source_origin for an imported mapping (e.g. chase_credit; '' when the import carries an empty slug). '' on a provider row means provider-wide

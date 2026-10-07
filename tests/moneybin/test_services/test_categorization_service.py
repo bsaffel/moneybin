@@ -3446,6 +3446,62 @@ class TestApplyPlaidCategories:
             "SELECT transaction_id, category_id FROM app.transaction_categories"
         ).fetchall() == [("t_detailed", "FND-COF")]
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("mapped_first", [True, False])
+    def test_mislabelled_primary_ignore_does_not_suppress_a_detailed_code(
+        self, db: Database, mapped_first: bool
+    ) -> None:
+        """The ranking reads the transaction's codes, not the row's ``code_level``.
+
+        The ignore is written without ``code_level``, so it carries the
+        ``'detailed'`` default and ties with the real detailed row on label.
+        """
+        refresh_views(db)
+        db.execute(
+            "INSERT INTO seeds.categories "
+            "(category_id, category, subcategory, description) "
+            "VALUES ('FND-COF', 'Food & Drink', 'Coffee Shops', 'test category')"
+        )
+        # Both written as user rows, in each order, so neither scan order hides a tie.
+        writes: list[tuple[str, str | None]] = [
+            ("FOOD_AND_DRINK_COFFEE", "FND-COF"),
+            ("FOOD_AND_DRINK", None),
+        ]
+        for code, category_id in writes if mapped_first else reversed(writes):
+            CategorySourceMapRepo(db).upsert(
+                source_type="plaid",
+                source_origin="",
+                category=code,
+                subcategory=None,
+                category_id=category_id,
+                actor="test",
+            )
+        _insert_plaid_txn(
+            db,
+            "t0",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        # A tie resolves by scan order, which only varies once the join output
+        # spans DuckDB vectors (2,048 rows); a handful of rows cannot expose it.
+        transaction_count = 5000
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged "
+            "SELECT 't' || n, 'FOOD_AND_DRINK_COFFEE', 'FOOD_AND_DRINK', 'HIGH' "
+            "FROM range(1, ?) AS r(n)",
+            [transaction_count],
+        )
+
+        candidates = CategorizationService(db)._orchestrator._plaid_bridge_candidates(  # pyright: ignore[reportPrivateUsage]  # the ranking, without 5,000 writes
+            "uncategorized"
+        )
+
+        assert len(candidates) == transaction_count
+        assert {(row[1], row[2]) for row in candidates} == {
+            ("Food & Drink", "Coffee Shops")
+        }
+
 
 def _ignore_plaid_code(db: Database, code: str, *, code_level: str) -> None:
     """Store a user row that ignores one provider-wide Plaid code."""

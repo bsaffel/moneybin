@@ -1038,6 +1038,11 @@ class CategorizationOrchestrator:
         materialized yet, or predates the PFC carry-through — see
         :meth:`apply_plaid_categories` for the full rationale.
 
+        The ranking prefers the row whose code is the transaction's detailed
+        code, read from the data: ``code_level`` is a caller-supplied label
+        that defaults to ``'detailed'``, so a mislabelled primary row would
+        otherwise tie with the real detailed one.
+
         No fallback past an ignored code: an ignored bridge row
         (``category_id IS NULL``) stays in the ranking, so an ignored detailed
         code still outranks a mapped primary one, and only the winner is then
@@ -1065,7 +1070,10 @@ class CategorizationOrchestrator:
                     AND (dc.category_id IS NOT NULL OR b.category_id IS NULL)
                 QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY m.transaction_id
-                    ORDER BY (b.code_level = 'detailed') DESC
+                    ORDER BY
+                        COALESCE(b.source_category_code = m.category_detailed, FALSE) DESC,
+                        (b.code_level = 'detailed') DESC,
+                        b.source_subcategory_code
                 ) = 1 AND b.category_id IS NOT NULL
                 """  # TableRef constants + code-constant bridge predicate; no user input
             ).fetchall()

@@ -19,6 +19,7 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Any, Literal
 
+from moneybin import error_codes
 from moneybin.config import get_settings as get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError as UserError
@@ -608,7 +609,21 @@ class CategorizationService:
             actor=actor,
         )
         held = self._applier.source_term_categorized_ids(mapping)
-        self.categorize_pending()
+        try:
+            self.categorize_pending()
+        except Exception as exc:
+            # The mapping and its withdrawals are already committed.
+            logger.error(
+                f"Categorize sweep failed after a mapping commit: {type(exc).__name__}"
+            )
+            raise UserError(
+                "The mapping is stored, but the categorize sweep that follows "
+                f"it failed. {mapping.recategorized} earlier categorization(s) "
+                "from this term were withdrawn and stay uncategorized until "
+                "the sweep runs; running it again finishes the change.",
+                code=error_codes.REFRESH_CATEGORIZE_FAILED,
+                hint="💡 Run 'moneybin refresh --step categorize' to finish it.",
+            ) from exc
         gained = self._applier.source_term_categorized_ids(mapping) - held
         return replace(mapping, categorized=len(gained - mapping.withdrawn_ids))
 

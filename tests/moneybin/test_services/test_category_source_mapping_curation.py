@@ -1551,6 +1551,104 @@ class TestMappingFollowsThrough:
             "SELECT actor, target_id FROM app.audit_log WHERE action = 'category.clear'"
         ).fetchall() == [("cli", "t1")]
 
+    @pytest.mark.unit
+    def test_shared_transaction_is_recategorized_by_the_surviving_term(
+        self, db: Database
+    ) -> None:
+        """Two members, two terms, one category: the other term restores the row.
+
+        The withdrawal cannot tell which term produced the shared row, so it
+        is counted and cleared, and the re-sweep recreates it from the term
+        that is still mapped.
+        """
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t_shared", "t_user", "t_rule", "t_merchant")
+        _insert_matched_txn(
+            db,
+            "t_shared",
+            source_type="csv",
+            source_origin="mint",
+            category="Cafe",
+            subcategory=None,
+            source_transaction_id="t_shared_mint",
+        )
+        categories = TransactionCategoriesRepo(db)
+        categories.set(
+            "t_user",
+            category="Category A",
+            subcategory=None,
+            category_id="cat-a",
+            actor="test",
+        )
+        for transaction_id, rule_id, merchant_id in (
+            ("t_rule", "rule-1", None),
+            ("t_merchant", None, "merchant-1"),
+        ):
+            categories.upsert_guarded(
+                transaction_id,
+                category="Category A",
+                subcategory=None,
+                category_id="cat-a",
+                categorized_by="rule",
+                merchant_id=merchant_id,
+                rule_id=rule_id,
+                confidence=1.0,
+                source_type="internal",
+                actor="test",
+            )
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        service.resolve_source_term(
+            source_origin="mint",
+            category="Cafe",
+            subcategory=None,
+            category_id="cat-a",
+            actor="test",
+        )
+        before = _categorizations(db)
+        assert ("t_shared", "cat-a", "provider_native") in before
+        sets_before = _audit_count(db, "category.set")
+
+        mapping = service.resolve_source_term(**_TERM, ignore=True, actor="test")
+
+        assert _categorizations(db) == before
+        # Over-counted by the shared row, and audited as a clear/set pair.
+        assert (mapping.categorized, mapping.recategorized) == (0, 1)
+        assert _audit_count(db, "category.clear") == 1
+        assert _audit_count(db, "category.set") == sets_before + 1
+
+    @pytest.mark.unit
+    def test_sweep_failure_reports_what_is_already_stored(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The mapping and withdrawals are committed before the sweep can fail."""
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1", "t2")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        failure = RuntimeError("sweep broke")
+
+        def _fail() -> dict[str, int]:
+            raise failure
+
+        monkeypatch.setattr(service, "categorize_pending", _fail)
+
+        with pytest.raises(UserError) as exc_info:
+            service.resolve_source_term(**_TERM, ignore=True, actor="test")
+
+        error = exc_info.value
+        assert error.code == error_codes.REFRESH_CATEGORIZE_FAILED
+        assert "mapping is stored" in error.message
+        assert "2 earlier categorization(s)" in error.message
+        assert "moneybin refresh --step categorize" in (error.hint or "")
+        assert error.__cause__ is failure
+        assert db.execute(
+            "SELECT category_id FROM app.category_source_map"
+        ).fetchall() == [(None,)]
+        assert _categorizations(db) == []
+
 
 def _audit_count(db: Database, action: str) -> int:
     row = db.execute(

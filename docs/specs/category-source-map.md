@@ -104,6 +104,13 @@ ORDER  BY code_level = 'detailed' DESC        -- detailed match first
 LIMIT  1;
 ```
 
+`apply_plaid_categories` ranks first on the row whose
+`source_category_code` equals the transaction's own detailed code, and only
+then on `code_level`. `code_level` is a label the writer supplies, and
+`CategorySourceMapRepo.upsert` defaults it to `'detailed'`, so a primary-code
+row written without it would otherwise tie with the real detailed row. An
+ignored primary row could then win and leave the transaction uncategorized.
+
 A code string is unique across levels (no primary equals any detailed), so
 the primary key holds with both levels in one table. An unmapped detailed
 code still lands in the right top-level category via its primary instead of
@@ -310,8 +317,16 @@ term" is derived: an imported row of the transaction carries the term (the
 sweep's own match predicate), and the categorization holds the mapping's
 previous `category_id`, the term's `source_type`, and
 `categorized_by = 'provider_native'`. A categorization made by hand, by rule,
-or by merchant fails the last test and is never touched; one made by a
-different term fails the first.
+or by merchant fails the last test and is never touched. One made by a
+different term fails the first, with one exception: a merged transaction
+whose imported members share a source type and carry two terms mapped to the
+same category. Both
+terms pass every test for that one row, so changing either mapping withdraws
+it, whichever term produced it. The sweep that follows recreates it from the
+term still mapped, so the transaction ends in the right category. The cost is
+bookkeeping: `recategorized` counts that row, and the audit log holds a
+`category.clear` and a `category.set` for a categorization that did not
+change.
 
 The receipt reports two disjoint counts, as `categorized` and `recategorized`
 in `--output json`:
@@ -325,6 +340,11 @@ in `--output json`:
 Setting a term to the category it already has withdraws nothing. The sweep
 runs after the commit, so a sweep failure leaves the mapping stored and the
 withdrawn rows pending for the next sweep, as `create_rules`' reapply does.
+`set` then
+fails with `refresh_categorize_failed`: the message states that the mapping
+is stored and how many categorizations were withdrawn, and the hint names
+`moneybin refresh --step categorize`, which runs the same sweep and finishes
+the change. The original exception is chained, not shown.
 
 **Not delivered: a CLI path to ignore a provider code.** The engine honours
 an ignored Plaid row, and `CategorySourceMapRepo.upsert` writes one, but
