@@ -25,6 +25,11 @@ Reviewers verify the exemption reason and release scope; labels are not a
 substitute for that review. Even exempt PRs validate pending fragment names
 and rendering. Add the label in GitHub if it does not yet exist.
 
+Dependabot's GitHub Actions bumps arrive with `skip-changelog` already applied
+(`.github/dependabot.yml`): an action version is never user-visible. Its Python
+bumps do not — decide each one, and add a fragment when the bump changes
+behavior or fixes a vulnerability.
+
 ## Prepare a release
 
 1. Update the version in `pyproject.toml` and its lockfile. Preview the matching
