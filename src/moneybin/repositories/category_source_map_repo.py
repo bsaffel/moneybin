@@ -82,7 +82,7 @@ class CategorySourceMapRepo(BaseRepo):
         source_origin: str,
         category: str,
         subcategory: str | None,
-        category_id: str,
+        category_id: str | None,
         code_level: str = "detailed",
         source_taxonomy_version: str | None = None,
         actor: str,
@@ -106,6 +106,9 @@ class CategorySourceMapRepo(BaseRepo):
         ``('csv', 'chase_credit')`` for an imported mapping — two exporters,
         or one exporter in two formats, are free to map the same category
         string to different MoneyBin categories.
+
+        ``category_id=None`` stores the term as ignored: it is known and
+        categorizes nothing.
         """
         source_category_code = category
         source_subcategory_code = subcategory or ""

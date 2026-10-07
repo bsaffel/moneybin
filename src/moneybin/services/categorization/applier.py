@@ -385,13 +385,26 @@ class TaxonomyTargetResult:
 
 @dataclass(frozen=True, slots=True)
 class SourceTermMapping:
-    """One imported term as ``app.category_source_map`` stored it, and its target."""
+    """One imported term as ``app.category_source_map`` stored it, and its target.
+
+    ``category_id`` is ``None`` when the term is ignored. ``withdrawn_ids``
+    are the transactions whose earlier categorization from this term was
+    removed because the mapping changed; ``categorized`` is how many
+    transactions the follow-up sweep newly categorized through it.
+    """
 
     source_type: str
     source_origin: str
     category: str
     subcategory: str | None
-    category_id: str
+    category_id: str | None
+    withdrawn_ids: frozenset[str] = frozenset()
+    categorized: int = 0
+
+    @property
+    def recategorized(self) -> int:
+        """Transactions whose earlier categorization from this term was withdrawn."""
+        return len(self.withdrawn_ids)
 
 
 def _normalized_source_term(
@@ -1423,9 +1436,10 @@ class MatchApplier:
         subcategory: str | None,
         category_id: str | None = None,
         new_category: str | None = None,
+        ignore: bool = False,
         actor: str,
     ) -> SourceTermMapping:
-        """Map one imported vocabulary term to a MoneyBin category.
+        """Map one imported vocabulary term to a MoneyBin category, or ignore it.
 
         ``(source_type, source_origin, category, subcategory)`` identifies the
         term being resolved — the row's own type and origin plus an imported
@@ -1435,8 +1449,17 @@ class MatchApplier:
         mappings carrying the rest of the term name exactly one type;
         several is refused, never guessed. ``plaid`` is refused: provider
         vocabularies are not curated here. Exactly one of
-        ``category_id`` (bind to an existing category) or ``new_category``
-        (create a category named ``new_category``, then bind) must be given.
+        ``category_id`` (bind to an existing category), ``new_category``
+        (create a category named ``new_category``, then bind), or ``ignore``
+        (store the term with no category: it is known, so it leaves the
+        pending inbox, and it categorizes nothing) must be given.
+
+        A changed mapping follows through to history. When the term was
+        mapped to a different category, the ``provider_native``
+        categorizations it produced are removed in the same transaction as
+        the mapping write, so the caller's next sweep re-evaluates those
+        rows; they are returned as ``withdrawn_ids``. Categorizations from any
+        other source are never touched.
 
         The create path routes through :meth:`create_category` — never a
         direct ``app.user_categories`` write — and the mapping write through
@@ -1455,9 +1478,10 @@ class MatchApplier:
         actually written rather than the caller's padded input.
 
         Raises:
-            UserError(code=error_codes.MUTATION_INVALID_INPUT): neither or
-                both of ``category_id`` / ``new_category`` were given, a
-                part of the term is blank, or ``source_type`` is ``plaid``.
+            UserError(code=error_codes.MUTATION_INVALID_INPUT): none or
+                several of ``category_id`` / ``new_category`` / ``ignore``
+                were given, a part of the term is blank, or ``source_type``
+                is ``plaid``.
             UserError(code=error_codes.MUTATION_AMBIGUOUS): ``source_type``
                 was omitted and several types carry the term; the candidates
                 are in ``details``.
@@ -1472,9 +1496,9 @@ class MatchApplier:
             source_type, source_origin, category, subcategory = _normalized_source_term(
                 source_type, source_origin, category, subcategory
             )
-            if (category_id is None) == (new_category is None):
+            if sum([category_id is not None, new_category is not None, ignore]) != 1:
                 raise UserError(
-                    "Specify exactly one of category_id or new_category",
+                    "Specify exactly one of category_id, new_category, or ignore",
                     code=error_codes.MUTATION_INVALID_INPUT,
                 )
             with self._transaction():
@@ -1495,7 +1519,10 @@ class MatchApplier:
                         "no mapping to change",
                         code=error_codes.MUTATION_NOT_FOUND,
                     )
-                if new_category is not None:
+                resolved_category_id: str | None
+                if ignore:
+                    resolved_category_id = None
+                elif new_category is not None:
                     resolved_category_id = self.create_category(
                         new_category, actor=actor, in_outer_txn=True
                     )
@@ -1527,6 +1554,30 @@ class MatchApplier:
                     actor=actor,
                     in_outer_txn=True,
                 )
+                previous_category_id = cast(
+                    "str | None", (event.before_value or {}).get("category_id")
+                )
+                withdrawn_ids: frozenset[str] = frozenset()
+                if (
+                    previous_category_id is not None
+                    and previous_category_id != resolved_category_id
+                ):
+                    withdrawn = self._tx_categories.delete_provider_native(
+                        sorted(
+                            self._source_term_categorized_ids(
+                                source_type,
+                                source_origin,
+                                category,
+                                subcategory,
+                                previous_category_id,
+                            )
+                        ),
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    withdrawn_ids = frozenset(
+                        str(withdrawal.target_id) for withdrawal in withdrawn
+                    )
         except UserError:
             CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(outcome="refused").inc()
             raise
@@ -1540,7 +1591,67 @@ class MatchApplier:
             category=category,
             subcategory=subcategory,
             category_id=resolved_category_id,
+            withdrawn_ids=withdrawn_ids,
         )
+
+    def source_term_categorized_ids(self, mapping: SourceTermMapping) -> set[str]:
+        """Transactions categorized through this term's current mapping."""
+        if mapping.category_id is None:
+            return set()
+        return self._source_term_categorized_ids(
+            mapping.source_type,
+            mapping.source_origin,
+            mapping.category,
+            mapping.subcategory,
+            mapping.category_id,
+        )
+
+    def _source_term_categorized_ids(
+        self,
+        source_type: str,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        category_id: str,
+    ) -> set[str]:
+        """Transactions whose categorization this term's mapping accounts for.
+
+        ``app.transaction_categories`` records no term, so the attribution is
+        derived: an imported row of the transaction carries the term (the
+        sweep's own predicate), and the categorization holds the mapping's
+        category and that row's ``source_type``, which only the
+        category-source sweep stamps. The ``provider_native`` rank itself is
+        enforced where rows are removed
+        (``TransactionCategoriesRepo.delete_provider_native``).
+        """
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT tc.transaction_id
+                FROM (
+                    SELECT ? AS source_type, ? AS source_origin,
+                        ? AS source_category_code,
+                        ? AS source_subcategory_code
+                ) AS b
+                JOIN {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                    ON {
+                    source_category_bridge_match_predicate(
+                        "m.source_type",
+                        "m.source_origin",
+                        "m.category",
+                        "m.subcategory",
+                    )
+                }
+                JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
+                    ON tc.transaction_id = m.transaction_id
+                WHERE tc.source_type = b.source_type AND tc.category_id = ?
+                """,  # TableRef constants + code-constant bridge predicate
+                [source_type, source_origin, category, subcategory or "", category_id],
+            ).fetchall()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Nothing imported yet: prep.int_transactions__matched is absent.
+            return set()
+        return {str(row[0]) for row in rows}
 
     def _derive_source_type(
         self, source_origin: str, category: str, subcategory: str | None

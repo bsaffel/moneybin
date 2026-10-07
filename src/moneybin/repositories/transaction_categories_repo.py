@@ -21,6 +21,7 @@ audit verb (transaction-curation.md) is preserved, not renamed:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from moneybin.repositories.base import BaseRepo, quote_ident
@@ -407,6 +408,54 @@ class TransactionCategoriesRepo(BaseRepo):
                         after=None,
                         actor=actor,
                         parent_audit_id=parent_audit_id,
+                    )
+                )
+            return events
+
+    def delete_provider_native(
+        self,
+        transaction_ids: Sequence[str],
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> list[AuditEvent]:
+        """Strip the ``provider_native`` categorizations on these transactions.
+
+        One ``category.clear`` audit per deleted row. A row any other source
+        wrote (user, rule, merchant, ...) is left intact even when its id is
+        passed.
+        """
+        if not transaction_ids:
+            return []
+        cols = ", ".join(quote_ident(c) for c in _TRANSACTION_CATEGORIES_COLUMNS)
+        placeholders = ", ".join("?" for _ in transaction_ids)
+        where = (
+            f"transaction_id IN ({placeholders}) AND categorized_by = 'provider_native'"
+        )
+        with self._transaction(in_outer_txn=in_outer_txn):
+            rows = self._db.execute(
+                f"SELECT {cols} FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + code-constant columns + parameterized values
+                f"WHERE {where} ORDER BY transaction_id",
+                list(transaction_ids),
+            ).fetchall()
+            if not rows:
+                return []
+            self._db.execute(
+                f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} WHERE {where}",  # noqa: S608  # TableRef + parameterized values
+                list(transaction_ids),
+            )
+            events: list[AuditEvent] = []
+            for row in rows:
+                before: dict[str, Any] = dict(
+                    zip(_TRANSACTION_CATEGORIES_COLUMNS, row, strict=True)
+                )
+                events.append(
+                    self._emit_audit(
+                        action="category.clear",
+                        target=(*self._audit_target, str(before["transaction_id"])),
+                        before=self._serialize_for_audit(before),
+                        after=None,
+                        actor=actor,
                     )
                 )
             return events

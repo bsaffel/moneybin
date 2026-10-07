@@ -12,12 +12,17 @@ curating the bridge, not applying it.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
 
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
+from moneybin.repositories.transaction_categories_repo import (
+    TransactionCategoriesRepo,
+)
 from moneybin.seeds import refresh_views
 from moneybin.services.categorization import CategorizationService
 from tests.moneybin.db_helpers import create_core_tables
@@ -919,6 +924,8 @@ class TestSourceTypeAndOriginKeying:
         refresh_views(db)
         _seed_plaid_pfc(db)
         _carry_term(db, "plaid", "FOOD_AND_DRINK", source_type="csv")
+        # `set` sweeps at once, so the imported row needs its gold transaction.
+        _seed_gold_transaction(db, "t_csv_plaid_FOOD_AND_DRINK_None")
         category_id = CategorizationService(db).create_category(
             "Imported Plaid Collision", actor="test"
         )
@@ -1198,6 +1205,355 @@ class TestSourceTypeDerivation:
 
         assert (mapping.source_type, mapping.source_origin) == ("csv", "")
         assert service.list_unmapped_source_terms() == []
-        service.apply_plaid_categories()
+        # `set` swept at once: the imported row took the mapping, and the
+        # Plaid row kept Plaid's own translation.
+        assert mapping.categorized == 1
+        assert _categorized_by(db, "t_csv__Coffee Shops_None") == (category_id, "csv")
         assert _categorized_by(db, "t_plaid") == ("cat-plaid-food", "plaid")
-        assert service.apply_source_category_map() == 1
+
+
+# ---------------------------------------------------------------------------
+# Ignoring a term, and a changed mapping following through to history
+# ---------------------------------------------------------------------------
+
+
+class _Term(TypedDict):
+    source_origin: str
+    category: str
+    subcategory: None
+
+
+_TERM: _Term = {
+    "source_origin": "chase_credit",
+    "category": "Coffee Shops",
+    "subcategory": None,
+}
+
+
+def _import_rows(
+    db: Database, *transaction_ids: str, category: str = "Coffee Shops"
+) -> None:
+    """Import csv rows from chase_credit carrying one category term."""
+    for transaction_id in transaction_ids:
+        _insert_matched_txn(
+            db,
+            transaction_id,
+            source_type="csv",
+            source_origin="chase_credit",
+            category=category,
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, transaction_id)
+
+
+def _categorizations(db: Database) -> list[tuple[str, str, str]]:
+    """Every categorization as (transaction_id, category_id, categorized_by)."""
+    return db.execute(
+        "SELECT transaction_id, category_id, categorized_by "
+        "FROM app.transaction_categories ORDER BY transaction_id"
+    ).fetchall()
+
+
+class TestIgnoreSourceTerm:
+    """``resolve_source_term(ignore=True)`` — a translation to nothing."""
+
+    @pytest.mark.unit
+    def test_ignored_term_is_stored_without_a_category(self, db: Database) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+
+        mapping = CategorizationService(db).resolve_source_term(
+            **_TERM, ignore=True, actor="test"
+        )
+
+        assert mapping.category_id is None
+        assert db.execute(
+            "SELECT source_type, source_origin, source_category_code, category_id "
+            "FROM app.category_source_map"
+        ).fetchall() == [("csv", "chase_credit", "Coffee Shops", None)]
+
+    @pytest.mark.unit
+    def test_ignored_term_leaves_the_pending_inbox_and_categorizes_nothing(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1", "t2")
+        service = CategorizationService(db)
+        assert len(service.list_unmapped_source_terms()) == 1
+
+        mapping = service.resolve_source_term(**_TERM, ignore=True, actor="test")
+
+        assert service.list_unmapped_source_terms() == []
+        assert (mapping.categorized, mapping.recategorized) == (0, 0)
+        assert service.apply_source_category_map() == 0
+        assert _categorizations(db) == []
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "other", [{"category_id": "cat-a"}, {"new_category": "Brand New"}]
+    )
+    def test_ignore_with_another_target_is_refused(
+        self, db: Database, other: dict[str, str]
+    ) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).resolve_source_term(
+                **_TERM, ignore=True, actor="test", **other
+            )
+
+        assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+        assert db.execute(
+            "SELECT COUNT(*) FROM app.category_source_map"
+        ).fetchone() == (0,)
+
+    @pytest.mark.unit
+    def test_ignored_term_abstains_so_another_members_mapping_applies(
+        self, db: Database
+    ) -> None:
+        """One transaction, two imported members: the ignored term yields nothing."""
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+        _insert_matched_txn(
+            db,
+            "t1",
+            source_type="csv",
+            source_origin="mint",
+            category="Cafe",
+            subcategory=None,
+            source_transaction_id="t1_mint",
+        )
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, ignore=True, actor="test")
+
+        service.resolve_source_term(
+            source_origin="mint",
+            category="Cafe",
+            subcategory=None,
+            category_id="cat-a",
+            actor="test",
+        )
+
+        assert _categorizations(db) == [("t1", "cat-a", "provider_native")]
+
+    @pytest.mark.unit
+    def test_an_ignored_term_can_be_mapped_later(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1", "t2")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, ignore=True, actor="test")
+
+        mapping = service.resolve_source_term(
+            **_TERM, category_id="cat-a", actor="test"
+        )
+
+        assert (mapping.categorized, mapping.recategorized) == (2, 0)
+        assert _categorizations(db) == [
+            ("t1", "cat-a", "provider_native"),
+            ("t2", "cat-a", "provider_native"),
+        ]
+
+
+class TestMappingFollowsThrough:
+    """A set, changed, or ignored mapping reaches the transactions at once."""
+
+    @pytest.mark.unit
+    def test_fresh_mapping_categorizes_its_rows_at_once(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1", "t2")
+        _import_rows(db, "t_other", category="Travel")
+
+        mapping = CategorizationService(db).resolve_source_term(
+            **_TERM, category_id="cat-a", actor="test"
+        )
+
+        assert (mapping.categorized, mapping.recategorized) == (2, 0)
+        assert _categorizations(db) == [
+            ("t1", "cat-a", "provider_native"),
+            ("t2", "cat-a", "provider_native"),
+        ]
+
+    @pytest.mark.unit
+    def test_changed_mapping_moves_the_rows_it_categorized(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _seed_active_category(db, "cat-b", "Category B")
+        _import_rows(db, "t1", "t2")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+
+        mapping = service.resolve_source_term(
+            **_TERM, category_id="cat-b", actor="test"
+        )
+
+        assert (mapping.categorized, mapping.recategorized) == (0, 2)
+        assert _categorizations(db) == [
+            ("t1", "cat-b", "provider_native"),
+            ("t2", "cat-b", "provider_native"),
+        ]
+
+    @pytest.mark.unit
+    def test_change_counts_new_rows_apart_from_moved_ones(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _seed_active_category(db, "cat-b", "Category B")
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        _import_rows(db, "t2", "t3")
+
+        mapping = service.resolve_source_term(
+            **_TERM, category_id="cat-b", actor="test"
+        )
+
+        assert (mapping.categorized, mapping.recategorized) == (2, 1)
+
+    @pytest.mark.unit
+    def test_ignoring_a_mapped_term_withdraws_what_it_categorized(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1", "t2")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+
+        mapping = service.resolve_source_term(**_TERM, ignore=True, actor="test")
+
+        assert (mapping.categorized, mapping.recategorized) == (0, 2)
+        assert _categorizations(db) == []
+        assert service.list_unmapped_source_terms() == []
+
+    @pytest.mark.unit
+    def test_setting_the_same_category_again_withdraws_nothing(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        clears_before = _audit_count(db, "category.clear")
+
+        mapping = service.resolve_source_term(
+            **_TERM, category_id="cat-a", actor="test"
+        )
+
+        assert (mapping.categorized, mapping.recategorized) == (0, 0)
+        assert _audit_count(db, "category.clear") == clears_before
+        assert _categorizations(db) == [("t1", "cat-a", "provider_native")]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("change", ["remap", "ignore"])
+    def test_other_sources_categorizations_are_never_touched(
+        self, db: Database, change: str
+    ) -> None:
+        """Manual, rule, and merchant categorizations survive a changed mapping.
+
+        ``t_rule_twin`` is the hard case: a rule row that happens to hold the
+        mapping's old category and the term's own source type, so only its
+        ``categorized_by`` tells it apart from what the term produced.
+        """
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _seed_active_category(db, "cat-b", "Category B")
+        _import_rows(db, "t_term", "t_user", "t_rule", "t_merchant", "t_rule_twin")
+        categories = TransactionCategoriesRepo(db)
+        categories.set(
+            "t_user",
+            category="Category A",
+            subcategory=None,
+            category_id="cat-a",
+            actor="test",
+        )
+        for transaction_id, rule_id, merchant_id, source_type in (
+            ("t_rule", "rule-1", None, "internal"),
+            ("t_merchant", None, "merchant-1", "internal"),
+            ("t_rule_twin", "rule-2", None, "csv"),
+        ):
+            categories.upsert_guarded(
+                transaction_id,
+                category="Category A",
+                subcategory=None,
+                category_id="cat-a",
+                categorized_by="rule",
+                merchant_id=merchant_id,
+                rule_id=rule_id,
+                confidence=1.0,
+                source_type=source_type,
+                actor="test",
+            )
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        assert ("t_term", "cat-a", "provider_native") in _categorizations(db)
+
+        if change == "remap":
+            mapping = service.resolve_source_term(
+                **_TERM, category_id="cat-b", actor="test"
+            )
+            term_row = [("t_term", "cat-b", "provider_native")]
+        else:
+            mapping = service.resolve_source_term(**_TERM, ignore=True, actor="test")
+            term_row = []
+
+        assert mapping.recategorized == 1
+        assert _categorizations(db) == [
+            ("t_merchant", "cat-a", "rule"),
+            ("t_rule", "cat-a", "rule"),
+            ("t_rule_twin", "cat-a", "rule"),
+            *term_row,
+            ("t_user", "cat-a", "user"),
+        ]
+
+    @pytest.mark.unit
+    def test_another_terms_categorizations_are_left_alone(self, db: Database) -> None:
+        """Two terms mapped to one category: changing one leaves the other's rows."""
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _seed_active_category(db, "cat-b", "Category B")
+        _import_rows(db, "t_coffee")
+        _import_rows(db, "t_cafe", category="Cafe")
+        service = CategorizationService(db)
+        for category in ("Coffee Shops", "Cafe"):
+            service.resolve_source_term(
+                source_origin="chase_credit",
+                category=category,
+                subcategory=None,
+                category_id="cat-a",
+                actor="test",
+            )
+
+        mapping = service.resolve_source_term(
+            **_TERM, category_id="cat-b", actor="test"
+        )
+
+        assert mapping.recategorized == 1
+        assert _categorizations(db) == [
+            ("t_cafe", "cat-a", "provider_native"),
+            ("t_coffee", "cat-b", "provider_native"),
+        ]
+
+    @pytest.mark.unit
+    def test_withdrawal_is_audited_under_the_callers_actor(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+
+        service.resolve_source_term(**_TERM, ignore=True, actor="cli")
+
+        assert db.execute(
+            "SELECT actor, target_id FROM app.audit_log WHERE action = 'category.clear'"
+        ).fetchall() == [("cli", "t1")]
+
+
+def _audit_count(db: Database, action: str) -> int:
+    row = db.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = ?", [action]
+    ).fetchone()
+    return int(row[0]) if row else 0

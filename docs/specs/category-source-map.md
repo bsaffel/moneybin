@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-09-23
-> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface.
+> Last updated: 2026-10-07
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface, and "Extension: ignoring a term" for the translation to nothing.
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -109,6 +109,13 @@ the primary key holds with both levels in one table. An unmapped detailed
 code still lands in the right top-level category via its primary instead of
 falling through to rules/AI.
 
+The fallback covers an *unmapped* detailed code only. An *ignored* one — a
+user row with a NULL `category_id`, see "Extension: ignoring a term" — wins
+the ranking like any other detailed row and then yields nothing, so the
+transaction is not categorized through its primary code. The snippet above
+shows the ranking; a consumer must also discard a winner whose `category_id`
+is NULL, as `apply_plaid_categories` does.
+
 ### Columns
 
 | Column | Type | Notes |
@@ -118,7 +125,7 @@ falling through to rules/AI.
 | `source_category_code` | `VARCHAR` | The provider's code, stored verbatim (source-provided ID, `.claude/rules/identifiers.md` strategy 1). |
 | `source_subcategory_code` | `VARCHAR` | Second half of the source's (category, subcategory) key. `''` is the sentinel for "no subcategory" — DuckDB primary keys reject NULL, so an absent subcategory cannot be stored as one; never a distinct real value. |
 | `code_level` | `VARCHAR` | `'detailed'` \| `'primary'` — the tier this code sits at for the provider. |
-| `category_id` | `VARCHAR` | **FK** to `core.dim_categories.category_id` (Guard 3 — never text-key the relationship). May reference a `user_categories` row (app table only). |
+| `category_id` | `VARCHAR` | **FK** to `core.dim_categories.category_id` (Guard 3 — never text-key the relationship). May reference a `user_categories` row (app table only). Nullable in the app table and the view: NULL on a user row marks the term as ignored. A seed row always carries a category. |
 | `source_taxonomy_version` | `VARCHAR` | The provider taxonomy revision the row was curated against (e.g. `plaid_pfc_v2`). Non-PK — drift insurance; promote into the key only if historical multi-version rows ever coexist. |
 | `is_default` | `BOOLEAN` | View-only: `TRUE` for seed rows, `FALSE` for user rows (mirrors `dim_categories.is_default`). |
 | `created_at` / `updated_at` | `TIMESTAMP` | App table only — audit of user edits. |
@@ -223,14 +230,11 @@ term to an existing category or a newly-created one (via `create_category`),
 sharing one transaction with the `CategorySourceMapRepo.upsert` write. Both
 are exposed as `moneybin categories mappings pending` / `... set`.
 
-In PR2, `set` on an already-mapped term rebinds it for later sweeps only.
-Transactions the earlier mapping already categorized keep that category,
-because the sweep fills only uncategorized rows. The follow-up that lets a
-term be ignored also makes a changed mapping follow through to history: it
-removes the `provider_native` categorizations that term produced and sweeps
-again, leaving user, rule, and merchant categorizations untouched. `set`
-refuses an inactive target category, since an inactive category takes no new
-categorizations.
+In PR2, `set` on an already-mapped term rebound it for later sweeps only:
+transactions the earlier mapping had categorized kept that category, because
+the sweep fills only uncategorized rows. A mapping now always follows
+through — see "Extension: ignoring a term" below. `set` refuses an inactive
+target category, since an inactive category takes no new categorizations.
 
 `set` accepts a term only when an imported row carries it — keyed through the
 sweep's own `source_category_bridge_match_predicate`, so it accepts exactly
@@ -258,12 +262,83 @@ writes at `provider_native` rank, so every rule and merchant mapping outranks
 it. That is why it sits with merchant items in `taxonomy_set` and not in
 `transactions_categorize_rules_set`. It ships in a follow-up slice.
 
+## Extension: ignoring a term
+
+Some source terms carry no category worth keeping — an exporter's own
+`Uncategorized`, or a provider code whose shipped translation is wrong for
+one user. Ignoring is modelled as a translation to nothing, not as a second
+kind of row.
+
+- **A NULL `category_id` is the ignored state.** `app.category_source_map`
+  stores the term under its ordinary key with no category
+  (`V069__allow_ignored_category_source_mapping.py` drops the column's
+  `NOT NULL` in place; `category_id` is outside the primary key, so no
+  rebuild). The term is *known*: the bridge holds a row for it, so it leaves
+  `categories mappings pending` and is not counted by the `plaid_unmapped`
+  coverage stat. It *categorizes nothing*: every sweep resolves a category
+  through `core.dim_categories`, and there is none to resolve.
+- **A user row overrides a seed row, ignored or not.** The view's anti-join
+  already drops a seed row whose key an `app` row holds, so an ignored user
+  row for `('plaid', '', <code>, '')` switches off the shipped translation
+  for that code. No new precedence rule was needed.
+- **No Plaid fallback past an ignored code.** See "Two-tier" above: the
+  ignored detailed row is ranked before it is tested for a category, so the
+  primary code never takes its place. An ignored *primary* code leaves a
+  mapped detailed code working, since detailed outranks it.
+- **An ignored imported term abstains.** When one transaction has two
+  imported members with different terms, ignoring one leaves the other's
+  mapping free to categorize it. The no-fallback rule is specific to a
+  provider's two codes for one transaction.
+- **`categories mappings set --ignore`** writes the ignored state. It is
+  mutually exclusive with `--into` and `--new`; passing none or more than one
+  exits 2 with `mutation_invalid_input`. Mapping an ignored term later, with
+  `--into` or `--new`, is how it is un-ignored.
+
+### A mapping always follows through
+
+`set` no longer waits for the next sweep, and a changed mapping no longer
+leaves history behind:
+
+1. In the transaction that writes the mapping, when the term was mapped to a
+   *different* category before, the categorizations that mapping produced are
+   removed (`TransactionCategoriesRepo.delete_provider_native`, one
+   `category.clear` audit row each, under the caller's actor).
+2. After the commit, `categorize_pending` runs.
+
+`app.transaction_categories` records no source term, so "produced by this
+term" is derived: an imported row of the transaction carries the term (the
+sweep's own match predicate), and the categorization holds the mapping's
+previous `category_id`, the term's `source_type`, and
+`categorized_by = 'provider_native'`. A categorization made by hand, by rule,
+or by merchant fails the last test and is never touched; one made by a
+different term fails the first.
+
+The receipt reports two disjoint counts, as `categorized` and `recategorized`
+in `--output json`:
+
+- **categorized** — transactions the term newly categorized in this sweep.
+- **recategorized** — transactions whose earlier categorization from this
+  term was withdrawn and re-evaluated. After a remap they hold the new
+  category; after `--ignore` they are uncategorized again unless another
+  signal claimed them.
+
+Setting a term to the category it already has withdraws nothing. The sweep
+runs after the commit, so a sweep failure leaves the mapping stored and the
+withdrawn rows pending for the next sweep, as `create_rules`' reapply does.
+
+**Not delivered: a CLI path to ignore a provider code.** The engine honours
+an ignored Plaid row, and `CategorySourceMapRepo.upsert` writes one, but
+`set` still refuses `source_type = 'plaid'` (see above). Admitting it is a
+separate decision — ignore-only would leave no CLI way to restore the shipped
+translation — and is expected with the MCP `source_category` item.
+
 ## Reverse-lookup contract
 
 The `core.bridge_category_source_map` view **is** the contract the
 provider-native categorizer consumes. Given a transaction's `(source_type,
 detailed, primary)`, it returns exactly one `category_id` (detailed
-preferred, else primary) or nothing. No Python resolver ships in this PR —
+preferred, else primary) or nothing — and nothing when the preferred row is
+ignored. No Python resolver ships in this PR —
 M1U's `apply_plaid_categories`
 (`src/moneybin/services/categorization/orchestrator.py`) is that resolver;
 see [`categorization-source-model.md`](categorization-source-model.md).
@@ -377,8 +452,11 @@ spec + `INDEX.md` + `docs/roadmap.md` + CHANGELOG updates.
   (M1W) — the coverage-gap backfill, mortgage-duplicate resolution, and
   `class` reconciliation are done; the IRS Schedule C crosswalk remains
   deferred to the `us_tax` package (M2M).
-- Map-to-null suppression of a seed mapping; `parent_id` N-level nesting;
-  promoting `source_taxonomy_version` into the primary key.
+- ~~Map-to-null suppression of a seed mapping.~~ Delivered in the data model
+  and the sweeps — see "Extension: ignoring a term"; the CLI path for a
+  provider code is still open.
+- `parent_id` N-level nesting; promoting `source_taxonomy_version` into the
+  primary key.
 - See "Deferred to Tier-2b" immediately below for the three items pushed to
   the next increment by explicit decision.
 

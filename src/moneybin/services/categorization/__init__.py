@@ -15,6 +15,7 @@ without a circular dependency.
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -580,23 +581,36 @@ class CategorizationService:
         subcategory: str | None,
         category_id: str | None = None,
         new_category: str | None = None,
+        ignore: bool = False,
         actor: str = "system",
     ) -> SourceTermMapping:
-        """Map one imported vocabulary term to a MoneyBin category.
+        """Map one imported vocabulary term to a MoneyBin category, or ignore it.
 
         See :meth:`MatchApplier.resolve_source_term` for the write contract
-        (exactly one of ``category_id`` / ``new_category``, atomic commit,
-        ``source_type`` derived when omitted).
+        (exactly one of ``category_id`` / ``new_category`` / ``ignore``,
+        atomic commit, ``source_type`` derived when omitted).
+
+        The mapping always follows through: once the write commits,
+        ``categorize_pending`` runs, so a new mapping categorizes its rows at
+        once and the rows a changed mapping withdrew are re-evaluated. The
+        result's ``categorized`` counts transactions this term newly
+        categorized; ``recategorized`` counts those whose earlier
+        categorization from it was withdrawn, whatever they hold now.
         """
-        return self._applier.resolve_source_term(
+        mapping = self._applier.resolve_source_term(
             source_type=source_type,
             source_origin=source_origin,
             category=category,
             subcategory=subcategory,
             category_id=category_id,
             new_category=new_category,
+            ignore=ignore,
             actor=actor,
         )
+        held = self._applier.source_term_categorized_ids(mapping)
+        self.categorize_pending()
+        gained = self._applier.source_term_categorized_ids(mapping) - held
+        return replace(mapping, categorized=len(gained - mapping.withdrawn_ids))
 
     def plan_taxonomy_targets(
         self, targets: Sequence[TaxonomyStateTarget]

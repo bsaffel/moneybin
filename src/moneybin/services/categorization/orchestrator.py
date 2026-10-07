@@ -963,7 +963,9 @@ class CategorizationOrchestrator:
         carries both a detailed code (category_detailed) and a primary code
         (plaid_category); either may resolve in the bridge, so the QUALIFY
         picks exactly one row per transaction, detailed preferred, primary
-        fallback. Gated at >= MEDIUM confidence. Writes
+        fallback — except that an ignored detailed code (a user row with no
+        category) ends the lookup: the transaction is not categorized through
+        its primary code. Gated at >= MEDIUM confidence. Writes
         categorized_by='provider_native', source_type='plaid' at priority 6 —
         below every deliberate signal, above ai. Runs last of the deterministic
         categorizers so it only touches the long tail.
@@ -1035,6 +1037,13 @@ class CategorizationOrchestrator:
         Degrades to an empty list when prep.int_transactions__merged isn't
         materialized yet, or predates the PFC carry-through — see
         :meth:`apply_plaid_categories` for the full rationale.
+
+        No fallback past an ignored code: an ignored bridge row
+        (``category_id IS NULL``) stays in the ranking, so an ignored detailed
+        code still outranks a mapped primary one, and only the winner is then
+        tested for a category. Dropping ignored rows before the ranking would
+        let the primary win by elimination — the silent fallback ignoring is
+        meant to switch off.
         """
         tc_where = (
             "tc.transaction_id IS NULL"
@@ -1049,14 +1058,15 @@ class CategorizationOrchestrator:
                 FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
                 JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     ON {plaid_bridge_match_predicate("m.category_detailed", "m.plaid_category")}
-                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
+                LEFT JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
                     ON tc.transaction_id = m.transaction_id
                 WHERE {tc_where}
+                    AND (dc.category_id IS NOT NULL OR b.category_id IS NULL)
                 QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY m.transaction_id
                     ORDER BY (b.code_level = 'detailed') DESC
-                ) = 1
+                ) = 1 AND b.category_id IS NOT NULL
                 """  # TableRef constants + code-constant bridge predicate; no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
@@ -1213,6 +1223,9 @@ class CategorizationOrchestrator:
         source (``app.seed_source_priority``, the same table
         ``prep.int_transactions__merged`` itself uses) and falling back to a
         deterministic tiebreak so the choice never depends on scan order.
+        An ignored term (``category_id IS NULL``) has no category to join and
+        yields no candidate; it abstains, so another member's mapped term can
+        still categorize the transaction.
 
         Degrades to an empty list when ``prep.int_transactions__matched``
         isn't materialized yet — see :meth:`apply_source_category_map`.

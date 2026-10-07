@@ -414,6 +414,76 @@ def test_delete_by_rule_audits_each_deleted_row(db: Database) -> None:
         assert clear[5] is None  # after_value
 
 
+def test_delete_provider_native_removes_only_provider_native_rows(
+    db: Database,
+) -> None:
+    """Every other source's row survives, even when its id is passed."""
+    repo = TransactionCategoriesRepo(db)
+    for tid, categorized_by in (
+        ("p1", "provider_native"),
+        ("p2", "provider_native"),
+        ("p_unlisted", "provider_native"),
+        ("r1", "rule"),
+        ("a1", "ai"),
+    ):
+        repo.upsert_guarded(
+            tid,
+            category="Dining",
+            subcategory=None,
+            category_id="cat-dining",
+            categorized_by=categorized_by,
+            merchant_id=None,
+            rule_id=None,
+            confidence=1.0,
+            source_type="csv",
+            actor="system",
+        )
+    repo.set(
+        "u1",
+        category="Dining",
+        subcategory=None,
+        category_id="cat-dining",
+        actor="cli",
+    )
+
+    events = repo.delete_provider_native(["p1", "p2", "r1", "a1", "u1"], actor="cli")
+
+    assert sorted(str(event.target_id) for event in events) == ["p1", "p2"]
+    assert db.execute(
+        "SELECT transaction_id FROM app.transaction_categories ORDER BY 1"
+    ).fetchall() == [("a1",), ("p_unlisted",), ("r1",), ("u1",)]
+    clear = next(r for r in _audit_rows_for(db, "p1") if r[0] == "category.clear")
+    assert clear[5] is None  # after_value
+
+
+def test_delete_provider_native_is_undoable(db: Database) -> None:
+    repo = TransactionCategoriesRepo(db)
+    repo.upsert_guarded(
+        "p1",
+        category="Dining",
+        subcategory=None,
+        category_id="cat-dining",
+        categorized_by="provider_native",
+        merchant_id=None,
+        rule_id=None,
+        confidence=1.0,
+        source_type="csv",
+        actor="system",
+    )
+
+    (event,) = repo.delete_provider_native(["p1"], actor="cli")
+    repo.undo_event(event, actor="cli")
+
+    assert db.execute(
+        "SELECT transaction_id, categorized_by, source_type "
+        "FROM app.transaction_categories"
+    ).fetchall() == [("p1", "provider_native", "csv")]
+
+
+def test_delete_provider_native_with_no_ids_is_a_no_op(db: Database) -> None:
+    assert TransactionCategoriesRepo(db).delete_provider_native([], actor="cli") == []
+
+
 def test_set_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")
