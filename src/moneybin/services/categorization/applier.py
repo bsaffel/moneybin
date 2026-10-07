@@ -1623,11 +1623,15 @@ class MatchApplier:
         category-source sweep stamps. The ``provider_native`` rank itself is
         enforced where rows are removed
         (``TransactionCategoriesRepo.delete_provider_native``).
+
+        Carrier ids go through the curation seam before they are compared:
+        the sweep writes under the live id, so a superseded matched id would
+        otherwise find nothing to withdraw.
         """
         try:
-            rows = self._db.execute(
+            carriers = self._db.execute(
                 f"""
-                SELECT DISTINCT tc.transaction_id
+                SELECT DISTINCT m.transaction_id
                 FROM (
                     SELECT ? AS source_type, ? AS source_origin,
                         ? AS source_category_code,
@@ -1642,16 +1646,23 @@ class MatchApplier:
                         "m.subcategory",
                     )
                 }
-                JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
-                    ON tc.transaction_id = m.transaction_id
-                WHERE tc.source_type = b.source_type AND tc.category_id = ?
                 """,  # TableRef constants + code-constant bridge predicate
-                [source_type, source_origin, category, subcategory or "", category_id],
+                [source_type, source_origin, category, subcategory or ""],
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
             # Nothing imported yet: prep.int_transactions__matched is absent.
             return set()
-        return {str(row[0]) for row in rows}
+        carrier_ids = [str(row[0]) for row in carriers]
+        resolved = resolve_curation_transaction_ids(self._db, carrier_ids)
+        live_ids = {resolved.get(tid, tid) for tid in carrier_ids}
+        held = self._db.execute(
+            f"""
+            SELECT transaction_id FROM {TRANSACTION_CATEGORIES.full_name}
+            WHERE source_type = ? AND category_id = ?
+            """,  # TableRef constant
+            [source_type, category_id],
+        ).fetchall()
+        return live_ids & {str(row[0]) for row in held}
 
     def _derive_source_type(
         self, source_origin: str, category: str, subcategory: str | None

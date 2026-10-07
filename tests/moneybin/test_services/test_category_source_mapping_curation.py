@@ -12,7 +12,7 @@ curating the bridge, not applying it.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import pytest
 
@@ -1395,6 +1395,45 @@ class TestMappingFollowsThrough:
             ("t1", "cat-b", "provider_native"),
             ("t2", "cat-b", "provider_native"),
         ]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("change", "expected"),
+        [
+            ({"ignore": True}, []),
+            ({"category_id": "cat-b"}, [("t_live", "cat-b", "provider_native")]),
+        ],
+    )
+    def test_change_reaches_a_row_whose_id_was_superseded(
+        self, db: Database, change: dict[str, Any], expected: list[tuple[str, ...]]
+    ) -> None:
+        """The sweep writes under the live id; the withdrawal must look there."""
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _seed_active_category(db, "cat-b", "Category B")
+        _insert_matched_txn(
+            db,
+            "t_superseded",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Coffee Shops",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t_live")
+        db.execute(
+            "INSERT INTO app.transaction_id_aliases "
+            "(old_transaction_id, new_transaction_id, created_at) "
+            "VALUES ('t_superseded', 't_live', CURRENT_TIMESTAMP)"
+        )
+        service = CategorizationService(db)
+        first = service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        assert _categorizations(db) == [("t_live", "cat-a", "provider_native")]
+        assert (first.categorized, first.recategorized) == (1, 0)
+
+        mapping = service.resolve_source_term(**_TERM, **change, actor="test")
+
+        assert (mapping.categorized, mapping.recategorized) == (0, 1)
+        assert _categorizations(db) == expected
 
     @pytest.mark.unit
     def test_change_counts_new_rows_apart_from_moved_ones(self, db: Database) -> None:
