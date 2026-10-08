@@ -158,9 +158,14 @@ def mappings_set(
         "--new",
         help="Create a new category with this name, then map the term to it",
     ),
+    ignore: bool = typer.Option(
+        False,
+        "--ignore",
+        help="Ignore the term: it leaves the pending list and categorizes nothing",
+    ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Map one imported category-vocabulary term to a MoneyBin category.
+    """Map one imported category-vocabulary term to a MoneyBin category, or ignore it.
 
     Identify the term with --namespace, --category, and (if applicable)
     --subcategory — the exact term `categories mappings pending` reported.
@@ -171,18 +176,25 @@ def mappings_set(
     refused. Pass exactly one of:
       --into <category_id>   map to this existing category
       --new <name>           create a new category, then map to it
+      --ignore               keep the term known but categorize nothing by it
+
+    The mapping applies at once: transactions carrying the term are
+    categorized, and when a term's mapping changes, the categories it
+    assigned earlier are withdrawn and re-evaluated. Categories you set by
+    hand, by rule, or by merchant are never touched.
 
     Examples:
       moneybin categories mappings set --namespace chase_credit --category Groceries --into cat-food
       moneybin categories mappings set --namespace mint --category "Home Improvement" --new "Housing"
+      moneybin categories mappings set --namespace mint --category Uncategorized --ignore
     """
     # Usage errors go through the output-aware seam so --output json still
     # returns an error envelope, while keeping the usage exit code.
     usage_error: str | None = None
-    if into is not None and new is not None:
-        usage_error = "--into and --new are mutually exclusive"
-    elif not into and not new:
-        usage_error = "Specify either --into <category_id> or --new <name>"
+    if sum([into is not None, new is not None, ignore]) > 1:
+        usage_error = "--into, --new, and --ignore are mutually exclusive"
+    elif not into and not new and not ignore:
+        usage_error = "Specify one of --into <category_id>, --new <name>, or --ignore"
     if usage_error is not None:
         abort_cli_error(
             UserError(usage_error, code=error_codes.MUTATION_INVALID_INPUT),
@@ -202,6 +214,7 @@ def mappings_set(
                 subcategory=subcategory,
                 category_id=into,
                 new_category=new,
+                ignore=ignore,
                 actor="cli",
             )
 
@@ -213,7 +226,9 @@ def mappings_set(
         category=mapping.category,
         subcategory=mapping.subcategory,
         category_id=mapping.category_id,
-        action="mapped",
+        action="mapped" if mapping.category_id is not None else "ignored",
+        categorized=mapping.categorized,
+        recategorized=mapping.recategorized,
     )
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json
@@ -231,11 +246,19 @@ def mappings_set(
     ]
     if payload.subcategory:
         receipt.append(("Subcategory", payload.subcategory))
-    receipt.append(("Mapped to", payload.category_id))
+    if payload.category_id is not None:
+        receipt.append(("Mapped to", payload.category_id))
+    receipt.append((
+        "Transactions",
+        f"categorized {payload.categorized}, recategorized {payload.recategorized}",
+    ))
+    title = (
+        "Category mapping recorded"
+        if payload.category_id is not None
+        else "Category term ignored"
+    )
     emit_human_result(
-        compose_human_result([
-            build_summary(receipt, title="Category mapping recorded")
-        ]),
+        compose_human_result([build_summary(receipt, title=title)]),
         policy=get_terminal_policy(),
         finite_read=False,
         receipt=True,

@@ -82,11 +82,19 @@ class CategoryMappingsPendingPayload:
 
 @dataclass(frozen=True, slots=True)
 class CategoryMappingSetPayload:
-    """Payload for ``categories_mappings_set`` — mapping confirmation."""
+    """Payload for ``categories_mappings_set`` — mapping or ignore confirmation.
+
+    ``category_id`` is ``None`` exactly when ``action == "ignored"``.
+    ``categorized`` counts transactions the term newly categorized in the
+    follow-up sweep; ``recategorized`` counts those whose earlier
+    categorization from this term was withdrawn and re-evaluated.
+    """
 
     source_type: Annotated[str, DataClass.TXN_TYPE]
     source_origin: Annotated[str, DataClass.TXN_TYPE]
     category: Annotated[str, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
-    category_id: Annotated[str, DataClass.CATEGORY]
+    category_id: Annotated[str | None, DataClass.CATEGORY]
     action: Annotated[str, DataClass.TXN_TYPE]
+    categorized: Annotated[int, DataClass.AGGREGATE]
+    recategorized: Annotated[int, DataClass.AGGREGATE]

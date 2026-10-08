@@ -15,9 +15,11 @@ without a circular dependency.
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any, Literal
 
+from moneybin import error_codes
 from moneybin.config import get_settings as get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError as UserError
@@ -580,23 +582,51 @@ class CategorizationService:
         subcategory: str | None,
         category_id: str | None = None,
         new_category: str | None = None,
+        ignore: bool = False,
         actor: str = "system",
     ) -> SourceTermMapping:
-        """Map one imported vocabulary term to a MoneyBin category.
+        """Map one imported vocabulary term to a MoneyBin category, or ignore it.
 
         See :meth:`MatchApplier.resolve_source_term` for the write contract
-        (exactly one of ``category_id`` / ``new_category``, atomic commit,
-        ``source_type`` derived when omitted).
+        (exactly one of ``category_id`` / ``new_category`` / ``ignore``,
+        atomic commit, ``source_type`` derived when omitted).
+
+        The mapping always follows through: once the write commits,
+        ``categorize_pending`` runs, so a new mapping categorizes its rows at
+        once and the rows a changed mapping withdrew are re-evaluated. The
+        result's ``categorized`` counts transactions this term newly
+        categorized; ``recategorized`` counts those whose earlier
+        categorization from it was withdrawn, whatever they hold now.
         """
-        return self._applier.resolve_source_term(
+        mapping = self._applier.resolve_source_term(
             source_type=source_type,
             source_origin=source_origin,
             category=category,
             subcategory=subcategory,
             category_id=category_id,
             new_category=new_category,
+            ignore=ignore,
             actor=actor,
         )
+        held = self._applier.source_term_categorized_ids(mapping)
+        try:
+            self.categorize_pending()
+        except Exception as exc:
+            # The mapping and its withdrawals are already committed.
+            logger.error(
+                f"Categorize sweep failed after a mapping commit: {type(exc).__name__}"
+            )
+            raise UserError(
+                "The mapping is stored, but the categorize sweep that follows "
+                f"it failed. {mapping.recategorized} earlier categorization(s) "
+                "from this term were withdrawn, and the sweep may have "
+                "re-categorized only some of them before it stopped; running "
+                "it again finishes the change.",
+                code=error_codes.REFRESH_CATEGORIZE_FAILED,
+                hint="💡 Run 'moneybin refresh --step categorize' to finish it.",
+            ) from exc
+        gained = self._applier.source_term_categorized_ids(mapping) - held
+        return replace(mapping, categorized=len(gained - mapping.withdrawn_ids))
 
     def plan_taxonomy_targets(
         self, targets: Sequence[TaxonomyStateTarget]
