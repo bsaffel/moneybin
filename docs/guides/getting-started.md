@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-10-01 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Getting started
 
 From a clean machine to a first report and a first question to your AI assistant, in eight steps: install from source, try the synthetic demo, create a profile, import one bank file, check what landed, read the first reports, categorize, and wire the MCP server into a client. Budget about an hour, most of it on your bank's download page.
@@ -42,28 +42,17 @@ A profile is one encrypted database, one keychain entry, one audit trail. Create
 ```console
 $ uv run moneybin profile create personal
 Profile created
-Profile:  personal
+Profile:  personal (active)
+› Switch back to demo: moneybin profile switch demo
 ```
 
-Schema migration and the transform plan run behind that receipt: neither prints to stdout, and the only thing the run wrote to stderr is two SQLMesh notices about reseeded tables, trimmed from the block. Three more lines are trimmed — a `Location:` label and the two lines its value wrapped onto, naming the profile directory — `.moneybin/profiles/personal` inside the checkout when you run from it, as this guide does, and `~/.moneybin/profiles/personal` from anywhere else. The encrypted database file, its config, logs, and backups live under that directory. The import inbox is the one thing that does not: accept the prompt and `~/Documents/MoneyBin/personal/{inbox,processed,failed,pending}` is created for files you drop in, so [moving the profile to another machine](profiles.md#multi-machine-workflows) is a copy plus the key, plus that directory if you use it.
+Schema migration and the transform plan run behind that receipt: neither prints to stdout, and the only thing the run wrote to stderr is two SQLMesh notices about reseeded tables, trimmed from the block. Three more lines are trimmed above the `›` line — a `Location:` label and the two lines its value wrapped onto, naming the profile directory — `.moneybin/profiles/personal` inside the checkout when you run from it, as this guide does, and `~/.moneybin/profiles/personal` from anywhere else. The encrypted database file, its config, logs, and backups live under that directory. The import inbox is the one thing that does not: accept the prompt and `~/Documents/MoneyBin/personal/{inbox,processed,failed,pending}` is created for files you drop in — the receipt prints the path it used — so [moving the profile to another machine](profiles.md#multi-machine-workflows) is a copy plus the key, plus that directory if you use it.
 
-The database exists and is encrypted from this moment: a random 256-bit key is generated and stored in the OS keychain under the service name `moneybin-personal`, and you never type a passphrase. On Linux the keychain is Secret Service (GNOME Keyring or KWallet); a headless box or container with no keyring takes the key from an environment variable instead — see [Headless and cron](database-security.md#headless-and-cron-deployments). `profile create` has no passphrase option, so to type a passphrase instead, decide now while the database is empty: switch to the profile, delete its database file, run `moneybin db init --passphrase`, and record the choice with `moneybin profile set database.encryption_key_mode passphrase`, because `db init` derives the key without rewriting the profile's config and `profile show` and `db info` would otherwise keep reporting auto mode. [Passphrase mode](database-security.md#passphrase-mode) says what the passphrase protects, and the same guide's Switching modes section wraps that sequence in a backup and a restore, because once data has landed there is no in-place conversion.
+The database exists and is encrypted from this moment: a random 256-bit key is generated and stored in the OS keychain under the service name `moneybin-personal`, and you never type a passphrase. On Linux the keychain is Secret Service (GNOME Keyring or KWallet); a headless box or container with no keyring takes the key from an environment variable instead — see [Headless and cron](database-security.md#headless-and-cron-deployments). `profile create` has no passphrase option, so to type a passphrase instead, decide now while the database is empty: delete its database file and run `moneybin db init --passphrase`, which records `passphrase` as the profile's key mode for `profile show` and `db info`. [Passphrase mode](database-security.md#passphrase-mode) says what the passphrase protects, and the same guide's Switching modes section wraps that sequence in a backup and a restore, because once data has landed there is no in-place conversion.
 
-`profile create` does not make the new profile active. `profile list` still marks `demo`:
-
-```console
-$ uv run moneybin profile list
-Profiles
-Profile: demo (active)
-Profile: personal
-```
-
-Without a switch, the next command still runs against `demo` — or, if you skipped the demo and no profile has ever been active, opens the first-run setup wizard. Switch, then confirm:
+`profile create` makes the new profile active, so every command from here on runs against `personal`; the `›` line is the way back to `demo`, printed only because the demo was active before. Confirm:
 
 ```console
-$ uv run moneybin profile switch personal
-Profile switched
-Active profile: personal
 $ uv run moneybin profile show
 Profile
 Profile:  personal (active)
@@ -79,7 +68,7 @@ display_currency_targets: (not set)
 
 Six lines are trimmed from `profile show`: the `Path:` and `Database:` labels and the two lines each of their values wrapped onto, naming the profile directory and the encrypted database file inside it.
 
-`--profile personal` on any single command does the same job for one invocation. `home_currency` stays unset until you choose one — MoneyBin never assumes USD — but the three net-worth reports price their totals into it, so a profile without one reads `net-worth` as an empty total with `unpriced_currency_count` at 1 even in a single currency; the [reports guide](reports.md#one-display-currency) says when it matters. Everything else about profiles — several of them, moving one between machines, deleting one — is in the [profiles guide](profiles.md).
+`--profile <name>` on any single command picks a different profile for one invocation, and `profile switch <name>` changes the default. `home_currency` stays unset until you choose one — MoneyBin never assumes USD — but the three net-worth reports price their totals into it, so a profile without one reads `net-worth` as an empty total with `unpriced_currency_count` at 1 even in a single currency; the [reports guide](reports.md#one-display-currency) says when it matters. Everything else about profiles — several of them, moving one between machines, deleting one — is in the [profiles guide](profiles.md).
 
 ## 4. Import your first file
 

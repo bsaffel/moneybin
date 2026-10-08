@@ -39,11 +39,16 @@ app = typer.Typer(
 )
 
 
-def _emit_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
+def _emit_receipt(
+    title: str, pairs: list[tuple[str, str]], *, disclosures: list[str] | None = None
+) -> None:
     """Print one unpaged mutation receipt to stdout."""
     policy = get_terminal_policy()
     emit_human_result(
-        compose_human_result([build_summary(pairs, title=title, terminal=policy)]),
+        compose_human_result(
+            [build_summary(pairs, title=title, terminal=policy)],
+            disclosures=disclosures or (),
+        ),
         policy=policy,
         finite_read=False,
         receipt=True,
@@ -80,54 +85,44 @@ def profile_create(
         typer.Option(
             "--init-inbox/--no-init-inbox",
             help=(
-                "Create the import-inbox layout (~/Documents/MoneyBin/<profile>/"
-                "{inbox,processed,failed}/). If unset, prompts when interactive "
+                "Create the import-inbox layout (<inbox_root>/<profile>/"
+                "{inbox,processed,failed,pending}/; inbox_root defaults to "
+                "~/Documents/MoneyBin). If unset, prompts when interactive "
                 "and skips when not."
             ),
         ),
     ] = None,
 ) -> None:
-    """Create a profile, or finish setting up a half-made one.
+    """Create a profile, or finish setting up a half-made one, and make it active.
 
     Creates the directory structure, config, and encrypted database. A directory
     left unregistered by a bare `db init`, a hand `mkdir`, or an interrupted delete
     is completed in place rather than refused — an existing database is preserved
     untouched. Refuses only when a fully registered profile already exists.
+
+    The profile becomes the active default, so the next command runs against it.
+    When another profile was active, the receipt names it and how to switch back.
     """
     normalized = _normalize_mutation_profile(name)
+    svc = ProfileService()
     if init_inbox is None:
         init_inbox = (
             typer.confirm(
-                f"Set up the import inbox at ~/Documents/MoneyBin/{normalized}/?",
+                f"Set up the import inbox at {svc.inbox_root(normalized)}/?",
                 default=True,
             )
             if get_terminal_policy().interactive
             else False
         )
-    svc = ProfileService()
     # A directory with no config.yaml is completed in place rather than refused, and
     # it may already hold a `db init`'d database. Ask both questions before the call:
     # "Created" would hide the adoption from the person whose data is in there, and
     # claiming we preserved a database that never existed is just as wrong.
     adopting = svc.exists(name)
     preserving_db = adopting and svc.has_database(name)
+    previous = next((str(p["name"]) for p in svc.list() if p["active"]), None)
     try:
         profile_dir = svc.create(name, init_inbox=init_inbox)
-        if adopting:
-            pairs = [("Profile", normalized), ("Location", str(profile_dir))]
-            if preserving_db:
-                pairs.append(("Database", "Existing database was preserved."))
-            _emit_receipt("Profile setup completed", pairs)
-        else:
-            _emit_receipt(
-                "Profile created",
-                [("Profile", normalized), ("Location", str(profile_dir))],
-            )
-        if init_inbox:
-            _emit_receipt(
-                "Import inbox ready",
-                [("Location", f"~/Documents/MoneyBin/{normalized}/inbox/")],
-            )
     except ProfileExistsError as e:
         logger.error(str(e))
         raise typer.Exit(1) from e
@@ -135,6 +130,33 @@ def profile_create(
         logger.error(f"Failed to create profile '{name}': {e}")
         logger.error(f"Run 'moneybin profile create {name}' to retry")
         raise typer.Exit(1) from e
+    # Every walkthrough's next command expects the profile it just created; an
+    # unactivated one sent it to the previous profile or the first-run wizard.
+    svc.switch(normalized)
+    pairs = [("Profile", f"{normalized} (active)"), ("Location", str(profile_dir))]
+    if preserving_db:
+        pairs.append(("Database", "Existing database was preserved."))
+    disclosures: list[str] = []
+    if previous is not None and previous != normalized:
+        action = get_terminal_policy().symbols.action
+        disclosures.append(
+            f"{action} Switch back to {previous}: moneybin profile switch {previous}"
+        )
+    _emit_receipt(
+        "Profile setup completed" if adopting else "Profile created",
+        pairs,
+        disclosures=disclosures,
+    )
+    if init_inbox:
+        from moneybin.services.inbox_service import INBOX_LAYOUT
+
+        _emit_receipt(
+            "Import inbox ready",
+            [
+                ("Location", str(svc.inbox_root(normalized))),
+                ("Folders", ", ".join(f"{d}/" for d in INBOX_LAYOUT)),
+            ],
+        )
 
 
 @app.command("list")

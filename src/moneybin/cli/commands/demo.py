@@ -75,6 +75,8 @@ def _render_demo_receipt(result: DemoResult, *, quiet: bool) -> None:
     else:
         doctor = "Clean"
     facts.append(("Doctor", doctor))
+    if demo_result.inbox_dir is not None:
+        facts.append(("Import inbox", str(demo_result.inbox_dir)))
 
     disclosures: list[str] = []
     if demo_result.net_worth is None:

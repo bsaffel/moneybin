@@ -32,6 +32,65 @@ def _terminal(*, interactive: bool) -> TerminalPolicy:
     )
 
 
+@pytest.fixture(autouse=True)
+def _target_profile_has_database(mocker: Any) -> MagicMock:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """These tests mock the database; the target profile's file never exists."""
+    return mocker.patch(
+        "moneybin.services.profile_service.ProfileService.has_database",
+        return_value=True,
+    )
+
+
+class TestMissingTargetProfile:
+    """A missing target names the profile, not the encryption key it lacks."""
+
+    @pytest.mark.parametrize("command", ["generate", "reset"])
+    def test_missing_profile_names_profile_create(
+        self,
+        command: str,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        _target_profile_has_database: MagicMock,
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        _target_profile_has_database.return_value = False
+        mocker.patch("moneybin.config.get_current_profile", return_value="default")
+        mocker.patch("moneybin.config.set_current_profile")
+        get_database = mocker.patch("moneybin.database.get_database")
+
+        confirm = ["--yes"] if command == "reset" else []
+        result = CliRunner().invoke(app, [command, "--persona", "family", *confirm])
+
+        assert result.exit_code == 1
+        assert "Profile 'bob' does not exist." in caplog.text
+        assert "moneybin profile create bob" in result.output
+        assert "encryption key" not in caplog.text + result.output
+        get_database.assert_not_called()
+
+    def test_directory_without_database_says_so(
+        self,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        _target_profile_has_database: MagicMock,
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        (tmp_path / "profiles" / "bob").mkdir(parents=True)
+        _target_profile_has_database.return_value = False
+        mocker.patch("moneybin.config.get_current_profile", return_value="default")
+        mocker.patch("moneybin.config.set_current_profile")
+        mocker.patch("moneybin.database.get_database")
+
+        result = CliRunner().invoke(app, ["generate", "--persona", "family"])
+
+        assert result.exit_code == 1
+        assert "Profile 'bob' has no database yet." in caplog.text
+        assert "moneybin profile create bob" in result.output
+
+
 class TestGenerateCommand:
     """Test the 'synthetic generate' CLI command."""
 

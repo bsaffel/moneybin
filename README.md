@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-07 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <picture>
@@ -130,9 +130,11 @@ $ uv run moneybin sql query "
 The transcript is stdout, trimmed by whole lines only: the five diagnostic
 lines `demo` writes to stderr (two SQLMesh notices about reseeded tables, a
 two-line pandas `FutureWarning` a dependency emits, and one naming the merchant
-patterns it skipped because two categories claim them), and the two lines of a
-third next-step hint pointing at `profile set home_currency <CODE>` for
-converted totals.
+patterns it skipped because two categories claim them), the three lines of the
+`Import inbox:` fact after `Doctor:` (its label and the absolute path it
+wrapped onto — `~/Documents/MoneyBin/demo` unless `MONEYBIN_IMPORT___INBOX_ROOT`
+moves it), and the two lines of a third next-step hint pointing at
+`profile set home_currency <CODE>` for converted totals.
 
 The demo is deterministic synthetic data pushed through the real pipeline —
 import, transform, dedup, categorization, integrity checks. Its window is the
@@ -160,8 +162,7 @@ run `uv run moneybin db backup` before anything large.
 Create a real profile and point it at an export:
 
 ```bash
-uv run moneybin profile create personal
-uv run moneybin profile switch personal                 # demo left itself active
+uv run moneybin profile create personal                 # becomes the active profile
 uv run moneybin import files ~/Downloads/checking.qfx   # OFX / QFX / QBO
 uv run moneybin import files ~/Downloads/history.csv    # CSV / Excel / Parquet
 uv run moneybin reports spending-trend

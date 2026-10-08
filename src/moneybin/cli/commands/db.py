@@ -59,6 +59,7 @@ _DB_INFO_TABLE_LIMIT = 20
 
 if TYPE_CHECKING:
     from moneybin.cli.terminal import TerminalPolicy
+    from moneybin.config import MoneyBinSettings
 
 
 # Shown in --help and emitted to stderr on every invocation of the three
@@ -273,6 +274,31 @@ def db_init(
             )
         raise typer.Exit(1) from e
     typer.echo(f"Encrypted database created: {db_path}")
+    # Record the mode in the profile's config.yaml, which `profile show` and
+    # `db info` report. A --database file elsewhere has no profile config to
+    # describe it, and an unregistered profile has no config.yaml yet — writing
+    # one would register it half-scaffolded (config.yaml is the commit marker).
+    if db_path == settings.database.path:
+        from moneybin.services.profile_service import ProfileService
+
+        profiles = ProfileService()
+        if profiles.is_registered(settings.profile):
+            key_mode = "passphrase" if passphrase else "auto"
+            profiles.set(settings.profile, "database.encryption_key_mode", key_mode)
+            typer.echo(f"Key mode: {key_mode}")
+
+
+def _reported_key_mode(settings: "MoneyBinSettings", db_path: Path) -> str:
+    """The key mode to report: explicit setting, then the profile's record."""
+    if (
+        db_path != settings.database.path
+        or "encryption_key_mode" in settings.database.model_fields_set
+    ):
+        return settings.database.encryption_key_mode
+    from moneybin.services.profile_service import ProfileService
+
+    recorded = ProfileService().recorded_key_mode(settings.profile)
+    return recorded or settings.database.encryption_key_mode
 
 
 def _run_duckdb_cli(
@@ -492,7 +518,7 @@ def db_info(
         "database": str(db_path),
         "file_size_bytes": db_path.stat().st_size,
         "encryption": "AES-256-GCM",
-        "key_mode": settings.database.encryption_key_mode,
+        "key_mode": _reported_key_mode(settings, db_path),
     }
 
     # Check lock state

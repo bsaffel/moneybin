@@ -83,6 +83,24 @@ class TestProfileCreate:
         assert (profile_inbox / "inbox").is_dir()
         assert (profile_inbox / "processed").is_dir()
         assert (profile_inbox / "failed").is_dir()
+        assert (profile_inbox / "pending").is_dir()
+        assert svc.inbox_root("alice") == profile_inbox
+
+    def test_denied_inbox_fails_before_the_database_is_built(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A macOS TCC denial on ~/Documents must not leave a half-built schema."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        denied = PermissionError(1, "Operation not permitted", "/denied/alice")
+        with (
+            patch.object(ProfileService, "ensure_inbox", side_effect=denied),
+            patch.object(ProfileService, "_init_database") as init_db,
+            pytest.raises(PermissionError),
+        ):
+            ProfileService().create("alice", init_inbox=True)
+
+        init_db.assert_not_called()
+        assert not (tmp_path / "profiles" / "alice").exists()
 
     def test_create_without_init_inbox_skips_layout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -250,7 +268,7 @@ class TestProfileCreateRepairsBareDirectory:
         svc = ProfileService()
         with (
             patch.object(
-                ProfileService, "_init_inbox", side_effect=RuntimeError("inbox fail")
+                ProfileService, "ensure_inbox", side_effect=RuntimeError("inbox fail")
             ),
             pytest.raises(RuntimeError, match="inbox fail"),
         ):
@@ -432,6 +450,30 @@ class TestProfileShow:
         svc.switch("alice")
         info = svc.show()
         assert info["name"] == "alice"
+
+
+class TestRecordedKeyMode:
+    """The key mode `db info` reports comes from the profile's config.yaml."""
+
+    def test_reads_the_recorded_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        assert svc.recorded_key_mode("alice") == "auto"
+        svc.set("alice", "database.encryption_key_mode", "passphrase")
+        assert svc.recorded_key_mode("alice") == "passphrase"
+
+    def test_unknown_or_missing_mode_is_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        assert svc.recorded_key_mode("ghost") is None
+        svc.create("alice")
+        svc.set("alice", "database.encryption_key_mode", "bogus")
+        assert svc.recorded_key_mode("alice") is None
 
 
 class TestProfileSet:
