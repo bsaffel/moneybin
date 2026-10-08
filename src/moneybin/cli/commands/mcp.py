@@ -34,7 +34,12 @@ from moneybin.cli.utils import (
     _flags,  # pyright: ignore[reportPrivateUsage]
     get_terminal_policy,
 )
-from moneybin.config import canonical_checkout_root, find_repo_root, get_base_dir
+from moneybin.config import (
+    canonical_checkout_root,
+    find_repo_root,
+    get_base_dir,
+    running_checkout_root,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.utils.user_config import get_default_profile
 
@@ -305,15 +310,13 @@ def mcp_install(
     # it so we can pin it in the generated client config env block. `--home`
     # writes through to the same variable, so it pins here too.
     moneybin_home = os.getenv("MONEYBIN_HOME")
-    repo_root = find_repo_root()
+    # The launch shape follows how this package is installed, never the cwd:
+    # running a checkout's code from `src/` or another directory must not swap
+    # in a published-package config, and vice versa.
+    checkout_root = running_checkout_root()
 
-    if moneybin_home:
-        # Explicit override — pin the home so it survives the client's launch context.
-        env["MONEYBIN_HOME"] = str(Path(moneybin_home).expanduser().resolve())
-
-    if repo_root is not None:
-        # Repo checkout (the dev path): anchor uv at the repo root so repo
-        # detection resolves the checkout's .moneybin/ at server-launch time.
+    if checkout_root is not None:
+        # Source checkout (the dev path): anchor uv at the checkout root.
         #
         # A linked worktree anchors at its MAIN checkout, not itself. The
         # destination file already resolves that way (via get_base_dir), so a
@@ -322,14 +325,17 @@ def mcp_install(
         # and break the main checkout's launch with nothing naming the cause.
         # An installed client config has to outlive the worktree it was
         # generated from.
-        canonical_root = canonical_checkout_root(repo_root)
-        if canonical_root != repo_root:
+        canonical_root = canonical_checkout_root(checkout_root)
+        if canonical_root != checkout_root:
             render_note(
                 "Installing from a linked worktree. Anchoring the config at "
                 f"the main checkout ({canonical_root}) so it stays valid after "
                 "this worktree is removed."
             )
         args: list[str] = ["run", "--directory", str(canonical_root)]
+        # `uv run --directory` starts the server in the checkout, so its repo
+        # detection resolves the checkout's own data home.
+        launch_home = canonical_root / ".moneybin"
     else:
         # Installed path: run the PUBLISHED package, pinned. Unpinned would let
         # a new release auto-install on the client's next restart and migrate
@@ -345,6 +351,16 @@ def mcp_install(
         # the first release. No fallback is added: once published the pin is
         # correct, and a permanent warning would be post-launch noise.
         args = ["tool", "run", "--from", f"moneybin=={get_version()}"]
+        # A client launches the published tool outside any checkout, which
+        # resolves the default home.
+        launch_home = Path.home() / ".moneybin"
+
+    # Pin the home whenever the server would not land on the one this install
+    # resolved — the profile named above lives there. An explicit
+    # MONEYBIN_HOME is always pinned so it survives the client's launch context.
+    install_home = get_base_dir()
+    if moneybin_home or install_home != launch_home.resolve():
+        env["MONEYBIN_HOME"] = str(install_home)
 
     args += ["moneybin", "--profile", resolved_profile, "mcp", "serve"]
 

@@ -13,7 +13,6 @@ from moneybin.cli.output import (
 from moneybin.cli.render import build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
-from moneybin.protocol.envelope import build_envelope
 
 from . import audit as _audit
 from . import doctor as _doctor
@@ -36,9 +35,17 @@ def system_status(
     quiet: bool = quiet_option,  # status is data-only; nothing to suppress
     no_pager: bool = no_pager_option,
 ) -> None:
-    """Show data inventory and pending review queue counts."""
+    """Show data inventory and pending review queue counts.
+
+    `--output json` returns the same `data` and sensitivity as the MCP call
+    `system_status(sections=["overview", "exports"])`.
+    """
     from moneybin.exports.service import ExportService
     from moneybin.services.system_service import SystemService
+
+    if output == OutputFormat.JSON:
+        _emit_status_json(output)
+        return
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
@@ -46,43 +53,6 @@ def system_status(
             exports = ExportService(db).status()
 
     min_d, max_d = s.transactions_date_range
-    if output == OutputFormat.JSON:
-        from moneybin.privacy.payloads.system import (
-            SystemStatusCLIPayload,
-            SystemStatusExportDestination,
-        )
-
-        render_or_json(
-            build_envelope(
-                data=SystemStatusCLIPayload(
-                    accounts_count=s.accounts_count,
-                    transactions_count=s.transactions_count,
-                    transactions_date_range=[
-                        min_d.isoformat() if min_d else None,
-                        max_d.isoformat() if max_d else None,
-                    ],
-                    last_import_at=(
-                        s.last_import_at.isoformat() if s.last_import_at else None
-                    ),
-                    matches_pending=s.matches_pending,
-                    categorize_pending=s.categorize_pending,
-                    exports=[
-                        SystemStatusExportDestination(
-                            name=destination.name,
-                            kind=destination.kind,
-                            ready=destination.ready,
-                            write_capable=destination.write_capable,
-                            reasons=list(destination.reasons),
-                        )
-                        for destination in exports.destinations
-                    ],
-                )
-            ),
-            output,
-            cli_actor="system_status",
-        )
-        return
-
     transaction_range = (
         f"{s.transactions_count} ({min_d} – {max_d})" if s.transactions_count else "0"
     )
@@ -105,4 +75,48 @@ def system_status(
         policy=get_terminal_policy(no_pager=no_pager),
         finite_read=True,
         no_pager=no_pager,
+    )
+
+
+def _emit_status_json(output: OutputFormat) -> None:
+    """Emit the overview and exports sections in the MCP tool's sectioned shape."""
+    from moneybin.adapters import system_status_adapters as status_adapters
+    from moneybin.config import get_settings
+    from moneybin.exports.service import ExportService
+    from moneybin.privacy.classified_envelope import build_classified_envelope
+    from moneybin.privacy.payloads.system import (
+        OverviewStatus,
+        SystemStatusCoarsePayload,
+        SystemStatusSection,
+    )
+    from moneybin.services.system_service import SystemService
+
+    with handle_cli_errors():
+        # Snapshot connections before opening, as the MCP tool does, so this
+        # command's own read never appears in the list.
+        db_connections = status_adapters.database_connections_info(
+            get_settings().database.path
+        )
+        with get_database(read_only=True) as db:
+            status = SystemService(db).status()
+            gsheet = status_adapters.gsheet_info(db)
+            readiness = ExportService(db).status()
+
+    sections: list[SystemStatusSection] = [
+        OverviewStatus(
+            overview=status_adapters.overview_payload(status, gsheet, db_connections)
+        ),
+        status_adapters.exports_status(readiness),
+    ]
+    envelope = build_classified_envelope(
+        SystemStatusCoarsePayload(sections=sections),
+        contract_type=[type(section) for section in sections],
+        total_count=len(sections),
+        returned_count=len(sections),
+    )
+    render_or_json(
+        envelope,
+        output,
+        cli_actor="system_status",
+        classes_returned=envelope.classes_returned,
     )

@@ -34,6 +34,9 @@ Usage: `moneybin system doctor [OPTIONS]`
 
 Show data inventory and pending review queue counts.
 
+`--output json` returns the same `data` and sensitivity as the MCP call
+`system_status(sections=["overview", "exports"])`.
+
 Usage: `moneybin system status [OPTIONS]`
 
 **Options**

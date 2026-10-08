@@ -13,13 +13,13 @@ from unittest.mock import patch
 
 import pytest
 
+from moneybin.adapters.system_status_adapters import (
+    _database_connections_block,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
+)
 from moneybin.db_lock import write_lock
 from moneybin.db_lock.lock import (
     _LOCK_SUFFIX,  # type: ignore[reportPrivateUsage]  # test-only access to the canonical lock-file suffix
     _read_writer_metadata,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
-)
-from moneybin.mcp.tools.system import (
-    _database_connections_block,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
 )
 
 
@@ -60,7 +60,7 @@ def test_block_reports_writer_while_lock_is_held(tmp_path: Path) -> None:
     with (
         _holding_write_lock(db_path, operation_type="transform_apply"),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.adapters.system_status_adapters.find_blocking_processes",
             return_value=[],
         ),
     ):
@@ -84,7 +84,7 @@ def test_block_sanitizes_reader_command_to_friendly_name(tmp_path: Path) -> None
     with (
         _holding_write_lock(db_path),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.adapters.system_status_adapters.find_blocking_processes",
             return_value=[
                 {
                     "pid": 9999,
@@ -121,7 +121,7 @@ def test_block_omits_stale_lock_file_when_no_writer_holds(tmp_path: Path) -> Non
         })
     )
     with patch(
-        "moneybin.mcp.tools.system.find_blocking_processes",
+        "moneybin.adapters.system_status_adapters.find_blocking_processes",
         return_value=[],
     ):
         block = _database_connections_block(db_path)
@@ -136,7 +136,7 @@ def test_block_reports_readers_from_lsof_when_diagnosing_a_writer(
     with (
         _holding_write_lock(db_path),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.adapters.system_status_adapters.find_blocking_processes",
             return_value=[
                 {
                     "pid": 9999,
@@ -162,7 +162,7 @@ def test_block_excludes_writer_pid_from_readers_to_avoid_double_listing(
     with (
         _holding_write_lock(db_path, operation_type="interactive"),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.adapters.system_status_adapters.find_blocking_processes",
             return_value=[
                 {"pid": writer_pid, "command": "moneybin", "cmdline": "moneybin sync"},
                 {"pid": 6666, "command": "moneybin", "cmdline": "moneybin reports"},
@@ -189,7 +189,7 @@ def test_block_resolves_symlinked_db_path(tmp_path: Path) -> None:
     with (
         _holding_write_lock(link_path, operation_type="migration"),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.adapters.system_status_adapters.find_blocking_processes",
             return_value=[],
         ),
     ):
@@ -204,7 +204,7 @@ def test_block_returns_empty_when_no_lock_file_and_no_lsof_output(
     db_path = tmp_path / "status.duckdb"
     db_path.touch()
     with patch(
-        "moneybin.mcp.tools.system.find_blocking_processes",
+        "moneybin.adapters.system_status_adapters.find_blocking_processes",
         return_value=[],
     ):
         block = _database_connections_block(db_path)
@@ -216,7 +216,7 @@ def test_block_reports_readers_without_live_writer(tmp_path: Path) -> None:
     db_path = tmp_path / "status.duckdb"
     db_path.touch()
     with patch(
-        "moneybin.mcp.tools.system.find_blocking_processes",
+        "moneybin.adapters.system_status_adapters.find_blocking_processes",
         return_value=[
             {
                 "pid": 9999,
@@ -242,7 +242,7 @@ def test_block_tolerates_corrupted_lock_file_while_held(tmp_path: Path) -> None:
     with (
         _holding_write_lock(db_path),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.adapters.system_status_adapters.find_blocking_processes",
             return_value=[],
         ) as find_processes,
     ):
@@ -266,7 +266,7 @@ def test_block_tolerates_non_dict_json_while_held(tmp_path: Path) -> None:
     with (
         _holding_write_lock(db_path),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.adapters.system_status_adapters.find_blocking_processes",
             return_value=[],
         ) as find_processes,
     ):

@@ -109,8 +109,8 @@ async def test_system_status_degrades_when_one_section_returns_an_error_envelope
     """The other half of the contract: a section that RETURNS an error.
 
     `_run_tool_body` unwraps the decorator but not the body's own return
-    value, and live bodies do return error envelopes — `_locked_status_envelope`
-    does exactly that on a locked database. Breaks if only the raise arm is
+    value, and live bodies do return error envelopes — `system_status`'s
+    locked-database branch does exactly that. Breaks if only the raise arm is
     handled: the whole call would surface that section's error and destroy the
     healthy ones.
     """
@@ -1115,7 +1115,7 @@ async def test_system_status_degraded_when_db_locked(
 
     monkeypatch.setattr(db_module, "get_database", locked_get_database)
     monkeypatch.setattr(
-        "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
+        "moneybin.adapters.system_status_adapters.find_blocking_processes", no_blockers
     )
 
     result = system_status()
@@ -1171,7 +1171,8 @@ async def test_system_status_recomputes_connections_after_lock_error(
 
     monkeypatch.setattr(db_module, "get_database", locked_get_database)
     monkeypatch.setattr(
-        "moneybin.mcp.tools.system._database_connections_block", next_block
+        "moneybin.adapters.system_status_adapters._database_connections_block",
+        next_block,
     )
 
     result = system_status()
@@ -1208,7 +1209,7 @@ async def test_system_status_opens_with_short_max_wait(
 
     monkeypatch.setattr(db_module, "get_database", capturing_get_database)
     monkeypatch.setattr(
-        "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
+        "moneybin.adapters.system_status_adapters.find_blocking_processes", no_blockers
     )
 
     system_status()
