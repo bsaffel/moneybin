@@ -1250,8 +1250,7 @@ def _stated_figures() -> list[_Figure]:
     from moneybin.exports.catalog import BUNDLE_TABLES
     from moneybin.mcp.surface import STANDARD_TOOL_NAMES
     from moneybin.privacy.sensitivity import Sensitivity
-    from moneybin.reports import definitions
-    from moneybin.reports._framework.registry import discover_reports
+    from moneybin.reports.definitions import ALL_REPORTS
 
     domains = _spec_domain_table()
     assert frozenset().union(*domains.values()) == STANDARD_TOOL_NAMES, (
@@ -1356,7 +1355,8 @@ def _stated_figures() -> list[_Figure]:
         _Figure(
             "built-in reports",
             (rf"\b{n} built-in reports\b",),
-            (len(discover_reports(definitions)),),
+            # ALL_REPORTS is what the CLI and the report catalog register.
+            (len(ALL_REPORTS),),
         ),
         _Figure(
             "system doctor investment checks",
