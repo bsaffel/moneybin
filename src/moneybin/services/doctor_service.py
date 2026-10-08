@@ -14,17 +14,22 @@ from sqlglot import exp
 from moneybin.audits import recipes as recipe_registry
 from moneybin.audits.runner import run_standalone_audits
 from moneybin.config import get_settings
-from moneybin.database import Database
+from moneybin.database import Database, has_column
 from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.account_identity import (
     UNNAMED_ACCOUNT_LABEL,
     mask_embedded_account_number,
 )
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
-from moneybin.investments.source_overlap import investment_source_overlap
+from moneybin.investments.source_overlap import (
+    investment_source_choice_counts,
+    investment_source_overlap,
+    stale_source_choice_accounts,
+)
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
     FX_RATE_SPINE_ROWS,
+    INVESTMENT_SOURCE_CHOICE_ACCOUNTS,
     NET_WORTH_STALE_BALANCE_ACCOUNTS,
     NET_WORTH_UNANCHORED_ACCOUNTS,
     NET_WORTH_UNPRICED_DATES,
@@ -1299,6 +1304,25 @@ class DoctorService:
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
+    def _unchosen_plaid_filter(self, *, keep_split_rejects: bool = False) -> str:
+        """Predicate dropping staging rows (alias ``s``) in a non-Plaid account.
+
+        Empty when ``core.dim_accounts`` predates the column (migrated, not yet
+        refreshed): no choice is readable, so every row counts, as in the match
+        planner. ``keep_split_rejects`` exempts ``split_underivable`` rows.
+        """
+        if not has_column(self._db, DIM_ACCOUNTS, "investment_source_type"):
+            return ""
+        unchosen = f"""NOT EXISTS (
+                      SELECT 1 FROM {DIM_ACCOUNTS.full_name} AS a
+                      WHERE a.account_id = s.account_id
+                        AND a.investment_source_type IS NOT NULL
+                        AND a.investment_source_type <> 'plaid'
+                  )"""  # TableRef constant, no user input
+        if keep_split_rejects:
+            unchosen = f"(s.review_reason = 'split_underivable' OR {unchosen})"
+        return f"AND {unchosen}"
+
     def _run_investment_staging_rejects(self) -> InvariantResult:
         """Plaid investment rows staging routed to review instead of the ledger.
 
@@ -1310,17 +1334,21 @@ class DoctorService:
         subtype). All are deliberate refusals, not silent drops — this is where
         they surface. The query is deliberately open (``review_reason IS NOT
         NULL``), so a NEW reason added upstream surfaces here without a code
-        change; only this list needs the follow-up.
+        change; only this list needs the follow-up. Skips Plaid rows in an
+        account whose investment source is set to another source, except
+        ``split_underivable``: ``core.dim_holdings`` withholds a position per
+        security, so that reject still explains a withhold in any account.
         """
         name = "investment_staging_rejects"
         try:
             rows = self._db.execute(
                 f"""
-                SELECT investment_transaction_id, review_reason
-                FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name}
-                WHERE review_reason IS NOT NULL
-                ORDER BY investment_transaction_id
-                """  # TableRef constant, no user input
+                SELECT s.investment_transaction_id, s.review_reason
+                FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name} AS s
+                WHERE s.review_reason IS NOT NULL
+                  {self._unchosen_plaid_filter(keep_split_rejects=True)}
+                ORDER BY s.investment_transaction_id
+                """  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # view absent before first transform
             return InvariantResult(
@@ -1355,17 +1383,21 @@ class DoctorService:
         fallback ``_run_investment_unreported_holdings`` uses) — an unbound
         security is exactly the kind of gap this check exists to surface, and
         a bare ``security_id`` would render it as an unactionable ``None``.
+        Skips Plaid rows in an account whose investment source is set to
+        another source; those rows never reach its ledger.
         """
         name = "investment_opening_lot_review"
         try:
             rows = self._db.execute(
                 f"""
-                SELECT account_id,
-                       COALESCE(security_id, source_security_key) AS security_key,
-                       reason
-                FROM {STG_PLAID_OPENING_LOT_REVIEW.full_name}
-                ORDER BY account_id, security_key
-                """  # TableRef constant, no user input
+                SELECT s.account_id,
+                       COALESCE(s.security_id, s.source_security_key) AS security_key,
+                       s.reason
+                FROM {STG_PLAID_OPENING_LOT_REVIEW.full_name} AS s
+                WHERE TRUE
+                  {self._unchosen_plaid_filter()}
+                ORDER BY s.account_id, security_key
+                """  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # view absent before first transform
             return InvariantResult(
@@ -1411,7 +1443,9 @@ class DoctorService:
         casing in ``provider_subtype``: a case-sensitive list here would miss
         an ``'Assignment'`` that staging still routed to NULL-quantity
         ``other``, and the check would report ``pass`` on exactly the row it
-        exists to surface. Normalize identically on both sides.
+        exists to surface. Normalize identically on both sides. Reads the
+        ledger, which already excludes rows an account's investment source
+        choice leaves out.
         """
         name = "investment_unmodeled_legs"
         try:
@@ -1515,7 +1549,14 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_investment_source_overlap(self) -> InvariantResult:
-        """Detect transaction or holdings overlap before any transform runs."""
+        """Detect transaction or holdings overlap before any transform runs.
+
+        Unresolved overlaps come from the raw-scope detector, which excludes
+        chosen accounts. Accounts whose built ledger does not reflect their saved
+        choice (a restate that failed after it was saved or cleared) fail too:
+        the ledger can double-count or drop rows like an unresolved overlap.
+        Also refreshes the per-choice account gauge.
+        """
         name = "investment_source_overlap"
         try:
             accounts = investment_source_overlap(self._db)
@@ -1526,22 +1567,51 @@ class DoctorService:
                 detail=f"raw tables unavailable: {e}",
                 affected_ids=[],
             )
-        if accounts:
+        stale_error: Exception | None = None
+        try:
+            stale = stale_source_choice_accounts(self._db)
+        except Exception as e:  # ledger unreadable; a found overlap still fails
+            stale, stale_error = [], e
+        try:
+            for source_type, count in investment_source_choice_counts(self._db).items():
+                INVESTMENT_SOURCE_CHOICE_ACCOUNTS.labels(
+                    investment_source_type=source_type
+                ).set(count)
+        except Exception:  # telemetry never fails a check
+            logger.warning("! Could not refresh the investment source choice gauge")
+        if accounts or stale:
+            parts: list[str] = []
+            if accounts:
+                many = len(accounts) != 1
+                parts.append(
+                    f"{len(accounts)} account{'s' if many else ''} "
+                    f"{'have' if many else 'has'} investment history from two "
+                    "sources (recorded and synced). Lots and gains double-count "
+                    "and holdings are withheld until you choose which history "
+                    "each account keeps: moneybin accounts set <account> "
+                    "--investment-source-type manual|plaid. Choosing deletes "
+                    "nothing, and clearing the setting brings both back"
+                )
+            if stale:
+                many = len(stale) != 1
+                parts.append(
+                    f"{len(stale)} account{'s' if many else ''} "
+                    f"{'have' if many else 'has'} a saved source choice the "
+                    "investment ledger does not reflect yet; run "
+                    "`moneybin refresh`"
+                )
             return InvariantResult(
                 name=name,
                 status="fail",
-                detail=(
-                    f"{len(accounts)} account(s) have manual investment history "
-                    "alongside Plaid transactions or holdings. Review overlapping "
-                    "history before relying on lots or gains. Holdings withholding "
-                    "for mixed transaction ledgers remains active; opening-bootstrap "
-                    "rows do not trigger it. Revert the redundant import batch to "
-                    "clear it; disconnecting the connector stops future pulls "
-                    "but keeps the rows already pulled, so it does not "
-                    "(investment dedup across sources is a future matching "
-                    "child)"
-                ),
-                affected_ids=accounts,
+                detail=". ".join(parts),
+                affected_ids=_masked_account_affected_ids([*accounts, *stale]),
+            )
+        if stale_error is not None:  # don't pass blind on an unread ledger
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"investment ledger unavailable: {stale_error}",
+                affected_ids=[],
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
@@ -1554,7 +1624,8 @@ class DoctorService:
         understates lots and gains for that event. Scoped to rows whose
         staging row carried a non-NULL provider security key (a genuine
         security-bearing event); a NULL key is a legitimate cash-only row
-        (deposit, withdrawal, ...) and not a gap.
+        (deposit, withdrawal, ...) and not a gap. Reads the ledger, which
+        already excludes rows an account's investment source choice leaves out.
         """
         name = "investment_unresolved_securities"
         try:

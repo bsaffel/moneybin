@@ -29,7 +29,7 @@ from moneybin.services.doctor_service import DoctorService
 logger = logging.getLogger(__name__)
 
 
-#: Maps the five MCP tool names doctor's recipes emit (`src/moneybin/audits/
+#: Maps the MCP tool names doctor's recipes emit (`src/moneybin/audits/
 #: recipes/`) to the CLI argv that performs the same repair, given that
 #: action's own ``arguments``. Returns ``None`` when the arguments name
 #: nothing the CLI can express (e.g. clearing a transaction's tags to an
@@ -54,6 +54,17 @@ def _recovery_command(action: RecoveryAction) -> tuple[str, ...] | None:
                 ",".join(methods),
             )
         return ("transactions", "categorize", "run")
+    if action.tool == "accounts_set":
+        source = args.get("investment_source_type")
+        if not source:
+            return None
+        return (
+            "accounts",
+            "set",
+            str(args.get("account_id") or "<account_id>"),
+            "--investment-source-type",
+            str(source),
+        )
     if action.tool == "import_revert":
         # `import_id` is never known at recovery-construction time (the
         # rationale tells the agent to read it from import_status); the
@@ -190,9 +201,8 @@ def doctor_command(
         lines.append(line)
         if result.status != "pass" and result.affected_ids:
             lines.append(f"   Affected: {', '.join(result.affected_ids)}")
-        # Affected IDs and recovery actions remain visible for non-pass checks;
-        # the five-action cap bounds guidance for checks with many affected rows.
-        # Quiet preserves recovery guidance needed to act on a failed check.
+        # Affected IDs and every recovery action remain visible for non-pass
+        # checks; quiet preserves the guidance needed to act on a failed check.
         recovery = result.recovery_actions or []
         for action in recovery:
             rationale = action.rationale
