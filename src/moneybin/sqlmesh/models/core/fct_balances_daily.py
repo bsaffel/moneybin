@@ -1,22 +1,38 @@
 """SQLMesh Python model for core.fct_balances_daily.
 
-Per account: build a date spine from the account's first observation to the
-NEWEST observation across all accounts, carry forward the last known balance
-adjusted by intervening transactions, and compute reconciliation deltas on
-observed days.
+One row per account per day, from the account's first observation (or, with no
+observation, its first evidence of holding value) to the spine end: the newest
+date of any evidence in the profile, whether an observation, a transaction, a
+trade, or a broker-reported position. Observed days carry the observed balance;
+between observations the last balance is carried forward, adjusted by the
+transactions in its currency, and each observed day records its reconciliation
+delta.
 
-The spine deliberately ends at the global last date, not the account's own. Ending
-each account at its own last observation silently drops it from every cross-account
-aggregate after that date — `reports.net_worth` sums the accounts present on a date
-and takes the latest one, so an account whose statement landed a week earlier than
-another's simply vanished from net worth. A checking account with one January
-statement contributed nothing to a December total. Carrying every account forward to
-the newest known date means net worth always reflects each account's last known
-balance, which is what the number is supposed to mean.
+Every account runs to the same end. Ending each account at its own last
+observation silently dropped it from every cross-account aggregate after that
+date: reports.net_worth sums the accounts present on a date and takes the latest
+one, so an account whose statement landed a week before another's vanished from
+net worth. The end is the newest evidence, not the newest observation, because a
+profile holding only CSV transactions has no observation at all, and an
+observation-only end gives it no rows and the guard below nothing to see. The
+end is never capped at today: a FULL model must not depend on the day it was
+built, so a future-dated transaction extends the spine.
+
+An account with evidence of holding value and no balance observation gets rows
+too, from its first evidence to the spine end, with balance NULL: it holds
+something and its balance is unknown. Every net-worth reader counts those rows
+and withholds its total while any is present, rather than letting SUM() skip
+them (net-worth-guard-on-daily-balances.md Requirement 5).
+
+in_net_worth answers "does this account count toward net worth on this date",
+from core.dim_accounts, once, so no reader restates the rule. It is stored per
+row only because this model is kind FULL: every refresh recomputes it from
+current settings. If this model ever becomes incremental, move the flag to read
+time first, or an `accounts set` change will stop reaching rows already built.
 
 An account that is genuinely gone should be excluded by archiving it
-(`app.account_settings.archived` / `include_in_net_worth`, already honored by
-`reports.net_worth`) — not by silently ageing out of the spine.
+(`app.account_settings.archived` / `include_in_net_worth`), not by silently
+ageing out of the spine.
 
 Per-account precedence within a single date (most authoritative wins):
   user assertion > ofx/plaid snapshot > tabular running balance
@@ -101,19 +117,254 @@ def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _to_date(value: object) -> date | None:
+    """Normalise a fetchdf DATE cell (Timestamp, date, NaT or None) to date | None."""
+    if value is None or pd.isna(value):  # type: ignore[arg-type]  # pandas stubs reject object
+        return None
+    return pd.Timestamp(value).date()  # type: ignore[arg-type]  # pandas stubs reject object
+
+
+def _counts_through(include: object, archived: object, archived_at: object) -> date:
+    """The last balance_date on which an account counts toward net worth.
+
+    date.min (never counts) when the account is excluded, or archived with no
+    known date (V063 left undated legacy archives NULL, and they stay excluded
+    on every date). Its archive date when archived on a known date. date.max
+    (no end) otherwise.
+
+    The sentinels are spelled inline: SQLMesh serialises every module global
+    this model reaches, and it cannot serialise a date instance.
+    """
+    if not include:
+        return date.min
+    if archived:
+        return _to_date(archived_at) or date.min
+    return date.max
+
+
+def _evidence_sql(
+    transactions: str, investment_transactions: str, broker_reported: str
+) -> str:
+    """Per account, the first and last date of any evidence of holding value.
+
+    Evidence is a row on either ledger or a broker-reported nonzero position.
+    Open lots need no arm: core.fct_investment_lots is built only from
+    core.fct_investment_transactions and keeps each row's account_id.
+    """
+    return f"""
+        SELECT account_id, MIN(d) AS first_date, MAX(d) AS last_date
+        FROM (
+            SELECT account_id, transaction_date AS d FROM {transactions}
+            UNION ALL
+            SELECT account_id, trade_date AS d FROM {investment_transactions}
+            UNION ALL
+            SELECT account_id, as_of AS d FROM {broker_reported} WHERE has_position
+        )
+        WHERE account_id IS NOT NULL AND d IS NOT NULL
+        GROUP BY account_id
+    """  # noqa: S608  # table names from context.resolve_table(), not user input
+
+
+def _walk_observed_account(
+    account_id: str, group: pd.DataFrame, txns: pd.DataFrame, spine_end: date
+) -> list[dict[str, t.Any]]:
+    """The carry-forward walk for one account with observations, to spine_end."""
+    rows: list[dict[str, t.Any]] = []
+    winners: pd.DataFrame = _select_winning_observations(group)
+
+    first_date = winners["balance_date"].min()  # type: ignore[reportUnknownMemberType]
+    last_date = spine_end
+    # pd.date_range returns Timestamps; .date converts to Python date objects,
+    # which DuckDB maps to the DATE type without ambiguity.
+    spine: list[date] = list(
+        pd.date_range(first_date, last_date, freq="D").date  # type: ignore[reportUnknownMemberType, reportAttributeAccessIssue] — .date exists at runtime
+    )
+
+    # fetchdf() returns DATE columns as datetime64[us] Timestamps, not Python
+    # date objects. Normalise to date so .get(d) matches spine elements.
+    acct_txns_df = txns[txns["account_id"] == account_id].copy()  # type: ignore[reportUnknownMemberType]
+    # date -> {currency_code: net_amount}, so the walk below can apply only
+    # the transactions denominated in the currency it is currently carrying.
+    acct_txns: dict[date, dict[str | None, object]] = {}
+    if not acct_txns_df.empty:  # type: ignore[reportUnknownMemberType]
+        acct_txns_df["d"] = pd.to_datetime(acct_txns_df["d"]).dt.date  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        for txn_date, txn_currency, net_amount in zip(  # type: ignore[reportUnknownVariableType]
+            acct_txns_df["d"],  # type: ignore[reportUnknownArgumentType]
+            acct_txns_df["currency_code"],  # type: ignore[reportUnknownArgumentType]
+            acct_txns_df["net_amount"],  # type: ignore[reportUnknownArgumentType]
+            strict=True,
+        ):
+            bucket = acct_txns.setdefault(t.cast(date, txn_date), {})
+            bucket[_to_currency(txn_currency)] = net_amount
+
+    # Normalise balance_date to Python date objects so lookups match spine elements
+    # regardless of whether fetchdf returns date or Timestamp.
+    winners["balance_date"] = (  # type: ignore[reportUnknownMemberType]
+        pd.to_datetime(winners["balance_date"]).dt.date  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    )
+    observed_lookup: pd.DataFrame = winners.set_index("balance_date")[  # type: ignore[reportUnknownMemberType]
+        ["balance", "source_type", "currency_code"]
+    ]
+
+    carry: Decimal | None = None
+    carry_currency: str | None = None
+    for d in spine:
+        # Only the movement denominated in the carried currency. A
+        # transaction in any other currency needs an FX rate to become an
+        # amount of this balance, and MoneyBin has none until M1K.2 — it is
+        # left out rather than added as though the units matched, and
+        # resurfaces as reconciliation_delta at the next observation.
+        txn_adj = _to_decimal(acct_txns.get(d, {}).get(carry_currency))
+
+        if d in observed_lookup.index:  # type: ignore[reportUnknownMemberType]
+            obs_balance = _to_decimal(observed_lookup.loc[d, "balance"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — pandas .loc stubs return Unknown; safe at runtime
+            obs_source: str = str(observed_lookup.loc[d, "source_type"])  # type: ignore[reportUnknownMemberType]
+            obs_currency = _to_currency(observed_lookup.loc[d, "currency_code"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            delta: Decimal | None
+            if carry is None:
+                # First observation: no prior carry, so delta is undefined.
+                delta = None
+            elif obs_currency != carry_currency:
+                # The carry is denominated in the previous observation's
+                # currency. Subtracting it from an observation in a different
+                # one yields a number in no unit at all — and the row is
+                # labelled with the *new* currency, so balance_drift's
+                # currency_mismatch guard (account vs row) sees two agreeing
+                # codes and passes it. Undefined until conversion (M1K.2);
+                # balance_drift already renders a NULL delta as `no-data`.
+                delta = None
+            else:
+                delta = obs_balance - (carry + txn_adj)
+            rows.append({
+                "account_id": account_id,
+                "balance_date": d,
+                "balance": obs_balance,
+                "is_observed": True,
+                "observation_source": obs_source,
+                "reconciliation_delta": delta,
+                "currency_code": obs_currency,
+            })
+            carry = obs_balance
+            carry_currency = obs_currency
+        else:
+            assert carry is not None, (  # noqa: S101  # invariant, not user input
+                "interpolated branch reached before first observation — "
+                "spine should always start at the first observed date"
+            )
+            carry = carry + txn_adj
+            rows.append({
+                "account_id": account_id,
+                "balance_date": d,
+                "balance": carry,
+                "is_observed": False,
+                "observation_source": None,
+                "reconciliation_delta": None,
+                "currency_code": carry_currency,
+            })
+    return rows
+
+
+def _unanchored_rows(
+    account_id: str, first: date, spine_end: date, currency: str | None
+) -> list[dict[str, t.Any]]:
+    """One NULL-balance row per day for an account with evidence and no observation."""
+    return [
+        {
+            "account_id": account_id,
+            "balance_date": d,
+            "balance": None,
+            "is_observed": False,
+            "observation_source": None,
+            "reconciliation_delta": None,
+            "currency_code": currency,
+        }
+        for d in pd.date_range(first, spine_end, freq="D").date  # type: ignore[reportUnknownMemberType, reportAttributeAccessIssue] — .date exists at runtime
+    ]
+
+
+def _build_spine_rows(
+    obs: pd.DataFrame,
+    txns: pd.DataFrame,
+    evidence: pd.DataFrame,
+    accounts: pd.DataFrame,
+) -> list[dict[str, t.Any]]:
+    """Every spine row, anchored and unanchored, each stamped with in_net_worth.
+
+    obs: account_id, balance_date, balance, source_type, updated_at, currency_code.
+    txns: account_id, d, currency_code, net_amount.
+    evidence: account_id, first_date, last_date (see _evidence_sql).
+    accounts: account_id, include_in_net_worth, archived, archived_at, currency_code.
+    """
+    ends = [
+        d
+        for d in (
+            *(_to_date(v) for v in obs["balance_date"]),  # type: ignore[reportUnknownArgumentType]
+            *(_to_date(v) for v in evidence["last_date"]),  # type: ignore[reportUnknownArgumentType]
+        )
+        if d is not None
+    ]
+    if not ends:
+        return []
+    spine_end = max(ends)
+
+    counts_through: dict[str, date] = {}
+    account_currency: dict[str, str | None] = {}
+    for account_id, include, archived, archived_at, currency in zip(  # type: ignore[reportUnknownVariableType]
+        accounts["account_id"],  # type: ignore[reportUnknownArgumentType]
+        accounts["include_in_net_worth"],  # type: ignore[reportUnknownArgumentType]
+        accounts["archived"],  # type: ignore[reportUnknownArgumentType]
+        accounts["archived_at"],  # type: ignore[reportUnknownArgumentType]
+        accounts["currency_code"],  # type: ignore[reportUnknownArgumentType]
+        strict=True,
+    ):
+        key = str(account_id)  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        counts_through[key] = _counts_through(include, archived, archived_at)  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        account_currency[key] = _to_currency(currency)  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+
+    rows: list[dict[str, t.Any]] = []
+    anchored: set[str] = set()
+    for account_id, group in obs.groupby("account_id"):  # type: ignore[reportUnknownMemberType] — pandas stubs are incomplete
+        anchored.add(str(account_id))
+        rows.extend(_walk_observed_account(str(account_id), group, txns, spine_end))
+    for account_id, first_date in zip(  # type: ignore[reportUnknownVariableType]
+        evidence["account_id"],  # type: ignore[reportUnknownArgumentType]
+        evidence["first_date"],  # type: ignore[reportUnknownArgumentType]
+        strict=True,
+    ):
+        key = str(account_id)  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        first = _to_date(first_date)  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        if key in anchored or first is None:
+            continue
+        rows.extend(_unanchored_rows(key, first, spine_end, account_currency.get(key)))
+
+    for row in rows:
+        # An account_id with no core.dim_accounts row never counts, which is
+        # what the rungs' former INNER JOIN to dim_accounts did.
+        row["in_net_worth"] = row["balance_date"] <= counts_through.get(
+            row["account_id"], date.min
+        )
+    return rows
+
+
 @model(
     "core.fct_balances_daily",
     kind="FULL",
     # context.fetchdf() SQL strings are opaque to SQLMesh's dependency scanner
     # — it cannot infer these from the string literals. Declaring them here
-    # ensures SQLMesh materialises core.fct_balances and core.fct_transactions
-    # before this model executes.
-    depends_on={"core.fct_balances", "core.fct_transactions"},
+    # ensures SQLMesh materialises every input before this model executes.
+    depends_on={
+        "core.fct_balances",
+        "core.fct_transactions",
+        "core.fct_investment_transactions",
+        "core.dim_holdings_broker_reported",
+        "core.dim_accounts",
+    },
     columns={
         "account_id": "VARCHAR",
         "balance_date": "DATE",
         "balance": "DECIMAL(18, 2)",
         "is_observed": "BOOLEAN",
+        "in_net_worth": "BOOLEAN",
         "observation_source": "VARCHAR",
         "reconciliation_delta": "DECIMAL(18, 2)",
         "currency_code": "VARCHAR",
@@ -121,20 +372,22 @@ def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
     column_descriptions={
         "account_id": "Foreign key to core.dim_accounts.account_id",
         "balance_date": "Calendar date",
-        "balance": "Balance as of end of this day",
+        "balance": "Balance as of end of this day; NULL when the account holds value (a transaction, a trade, or a broker-reported position) but has no balance observation. Count those rows before trusting a SUM: SUM() skips them silently",
         "is_observed": "TRUE if an authoritative observation exists for this date",
-        "observation_source": "source_type of the winning observation (ofx, tabular, assertion, plaid); NULL if interpolated",
-        "reconciliation_delta": "Difference between observed and transaction-derived balance; NULL on interpolated days and on the first observation",
-        "currency_code": "ISO 4217 currency code, carried forward from the winning observation (or its interpolated predecessor) on each day",
+        "in_net_worth": "TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from core.dim_accounts on every refresh, which holds only while this model is kind FULL",
+        "observation_source": "source_type of the winning observation (ofx, tabular, assertion, plaid); NULL if interpolated or the account has no balance observation",
+        "reconciliation_delta": "Difference between observed and transaction-derived balance; NULL on interpolated days, on the first observation, and when the account has no balance observation",
+        "currency_code": "ISO 4217 currency code, carried forward from the winning observation (or its interpolated predecessor) on each day; core.dim_accounts.currency_code when the account has no balance observation",
     },
     description=(
-        "One row per account per day, from that account's first observation to the "
-        "newest observation across all accounts — so every account still carries its "
-        "last known balance on the latest date and none drops out of cross-account "
-        "aggregates like reports.net_worth. Observed days use the most authoritative "
-        "source for that date; gaps are filled by carrying the last balance forward, "
-        "adjusted by intervening transactions from core.fct_transactions. Self-heals "
-        "on every sqlmesh run."
+        "One row per account per day, from the account's first observation (or "
+        "first evidence of holding value) to the newest evidence date in the "
+        "profile, so every account carries its last known balance on the latest "
+        "date. Observed days use the most authoritative source; gaps carry the "
+        "last balance forward, adjusted by transactions from core.fct_transactions. "
+        "An account holding value with no balance observation has NULL-balance "
+        "rows. in_net_worth says whether the row counts toward net worth. "
+        "Self-heals on every sqlmesh run."
     ),
 )
 def execute(
@@ -150,6 +403,9 @@ def execute(
     # Plain "core.fct_balances" only exists after promotion, not during backfill.
     fct_balances_table = context.resolve_table("core.fct_balances")
     fct_transactions_table = context.resolve_table("core.fct_transactions")
+    investment_table = context.resolve_table("core.fct_investment_transactions")
+    broker_table = context.resolve_table("core.dim_holdings_broker_reported")
+    accounts_table = context.resolve_table("core.dim_accounts")
 
     obs: pd.DataFrame = context.fetchdf(
         f"""
@@ -158,13 +414,6 @@ def execute(
         ORDER BY account_id, balance_date
         """  # noqa: S608  # table name from context.resolve_table(), not user input
     )
-    if obs.empty:
-        # SQLMesh rejects empty DataFrames from Python models — use the
-        # generator protocol instead: yield from () signals "no rows" without
-        # triggering the "Cannot construct source query" error.
-        yield from ()
-        return
-
     # Grouped by currency_code as well as account/date: fct_transactions resolves
     # currency per row (its own, else the account's), so one account-date can hold
     # amounts in more than one currency. Summing across them would add unlike
@@ -179,105 +428,23 @@ def execute(
         GROUP BY account_id, transaction_date, currency_code
         """  # noqa: S608  # table name from context.resolve_table(), not user input
     )
+    evidence: pd.DataFrame = context.fetchdf(
+        _evidence_sql(fct_transactions_table, investment_table, broker_table)
+    )
+    accounts: pd.DataFrame = context.fetchdf(
+        f"""
+        SELECT account_id, include_in_net_worth, archived, archived_at, currency_code
+        FROM {accounts_table}
+        """  # noqa: S608  # table name from context.resolve_table(), not user input
+    )
 
-    # The newest observation anywhere. Every account is carried forward to it, so no
-    # account drops out of a cross-account aggregate just because another account has
-    # a fresher statement (see the module docstring).
-    global_last_date = obs["balance_date"].max()  # type: ignore[reportUnknownMemberType]
-
-    rows: list[dict[str, t.Any]] = []
-    for account_id, group in obs.groupby("account_id"):  # type: ignore[reportUnknownMemberType] — pandas stubs are incomplete
-        winners: pd.DataFrame = _select_winning_observations(group)
-
-        first_date = winners["balance_date"].min()  # type: ignore[reportUnknownMemberType]
-        last_date = global_last_date
-        # pd.date_range returns Timestamps; .date converts to Python date objects,
-        # which DuckDB maps to the DATE type without ambiguity.
-        spine: list[date] = list(
-            pd.date_range(first_date, last_date, freq="D").date  # type: ignore[reportUnknownMemberType, reportAttributeAccessIssue] — .date exists at runtime
-        )
-
-        # fetchdf() returns DATE columns as datetime64[us] Timestamps, not Python
-        # date objects. Normalise to date so .get(d) matches spine elements.
-        acct_txns_df = txns[txns["account_id"] == account_id].copy()  # type: ignore[reportUnknownMemberType]
-        # date -> {currency_code: net_amount}, so the walk below can apply only
-        # the transactions denominated in the currency it is currently carrying.
-        acct_txns: dict[date, dict[str | None, object]] = {}
-        if not acct_txns_df.empty:  # type: ignore[reportUnknownMemberType]
-            acct_txns_df["d"] = pd.to_datetime(acct_txns_df["d"]).dt.date  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            for txn_date, txn_currency, net_amount in zip(  # type: ignore[reportUnknownVariableType]
-                acct_txns_df["d"],  # type: ignore[reportUnknownArgumentType]
-                acct_txns_df["currency_code"],  # type: ignore[reportUnknownArgumentType]
-                acct_txns_df["net_amount"],  # type: ignore[reportUnknownArgumentType]
-                strict=True,
-            ):
-                bucket = acct_txns.setdefault(t.cast(date, txn_date), {})
-                bucket[_to_currency(txn_currency)] = net_amount
-
-        # Normalise balance_date to Python date objects so lookups match spine elements
-        # regardless of whether fetchdf returns date or Timestamp.
-        winners["balance_date"] = (  # type: ignore[reportUnknownMemberType]
-            pd.to_datetime(winners["balance_date"]).dt.date  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-        )
-        observed_lookup: pd.DataFrame = winners.set_index("balance_date")[  # type: ignore[reportUnknownMemberType]
-            ["balance", "source_type", "currency_code"]
-        ]
-
-        carry: Decimal | None = None
-        carry_currency: str | None = None
-        for d in spine:
-            # Only the movement denominated in the carried currency. A
-            # transaction in any other currency needs an FX rate to become an
-            # amount of this balance, and MoneyBin has none until M1K.2 — it is
-            # left out rather than added as though the units matched, and
-            # resurfaces as reconciliation_delta at the next observation.
-            txn_adj = _to_decimal(acct_txns.get(d, {}).get(carry_currency))
-
-            if d in observed_lookup.index:  # type: ignore[reportUnknownMemberType]
-                obs_balance = _to_decimal(observed_lookup.loc[d, "balance"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — pandas .loc stubs return Unknown; safe at runtime
-                obs_source: str = str(observed_lookup.loc[d, "source_type"])  # type: ignore[reportUnknownMemberType]
-                obs_currency = _to_currency(observed_lookup.loc[d, "currency_code"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-                delta: Decimal | None
-                if carry is None:
-                    # First observation: no prior carry, so delta is undefined.
-                    delta = None
-                elif obs_currency != carry_currency:
-                    # The carry is denominated in the previous observation's
-                    # currency. Subtracting it from an observation in a different
-                    # one yields a number in no unit at all — and the row is
-                    # labelled with the *new* currency, so balance_drift's
-                    # currency_mismatch guard (account vs row) sees two agreeing
-                    # codes and passes it. Undefined until conversion (M1K.2);
-                    # balance_drift already renders a NULL delta as `no-data`.
-                    delta = None
-                else:
-                    delta = obs_balance - (carry + txn_adj)
-                rows.append({
-                    "account_id": account_id,
-                    "balance_date": d,
-                    "balance": obs_balance,
-                    "is_observed": True,
-                    "observation_source": obs_source,
-                    "reconciliation_delta": delta,
-                    "currency_code": obs_currency,
-                })
-                carry = obs_balance
-                carry_currency = obs_currency
-            else:
-                assert carry is not None, (  # noqa: S101  # invariant, not user input
-                    "interpolated branch reached before first observation — "
-                    "spine should always start at the first observed date"
-                )
-                carry = carry + txn_adj
-                rows.append({
-                    "account_id": account_id,
-                    "balance_date": d,
-                    "balance": carry,
-                    "is_observed": False,
-                    "observation_source": None,
-                    "reconciliation_delta": None,
-                    "currency_code": carry_currency,
-                })
+    rows = _build_spine_rows(obs, txns, evidence, accounts)
+    if not rows:
+        # SQLMesh rejects empty DataFrames from Python models — use the
+        # generator protocol instead: yield from () signals "no rows" without
+        # triggering the "Cannot construct source query" error.
+        yield from ()
+        return
 
     # Build with an explicit pyarrow schema so DuckDB receives DECIMAL(18, 2)
     # columns end-to-end. Without this, DuckDB infers DECIMAL precision from
@@ -290,6 +457,7 @@ def execute(
         pa.field("balance_date", pa.date32()),
         pa.field("balance", pa.decimal128(18, 2)),
         pa.field("is_observed", pa.bool_()),
+        pa.field("in_net_worth", pa.bool_()),
         pa.field("observation_source", pa.string()),
         pa.field("reconciliation_delta", pa.decimal128(18, 2)),
         pa.field("currency_code", pa.string()),

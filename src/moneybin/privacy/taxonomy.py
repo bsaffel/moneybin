@@ -1015,6 +1015,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "balance_date": DataClass.TXN_DATE,
         "currency_code": DataClass.CURRENCY,
         "is_observed": DataClass.TXN_TYPE,
+        "in_net_worth": DataClass.TXN_TYPE,
         "observation_source": DataClass.TXN_TYPE,
         "reconciliation_delta": DataClass.BALANCE,
     },

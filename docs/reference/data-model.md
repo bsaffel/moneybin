@@ -277,21 +277,24 @@ Observation-grain balance view: OFX statement balances, tabular running balances
 
 ### `core.fct_balances_daily`
 
-Per-account daily balance spine. Grain: one row per `(account_id, balance_date)` from each account's first observation to its last. `FULL` Python model.
+Per-account daily balance spine. Grain: one row per `(account_id, balance_date)` from each account's first observation (or, for an account with no observation, its first evidence of holding value) to the newest evidence date in the profile. `FULL` Python model.
 
 Observed days use the most authoritative source (per-day precedence: `user assertion > {ofx, plaid} > tabular`; `ofx` and `plaid` tie and are broken by freshest `updated_at`, then `source_type` ascending). Gaps are filled by carrying the last balance forward, adjusted by intervening transactions from `core.fct_transactions`.
 
 Only transactions denominated in the **currency being carried** adjust the balance. A transaction in any other currency is left out rather than added as though the units matched. This spine converts nothing: exchange rates live in `raw.exchange_rates` and conversion runs at the report layer, after `core` is built, so no rate reaches this model. The excluded movement is not lost: it appears in the next observation's `reconciliation_delta`, and therefore as drift in `reports.balance_drift`. `moneybin system doctor` warns whenever a profile holds more than one currency and names this consequence.
 
+An account that holds value (a transaction, a trade, or a broker-reported position) but has no balance observation gets rows with `balance` NULL. Count those rows before trusting a `SUM(balance)`, which skips them silently. `in_net_worth` says whether a row counts toward net worth on its date.
+
 | Column | Type | Description |
 |---|---|---|
 | `account_id` | VARCHAR | FK → `core.dim_accounts.account_id`. |
 | `balance_date` | DATE | Calendar date (institution-local). |
-| `balance` | DECIMAL(18,2) | End-of-day balance. |
+| `balance` | DECIMAL(18,2) | End-of-day balance; NULL when the account holds value (a transaction, a trade, or a broker-reported position) but has no balance observation. Count those rows before trusting a SUM: `SUM()` skips them silently. |
 | `is_observed` | BOOLEAN | TRUE if an authoritative observation exists for this date. |
-| `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated. |
-| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, and this model converts nothing, so no comparison is defined. |
-| `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day. |
+| `in_net_worth` | BOOLEAN | TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from `core.dim_accounts` on every refresh, which holds only while this model is kind `FULL`. |
+| `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated or the account has no balance observation. |
+| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, when the account has no balance observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, and this model converts nothing, so no comparison is defined. |
+| `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day; `core.dim_accounts.currency_code` when the account has no balance observation. |
 
 Logical grain key: `(account_id, balance_date)`.
 

@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
     balance_date DATE,
     balance DECIMAL(18, 2),
     is_observed BOOLEAN,
+    in_net_worth BOOLEAN,
     observation_source VARCHAR,
     reconciliation_delta DECIMAL(18, 2),
     currency_code VARCHAR
