@@ -196,7 +196,7 @@ def test_auto_accept_names_each_guard_refusal_and_its_override(
     assert "b1: matches far more transactions" in err
     assert "s1: its 'contains' pattern is too short" in err
     assert err.count("accepting it takes --allow-broad") == 2
-    assert err.count("› Review the estimated match counts:") == 1
+    assert err.count(" Review the estimated match counts:") == 1
     assert "moneybin transactions categorize auto review" in err
     assert "auto accept --accept" not in err
     assert "b1" not in text_result.stdout
@@ -205,6 +205,30 @@ def test_auto_accept_names_each_guard_refusal_and_its_override(
         "refused_broad": ["b1"],
         "refused_unselective": ["s1"],
     }
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_accept_short_pattern_refusals_skip_the_review_hint_and_cap(
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """`auto review` flags broad proposals only, so it is not offered for these.
+
+    Past ten refusals the rest are counted rather than listed one per line.
+    """
+    mock_db_ctx.return_value.__enter__.return_value = MagicMock()
+    ids = [f"s{i}" for i in range(12)]
+    mock_svc_cls.return_value.accept.return_value = AutoConfirmResult(
+        skipped=12, refused_unselective=ids
+    )
+
+    result = runner.invoke(app, ["auto", "accept", "--accept-all"])
+
+    assert result.exit_code == 1, result.output
+    assert result.stderr.count("accepting it takes --allow-broad") == 10
+    assert "2 more refused; --output json lists every id." in result.stderr
+    assert "auto review" not in result.stderr
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")

@@ -237,12 +237,16 @@ def categorize_auto_accept(
         raise typer.Exit(1)
 
 
+_MAX_REFUSAL_LINES = 10
+
+
 def _warn_refused_proposals(result: "AutoConfirmResult") -> None:
     """Name each guard-refused proposal and why, on stderr.
 
     `--allow-broad` is named but not offered as a command, as in `rules
-    create`: taking the risk is a decision, not a rerun. The `›` line is the
-    review that informs it.
+    create`: taking the risk is a decision, not a rerun. The review hint is
+    printed only for a broad refusal, the one `auto review` flags. Past
+    ``_MAX_REFUSAL_LINES`` the rest are counted; JSON lists every id.
     """
     reasons = [
         (pid, "matches far more transactions than the evidence behind it")
@@ -251,16 +255,25 @@ def _warn_refused_proposals(result: "AutoConfirmResult") -> None:
         (pid, "its 'contains' pattern is too short to match one merchant")
         for pid in result.refused_unselective
     ]
-    for pid, reason in reasons:
+    for pid, reason in reasons[:_MAX_REFUSAL_LINES]:
         render_note(
             f"Attention: {pid}: {reason}; accepting it takes --allow-broad.",
             warn=True,
         )
-    if reasons:
+    if len(reasons) > _MAX_REFUSAL_LINES:
+        render_note(
+            f"Attention: {len(reasons) - _MAX_REFUSAL_LINES} more refused; "
+            "--output json lists every id.",
+            warn=True,
+        )
+    if result.refused_broad:
+        action = get_terminal_policy().symbols.action
         review_cmd = generated_cli_command(
             "transactions", "categorize", "auto", "review"
         )
-        render_note(f"› Review the estimated match counts: {review_cmd}", warn=True)
+        render_note(
+            f"{action} Review the estimated match counts: {review_cmd}", warn=True
+        )
 
 
 @app.command("stats")

@@ -622,9 +622,9 @@ def _validate_running_balance(
     inverted_rate = _pass_rate(inverted)
 
     if inverted_rate >= _pass_threshold:
-        # Presentation lives on the result: the CLI and MCP each render
-        # `sign_correction_suggested` in their own words, so this stays a
-        # file-log record rather than a duplicate console warning.
+        # Presentation lives on the result: each caller renders
+        # `sign_correction_suggested` (file imports as an attention line, the
+        # gsheet adapter as its own warning), so this stays a file-log record.
         logger.info(
             f"Running balance suggests inverted signs: forward {forward_rate:.0%}, "
             f"inverted {inverted_rate:.0%}; amounts not auto-corrected"

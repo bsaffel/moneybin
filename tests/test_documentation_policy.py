@@ -1176,15 +1176,28 @@ def _doctor_investment_check_count() -> int:
     from moneybin.services.doctor_service import DoctorService
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(DoctorService.run_all)))
+    literals: list[ast.List] = []
     for node in ast.walk(tree):
+        if isinstance(node, ast.Assign | ast.AugAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(
+                isinstance(t, ast.Name) and t.id == "investment_checks" for t in targets
+            ):
+                assert isinstance(node, ast.Assign), "investment_checks is extended"
+                assert isinstance(node.value, ast.List), "investment_checks not a list"
+                literals.append(node.value)
         if (
-            isinstance(node, ast.Assign)
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == "investment_checks"
-            and isinstance(node.value, ast.List)
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "investment_checks"
         ):
-            return len(node.value.elts)
-    raise AssertionError("DoctorService.run_all no longer lists investment_checks")
+            raise AssertionError(f"investment_checks.{node.attr} changes the count")
+    assert len(literals) == 1, "DoctorService.run_all no longer lists investment_checks"
+    (checks,) = literals
+    assert not any(isinstance(e, ast.Starred) for e in checks.elts), (
+        "investment_checks unpacks a sequence; count it another way"
+    )
+    return len(checks.elts)
 
 
 def _duckdb_versions() -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -1192,16 +1205,20 @@ def _duckdb_versions() -> tuple[tuple[int, ...], tuple[int, ...]]:
     import tomllib
 
     lock = tomllib.loads((_REPO_ROOT / "uv.lock").read_text())
-    (pinned,) = [p["version"] for p in lock["package"] if p["name"] == "duckdb"]
+    pinned = [p["version"] for p in lock["package"] if p["name"] == "duckdb"]
+    assert len(pinned) == 1, f"uv.lock pins duckdb {len(pinned)} times: {pinned}"
     project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
-    (floor,) = [
-        dep.removeprefix("duckdb>=")
+    floors = [
+        found.group(1)
         for dep in project["project"]["dependencies"]
-        if dep.startswith("duckdb>=")
+        if (found := re.fullmatch(r"duckdb>=(\d+(?:\.\d+)*)", dep))
     ]
+    assert len(floors) == 1, "pyproject.toml no longer floors duckdb as `duckdb>=X.Y.Z`"
+    version = re.fullmatch(r"\d+(?:\.\d+)*", pinned[0])
+    assert version, f"uv.lock's duckdb {pinned[0]!r} is not a plain release"
     return (
-        tuple(int(part) for part in pinned.split(".")),
-        tuple(int(part) for part in floor.split(".")),
+        tuple(int(part) for part in pinned[0].split(".")),
+        tuple(int(part) for part in floors[0].split(".")),
     )
 
 
@@ -1258,7 +1275,6 @@ def _stated_figures() -> list[_Figure]:
         seed_rows = list(csv.DictReader(handle))
     seeded_categories = len(seed_rows)
     seeded_primaries = len({row["category"] for row in seed_rows})
-    seeded_subcategories = sum(1 for row in seed_rows if row["subcategory"])
     mcp_defaults = MCPConfig()
     duckdb_pinned, duckdb_floor = _duckdb_versions()
     stub_count, exit_one_stub_count = _hidden_stub_counts()
@@ -1331,9 +1347,11 @@ def _stated_figures() -> list[_Figure]:
             (seeded_categories,),
         ),
         _Figure(
-            "seeded primary categories and subcategories",
-            (rf"\b{n} primary(?: categories)?(?:,| with) ~?{n} subcategories\b",),
-            (seeded_primaries, seeded_subcategories),
+            # "~95 subcategories" is worded as a bound, so only the primary
+            # count is captured and pinned.
+            "seeded primary categories",
+            (rf"\b{n} primary(?: categories)?(?:,| with) ~\d+ subcategories\b",),
+            (seeded_primaries,),
         ),
         _Figure(
             "built-in reports",
@@ -1513,9 +1531,15 @@ def test_public_docs_list_exactly_the_supported_clients() -> None:
         )
     # The per-client sections use display names, which no code owns, so they
     # are pinned by count: one section per supported client.
-    setup = guide.split("\n## Per-client setup\n", 1)[1].split("\n## ", 1)[0]
+    setup_heading = "\n## Per-client setup\n"
+    assert setup_heading in guide, "mcp-clients.md lost its Per-client setup section"
+    setup = guide.split(setup_heading, 1)[1].split("\n## ", 1)[0]
     headings = re.findall(r"^### (.+)$", setup, flags=re.MULTILINE)
-    assert len(headings) == len(_SUPPORTED_CLIENTS), headings
+    assert len(headings) == len(_SUPPORTED_CLIENTS), (
+        f"Per-client setup has {len(headings)} subsections for "
+        f"{len(_SUPPORTED_CLIENTS)} clients; each subsection there is one "
+        f"client: {headings}"
+    )
 
 
 def test_getting_started_names_live_registry_tools() -> None:
