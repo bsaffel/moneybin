@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Setting up MoneyBin in Claude Desktop
 
 Four steps take Claude Desktop from knowing nothing about your money to querying it: install MoneyBin, write the server entry into Claude Desktop's config with one command, restart the app, and ask a question. Only the restart is manual work; the install command edits one JSON file.
@@ -42,7 +42,7 @@ $ uv run moneybin mcp install --client claude-desktop --print
 }
 ```
 
-`--print` shows the entry without writing it. Drop `--print` and add `-y` to write it into the config file. Three lines are trimmed from the block above: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran (the `env` block appears only when `MONEYBIN_HOME` is set). A one-line note `mcp install` writes to stderr is trimmed as well: it appears when install runs inside a linked git worktree and names the main checkout the config was anchored at. It carries no status symbol, because anchoring the config is information, not an outcome.
+`--print` shows the entry without writing it. Drop `--print` and add `-y` to write it into the config file. Three lines are trimmed from the block above: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran (the `env` block appears only when `MONEYBIN_HOME` is set, or when the server would otherwise open a different home; [Preview the snippet](mcp-clients.md#preview-the-snippet) gives the rule). A one-line note `mcp install` writes to stderr is trimmed as well: it appears when install runs inside a linked git worktree and names the main checkout the config was anchored at. It carries no status symbol, because anchoring the config is information, not an outcome.
 
 ```bash
 moneybin mcp install --client claude-desktop -y

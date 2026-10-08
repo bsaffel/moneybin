@@ -28,7 +28,6 @@ Tier derivation summary:
   - ``SystemStatusBuildInfo``       → Tier.LOW (AGGREGATE + RECORD_ID)
   - ``SystemStatusPayload``         → Tier.LOW (no DESCRIPTION fields)
   - ``ExportsStatus``               → Tier.MEDIUM (destination name = USER_NOTE)
-  - ``SystemStatusCLIPayload``      → Tier.MEDIUM (exports include USER_NOTE)
   - ``InvariantResultPayload``      → Tier.MEDIUM (detail = DESCRIPTION, affected_ids = RECORD_ID)
   - ``SystemDoctorPayload``         → Tier.MEDIUM (via InvariantResultPayload)
   - ``RefreshRunPayload``           → Tier.MEDIUM (error = DESCRIPTION)
@@ -426,20 +425,6 @@ class ExportsStatus(BaseModel):
 
     kind: Literal["exports"] = "exports"
     destinations: list[SystemStatusExportDestination]
-
-
-@row_set(NO_ROW_SET)
-@dataclass(frozen=True, slots=True)
-class SystemStatusCLIPayload:
-    """Flat typed payload for the established ``system status`` CLI JSON shape."""
-
-    accounts_count: Annotated[int, DataClass.AGGREGATE]
-    transactions_count: Annotated[int, DataClass.AGGREGATE]
-    transactions_date_range: Annotated[list[str | None], DataClass.AGGREGATE]
-    last_import_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
-    matches_pending: Annotated[int, DataClass.AGGREGATE]
-    categorize_pending: Annotated[int, DataClass.AGGREGATE]
-    exports: list[SystemStatusExportDestination]
 
 
 class SectionUnavailable(BaseModel):

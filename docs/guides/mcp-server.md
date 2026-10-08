@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-07 -->
 # MCP Server
 
 MoneyBin exposes one **50-tool standard registry** to every generic MCP client,
@@ -48,7 +48,9 @@ Three lines are trimmed from that block: the two `args` entries
 `"--directory"` and the absolute path of the checkout `uv` runs from, and the
 `"MONEYBIN_HOME"` entry inside `env`, which carries the absolute path of the
 MoneyBin home directory that was set when install ran (the `env` block appears
-only when `MONEYBIN_HOME` is set). A one-line note `mcp install` writes to
+only when `MONEYBIN_HOME` is set, or when the server would otherwise open a
+different home; [Preview the snippet](mcp-clients.md#preview-the-snippet) gives
+the rule). A one-line note `mcp install` writes to
 stderr is trimmed as well: it appears when install runs inside a linked
 worktree, names the main checkout the config was anchored at, and carries no
 status symbol because it reports information rather than an outcome. Every option

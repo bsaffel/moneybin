@@ -392,6 +392,12 @@ sits at the 50-tool hard limit exactly — admitting another means retiring one:
 - `system_status(sections=["exports"])` reports destination readiness through
   the existing orientation tool, so status does not consume a third export
   slot.
+- `moneybin system status --output json` returns the same `data` and
+  `summary` as `system_status(sections=["overview", "exports"])`: one
+  sectioned payload, built once in `moneybin.adapters.system_status_adapters`,
+  and one derived sensitivity. Only `actions` differ: MCP names tools, and
+  the CLI emits none. Under a held write lock MCP degrades to a zero-filled
+  overview naming the holder; the CLI returns an error envelope instead.
 
 Sheets destinations are output-only and cannot overlap an inbound `gsheet`
 connection. Publication replaces only MoneyBin-managed tabs after staging and

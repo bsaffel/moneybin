@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-10-07 -->
 # CLI Reference
 
 Run `moneybin` for a short menu of common commands, or `moneybin --help` for
@@ -741,7 +741,8 @@ moneybin system doctor
 ### Status-check a long-running pipeline from a script
 
 ```bash
-moneybin system status --output json | jq -e '.summary.total_count > 0' \
+moneybin system status --output json \
+  | jq -e '.data.sections[0].overview.transactions.count > 0' \
   && echo "data present" \
   || moneybin transactions categorize run
 ```

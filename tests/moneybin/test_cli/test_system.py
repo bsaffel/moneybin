@@ -1,6 +1,7 @@
 """Tests for the `system status` CLI command."""
 
 import json
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+from moneybin.services.system_service import SystemStatus
 
 runner = CliRunner()
 
@@ -38,40 +40,98 @@ def test_system_status_text_output(mock_get_db: MagicMock) -> None:
     assert "ready" in out
 
 
-@patch("moneybin.cli.commands.system.get_database")
-def test_system_status_json_output(mock_get_db: MagicMock) -> None:
-    mock_db = MagicMock()
-    mock_get_db.return_value.__enter__.return_value = mock_db
-    mock_db.execute.return_value.fetchone.return_value = (0, None, None)
+def _fixed_status() -> SystemStatus:
+    return SystemStatus(
+        accounts_count=2,
+        transactions_count=5,
+        transactions_date_range=(date(2025, 1, 1), date(2025, 3, 31)),
+        last_import_at=None,
+        matches_pending=1,
+        account_links_pending=0,
+        merchant_links_pending=0,
+        security_links_pending=0,
+        categorize_pending=3,
+        transforms_pending=False,
+        transforms_last_apply_at=None,
+        schema_drift={},
+    )
 
+
+@pytest.fixture
+def _status_reads(monkeypatch: pytest.MonkeyPatch) -> MagicMock:  # pyright: ignore[reportUnusedFunction]  # fixture used by name
+    """Stub the reads behind `system status --output json` with fixed values."""
+
+    def fixed_status(_self: object) -> SystemStatus:
+        return _fixed_status()
+
+    def no_gsheets(_self: object) -> list[dict[str, object]]:
+        return []
+
+    def no_connections(_path: object) -> dict[str, list[dict[str, object]]]:
+        return {"writers": [], "readers": []}
+
+    service = "moneybin.services.system_service"
+    monkeypatch.setattr(f"{service}.SystemService.status", fixed_status)
+    monkeypatch.setattr(f"{service}.SystemService.gsheet_connections", no_gsheets)
+    monkeypatch.setattr(f"{service}.database_connections", no_connections)
+    get_db = MagicMock()
+    monkeypatch.setattr("moneybin.cli.commands.system.get_database", get_db)
+    return get_db
+
+
+@pytest.mark.usefixtures("_status_reads")
+def test_system_status_json_output_is_the_mcp_sectioned_shape() -> None:
+    """The CLI emits `system_status(sections=["overview", "exports"])`'s data."""
     result = runner.invoke(app, ["system", "status", "--output", "json"])
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     envelope = json.loads(result.stdout)
     assert envelope["summary"]["sensitivity"] == "medium"
-    payload = envelope["data"]
-    assert "accounts_count" in payload
-    assert "transactions_count" in payload
-    assert "matches_pending" in payload
-    assert "categorize_pending" in payload
-    assert payload["exports"] == [
-        {
-            "name": "local:exports",
-            "kind": "local",
-            "ready": True,
-            "write_capable": True,
-            "reasons": [],
-        }
+    assert envelope["summary"]["total_count"] == 2
+    data = envelope["data"]
+    assert data["kind"] == "sections"
+    overview, exports = data["sections"]
+    assert overview["kind"] == "overview"
+    assert overview["overview"]["accounts"] == {"count": 2}
+    assert overview["overview"]["transactions"]["date_range"] == [
+        "2025-01-01",
+        "2025-03-31",
     ]
+    assert overview["overview"]["matches"] == {"pending_review": 1}
+    assert overview["overview"]["categorization"] == {"uncategorized": 3}
+    assert exports == {
+        "kind": "exports",
+        "destinations": [
+            {
+                "name": "local:exports",
+                "kind": "local",
+                "ready": True,
+                "write_capable": True,
+                "reasons": [],
+            }
+        ],
+    }
 
 
-@patch("moneybin.cli.commands.system.get_database")
+def test_system_status_json_reports_a_held_lock_as_an_error_envelope(
+    _status_reads: MagicMock,
+) -> None:
+    """Unlike MCP's degraded overview, the CLI surfaces the lock and exits 1."""
+    from moneybin.database import DatabaseLockError
+
+    _status_reads.side_effect = DatabaseLockError("held by another process")
+
+    result = runner.invoke(app, ["system", "status", "--output", "json"])
+
+    assert result.exit_code == 1
+    envelope = json.loads(result.stdout)
+    assert envelope["status"] == "error"
+    assert envelope["data"] == []
+
+
+@pytest.mark.usefixtures("_status_reads")
 def test_system_status_json_uses_typed_privacy_and_redaction_path(
-    mock_get_db: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mock_db = MagicMock()
-    mock_get_db.return_value.__enter__.return_value = mock_db
-    mock_db.execute.return_value.fetchone.return_value = (0, None, None)
     captured_event: dict[str, object] = {}
     redacted_payloads: list[object] = []
 
@@ -103,18 +163,13 @@ def test_system_status_json_uses_typed_privacy_and_redaction_path(
     assert not isinstance(redacted_payloads[0], dict)
 
 
-@patch("moneybin.cli.commands.system.get_database")
-def test_system_status_text_and_json_share_export_readiness_reasons(
-    mock_get_db: MagicMock,
-) -> None:
+@pytest.mark.usefixtures("_status_reads")
+def test_system_status_text_and_json_share_export_readiness_reasons() -> None:
     from moneybin.exports.service import (
         ExportDestinationReadiness,
         ExportReadinessStatus,
     )
 
-    mock_db = MagicMock()
-    mock_get_db.return_value.__enter__.return_value = mock_db
-    mock_db.execute.return_value.fetchone.return_value = (0, None, None)
     readiness = ExportReadinessStatus(
         destinations=(
             ExportDestinationReadiness(
@@ -143,8 +198,8 @@ def test_system_status_text_and_json_share_export_readiness_reasons(
     assert text_result.exit_code == 0
     assert "invalid_managed_tab_prefix" in text_result.stdout
     assert "sheets_write_authorization_required" in text_result.stdout
-    payload = json.loads(json_result.stdout)["data"]
-    assert payload["exports"][0]["reasons"] == [
+    exports = json.loads(json_result.stdout)["data"]["sections"][1]
+    assert exports["destinations"][0]["reasons"] == [
         "invalid_managed_tab_prefix",
         "sheets_write_authorization_required",
     ]

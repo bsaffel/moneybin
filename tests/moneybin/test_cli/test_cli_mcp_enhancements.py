@@ -538,7 +538,9 @@ class TestMCPInstall:
         )
         (worktree / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
         monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path / "home"))
-        monkeypatch.chdir(worktree)
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: worktree
+        )
 
         result = runner.invoke(
             app, ["install", "--client", "claude-code", "--profile", "p", "--print"]
@@ -682,11 +684,13 @@ class TestMCPInstall:
         assert "→" not in result.stderr
         assert "restart" in result.stderr.lower()
 
-    def test_install_emits_pinned_uvx_when_not_in_a_repo(
+    def test_install_emits_pinned_uvx_from_an_installed_package(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Outside a checkout, the config must point at the published package."""
-        monkeypatch.setattr("moneybin.cli.commands.mcp.find_repo_root", lambda: None)
+        """An installed package's config must point at the published package."""
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
+        )
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
 
         result = runner.invoke(
@@ -700,12 +704,12 @@ class TestMCPInstall:
         assert "--from" in result.stdout
         assert "--directory" not in result.stdout
 
-    def test_install_keeps_the_repo_dev_path_in_a_checkout(
+    def test_install_keeps_the_repo_dev_path_from_a_checkout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Inside a checkout, keep `uv run --directory <repo>` — the dev path."""
+        """Code loaded from a checkout keeps `uv run --directory <repo>`."""
         monkeypatch.setattr(
-            "moneybin.cli.commands.mcp.find_repo_root", lambda: tmp_path
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: tmp_path
         )
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
 
@@ -718,6 +722,129 @@ class TestMCPInstall:
         assert str(tmp_path) in result.stdout
         assert "--from" not in result.stdout
 
+    def test_install_args_follow_the_package_not_the_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Running a checkout's code from another directory keeps the dev path.
+
+        The cwd used to decide: `uv run --directory src moneybin mcp install`
+        printed the published-package config, which cannot resolve before the
+        first release. The home is pinned because the server, started inside
+        the checkout, would otherwise read the checkout's data home rather than
+        the one this install resolved its profile from.
+        """
+        checkout = tmp_path / "checkout"
+        elsewhere = tmp_path / "elsewhere"
+        checkout.mkdir()
+        elsewhere.mkdir()
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: checkout
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_base_dir", lambda: elsewhere / ".moneybin"
+        )
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+        monkeypatch.chdir(elsewhere)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        entry = json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+        assert entry["args"][:3] == ["run", "--directory", str(checkout)]
+        assert entry["env"] == {"MONEYBIN_HOME": str(elsewhere / ".moneybin")}
+
+    def test_install_from_the_checkout_root_pins_no_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The dev path's server lands on the same home, so nothing is pinned."""
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_base_dir",
+            lambda: (tmp_path / ".moneybin").resolve(),
+        )
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "env" not in json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+
+    def test_installed_package_pins_a_home_other_than_the_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A published-tool server opens ~/.moneybin; any other home is pinned."""
+        home = tmp_path / "checkout" / ".moneybin"
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
+        )
+        monkeypatch.setattr("moneybin.cli.commands.mcp.get_base_dir", lambda: home)
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        entry = json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+        assert entry["args"][:2] == ["tool", "run"]
+        assert entry["env"] == {"MONEYBIN_HOME": str(home)}
+
+    def test_installed_package_at_the_default_home_pins_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default home is what the launched server opens on its own."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_base_dir",
+            lambda: (tmp_path / ".moneybin").resolve(),
+        )
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "env" not in json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+
+    def test_worktree_install_pins_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A worktree resolves to the main checkout's home, as the server does."""
+        main = tmp_path / "main"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        (main / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / ".git").write_text(
+            f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n"
+        )
+        (worktree / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: worktree
+        )
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+        monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
+        monkeypatch.chdir(worktree)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        entry = json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+        assert entry["args"][:3] == ["run", "--directory", str(main)]
+        assert "env" not in entry
+
     def test_install_pins_moneybin_home_in_the_published_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -727,7 +854,9 @@ class TestMCPInstall:
         that MONEYBIN_HOME still lands in the emitted env there, so a future
         refactor cannot silently re-couple home-pinning to the repo branch.
         """
-        monkeypatch.setattr("moneybin.cli.commands.mcp.find_repo_root", lambda: None)
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
+        )
         monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
 
         result = runner.invoke(
