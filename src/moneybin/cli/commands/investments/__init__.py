@@ -185,7 +185,16 @@ def investments_add(
 _EVENTS_COLUMNS: tuple[tuple[str, Callable[[EventRow], object]], ...] = (
     ("date", lambda r: r.trade_date),
     ("type", lambda r: r.type),
-    ("security", lambda r: security_label(r.ticker, r.security_name, r.security_id)),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
     ("security id", lambda r: r.security_id or "-"),
     ("quantity", lambda r: r.quantity),
     ("amount", lambda r: r.amount),
@@ -303,7 +312,16 @@ def investments_list(
 # ---------------------------------------------------------------------------
 
 _HOLDINGS_COLUMNS: tuple[tuple[str, Callable[[HoldingRow], object]], ...] = (
-    ("security", lambda r: security_label(r.ticker, r.security_name, r.security_id)),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
     ("security id", lambda r: r.security_id),
     ("quantity", lambda r: r.quantity),
     ("cost basis", lambda r: r.cost_basis),
@@ -513,7 +531,16 @@ def investments_holdings(
 
 _GAINS_COLUMNS: tuple[tuple[str, Callable[[RealizedGainRow], object]], ...] = (
     ("disposed", lambda r: r.disposal_date),
-    ("security", lambda r: security_label(r.ticker, r.security_name, r.security_id)),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
     ("security id", lambda r: r.security_id),
     ("quantity", lambda r: r.quantity),
     ("proceeds", lambda r: r.proceeds),

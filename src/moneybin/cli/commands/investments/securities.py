@@ -36,13 +36,23 @@ app.add_typer(security_links.app, name="links")
 
 
 def security_label(
-    ticker: str | None, name: str | None, security_id: str | None
+    ticker: str | None,
+    name: str | None,
+    security_id: str | None,
+    *,
+    exchange: str | None = None,
+    ticker_shared: bool = False,
 ) -> str:
     """Name a security in a table: its ticker, else its catalog name, else its id.
 
-    An id falls through only when the catalog has no row for it, so the cell is
-    never blank; ``-`` is an event that names no security at all.
+    A ticker another catalog row also carries is written ``TICKER.EXCHANGE`` —
+    the form the security resolver accepts back — so two positions never share
+    a cell. Without an exchange to tell them apart the id is the label, as it
+    is when the catalog has no row for it at all, so the cell is never blank;
+    ``-`` is an event that names no security.
     """
+    if ticker and ticker_shared:
+        return f"{ticker}.{exchange}" if exchange else security_id or ticker
     return ticker or name or security_id or "-"
 
 

@@ -25,7 +25,10 @@ WITH positions AS (
      assertion on such an account states cash plus positions at market value,
      which needs a price history nothing here reconstructs. The computed side is
      therefore withheld rather than published as a deposits-only figure that
-     would read as a large, false drift. */
+     would read as a large, false drift. It is tested first: a mismatch is a
+     defect the user can repair, after which the ledger still leaves nothing
+     to compare, so the status names the condition that outlasts the fix and
+     `--status investment-ledger` lists every ledger account. */
   SELECT
     ba.account_id,
     a.display_name AS account_name,
@@ -37,11 +40,11 @@ WITH positions AS (
     AND fbd.currency_code <> a.currency_code AS currency_mismatch,
     NOT ledger.account_id IS NULL AS investment_ledger,
     CASE
+      WHEN NOT ledger.account_id IS NULL
+      THEN NULL
       WHEN NOT fbd.currency_code IS NULL
       AND NOT a.currency_code IS NULL
       AND fbd.currency_code <> a.currency_code
-      THEN NULL
-      WHEN NOT ledger.account_id IS NULL
       THEN NULL
       WHEN NOT fbd.is_observed
       THEN fbd.balance
@@ -80,10 +83,10 @@ SELECT
   account_name, /* Account display name */
   currency_code, /* ISO 4217 currency the account is denominated in; both balances and the drift between them share it, so this row never blends currencies (multi-currency.md Requirement 5) */
   CASE
-    WHEN currency_mismatch
-    THEN 'currency-mismatch'
     WHEN investment_ledger
     THEN 'investment-ledger'
+    WHEN currency_mismatch
+    THEN 'currency-mismatch'
     WHEN computed_balance IS NULL
     THEN 'no-data'
     WHEN ABS(drift) < 1.00
@@ -91,7 +94,7 @@ SELECT
     WHEN ABS(drift) < 10.00
     THEN 'warning'
     ELSE 'drift'
-  END AS status, /* clean (<1) | warning (<10) | drift (>=10) | no-data (computed_balance NULL) | currency-mismatch (the account's currency and the observation's disagree, so no drift is computable) | investment-ledger (the account carries investment ledger events, whose cash legs and positions no transaction-derived balance includes, so no drift is computable). The clean/warning thresholds are absolute amounts in the row's own currency_code. A display-converted read re-buckets them against the converted drift, in `reports/definitions/balance_drift.py::_rebucket_status` — SQL cannot read that module's `_CLEAN_BELOW` / `_WARNING_BELOW`, so changing 1.00 or 10.00 here means changing them there in the same edit. */
+  END AS status, /* clean (<1) | warning (<10) | drift (>=10) | no-data (computed_balance NULL) | currency-mismatch (the account's currency and the observation's disagree, so no drift is computable) | investment-ledger (the account carries investment ledger events, whose cash legs and positions no transaction-derived balance includes, so no drift is computable; it wins over currency-mismatch when both hold). The clean/warning thresholds are absolute amounts in the row's own currency_code. A display-converted read re-buckets them against the converted drift, in `reports/definitions/balance_drift.py::_rebucket_status` — SQL cannot read that module's `_CLEAN_BELOW` / `_WARNING_BELOW`, so changing 1.00 or 10.00 here means changing them there in the same edit. */
   assertion_date, /* User-asserted balance date */
   CAST(CURRENT_DATE - assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */
   asserted_balance, /* User-entered balance for this date */

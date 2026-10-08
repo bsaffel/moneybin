@@ -1009,3 +1009,36 @@ def test_balance_drift_says_it_cannot_reconcile_an_investment_ledger(
     ).fetchone()
     # 15,000.00 computed and 2,125.00 drift would be the deposits-only answer.
     assert row == (Decimal("17125.00"), None, None, None, "investment-ledger")
+
+
+def test_balance_drift_names_the_ledger_before_a_currency_mismatch(
+    model_db: Database,
+) -> None:
+    """A ledger account with a currency mismatch still reports investment-ledger.
+
+    The spec promises `--status investment-ledger` lists every account with a
+    ledger row. A mismatch is repairable (`accounts set --currency`), and after
+    the repair the ledger still leaves nothing to compare, so the row names the
+    condition that outlasts the fix.
+    """
+    _install_balance_drift_sources(model_db, currency="USD")
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES ('checking', '2025-12-31', 17125.00)
+        """
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES
+            ('checking', '2025-12-31', 17125.00, TRUE, 2125.00, 'EUR')
+        """
+    )
+    model_db.execute("INSERT INTO core.fct_investment_transactions VALUES ('checking')")
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        "SELECT computed_balance, drift, status FROM reports.balance_drift"
+    ).fetchone()
+    assert row == (None, None, "investment-ledger")

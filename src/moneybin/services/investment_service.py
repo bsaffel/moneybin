@@ -265,6 +265,18 @@ class SecurityResolutionError(UserError):
         super().__init__(message, code=code, hint=hint)
 
 
+# The catalog columns every ledger read joins in so a table can name a security
+# by ticker. ``ticker_shared`` is true when another catalog row carries the same
+# ticker — a supported case, ``exchange`` being the documented disambiguator —
+# so the label can add the exchange instead of printing two identical cells.
+_SECURITY_LABELS_SQL = f"""
+    (SELECT security_id, ticker, name, exchange,
+            NOT ticker IS NULL
+            AND COUNT(*) OVER (PARTITION BY UPPER(ticker)) > 1 AS ticker_shared
+       FROM {DIM_SECURITIES.full_name})
+"""  # TableRef constant
+
+
 # ── Read-path result shapes ───────────────────────────────────────────────
 # One row dataclass + one result wrapper per read method, mirroring
 # AccountSummary/AccountListPayload (privacy/payloads/accounts.py). No
@@ -281,6 +293,8 @@ class EventRow:
     security_id: str | None
     ticker: str | None
     security_name: str | None
+    exchange: str | None
+    ticker_shared: bool
     trade_date: date
     settlement_date: date | None
     original_acquisition_date: date | None
@@ -330,6 +344,8 @@ class HoldingRow:
     security_id: str
     ticker: str | None
     security_name: str | None
+    exchange: str | None
+    ticker_shared: bool
     quantity: Decimal
     cost_basis: Decimal
     average_cost: Decimal | None
@@ -398,6 +414,8 @@ class LotRow:
     security_id: str
     ticker: str | None
     security_name: str | None
+    exchange: str | None
+    ticker_shared: bool
     acquisition_date: date
     acquisition_type: str
     original_quantity: Decimal
@@ -435,6 +453,8 @@ class RealizedGainRow:
     security_id: str
     ticker: str | None
     security_name: str | None
+    exchange: str | None
+    ticker_shared: bool
     disposal_txn_id: str
     lot_id: str
     quantity: Decimal
@@ -1901,9 +1921,9 @@ class InvestmentService:
                    s.ticker, s.name, t.trade_date, t.settlement_date,
                    t.original_acquisition_date, t.type, t.subtype,
                    t.event_group_id, t.quantity, t.price, t.amount, t.fees,
-                   t.currency_code, t.description
+                   t.currency_code, t.description, s.exchange, s.ticker_shared
               FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS t
-              LEFT JOIN {DIM_SECURITIES.full_name} AS s
+              LEFT JOIN {_SECURITY_LABELS_SQL} AS s
                 ON s.security_id = t.security_id
               {where_sql}
              ORDER BY t.trade_date, t.investment_transaction_id
@@ -1930,6 +1950,8 @@ class InvestmentService:
                     fees=r[14],
                     currency_code=_opt_currency(r[15]),
                     description=r[16],
+                    exchange=r[17],
+                    ticker_shared=bool(r[18]),
                 )
                 for r in rows
             ],
@@ -1975,9 +1997,10 @@ class InvestmentService:
             SELECT h.account_id, h.security_id, s.ticker, s.name, h.quantity,
                    h.cost_basis, h.average_cost, h.currency_code, h.market_value,
                    h.unrealized_gain, h.price_date, h.price_source,
-                   h.days_since_observed, h.valuation_status
+                   h.days_since_observed, h.valuation_status, s.exchange,
+                   s.ticker_shared
               FROM {DIM_HOLDINGS.full_name} AS h
-              LEFT JOIN {DIM_SECURITIES.full_name} AS s
+              LEFT JOIN {_SECURITY_LABELS_SQL} AS s
                 ON s.security_id = h.security_id
               {where_sql}
              ORDER BY h.account_id, h.security_id
@@ -2004,6 +2027,8 @@ class InvestmentService:
                 price_source=None if r[11] is None else str(r[11]),
                 days_since_observed=None if r[12] is None else int(r[12]),
                 valuation_status=str(r[13]),
+                exchange=r[14],
+                ticker_shared=bool(r[15]),
             )
             for r in rows
         ]
@@ -2210,9 +2235,9 @@ class InvestmentService:
                    l.acquisition_date, l.acquisition_type, l.original_quantity,
                    l.remaining_quantity, l.cost_basis_total,
                    l.cost_basis_remaining, l.cost_basis_method, l.currency_code,
-                   l.is_open, l.basis_incomplete
+                   l.is_open, l.basis_incomplete, s.exchange, s.ticker_shared
               FROM {FCT_INVESTMENT_LOTS.full_name} AS l
-              LEFT JOIN {DIM_SECURITIES.full_name} AS s
+              LEFT JOIN {_SECURITY_LABELS_SQL} AS s
                 ON s.security_id = l.security_id
               {where_sql}
              ORDER BY l.acquisition_date, l.lot_id
@@ -2236,6 +2261,8 @@ class InvestmentService:
                 currency_code=_opt_currency(r[12]),
                 is_open=bool(r[13]),
                 basis_incomplete=bool(r[14]),
+                exchange=r[15],
+                ticker_shared=bool(r[16]),
             )
             for r in rows
         ]
@@ -2308,9 +2335,9 @@ class InvestmentService:
                    s.name, g.disposal_txn_id, g.lot_id, g.quantity,
                    g.acquisition_date, g.disposal_date, g.proceeds, g.cost_basis,
                    g.gain_loss, g.term, g.cost_basis_method, g.basis_incomplete,
-                   g.currency_code
+                   g.currency_code, s.exchange, s.ticker_shared
               FROM {FCT_REALIZED_GAINS.full_name} AS g
-              LEFT JOIN {DIM_SECURITIES.full_name} AS s
+              LEFT JOIN {_SECURITY_LABELS_SQL} AS s
                 ON s.security_id = g.security_id
               {where_sql}
              ORDER BY g.disposal_date, g.realized_gain_id
@@ -2336,6 +2363,8 @@ class InvestmentService:
                 cost_basis_method=str(r[14]),
                 basis_incomplete=bool(r[15]),
                 currency_code=_opt_currency(r[16]),
+                exchange=r[17],
+                ticker_shared=bool(r[18]),
             )
             for r in rows
         ]

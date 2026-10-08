@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-10-07 -->
+<!-- Last reviewed: 2026-10-08 -->
 # Investments
 
 One ledger of investment events is the source of truth. Tax lots, positions, and realized gain or loss are derived from it on every refresh, under one of four cost-basis methods, and nothing derived is ever stored as authoritative. Prices come from the broker's own closes, from Tiingo and CoinGecko, from the trades you recorded, or from a mark you set by hand, and a position with no usable price says so rather than reporting zero.
@@ -118,7 +118,7 @@ $ uv run moneybin investments list
 6 of 7 columns shown — --wide for all
 ```
 
-Every table on this page names a security by its ticker, or by its catalog name when it has none; `--wide` adds the catalog id as `security id`, and `securities list` maps one to the other. Quantities carry ten decimal places because a mutual fund or a crypto position is fractional.
+Every table on this page names a security by its ticker, or by its catalog name when it has none; `--wide` adds the catalog id as `security id`, and `securities list` maps one to the other. A ticker two catalog entries share is written with its exchange (`UMAX.AX`), the same form `securities set` accepts. Quantities carry ten decimal places because a mutual fund or a crypto position is fractional.
 
 ## Positions and lots
 

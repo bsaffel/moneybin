@@ -874,7 +874,12 @@ it has none; the 12-hex catalog id is a `security id` column under `--wide`, and
 every JSON row carries `security_id`, `ticker`, and `security_name` (decided
 2026-10: a reader recognises a holding by its ticker, and the id alone forced a
 second lookup in `securities list`). `investments list`, `gains`, and
-`lots list` name securities the same way. Each row carries its own currency
+`lots list` name securities the same way. A ticker another catalog row also
+carries is written `TICKER.EXCHANGE` — tickers are not unique and `exchange` is
+the documented disambiguator — which is the form the security resolver accepts
+back; a shared ticker with no exchange falls back to the id. The JSON rows
+carry `exchange` and `ticker_shared` so a consumer can make the same choice.
+Each row carries its own currency
 code beside the money figures. An absent figure renders
 `-`, matching `avg_cost`'s existing NULL rendering — a blank column reads as zero,
 and NULL here means "no number", not "worth nothing".

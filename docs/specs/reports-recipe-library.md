@@ -378,7 +378,11 @@ brokerage states cash plus positions at market value. Folding the cash legs in
 was rejected — it would still omit the positions, which need a daily valuation
 series that does not exist (see `investments-overview.md`), so it would trade
 one false drift for a smaller false drift. The status is magnitude-free, like
-`currency-mismatch`: display conversion never re-buckets it. When positions
+`currency-mismatch`: display conversion never re-buckets it. When both hold,
+`investment-ledger` wins: a currency mismatch is a defect the user can repair,
+and after the repair the ledger still leaves nothing to compare, so the row
+names the condition that outlasts the fix and `--status investment-ledger`
+lists every account with a ledger row. When positions
 fold into net worth with a past-dated valuation, this status is what that work
 replaces.
 

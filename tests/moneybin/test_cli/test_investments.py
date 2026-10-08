@@ -1235,13 +1235,16 @@ class TestHoldingsAndGains:
 # ---------------------------------------------------------------------------
 
 
-def _seed_one_position_everywhere(db: Database, *, ticker: str | None) -> None:
+def _seed_one_position_everywhere(
+    db: Database, *, ticker: str | None, exchange: str | None = None
+) -> None:
     """One event, lot, gain, and holding, all on catalog security ``sec_1``."""
     SecuritiesRepo(db).upsert(
         security_id="sec_1",
         name="Apple Inc.",
         security_type="equity",
         ticker=ticker,
+        exchange=exchange,
         actor="cli",
     )
     db.conn.execute(
@@ -1355,6 +1358,77 @@ class TestSecuritiesNamedByTicker:
         assert result.exit_code == 0, result.output
         assert "Apple Inc." in result.stdout
         assert "sec_1" not in result.stdout
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("args", _TABLE_COMMANDS)
+    def test_a_ticker_two_securities_share_is_labelled_with_its_exchange(
+        self,
+        runner: CliRunner,
+        db: Database,
+        wide_terminal: None,
+        args: list[str],
+    ) -> None:
+        """Tickers are not unique; `exchange` is the documented disambiguator.
+
+        The label takes the ``TICKER.EXCHANGE`` form the security resolver
+        accepts back, so a reader can pass it to ``investments securities set``
+        — and the twin that is not in this table still makes the cell
+        unambiguous, because sharing is decided against the catalog.
+        """
+        _seed_one_position_everywhere(db, ticker="UMAX", exchange="AX")
+        SecuritiesRepo(db).upsert(
+            security_id="sec_2",
+            name="UMAX NZ",
+            security_type="equity",
+            ticker="UMAX",
+            exchange="NZ",
+            actor="cli",
+        )
+
+        result = runner.invoke(app, args)
+
+        assert result.exit_code == 0, result.output
+        assert "UMAX.AX" in result.stdout
+        assert "sec_1" not in result.stdout
+
+        as_json = runner.invoke(app, [*args, "--output", "json"])
+
+        assert as_json.exit_code == 0, as_json.output
+        (row,) = json.loads(as_json.stdout)["data"]["rows"]
+        assert row["ticker"] == "UMAX"
+        assert row["exchange"] == "AX"
+        assert row["ticker_shared"] is True
+
+    @pytest.mark.unit
+    def test_a_shared_ticker_without_an_exchange_falls_back_to_the_id(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """With no exchange to tell twins apart, the unique id is the label."""
+        _seed_one_position_everywhere(db, ticker="UMAX")
+        SecuritiesRepo(db).upsert(
+            security_id="sec_2",
+            name="UMAX twin",
+            security_type="equity",
+            ticker="UMAX",
+            actor="cli",
+        )
+
+        result = runner.invoke(app, ["investments", "holdings"])
+
+        assert result.exit_code == 0, result.output
+        assert "sec_1" in result.stdout
+
+    @pytest.mark.unit
+    def test_an_unshared_ticker_is_not_suffixed_by_its_exchange(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        _seed_one_position_everywhere(db, ticker="AAPL", exchange="NASDAQ")
+
+        result = runner.invoke(app, ["investments", "holdings"])
+
+        assert result.exit_code == 0, result.output
+        assert "AAPL" in result.stdout
+        assert "AAPL.NASDAQ" not in result.stdout
 
 
 class TestWideAtEightyColumns:

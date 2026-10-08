@@ -44,7 +44,16 @@ app = typer.Typer(
 
 _LOTS_COLUMNS: tuple[tuple[str, Callable[[LotRow], object]], ...] = (
     ("lot", lambda r: r.lot_id),
-    ("security", lambda r: security_label(r.ticker, r.security_name, r.security_id)),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
     ("security id", lambda r: r.security_id),
     ("acquired", lambda r: r.acquisition_date),
     ("remaining", lambda r: r.remaining_quantity),
