@@ -132,12 +132,19 @@ def profile_create(
         raise typer.Exit(1) from e
     # Every walkthrough's next command expects the profile it just created; an
     # unactivated one sent it to the previous profile or the first-run wizard.
-    svc.switch(normalized)
-    pairs = [("Profile", f"{normalized} (active)"), ("Location", str(profile_dir))]
+    # The profile is committed by now, so a failed activation must not read as a
+    # failed create: retrying `create` would only report that it exists.
+    activation_error: OSError | None = None
+    try:
+        svc.switch(normalized)
+    except OSError as e:
+        activation_error = e
+    marker = "" if activation_error else " (active)"
+    pairs = [("Profile", f"{normalized}{marker}"), ("Location", str(profile_dir))]
     if preserving_db:
         pairs.append(("Database", "Existing database was preserved."))
     disclosures: list[str] = []
-    if previous is not None and previous != normalized:
+    if activation_error is None and previous is not None and previous != normalized:
         action = get_terminal_policy().symbols.action
         disclosures.append(
             f"{action} Switch back to {previous}: moneybin profile switch {previous}"
@@ -157,6 +164,14 @@ def profile_create(
                 ("Folders", ", ".join(f"{d}/" for d in INBOX_LAYOUT)),
             ],
         )
+    if activation_error is not None:
+        unchanged = previous or "none"
+        logger.error(
+            f"Profile '{normalized}' was created but could not be made active "
+            f"(active profile is still {unchanged}): {activation_error}"
+        )
+        typer.echo(f"Activate it with: moneybin profile switch {normalized}", err=True)
+        raise typer.Exit(1) from activation_error
 
 
 @app.command("list")

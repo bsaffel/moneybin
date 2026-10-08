@@ -284,7 +284,23 @@ def db_init(
         profiles = ProfileService()
         if profiles.is_registered(settings.profile):
             key_mode = "passphrase" if passphrase else "auto"
-            profiles.set(settings.profile, "database.encryption_key_mode", key_mode)
+            try:
+                profiles.set(settings.profile, "database.encryption_key_mode", key_mode)
+            except OSError as e:
+                # The database and its key are already stored; only the record
+                # is missing, so say that and how to finish, not "init failed".
+                logger.error(
+                    format_cli_failure(
+                        f"The database was created, but its key mode ({key_mode}) "
+                        f"could not be recorded in the profile config: {e}"
+                    )
+                )
+                typer.echo(
+                    "Record it with: moneybin profile set "
+                    f"database.encryption_key_mode {key_mode}",
+                    err=True,
+                )
+                raise typer.Exit(1) from e
             typer.echo(f"Key mode: {key_mode}")
 
 

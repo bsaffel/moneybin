@@ -922,6 +922,34 @@ class TestDbInitCommand:
         assert ProfileService().recorded_key_mode("alice") == mode
         assert f"Key mode: {mode}" in result.output
 
+    def test_init_reports_an_unrecordable_key_mode_with_the_fix(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The database exists; only the record failed, and the hint finishes it."""
+        from moneybin.services.profile_service import ProfileService
+        from moneybin.utils.user_config import generate_profile_config
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        generate_profile_config(profile_dir, "alice")
+        mock_store, _ = self._mock_deps(mocker, profile_dir)
+        mocker.patch.object(
+            ProfileService, "set", side_effect=PermissionError(13, "Permission denied")
+        )
+
+        result = runner.invoke(app, ["init", "--yes"])
+
+        assert result.exit_code == 1
+        mock_store.set_key.assert_called_once()  # the key was stored before
+        assert "Encrypted database created" in result.stdout
+        assert "could not be recorded" in caplog.text
+        assert "moneybin profile set database.encryption_key_mode auto" in result.stderr
+
     def test_init_elsewhere_or_unregistered_records_nothing(
         self,
         runner: CliRunner,
