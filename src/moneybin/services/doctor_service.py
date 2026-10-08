@@ -145,40 +145,6 @@ _ALLOWED_PK_EXPRS = frozenset({
 
 _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
 
-# Used by `_run_investment_unreported_holdings`, which needs "the one whole
-# snapshot per item with the latest extracted_at" (never "latest row per
-# position": that would let a stale survivor from an earlier pull mask an
-# omission in the newest one). Mirrors the identical CTE in `dim_holdings.sql`.
-# No leading `WITH` — callers splice this into their own `WITH <this>, ...`
-# clause. (`_run_investment_phantom_holdings` no longer needs it: it scopes on
-# the position-level `ever_reported_positions` gate instead.)
-#
-# Derived from the snapshot RECEIPTS (one row per item per pull, written even
-# when the item reports zero positions), NOT from the presence of holdings rows.
-# Plaid returns no holding entries for an item holding nothing, so the pull
-# where a broker's every account is liquidated writes no holdings rows at all —
-# a row-derived newest snapshot cannot see it, and silently keeps the last
-# NON-EMPTY snapshot from an earlier pull. Keyed on the receipt, an item that
-# reported nothing has an EMPTY newest snapshot (its positions are phantoms) and
-# an item that never reported has NO newest snapshot (its positions are out of
-# scope) — the distinction the raw holdings rows cannot express.
-_NEWEST_HOLDINGS_SNAPSHOT_CTE = f"""
-newest_snapshot AS (
-    SELECT source_origin, source_file
-    FROM (
-        SELECT
-            source_origin,
-            source_file,
-            ROW_NUMBER() OVER (
-                PARTITION BY source_origin
-                ORDER BY extracted_at DESC, ingestion_sequence DESC
-            ) AS snapshot_rank
-        FROM {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name}
-    )
-    WHERE snapshot_rank = 1
-)
-"""
-
 
 def _is_live_fingerprint(raw: str | None) -> bool:
     """Return whether ``raw`` is a fingerprint the replay path could match.
@@ -1694,13 +1660,13 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
-                WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE}
                 SELECT DISTINCT h.account_id,
                        COALESCE(h.security_id, h.source_security_key) AS security_key
                 FROM {STG_PLAID_INVESTMENT_HOLDINGS.full_name} AS h
-                JOIN newest_snapshot AS ns
+                JOIN {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name} AS ns
                   ON ns.source_file = h.source_file
                   AND ns.source_origin = h.source_origin
+                  AND ns.is_newest
                 LEFT JOIN {DIM_HOLDINGS.full_name} AS d
                   ON d.account_id = h.account_id AND d.security_id = h.security_id
                 WHERE d.account_id IS NULL

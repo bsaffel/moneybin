@@ -831,3 +831,19 @@ def seed_pending_dedup_pair(db: Database) -> None:
         decided_by="auto",
         actor="test",
     )
+
+
+def install_prep_view(db: Database, name: str) -> None:
+    """Install one shipped ``prep`` model as a view, its SELECT parsed off disk."""
+    # Deferred: sqlmesh is heavy, and most importers of this module never call this.
+    from sqlglot import exp
+    from sqlmesh.core.dialect import parse
+
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    path = SQLMESH_ROOT / "models" / "prep" / f"{name}.sql"
+    query = next(
+        node for node in parse(path.read_text()) if isinstance(node, exp.Select)
+    )
+    db.execute(
+        f"CREATE OR REPLACE VIEW prep.{name} AS {query.sql(dialect='duckdb')}"  # shipped model name from a test, not user input
+    )

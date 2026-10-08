@@ -22,23 +22,14 @@ MODEL (
 );
 
 WITH newest_snapshot AS (
-  /* Same receipt-scoped newest pull as core.dim_holdings: a liquidated item's
-     newest pull writes zero holdings rows, so the newest snapshot comes from
-     the receipts, never from the rows. */
+  /* The receipt-scoped newest pull, ranked once on the staging view: a liquidated item's newest pull writes zero holdings rows, so the newest snapshot comes from the receipts, never from the rows. */
   SELECT
     source_origin,
     source_file,
     extracted_at
-  FROM (
-    SELECT
-      source_origin,
-      source_file,
-      extracted_at,
-      ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at DESC, ingestion_sequence DESC) AS snapshot_rank
-    FROM prep.stg_plaid__investment_holdings_snapshots
-  )
+  FROM prep.stg_plaid__investment_holdings_snapshots
   WHERE
-    snapshot_rank = 1
+    is_newest
 ), mapped_origins AS (
   /* can_read_negative: only an investment-typed origin may license FALSE or
      absent; any origin may license TRUE. */

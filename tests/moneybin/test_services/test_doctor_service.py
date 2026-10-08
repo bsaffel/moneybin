@@ -42,6 +42,7 @@ from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import (
     CORE_FCT_EXCHANGE_RATES_DAILY_DDL,
     create_core_tables,
+    install_prep_view,
 )
 
 _COVERAGE_PREFIX: Final = "app_audit_coverage_"
@@ -1665,20 +1666,13 @@ def test_unresolved_securities_pass_when_resolved(
 
 
 def _create_snapshot_receipts_table(db: Database) -> None:
-    """Create the per-item, per-pull holdings-snapshot receipts staging view.
+    """Install the shipped receipts staging view over the raw receipts table.
 
-    Both holdings checks read "the newest snapshot for this item" from HERE,
-    not from the presence of holdings rows: an item whose pull returned zero
-    positions writes no holdings rows at all, so a row-derived newest snapshot
-    silently stays the last NON-EMPTY one.
+    Both holdings checks read "the newest snapshot for this item" from its
+    is_newest, not from the presence of holdings rows: an item whose pull
+    returned zero positions writes no holdings rows at all.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute(
-        "CREATE TABLE prep.stg_plaid__investment_holdings_snapshots "
-        "(source_origin VARCHAR, source_file VARCHAR, holdings_date DATE, "
-        "holdings_count INTEGER, extracted_at TIMESTAMP, "
-        "ingestion_sequence BIGINT DEFAULT nextval('raw.investment_ingestion_sequence'))"
-    )
+    install_prep_view(db, "stg_plaid__investment_holdings_snapshots")
 
 
 def _receipt(
@@ -1690,9 +1684,11 @@ def _receipt(
 ) -> None:
     """Record that ``source_origin`` reported its holdings in pull ``source_file``."""
     db.execute(
-        "INSERT INTO prep.stg_plaid__investment_holdings_snapshots "
-        "(source_origin, source_file, holdings_date, holdings_count, extracted_at) "
-        "VALUES (?, ?, CAST(? AS TIMESTAMP)::DATE, ?, CAST(? AS TIMESTAMP))",
+        "INSERT INTO raw.plaid_investment_holdings_snapshots "
+        "(source_origin, source_file, holdings_date, holdings_count, "
+        "transactions_window_start, extracted_at) "
+        "VALUES (?, ?, CAST(? AS TIMESTAMP)::DATE, ?, DATE '2024-01-01', "
+        "CAST(? AS TIMESTAMP))",
         [source_origin, source_file, extracted_at, holdings_count, extracted_at],
     )
 

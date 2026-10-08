@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import SQLMESH_ROOT, Database
+from tests.moneybin.db_helpers import install_prep_view
 
 pytestmark = pytest.mark.unit
 
@@ -53,11 +54,9 @@ def _install_broker_sources(db: Database) -> None:
         "CREATE TABLE prep.stg_plaid__accounts "
         "(account_id VARCHAR, account_type VARCHAR, source_origin VARCHAR)"
     )
-    db.execute(
-        "CREATE TABLE prep.stg_plaid__investment_holdings_snapshots "
-        "(source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP, "
-        "ingestion_sequence BIGINT)"
-    )
+    # raw.plaid_investment_holdings_snapshots exists already: init_schemas
+    # creates it from the Plaid extractor schema.
+    install_prep_view(db, "stg_plaid__investment_holdings_snapshots")
     db.execute(
         "CREATE TABLE prep.stg_plaid__investment_holdings "
         "(account_id VARCHAR, quantity DECIMAL(28, 10), "
@@ -80,8 +79,12 @@ def _receipt(
     db: Database, origin: str, source_file: str, extracted_at: str, seq: int = 1
 ) -> None:
     db.execute(
-        "INSERT INTO prep.stg_plaid__investment_holdings_snapshots VALUES (?, ?, ?, ?)",
-        [origin, source_file, extracted_at, seq],
+        "INSERT INTO raw.plaid_investment_holdings_snapshots "
+        "(source_origin, source_file, holdings_date, holdings_count, "
+        "transactions_window_start, extracted_at, ingestion_sequence) "
+        "VALUES (?, ?, CAST(? AS TIMESTAMP)::DATE, 0, DATE '2024-01-01', "
+        "CAST(? AS TIMESTAMP), ?)",
+        [origin, source_file, extracted_at, extracted_at, seq],
     )
 
 
@@ -383,3 +386,34 @@ def test_unanchored_one_row_per_account_across_arms(guard_db: Database) -> None:
         "INSERT INTO core.fct_transactions VALUES ('multi', 1), ('multi', 2)"
     )
     assert _unanchored(guard_db) == {"multi": (True, False, True, False)}
+
+
+def test_is_newest_breaks_an_extracted_at_tie_by_ingestion_sequence(
+    guard_db: Database,
+) -> None:
+    """Two receipts at one instant: the later ingestion wins, and only one does."""
+    _install_broker_sources(guard_db)
+    _receipt(guard_db, "item_1", "sync_a", "2026-09-01 10:00:00", seq=2)
+    _receipt(guard_db, "item_1", "sync_b", "2026-09-01 10:00:00", seq=1)
+    _receipt(guard_db, "item_2", "sync_c", "2026-08-01 10:00:00", seq=3)
+    newest = guard_db.execute(
+        "SELECT source_origin, source_file "
+        "FROM prep.stg_plaid__investment_holdings_snapshots "
+        "WHERE is_newest ORDER BY source_origin"
+    ).fetchall()
+    assert newest == [("item_1", "sync_a"), ("item_2", "sync_c")]
+
+
+def test_no_model_ranks_holdings_snapshots_itself() -> None:
+    """The ranking lives on the staging view; a reader restating it would drift."""
+    from moneybin.services import doctor_service
+
+    sources = {
+        "dim_holdings.sql": (_CORE_MODELS / "dim_holdings.sql").read_text(),
+        "dim_holdings_broker_reported.sql": (
+            _CORE_MODELS / "dim_holdings_broker_reported.sql"
+        ).read_text(),
+        "doctor_service.py": Path(doctor_service.__file__).read_text(),
+    }
+    for name, text in sources.items():
+        assert "snapshot_rank" not in text, name

@@ -1,7 +1,7 @@
 # Feature: Net-Worth Guard on the Daily Balance Spine
 
 ## Status
-draft
+in-progress
 
 ## Goal
 
