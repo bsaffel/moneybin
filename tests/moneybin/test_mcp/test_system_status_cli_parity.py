@@ -26,7 +26,7 @@ async def test_cli_json_matches_mcp_overview_and_exports_sections(
         return []
 
     monkeypatch.setattr(
-        "moneybin.adapters.system_status_adapters.find_blocking_processes",
+        "moneybin.services.system_service.find_blocking_processes",
         no_blockers,
     )
 

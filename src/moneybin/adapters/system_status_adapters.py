@@ -2,19 +2,16 @@
 
 ``system_status(sections=["overview", "exports"])`` and ``moneybin system
 status --output json`` return the same payload, so the overview and exports
-sections are assembled here once. Lock handling and ``actions`` stay with the
-caller: MCP degrades under a held lock and names tools, the CLI names commands.
+sections are projected here once from ``SystemService`` reads. Lock handling
+and ``actions`` stay with the caller: MCP degrades under a held lock and names
+tools; the CLI reports the lock as an error and emits no actions.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import duckdb
-
 from moneybin.build_info import get_build_info
-from moneybin.db_lock import live_writer
 from moneybin.privacy.payloads.system import (
     ExportsStatus,
     SchemaDriftTable,
@@ -36,8 +33,6 @@ from moneybin.privacy.payloads.system import (
     SystemStatusTransformsInfo,
     SystemStatusWriter,
 )
-from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
-from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 if TYPE_CHECKING:
     from moneybin.exports.service import ExportReadinessStatus
@@ -47,23 +42,11 @@ _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
 
 
-def gsheet_info(db: Any) -> SystemStatusGsheetInfo:
-    """Build the gsheet block: counts by status + per-attention rows.
+def gsheet_info(connections: list[dict[str, Any]]) -> SystemStatusGsheetInfo:
+    """Project connection rows into counts by status + per-attention rows.
 
-    Returns the zero-connections shape when the table is empty or absent;
-    healthy and disconnected connections are excluded from ``needs_attention``.
+    Healthy and disconnected connections are excluded from ``needs_attention``.
     """
-    try:
-        connections = GSheetConnectionsRepo(db).list_all()
-    except duckdb.CatalogException:
-        # Table absent on bare DBs before init_schemas — report empty rather
-        # than error. Narrowed from a blanket except so real DB/query problems
-        # (corruption, permission, a broken schema) surface instead of being
-        # masked as total_connections=0 and suppressing recovery hints.
-        return SystemStatusGsheetInfo(
-            total_connections=0, by_status={}, needs_attention=[]
-        )
-
     by_status: dict[str, int] = {}
     needs_attention: list[SystemStatusGsheetRow] = []
     for connection in connections:
@@ -88,52 +71,14 @@ def gsheet_info(db: Any) -> SystemStatusGsheetInfo:
     )
 
 
-def database_connections_info(db_path: Path) -> SystemStatusDatabaseConnectionsInfo:
-    """Build the typed database_connections payload from the lock + lsof view."""
-    block = _database_connections_block(db_path)
+def database_connections_info(
+    block: dict[str, list[dict[str, Any]]],
+) -> SystemStatusDatabaseConnectionsInfo:
+    """Project ``system_service.database_connections`` into its typed payload."""
     return SystemStatusDatabaseConnectionsInfo(
         writers=[SystemStatusWriter(**w) for w in block["writers"]],
         readers=[SystemStatusReader(**r) for r in block["readers"]],
     )
-
-
-def _database_connections_block(db_path: Path) -> dict[str, Any]:
-    """Merge file-lock writer metadata with lsof-derived reader enumeration.
-
-    Returns the empty-shape ``{"writers": [], "readers": []}`` when neither
-    source reports anything. A writer is reported only when a process actually
-    holds the file lock (``live_writer``) — the persisted metadata file
-    alone is not enough, since it outlives the holder. Tolerates a corrupted
-    lock file by treating it as no-writer-info — the lock-file payload is
-    best-effort observability, not a correctness contract. The writer's pid is
-    filtered out of the reader list to avoid double-listing the writer process.
-    """
-    writers: list[dict[str, Any]] = []
-    writer_pid: int | None = None
-    # live_writer resolves db_path itself for the lock file; resolving here
-    # too keeps the lsof reader scan on the same inode for a symlinked path.
-    resolved = db_path.resolve()
-    metadata = live_writer(db_path)
-    if metadata is not None:
-        writer_pid = metadata["pid"]
-        writers.append(metadata)
-
-    # A writer can time out and release the advisory lock while a DuckDB reader
-    # still blocks the next write, so recovery diagnostics must enumerate
-    # readers independently of the current writer-lock state.
-    readers: list[dict[str, Any]] = []
-    processes = find_blocking_processes(resolved)
-    for proc in processes:
-        if writer_pid is not None and proc["pid"] == writer_pid:
-            continue  # Avoid double-listing the writer as a reader
-        readers.append({
-            "pid": int(proc["pid"]),
-            "command": describe_process(
-                str(proc.get("cmdline") or proc.get("command", ""))
-            ),
-        })
-
-    return {"writers": writers, "readers": readers}
 
 
 def build_info() -> SystemStatusBuildInfo:

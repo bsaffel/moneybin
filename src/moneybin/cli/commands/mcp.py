@@ -343,16 +343,17 @@ def mcp_install(
         #
         # Accepted pre-launch gap: until the first tag publishes moneybin to
         # PyPI, this pinned `--from moneybin==X.Y.Z` config is unresolvable, so a
-        # user who runs `mcp install` from outside the repo checkout during the
-        # pre-launch window gets a config `uv tool run` can't satisfy. Narrow and
-        # self-resolving — the documented pre-launch install is the git-clone dev
-        # path (which takes the repo_root branch above), and README/
-        # ai-client-compatibility.md present the published path as arriving with
-        # the first release. No fallback is added: once published the pin is
-        # correct, and a permanent warning would be post-launch noise.
+        # user running a non-checkout install during the pre-launch window gets
+        # a config `uv tool run` can't satisfy. Narrow and self-resolving — the
+        # documented pre-launch install is the git-clone dev path (which takes
+        # the checkout branch above), and README/ai-client-compatibility.md
+        # present the published path as arriving with the first release. No
+        # fallback is added: once published the pin is correct, and a permanent
+        # warning would be post-launch noise.
         args = ["tool", "run", "--from", f"moneybin=={get_version()}"]
-        # A client launches the published tool outside any checkout, which
-        # resolves the default home.
+        # Assumes the client starts the tool outside any checkout, where the
+        # default home resolves. A client that starts it inside a checkout
+        # opens that checkout's home instead; the guide states the assumption.
         launch_home = Path.home() / ".moneybin"
 
     # Pin the home whenever the server would not land on the one this install

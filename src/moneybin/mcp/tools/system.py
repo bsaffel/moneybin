@@ -105,7 +105,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """
     from moneybin.config import get_settings
     from moneybin.database import DatabaseLockError, get_database
-    from moneybin.services.system_service import SystemService
+    from moneybin.services.system_service import SystemService, database_connections
 
     # Collect the file-lock / lsof connection view BEFORE opening the DB: it
     # reads the lock file and lsof (no DB connection needed) and must stay
@@ -114,7 +114,9 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     # first would let a read-only open retry-then-fail under contention, so the
     # diagnostic would time out exactly when it is needed.
     db_path = get_settings().database.path
-    db_connections = status_adapters.database_connections_info(db_path)
+    db_connections = status_adapters.database_connections_info(
+        database_connections(db_path)
+    )
 
     try:
         # Short max_wait: this is the DatabaseLockError recovery tool, so under
@@ -123,8 +125,9 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
         # read to succeed — db_connections is captured before the open and
         # recomputed in the except branch below.
         with get_database(read_only=True, max_wait=2.0) as db:
-            status = SystemService(db).status()
-            gsheet = status_adapters.gsheet_info(db)
+            service = SystemService(db)
+            status = service.status()
+            gsheet = status_adapters.gsheet_info(service.gsheet_connections())
     except DatabaseLockError:
         # Re-snapshot before degrading: a writer can acquire the lock between the
         # preflight snapshot above and this read failing, so the preflight view
@@ -135,7 +138,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
         # zero-filled and flagged degraded so the agent trusts nothing else.
         return build_envelope(
             data=status_adapters.locked_overview_payload(
-                status_adapters.database_connections_info(db_path)
+                status_adapters.database_connections_info(database_connections(db_path))
             ),
             degraded=True,
             degraded_reason=(

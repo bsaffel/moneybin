@@ -60,30 +60,20 @@ def _fixed_status() -> SystemStatus:
 @pytest.fixture
 def _status_reads(monkeypatch: pytest.MonkeyPatch) -> MagicMock:  # pyright: ignore[reportUnusedFunction]  # fixture used by name
     """Stub the reads behind `system status --output json` with fixed values."""
-    from moneybin.adapters import system_status_adapters
-    from moneybin.privacy.payloads.system import (
-        SystemStatusDatabaseConnectionsInfo,
-        SystemStatusGsheetInfo,
-    )
 
     def fixed_status(_self: object) -> SystemStatus:
         return _fixed_status()
 
-    def no_gsheets(_db: object) -> SystemStatusGsheetInfo:
-        return SystemStatusGsheetInfo(
-            total_connections=0, by_status={}, needs_attention=[]
-        )
+    def no_gsheets(_self: object) -> list[dict[str, object]]:
+        return []
 
-    def no_connections(_path: object) -> SystemStatusDatabaseConnectionsInfo:
-        return SystemStatusDatabaseConnectionsInfo(writers=[], readers=[])
+    def no_connections(_path: object) -> dict[str, list[dict[str, object]]]:
+        return {"writers": [], "readers": []}
 
-    monkeypatch.setattr(
-        "moneybin.services.system_service.SystemService.status", fixed_status
-    )
-    monkeypatch.setattr(system_status_adapters, "gsheet_info", no_gsheets)
-    monkeypatch.setattr(
-        system_status_adapters, "database_connections_info", no_connections
-    )
+    service = "moneybin.services.system_service"
+    monkeypatch.setattr(f"{service}.SystemService.status", fixed_status)
+    monkeypatch.setattr(f"{service}.SystemService.gsheet_connections", no_gsheets)
+    monkeypatch.setattr(f"{service}.database_connections", no_connections)
     get_db = MagicMock()
     monkeypatch.setattr("moneybin.cli.commands.system.get_database", get_db)
     return get_db
@@ -120,6 +110,22 @@ def test_system_status_json_output_is_the_mcp_sectioned_shape() -> None:
             }
         ],
     }
+
+
+def test_system_status_json_reports_a_held_lock_as_an_error_envelope(
+    _status_reads: MagicMock,
+) -> None:
+    """Unlike MCP's degraded overview, the CLI surfaces the lock and exits 1."""
+    from moneybin.database import DatabaseLockError
+
+    _status_reads.side_effect = DatabaseLockError("held by another process")
+
+    result = runner.invoke(app, ["system", "status", "--output", "json"])
+
+    assert result.exit_code == 1
+    envelope = json.loads(result.stdout)
+    assert envelope["status"] == "error"
+    assert envelope["data"] == []
 
 
 @pytest.mark.usefixtures("_status_reads")

@@ -89,17 +89,20 @@ def _emit_status_json(output: OutputFormat) -> None:
         SystemStatusCoarsePayload,
         SystemStatusSection,
     )
-    from moneybin.services.system_service import SystemService
+    from moneybin.services.system_service import SystemService, database_connections
 
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="system_status", payload_type=SystemStatusCoarsePayload
+    ):
         # Snapshot connections before opening, as the MCP tool does, so this
         # command's own read never appears in the list.
         db_connections = status_adapters.database_connections_info(
-            get_settings().database.path
+            database_connections(get_settings().database.path)
         )
         with get_database(read_only=True) as db:
-            status = SystemService(db).status()
-            gsheet = status_adapters.gsheet_info(db)
+            service = SystemService(db)
+            status = service.status()
+            gsheet = status_adapters.gsheet_info(service.gsheet_connections())
             readiness = ExportService(db).status()
 
     sections: list[SystemStatusSection] = [

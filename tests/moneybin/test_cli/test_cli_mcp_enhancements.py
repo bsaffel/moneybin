@@ -775,6 +775,76 @@ class TestMCPInstall:
         assert result.exit_code == 0, result.output
         assert "env" not in json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
 
+    def test_installed_package_pins_a_home_other_than_the_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A published-tool server opens ~/.moneybin; any other home is pinned."""
+        home = tmp_path / "checkout" / ".moneybin"
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
+        )
+        monkeypatch.setattr("moneybin.cli.commands.mcp.get_base_dir", lambda: home)
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        entry = json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+        assert entry["args"][:2] == ["tool", "run"]
+        assert entry["env"] == {"MONEYBIN_HOME": str(home)}
+
+    def test_installed_package_at_the_default_home_pins_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default home is what the launched server opens on its own."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_base_dir",
+            lambda: (tmp_path / ".moneybin").resolve(),
+        )
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "env" not in json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+
+    def test_worktree_install_pins_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A worktree resolves to the main checkout's home, as the server does."""
+        main = tmp_path / "main"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        (main / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / ".git").write_text(
+            f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n"
+        )
+        (worktree / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.running_checkout_root", lambda: worktree
+        )
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+        monkeypatch.delenv("MONEYBIN_ENVIRONMENT", raising=False)
+        monkeypatch.chdir(worktree)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        entry = json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+        assert entry["args"][:3] == ["run", "--directory", str(main)]
+        assert "env" not in entry
+
     def test_install_pins_moneybin_home_in_the_published_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
