@@ -91,10 +91,11 @@ Every scenario MUST be evaluated against the following tiers. The scenario YAML 
 
 | Check | Primitive |
 |---|---|
-| Amount distribution bounds (min/max/mean within plausible range) | `assert_amount_distribution` |
+| Amount distribution bounds (min/max/mean within author-specified bounds) | `assert_distribution_within_bounds` (the Tier 2 primitive, pointed at an amount column) |
 | Date continuity: no month-long gaps per account in multi-year scenarios | `assert_date_continuity` |
 | Ground-truth coverage: ≥90% of `fct_transactions` labeled in `synthetic.ground_truth` | `assert_ground_truth_coverage` |
-| Category distribution sanity (no single category swallows >X% of rows) | `assert_category_distribution` |
+
+A category-distribution check (no single category swallows more than X% of rows) is not part of this taxonomy: no scenario in R2 requires one, and it would first need a defined denominator (all rows, or categorized rows only) and a threshold.
 
 #### Tier 5 — Operational
 

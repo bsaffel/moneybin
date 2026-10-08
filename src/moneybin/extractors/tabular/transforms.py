@@ -548,7 +548,7 @@ def _validate_running_balance(
     the corresponding transaction amounts within a ±0.01 tolerance.
 
     If the forward pass fails but the inverted-sign pass succeeds, sets
-    ``sign_correction_suggested=True`` on the result and emits a warning.
+    ``sign_correction_suggested=True`` on the result for the caller to present.
     Amounts are NOT mutated — the caller decides what to do.
 
     Args:
@@ -622,10 +622,12 @@ def _validate_running_balance(
     inverted_rate = _pass_rate(inverted)
 
     if inverted_rate >= _pass_threshold:
-        logger.warning(
+        # Presentation lives on the result: the CLI and MCP each render
+        # `sign_correction_suggested` in their own words, so this stays a
+        # file-log record rather than a duplicate console warning.
+        logger.info(
             f"Running balance suggests inverted signs: forward {forward_rate:.0%}, "
-            f"inverted {inverted_rate:.0%}. Amounts not auto-corrected — re-import "
-            f"with --sign if appropriate."
+            f"inverted {inverted_rate:.0%}; amounts not auto-corrected"
         )
         result.sign_correction_suggested = True
         result.balance_validated = False  # we did NOT validate; we suggested

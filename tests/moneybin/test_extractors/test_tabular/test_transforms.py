@@ -1,9 +1,11 @@
 """Tests for Stage 4 transform and validation."""
 
+import logging
 from decimal import Decimal
 from typing import TypedDict
 
 import polars as pl
+import pytest
 
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
@@ -452,6 +454,23 @@ class TestRunningBalanceValidation:
         )
         assert result.sign_correction_suggested is True
         assert result.transactions["amount"].to_list() == original_amounts
+
+    def test_balance_inversion_is_not_a_console_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The flag is the presentation; a WARNING would print it twice (rule 33)."""
+        df = _make_df(
+            Date=["01/15/2026", "01/16/2026"],
+            Amount=["42.50", "-100.00"],
+            Description=["A", "B"],
+            Balance=["957.50", "1057.50"],
+        )
+        kwargs = _base_kwargs()
+        kwargs["field_mapping"] = {**kwargs["field_mapping"], "balance": "Balance"}
+        with caplog.at_level(logging.INFO, logger="moneybin.extractors.tabular"):
+            result = transform_dataframe(df=df, **kwargs)
+        assert result.sign_correction_suggested is True
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_balance_inconsistent_warns(self) -> None:
         """Balance doesn't match in either direction → balance_validated=False."""

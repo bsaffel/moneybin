@@ -171,6 +171,45 @@ def test_auto_accept_skips_are_partial_failures_in_text_and_json(
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
 @patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_accept_names_each_guard_refusal_and_its_override(
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """A guard refusal names the proposal, the reason, and the flag that overrides it.
+
+    The reason used to reach the terminal only as a service WARNING log line
+    that named the MCP parameter (`allow_broad`), not the CLI flag. The flag
+    is named, never offered as a runnable command (categorization guide: taking
+    the risk is a decision, not a rerun); the `›` line is the review.
+    """
+    mock_db_ctx.return_value.__enter__.return_value = MagicMock()
+    mock_svc_cls.return_value.accept.return_value = AutoConfirmResult(
+        skipped=2, refused_broad=["b1"], refused_unselective=["s1"]
+    )
+
+    text_result = runner.invoke(app, ["auto", "accept", "--accept-all"])
+    json_result = runner.invoke(
+        app, ["auto", "accept", "--accept-all", "--output", "json"]
+    )
+
+    assert text_result.exit_code == 1, text_result.output
+    err = text_result.stderr
+    assert "b1: matches far more transactions" in err
+    assert "s1: its 'contains' pattern is too short" in err
+    assert err.count("accepting it takes --allow-broad") == 2
+    assert err.count("› Review the estimated match counts:") == 1
+    assert "moneybin transactions categorize auto review" in err
+    assert "auto accept --accept" not in err
+    assert "b1" not in text_result.stdout
+    body = json.loads(json_result.stdout)
+    assert body["error"]["details"] == {
+        "refused_broad": ["b1"],
+        "refused_unselective": ["s1"],
+    }
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_accept_explicit_accept(
     mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
