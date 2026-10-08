@@ -84,6 +84,8 @@ def _set_account_default_method(db: Database, method: str) -> None:
         archived_at=None,
         include_in_net_worth=True,
         default_cost_basis_method=method,
+        investment_source_type=None,
+        investment_source_type_changed_at=None,
         actor="cli",
     )
 
@@ -899,6 +901,90 @@ class TestManualInvestmentImportFinalization:
         assert rows_total == 2
         assert rows_imported == 2
         assert completed_at is not None
+
+
+class TestRecordRefusesAnExcludedSource:
+    """A recorded trade never reaches an account whose ledger comes from Plaid."""
+
+    _OTHER = "acct_other"
+
+    def _svc(self, db: Database, choice: str | None = "plaid") -> InvestmentService:
+        _add_account(db)
+        _add_account(db, self._OTHER)
+        db.execute(
+            "UPDATE core.dim_accounts SET display_name = 'Quiet Brokerage' "
+            "WHERE account_id = 'acct_brokerage'"
+        )
+        _add_security(db, security_id="sec_1", name="Apple Inc.", ticker="AAPL")
+        if choice is not None:
+            db.execute(
+                "INSERT INTO app.account_settings "
+                "(account_id, investment_source_type) VALUES ('acct_brokerage', ?)",
+                [choice],
+            )
+        return db_service(db)
+
+    def _buy(self, account_ref: str = "acct_brokerage") -> dict[str, Any]:
+        return {
+            "account_ref": account_ref,
+            "security_ref": "AAPL",
+            "type_": "buy",
+            "subtype": None,
+            "trade_date": date(2024, 1, 15),
+            "quantity": Decimal("10"),
+            "price": Decimal("150.00"),
+            "amount": Decimal("-1500.00"),
+            "fees": None,
+            "acquired": None,
+            "basis": None,
+            "currency_code": "USD",
+            "description": "buy aapl",
+        }
+
+    def _row_count(self, db: Database) -> int:
+        row = db.execute(
+            "SELECT COUNT(*) FROM raw.manual_investment_transactions"
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def test_record_event_refuses_a_plaid_account(self, db: Database) -> None:
+        svc = self._svc(db)
+        with pytest.raises(UserError) as excinfo:
+            svc.record_event(**self._buy(), actor="cli", created_by="cli")
+        err = excinfo.value
+        assert err.code == "investment_source_excluded"
+        assert "investment_source_type" in err.message
+        assert "plaid" in err.message
+        assert "--investment-source-type manual" in (err.hint or "")
+        assert "Quiet Brokerage" not in err.message
+        assert "Quiet Brokerage" not in (err.hint or "")
+        assert self._row_count(db) == 0
+
+    def test_record_events_refusal_aborts_the_batch(self, db: Database) -> None:
+        svc = self._svc(db)
+        with pytest.raises(UserError) as excinfo:
+            svc.record_events(
+                [self._buy(self._OTHER), self._buy()], actor="cli", created_by="cli"
+            )
+        assert excinfo.value.code == "investment_source_excluded"
+        assert self._row_count(db) == 0
+
+    def test_record_event_allowed_on_a_manual_account(self, db: Database) -> None:
+        svc = self._svc(db, "manual")
+        assert svc.record_event(**self._buy(), actor="cli", created_by="cli")
+
+    def test_record_event_allowed_without_a_choice(self, db: Database) -> None:
+        svc = self._svc(db, None)
+        assert svc.record_event(**self._buy(), actor="cli", created_by="cli")
+
+    def test_source_overlap_reason_names_the_setting(self, db: Database) -> None:
+        reason = self._svc(db, None)._source_overlap_reason(  # pyright: ignore[reportPrivateUsage]  # pins the user-facing text
+            2, "positions"
+        )
+        assert "accounts set" in reason
+        assert "--investment-source-type manual|plaid" in reason
+        assert "Revert" not in reason
 
 
 # ---------------------------------------------------------------------------

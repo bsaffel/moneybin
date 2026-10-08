@@ -14,6 +14,7 @@ from moneybin.services.fx_accounting_refresh import (
     CommittedChange,
     restate_fx_accounting,
     restate_fx_accounting_after_match_run,
+    restate_investment_ledger,
 )
 from moneybin.services.transform_service import ApplyResult, TransformService
 from moneybin.sqlmesh_registry import ModelPresence
@@ -262,3 +263,66 @@ def test_catalog_failure_preserves_the_committed_change_context(
 
     assert caught.value.code == error_codes.REFRESH_MODEL_FAILED
     assert wording in str(caught.value).lower()
+
+
+def _built_presence(_db: Database) -> ModelPresence:
+    return _model_presence()
+
+
+def _never_built_presence(_db: Database) -> ModelPresence:
+    return _model_presence(never_built=True)
+
+
+def test_restate_investment_ledger_restates_from_the_account_dimension(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
+        _built_presence,
+    )
+    restate = MagicMock(return_value=ApplyResult(applied=True, duration_seconds=0.1))
+    monkeypatch.setattr(TransformService, "restate_models", restate)
+
+    restate_investment_ledger(db)
+
+    restate.assert_called_once_with(["core.dim_accounts"])
+
+
+def test_restate_investment_ledger_is_a_noop_before_the_warehouse_is_built(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
+        _never_built_presence,
+    )
+    restate = MagicMock()
+    monkeypatch.setattr(TransformService, "restate_models", restate)
+
+    restate_investment_ledger(db)
+
+    restate.assert_not_called()
+
+
+def test_restate_investment_ledger_failure_names_the_ledger_and_refresh(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
+        _built_presence,
+    )
+    monkeypatch.setattr(
+        TransformService,
+        "restate_models",
+        MagicMock(return_value=ApplyResult(applied=False, duration_seconds=0.1)),
+    )
+
+    with pytest.raises(UserError) as caught:
+        restate_investment_ledger(db, committed_change="undo")
+
+    assert caught.value.code == error_codes.REFRESH_MODEL_FAILED
+    message = str(caught.value)
+    assert "undo was committed" in message
+    assert "the investment ledger could not be rebuilt" in message
+    assert caught.value.hint is not None
+    assert "moneybin refresh" in caught.value.hint
+    assert "holdings, lots or gains" in caught.value.hint

@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Any
 
 from moneybin import error_codes
-from moneybin.database import Database
+from moneybin.database import Database, has_column
 from moneybin.errors import UserError
 from moneybin.investments.event_planning import evaluate_plan
 from moneybin.metrics.registry import (
@@ -18,6 +18,7 @@ from moneybin.repositories.investment_match_decisions_repo import (
     InvestmentMatchDecisionsRepo,
 )
 from moneybin.tables import (
+    ACCOUNT_SETTINGS,
     INVESTMENT_EVENT_EVIDENCE,
     INVESTMENT_EVENT_HEADERS,
     INVESTMENT_EVENT_LEGS,
@@ -50,6 +51,14 @@ class InvestmentMatchingService:
     def _facts(
         self, table: TableRef, locked_components: Sequence[Mapping[str, Any]] = ()
     ) -> list[dict[str, Any]]:
+        """Candidate-scoped planner facts, minus accounts with a source chosen.
+
+        A chosen account's ledger has one source, so a proposal there is noise;
+        existing pending proposals go stale under the existing rules. Reserved
+        rows of accepted decisions are kept so locked components stay whole.
+        The saved setting is read, not the built dim, because matching runs
+        before the transform.
+        """
         evidence = INVESTMENT_EVENT_EVIDENCE.full_name
         legs = INVESTMENT_EVENT_LEGS.full_name
         parameters: list[Any] = []
@@ -58,13 +67,26 @@ class InvestmentMatchingService:
             for row in component["reserved_rows"]:
                 reserved += " OR (source_type = ? AND source_origin = ? AND native_reference = ?)"
                 parameters.extend(row)
+        candidate = "is_candidate"
+        if has_column(self._db, ACCOUNT_SETTINGS, "investment_source_type"):
+            chosen = f"""
+                SELECT source_event_key FROM {legs}
+                WHERE account_id IN (
+                    SELECT account_id FROM {ACCOUNT_SETTINGS.full_name}
+                    WHERE investment_source_type IS NOT NULL
+                )
+            """  # fixed TableRefs
+            candidate += (
+                f" AND left_source_event_key NOT IN ({chosen})"
+                f" AND right_source_event_key NOT IN ({chosen})"
+            )
         candidate_events = f"""
-            SELECT left_source_event_key AS source_event_key FROM {evidence} WHERE is_candidate
-            UNION SELECT right_source_event_key FROM {evidence} WHERE is_candidate
+            SELECT left_source_event_key AS source_event_key FROM {evidence} WHERE {candidate}
+            UNION SELECT right_source_event_key FROM {evidence} WHERE {candidate}
             UNION SELECT source_event_key FROM {legs} WHERE FALSE {reserved}
         """  # fixed TableRefs and parameterized reserved-row identities
         predicate = (
-            "is_candidate"
+            candidate
             if table == INVESTMENT_EVENT_EVIDENCE
             else f"source_event_key IN ({candidate_events})"
         )
