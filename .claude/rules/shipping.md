@@ -37,7 +37,9 @@ Cite PR numbers when known. Keep entries to one or two sentences each.
 
 When in doubt: if a user reading the changelog would benefit from knowing about
 it, add a fragment. For internal-only work, explain the exemption in the PR
-description and apply `skip-changelog` for review.
+description and apply `skip-changelog` for review. The one exemption that needs
+no per-PR reason is the standing one for Dependabot's GitHub Actions bumps,
+recorded in `changelog.d/README.md`.
 
 ### 2. docs/roadmap.md (milestone status)
 
