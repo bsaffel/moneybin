@@ -164,7 +164,7 @@ File-import related settings (inbox layout + confirmation gate).
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `MONEYBIN_IMPORT___PDF_PREVIEW_SIZE_LIMIT_MB` | int (≥ 1) | `100` | Maximum PDF size in MB that import_preview may materialize and persist as an immutable confirmation snapshot. Override with MONEYBIN_IMPORT___PDF_PREVIEW_SIZE_LIMIT_MB. |
-| `MONEYBIN_IMPORT___INBOX_ROOT` | Path | `~/Documents/MoneyBin` | Parent directory for the user-facing import workspace. Per-profile subdirs (\<inbox_root>/\<profile>/{inbox,processed,failed}/) are created on first use. Defaults to ~/Documents/MoneyBin. |
+| `MONEYBIN_IMPORT___INBOX_ROOT` | Path | `~/Documents/MoneyBin` | Parent directory for the user-facing import workspace. Per-profile subdirs (\<inbox_root>/\<profile>/{inbox,processed,failed,pending}/) are created on first use. Defaults to ~/Documents/MoneyBin. |
 | `MONEYBIN_IMPORT___CONFIDENCE__T_HIGH` | float (≥ 0.0, ≤ 1.0) | `0.9` | Score at or above which a detection is banded high. |
 | `MONEYBIN_IMPORT___CONFIDENCE__T_MED` | float (≥ 0.0, ≤ 1.0) | `0.7` | Score at or above which a detection is banded medium; below it, low. |
 | `MONEYBIN_IMPORT___SELF_ACCEPT_HIGH` | bool | `false` | When True, MCP-driven imports auto-accept a `high`-tier first encounter. Gated off until the calibration corpus proves the `high` band clears the precision bar (smart-import-confirmation.md Req 12). The CLI human path always prompts regardless. |

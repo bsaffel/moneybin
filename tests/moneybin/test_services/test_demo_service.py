@@ -218,6 +218,48 @@ def test_run_populates_fresh_demo_profile(
     from moneybin.utils.user_config import get_default_profile
 
     assert get_default_profile() == DEMO_PROFILE
+    # The receipt names where the inbox was written, which is outside the home.
+    assert result.inbox_dir is not None
+    assert (result.inbox_dir / "inbox").is_dir()
+
+
+def test_denied_inbox_fails_before_the_fresh_database_is_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    """A TCC-style denial on the inbox root fails first, leaving no profile."""
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    denied = PermissionError(1, "Operation not permitted", "/denied/MoneyBin/demo")
+    mocker.patch.object(ProfileService, "ensure_inbox", side_effect=denied)
+    init_db = mocker.patch("moneybin.database.init_db")
+
+    with pytest.raises(PermissionError) as raised:
+        DemoService().run(persona="basic", seed=42)
+
+    assert raised.value.filename == "/denied/MoneyBin/demo"
+    init_db.assert_not_called()
+    assert not (tmp_path / "profiles" / DEMO_PROFILE).exists()
+
+
+@pytest.mark.integration
+def test_denied_inbox_fails_before_an_existing_database_is_rebuilt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    """On a rerun, the guard reads first, then the inbox, then the rebuild."""
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=True)
+    denied = PermissionError(1, "Operation not permitted", "/denied/MoneyBin/demo")
+    mocker.patch.object(ProfileService, "ensure_inbox", side_effect=denied)
+    rebuild = mocker.patch("moneybin.services.demo_service._rebuild_database")
+
+    with pytest.raises(PermissionError):
+        DemoService().run(persona="basic", seed=42, reset_confirmed=True)
+
+    rebuild.assert_not_called()
+    assert DemoService().profile_has_data()
 
 
 @pytest.mark.integration

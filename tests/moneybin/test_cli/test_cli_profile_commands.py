@@ -168,6 +168,96 @@ class TestProfileCreate:
         assert result.exit_code == 0
         assert "preserved" in result.stdout
 
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_activates_the_new_profile(self, mock_cls: MagicMock) -> None:
+        """The next command runs against the profile just created, not the old one."""
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.list.return_value = []
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+
+        result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 0
+        mock_svc.switch.assert_called_once_with("alice")
+        assert "alice (active)" in result.stdout
+        assert "Switch back" not in result.stdout
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_names_the_way_back_to_the_displaced_profile(
+        self, mock_cls: MagicMock
+    ) -> None:
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.list.return_value = [{"name": "demo", "active": True, "path": "/f"}]
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+
+        result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 0
+        assert "> Switch back to demo: moneybin profile switch demo" in result.stdout
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_failed_activation_reports_the_created_profile_and_the_fix(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A read-only user config must not read as a failed create."""
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.list.return_value = [{"name": "demo", "active": True, "path": "/f"}]
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+        mock_svc.switch.side_effect = PermissionError(13, "Permission denied")
+
+        with caplog.at_level(logging.ERROR):
+            result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 1
+        assert "Profile created" in result.stdout
+        assert "(active)" not in result.stdout
+        assert "Switch back" not in result.stdout
+        assert "was created but could not be made active" in caplog.text
+        assert "active profile is still demo" in caplog.text
+        assert "moneybin profile switch alice" in result.stderr
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_failed_create_does_not_activate(self, mock_cls: MagicMock) -> None:
+        from moneybin.services.profile_service import ProfileExistsError
+
+        mock_svc = mock_cls.return_value
+        mock_svc.create.side_effect = ProfileExistsError("exists")
+
+        result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 1
+        mock_svc.switch.assert_not_called()
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_inbox_receipt_names_the_root_it_used_and_every_folder(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Not a hardcoded ~/Documents path: MONEYBIN_IMPORT___INBOX_ROOT moves it."""
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.list.return_value = []
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+        mock_svc.inbox_root.return_value = Path("/custom/inbox-root/alice")
+
+        result = runner.invoke(app, ["create", "alice", "--init-inbox"])
+
+        assert result.exit_code == 0
+        assert "/custom/inbox-root/alice" in result.stdout
+        assert "Documents" not in result.stdout
+        assert "inbox/, processed/, failed/, pending/" in result.stdout
+
+    def test_init_inbox_help_lists_every_layout_directory(self) -> None:
+        from moneybin.services.inbox_service import INBOX_LAYOUT
+
+        result = runner.invoke(app, ["create", "--help"], env={"COLUMNS": "200"})
+
+        assert result.exit_code == 0
+        listed = " ".join(result.stdout.split())
+        assert "{" + ",".join(INBOX_LAYOUT) + "}" in listed
+
 
 class TestProfileList:
     """Tests for 'profile list' command."""

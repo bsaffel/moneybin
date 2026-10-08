@@ -556,7 +556,8 @@ class ImportSettings(BaseModel):
         default_factory=lambda: Path.home() / "Documents" / "MoneyBin",
         description=(
             "Parent directory for the user-facing import workspace. "
-            "Per-profile subdirs (<inbox_root>/<profile>/{inbox,processed,failed}/) "
+            "Per-profile subdirs "
+            "(<inbox_root>/<profile>/{inbox,processed,failed,pending}/) "
             "are created on first use. Defaults to ~/Documents/MoneyBin."
         ),
     )

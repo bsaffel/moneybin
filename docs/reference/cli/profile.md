@@ -11,7 +11,7 @@ Usage: `moneybin profile [OPTIONS] COMMAND [ARGS]...`
 
 | Command | Purpose |
 |---|---|
-| [`moneybin profile create`](#moneybin-profile-create) | Create a profile, or finish setting up a half-made one. |
+| [`moneybin profile create`](#moneybin-profile-create) | Create a profile, or finish setting up a half-made one, and make it active. |
 | [`moneybin profile list`](#moneybin-profile-list) | List all profiles, marking the active one. |
 | [`moneybin profile switch`](#moneybin-profile-switch) | Set a different profile as the active default. |
 | [`moneybin profile delete`](#moneybin-profile-delete) | Delete a profile and all its data (database, logs, config). |
@@ -20,12 +20,15 @@ Usage: `moneybin profile [OPTIONS] COMMAND [ARGS]...`
 
 ## moneybin profile create
 
-Create a profile, or finish setting up a half-made one.
+Create a profile, or finish setting up a half-made one, and make it active.
 
 Creates the directory structure, config, and encrypted database. A directory
 left unregistered by a bare `db init`, a hand `mkdir`, or an interrupted delete
 is completed in place rather than refused — an existing database is preserved
 untouched. Refuses only when a fully registered profile already exists.
+
+The profile becomes the active default, so the next command runs against it.
+When another profile was active, the receipt names it and how to switch back.
 
 Usage: `moneybin profile create [OPTIONS] {name}`
 
@@ -39,7 +42,7 @@ Usage: `moneybin profile create [OPTIONS] {name}`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--init-inbox / --no-init-inbox` | flag |  | Create the import-inbox layout (~/Documents/MoneyBin/\<profile>/{inbox,processed,failed}/). If unset, prompts when interactive and skips when not. |
+| `--init-inbox / --no-init-inbox` | flag |  | Create the import-inbox layout (\<inbox_root>/\<profile>/{inbox,processed,failed,pending}/; inbox_root defaults to ~/Documents/MoneyBin). If unset, prompts when interactive and skips when not. |
 
 ## moneybin profile list
 

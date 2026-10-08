@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Synthetic Data
 
 MoneyBin ships a synthetic-data generator that builds a multi-year transaction history from a declared persona. It reads no real statement: every input is a persona YAML file shipped in the repo. This guide covers what the generator produces, how to drive it from the CLI, and how it stays isolated from any real data on the same machine.
@@ -60,17 +60,23 @@ If you want to reseed the *same* profile with a different seed or year count wit
 ## Quick start
 
 Create the target profile first. `synthetic generate` does not create it: against a
-missing profile the command exits 1 without writing anything (see Limitations).
+missing profile the command exits 1 without writing anything and names the command
+that would:
 
 ```console
+$ moneybin synthetic generate --persona family --seed 42
+× Profile 'bob' does not exist.
+› Create it first: moneybin profile create bob
 $ moneybin profile create bob --no-init-inbox
 Profile created
-Profile:  bob
+Profile:  bob (active)
 ```
 
-Three lines are trimmed above the closing fence: the `Location:` label and the two
+Four lines are trimmed above the closing fence: the `Location:` label and the three
 lines its absolute path wrapped onto. Two SQLMesh `Target data object ... dropping
-it` lines above `Profile created` are trimmed as well.
+it` lines above `Profile created` are trimmed as well. `profile create` makes `bob`
+the active profile; `synthetic generate` writes into the profile its persona names
+(or `--profile`), not the active one, and leaves the active profile as it found it.
 
 Then generate. The command writes raw rows, then runs SQLMesh to build core and reports.
 
@@ -252,7 +258,7 @@ moneybin synthetic generate --persona <name> [--profile <name>] [--years <N>] [-
 
 Every flag, its type, and its bounds: [`moneybin synthetic generate`](../reference/cli/synthetic.md#moneybin-synthetic-generate), generated from the command tree. Behaviour `--help` does not carry:
 
-- **The target profile must already exist.** `generate` does not create it. Run `moneybin profile create <name>` first; against a missing profile the command exits 1 and reports a missing encryption key rather than a missing profile.
+- **The target profile must already exist.** `generate` does not create it. Run `moneybin profile create <name>` first; against a missing profile the command exits 1, says the profile does not exist, and names that command.
 - **It refuses to write into a profile that already holds imported data.** Exits 1 and points you at `synthetic reset`.
 - **Omitting `--seed` picks a value in `1..9999`.** The completion receipt shows the chosen seed; save it for reproducibility.
 
@@ -364,4 +370,4 @@ Practical implications for CI and regression tests:
 - **No inferred conversion.** Accounts carry their own `currency_code` (see the `international` persona). A same-currency transfer moves one magnitude to both sides. A cross-currency transfer must declare `received_amount` in the persona YAML; the generator writes the two declared magnitudes and looks up no rate, and a cross-currency transfer without `received_amount` is refused at persona load (`src/moneybin/synthetic/models.py`). Without a home currency set, reports sub-total per currency — see [Multi-currency](multi-currency.md).
 - **No manual entries or rule training.** The generator produces raw transactions and ground truth; it does not seed `app.*` user-state tables (manual entries, custom rules, budgets).
 - **Save the random seed for reproducibility.** If you omit `--seed`, the generator picks a value in `1..9999` and shows it in the completion receipt. Save that value or pass an explicit seed.
-- **`generate` does not create the target profile.** Run `moneybin profile create <name>` first. Against a missing profile the command exits 1 and reports a missing encryption key, which names the symptom rather than the cause.
+- **`generate` does not create the target profile.** Run `moneybin profile create <name>` first; the command refuses a missing profile and says so.

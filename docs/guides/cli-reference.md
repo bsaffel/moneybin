@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-10-07 -->
 # CLI Reference
 
 Run `moneybin` for a short menu of common commands, or `moneybin --help` for
@@ -160,6 +160,17 @@ config, and log directory. `profile set <key> <value>` writes one config value
 resolved settings, and `profile delete` removes the database, logs, and config
 together after a confirmation. Commands:
 [`reference/cli/profile.md`](../reference/cli/profile.md).
+
+`profile create` makes the new profile the active default, so the next command
+runs against it with no `profile switch` and no first-run wizard. Its receipt
+marks the profile `(active)` and, when it displaced another active profile,
+prints a `›` line with the `profile switch` command back. Activation is the
+default because every first command after a create expects the new profile;
+leaving it inactive sent that command to the previous profile, or to the wizard
+on a fresh home, which aborts without a terminal. The first-run wizard, and
+`moneybin demo` once its build passes doctor, activate the profile they build
+for the same reason.
+`synthetic generate` does not change the active profile.
 
 **Related guides:** [`profiles.md`](profiles.md).
 
@@ -641,8 +652,9 @@ by `--since <duration>` and `--metric <family>`. Commands:
 
 Generate and manage synthetic financial data for testing and demos. Each
 profile is isolated, so synthetic data never collides with real data.
-`synthetic generate` writes a persona's data into a fresh profile; `synthetic
-reset` wipes and regenerates from scratch. Commands:
+`synthetic generate` writes a persona's data into an empty profile that
+`profile create` already made, and names that command when the profile is
+missing; `synthetic reset` wipes and regenerates from scratch. Commands:
 [`reference/cli/synthetic.md`](../reference/cli/synthetic.md).
 
 Whole-pipeline scenarios live under `tests/scenarios/` and are driven via `make test-scenarios` rather than a CLI command.

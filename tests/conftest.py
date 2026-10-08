@@ -93,7 +93,7 @@ os.environ["MONEYBIN_HOME"] = str(_worker_home)
 
 # Defensive isolation for the import-inbox root. Without this, any test that
 # constructs ImportSettings() without an explicit inbox_root — or triggers
-# code that does (e.g. ProfileService._init_inbox) — falls through to
+# code that does (e.g. ProfileService.ensure_inbox) — falls through to
 # Path.home() / "Documents" / "MoneyBin", leaking test directories into the
 # user's real ~/Documents/MoneyBin/. The triple-underscore is intentional:
 # the field name is `import_` (trailing underscore) and pydantic-settings

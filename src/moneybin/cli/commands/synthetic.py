@@ -147,6 +147,23 @@ def _render_reset_interrupted(profile: str, *, terminal: TerminalPolicy) -> None
     )
 
 
+def _require_profile_database(profile: str) -> None:
+    """Refuse a target with no database before the key lookup misnames the cause."""
+    from moneybin.services.profile_service import ProfileService
+    from moneybin.utils.user_config import normalize_profile_name
+
+    profiles = ProfileService()
+    if profiles.has_database(profile):
+        return
+    name = normalize_profile_name(profile)
+    state = "has no database yet" if profiles.exists(profile) else "does not exist"
+    raise UserError(
+        f"Profile {name!r} {state}.",
+        code=error_codes.MUTATION_NOT_FOUND,
+        hint=f"💡 Create it first: moneybin profile create {name}",
+    )
+
+
 def _reset_safety_check(db: Database, profile: str) -> None:
     """Refuse a target whose provenance does not make reset safe."""
     from moneybin.synthetic.reset import (
@@ -202,6 +219,7 @@ def _run_generate(
 
     try:
         with handle_cli_errors(cli_actor=cli_actor):
+            _require_profile_database(profile)
             with get_database(read_only=False) as db:
                 try:
                     row = db.execute(
@@ -360,6 +378,7 @@ def synthetic_reset(
                     code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
                 )
 
+            _require_profile_database(target_profile)
             with get_database(read_only=True) as db:
                 _reset_safety_check(db, target_profile)
 
