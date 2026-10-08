@@ -298,8 +298,8 @@ def _build_spine_rows(
     ends = [
         d
         for d in (
-            *(_to_date(v) for v in obs["balance_date"]),  # type: ignore[reportUnknownArgumentType]
-            *(_to_date(v) for v in evidence["last_date"]),  # type: ignore[reportUnknownArgumentType]
+            *(_to_date(v) for v in obs["balance_date"]),  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+            *(_to_date(v) for v in evidence["last_date"]),  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
         )
         if d is not None
     ]
@@ -309,12 +309,12 @@ def _build_spine_rows(
 
     counts_through: dict[str, date] = {}
     account_currency: dict[str, str | None] = {}
-    for account_id, include, archived, archived_at, currency in zip(  # type: ignore[reportUnknownVariableType]
-        accounts["account_id"],  # type: ignore[reportUnknownArgumentType]
-        accounts["include_in_net_worth"],  # type: ignore[reportUnknownArgumentType]
-        accounts["archived"],  # type: ignore[reportUnknownArgumentType]
-        accounts["archived_at"],  # type: ignore[reportUnknownArgumentType]
-        accounts["currency_code"],  # type: ignore[reportUnknownArgumentType]
+    for account_id, include, archived, archived_at, currency in zip(  # type: ignore[reportUnknownVariableType]  # zip over Series unpacks to Unknown
+        accounts["account_id"],  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        accounts["include_in_net_worth"],  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        accounts["archived"],  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        accounts["archived_at"],  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        accounts["currency_code"],  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
         strict=True,
     ):
         key = str(account_id)  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
@@ -326,9 +326,9 @@ def _build_spine_rows(
     for account_id, group in obs.groupby("account_id"):  # type: ignore[reportUnknownMemberType] — pandas stubs are incomplete
         anchored.add(str(account_id))
         rows.extend(_walk_observed_account(str(account_id), group, txns, spine_end))
-    for account_id, first_date in zip(  # type: ignore[reportUnknownVariableType]
-        evidence["account_id"],  # type: ignore[reportUnknownArgumentType]
-        evidence["first_date"],  # type: ignore[reportUnknownArgumentType]
+    for account_id, first_date in zip(  # type: ignore[reportUnknownVariableType]  # zip over Series unpacks to Unknown
+        evidence["account_id"],  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
+        evidence["first_date"],  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
         strict=True,
     ):
         key = str(account_id)  # type: ignore[reportUnknownArgumentType]  # Series cells are Unknown to the stubs
