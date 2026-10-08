@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-10-01 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Multi-currency
 
 Every transaction, balance, and investment event keeps the currency it arrived
@@ -212,6 +212,87 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --interval mo
 ```
 
 The three next-step hints, five lines at this width, are trimmed above.
+
+## When the market was closed
+
+ECB publishes no rate on a weekend or on its holidays. Over Christmas 2025 it
+published on Wednesday the 24th and next on Monday the 29th. The transcripts in
+this section continue the same profile after a live `moneybin refresh --step
+rates`, captured 2026-10-07, so the CAD, EUR, and GBP rates are Frankfurter's
+own. The refresh receipt is omitted. AED has no ECB series, so refresh named
+it unsupported.
+
+A date inside a closure prices at the last rate published before it, as long
+as stored rates on both sides bracket it no more than a week apart. A rate
+published after the date shows the market reopened, so the missing day is a
+closure, not a gap nobody fetched. Past the newest stored rate a date stays
+unpriced. `fx rate` names both days:
+
+```console
+$ uv run moneybin --profile cli-ux-international fx rate EUR USD 2025-12-26
+FX rate
+Pair:           EUR/USD
+Applied date:   2025-12-24
+Rate:           1.17870000
+Source:         frankfurter
+Requested date: 2025-12-26
+```
+
+A report that still cannot price a pair names it, says whether it is
+unsupported or unfetched, and gives the command that fixes it. Boxing Day has
+no AED override yet:
+
+```console
+$ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-26 --to-date 2025-12-26 --display-currency USD --no-pager
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
+┃ currency_code ┃ balance_date ┃ net_worth ┃ net_worth_home ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩
+│ AED           │ 2025-12-26   │ 40,789.57 │              - │
+│ CAD           │ 2025-12-26   │ 14,035.34 │      10,257.59 │
+│ EUR           │ 2025-12-26   │ 61,085.01 │      72,000.90 │
+│ GBP           │ 2025-12-26   │  8,786.52 │      11,864.44 │
+│ USD           │ 2025-12-26   │  6,294.20 │       6,294.20 │
+└───────────────┴──────────────┴───────────┴────────────────┘
+4 of 13 columns shown — --wide for all
+
+! AED->USD is unsupported: the rate provider publishes no AED rates, so refresh cannot fetch it;
+record the rate with 'moneybin fx set AED USD <date> <rate>'
+```
+
+An *unfetched* pair names `moneybin refresh` instead. If the display currency
+is neither the home currency nor a declared display target, it names the
+`profile set display_currency_targets` command that adds it, followed by a
+refresh. With the AED rate recorded, every row converts, and the closing note
+counts the rates that were published before the date they price:
+
+```console
+$ uv run moneybin --profile cli-ux-international fx set AED USD 2025-12-26 0.27200000 --note 'synthetic transcript fixture'
+FX override recorded
+Pair:    AED/USD
+Date:    2025-12-26
+Rate:    0.27200000
+Outcome: Recorded 1 AED = 0.27200000 USD on 2025-12-26
+$ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-26 --to-date 2025-12-26 --display-currency USD --no-pager
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
+┃ currency_code ┃ original_currency_code ┃ balance_date ┃ net_worth ┃ net_worth_home ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩
+│ USD           │ AED                    │ 2025-12-26   │ 11,094.76 │      11,094.76 │
+│ USD           │ CAD                    │ 2025-12-26   │ 10,257.59 │      10,257.59 │
+│ USD           │ EUR                    │ 2025-12-26   │ 72,000.90 │      72,000.90 │
+│ USD           │ GBP                    │ 2025-12-26   │ 11,864.44 │      11,864.44 │
+│ USD           │ USD                    │ 2025-12-26   │  6,294.20 │       6,294.20 │
+└───────────────┴────────────────────────┴──────────────┴───────────┴────────────────┘
+5 of 14 columns shown — --wide for all
+
+Converted from AED, CAD, EUR, GBP using 4 stored rates, 3 published on an earlier day than the date
+they price; run 'moneybin --profile cli-ux-international fx rate CAD USD 2025-12-26' for one of
+them, or --output json for all
+```
+
+Both reports' two next-step hints are trimmed above. Under `--output json`,
+each entry in `summary.applied_rates` carries both `requested_date` and
+`rate_date`. The `--wide` column `rate_published_date` names the publication
+behind each row's `net_worth_home`.
 
 ## From an AI client
 
