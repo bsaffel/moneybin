@@ -184,9 +184,12 @@ Metric definitions live in `src/moneybin/metrics/registry.py` (single source of 
 | `moneybin_categorization_rules_fired_total` | Counter | `rule_id` |
 | `moneybin_profile_currencies` | Gauge | — |
 | `moneybin_unknown_currency_rows` | Gauge | `grain` |
+| `moneybin_investment_source_choice_accounts` | Gauge | `investment_source_type` |
 | `moneybin_mcp_tool_calls_total` | Counter | `tool_name` |
 | `moneybin_mcp_tool_duration_seconds` | Histogram | `tool_name` |
 | `moneybin_db_query_duration_seconds` | Histogram | `operation` |
+
+`moneybin_investment_source_choice_accounts` counts the accounts that have each investment source chosen (`manual`, `plaid`, zeros included). It is set when the `investment_source_overlap` doctor check runs, on the read path and without a write lock, as the `moneybin_net_worth_*` gauges are. Changes to the setting itself are already in `app.audit_log` through `account_settings.set`, so no counter accompanies it. See [`investment-source-choice.md`](investment-source-choice.md).
 
 ### Instrumentation API
 

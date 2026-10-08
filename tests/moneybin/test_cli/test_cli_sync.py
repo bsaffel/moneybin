@@ -172,7 +172,7 @@ def test_sync_pull_text_output(mock_build: MagicMock) -> None:
         ),
         (
             lambda: _fake_pull_result(investment_source_overlap_accounts=["account-1"]),
-            "moneybin doctor",
+            "moneybin system doctor",
             0,
         ),
     ],
@@ -381,7 +381,21 @@ def test_sync_pull_text_output_shows_bootstrap_and_overlap(
     result = runner.invoke(app, ["sync", "pull"])
     assert result.exit_code == 0, result.output
     assert "2 cumulative lots seeded for pre-window positions" in result.stdout
-    assert "1 accounts have both manual and Plaid history" in result.stdout
+    assert "1 account has both manual and Plaid history" in result.stdout
+    assert "moneybin system doctor" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_pluralizes_the_overlap_row(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        investment_source_overlap_accounts=["acc_1", "acc_2"],
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 0, result.output
+    assert "2 accounts have both manual and Plaid history" in result.stdout
 
 
 @pytest.mark.unit

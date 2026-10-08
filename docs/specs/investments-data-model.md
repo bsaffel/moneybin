@@ -247,6 +247,11 @@ ALTER TABLE app.account_settings
         CHECK (default_cost_basis_method IN ('fifo', 'hifo', 'specific', 'average')); -- Per-account default; NULL → global FIFO
 ```
 
+A later spec, [`investment-source-choice.md`](investment-source-choice.md), appends
+`investment_source_type` and `investment_source_type_changed_at` to this table:
+the per-account choice of which source type feeds the ledger when `manual` and
+`plaid` histories overlap. `core.fct_investment_transactions` filters on it.
+
 Delivered the same dual-path way as prior column additions (e.g. V030's Plaid
 transaction fields): the column joins the `app_account_settings.sql` DDL for fresh
 installs, and a migration applies the ALTER to existing databases.
