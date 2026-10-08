@@ -1,4 +1,4 @@
-"""V069: create raw.exchange_rate_currencies.
+"""V070: create raw.exchange_rate_currencies.
 
 The provider's published-currency list, recorded when refresh or ``fx rate``
 reads it, so a report read can tell an unsupported pair from an unfetched one
@@ -42,7 +42,7 @@ _COLUMN_COMMENTS: list[tuple[str, str]] = [
 
 def migrate(conn: object) -> None:
     """Create raw.exchange_rate_currencies. Idempotent."""
-    logger.debug("V069: creating raw.exchange_rate_currencies")
+    logger.debug("V070: creating raw.exchange_rate_currencies")
     conn.execute(_CREATE_TABLE_SQL)  # type: ignore[union-attr]
     conn.execute(_TABLE_COMMENT)  # type: ignore[union-attr]
     for column, comment in _COLUMN_COMMENTS:
