@@ -64,6 +64,7 @@ from moneybin.services.investment_service import (
 )
 
 from . import lots, matches, prices, securities
+from .securities import security_label
 
 logger = logging.getLogger(__name__)
 
@@ -184,28 +185,40 @@ def investments_add(
 _EVENTS_COLUMNS: tuple[tuple[str, Callable[[EventRow], object]], ...] = (
     ("date", lambda r: r.trade_date),
     ("type", lambda r: r.type),
-    ("security", lambda r: r.security_id or "-"),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
+    ("security id", lambda r: r.security_id or "-"),
     ("quantity", lambda r: r.quantity),
     ("amount", lambda r: r.amount),
     ("currency", lambda r: currency_label(r.currency_code)),
 )
 
 _EVENTS_DEFAULT = ("date", "type", "security", "quantity", "amount", "currency")
-"""Every declared column — this table has nothing to curate away.
+"""Every declared column but the security's catalog id.
 
-Six narrow columns fit 80 together, which puts this command in the bucket
-`fx list` and `securities list` are already in: show all of them and offer no
-`--wide`, rather than a flag whose help promises columns the default view is
-not holding back.
+`security` is the ticker, because a reader recognises a holding by it and not
+by a minted id; `security id` is the one column held back, for the reader who
+needs to pass it to `securities set`, and `--wide` carries it.
 
-`currency` is why the set is now the whole declaration. It repeats down a
-single-currency ledger, which is what argued for dropping it, but this command
-takes no currency filter, so one unfiltered call can span accounts denominated
-differently — and `multi-currency.md` makes the row's own `currency_code` the
-canonical unit of its `amount`. Two rows reading `1,500.00` are then not the
-same quantity, with nothing on screen to say so. `investments holdings` keeps
-it for that reason, and the two commands disagreeing was its own defect.
+`currency` stays in the default set. It repeats down a single-currency ledger,
+which is what argued for dropping it, but this command takes no currency
+filter, so one unfiltered call can span accounts denominated differently — and
+`multi-currency.md` makes the row's own `currency_code` the canonical unit of
+its `amount`. Two rows reading `1,500.00` are then not the same quantity, with
+nothing on screen to say so. `investments holdings` keeps it for that reason,
+and the two commands disagreeing was its own defect.
 """
+
+_EVENTS_OPTIONAL = ("security id",)
+"""What `--wide` omits, last first, when the whole table is wider than the terminal."""
 
 
 @app.command("list")
@@ -225,13 +238,14 @@ def investments_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list has no informational chatter; only data
+    wide: bool = wide_option,
     no_pager: bool = no_pager_option,
 ) -> None:
     """List ledger events from the canonical investment-transaction fact table.
 
-    Shows the trade date, event type, security, quantity, and the signed amount
-    with the currency it is denominated in. There is no ``--wide``: all six
-    columns fit an 80-column terminal, so none is held back.
+    Shows the trade date, event type, security (its ticker, or its catalog name
+    when it has none), quantity, and the signed amount with the currency it is
+    denominated in. ``--wide`` adds the security's catalog id.
     """
     with handle_cli_errors(
         cli_actor="investments_list", payload_type=InvestmentEventsPayload
@@ -256,7 +270,7 @@ def investments_list(
         return
     if result.rows:
         view = column_view(
-            _EVENTS_COLUMNS, result.rows, default=_EVENTS_DEFAULT, wide=False
+            _EVENTS_COLUMNS, result.rows, default=_EVENTS_DEFAULT, wide=wide
         )
         policy = get_terminal_policy(no_pager=no_pager)
         emit_human_result(
@@ -267,13 +281,14 @@ def investments_list(
                 # quantity is a share count, not an amount, and is left as stored.
                 money={"amount": Money("flow")},
                 numeric=("quantity",),
-                # No `total_columns`: the view is the whole declaration, so there is
-                # no narrowing to disclose and no flag that would widen it.
+                total_columns=view.total,
+                optional=_EVENTS_OPTIONAL if wide else None,
                 terminal=policy,
             ),
             policy=policy,
             finite_read=True,
             no_pager=no_pager,
+            wide=wide,
         )
     else:
         policy = get_terminal_policy(no_pager=no_pager)
@@ -297,7 +312,17 @@ def investments_list(
 # ---------------------------------------------------------------------------
 
 _HOLDINGS_COLUMNS: tuple[tuple[str, Callable[[HoldingRow], object]], ...] = (
-    ("security", lambda r: r.security_id),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
+    ("security id", lambda r: r.security_id),
     ("quantity", lambda r: r.quantity),
     ("cost basis", lambda r: r.cost_basis),
     # A per-unit cost is DECIMAL(28,10); `format_money` rounds to two places,
@@ -341,6 +366,18 @@ dropping one of the two feeds respectively. `InvestmentService.holdings` warns
 by telling the reader to see each row's `valuation_status`, so a default view
 without it names something not on screen — and that warning is a `render_note`,
 which `-q` drops.
+
+`security` is the ticker; the catalog id is `--wide` material like the rest of
+the audit trail.
+"""
+
+_HOLDINGS_OPTIONAL = ("cost basis", "as of", "avg cost", "security id")
+"""What `--wide` omits, last first, when all ten columns are wider than the terminal.
+
+The default set is never omitted: it is the answer, and a measured fit would
+drop `market value` from the middle. Cost basis is kept longest because it is
+what `unrealized` is computed from; the id goes first because the JSON output
+carries it and a reader rarely needs it beside a ticker.
 """
 
 
@@ -361,8 +398,10 @@ def investments_holdings(
     known wrong, or one in an account whose investment ledger arrives from two
     sources at once shows ``-`` rather than a zero, and the ``status`` column
     beside it says which — it prints by default, because the three cases have
-    different remedies. ``--wide`` adds the cost basis, the average cost, and
-    the date the price was observed.
+    different remedies. A position is named by its ticker. ``--wide`` adds the
+    security's catalog id, the cost basis, the average cost, and the date the
+    price was observed, omitting those it cannot fit the terminal and saying
+    which.
 
     The closing portfolio line reports ``max_days_since_observed``: the age in
     days of the stalest close behind any figure above, or ``-`` when no
@@ -411,6 +450,7 @@ def investments_holdings(
             # named here for the no-fold guarantee alone.
             numeric=("quantity", "avg cost"),
             total_columns=view.total,
+            optional=_HOLDINGS_OPTIONAL if wide else None,
             terminal=policy,
         )
         # Portfolio-level disclosure, not a status line — `-q` keeps it, the
@@ -491,7 +531,17 @@ def investments_holdings(
 
 _GAINS_COLUMNS: tuple[tuple[str, Callable[[RealizedGainRow], object]], ...] = (
     ("disposed", lambda r: r.disposal_date),
-    ("security", lambda r: r.security_id),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
+    ("security id", lambda r: r.security_id),
     ("quantity", lambda r: r.quantity),
     ("proceeds", lambda r: r.proceeds),
     ("basis", lambda r: r.cost_basis),
@@ -509,7 +559,8 @@ Quantity and cost basis are the arithmetic behind the gain rather than the
 answer, so `--wide` carries them, and `note` goes with them for a width reason
 rather than a relevance one. `investments lots list` keeps its identical marker
 in the default view because six columns fit there; measured at 80 with a
-production-width security id, a seventh column here folds the disposal date and
+12-character security cell (an id, or a catalog name standing in for a missing
+ticker), a seventh column here folds the disposal date and
 the security id and breaks `⚠️ basis_incomplete` itself across three lines. The
 requirement both tables answer is that an incomplete basis must survive `-q` —
 the marker is how `lots list` meets it, and the ungated warning below is how
@@ -521,6 +572,14 @@ filter, so one unfiltered call can span accounts denominated differently, and
 its `proceeds`, `basis` and `gain`. Two rows reading `+200.00` are then not the
 same quantity, with nothing on screen to say so — the same reason
 `investments list` and `investments holdings` keep it.
+"""
+
+_GAINS_OPTIONAL = ("basis", "note", "quantity", "security id")
+"""What `--wide` omits, last first, when all ten columns are wider than the terminal.
+
+The basis is kept longest because it is what the gain is computed from, and
+`note` next because it qualifies that basis; the incomplete-basis warning
+survives either way, ungated on stderr. The id goes first, as in `holdings`.
 """
 
 
@@ -550,9 +609,11 @@ def investments_gains(
 
     Shows when each position was disposed, what it was, what it fetched, the
     gain or loss, the currency those figures are denominated in, and whether
-    the holding term was short or long. ``--wide`` adds the quantity and cost
-    basis the gain was computed from, and a ``note`` column marking each row
-    whose basis is known to be incomplete.
+    the holding term was short or long. A security is named by its ticker.
+    ``--wide`` adds its catalog id, the quantity and cost basis the gain was
+    computed from, and a ``note`` column marking each row whose basis is known
+    to be incomplete, omitting those it cannot fit the terminal and saying
+    which.
 
     When any row's basis is incomplete the command says so on stderr, and
     ``-q`` does not silence it: the gain shown for such a row is a conservative
@@ -608,6 +669,7 @@ def investments_gains(
                         },
                         numeric=("quantity",),
                         total_columns=view.total,
+                        optional=_GAINS_OPTIONAL if wide else None,
                         terminal=policy,
                     )
                 ],

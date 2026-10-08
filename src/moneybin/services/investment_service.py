@@ -265,6 +265,18 @@ class SecurityResolutionError(UserError):
         super().__init__(message, code=code, hint=hint)
 
 
+# The catalog columns every ledger read joins in so a table can name a security
+# by ticker. ``ticker_shared`` is true when another catalog row carries the same
+# ticker — a supported case, ``exchange`` being the documented disambiguator —
+# so the label can add the exchange instead of printing two identical cells.
+_SECURITY_LABELS_SQL = f"""
+    (SELECT security_id, ticker, name, exchange,
+            NOT ticker IS NULL
+            AND COUNT(*) OVER (PARTITION BY UPPER(ticker)) > 1 AS ticker_shared
+       FROM {DIM_SECURITIES.full_name})
+"""  # TableRef constant
+
+
 # ── Read-path result shapes ───────────────────────────────────────────────
 # One row dataclass + one result wrapper per read method, mirroring
 # AccountSummary/AccountListPayload (privacy/payloads/accounts.py). No
@@ -279,6 +291,10 @@ class EventRow:
     investment_transaction_id: str
     account_id: str
     security_id: str | None
+    ticker: str | None
+    security_name: str | None
+    exchange: str | None
+    ticker_shared: bool
     trade_date: date
     settlement_date: date | None
     original_acquisition_date: date | None
@@ -326,6 +342,10 @@ class HoldingRow:
 
     account_id: str
     security_id: str
+    ticker: str | None
+    security_name: str | None
+    exchange: str | None
+    ticker_shared: bool
     quantity: Decimal
     cost_basis: Decimal
     average_cost: Decimal | None
@@ -392,6 +412,10 @@ class LotRow:
     lot_id: str
     account_id: str
     security_id: str
+    ticker: str | None
+    security_name: str | None
+    exchange: str | None
+    ticker_shared: bool
     acquisition_date: date
     acquisition_type: str
     original_quantity: Decimal
@@ -427,6 +451,10 @@ class RealizedGainRow:
     realized_gain_id: str
     account_id: str
     security_id: str
+    ticker: str | None
+    security_name: str | None
+    exchange: str | None
+    ticker_shared: bool
     disposal_txn_id: str
     lot_id: str
     quantity: Decimal
@@ -1871,31 +1899,34 @@ class InvestmentService:
         where: list[str] = []
         params: list[object] = []
         if account_id is not None:
-            where.append("account_id = ?")
+            where.append("t.account_id = ?")
             params.append(account_id)
         if security_id is not None:
-            where.append("security_id = ?")
+            where.append("t.security_id = ?")
             params.append(security_id)
         if type_filter is not None:
-            where.append("type = ?")
+            where.append("t.type = ?")
             params.append(type_filter)
         if date_from is not None:
-            where.append("trade_date >= ?")
+            where.append("t.trade_date >= ?")
             params.append(date_from)
         if date_to is not None:
-            where.append("trade_date <= ?")
+            where.append("t.trade_date <= ?")
             params.append(date_to)
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
         rows = self._db.execute(
             f"""
-            SELECT investment_transaction_id, account_id, security_id, trade_date,
-                   settlement_date, original_acquisition_date, type, subtype,
-                   event_group_id, quantity, price, amount, fees, currency_code,
-                   description
-              FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
+            SELECT t.investment_transaction_id, t.account_id, t.security_id,
+                   s.ticker, s.name, t.trade_date, t.settlement_date,
+                   t.original_acquisition_date, t.type, t.subtype,
+                   t.event_group_id, t.quantity, t.price, t.amount, t.fees,
+                   t.currency_code, t.description, s.exchange, s.ticker_shared
+              FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS t
+              LEFT JOIN {_SECURITY_LABELS_SQL} AS s
+                ON s.security_id = t.security_id
               {where_sql}
-             ORDER BY trade_date, investment_transaction_id
+             ORDER BY t.trade_date, t.investment_transaction_id
             """,  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
@@ -1905,18 +1936,22 @@ class InvestmentService:
                     investment_transaction_id=str(r[0]),
                     account_id=str(r[1]),
                     security_id=r[2],
-                    trade_date=r[3],
-                    settlement_date=r[4],
-                    original_acquisition_date=r[5],
-                    type=str(r[6]),
-                    subtype=r[7],
-                    event_group_id=r[8],
-                    quantity=r[9],
-                    price=r[10],
-                    amount=r[11],
-                    fees=r[12],
-                    currency_code=_opt_currency(r[13]),
-                    description=r[14],
+                    ticker=r[3],
+                    security_name=r[4],
+                    trade_date=r[5],
+                    settlement_date=r[6],
+                    original_acquisition_date=r[7],
+                    type=str(r[8]),
+                    subtype=r[9],
+                    event_group_id=r[10],
+                    quantity=r[11],
+                    price=r[12],
+                    amount=r[13],
+                    fees=r[14],
+                    currency_code=_opt_currency(r[15]),
+                    description=r[16],
+                    exchange=r[17],
+                    ticker_shared=bool(r[18]),
                 )
                 for r in rows
             ],
@@ -1950,21 +1985,25 @@ class InvestmentService:
         where: list[str] = []
         params: list[object] = []
         if account_id is not None:
-            where.append("account_id = ?")
+            where.append("h.account_id = ?")
             params.append(account_id)
         if security_id is not None:
-            where.append("security_id = ?")
+            where.append("h.security_id = ?")
             params.append(security_id)
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
         rows = self._db.execute(
             f"""
-            SELECT account_id, security_id, quantity, cost_basis, average_cost,
-                   currency_code, market_value, unrealized_gain, price_date,
-                   price_source, days_since_observed, valuation_status
-              FROM {DIM_HOLDINGS.full_name}
+            SELECT h.account_id, h.security_id, s.ticker, s.name, h.quantity,
+                   h.cost_basis, h.average_cost, h.currency_code, h.market_value,
+                   h.unrealized_gain, h.price_date, h.price_source,
+                   h.days_since_observed, h.valuation_status, s.exchange,
+                   s.ticker_shared
+              FROM {DIM_HOLDINGS.full_name} AS h
+              LEFT JOIN {_SECURITY_LABELS_SQL} AS s
+                ON s.security_id = h.security_id
               {where_sql}
-             ORDER BY account_id, security_id
+             ORDER BY h.account_id, h.security_id
             """,  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
@@ -1972,20 +2011,24 @@ class InvestmentService:
             HoldingRow(
                 account_id=str(r[0]),
                 security_id=str(r[1]),
-                quantity=r[2],
-                cost_basis=r[3],
-                average_cost=r[4],
+                ticker=r[2],
+                security_name=r[3],
+                quantity=r[4],
+                cost_basis=r[5],
+                average_cost=r[6],
                 # Normalize to the price layer's canonical UPPER form (lots store the
                 # code verbatim; 'usd' and 'USD' are one currency): keeps a row's own
                 # currency_code equal to the market_value_by_currency key a consumer
                 # would look it up under.
-                currency_code=_opt_currency(r[5], upper=True),
-                market_value=r[6],
-                unrealized_gain=r[7],
-                price_date=r[8],
-                price_source=None if r[9] is None else str(r[9]),
-                days_since_observed=None if r[10] is None else int(r[10]),
-                valuation_status=str(r[11]),
+                currency_code=_opt_currency(r[7], upper=True),
+                market_value=r[8],
+                unrealized_gain=r[9],
+                price_date=r[10],
+                price_source=None if r[11] is None else str(r[11]),
+                days_since_observed=None if r[12] is None else int(r[12]),
+                valuation_status=str(r[13]),
+                exchange=r[14],
+                ticker_shared=bool(r[15]),
             )
             for r in rows
         ]
@@ -2177,24 +2220,27 @@ class InvestmentService:
         where: list[str] = []
         params: list[object] = []
         if account_id is not None:
-            where.append("account_id = ?")
+            where.append("l.account_id = ?")
             params.append(account_id)
         if security_id is not None:
-            where.append("security_id = ?")
+            where.append("l.security_id = ?")
             params.append(security_id)
         if open_only:
-            where.append("is_open = TRUE")
+            where.append("l.is_open = TRUE")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
         rows = self._db.execute(
             f"""
-            SELECT lot_id, account_id, security_id, acquisition_date,
-                   acquisition_type, original_quantity, remaining_quantity,
-                   cost_basis_total, cost_basis_remaining, cost_basis_method,
-                   currency_code, is_open, basis_incomplete
-              FROM {FCT_INVESTMENT_LOTS.full_name}
+            SELECT l.lot_id, l.account_id, l.security_id, s.ticker, s.name,
+                   l.acquisition_date, l.acquisition_type, l.original_quantity,
+                   l.remaining_quantity, l.cost_basis_total,
+                   l.cost_basis_remaining, l.cost_basis_method, l.currency_code,
+                   l.is_open, l.basis_incomplete, s.exchange, s.ticker_shared
+              FROM {FCT_INVESTMENT_LOTS.full_name} AS l
+              LEFT JOIN {_SECURITY_LABELS_SQL} AS s
+                ON s.security_id = l.security_id
               {where_sql}
-             ORDER BY acquisition_date, lot_id
+             ORDER BY l.acquisition_date, l.lot_id
             """,  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
@@ -2203,16 +2249,20 @@ class InvestmentService:
                 lot_id=str(r[0]),
                 account_id=str(r[1]),
                 security_id=str(r[2]),
-                acquisition_date=r[3],
-                acquisition_type=str(r[4]),
-                original_quantity=r[5],
-                remaining_quantity=r[6],
-                cost_basis_total=r[7],
-                cost_basis_remaining=r[8],
-                cost_basis_method=str(r[9]),
-                currency_code=_opt_currency(r[10]),
-                is_open=bool(r[11]),
-                basis_incomplete=bool(r[12]),
+                ticker=r[3],
+                security_name=r[4],
+                acquisition_date=r[5],
+                acquisition_type=str(r[6]),
+                original_quantity=r[7],
+                remaining_quantity=r[8],
+                cost_basis_total=r[9],
+                cost_basis_remaining=r[10],
+                cost_basis_method=str(r[11]),
+                currency_code=_opt_currency(r[12]),
+                is_open=bool(r[13]),
+                basis_incomplete=bool(r[14]),
+                exchange=r[15],
+                ticker_shared=bool(r[16]),
             )
             for r in rows
         ]
@@ -2263,31 +2313,34 @@ class InvestmentService:
         where: list[str] = []
         params: list[object] = []
         if account_id is not None:
-            where.append("account_id = ?")
+            where.append("g.account_id = ?")
             params.append(account_id)
         if security_id is not None:
-            where.append("security_id = ?")
+            where.append("g.security_id = ?")
             params.append(security_id)
         if date_from is not None:
-            where.append("disposal_date >= ?")
+            where.append("g.disposal_date >= ?")
             params.append(date_from)
         if date_to is not None:
-            where.append("disposal_date <= ?")
+            where.append("g.disposal_date <= ?")
             params.append(date_to)
         if term is not None:
-            where.append("term = ?")
+            where.append("g.term = ?")
             params.append(term)
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
         rows = self._db.execute(
             f"""
-            SELECT realized_gain_id, account_id, security_id, disposal_txn_id,
-                   lot_id, quantity, acquisition_date, disposal_date, proceeds,
-                   cost_basis, gain_loss, term, cost_basis_method,
-                   basis_incomplete, currency_code
-              FROM {FCT_REALIZED_GAINS.full_name}
+            SELECT g.realized_gain_id, g.account_id, g.security_id, s.ticker,
+                   s.name, g.disposal_txn_id, g.lot_id, g.quantity,
+                   g.acquisition_date, g.disposal_date, g.proceeds, g.cost_basis,
+                   g.gain_loss, g.term, g.cost_basis_method, g.basis_incomplete,
+                   g.currency_code, s.exchange, s.ticker_shared
+              FROM {FCT_REALIZED_GAINS.full_name} AS g
+              LEFT JOIN {_SECURITY_LABELS_SQL} AS s
+                ON s.security_id = g.security_id
               {where_sql}
-             ORDER BY disposal_date, realized_gain_id
+             ORDER BY g.disposal_date, g.realized_gain_id
             """,  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
@@ -2296,18 +2349,22 @@ class InvestmentService:
                 realized_gain_id=str(r[0]),
                 account_id=str(r[1]),
                 security_id=str(r[2]),
-                disposal_txn_id=str(r[3]),
-                lot_id=str(r[4]),
-                quantity=r[5],
-                acquisition_date=r[6],
-                disposal_date=r[7],
-                proceeds=r[8],
-                cost_basis=r[9],
-                gain_loss=r[10],
-                term=str(r[11]),
-                cost_basis_method=str(r[12]),
-                basis_incomplete=bool(r[13]),
-                currency_code=_opt_currency(r[14]),
+                ticker=r[3],
+                security_name=r[4],
+                disposal_txn_id=str(r[5]),
+                lot_id=str(r[6]),
+                quantity=r[7],
+                acquisition_date=r[8],
+                disposal_date=r[9],
+                proceeds=r[10],
+                cost_basis=r[11],
+                gain_loss=r[12],
+                term=str(r[13]),
+                cost_basis_method=str(r[14]),
+                basis_incomplete=bool(r[15]),
+                currency_code=_opt_currency(r[16]),
+                exchange=r[17],
+                ticker_shared=bool(r[18]),
             )
             for r in rows
         ]

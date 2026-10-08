@@ -1243,6 +1243,91 @@ def test_one_unkeepable_column_does_not_end_the_fit(
     assert "sprawling" not in out
 
 
+_OPTIONAL_COLUMNS = ["name", "extra_one", "answer", "extra_two", "extra_three"]
+_OPTIONAL_ROW = ("n" * 10, "1" * 20, "a" * 10, "2" * 20, "3" * 20)
+
+
+def test_an_optional_drop_keeps_every_essential_column_and_names_the_rest(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `--wide` table too wide for the terminal sheds declared extras, last first.
+
+    `answer` sits mid-projection, where a positional fit would drop it; an
+    optional drop never touches a column the caller did not name. The frame
+    names what went rather than pointing at `--wide`, which is already in force.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+
+    render_rows(
+        _OPTIONAL_COLUMNS,
+        [_OPTIONAL_ROW],
+        optional=("extra_one", "extra_two", "extra_three"),
+    )
+
+    out = capsys.readouterr().out
+    table = [line for line in out.splitlines() if line[:1] in "┏┃┡│└"]
+    assert max(len(line) for line in table) <= 80
+    assert "answer" in out
+    assert "extra_one" in out
+    # Last declared, first dropped: three 20-wide extras do not fit 80 beside
+    # the essentials, two do.
+    assert (
+        "4 of 5 columns fit — extra_three omitted; widen the terminal or use "
+        "--output json"
+    ) in out
+    assert "--wide for all" not in out
+    assert "…" not in out
+
+
+def test_an_optional_drop_leaves_a_table_that_fits_whole(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Optional columns are dropped only when the terminal cannot hold them."""
+    monkeypatch.setenv("COLUMNS", "200")
+
+    render_rows(
+        _OPTIONAL_COLUMNS,
+        [_OPTIONAL_ROW],
+        optional=("extra_one", "extra_two", "extra_three"),
+    )
+
+    out = capsys.readouterr().out
+    assert "extra_three" in out
+    assert "columns fit" not in out
+
+
+def test_an_optional_drop_never_sheds_an_essential_column(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past the last optional column the essentials stay, even if still too wide."""
+    monkeypatch.setenv("COLUMNS", "30")
+
+    render_rows(
+        _OPTIONAL_COLUMNS,
+        [_OPTIONAL_ROW],
+        optional=("extra_one", "extra_two", "extra_three"),
+    )
+
+    out = capsys.readouterr().out
+    assert "2 of 5 columns fit" in out
+    assert "extra_one, extra_two, extra_three omitted" in out
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"optional": ("extra_one",), "fit": True}, "exclusive"),
+        ({"optional": ("not_a_column",)}, "undeclared optional"),
+    ],
+)
+def test_an_optional_drop_refuses_an_ambiguous_declaration(
+    kwargs: dict[str, object], message: str
+) -> None:
+    """Refused, as an unknown column is: a silent no-op would never be noticed."""
+    with pytest.raises(ValueError, match=message):
+        build_rows(_OPTIONAL_COLUMNS, [_OPTIONAL_ROW], **kwargs)  # type: ignore[arg-type]  # parametrized kwargs
+
+
 def _widest_one_gap_fit(widths: Sequence[int], available: int) -> tuple[int, ...]:
     """The most columns any single-gap projection can show in ``available``.
 

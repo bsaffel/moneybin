@@ -34,6 +34,8 @@ from moneybin.privacy.payloads.investments import (
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.investment_service import InvestmentService, LotRow
 
+from .securities import security_label
+
 app = typer.Typer(
     help="Tax lots: list and specific-identification selection",
     no_args_is_help=True,
@@ -42,7 +44,17 @@ app = typer.Typer(
 
 _LOTS_COLUMNS: tuple[tuple[str, Callable[[LotRow], object]], ...] = (
     ("lot", lambda r: r.lot_id),
-    ("security", lambda r: r.security_id),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
+    ("security id", lambda r: r.security_id),
     ("acquired", lambda r: r.acquisition_date),
     ("remaining", lambda r: r.remaining_quantity),
     ("basis", lambda r: r.cost_basis_remaining),
@@ -100,6 +112,17 @@ one table whose default set depends on the query, because it is the one command
 whose result changes kind rather than size.
 """
 
+_LOTS_OPTIONAL = ("currency", "method", "security id", "state")
+"""What `--wide` omits, last first, when all ten columns are wider than the terminal.
+
+Under `--open` `state` reads `open` on every row, so it goes first. The id goes
+next, as in `holdings`: a ticker already names the security and JSON carries
+the id.
+"""
+
+_LOTS_ALL_OPTIONAL = ("currency", "method", "security id")
+"""The `--all` counterpart: `state` is part of that default set, so never omitted."""
+
 
 @app.command("list")
 def investments_lots_list(
@@ -121,12 +144,13 @@ def investments_lots_list(
 ) -> None:
     """List tax lots with remaining quantity and basis. Open lots only by default.
 
-    Shows the lot, its security, when it was acquired, how much remains, the
-    remaining basis, and a note marking any basis known to be incomplete.
-    ``--all`` adds an open/closed ``state`` column, since that view returns
-    both. ``--wide`` shows every declared column: the currency, the cost-basis
-    method, and ``state`` — which under the default ``--open`` reads ``open``
-    on every row.
+    Shows the lot, its security (by ticker), when it was acquired, how much
+    remains, the remaining basis, and a note marking any basis known to be
+    incomplete. ``--all`` adds an open/closed ``state`` column, since that view
+    returns both. ``--wide`` shows every declared column: the security's
+    catalog id, the currency, the cost-basis method, and ``state`` — which
+    under the default ``--open`` reads ``open`` on every row — omitting those
+    it cannot fit the terminal and saying which.
 
     Lots in an account whose investment ledger arrives from two sources at once
     double-count, because the two ledgers interleave rather than merge. The
@@ -176,6 +200,13 @@ def investments_lots_list(
                         money={"basis": Money("balance")},
                         numeric=("remaining",),
                         total_columns=view.total,
+                        optional=(
+                            None
+                            if not wide
+                            else _LOTS_OPTIONAL
+                            if open_only
+                            else _LOTS_ALL_OPTIONAL
+                        ),
                         terminal=policy,
                     )
                 ],

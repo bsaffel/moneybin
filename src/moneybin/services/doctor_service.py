@@ -2222,7 +2222,8 @@ class DoctorService:
                     "so the net-worth total is withheld — record a balance with "
                     "`moneybin accounts balance assert`, or leave the account out "
                     "with `moneybin accounts set <account_id> --exclude`, then run "
-                    "`moneybin refresh` so the total and this check pick it up"
+                    "`moneybin refresh --step transform` — the rebuild the assert "
+                    "receipt names — so the total and this check pick it up"
                 ),
                 affected_ids=_masked_account_affected_ids(unanchored),
             )
@@ -4467,9 +4468,10 @@ class DoctorService:
                     f"{', '.join(parts)} have an unknown currency. Their amounts "
                     "are segmented out of every total until you assign one — "
                     "run `moneybin accounts set <account> --currency <ISO 4217>`, "
-                    "then `moneybin transform apply`: the setting is app state, and "
-                    "core.* only picks it up on the next transform, so this check "
-                    "keeps failing until you re-run one. "
+                    "then the rebuild it names, `moneybin refresh --step "
+                    "transform`: the setting is app state, and core.* only picks "
+                    "it up on the next transform, so this check keeps failing "
+                    "until you re-run one. "
                     "MoneyBin never guesses a currency, because a wrong guess "
                     "would silently blend into a figure nothing could flag."
                 ),

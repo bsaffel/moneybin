@@ -3144,6 +3144,26 @@ def test_unanchored_accounts_fails_naming_each_eligible_account(
 
 
 @pytest.mark.unit
+def test_unanchored_accounts_names_the_rebuild_the_assert_receipt_names(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Doctor and `accounts balance assert` must send the reader to one command.
+
+    The assert receipt already ends on `refresh --step transform`; a doctor
+    remedy naming a different rebuild reads as a second, unrelated step.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "brk")
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('brk')")
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.detail is not None
+    assert "`moneybin refresh --step transform`" in result.detail
+    assert_published_commands_resolve(result.detail)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("kwargs", [{"include": False}, {"archived": True}])
 def test_unanchored_accounts_passes_for_an_excluded_or_archived_account(
     db: Database, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool]
@@ -3597,7 +3617,8 @@ def test_currency_integrity_fail_names_the_transform_that_applies_the_fix(
 
     assert result.status == "fail"
     detail = result.detail or ""
-    assert "transform apply" in detail
+    # The same rebuild `accounts set --currency` prints on its own receipt.
+    assert "`moneybin refresh --step transform`" in detail
     # "transform" alone is a substring of both the fixed text above and the
     # stale bare-`transform` invocation this test guards against, so it
     # cannot tell the two apart. The stale spelling was the exact substring
@@ -5821,9 +5842,10 @@ def test_currency_integrity_plain_advice_unchanged_when_no_duplicate_overlap(
         "1 account(s) have an unknown currency. Their amounts "
         "are segmented out of every total until you assign one — "
         "run `moneybin accounts set <account> --currency <ISO 4217>`, "
-        "then `moneybin transform apply`: the setting is app state, and "
-        "core.* only picks it up on the next transform, so this check "
-        "keeps failing until you re-run one. "
+        "then the rebuild it names, `moneybin refresh --step "
+        "transform`: the setting is app state, and core.* only picks "
+        "it up on the next transform, so this check keeps failing "
+        "until you re-run one. "
         "MoneyBin never guesses a currency, because a wrong guess "
         "would silently blend into a figure nothing could flag."
     )

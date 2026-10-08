@@ -368,13 +368,31 @@ on the first observation, so `is_observed` is required to distinguish them.
 The first observation has no prior transaction-derived anchor and remains
 `status = 'no-data'`; a missing daily row does as well.
 
+**Investment accounts (decided 2026-10, after the investments guide).** An
+account with any row in `core.fct_investment_transactions` reports
+`status = 'investment-ledger'` with `computed_balance`, `drift`, and
+`drift_pct` NULL. The comparison cannot be made honestly there: the ledger's
+cash legs (buys, sells, dividends) never reach `core.fct_transactions`, so the
+transaction-derived position is the deposits alone, and an assertion on a
+brokerage states cash plus positions at market value. Folding the cash legs in
+was rejected — it would still omit the positions, which need a daily valuation
+series that does not exist (see `investments-overview.md`), so it would trade
+one false drift for a smaller false drift. The status is magnitude-free, like
+`currency-mismatch`: display conversion never re-buckets it. When both hold,
+`investment-ledger` wins: a currency mismatch is a defect the user can repair,
+and after the repair the ledger still leaves nothing to compare, so the row
+names the condition that outlasts the fix and `--status investment-ledger`
+lists every account with a ledger row. When positions
+fold into net worth with a past-dated valuation, this status is what that work
+replaces.
+
 **Columns:**
 
 | Column | Type | Comment |
 |---|---|---|
 | `account_id` | `VARCHAR` | Joinable to core.dim_accounts |
 | `account_name` | `VARCHAR` | Account display name |
-| `status` | `VARCHAR` | 'clean' if `drift_abs < 1.00`, 'warning' if `< 10.00`, 'drift' if `≥ 10.00`, 'no-data' if computed_balance IS NULL |
+| `status` | `VARCHAR` | 'clean' if `drift_abs < 1.00`, 'warning' if `< 10.00`, 'drift' if `≥ 10.00`, 'no-data' if computed_balance IS NULL, 'currency-mismatch' when the account's and the observation's known currencies disagree, 'investment-ledger' when the account has investment ledger events |
 | `assertion_date` | `DATE` | User-asserted balance date |
 | `days_since_assertion` | `INTEGER` | today - assertion_date |
 | `asserted_balance` | `DECIMAL(18,2)` | User-entered balance for this date |
@@ -385,7 +403,7 @@ The first observation has no prior transaction-derived anchor and remains
 
 Thresholds (`$1`, `$10`) are hardcoded in v1 with a docstring noting they are intentional defaults; future iterations may move them to `MoneyBinSettings.reports.balance_drift_thresholds`.
 
-CLI: `moneybin reports balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]`.
+CLI: `moneybin reports balance-drift [--account NAME] [--status drift|warning|clean|no-data|currency-mismatch|investment-ledger] [--since DATE]`.
 MCP: `reports(report_id="core:balance_drift", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 

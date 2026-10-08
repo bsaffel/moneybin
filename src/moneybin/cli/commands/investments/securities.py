@@ -35,6 +35,27 @@ app = typer.Typer(
 app.add_typer(security_links.app, name="links")
 
 
+def security_label(
+    ticker: str | None,
+    name: str | None,
+    security_id: str | None,
+    *,
+    exchange: str | None = None,
+    ticker_shared: bool = False,
+) -> str:
+    """Name a security in a table: its ticker, else its catalog name, else its id.
+
+    A ticker another catalog row also carries is written ``TICKER.EXCHANGE`` —
+    the form the security resolver accepts back — so two positions never share
+    a cell. Without an exchange to tell them apart the id is the label, as it
+    is when the catalog has no row for it at all, so the cell is never blank;
+    ``-`` is an event that names no security.
+    """
+    if ticker and ticker_shared:
+        return f"{ticker}.{exchange}" if exchange else security_id or ticker
+    return ticker or name or security_id or "-"
+
+
 @app.command("list")
 def investments_securities_list(
     type_: str | None = typer.Option(
@@ -70,7 +91,10 @@ def investments_securities_list(
     if result.rows:
         parts.append(
             build_rows(
-                ["security", "ticker", "name", "type"],
+                # `security id`, as every other investments table heads it under
+                # `--wide`: there `security` is the ticker, here the id is the
+                # point, since `securities set` takes nothing else.
+                ["security id", "ticker", "name", "type"],
                 [
                     (row.security_id, row.ticker or "-", row.name, row.security_type)
                     for row in result.rows
