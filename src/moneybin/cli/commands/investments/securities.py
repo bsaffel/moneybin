@@ -35,6 +35,17 @@ app = typer.Typer(
 app.add_typer(security_links.app, name="links")
 
 
+def security_label(
+    ticker: str | None, name: str | None, security_id: str | None
+) -> str:
+    """Name a security in a table: its ticker, else its catalog name, else its id.
+
+    An id falls through only when the catalog has no row for it, so the cell is
+    never blank; ``-`` is an event that names no security at all.
+    """
+    return ticker or name or security_id or "-"
+
+
 @app.command("list")
 def investments_securities_list(
     type_: str | None = typer.Option(
@@ -70,7 +81,10 @@ def investments_securities_list(
     if result.rows:
         parts.append(
             build_rows(
-                ["security", "ticker", "name", "type"],
+                # `security id`, as every other investments table heads it under
+                # `--wide`: there `security` is the ticker, here the id is the
+                # point, since `securities set` takes nothing else.
+                ["security id", "ticker", "name", "type"],
                 [
                     (row.security_id, row.ticker or "-", row.name, row.security_type)
                     for row in result.rows

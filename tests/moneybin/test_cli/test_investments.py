@@ -528,9 +528,6 @@ class TestInvestmentsList:
                     10, -1500.00, 'USD')
             """  # test fixture insert, static SQL
         )
-        # No `--wide`: all six columns are the default view, so the flag would
-        # promise columns nothing is holding back and the command does not
-        # offer one.
         result = runner.invoke(app, ["investments", "list"])
         assert result.exit_code == 0, result.output
         assert "buy" in result.output
@@ -541,8 +538,9 @@ class TestInvestmentsList:
             assert header in result.stdout
         assert "qty=" not in result.stdout
         assert "amt=" not in result.stdout
-        # Nothing was narrowed, so nothing claims it was.
-        assert "columns shown" not in result.stdout
+        # The catalog id is the one column held back, and the frame says so.
+        assert "security id" not in result.stdout
+        assert "6 of 7 columns shown — --wide for all" in result.stdout
 
     @pytest.mark.unit
     def test_list_default_view_keeps_the_currency_beside_the_amount(
@@ -755,7 +753,7 @@ class TestHoldingsAndGains:
         # Every rendered line fits, borders included.
         assert max(len(li) for li in result.output.splitlines()) <= 80
         # The narrowing discloses itself, and names a flag this command has.
-        assert "6 of 9 columns shown" in result.output
+        assert "6 of 10 columns shown" in result.output
         assert "--wide" in result.output
         assert "valuation_status" not in result.output
 
@@ -1230,6 +1228,182 @@ class TestHoldingsAndGains:
         assert result.exit_code == 0, result.output
         assert "currency" in result.stdout
         assert "USD" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Securities named by ticker; ids behind --wide; --wide at 80 columns
+# ---------------------------------------------------------------------------
+
+
+def _seed_one_position_everywhere(db: Database, *, ticker: str | None) -> None:
+    """One event, lot, gain, and holding, all on catalog security ``sec_1``."""
+    SecuritiesRepo(db).upsert(
+        security_id="sec_1",
+        name="Apple Inc.",
+        security_type="equity",
+        ticker=ticker,
+        actor="cli",
+    )
+    db.conn.execute(
+        """
+        INSERT INTO core.fct_investment_transactions
+            (investment_transaction_id, account_id, security_id, trade_date,
+             type, quantity, amount, currency_code)
+        VALUES ('evt_1', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                10, -1000.00, 'USD')
+        """  # test fixture insert, static SQL
+    )
+    db.conn.execute(
+        """
+        INSERT INTO core.fct_investment_lots
+            (lot_id, account_id, security_id, acquisition_date,
+             acquisition_type, original_quantity, remaining_quantity,
+             cost_basis_total, cost_basis_remaining, cost_basis_method,
+             currency_code, is_open, basis_incomplete)
+        VALUES ('lot_1', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
+                10, 10, 1000.00, 1000.00, 'fifo', 'USD', true, false)
+        """  # test fixture insert, static SQL
+    )
+    db.conn.execute(
+        """
+        INSERT INTO core.fct_realized_gains
+            (realized_gain_id, account_id, security_id, disposal_txn_id,
+             lot_id, quantity, acquisition_date, disposal_date, proceeds,
+             cost_basis, gain_loss, term, cost_basis_method,
+             basis_incomplete, currency_code)
+        VALUES ('gain_1', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_0',
+                5, '2024-01-01', '2024-06-12', 1950.00, 1750.00, 200.00,
+                'long', 'fifo', false, 'USD')
+        """  # test fixture insert, static SQL
+    )
+    db.conn.execute(
+        """
+        CREATE OR REPLACE VIEW core.dim_holdings AS
+        SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+               10::DECIMAL(28,10) AS quantity,
+               1000.00::DECIMAL(18,2) AS cost_basis,
+               100.00::DECIMAL(28,10) AS average_cost,
+               'USD' AS currency_code,
+               1200.00::DECIMAL(18,2) AS market_value,
+               200.00::DECIMAL(18,2) AS unrealized_gain,
+               DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+               0::INT AS days_since_observed, 'valued' AS valuation_status
+        """  # test fixture view, literal test data only
+    )
+
+
+_TABLE_COMMANDS = [
+    ["investments", "list"],
+    ["investments", "holdings"],
+    ["investments", "gains"],
+    ["investments", "lots", "list"],
+]
+
+
+class TestSecuritiesNamedByTicker:
+    """A reader recognises a holding by its ticker, not by a minted catalog id."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("args", _TABLE_COMMANDS)
+    def test_default_view_names_the_ticker_and_wide_adds_the_id(
+        self,
+        runner: CliRunner,
+        db: Database,
+        wide_terminal: None,
+        args: list[str],
+    ) -> None:
+        _seed_one_position_everywhere(db, ticker="AAPL")
+
+        narrow = runner.invoke(app, args)
+
+        assert narrow.exit_code == 0, narrow.output
+        assert "AAPL" in narrow.stdout
+        assert "sec_1" not in narrow.stdout
+        assert "security id" not in narrow.stdout
+
+        wide = runner.invoke(app, [*args, "--wide"])
+
+        assert wide.exit_code == 0, wide.output
+        assert "AAPL" in wide.stdout
+        assert "security id" in wide.stdout
+        assert "sec_1" in wide.stdout
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("args", _TABLE_COMMANDS)
+    def test_json_rows_carry_the_id_beside_the_ticker_and_name(
+        self, runner: CliRunner, db: Database, args: list[str]
+    ) -> None:
+        _seed_one_position_everywhere(db, ticker="AAPL")
+
+        result = runner.invoke(app, [*args, "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        (row,) = json.loads(result.stdout)["data"]["rows"]
+        assert row["security_id"] == "sec_1"
+        assert row["ticker"] == "AAPL"
+        assert row["security_name"] == "Apple Inc."
+
+    @pytest.mark.unit
+    def test_a_security_with_no_ticker_is_named_by_its_catalog_name(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """A bond or private holding has no ticker; the id is not the fallback."""
+        _seed_one_position_everywhere(db, ticker=None)
+
+        result = runner.invoke(app, ["investments", "holdings"])
+
+        assert result.exit_code == 0, result.output
+        assert "Apple Inc." in result.stdout
+        assert "sec_1" not in result.stdout
+
+
+class TestWideAtEightyColumns:
+    """`--wide` at 80 columns sheds extras, keeps the answer, and says what went."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("columns", "kept", "omitted"),
+        [
+            # The default set alone is 76 wide here, so 80 holds no extra.
+            (80, (), "security id, cost basis, avg cost, as of"),
+            # Cost basis is the extra kept longest; the id goes first.
+            (100, ("cost basis",), "security id, avg cost, as of"),
+        ],
+    )
+    def test_holdings_wide_omits_the_extras_it_cannot_fit_and_names_them(
+        self,
+        runner: CliRunner,
+        db: Database,
+        monkeypatch: pytest.MonkeyPatch,
+        columns: int,
+        kept: tuple[str, ...],
+        omitted: str,
+    ) -> None:
+        """All ten columns squeezed into 80 crushed text and cut numbers short.
+
+        The default set is the answer, so it stays whole, and the extras go
+        last-first until the table fits the terminal.
+        """
+        monkeypatch.setenv("COLUMNS", str(columns))
+        _seed_one_position_everywhere(db, ticker="AAPL")
+
+        result = runner.invoke(app, ["investments", "holdings", "--wide"])
+
+        assert result.exit_code == 0, result.output
+        table = [li for li in result.stdout.splitlines() if li[:1] in "┏┃┡│└"]
+        assert max(len(li) for li in table) <= columns
+        header = next(li for li in table if li.startswith("┃"))
+        for figure in ("AAPL", "1,200.00", "+200.00", "valued", "USD"):
+            assert figure in result.stdout
+        for extra in ("security id", "cost basis", "avg cost", "as of"):
+            assert (extra in header) == (extra in kept)
+        shown = 6 + len(kept)
+        assert (
+            f"{shown} of 10 columns fit — {omitted} omitted; widen the terminal "
+            "or use --output json"
+        ) in result.stdout
+        # `--wide` is already in force, so the frame must not offer it.
+        assert "--wide for all" not in result.stdout
 
 
 # ---------------------------------------------------------------------------

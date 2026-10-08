@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Data Model
 
 The user-facing data model. Tables in `core.*`, `reports.*`, and `app.*` are the surfaces consumers (CLI, MCP, your own SQL) read from for analysis; `raw.*` and `prep.*` are readable for inspection through the agent-safe SQL paths. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
@@ -686,11 +686,11 @@ Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed bala
 |---|---|---|
 | `account_id` | VARCHAR | Joinable to `core.dim_accounts.account_id`. |
 | `account_name` | VARCHAR | Resolved display name. |
-| `status` | VARCHAR | `clean` (< $1) \| `warning` (< $10) \| `drift` (≥ $10) \| `no-data` (computed NULL). |
+| `status` | VARCHAR | `clean` (< $1) \| `warning` (< $10) \| `drift` (≥ $10) \| `no-data` (computed NULL) \| `currency-mismatch` (the account's currency and the observation's disagree) \| `investment-ledger` (the account has investment ledger events, so no transaction-derived balance compares to the assertion). |
 | `assertion_date` | DATE | User-asserted balance date. |
 | `days_since_assertion` | INTEGER | `CURRENT_DATE − assertion_date`. |
 | `asserted_balance` | DECIMAL(18,2) | User-entered value. |
-| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation. |
+| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation, on a currency mismatch, and for an account with investment ledger events: their buys, sells, and dividends never reach `core.fct_transactions`, and the assertion counts positions at a market value nothing reconstructs for a past date. |
 | `drift_abs` | DECIMAL(18,2) | For default sort. |
 | `drift_pct` | DECIMAL | `drift / asserted_balance`; NULL when asserted is zero. |
 | `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |

@@ -1476,15 +1476,20 @@ def test_restating_the_drift_leaves_a_zero_denominator_undefined() -> None:
 
 
 def test_rebucketing_leaves_a_status_that_names_no_magnitude() -> None:
-    """``no-data`` and ``currency-mismatch`` report that no drift was computable.
+    """``no-data``, ``currency-mismatch`` and ``investment-ledger`` name no drift.
 
-    Re-bucketing either from an amount that does not exist would invent a
+    Re-bucketing any of them from an amount that does not exist would invent a
     reconciliation verdict — concretely, reading a null drift as ``clean``.
     """
     rows: list[dict[str, Any]] = [
         {"drift": None, "drift_abs": None, "status": "no-data"},
         {"drift": Decimal("0.00"), "drift_abs": Decimal("0.00"), "status": "no-data"},
         {"drift": Decimal("0.00"), "status": "currency-mismatch"},
+        {
+            "asserted_balance": Decimal("17125.00"),
+            "computed_balance": Decimal("15000.00"),
+            "status": "investment-ledger",
+        },
     ]
 
     _rebucket_status(rows, "USD")
@@ -1493,6 +1498,7 @@ def test_rebucketing_leaves_a_status_that_names_no_magnitude() -> None:
         "no-data",
         "no-data",
         "currency-mismatch",
+        "investment-ledger",
     ]
 
 

@@ -856,49 +856,55 @@ moneybin investments securities set <security_id> [--name ...] [--ticker ...] \
 $ moneybin investments holdings --account fidelity_brokerage
 
 ┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┓
-┃ security ┃ quantity       ┃ market value ┃ unrealized ┃ currency ┃ status    ┃
+┃ security ┃       quantity ┃ market value ┃ unrealized ┃ currency ┃ status    ┃
 ┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━┩
-│ a3f19c02 │ 15.0000000000  │     2,850.00 │    +375.00 │ USD      │ valued    │
-│ b8e1     │                │              │            │          │           │
-│ 7d40be91 │ 200.0000000000 │    25,000.00 │  +1,600.00 │ USD      │ carried_f │
-│ c5a2     │                │              │            │          │ orward    │
-│ c81a5f60 │ 0.5000000000   │            - │          - │ USD      │ unpriced  │
-│ 39db     │                │              │            │          │           │
+│ AAPL     │  15.0000000000 │     2,850.00 │    +375.00 │ USD      │ valued    │
+│ VTI      │ 200.0000000000 │    25,000.00 │  +1,600.00 │ USD      │ carried_f │
+│          │                │              │            │          │ orward    │
+│ BOND30   │   0.5000000000 │            - │          - │ USD      │ unpriced  │
 └──────────┴────────────────┴──────────────┴────────────┴──────────┴───────────┘
-6 of 9 columns shown — --wide for all
+6 of 10 columns shown — --wide for all
 portfolio market_value=27,850.00 USD max_days_since_observed=3
 
 ⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved), 'withheld' (a known-wrong share count, or lots that disagree on currency), or 'source_overlap' (the account's investment ledger arrives from two sources at once).
 ```
 
-The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row
-carries its own currency code beside the money figures. An absent figure renders
+The first column names the security by its ticker, or by its catalog name when
+it has none; the 12-hex catalog id is a `security id` column under `--wide`, and
+every JSON row carries `security_id`, `ticker`, and `security_name` (decided
+2026-10: a reader recognises a holding by its ticker, and the id alone forced a
+second lookup in `securities list`). `investments list`, `gains`, and
+`lots list` name securities the same way. Each row carries its own currency
+code beside the money figures. An absent figure renders
 `-`, matching `avg_cost`'s existing NULL rendering — a blank column reads as zero,
 and NULL here means "no number", not "worth nothing".
 
-The cost basis, the average cost and the observation date follow under `--wide`;
-the six columns above are the curated default. `quantity` is the reason the ids
-fold rather than the share counts: a `DECIMAL(28,10)` count is declared
-`numeric`, so a squeeze is paid out of the text columns and no number is ever
-broken across lines.
+The catalog id, the cost basis, the average cost and the observation date follow
+under `--wide`; the six columns above are the curated default. `quantity` is
+the reason the status folds rather than the share counts: a `DECIMAL(28,10)`
+count is declared `numeric`, so a squeeze is paid out of the text columns and
+no number is ever broken across lines. A `--wide` table wider than the terminal
+keeps the default six and drops its extras, least important first, naming the
+ones it omitted beneath the table; all ten columns squeezed into 80 had crushed
+the text columns and cut the numbers short.
 
 ```
 $ moneybin investments gains --account fidelity_brokerage --from 2024-01-01
 
-┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┓
-┃ disposed   ┃ security     ┃ proceeds ┃    gain ┃ currency ┃ term  ┃
-┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━┩
-│ 2024-06-12 │ a3f19c02b8e1 │   950.00 │ +200.00 │ USD      │ long  │
-│ 2024-09-03 │ c81a5f6039db │ 9,500.00 │ +500.00 │ USD      │ short │
-└────────────┴──────────────┴──────────┴─────────┴──────────┴───────┘
-6 of 9 columns shown — --wide for all
+┏━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┓
+┃ disposed   ┃ security ┃ proceeds ┃    gain ┃ currency ┃ term  ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━┩
+│ 2024-06-12 │ AAPL     │   950.00 │ +200.00 │ USD      │ long  │
+│ 2024-09-03 │ BOND30   │ 9,500.00 │ +500.00 │ USD      │ short │
+└────────────┴──────────┴──────────┴─────────┴──────────┴───────┘
+6 of 10 columns shown — --wide for all
 ```
 
-`--wide` adds the quantity and the cost basis the gain was computed from, plus
-a `note` column marking each row whose basis is known to be incomplete. That
+`--wide` adds the catalog id, the quantity and the cost basis the gain was
+computed from, plus a `note` column marking each row whose basis is known to be incomplete. That
 marker sits in `investments lots list`'s default view but not this one: a
-seventh column here folds the disposal date and the security id and breaks the
-marker itself across three lines at 80 columns. The requirement it exists for —
+seventh column here, with a 12-character security cell, folds the disposal date
+and the security and breaks the marker itself across three lines at 80 columns. The requirement it exists for —
 that an incomplete basis is never invisible — is met on this command by the
 warning instead, which is the one note `-q` does not silence.
 

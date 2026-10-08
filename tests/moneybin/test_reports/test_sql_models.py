@@ -328,6 +328,9 @@ def _install_balance_drift_sources(
             currency_code VARCHAR
         )
     """)
+    model_db.execute("""
+        CREATE TABLE core.fct_investment_transactions (account_id VARCHAR)
+    """)
     model_db.execute(
         """
         INSERT INTO core.dim_accounts VALUES (?, ?, ?, ?)
@@ -969,3 +972,40 @@ def test_balance_drift_reports_the_currency_the_position_is_denominated_in(
         "SELECT currency_code, drift FROM reports.balance_drift"
     ).fetchone()
     assert row == ("EUR", Decimal("5.00"))
+
+
+def test_balance_drift_says_it_cannot_reconcile_an_investment_ledger(
+    model_db: Database,
+) -> None:
+    """A hand-kept brokerage's assertion is cash plus positions; no drift exists.
+
+    The ledger's buys, sells and dividends never reach `core.fct_transactions`,
+    so the transaction-derived balance is the deposits alone, and the assertion
+    also counts positions at market value. Subtracting the two would publish
+    every share held as drift; the row names why it has no figure instead.
+    """
+    _install_balance_drift_sources(model_db, currency="USD")
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES ('checking', '2025-12-31', 17125.00)
+        """
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES
+            ('checking', '2025-12-31', 17125.00, TRUE, 2125.00, 'USD')
+        """
+    )
+    model_db.execute("INSERT INTO core.fct_investment_transactions VALUES ('checking')")
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        """
+        SELECT asserted_balance, computed_balance, drift, drift_pct, status
+        FROM reports.balance_drift
+        """
+    ).fetchone()
+    # 15,000.00 computed and 2,125.00 drift would be the deposits-only answer.
+    assert row == (Decimal("17125.00"), None, None, None, "investment-ledger")
