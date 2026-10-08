@@ -72,7 +72,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `profile_set` | `display_currency_targets`, `home_currency` | Set profile currency settings | Audited write / at least low |
 | `reports` | `display_currency`, `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / up to critical / report-derived |
 | `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / up to critical / view-derived |
-| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / at least critical |
+| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `investment_source_type`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / at least critical |
 | `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / up to high / balance-derived |
 | `accounts_balance_assert` | `account`, `amount`, `as_of`, `confirmation_token`, `state` | Record a balance assertion | Audited write / at least medium |
 | `accounts_links_run` | `account_id`, `candidate_account_id` | Propose account merges — sweep, or one named pair | Audited write / at least low |

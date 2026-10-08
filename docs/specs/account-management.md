@@ -42,7 +42,7 @@ Related specs and docs:
    - **MCP:** write always succeeds; the response payload carries a `list[str]` at `data.warnings`. The agent decides whether to retry.
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
 8. **Display name resolution chain:** `app.account_settings.display_name` → `institution_name + account_subtype + …last_four` → `institution_name + …last_four` when the account has no type → `institution_name + account_subtype` when it has no last four → `institution_name` alone → `account_subtype + …last_four` when it has no institution → `account_subtype` alone → `…last_four` alone → the literal `Unnamed account`. First non-empty wins. A last four outranks the category beside it at every level: `checking` is shared by every checking account, while the last four is what tells two of them apart. Reaching the terminal therefore means the account has no institution, no subtype, no type **and** no last four. Materialized inside `core.dim_accounts.display_name`. The terminal is that literal and never the `account_id`: for an account carrying no accepted link the id *is* the institution's own account number, and the model cannot tell that case from a canonical one, so naming no account at all beats naming one with a number. The subtype is preferred over the canonical `account_type` because "checking" reads to a human where "depository" does not; a user override of `account_subtype` flows through to the rendered name. Because that literal names no account, it is refused wherever a name is used to *identify* one — fuzzy resolution, the strict `--account` resolver, and merge-name matching — since every unnameable account wears it and a string comparison would report a perfect match between two unrelated accounts. Such an account stays addressable by its `account_id`, which `accounts list` prints beside the literal: that listing is where a user meets the account, and `accounts set` accepts no other selector. The id is never substituted into a *name* slot to fill the gap — an account with no resolver link carries its source-native key there (on OFX a real `<ACCTID>`), and candidate names are rendered into the not-found error that the CLI persists to its log. Resolution by id is unaffected, because the resolver matches ids off the candidate's id field. That literal is also reserved at the write path: `accounts set --display-name` refuses it, folded through the same `normalize_reference` that `resolve_entity_reference`'s third rung matches on — so case variants, padding, doubled spaces and NFKC-equivalent characters are refused with it. An account wearing a user-set copy would drop out of those same lookups with no error; worse, because generated placeholders are filtered out of the candidate-name slot, it becomes the *unique* hit for a request carrying the label another account displays. Reserving on a narrower fold than the matcher compares would leave that difference as a hole. The check lives on the write path rather than in `AccountSettings.__post_init__`, which runs on reads too and would strand any row already holding the label.
-9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). `--archive`/`--unarchive` and `--include`/`--exclude` are independent flags — see [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags. (`--default-cost-basis-method` added by [`investments-data-model.md`](investments-data-model.md).)
+9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, `--investment-source-type`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). `--archive`/`--unarchive` and `--include`/`--exclude` are independent flags — see [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags. (`--default-cost-basis-method` added by [`investments-data-model.md`](investments-data-model.md).)
 10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) and one typed read tool. Use `accounts(view="list")`, `accounts(view="detail", reference=...)`, `accounts(view="summary")`, or `accounts(view="resolve", query=...)`. Detail requires `reference`; resolve requires `query`; summary is aggregate-only. `include_closed` applies to list and detail reads, never mutates state, and response data emits `archived`.
 11. **Sensitivity tiers:** `accounts(view="summary")` is aggregate-only. `accounts` dynamically classifies its selected projection. `accounts_set` is statically classified with a sensitivity floor of `critical`; its mutations remain audited.
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
@@ -94,6 +94,16 @@ SQL `CHECK` constraint rather than service-layer validation, since an
 elected-but-unimplemented method would silently miscompute cost basis (see
 that spec's Cost-Basis Engine section). `NULL` falls back to the global FIFO
 default.
+
+**`investment_source_type`** and **`investment_source_type_changed_at`** —
+added by [`investment-source-choice.md`](investment-source-choice.md) and
+appended after `archived_at`. `investment_source_type` is the one source type
+(`manual` or `plaid`) whose investment rows feed the account's ledger; `NULL`
+uses every source. It is validated in `AccountService` against the source types
+the ledger unions, with no SQL `CHECK`, so a new investment importer becomes
+choosable without a migration. `investment_source_type_changed_at` records when
+it last changed (a clear and an undo included), so the ledger's `updated_at`
+keeps advancing.
 
 **Open question — Plaid precedence (deferred to `sync-plaid.md`):** When Plaid sync ships and starts populating `official_name` / `last_four` / `account_subtype` / `holder_category` / `currency_code` automatically, what happens if the user has already written a value? Options: (i) Plaid wins on resync, (ii) user wins, (iii) per-field "user_modified" tracking. For v1 (no Plaid yet) this doesn't matter. The table shape is forward-compatible with all three; pick one when `sync-plaid.md` is designed.
 
@@ -151,6 +161,7 @@ moneybin accounts set <account_id>
     [--currency USD]
     [--credit-limit AMOUNT]
     [--default-cost-basis-method fifo|hifo|specific|average]
+    [--investment-source-type manual|plaid]
     [--clear-display-name]
     [--clear-official-name]
     [--clear-last-four]
@@ -159,6 +170,7 @@ moneybin accounts set <account_id>
     [--clear-currency]
     [--clear-credit-limit]
     [--clear-default-cost-basis-method]
+    [--clear-investment-source-type]
     [--yes]
 ```
 - At least one field flag required (else exit `2` with usage error).
@@ -172,6 +184,7 @@ moneybin accounts set <account_id>
   ```
   `--yes` skips the prompt and writes. Non-TTY contexts (scripts, CI) without `--yes` exit `2` with the warning text — forces explicit intent.
 - **`--default-cost-basis-method`** (added by [`investments-data-model.md`](investments-data-model.md)): per-account default cost-basis method (`fifo`, `hifo`, `specific`, `average`); an invalid value is rejected before any write (SQL `CHECK`, not soft-validated). `NULL` (the default, or after `--clear-default-cost-basis-method`) falls back to global FIFO. A per-security override on the security catalog (`moneybin investments securities set --method`) takes precedence over this account default; see that spec's Cost-Basis Engine section.
+- **`--investment-source-type`** (added by [`investment-source-choice.md`](investment-source-choice.md)): which source type feeds the account's investment ledger, `manual` (recorded trades) or `plaid` (synced); an unknown or uppercase value is rejected before any write with `mutation_invalid_input`. Nothing is deleted; `--clear-investment-source-type` uses every source again. The write restates the investment ledger before returning, and the receipt adds an "Investment source" row naming the trades now used and ignored.
 
 ## MCP Interface
 
@@ -191,7 +204,7 @@ view selectors. Account reads therefore share `accounts(view=...)`; the separate
 
 | Tool | Params | Runtime payload |
 |---|---|---|
-| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`, `default_cost_basis_method` (added by [`investments-data-model.md`](investments-data-model.md); `fifo`/`hifo`/`specific`/`average`). Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived` and `include_in_net_worth` are independent: archiving today excludes the account from net worth entirely, history included — `archived_at` records the transition for a future date-scoped release, not applied yet. Use `include_in_net_worth=False` to exclude an account regardless of archived status. | Updated settings in `data`, including `data.warnings` as `list[str]`. Data emits `archived`, not `is_archived`. The retired cascade's `cascaded_include_in_net_worth` field is removed outright (pre-launch posture; see `design-principles.md`) rather than kept as an always-`null` field. The current registry advertises no output schema. |
+| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`, `default_cost_basis_method` (added by [`investments-data-model.md`](investments-data-model.md); `fifo`/`hifo`/`specific`/`average`), `investment_source_type` (added by [`investment-source-choice.md`](investment-source-choice.md); `manual`/`plaid`; clearable, and a set or clear answers in `actions[]` with the trades now used and ignored). Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived` and `include_in_net_worth` are independent: archiving today excludes the account from net worth entirely, history included — `archived_at` records the transition for a future date-scoped release, not applied yet. Use `include_in_net_worth=False` to exclude an account regardless of archived status. | Updated settings in `data`, including `data.warnings` as `list[str]`. Data emits `archived`, not `is_archived`. The retired cascade's `cascaded_include_in_net_worth` field is removed outright (pre-launch posture; see `design-principles.md`) rather than kept as an always-`null` field. The current registry advertises no output schema. |
 
 ### Soft-validation in MCP
 
