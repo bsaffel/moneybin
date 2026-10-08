@@ -19,6 +19,7 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.catalog import ReportCatalog
 from moneybin.reports._framework.contract import (
@@ -612,6 +613,9 @@ def test_a_row_dated_in_a_market_closure_prices_at_the_publication_before_it(
     """
     _seed_rate(saved_db, "EUR", "USD", date(2025, 12, 24), Decimal("1.1787"))
     _seed_rate(saved_db, "EUR", "USD", date(2025, 12, 29), Decimal("1.1773"))
+    CurrencyService(saved_db).record_coverage(
+        "EUR", "USD", date(2025, 12, 24), date(2025, 12, 29), "frankfurter"
+    )
 
     outcome = convert_records(
         [_row(txn_date=date(2025, 12, 27))],
@@ -710,6 +714,25 @@ def test_an_undeclared_target_names_the_setting_refresh_reads(
     assert reason.startswith("EUR->USD is unfetched")
     assert "'moneybin profile set display_currency_targets JPY,USD'" in reason
     assert "'moneybin refresh'" in reason
+
+
+def test_a_full_target_list_is_not_offered_as_the_fix(saved_db: Database) -> None:
+    """One more target than the limit allows would be refused, so name fx set."""
+    _record_provider_catalog(saved_db, "USD", "EUR", "GBP")
+    settings = ProfileSettingsRepo(saved_db)
+    settings.set_home_currency("GBP", actor="test")
+    full = (
+        "AUD BRL CAD CHF CNY CZK DKK HKD HUF IDR ILS INR ISK JPY KRW MXN MYR NOK "
+        "NZD PHP"
+    ).split()
+    assert len(full) == DISPLAY_CURRENCY_TARGETS_MAX_COUNT
+    settings.set_display_currency_targets(full, actor="test")
+
+    reason = _missing_eur_reason(saved_db)
+
+    assert reason.startswith("EUR->USD is unfetched")
+    assert "display_currency_targets" not in reason
+    assert "'moneybin fx set EUR USD <date> <rate>'" in reason
 
 
 def test_the_reason_names_no_date(saved_db: Database) -> None:

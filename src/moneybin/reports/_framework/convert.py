@@ -518,6 +518,14 @@ def _missing_reason(service: CurrencyService, base: str, target: str) -> str:
             f"'moneybin fx set {missing.from_currency} {missing.to_currency} "
             "<date> <rate>'"
         )
+    if not missing.gathered and not missing.targets:
+        return (
+            f"{pair} is unfetched: refresh gathers rates only into the home "
+            "currency and declared display currencies, and this profile "
+            "already declares the most it may; record the rate with "
+            f"'moneybin fx set {missing.from_currency} {missing.to_currency} "
+            "<date> <rate>', or replace a declared display currency"
+        )
     if not missing.gathered:
         return (
             f"{pair} is unfetched: refresh gathers rates only into the home "

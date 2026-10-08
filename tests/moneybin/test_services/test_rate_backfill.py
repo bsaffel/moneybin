@@ -881,6 +881,47 @@ def test_an_unsupported_verdict_reaches_a_later_cache_only_read(db: Database) ->
     assert CurrencyService(db).unsupported("JPY", "USD") == {"JPY"}
 
 
+def test_a_fully_successful_refresh_still_records_the_provider_list(
+    db: Database,
+) -> None:
+    """Every pair answering is the normal case, and the list must stay current.
+
+    A report reading an ad-hoc display currency the provider never publishes
+    needs that list to say so, whatever the refresh's own pairs answered.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=_SpanAdapter())
+
+    assert CurrencyService(db).unsupported("AED", "USD") == {"AED"}
+
+
+def test_a_range_answer_records_the_span_it_proves_complete(db: Database) -> None:
+    """From the first to the last kept publication, every date is accounted for."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(date(2026, 3, 9), date(2026, 3, 13))
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    rows = db.execute(
+        "SELECT from_currency, to_currency, start_date, end_date "
+        "FROM raw.exchange_rate_coverage"
+    ).fetchall()
+    assert rows == [("EUR", "USD", date(2026, 3, 9), date(2026, 3, 13))]
+
+
+def test_a_range_answer_missing_a_rate_records_no_span(db: Database) -> None:
+    """A rate dropped as unstorable leaves a hole that is not a closed market."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    run_rate_backfill(
+        db, home_currency="USD", through=_TODAY, adapter=_UnstorableAdapter()
+    )
+
+    row = db.execute("SELECT COUNT(*) FROM raw.exchange_rate_coverage").fetchone()
+    assert row == (0,)
+
+
 def test_a_home_currency_the_provider_does_not_publish_is_reported_as_unsupported(
     db: Database,
 ) -> None:

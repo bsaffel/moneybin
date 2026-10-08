@@ -562,11 +562,20 @@ Numbered, testable. Tagged by phase.
 
     From stored rates alone, a weekend resolves to its calendar Friday, and a
     weekday with no row resolves to the publication before it only when it sits
-    inside a **market closure**: stored provider publications bracket it on both
-    sides no more than `MAX_MARKET_CLOSURE_DAYS` (7) apart. The publication after
-    the date is what makes the hop safe. It shows the cache was filled past this
-    day, so the missing day is a closed market rather than a date nobody fetched.
-    Without one, as past the newest stored rate, the date stays unpriced. The
+    inside a **market closure**. Two proofs are required. First, a recorded
+    provider answer must cover the date: `raw.exchange_rate_coverage` holds the
+    span from the first to the last publication a refresh's range answer kept
+    (only when nothing was dropped from its middle), and the span a single `fx
+    rate` fetch proves when the provider resolves a date back to its
+    publication. Inside such a span, a date with no row was a closed market.
+    Stored rows alone cannot prove that, because two separate `fx rate` lookups
+    on a Monday and a Wednesday leave the same rows as a full fetch, with a
+    Tuesday nobody asked for between them. Second, stored provider publications
+    must bracket the date no more than `MAX_MARKET_CLOSURE_DAYS` (7) apart, so a
+    stopped series is not carried forward. Past the newest stored rate, or
+    outside any recorded span, the date stays unpriced. A cache filled before
+    coverage was recorded gains its spans on the next refresh, which
+    re-requests the whole window. The
     bound is a week because ECB's longest closure, Easter, runs Thursday to
     Tuesday (five days between publications) and Christmas runs at most the
     same. A wider gap is likelier a hole in the cache than a closed market, so
@@ -677,15 +686,19 @@ Numbered, testable. Tagged by phase.
     unsupported through an ordinary base — and when that list cannot be read,
     neither kind is claimed.
 
-    A report read has no provider to ask, so each read of that list is recorded
-    in `raw.exchange_rate_currencies`, replaced whole per provider so a currency
-    the provider stops carrying stops counting. A report that cannot price a
+    A report read has no provider to ask, so the rates step reads that list once
+    on every refresh that plans a pair, whatever the pairs answer, and `fx rate`
+    reads it when a lookup comes back empty. Each read is recorded in
+    `raw.exchange_rate_currencies`, replaced whole per provider so a currency the
+    provider stops carrying stops counting. A report that cannot price a
     pair names the pair and one of two kinds from it. *Unsupported* means a
     recorded list lacks one side, and the fix is `moneybin fx set`. *Unfetched*
     covers everything else, and the fix is `moneybin refresh`. When refresh
     never plans the target, because it is neither the home currency nor a
     declared display target, the fix is the `profile set
-    display_currency_targets` command that adds it, then a refresh. With no
+    display_currency_targets` command that adds it, then a refresh. If the
+    profile already declares the maximum number of targets, it names `fx set`
+    instead, since a longer list would be refused. With no
     recorded list, unsupported is never claimed. A market closure is never the
     reason, because Requirement 13 already prices any closure the cache
     brackets.
@@ -750,8 +763,9 @@ Numbered, testable. Tagged by phase.
 
     **Closed — a holiday-dated row is priced offline.** Requirement 13's
     market-closure rule answers it from the cache before `_fetch` is reached:
-    a weekday the provider skipped, bracketed by stored publications at most a
-    week apart, prices at the publication before it, and the applied rate
+    a weekday a recorded provider answer covers, bracketed by stored
+    publications at most a week apart, prices at the publication before it,
+    and the applied rate
     names that day. Verified live 2026-10-07: ECB published nothing on
     2025-12-25 or 2025-12-26, and a 2025-12-27 balance now converts at the
     2025-12-24 rate in both the SQL rungs and the read-time conversion. A

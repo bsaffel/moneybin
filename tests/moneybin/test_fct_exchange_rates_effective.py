@@ -45,6 +45,20 @@ def _insert_provider(
     )
 
 
+def _insert_coverage(
+    db: Database, *, from_currency: str, to_currency: str, start: str, end: str
+) -> None:
+    """Record a complete provider answer over a span, as a refresh would."""
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rate_coverage
+            (from_currency, to_currency, start_date, end_date, source_type)
+        VALUES (?, ?, ?::DATE, ?::DATE, 'frankfurter')
+        """,  # test fixture, not executing user SQL
+        [from_currency, to_currency, start, end],
+    )
+
+
 def _insert_override(
     db: Database,
     *,
@@ -97,6 +111,9 @@ def effective_template(
     _insert_provider(
         db, from_currency="USD", to_currency="FFF", rate_date="2026-01-08", rate="2.000"
     )
+    _insert_coverage(
+        db, from_currency="USD", to_currency="FFF", start="2026-01-05", end="2026-01-08"
+    )
 
     # Thursday, then the following Monday — no Friday quote, so the gap
     # Friday carries from Thursday and brackets a real weekend.
@@ -105,6 +122,9 @@ def effective_template(
     )
     _insert_provider(
         db, from_currency="USD", to_currency="GGG", rate_date="2026-01-12", rate="4.000"
+    )
+    _insert_coverage(
+        db, from_currency="USD", to_currency="GGG", start="2026-01-08", end="2026-01-12"
     )
 
     # A real observation dated exactly on a Saturday -- no shipped adapter
@@ -121,6 +141,9 @@ def effective_template(
     _insert_provider(
         db, from_currency="USD", to_currency="LLL", rate_date="2026-01-12", rate="9.000"
     )
+    _insert_coverage(
+        db, from_currency="USD", to_currency="LLL", start="2026-01-05", end="2026-01-12"
+    )
 
     # Thursday, then the Friday eight days later — wider than a market closure.
     _insert_provider(
@@ -128,6 +151,17 @@ def effective_template(
     )
     _insert_provider(
         db, from_currency="USD", to_currency="JJJ", rate_date="2026-01-23", rate="7.000"
+    )
+    _insert_coverage(
+        db, from_currency="USD", to_currency="JJJ", start="2026-01-15", end="2026-01-23"
+    )
+
+    # Monday and Wednesday from two separate lookups — no answer covers Tuesday.
+    _insert_provider(
+        db, from_currency="USD", to_currency="MMM", rate_date="2026-01-05", rate="1.500"
+    )
+    _insert_provider(
+        db, from_currency="USD", to_currency="MMM", rate_date="2026-01-07", rate="1.600"
     )
 
     # GBP->USD: no provider coverage at all, for the uncovered-override case.
@@ -391,6 +425,25 @@ def test_parity_with_resolve_rate_across_an_interior_closure(db: Database) -> No
     )
     assert resolved.rate == Decimal(str(row[0]))
     assert resolved.rate_date == date(2026, 1, 5)
+
+
+@pytest.mark.slow
+def test_an_unfetched_day_between_separate_lookups_is_unpriced_on_both_surfaces(
+    db: Database,
+) -> None:
+    """Monday and Wednesday rows with no answer covering Tuesday prove nothing.
+
+    Tuesday may have been published and never asked for, so neither the spine
+    nor the cache-only `resolve_rate` prices it from Monday.
+    """
+    rows = db.execute(
+        "SELECT effective_date FROM core.fct_exchange_rates_effective "
+        "WHERE from_currency = 'USD' AND to_currency = 'MMM' ORDER BY effective_date"
+    ).fetchall()
+    assert [str(r[0]) for r in rows] == ["2026-01-05", "2026-01-07"]
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db, adapter=None).resolve_rate("USD", "MMM", date(2026, 1, 6))
 
 
 @pytest.mark.slow

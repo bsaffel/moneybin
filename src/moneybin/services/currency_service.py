@@ -30,6 +30,7 @@ from moneybin.connectors.feed_errors import FeedError, FeedUnreachableError
 from moneybin.connectors.rates.protocol import RateAdapter, RateObservation
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
 from moneybin.metrics.registry import (
     FX_RATE_FETCH_DURATION_SECONDS,
     FX_RATE_RESOLUTION_TOTAL,
@@ -40,6 +41,7 @@ from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services._validators import validate_currency_code, validate_note_text
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import (
+    EXCHANGE_RATE_COVERAGE,
     EXCHANGE_RATE_CURRENCIES,
     EXCHANGE_RATE_OVERRIDES,
     EXCHANGE_RATES,
@@ -151,7 +153,8 @@ class MissingRate:
     ``unsupported`` names the currencies the provider's last-read list lacks;
     when it is non-empty only ``moneybin fx set`` can fill the pair. Otherwise
     the pair is unfetched, and ``gathered`` says whether refresh plans it at all
-    — when it does not, ``targets`` is the display-currency list that would.
+    — when it does not, ``targets`` is the display-currency list that would, or
+    empty when the profile already declares the most targets it may.
     """
 
     from_currency: str
@@ -242,6 +245,12 @@ class CurrencyService:
 
         observation = self._fetch(base, quote, on)
         self._store(observation)
+        # The provider resolving `on` back to its publication day says nothing
+        # was published in between, which is the proof the offline closure
+        # rule needs for those days.
+        self.record_coverage(
+            base, quote, observation.rate_date, on, observation.source_type
+        )
 
         # The provider can also resolve backwards — a weekday holiday reaches
         # here, because only a weekend is hopped before the fetch. An override
@@ -689,6 +698,9 @@ class CurrencyService:
         planned = {canonical_currency(code) for code in (*declared, home) if code}
         if quote in planned:
             return MissingRate(base, quote)
+        if len(declared) >= DISPLAY_CURRENCY_TARGETS_MAX_COUNT:
+            # Adding one more would be refused, so no target list is a fix.
+            return MissingRate(base, quote, gathered=False)
         return MissingRate(base, quote, gathered=False, targets=(*declared, quote))
 
     def _recorded_unsupported(self, codes: Sequence[str]) -> set[str] | None:
@@ -730,28 +742,59 @@ class CurrencyService:
     def _closure_publication(self, base: str, quote: str, on: date) -> date | None:
         """The publication a market closure around ``on`` carries, or ``None``.
 
-        Stored provider rows must bracket ``on`` on both sides no more than
-        ``MAX_MARKET_CLOSURE_DAYS`` apart: a publication after it is what shows
-        the cache was filled past this day, so the gap is a closed market rather
-        than a date nobody fetched. Overrides do not count as either side — a
-        user's correction says nothing about whether the market was open.
+        Two proofs are required. A recorded coverage span must include ``on``:
+        the provider answered for that day and published nothing, so the gap is
+        a closed market. Stored rows alone cannot say that, because two separate
+        `fx rate` lookups leave the same rows as a full fetch with a real gap
+        between them. And stored provider rows must bracket ``on`` no more than
+        ``MAX_MARKET_CLOSURE_DAYS`` apart, so a stopped series is not carried
+        forward indefinitely. Overrides count toward neither: a user's
+        correction says nothing about whether the market was open.
         """
-        row = self._db.execute(
-            f"""
-            SELECT
-                (SELECT MAX(rate_date) FROM {EXCHANGE_RATES.full_name}
-                  WHERE from_currency = ? AND to_currency = ? AND rate_date < ?),
-                (SELECT MIN(rate_date) FROM {EXCHANGE_RATES.full_name}
-                  WHERE from_currency = ? AND to_currency = ? AND rate_date > ?)
-            """,  # TableRef + parameterized values
-            [base, quote, on, base, quote, on],
-        ).fetchone()
-        if row is None or row[0] is None or row[1] is None:
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT
+                    (SELECT MAX(rate_date) FROM {EXCHANGE_RATES.full_name}
+                      WHERE from_currency = ? AND to_currency = ? AND rate_date < ?),
+                    (SELECT MIN(rate_date) FROM {EXCHANGE_RATES.full_name}
+                      WHERE from_currency = ? AND to_currency = ? AND rate_date > ?),
+                    EXISTS (SELECT 1 FROM {EXCHANGE_RATE_COVERAGE.full_name}
+                      WHERE from_currency = ? AND to_currency = ?
+                        AND start_date <= ? AND end_date >= ?)
+                """,  # TableRef + parameterized values
+                [base, quote, on, base, quote, on, base, quote, on, on],
+            ).fetchone()
+        except duckdb.CatalogException:
+            # A read-only open skips the migration runner, so an upgrading
+            # profile can reach this before the coverage table exists.
+            return None
+        if row is None or row[0] is None or row[1] is None or not row[2]:
             return None
         before, after = row[0], row[1]
         if (after - before).days > MAX_MARKET_CLOSURE_DAYS:
             return None
         return before
+
+    def record_coverage(
+        self,
+        from_currency: str,
+        to_currency: str,
+        start: date,
+        end: date,
+        source_type: str,
+    ) -> None:
+        """Record that the provider answered for every date in ``[start, end]``.
+
+        Callers vouch that the stored rows already hold every publication in
+        the span; the closure rule trusts a date inside it to be closed.
+        """
+        self._db.execute(
+            f"INSERT INTO {EXCHANGE_RATE_COVERAGE.full_name} "  # TableRef + parameterized values
+            "(from_currency, to_currency, start_date, end_date, source_type) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            [from_currency, to_currency, start, end, source_type],
+        )
 
 
 def build_currency_service(db: Database, *, actor: str = "system") -> CurrencyService:

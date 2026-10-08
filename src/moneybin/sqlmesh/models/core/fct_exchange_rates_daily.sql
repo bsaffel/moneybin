@@ -35,7 +35,8 @@
    carrying that quote forward, and nothing else. This mirrors
    `_last_publication_day` exactly and stops exactly where it stops.
    Inside the window a day carries only across a market closure — the weekend
-   after a Friday, or a gap whose bracketing publications sit at most
+   after a Friday, or a day inside a recorded provider answer
+   (raw.exchange_rate_coverage) whose bracketing publications sit at most
    MAX_MARKET_CLOSURE_DAYS (7) apart, the rule resolve_rate's offline path
    applies — so a holiday prices at the publication before it and a wider
    hole stays unpriced. `MAX_BACKWARD_RESOLUTION_DAYS` (14) is not that
@@ -173,11 +174,13 @@ WITH provider_obs AS (
   )
 ), provider_closures AS (
   /* A carried row survives only as a market closure: the weekend after a
-     Friday (_last_publication_day's hop), or a gap whose two bracketing
-     publications are at most 7 days apart — MAX_MARKET_CLOSURE_DAYS in
-     currency_service.py, which resolve_rate's offline closure rule reads, so
-     the two answer the same days. A wider gap is likelier a hole in the cache
-     than a closed market, and stays unpriced (Requirement 5). */
+     Friday (_last_publication_day's hop), or a day a recorded provider answer
+     covered (raw.exchange_rate_coverage) whose two bracketing publications are
+     at most 7 days apart — MAX_MARKET_CLOSURE_DAYS in currency_service.py, the
+     same rule resolve_rate's offline path applies, so the two answer the same
+     days. Without coverage the gap may be a day nobody fetched (two separate
+     `fx rate` lookups leave the same rows as a full fetch); a wider gap is
+     likelier a hole than a closed market. Both stay unpriced (Requirement 5). */
   SELECT
     from_currency,
     to_currency,
@@ -194,7 +197,19 @@ WITH provider_obs AS (
       AND ISODOW(published_date) = 5
       AND effective_date - published_date <= 2
     )
-    OR next_published_date - published_date <= 7
+    OR (
+      next_published_date - published_date <= 7
+      AND EXISTS(
+        SELECT
+          1
+        FROM raw.exchange_rate_coverage AS c
+        WHERE
+          c.from_currency = provider_filled.from_currency
+          AND c.to_currency = provider_filled.to_currency
+          AND c.start_date <= provider_filled.effective_date
+          AND c.end_date >= provider_filled.effective_date
+      )
+    )
 ), identity_currencies AS (
   /* Both arms feed this, not core.dim_accounts alone: core.fct_balances
      coalesces a balance observation's own captured currency over the

@@ -222,10 +222,11 @@ rates`, captured 2026-10-07, so the CAD, EUR, and GBP rates are Frankfurter's
 own. The refresh receipt is omitted. AED has no ECB series, so refresh named
 it unsupported.
 
-A date inside a closure prices at the last rate published before it, as long
-as stored rates on both sides bracket it no more than a week apart. A rate
-published after the date shows the market reopened, so the missing day is a
-closure, not a gap nobody fetched. Past the newest stored rate a date stays
+A date inside a closure prices at the last rate published before it. Two
+conditions apply. The refresh, or an `fx rate` lookup, must have asked the
+provider about that date and got no rate back for it, so the missing day is a
+closure rather than a day nobody fetched. And stored rates on both sides must
+bracket it no more than a week apart. Past the newest stored rate a date stays
 unpriced. `fx rate` names both days:
 
 ```console

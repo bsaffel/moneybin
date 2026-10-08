@@ -348,8 +348,12 @@ _HOLIDAY_SATURDAY = date(2025, 12, 27)
 _NEXT_PUBLICATION = date(2025, 12, 29)  # Monday
 
 
-def _cache_christmas(db: Database) -> None:
-    """The EUR/USD series as ECB published it around Christmas 2025."""
+def _cache_christmas(db: Database, *, covered: bool = True) -> None:
+    """The EUR/USD series as ECB published it around Christmas 2025.
+
+    ``covered`` records the range answer that produced it, as a refresh does;
+    without it the two rows are what two separate lookups would leave.
+    """
     _cache(
         db,
         from_currency="EUR",
@@ -364,6 +368,42 @@ def _cache_christmas(db: Database) -> None:
         rate_date=_NEXT_PUBLICATION,
         rate="1.17730000",
     )
+    if covered:
+        CurrencyService(db).record_coverage(
+            "EUR", "USD", _XMAS_EVE, _NEXT_PUBLICATION, "frankfurter"
+        )
+
+
+def test_offline_rows_from_separate_lookups_do_not_prove_a_closure(
+    db: Database,
+) -> None:
+    """Two stored days a few days apart may bracket a day nobody fetched.
+
+    Only a recorded provider answer covering the day proves it closed;
+    otherwise an ordinary weekday would be priced from the day before.
+    """
+    _cache_christmas(db, covered=False)
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+
+def test_a_fetch_that_resolves_back_records_the_closure_it_proves(
+    db: Database,
+) -> None:
+    """The provider answering Boxing Day with the 24th covers the days between.
+
+    A later cache-only read can then price that day without the network.
+    """
+    _cache_christmas(db, covered=False)
+    adapter = _StubAdapter(
+        RateObservation("EUR", "USD", _XMAS_EVE, Decimal("1.1787"), "frankfurter")
+    )
+    CurrencyService(db, adapter=adapter).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    resolved = CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    assert resolved.rate_date == _XMAS_EVE
 
 
 @pytest.mark.parametrize("requested", [_BOXING_DAY, _HOLIDAY_SATURDAY])
@@ -414,6 +454,9 @@ def test_offline_a_gap_wider_than_a_market_closure_stays_unpriced(
     """Eight days between publications is likelier a hole than a closed market."""
     _cache(db, rate_date=date(2026, 3, 2), rate="0.92000000")
     _cache(db, rate_date=date(2026, 3, 10), rate="0.93000000")
+    CurrencyService(db).record_coverage(
+        "USD", "EUR", date(2026, 3, 2), date(2026, 3, 10), "frankfurter"
+    )
 
     with pytest.raises(RateUnavailableError):
         CurrencyService(db).resolve_rate("USD", "EUR", date(2026, 3, 4))

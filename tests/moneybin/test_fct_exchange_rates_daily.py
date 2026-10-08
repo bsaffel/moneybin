@@ -119,6 +119,13 @@ def fct_exchange_rates_daily_db(
         rate_date="2026-01-08",
         rate="2.0000",
     )
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rate_coverage
+            (from_currency, to_currency, start_date, end_date, source_type)
+        VALUES ('USD', 'CCC', '2026-01-05', '2026-01-08', 'frankfurter')
+        """  # test fixture, not executing user SQL
+    )
 
     # A Friday, then a Tuesday eleven days on — wider than a market closure.
     _insert_provider(
