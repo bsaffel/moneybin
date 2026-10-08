@@ -278,7 +278,7 @@ kind of row.
 
 - **A NULL `category_id` is the ignored state.** `app.category_source_map`
   stores the term under its ordinary key with no category
-  (`V069__allow_ignored_category_source_mapping.py` drops the column's
+  (`V070__allow_ignored_category_source_mapping.py` drops the column's
   `NOT NULL` in place; `category_id` is outside the primary key, so no
   rebuild). The term is *known*: the bridge holds a row for it, so it leaves
   `categories mappings pending` and is not counted by the `plaid_unmapped`

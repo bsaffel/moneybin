@@ -1370,6 +1370,78 @@ class TestAccountsSetExtended:
         parsed = result.to_dict()
         assert parsed["data"]["default_cost_basis_method"] is None
 
+    @pytest.mark.unit
+    async def test_investment_source_type_round_trips(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """investment_source_type round-trips through the payload."""
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            MagicMock(),
+        )
+        result = await accounts_set(account_id="ACC001", investment_source_type="plaid")
+        parsed = result.to_dict()
+        assert parsed["data"]["investment_source_type"] == "plaid"
+
+    @pytest.mark.unit
+    async def test_clear_investment_source_type(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """investment_source_type is in _CLEARABLE_FIELDS; clearing it returns NULL."""
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            MagicMock(),
+        )
+        await accounts_set(account_id="ACC001", investment_source_type="manual")
+        result = await accounts_set(
+            account_id="ACC001", clear_fields=["investment_source_type"]
+        )
+        parsed = result.to_dict()
+        assert parsed["data"]["investment_source_type"] is None
+
+    @pytest.mark.unit
+    async def test_source_choice_confirmation_rides_in_actions(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set or clear answers with what the ledger now uses and ignores."""
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            MagicMock(),
+        )
+        monkeypatch.setattr(
+            "moneybin.services.account_service.AccountService."
+            "investment_source_confirmation",
+            MagicMock(return_value="Using 2 recorded trades"),
+        )
+        result = await accounts_set(
+            account_id="ACC001", investment_source_type="manual"
+        )
+        assert result.to_dict()["actions"] == ["Using 2 recorded trades"]
+
+    @pytest.mark.unit
+    async def test_other_writes_carry_no_confirmation(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.account_service.AccountService."
+            "investment_source_confirmation",
+            MagicMock(return_value="Using 2 recorded trades"),
+        )
+        result = await accounts_set(account_id="ACC001", display_name="Renamed")
+        assert not result.to_dict().get("actions")
+
+    @pytest.mark.unit
+    async def test_unknown_investment_source_type_is_refused(
+        self, mcp_db: Path
+    ) -> None:
+        result = await accounts_set(
+            account_id="ACC001",
+            investment_source_type="ofx",  # type: ignore[arg-type]  # service must still refuse
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+
 
 class TestBalanceCurrency:
     """`core.fct_balances_daily` carries a per-row currency; the surface must too."""

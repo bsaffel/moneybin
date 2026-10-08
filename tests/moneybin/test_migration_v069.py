@@ -1,119 +1,107 @@
-"""V069: app.category_source_map.category_id accepts NULL (an ignored term)."""
+"""V069: add app.account_settings.investment_source_type and its change time.
+
+Pure additive DDL, but the fixture is still populated (3 rows) so the upgrade is
+shown to leave existing settings rows at NULL (today's behavior: every source).
+"""
 
 from __future__ import annotations
 
 import pytest
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V069__allow_ignored_category_source_mapping import (
-    migrate,
-)
-from tests.moneybin.migration_helpers import column_info, run_migration
+from moneybin.sql.migrations.V069__add_investment_source_type import migrate
+from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
-_V068_CATEGORY_SOURCE_MAP_SQL = """
-CREATE TABLE app.category_source_map (
-    source_type VARCHAR NOT NULL,
-    source_origin VARCHAR NOT NULL,
-    source_category_code VARCHAR NOT NULL,
-    source_subcategory_code VARCHAR NOT NULL DEFAULT '',
-    code_level VARCHAR NOT NULL DEFAULT 'detailed'
-        CHECK (code_level IN ('detailed', 'primary')),
-    category_id VARCHAR NOT NULL,
-    source_taxonomy_version VARCHAR,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (
-        source_type, source_origin, source_category_code, source_subcategory_code
+_NEW_COLUMNS = ("investment_source_type", "investment_source_type_changed_at")
+_SETTINGS_COLUMNS = ("account_id", "display_name", "archived", "include_in_net_worth")
+
+
+@pytest.fixture()
+def pre_v069_db(db: Database) -> Database:
+    """app.account_settings without the V069 columns, holding three rows."""
+    for column in _NEW_COLUMNS:
+        db.execute(
+            f"ALTER TABLE app.account_settings DROP COLUMN {column}"
+        )  # test fixture, hardcoded column names
+    insert_rows(
+        db,
+        "app",
+        "account_settings",
+        _SETTINGS_COLUMNS,
+        [
+            ("acc_choice_a", "Brokerage A", False, True),
+            ("acc_choice_b", "Brokerage B", True, False),
+            ("acc_choice_c", None, False, True),
+        ],
     )
-)
-"""
-
-_ROWS = [
-    ("csv", "chase_credit", "Coffee Shops", "", "detailed", "cat-coffee", None),
-    ("csv", "chase_credit", "Travel", "Air", "detailed", "cat-air", None),
-    ("plaid", "", "FOOD_AND_DRINK_COFFEE", "", "detailed", "FND-COF", "plaid_pfc_v2"),
-    ("plaid", "", "TRANSPORTATION", "", "primary", "TRP", "plaid_pfc_v2"),
-]
-
-
-@pytest.fixture
-def v068_db(db: Database) -> Database:
-    """A populated table in the V068 shape, where category_id is NOT NULL."""
-    db.execute("DROP TABLE app.category_source_map")
-    db.execute(_V068_CATEGORY_SOURCE_MAP_SQL)
-    db.execute("""
-        INSERT INTO app.category_source_map
-            (source_type, source_origin, source_category_code,
-             source_subcategory_code, code_level, category_id,
-             source_taxonomy_version)
-        VALUES
-            ('csv', 'chase_credit', 'Coffee Shops', '', 'detailed', 'cat-coffee', NULL),
-            ('csv', 'chase_credit', 'Travel', 'Air', 'detailed', 'cat-air', NULL),
-            ('plaid', '', 'FOOD_AND_DRINK_COFFEE', '', 'detailed', 'FND-COF',
-             'plaid_pfc_v2'),
-            ('plaid', '', 'TRANSPORTATION', '', 'primary', 'TRP', 'plaid_pfc_v2')
-    """)
-    assert column_info(db, "app", "category_source_map", "category_id")[1] is False
     return db
 
 
-def _rows(db: Database) -> list[tuple[object, ...]]:
-    return db.execute(
-        "SELECT source_type, source_origin, source_category_code, "
-        "source_subcategory_code, code_level, category_id, source_taxonomy_version "
-        "FROM app.category_source_map "
-        "ORDER BY source_type, source_category_code"
+def _column_comment(db: Database, column: str) -> str | None:
+    row = db.execute(
+        "SELECT comment FROM duckdb_columns() "
+        "WHERE schema_name = 'app' AND table_name = 'account_settings' "
+        "AND column_name = ?",
+        [column],
+    ).fetchone()
+    assert row is not None
+    return row[0]
+
+
+def test_v069_adds_both_columns_as_null(pre_v069_db: Database) -> None:
+    for column in _NEW_COLUMNS:
+        assert not column_exists(pre_v069_db, "app", "account_settings", column)
+    run_migration(pre_v069_db, migrate)
+    for column in _NEW_COLUMNS:
+        assert column_exists(pre_v069_db, "app", "account_settings", column)
+    rows = pre_v069_db.execute(
+        "SELECT investment_source_type, investment_source_type_changed_at "
+        "FROM app.account_settings"
     ).fetchall()
+    assert len(rows) == 3
+    assert all(r == (None, None) for r in rows)
 
 
-def test_v069_makes_category_id_nullable_and_keeps_every_row(
-    v068_db: Database,
-) -> None:
-    run_migration(v068_db, migrate)
-
-    assert column_info(v068_db, "app", "category_source_map", "category_id") == (
-        "VARCHAR",
-        True,
-    )
-    assert _rows(v068_db) == _ROWS
-
-
-def test_v069_keeps_the_primary_key(v068_db: Database) -> None:
-    """Dropping the constraint in place must not lose the four-column key."""
-    run_migration(v068_db, migrate)
-
-    with pytest.raises(Exception, match="(?i)duplicate key|primary key"):
-        v068_db.execute(
-            "INSERT INTO app.category_source_map "
-            "(source_type, source_origin, source_category_code, category_id) "
-            "VALUES ('csv', 'chase_credit', 'Coffee Shops', 'cat-other')"
-        )
+def test_v069_appends_after_archived_at_with_comments(pre_v069_db: Database) -> None:
+    run_migration(pre_v069_db, migrate)
+    ordered = [
+        r[0]
+        for r in pre_v069_db.execute(
+            "SELECT column_name FROM duckdb_columns() "
+            "WHERE schema_name = 'app' AND table_name = 'account_settings' "
+            "ORDER BY column_index"
+        ).fetchall()
+    ]
+    assert ordered[-2:] == list(_NEW_COLUMNS)
+    assert ordered.index("archived_at") < ordered.index("investment_source_type")
+    for column in _NEW_COLUMNS:
+        assert _column_comment(pre_v069_db, column)
 
 
-def test_v069_admits_an_ignored_row(v068_db: Database) -> None:
-    run_migration(v068_db, migrate)
-
-    v068_db.execute(
-        "INSERT INTO app.category_source_map "
-        "(source_type, source_origin, source_category_code, category_id) "
-        "VALUES ('csv', 'chase_credit', 'Uncategorized', NULL)"
-    )
-    assert v068_db.execute(
-        "SELECT COUNT(*) FROM app.category_source_map WHERE category_id IS NULL"
-    ).fetchone() == (1,)
+def test_v069_is_a_no_op_on_replay(pre_v069_db: Database) -> None:
+    run_migration(pre_v069_db, migrate)
+    run_migration(pre_v069_db, migrate)
+    assert pre_v069_db.execute(
+        "SELECT COUNT(*) FROM app.account_settings"
+    ).fetchone() == (3,)
 
 
-def test_v069_idempotent_on_second_run(v068_db: Database) -> None:
-    run_migration(v068_db, migrate)
-    run_migration(v068_db, migrate)
-
-    assert _rows(v068_db) == _ROWS
-
-
-def test_v069_is_a_no_op_on_a_fresh_install(db: Database) -> None:
-    """A freshly-initialized database already has the nullable column."""
-    assert column_info(db, "app", "category_source_map", "category_id")[1] is True
+@pytest.mark.fresh_db
+def test_v069_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
+    """An upgraded table has the same ordered schema as a fresh install."""
+    fresh_schema = [
+        (row[1], row[2])
+        for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
+    ]
+    for column in _NEW_COLUMNS:
+        db.execute(
+            f"ALTER TABLE app.account_settings DROP COLUMN {column}"
+        )  # test fixture, hardcoded column names
 
     run_migration(db, migrate)
 
-    assert db.execute("SELECT COUNT(*) FROM app.category_source_map").fetchone() == (0,)
+    upgraded_schema = [
+        (row[1], row[2])
+        for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
+    ]
+    assert upgraded_schema == fresh_schema

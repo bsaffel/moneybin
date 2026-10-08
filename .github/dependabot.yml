@@ -17,3 +17,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # An action version bump is never user-visible, so it is exempt from the
+    # changelog check up front. `labels` replaces Dependabot's defaults, hence
+    # the first two. Python bumps stay unlabeled: each one gets a reviewed call.
+    labels:
+      - "dependencies"
+      - "github_actions"
+      - "skip-changelog"

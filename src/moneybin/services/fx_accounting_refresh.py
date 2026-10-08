@@ -1,4 +1,4 @@
-"""Keep materialized FX accounting coherent with mutable App inputs."""
+"""Keep materialized accounting coherent with mutable App inputs."""
 
 from __future__ import annotations
 
@@ -23,16 +23,21 @@ _RATE_SPINE_ROOT_MODEL = "core.fct_exchange_rates_daily"
 CommittedChange = Literal["setting", "exchange rate", "match decision", "undo"]
 
 
-def _committed_refresh_error(*, committed_change: CommittedChange) -> UserError:
+def _committed_refresh_error(
+    *,
+    committed_change: CommittedChange,
+    rebuilt: str = "derived FX accounting",
+    relying_on: str = "FX lots or gains",
+) -> UserError:
     verb = (
         "was saved"
         if committed_change in ("setting", "exchange rate")
         else "was committed"
     )
     return UserError(
-        f"The {committed_change} {verb}, but derived FX accounting could not be rebuilt.",
+        f"The {committed_change} {verb}, but {rebuilt} could not be rebuilt.",
         code=error_codes.REFRESH_MODEL_FAILED,
-        hint="Run 'moneybin refresh' before relying on FX lots or gains.",
+        hint=f"Run 'moneybin refresh' before relying on {relying_on}.",
     )
 
 
@@ -62,6 +67,33 @@ def restate_fx_accounting(
         return
 
     raise _committed_refresh_error(committed_change=committed_change)
+
+
+def restate_investment_ledger(
+    db: Database, *, committed_change: CommittedChange = "setting"
+) -> None:
+    """Rebuild everything downstream of core.dim_accounts after a source choice.
+
+    The account root is a superset of the FX root (bridge_currency_conversions
+    reads dim_accounts), so one restate also covers a same-call currency or
+    cost-basis change.
+    """
+
+    def _error() -> UserError:
+        return _committed_refresh_error(
+            committed_change=committed_change,
+            rebuilt="the investment ledger",
+            relying_on="holdings, lots or gains",
+        )
+
+    try:
+        presence = sqlmesh_registry.model_presence(db)
+    except UserError as exc:
+        raise _error() from exc
+    if presence.never_built:
+        return
+    if not TransformService(db).restate_models([_ACCOUNT_ROOT_MODEL]).applied:
+        raise _error()
 
 
 def _has_transfer_decision(db: Database, match_ids: Sequence[str]) -> bool:

@@ -1,5 +1,5 @@
 {
-  "sha256": "04dff3f4936dfd22c3dd1b6d9c47288d2e04f58b67d0c7ec22460fa3883c55d1",
+  "sha256": "b1ee6d6bdd2d8eeb7be5bcc479e1b9673b4cf2ac9019949b8b93a017892e3c86",
   "tool_count": 50,
   "tools": [
     {
@@ -406,7 +406,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving today excludes the account from net worth entirely (history included); archived_at is recorded for a future date-scoped release, not yet applied. include_in_net_worth=False excludes an account regardless of archived status. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.",
+        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average), investment_source_type (manual/plaid picks which investment history feeds the account's ledger; nothing is deleted, clearing it uses both), include_in_net_worth, is_archived. Invalid values raise mutation_invalid_input. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Omitted fields are unchanged; name a text field in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving excludes the account from net worth entirely, history included; include_in_net_worth=False excludes it regardless of archived status. Writes app.account_settings; revert by calling again with prior values. Amounts are in the currency named by `summary.display_currency`.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -504,6 +504,21 @@
               ],
               "default": null
             },
+            "investment_source_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "manual",
+                    "plaid"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "is_archived": {
               "anyOf": [
                 {
@@ -546,12 +561,12 @@
         "name": "accounts_set",
         "title": "Accounts Set"
       },
-      "description_bytes": 889,
-      "input_schema_bytes": 1006,
+      "description_bytes": 898,
+      "input_schema_bytes": 1118,
       "name": "accounts_set",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 2110
+      "total_bytes": 2231
     },
     {
       "annotation_bytes": 90,
@@ -5312,5 +5327,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 64284
+  "total_bytes": 64405
 }

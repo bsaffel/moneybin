@@ -1481,8 +1481,8 @@ class TestLotsList:
         assert result.exit_code == 0, result.output
         assert len(paged) == 1
         assert "basis" in paged[0]
-        assert "Revert the redundant import batch" in " ".join(paged[0].split())
-        assert "Revert the redundant import batch" not in result.stderr
+        assert "Choose one source for the account" in " ".join(paged[0].split())
+        assert "Choose one source for the account" not in result.stderr
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
