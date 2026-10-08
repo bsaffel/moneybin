@@ -667,7 +667,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- list-prompts               -- Show available MCP prompts
 |   +-- config path                -- Print the install-target config path for a client
 |   +-- install                    -- Install MoneyBin into a client's MCP config
-|         [--client claude-desktop|claude-code|cursor|vscode|windsurf|codex|gemini-cli]
+|         [--client claude-desktop|claude-code|cursor|vscode|windsurf|codex|chatgpt-desktop|gemini-cli]
 |         [--profile NAME]           Profile to configure (default: active)
 |         [--print]                  Print the snippet instead of writing
 |         [--yes]                    Skip the install confirmation prompt

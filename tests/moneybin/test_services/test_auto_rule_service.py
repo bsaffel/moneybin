@@ -1180,6 +1180,9 @@ def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -
     assert blocked.approved == 0
     assert blocked.skipped == 1
     assert blocked.rule_ids == []
+    # The refusal reason rides on the result for the surface to present.
+    assert blocked.refused_broad == [pid]
+    assert blocked.refused_unselective == []
     assert (
         AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL._value.get()  # type: ignore[reportPrivateUsage]
         == blocked_before + 1
@@ -1230,6 +1233,8 @@ def test_approve_refuses_legacy_short_contains_proposal_without_allow_broad(
     assert result.approved == 0
     assert result.skipped == 1
     assert result.rule_ids == []
+    assert result.refused_unselective == [pid]
+    assert result.refused_broad == []
     rule_count_row = real_db.execute(
         "SELECT COUNT(*) FROM app.categorization_rules WHERE created_by = 'auto_rule'"
     ).fetchone()

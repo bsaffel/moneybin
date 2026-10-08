@@ -1,7 +1,7 @@
 """Auto-rule proposal workflow (review, confirm, stats, rules)."""
 
 import logging
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import typer
 
@@ -13,9 +13,15 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.render import (
+    build_rows,
+    build_summary,
+    compose_human_result,
+    render_note,
+)
 from moneybin.cli.utils import (
     format_cli_failure,
+    generated_cli_command,
     get_terminal_policy,
     handle_cli_errors,
 )
@@ -26,6 +32,9 @@ from moneybin.privacy.payloads.categorize import (
     AutoStatsPayload,
 )
 from moneybin.protocol.envelope import build_envelope
+
+if TYPE_CHECKING:
+    from moneybin.services.auto_rule_service import AutoConfirmResult
 
 logger = logging.getLogger(__name__)
 
@@ -183,10 +192,15 @@ def categorize_auto_accept(
 
         envelope = auto_accept_envelope(result)
         if result.skipped:
+            refused = {
+                "refused_broad": result.refused_broad,
+                "refused_unselective": result.refused_unselective,
+            }
             envelope = envelope.with_error(
                 ErrorDetail(
                     message=f"{result.skipped} proposal(s) were skipped.",
                     code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    details={k: v for k, v in refused.items() if v} or None,
                 )
             )
         render_or_json(
@@ -218,8 +232,48 @@ def categorize_auto_accept(
             finite_read=False,
             receipt=True,
         )
+        _warn_refused_proposals(result)
     if result.skipped:
         raise typer.Exit(1)
+
+
+_MAX_REFUSAL_LINES = 10
+
+
+def _warn_refused_proposals(result: "AutoConfirmResult") -> None:
+    """Name each guard-refused proposal and why, on stderr.
+
+    `--allow-broad` is named but not offered as a command, as in `rules
+    create`: taking the risk is a decision, not a rerun. The review hint is
+    printed only for a broad refusal, the one `auto review` flags. Past
+    ``_MAX_REFUSAL_LINES`` the rest are counted; JSON lists every id.
+    """
+    reasons = [
+        (pid, "matches far more transactions than the evidence behind it")
+        for pid in result.refused_broad
+    ] + [
+        (pid, "its 'contains' pattern is too short to match one merchant")
+        for pid in result.refused_unselective
+    ]
+    for pid, reason in reasons[:_MAX_REFUSAL_LINES]:
+        render_note(
+            f"Attention: {pid}: {reason}; accepting it takes --allow-broad.",
+            warn=True,
+        )
+    if len(reasons) > _MAX_REFUSAL_LINES:
+        render_note(
+            f"Attention: {len(reasons) - _MAX_REFUSAL_LINES} more refused; "
+            "--output json lists every id.",
+            warn=True,
+        )
+    if result.refused_broad:
+        action = get_terminal_policy().symbols.action
+        review_cmd = generated_cli_command(
+            "transactions", "categorize", "auto", "review"
+        )
+        render_note(
+            f"{action} Review the estimated match counts: {review_cmd}", warn=True
+        )
 
 
 @app.command("stats")

@@ -1094,9 +1094,10 @@ def _either_case(words: tuple[str, ...]) -> str:
     return "|".join(f"[{word[0].upper()}{word[0]}]{word[1:]}" for word in words)
 
 
-# Digits, or words up to 999: "eight", "forty-six", "one hundred twelve".
+# Digits (comma-grouped or not), or words up to 999: "1,000", "eight",
+# "forty-six", "one hundred twelve".
 _NUMBER = (
-    r"(\d+|"
+    r"(\d{1,3}(?:,\d{3})+|\d+|"
     rf"(?:(?:{_either_case(_UNIT_WORDS[1:10])}|[Aa]) hundred(?: and)?(?: |-))?"
     rf"(?:(?:{_either_case(_TENS_WORDS)})(?:[- ](?:{_either_case(_UNIT_WORDS[1:10])}))?"
     rf"|(?:{_either_case(_UNIT_WORDS)}))"
@@ -1105,8 +1106,8 @@ _NUMBER = (
 
 
 def _as_int(token: str) -> int:
-    if token.isdigit():
-        return int(token)
+    if token.replace(",", "").isdigit():
+        return int(token.replace(",", ""))
     total = 0
     for word in re.split(r"[\s-]+", token.lower()):
         if word == "a":
@@ -1162,6 +1163,65 @@ def _hidden_stub_counts() -> tuple[int, int]:
     return len(UNIMPLEMENTED_CLI_PATHS) + exit_one, exit_one
 
 
+def _doctor_investment_check_count() -> int:
+    """Length of the `investment_checks` list `DoctorService.run_all` runs.
+
+    The list is local to the method, so it is read from the source rather
+    than by running the doctor against a database.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from moneybin.services.doctor_service import DoctorService
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(DoctorService.run_all)))
+    literals: list[ast.List] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign | ast.AugAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(
+                isinstance(t, ast.Name) and t.id == "investment_checks" for t in targets
+            ):
+                assert isinstance(node, ast.Assign), "investment_checks is extended"
+                assert isinstance(node.value, ast.List), "investment_checks not a list"
+                literals.append(node.value)
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "investment_checks"
+        ):
+            raise AssertionError(f"investment_checks.{node.attr} changes the count")
+    assert len(literals) == 1, "DoctorService.run_all no longer lists investment_checks"
+    (checks,) = literals
+    assert not any(isinstance(e, ast.Starred) for e in checks.elts), (
+        "investment_checks unpacks a sequence; count it another way"
+    )
+    return len(checks.elts)
+
+
+def _duckdb_versions() -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """(the version `uv.lock` pins, the `pyproject.toml` floor) for DuckDB."""
+    import tomllib
+
+    lock = tomllib.loads((_REPO_ROOT / "uv.lock").read_text())
+    pinned = [p["version"] for p in lock["package"] if p["name"] == "duckdb"]
+    assert len(pinned) == 1, f"uv.lock pins duckdb {len(pinned)} times: {pinned}"
+    project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
+    floors = [
+        found.group(1)
+        for dep in project["project"]["dependencies"]
+        if (found := re.fullmatch(r"duckdb>=(\d+(?:\.\d+)*)", dep))
+    ]
+    assert len(floors) == 1, "pyproject.toml no longer floors duckdb as `duckdb>=X.Y.Z`"
+    version = re.fullmatch(r"\d+(?:\.\d+)*", pinned[0])
+    assert version, f"uv.lock's duckdb {pinned[0]!r} is not a plain release"
+    return (
+        tuple(int(part) for part in pinned[0].split(".")),
+        tuple(int(part) for part in floors[0].split(".")),
+    )
+
+
 #: Specs that restate a guarded figure beside their own contract; they are
 #: scanned with the user-facing docs.
 _LIVE_SPECS = (
@@ -1186,8 +1246,11 @@ def _stated_figures() -> list[_Figure]:
     from moneybin.cli.commands.mcp import (
         _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
     )
+    from moneybin.config import DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS, MCPConfig
     from moneybin.exports.catalog import BUNDLE_TABLES
     from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+    from moneybin.privacy.sensitivity import Sensitivity
+    from moneybin.reports.definitions import ALL_REPORTS
 
     domains = _spec_domain_table()
     assert frozenset().union(*domains.values()) == STANDARD_TOOL_NAMES, (
@@ -1208,7 +1271,11 @@ def _stated_figures() -> list[_Figure]:
     ), "moneybin-mcp.md's domain-count sentence disagrees with its own table"
     seeds = _REPO_ROOT / "src" / "moneybin" / "sqlmesh" / "models" / "seeds"
     with (seeds / "categories.csv").open(newline="") as handle:
-        seeded_categories = sum(1 for _ in csv.DictReader(handle))
+        seed_rows = list(csv.DictReader(handle))
+    seeded_categories = len(seed_rows)
+    seeded_primaries = len({row["category"] for row in seed_rows})
+    mcp_defaults = MCPConfig()
+    duckdb_pinned, duckdb_floor = _duckdb_versions()
     stub_count, exit_one_stub_count = _hidden_stub_counts()
     n = _NUMBER
     return [
@@ -1228,7 +1295,7 @@ def _stated_figures() -> list[_Figure]:
         _Figure(
             "export bundle tables",
             # `\[?` admits a link opener between the count and its noun.
-            (rf"\b{n}-table \[?(?:canonical |portability )?(?:bundle|catalog)\b",),
+            (rf"\b{n}-table \[?(?:canonical |portability )?(?:bundle|catalog)s?\b",),
             (len(BUNDLE_TABLES),),
         ),
         _Figure(
@@ -1277,6 +1344,70 @@ def _stated_figures() -> list[_Figure]:
             "seeded categories",
             (rf"\b{n} seeded categories\b",),
             (seeded_categories,),
+        ),
+        _Figure(
+            # "~95 subcategories" is worded as a bound, so only the primary
+            # count is captured and pinned.
+            "seeded primary categories",
+            (rf"\b{n} primary(?: categories)?(?:,| with) ~\d+ subcategories\b",),
+            (seeded_primaries,),
+        ),
+        _Figure(
+            "built-in reports",
+            (rf"\b{n} built-in reports\b",),
+            # ALL_REPORTS is what the CLI and the report catalog register.
+            (len(ALL_REPORTS),),
+        ),
+        _Figure(
+            "system doctor investment checks",
+            # The roadmap's "gains nine investment checks" dates M1G.4, before
+            # the four price checks of M1J.3 C.2; it is history, not the count.
+            (rf"(?<!gains\s)\b{n} investment checks\b",),
+            (_doctor_investment_check_count(),),
+        ),
+        _Figure(
+            "sensitivity tiers",
+            (rf"\b{n} sensitivity tiers\b",),
+            (len(Sensitivity),),
+        ),
+        _Figure(
+            "write-lock wait budget, in seconds",
+            (
+                rf"write-lock wait budget (?:elapses|expires) \({n} s\b",
+                rf"\b{n} s write-lock budget\b",
+                rf"\(default {n} s, `DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS`",
+            ),
+            (int(DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS),),
+        ),
+        _Figure(
+            "MCP tool timeout, in seconds",
+            (
+                rf"\b{n}-second default dispatch cap\b",
+                rf"\b{n}s dispatch cap\b",
+                rf"timeout guard \({n}s default\b",
+                rf"`mcp\.tool_timeout_seconds` \(default \**{n} s\b",
+                rf"\brows with a {n}-second limit\b",
+            ),
+            (int(mcp_defaults.tool_timeout_seconds),),
+        ),
+        _Figure(
+            "MCP row cap",
+            (
+                rf"`MONEYBIN_MCP__MAX_ROWS`, {n} by default\b",
+                rf"`mcp\.max_rows` from `MoneyBinSettings` \(default \**{n}\b",
+                rf"\bcaps results at {n} rows\b",
+            ),
+            (mcp_defaults.max_rows,),
+        ),
+        _Figure(
+            "bundled DuckDB version",
+            (r"\bbundles \**DuckDB (\d+)\.(\d+)\.(\d+)\b",),
+            duckdb_pinned,
+        ),
+        _Figure(
+            "DuckDB version floor",
+            (r"`duckdb>=(\d+)\.(\d+)\.(\d+)`",),
+            duckdb_floor,
         ),
     ]
 
@@ -1359,7 +1490,8 @@ def test_public_docs_list_exactly_the_supported_clients() -> None:
     The count figure above cannot see one client swapped for another; the
     per-client install sections would go stale with the count still right.
     The MCP clients guide carries the list as bullets and the CLI reference
-    as a sentence; both are checked.
+    as a sentence; the CLI spec carries it twice, in its command tree and in
+    the `mcp install` section. All four are checked.
     """
     from moneybin.cli.commands.mcp import (
         _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
@@ -1374,6 +1506,11 @@ def test_public_docs_list_exactly_the_supported_clients() -> None:
         r"the supported clients are (.*?), and ([a-z-]+),", reference.replace("\n", " ")
     )
     assert sentence is not None, "cli-reference.md lost its supported-clients sentence"
+    cli_spec = (_REPO_ROOT / "docs" / "specs" / "moneybin-cli.md").read_text()
+    tree = re.search(r"\[--client ([a-z|-]+)\]", cli_spec)
+    assert tree is not None, "moneybin-cli.md lost its --client command-tree entry"
+    spec_sentence = re.search(r"^Supported clients: (.*?)\.", cli_spec, re.MULTILINE)
+    assert spec_sentence is not None, "moneybin-cli.md lost its supported-clients line"
     enumerations = {
         "docs/guides/mcp-clients.md": set(
             re.findall(r"^- `([a-z-]+)`", listing, flags=re.MULTILINE)
@@ -1382,12 +1519,27 @@ def test_public_docs_list_exactly_the_supported_clients() -> None:
             *sentence.group(1).split(", "),
             sentence.group(2),
         },
+        "docs/specs/moneybin-cli.md (command tree)": set(tree.group(1).split("|")),
+        "docs/specs/moneybin-cli.md (mcp install)": set(
+            re.findall(r"`([a-z-]+)`", spec_sentence.group(1))
+        ),
     }
     for relative, listed in enumerations.items():
         assert listed == set(_SUPPORTED_CLIENTS), (
             f"{relative}: missing={sorted(set(_SUPPORTED_CLIENTS) - listed)!r}; "
             f"extra={sorted(listed - set(_SUPPORTED_CLIENTS))!r}"
         )
+    # The per-client sections use display names, which no code owns, so they
+    # are pinned by count: one section per supported client.
+    setup_heading = "\n## Per-client setup\n"
+    assert setup_heading in guide, "mcp-clients.md lost its Per-client setup section"
+    setup = guide.split(setup_heading, 1)[1].split("\n## ", 1)[0]
+    headings = re.findall(r"^### (.+)$", setup, flags=re.MULTILINE)
+    assert len(headings) == len(_SUPPORTED_CLIENTS), (
+        f"Per-client setup has {len(headings)} subsections for "
+        f"{len(_SUPPORTED_CLIENTS)} clients; each subsection there is one "
+        f"client: {headings}"
+    )
 
 
 def test_getting_started_names_live_registry_tools() -> None:

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Direct SQL Access
 
 MoneyBin stores your finances in an encrypted DuckDB file. Any DuckDB client that supplies the encryption key on `ATTACH` reads that file with ordinary SQL, with no MoneyBin process in the path. This guide covers the read-only surface, how to connect from external tools, and the patterns that hold up across releases.
@@ -118,7 +118,7 @@ Default location: `<base>/profiles/<profile>/moneybin.duckdb`. `<base>` resolves
 
 ### DuckDB version compatibility
 
-The encrypted DuckDB file format is versioned with DuckDB itself; the version that wrote it must be compatible with the version reading it. MoneyBin currently bundles **DuckDB 1.5.4** (pinned in `uv.lock`; `pyproject.toml` only sets a floor, `duckdb>=1.3.2`). Your external client should use a DuckDB release with the same major.minor or one with documented forward-compatibility. A version mismatch typically surfaces as an opaque `IO Error` or `Serialization Error` on ATTACH. `moneybin db info` prints the DuckDB version *currently running* (it runs `SELECT version()`), which is the number to match your external client against. It is not a record of what wrote the file — DuckDB persists no writer-version metadata, so after a MoneyBin upgrade `db info` reports the new runtime even for a file last written by an older release.
+The encrypted DuckDB file format is versioned with DuckDB itself; the version that wrote it must be compatible with the version reading it. MoneyBin currently bundles **DuckDB 1.5.5** (pinned in `uv.lock`; `pyproject.toml` only sets a floor, `duckdb>=1.5.5`). Your external client should use a DuckDB release with the same major.minor or one with documented forward-compatibility. A version mismatch typically surfaces as an opaque `IO Error` or `Serialization Error` on ATTACH. `moneybin db info` prints the DuckDB version *currently running* (it runs `SELECT version()`), which is the number to match your external client against. It is not a record of what wrote the file — DuckDB persists no writer-version metadata, so after a MoneyBin upgrade `db info` reports the new runtime even for a file last written by an older release.
 
 ### DuckDB CLI
 

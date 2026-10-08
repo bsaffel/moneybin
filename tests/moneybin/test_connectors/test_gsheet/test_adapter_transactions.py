@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import polars as pl
+import pytest
 import yaml
 
 from moneybin.connectors.gsheet.adapters.base import GSheetConnection
 from moneybin.connectors.gsheet.adapters.transactions import TransactionsAdapter
 from moneybin.database import Database
+from moneybin.extractors.tabular.transforms import TransformResult
 from tests.moneybin.db_helpers import create_core_tables
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -218,6 +222,33 @@ def test_transform_applies_sign_convention(
     # Whole Foods is -87.42; Salary is +5000.00 under negative_is_expense.
     assert Decimal("-87.42") in amounts
     assert Decimal("5000.00") in amounts
+
+
+def test_transform_warns_when_balance_suggests_inverted_signs(
+    in_memory_db: Database,
+    sample_connection: GSheetConnection,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A sheet pull returns only rows, so the inverted-sign flag must warn here.
+
+    The shared transform logs it at INFO because file imports render the flag
+    on their result; this adapter discards the result, so it owns the warning.
+    """
+    fix = load_fixture("tiller_basic.yaml")
+    df = df_from_fixture(fix)
+    flagged = TransformResult(
+        transactions=pl.DataFrame(), sign_correction_suggested=True
+    )
+    with (
+        patch(
+            "moneybin.connectors.gsheet.adapters.transactions.transform_dataframe",
+            return_value=flagged,
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        TransactionsAdapter().transform(df, sample_connection, in_memory_db)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("inverted signs" in r.getMessage() for r in warnings)
 
 
 def test_load_with_empty_df_is_no_op(

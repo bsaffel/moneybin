@@ -78,6 +78,10 @@ class ApproveResult:
     skipped: int = 0
     newly_categorized: int = 0
     rule_ids: list[str] = field(default_factory=list)
+    refused_broad: list[str] = field(default_factory=list)
+    """Proposal ids skipped because their blast radius outruns their evidence."""
+    refused_unselective: list[str] = field(default_factory=list)
+    """Proposal ids skipped because their ``contains`` pattern is too short."""
 
 
 @dataclass(slots=True)
@@ -105,6 +109,8 @@ class AutoConfirmResult:
     skipped: int = 0
     newly_categorized: int = 0
     rule_ids: list[str] = field(default_factory=list)
+    refused_broad: list[str] = field(default_factory=list)
+    refused_unselective: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -568,6 +574,8 @@ class AutoRuleService:
             skipped=a.skipped + r.skipped,
             newly_categorized=a.newly_categorized,
             rule_ids=a.rule_ids,
+            refused_broad=a.refused_broad,
+            refused_unselective=a.refused_unselective,
         )
 
     def decide(
@@ -645,6 +653,8 @@ class AutoRuleService:
                 skipped=approved.skipped + rejected.skipped,
                 newly_categorized=approved.newly_categorized,
                 rule_ids=approved.rule_ids,
+                refused_broad=approved.refused_broad,
+                refused_unselective=approved.refused_unselective,
             )
             self._db.commit()
         except BaseException:
@@ -731,22 +741,17 @@ class AutoRuleService:
 
         for pid in proposed_rule_ids:
             if pid in broad_ids or pid in unselective_ids:
+                # The refusal rides on the result for the caller to present in
+                # its own surface's words; a console WARNING here named the MCP
+                # parameter to a CLI user, so the log keeps a record only.
                 if pid in broad_ids:
                     AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL.inc()
-                    logger.warning(
-                        f"Refusing to promote broad auto-rule proposal {pid}: its "
-                        f"match count far exceeds its trigger count. Review "
-                        f"estimated_match_count, then re-accept with allow_broad."
-                    )
+                    result.refused_broad.append(pid)
+                    logger.info(f"Refused broad auto-rule proposal {pid}")
                 else:
                     AUTO_RULE_UNSELECTIVE_ACCEPT_BLOCKED_TOTAL.inc()
-                    logger.warning(
-                        f"Refusing to promote auto-rule proposal {pid}: its "
-                        f"pattern is too short to be a 'contains' rule and "
-                        f"would match unrelated merchants (e.g. a 2-char "
-                        f"pattern like 'TO' matches STORE, AUTO, TOTAL). "
-                        f"Re-accept with allow_broad to accept the risk."
-                    )
+                    result.refused_unselective.append(pid)
+                    logger.info(f"Refused short-pattern auto-rule proposal {pid}")
                 result.skipped += 1
                 continue
             row = self._db.execute(

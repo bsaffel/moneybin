@@ -176,7 +176,7 @@ Numbered, each independently testable.
     **A fidelity disclosure is not an informational status line.** `-q` reaches
     a next-step hint — "run `moneybin reports explain …`" — because that is
     chatter in the sense this requirement means. It does not reach the three
-    statements `echo_report_notes` makes about how far the numbers above can be
+    statements `report_note_lines` makes about how far the numbers above can be
     trusted: the truncation warning, the degraded-report warning, and the
     applied-rates conversion disclosure. Asking for less chatter is not a claim
     that masking, truncation, or a currency conversion stopped happening, and
@@ -642,7 +642,7 @@ Numbered, each independently testable.
     whole job is to report on the ledger saying nothing about it. The summary
     is doctor's result, not a status line about producing one, and requirement
     5 already forbids `-q` suppressing result data. What `-q` does silence is
-    the 💡 recovery-action hints, which is the line `echo_report_notes` already
+    the 💡 recovery-action hints, which is the line `report_note_lines` already
     draws for reports: quiet reaches next-step hints and nothing else. A
     failing invariant still prints under `-q`.
 
