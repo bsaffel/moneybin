@@ -7,9 +7,10 @@ exists to make impossible.
 
 The precedence tests are ordered the way resolution is: an override outranks the
 provider cache, an exact cached row outranks the network, and a *weekend*
-resolves back to the preceding Friday from cache alone. A weekday gap
-deliberately does not: see
-``test_a_weekday_gap_is_not_answered_from_an_earlier_cached_day``.
+resolves back to the preceding Friday from cache alone. A weekday gap does so
+only offline, and only when stored publications bracket it as a market
+closure: see ``test_offline_a_bracketed_market_closure_prices_at_the_publication_before_it``
+and ``test_a_weekday_gap_is_not_answered_from_an_earlier_cached_day``.
 """
 
 from __future__ import annotations
@@ -339,6 +340,194 @@ def test_a_weekday_gap_is_not_answered_from_an_earlier_cached_day(
 
     with pytest.raises(RateUnavailableError):
         service.resolve_rate("USD", "EUR", _TUE)
+
+
+_XMAS_EVE = date(2025, 12, 24)  # Wednesday, ECB's last publication before Christmas
+_BOXING_DAY = date(2025, 12, 26)  # Friday, an ECB holiday
+_HOLIDAY_SATURDAY = date(2025, 12, 27)
+_NEXT_PUBLICATION = date(2025, 12, 29)  # Monday
+
+
+def _cache_christmas(db: Database, *, covered: bool = True) -> None:
+    """The EUR/USD series as ECB published it around Christmas 2025.
+
+    ``covered`` records the range answer that produced it, as a refresh does;
+    without it the two rows are what two separate lookups would leave.
+    """
+    _cache(
+        db,
+        from_currency="EUR",
+        to_currency="USD",
+        rate_date=_XMAS_EVE,
+        rate="1.17870000",
+    )
+    _cache(
+        db,
+        from_currency="EUR",
+        to_currency="USD",
+        rate_date=_NEXT_PUBLICATION,
+        rate="1.17730000",
+    )
+    if covered:
+        CurrencyService(db).record_coverage(
+            "EUR", "USD", _XMAS_EVE, _NEXT_PUBLICATION, "frankfurter"
+        )
+
+
+def test_offline_rows_from_separate_lookups_do_not_prove_a_closure(
+    db: Database,
+) -> None:
+    """Two stored days a few days apart may bracket a day nobody fetched.
+
+    Only a recorded provider answer covering the day proves it closed;
+    otherwise an ordinary weekday would be priced from the day before.
+    """
+    _cache_christmas(db, covered=False)
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+
+def test_a_fetch_that_resolves_back_records_the_closure_it_proves(
+    db: Database,
+) -> None:
+    """The provider answering Boxing Day with the 24th covers the days between.
+
+    A later cache-only read can then price that day without the network.
+    """
+    _cache_christmas(db, covered=False)
+    adapter = _StubAdapter(
+        RateObservation("EUR", "USD", _XMAS_EVE, Decimal("1.1787"), "frankfurter")
+    )
+    CurrencyService(db, adapter=adapter).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    resolved = CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    assert resolved.rate_date == _XMAS_EVE
+
+
+@pytest.mark.parametrize("requested", [_BOXING_DAY, _HOLIDAY_SATURDAY])
+def test_offline_a_bracketed_market_closure_prices_at_the_publication_before_it(
+    db: Database, requested: date
+) -> None:
+    """The holiday is proven by the publications either side of it, not guessed.
+
+    The weekend hop from Saturday lands on Boxing Day, which has no row. The
+    24th and the 29th sit five days apart — inside the closure bound — so the
+    cache can say the market was shut rather than unfetched, and the rate
+    names the day it was actually published.
+    """
+    _cache_christmas(db)
+
+    resolved = CurrencyService(db).resolve_rate("EUR", "USD", requested)
+
+    assert resolved.requested_date == requested
+    assert resolved.rate_date == _XMAS_EVE
+    assert resolved.rate == Decimal("1.17870000")
+    assert resolved.source == "frankfurter"
+
+
+def test_offline_a_closure_reads_the_override_on_the_publication_it_carries(
+    db: Database,
+) -> None:
+    """A correction to the 24th prices the closure carried from the 24th.
+
+    An override filed on a day inside the gap answers that day alone: it says
+    nothing about whether the market was open, so it neither anchors nor
+    breaks the bracket.
+    """
+    _cache_christmas(db)
+    service = CurrencyService(db, actor="test")
+    service.set_override("EUR", "USD", _XMAS_EVE, Decimal("1.18"), note=None)
+    service.set_override("EUR", "USD", date(2025, 12, 25), Decimal("9.99"), note=None)
+
+    resolved = service.resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    assert resolved.rate == Decimal("1.18")
+    assert resolved.source == "override"
+    assert resolved.rate_date == _XMAS_EVE
+
+
+def test_offline_a_gap_wider_than_a_market_closure_stays_unpriced(
+    db: Database,
+) -> None:
+    """Eight days between publications is likelier a hole than a closed market."""
+    _cache(db, rate_date=date(2026, 3, 2), rate="0.92000000")
+    _cache(db, rate_date=date(2026, 3, 10), rate="0.93000000")
+    CurrencyService(db).record_coverage(
+        "USD", "EUR", date(2026, 3, 2), date(2026, 3, 10), "frankfurter"
+    )
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("USD", "EUR", date(2026, 3, 4))
+
+
+def test_offline_a_gap_with_no_later_publication_stays_unpriced(
+    db: Database,
+) -> None:
+    """Past the newest stored rate nothing proves the market was closed."""
+    _cache(
+        db,
+        from_currency="EUR",
+        to_currency="USD",
+        rate_date=_XMAS_EVE,
+        rate="1.17870000",
+    )
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("EUR", "USD", _HOLIDAY_SATURDAY)
+
+
+def test_online_a_bracketed_gap_asks_the_provider_rather_than_the_cache(
+    db: Database,
+) -> None:
+    """The provider can tell a holiday from a day nobody fetched; the cache cannot."""
+    _cache_christmas(db)
+    adapter = _StubAdapter(
+        RateObservation("EUR", "USD", _XMAS_EVE, Decimal("1.1787"), "frankfurter")
+    )
+
+    resolved = CurrencyService(db, adapter=adapter).resolve_rate(
+        "EUR", "USD", _BOXING_DAY
+    )
+
+    assert adapter.calls == 1
+    assert resolved.rate_date == _XMAS_EVE
+
+
+def test_a_read_provider_list_is_recorded_for_cache_only_reads(db: Database) -> None:
+    """Refresh's verdict outlives the process, so a report read can quote it."""
+    online = CurrencyService(db, adapter=_StubAdapter(None))
+    assert online.unsupported("AED", "USD") == {"AED"}
+
+    assert CurrencyService(db).unsupported("AED", "USD") == {"AED"}
+
+
+def test_a_recorded_provider_list_is_replaced_not_appended(db: Database) -> None:
+    """A currency the provider stops carrying stops counting as published."""
+    CurrencyService(
+        db, adapter=_StubAdapter(None, supported=frozenset({"USD", "BGN"}))
+    ).unsupported("BGN")
+    CurrencyService(
+        db, adapter=_StubAdapter(None, supported=frozenset({"USD", "EUR"}))
+    ).unsupported("BGN")
+
+    assert CurrencyService(db).unsupported("BGN", "USD") == {"BGN"}
+
+
+def test_with_no_recorded_provider_list_nothing_is_claimed_unsupported(
+    db: Database,
+) -> None:
+    """``None`` — unknown — is not the empty set, offline as online."""
+    assert CurrencyService(db).unsupported("AED", "USD") is None
+
+
+def test_an_unreadable_provider_list_records_nothing(db: Database) -> None:
+    """A dropped connection must not erase the list a previous read recorded."""
+    CurrencyService(db, adapter=_StubAdapter(None)).unsupported("AED")
+
+    assert CurrencyService(db, adapter=_OfflineAdapter()).unsupported("AED") is None
+    assert CurrencyService(db).unsupported("AED") == {"AED"}
 
 
 def test_an_override_wins_the_day_a_holiday_fetch_resolves_back_to(
