@@ -868,6 +868,19 @@ def test_a_pair_the_provider_does_not_publish_is_reported_as_unsupported(
     assert result.rates_written == 0
 
 
+def test_an_unsupported_verdict_reaches_a_later_cache_only_read(db: Database) -> None:
+    """A report read cannot ask the provider, so refresh records its list.
+
+    Without it, a report missing a JPY rate could only guess whether refresh or
+    `moneybin fx set` is the fix.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="JPY")
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=_SilentAdapter())
+
+    assert CurrencyService(db).unsupported("JPY", "USD") == {"JPY"}
+
+
 def test_a_home_currency_the_provider_does_not_publish_is_reported_as_unsupported(
     db: Database,
 ) -> None:

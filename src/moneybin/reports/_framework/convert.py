@@ -496,25 +496,36 @@ def _rate_date(value: Any) -> date | None:
 
 
 def _missing_reason(service: CurrencyService, base: str, target: str) -> str:
-    """Why ``base``→``target`` could not be priced, from what the cache can show.
+    """Why ``base``→``target`` could not be priced, with the one fix for it.
 
-    The distinction the *error* carries — unsupported currency versus a date the
-    provider did not publish — is unavailable here by construction: it is decided
-    by reading the provider's currency list, and a report read has no provider.
-    What the cache can answer without one is whether this pair has ever been
-    priced at all, which separates the two remedies well enough to act on.
+    Unsupported is judged from the provider's currency list as the last refresh
+    recorded it, since a report read has no provider to ask; see
+    ``CurrencyService.explain_missing``. A market closure is not a reason —
+    ``resolve_rate`` already priced any the cache brackets — so what remains is
+    a currency no refresh can fill or a date no refresh has fetched yet.
 
-    Neither branch names a date. ``degraded_reason`` rides the response envelope
-    and the CLI's durable log, and a date someone asked about is a date money
-    moved on.
+    No branch names a date. ``degraded_reason`` rides the response envelope and
+    the CLI's durable log, and a date someone asked about is a date money moved
+    on — so the `fx set` command keeps a placeholder for it.
     """
-    if service.list_rates(base, target):
+    missing = service.explain_missing(base, target)
+    pair = f"{missing.from_currency}->{missing.to_currency}"
+    if missing.unsupported:
+        names = ", ".join(missing.unsupported)
         return (
-            f"no stored {base}->{target} rate for some of the dates in this "
-            "report; run 'moneybin refresh' to gather the missing dates"
+            f"{pair} is unsupported: the rate provider publishes no {names} "
+            f"rates, so refresh cannot fetch it; record the rate with "
+            f"'moneybin fx set {missing.from_currency} {missing.to_currency} "
+            "<date> <rate>'"
+        )
+    if not missing.gathered:
+        return (
+            f"{pair} is unfetched: refresh gathers rates only into the home "
+            "currency and declared display currencies; run 'moneybin profile "
+            f"set display_currency_targets {','.join(missing.targets)}', then "
+            "'moneybin refresh'"
         )
     return (
-        f"no stored {base}->{target} rates at all; run 'moneybin refresh' to "
-        "gather them, and record one with 'moneybin fx set' if refresh reports "
-        "the pair unsupported"
+        f"{pair} is unfetched for some dates in this report; run "
+        "'moneybin refresh' to gather them"
     )

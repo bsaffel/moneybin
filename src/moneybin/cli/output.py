@@ -191,8 +191,11 @@ def applied_rates_note(
             f"({priced_on}, {rate.source})"
         )
     sources = sorted({rate.from_currency for rate in applied_rates})
+    carried = [rate for rate in applied_rates if rate.rate_date != rate.requested_date]
+    # A carried rate is the example when there is one, so the command shown
+    # answers with the earlier day it was published on beside the day it priced.
     example = min(
-        applied_rates,
+        carried or applied_rates,
         key=lambda rate: (
             rate.from_currency,
             rate.to_currency,
@@ -204,9 +207,14 @@ def applied_rates_note(
     )
     from moneybin.cli.utils import generated_cli_command
 
+    carried_clause = (
+        f", {len(carried)} published on an earlier day than the date they price"
+        if carried
+        else ""
+    )
     return (
         f"Converted from {', '.join(sources)} using "
-        f"{len(applied_rates)} stored rates; run "
+        f"{len(applied_rates)} stored rates{carried_clause}; run "
         f"'{generated_cli_command('fx', 'rate', example.from_currency, example.to_currency, example.requested_date)}' "
         "for one of them, or --output json for all"
     )

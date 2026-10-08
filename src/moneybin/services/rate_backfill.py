@@ -26,7 +26,6 @@ from moneybin.services.currency_service import (
     CurrencyService,
     canonical_currency,
     is_storable_after_rounding,
-    unsupported_currencies,
 )
 from moneybin.tables import (
     BRIDGE_CURRENCY_CONVERSIONS,
@@ -187,8 +186,8 @@ def run_rate_backfill(
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="failed").inc()
             continue
         if not observations:
-            never_published = unsupported_currencies(
-                adapter, window.from_currency, window.to_currency
+            never_published = service.unsupported(
+                window.from_currency, window.to_currency
             )
             if never_published is None:
                 # The list that separates a permanent absence from a transient

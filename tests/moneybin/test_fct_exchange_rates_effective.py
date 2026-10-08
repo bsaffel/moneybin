@@ -17,7 +17,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
-from moneybin.services.currency_service import CurrencyService, RateUnavailableError
+from moneybin.services.currency_service import (
+    MAX_MARKET_CLOSURE_DAYS,
+    CurrencyService,
+    RateUnavailableError,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -108,6 +112,22 @@ def effective_template(
     # ever does.
     _insert_provider(
         db, from_currency="USD", to_currency="HHH", rate_date="2026-01-10", rate="5.000"
+    )
+
+    # Monday, then the Monday a week later — exactly the widest closure.
+    _insert_provider(
+        db, from_currency="USD", to_currency="LLL", rate_date="2026-01-05", rate="8.000"
+    )
+    _insert_provider(
+        db, from_currency="USD", to_currency="LLL", rate_date="2026-01-12", rate="9.000"
+    )
+
+    # Thursday, then the Friday eight days later — wider than a market closure.
+    _insert_provider(
+        db, from_currency="USD", to_currency="JJJ", rate_date="2026-01-15", rate="6.000"
+    )
+    _insert_provider(
+        db, from_currency="USD", to_currency="JJJ", rate_date="2026-01-23", rate="7.000"
     )
 
     # GBP->USD: no provider coverage at all, for the uncovered-override case.
@@ -348,18 +368,13 @@ def test_parity_with_resolve_rate_on_a_weekend_date(db: Database) -> None:
 
 
 @pytest.mark.slow
-def test_an_interior_weekday_gap_diverges_from_resolve_rate(db: Database) -> None:
-    """The spine answers an interior gap; `resolve_rate` does not — by design.
+def test_parity_with_resolve_rate_across_an_interior_closure(db: Database) -> None:
+    """The spine and the cache-only `resolve_rate` price a closure identically.
 
-    §Testing Strategy names this divergence explicitly: an interior weekday
-    gap is deliberately NOT a parity case. The daily spine densifies Tuesday
-    from the bracketing Monday observation, but `resolve_rate`'s two lookups
-    (exact day, then `_last_publication_day`) both miss a weekday nobody has
-    fetched — the weekday-holiday gap `currency_service.py:197-205` documents
-    as open — so it falls through to a live fetch. With no adapter configured
-    that fetch is impossible and it raises. Pinning the mismatch here means a
-    later widening of `resolve_rate`'s lookup to close the gap shows up as a
-    changed assertion instead of reading as an accidental regression to fix.
+    Monday and Thursday bracket Tuesday three days apart, inside
+    `MAX_MARKET_CLOSURE_DAYS`, so both read it as a closed market and price it
+    at Monday's publication. This was a named divergence until the offline
+    closure rule closed it; a parity failure here means the two rules drifted.
     """
     row = db.execute(
         "SELECT rate, rate_source, published_date, days_since_published "
@@ -367,14 +382,62 @@ def test_an_interior_weekday_gap_diverges_from_resolve_rate(db: Database) -> Non
         "WHERE from_currency = 'USD' AND to_currency = 'FFF' AND effective_date = '2026-01-06'"
     ).fetchone()
     assert row is not None
-    assert float(row[0]) == pytest.approx(1.000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert row[1] == "provider"
     assert str(row[2]) == "2026-01-05"
     assert row[3] == 1
 
+    resolved = CurrencyService(db, adapter=None).resolve_rate(
+        "USD", "FFF", date(2026, 1, 6)
+    )
+    assert resolved.rate == Decimal(str(row[0]))
+    assert resolved.rate_date == date(2026, 1, 5)
+
+
+@pytest.mark.slow
+def test_the_widest_closure_is_priced_on_both_surfaces(db: Database) -> None:
+    """Seven days between publications is the bound on both sides of the seam.
+
+    The SQL spine hard-codes the number `MAX_MARKET_CLOSURE_DAYS` holds; this
+    and the eight-day case below pin the two to the same value.
+    """
+    assert MAX_MARKET_CLOSURE_DAYS == 7
+    row = db.execute(
+        "SELECT rate, published_date FROM core.fct_exchange_rates_effective "
+        "WHERE from_currency = 'USD' AND to_currency = 'LLL' AND effective_date = '2026-01-08'"
+    ).fetchone()
+    assert row is not None
+    assert str(row[1]) == "2026-01-05"
+
+    resolved = CurrencyService(db, adapter=None).resolve_rate(
+        "USD", "LLL", date(2026, 1, 8)
+    )
+    assert resolved.rate == Decimal(str(row[0]))
+    assert resolved.rate_date == date(2026, 1, 5)
+
+
+@pytest.mark.slow
+def test_a_gap_wider_than_a_closure_is_unpriced_on_both_surfaces(db: Database) -> None:
+    """Eight days between publications: no spine row, and `resolve_rate` raises.
+
+    Thursday 2026-01-15 to Friday 2026-01-23. Saturday the 17th still carries
+    nothing: its calendar Friday (the 16th) was never published, so the weekend
+    hop has nothing to reach either.
+    """
+    rows = db.execute(
+        "SELECT effective_date FROM core.fct_exchange_rates_effective "
+        "WHERE from_currency = 'USD' AND to_currency = 'JJJ' ORDER BY effective_date"
+    ).fetchall()
+    assert [str(r[0]) for r in rows] == [
+        "2026-01-15",
+        "2026-01-23",
+        "2026-01-24",
+        "2026-01-25",
+    ]
+
     service = CurrencyService(db, adapter=None)
-    with pytest.raises(RateUnavailableError):
-        service.resolve_rate("USD", "FFF", date(2026, 1, 6))
+    for day in (date(2026, 1, 16), date(2026, 1, 17), date(2026, 1, 20)):
+        with pytest.raises(RateUnavailableError):
+            service.resolve_rate("USD", "JJJ", day)
 
 
 @pytest.mark.slow

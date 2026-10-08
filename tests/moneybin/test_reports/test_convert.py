@@ -40,6 +40,7 @@ from moneybin.reports.definitions.balance_drift import (
 from moneybin.reports.definitions.large_transactions import (
     _blank_original_currency_analytics,  # pyright: ignore[reportPrivateUsage]  # ditto
 )
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.currency_service import CurrencyService
 from moneybin.tables import TableRef
 
@@ -600,37 +601,115 @@ def test_a_non_finite_amount_segments_rather_than_being_priced(
     assert outcome.degraded_reason is not None
 
 
-def test_a_never_priced_pair_and_a_date_gap_give_different_remedies(
+def test_a_row_dated_in_a_market_closure_prices_at_the_publication_before_it(
     saved_db: Database,
 ) -> None:
-    """The two absences need different next actions, so they read differently.
+    """2025-12-27, after ECB closed on the 25th and 26th, prices from the 24th.
 
-    A pair with rates on other dates needs more dates gathered; a pair with none
-    at all may not be published, which no amount of refreshing will fix.
+    The weekend hop alone lands on Friday the 26th, a holiday with no row. The
+    publications on the 24th and the 29th bracket it five days apart, so the
+    report read converts offline and the applied rate names the 24th.
     """
-    service = CurrencyService(saved_db)
-    never_priced = convert_records(
+    _seed_rate(saved_db, "EUR", "USD", date(2025, 12, 24), Decimal("1.1787"))
+    _seed_rate(saved_db, "EUR", "USD", date(2025, 12, 29), Decimal("1.1773"))
+
+    outcome = convert_records(
+        [_row(txn_date=date(2025, 12, 27))],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+    )
+
+    assert outcome.degraded_reason is None
+    # 100.00 EUR at 1.1787 = 117.87 USD.
+    assert outcome.records[0]["amount"] == Decimal("117.87")
+    (applied,) = outcome.applied_rates
+    assert applied.requested_date == date(2025, 12, 27)
+    assert applied.rate_date == date(2025, 12, 24)
+
+
+def _record_provider_catalog(db: Database, *codes: str) -> None:
+    """Record a provider currency list, as refresh does when it reads one."""
+    db.executemany(
+        "INSERT INTO raw.exchange_rate_currencies (source_type, currency_code) "
+        "VALUES ('frankfurter', ?)",
+        [[code] for code in codes],
+    )
+
+
+def _missing_eur_reason(db: Database) -> str:
+    outcome = convert_records(
         [_row()],
         classes=_CLASSES,
         semantics=_semantics(),
         to_currency="USD",
-        service=service,
+        service=CurrencyService(db),
     )
+    assert outcome.degraded_reason is not None
+    return outcome.degraded_reason
 
+
+def test_an_unsupported_pair_names_fx_set_as_its_fix(saved_db: Database) -> None:
+    """No refresh can fill a currency the provider's own list lacks."""
+    _record_provider_catalog(saved_db, "USD", "GBP")
+    ProfileSettingsRepo(saved_db).set_home_currency("USD", actor="test")
+
+    reason = _missing_eur_reason(saved_db)
+
+    assert reason.startswith("EUR->USD is unsupported")
+    assert "'moneybin fx set EUR USD <date> <rate>'" in reason
+    assert "refresh'" not in reason
+
+
+def test_an_unfetched_pair_names_refresh_as_its_fix(saved_db: Database) -> None:
+    """A published pair into the home currency is filled by the next refresh."""
+    _record_provider_catalog(saved_db, "USD", "EUR")
+    ProfileSettingsRepo(saved_db).set_home_currency("USD", actor="test")
     _seed_rate(saved_db, "EUR", "USD", date(2026, 2, 2), Decimal("1.08"))
-    date_gap = convert_records(
-        [_row()],
-        classes=_CLASSES,
-        semantics=_semantics(),
-        to_currency="USD",
-        service=service,
-    )
 
-    assert never_priced.degraded_reason is not None
-    assert date_gap.degraded_reason is not None
-    assert never_priced.degraded_reason != date_gap.degraded_reason
-    assert "fx set" in never_priced.degraded_reason
-    assert "fx set" not in date_gap.degraded_reason
+    reason = _missing_eur_reason(saved_db)
+
+    assert reason.startswith("EUR->USD is unfetched")
+    assert reason.endswith("run 'moneybin refresh' to gather them")
+    assert "fx set" not in reason
+
+
+def test_an_unrecorded_provider_list_never_claims_unsupported(
+    saved_db: Database,
+) -> None:
+    """With no list on disk, a never-priced pair is unfetched, not unsupported.
+
+    Only the provider's own list can say a currency is never published; the
+    cache's silence about a pair is equally what a profile that has not
+    refreshed yet looks like.
+    """
+    ProfileSettingsRepo(saved_db).set_home_currency("USD", actor="test")
+
+    reason = _missing_eur_reason(saved_db)
+
+    assert reason.startswith("EUR->USD is unfetched")
+    assert "fx set" not in reason
+
+
+def test_an_undeclared_target_names_the_setting_refresh_reads(
+    saved_db: Database,
+) -> None:
+    """Refresh never plans a target that is not home or declared, so say so.
+
+    Declared targets already present stay in the command, because
+    `profile set display_currency_targets` replaces the whole list.
+    """
+    _record_provider_catalog(saved_db, "USD", "EUR", "GBP")
+    settings = ProfileSettingsRepo(saved_db)
+    settings.set_home_currency("GBP", actor="test")
+    settings.set_display_currency_targets(["JPY"], actor="test")
+
+    reason = _missing_eur_reason(saved_db)
+
+    assert reason.startswith("EUR->USD is unfetched")
+    assert "'moneybin profile set display_currency_targets JPY,USD'" in reason
+    assert "'moneybin refresh'" in reason
 
 
 def test_the_reason_names_no_date(saved_db: Database) -> None:

@@ -559,6 +559,27 @@ Numbered, testable. Tagged by phase.
     today's rate or `1.0`.
 13. **Weekend/holiday handling.** A non-trading date resolves to the ECB last-published
     business day; the resolution is recorded in `rate_date` provenance, not hidden.
+
+    From stored rates alone, a weekend resolves to its calendar Friday, and a
+    weekday with no row resolves to the publication before it only when it sits
+    inside a **market closure**: stored provider publications bracket it on both
+    sides no more than `MAX_MARKET_CLOSURE_DAYS` (7) apart. The publication after
+    the date is what makes the hop safe. It shows the cache was filled past this
+    day, so the missing day is a closed market rather than a date nobody fetched.
+    Without one, as past the newest stored rate, the date stays unpriced. The
+    bound is a week because ECB's longest closure, Easter, runs Thursday to
+    Tuesday (five days between publications) and Christmas runs at most the
+    same. A wider gap is likelier a hole in the cache than a closed market, so
+    pricing across it would be the substitution Requirement 12 forbids. It is
+    not `MAX_BACKWARD_RESOLUTION_DAYS` (14), which bounds how far a provider's
+    own answer may sit from the day asked about. User overrides never count as
+    either side of the bracket, since a correction says nothing about whether
+    the market was open. The publication the closure carries is still read
+    override-first. `core.fct_exchange_rates_daily` densifies by the same rule,
+    so the SQL net-worth rungs and the read-time conversion price the same days
+    from the same publication. The live path (`moneybin fx rate`) asks the
+    provider instead, because the provider can tell a holiday from an unfetched
+    day and the cache cannot.
 14. **User rate override.** A user may override an auto-fetched rate (the bank's actual rate
     differs from the ECB mid-rate). An override is **mutable user-authored state**, so it
     lives in `app.*` (e.g. `app.exchange_rate_overrides`), mutated only via a `*Repo` with
@@ -656,6 +677,19 @@ Numbered, testable. Tagged by phase.
     unsupported through an ordinary base — and when that list cannot be read,
     neither kind is claimed.
 
+    A report read has no provider to ask, so each read of that list is recorded
+    in `raw.exchange_rate_currencies`, replaced whole per provider so a currency
+    the provider stops carrying stops counting. A report that cannot price a
+    pair names the pair and one of two kinds from it. *Unsupported* means a
+    recorded list lacks one side, and the fix is `moneybin fx set`. *Unfetched*
+    covers everything else, and the fix is `moneybin refresh`. When refresh
+    never plans the target, because it is neither the home currency nor a
+    declared display target, the fix is the `profile set
+    display_currency_targets` command that adds it, then a refresh. With no
+    recorded list, unsupported is never claimed. A market closure is never the
+    reason, because Requirement 13 already prices any closure the cache
+    brackets.
+
     A *discarded* pair is the third: the provider answered, and the answer did
     not cover the window. Either MoneyBin threw part of it away — the rate fell
     outside the requested range, or the rate column could not hold it — or the
@@ -698,8 +732,9 @@ Numbered, testable. Tagged by phase.
     absent. Nothing files a rate under a wrong date, so Requirement 12 holds
     either way; what is missing is the warning. Closing it means verifying
     stored coverage against the dates the profile actually needs rather than
-    against the answer's bounds — the span model the hole below already calls
-    for.
+    against the answer's bounds. Requirement 13's closure rule does not close
+    it: an interior hole of a week or less reads as a closure and prices at the
+    publication before it, with that day named.
 
     **Closed for the conversion layer — the read path cannot reach the
     weekday-holiday hole.** A complete backfill still leaves no row on a weekday
@@ -711,20 +746,18 @@ Numbered, testable. Tagged by phase.
     never gets the chance: report execution and the holdings portfolio total
     both build their service through `build_cache_only_currency_service`, which
     passes no adapter, and `_fetch` raises `RateUnavailableError` at its
-    `self._adapter is None` check before the adapter is touched. The row
-    degrades instead — a report segments under Requirement 15, and the holdings
-    total reports no combined figure rather than a wrong one.
+    `self._adapter is None` check before the adapter is touched.
 
-    **Still open — pricing a holiday-dated row instead of degrading it.** The
-    backfill is what makes this fixable. `_last_publication_day`'s docstring
-    rejects a general "nearest earlier stored day" fallback because a missing
-    weekday is ambiguous — closed market, or nobody fetched it yet. Coverage
-    recorded as a span removes the ambiguity: **inside** `[earliest stored,
-    newest stored]` for a pair, a missing date is provably a non-publication
-    day and may resolve back to the last stored one; **outside** that span it is
-    genuinely unfetched and stays an error. Resolving backward within proven
-    coverage is not a guess, and it is what lets Requirement 17 price a
-    holiday-dated row offline.
+    **Closed — a holiday-dated row is priced offline.** Requirement 13's
+    market-closure rule answers it from the cache before `_fetch` is reached:
+    a weekday the provider skipped, bracketed by stored publications at most a
+    week apart, prices at the publication before it, and the applied rate
+    names that day. Verified live 2026-10-07: ECB published nothing on
+    2025-12-25 or 2025-12-26, and a 2025-12-27 balance now converts at the
+    2025-12-24 rate in both the SQL rungs and the read-time conversion. A
+    weekday outside any bracket, such as one past the newest stored rate,
+    still degrades — a report segments under Requirement 15, and the holdings
+    total reports no combined figure rather than a wrong one.
 
 ### M1K.3 — Realized FX gain/loss
 
