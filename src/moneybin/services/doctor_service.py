@@ -54,9 +54,9 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     DIM_HOLDINGS,
     DIM_SECURITIES,
-    DIM_UNANCHORED_ACCOUNTS,
     EXCHANGE_RATE_OVERRIDES,
     FCT_BALANCES,
+    FCT_BALANCES_DAILY,
     FCT_EXCHANGE_RATES_DAILY,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
@@ -74,7 +74,6 @@ from moneybin.tables import (
     PROFILE_SETTINGS,
     PROPOSED_RULES,
     REPORTS_NET_WORTH,
-    REPORTS_NET_WORTH_ACCOUNTS,
     RULE_CONFLICTS,
     SECURITIES,
     SECURITY_LINKS,
@@ -2065,44 +2064,33 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_net_worth_unanchored_accounts(self) -> InvariantResult:
-        """Eligible accounts holding value with no balance observation (Requirement 14).
+        """Accounts in net worth holding value with no balance observation.
 
-        `fail`, because each one makes reports.net_worth's total NULL: the account
-        contributes nothing, and the release bar says a total is right or visibly
-        incomplete. Eligibility is taken at the date the latest reports.net_worth
-        row carries, read from that view (CURRENT_DATE when it has no rows), so
-        the check fails exactly while that row's total is NULL: an
-        account archived on or after that date still counts, and a closed
-        account's preserved pre-archive history does not. Unlike
-        net_worth_stale_balance, which reads current state.
+        `fail`, because each one makes the net-worth total NULL: the account
+        contributes nothing, and the release bar says a total is right or
+        visibly incomplete. Read on the spine's last date, which every account
+        runs to, so an account archived on or after that date still counts and
+        a closed account's pre-archive history does not.
         """
         name = "net_worth_unanchored_accounts"
         try:
             rows = self._db.execute(
                 f"""
-                WITH latest AS (
-                    SELECT COALESCE(
-                        (SELECT MAX(n.balance_date)
-                         FROM {REPORTS_NET_WORTH.full_name} AS n),
-                        CURRENT_DATE
-                    ) AS balance_date
+                SELECT DISTINCT d.account_id
+                FROM {FCT_BALANCES_DAILY.full_name} AS d
+                WHERE d.balance_date = (
+                    SELECT MAX(balance_date) FROM {FCT_BALANCES_DAILY.full_name}
                 )
-                SELECT u.account_id
-                FROM {DIM_UNANCHORED_ACCOUNTS.full_name} AS u
-                JOIN {DIM_ACCOUNTS.full_name} AS a ON a.account_id = u.account_id
-                CROSS JOIN latest AS l
-                WHERE a.include_in_net_worth
-                  AND (NOT a.archived
-                       OR (a.archived_at IS NOT NULL
-                           AND a.archived_at >= l.balance_date))
-                ORDER BY u.account_id
+                  AND d.in_net_worth
+                  AND d.balance IS NULL
+                ORDER BY d.account_id
                 """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # core views absent before first transform
+        except Exception as e:  # spine absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
-                detail=f"unanchored-account view unavailable: {e}",
+                detail=f"balance spine unavailable: {e}",
                 affected_ids=[],
             )
         unanchored = [str(r[0]) for r in rows]
@@ -2124,33 +2112,46 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_net_worth_stale_balance(self) -> InvariantResult:
-        """Accounts whose latest observed balance is older than the threshold.
+        """Accounts in net worth whose latest observed balance is older than the threshold.
 
-        Each account's OWN latest observed row, compared against today — never a
-        shared balance_date = CURRENT_DATE filter, which finds nothing when every
-        account has gone stale together (the spine ends at the global last
-        observation, not today). `warn`: the balance still counts; it is aging, not
-        wrong.
+        Each account's OWN latest observed row, compared against today — never
+        a shared balance_date = CURRENT_DATE filter, which finds nothing when
+        every account has gone stale together. Scoped to the accounts that count
+        toward net worth with a known balance on the spine's last date; an
+        unknown balance is net_worth_unanchored_accounts' to report. `warn`: the
+        balance still counts; it is aging, not wrong.
         """
         name = "net_worth_stale_balance"
         threshold = get_settings().doctor.balance_staleness_threshold_days
         try:
             rows = self._db.execute(
                 f"""
-                SELECT n.account_id,
-                       CAST(CURRENT_DATE - MAX(n.balance_date) AS INTEGER) AS age_days
-                FROM {REPORTS_NET_WORTH_ACCOUNTS.full_name} AS n
-                JOIN {DIM_ACCOUNTS.full_name} AS a ON a.account_id = n.account_id
-                WHERE n.is_observed AND a.include_in_net_worth AND NOT a.archived
-                GROUP BY n.account_id
-                ORDER BY n.account_id
-                """
+                WITH counted AS (
+                    SELECT c.account_id
+                    FROM {FCT_BALANCES_DAILY.full_name} AS c
+                    WHERE c.balance_date = (
+                        SELECT MAX(balance_date) FROM {FCT_BALANCES_DAILY.full_name}
+                    )
+                      AND c.in_net_worth
+                      AND c.balance IS NOT NULL
+                )
+                SELECT d.account_id,
+                       CAST(
+                           CURRENT_DATE - MAX(d.balance_date) FILTER (WHERE d.is_observed)
+                           AS INTEGER
+                       ) AS age_days
+                FROM {FCT_BALANCES_DAILY.full_name} AS d
+                JOIN counted AS k ON k.account_id = d.account_id
+                GROUP BY d.account_id
+                HAVING COUNT(*) FILTER (WHERE d.is_observed) > 0
+                ORDER BY d.account_id
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # reports views absent before first transform
+        except Exception as e:  # spine absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
-                detail=f"net-worth account view unavailable: {e}",
+                detail=f"balance spine unavailable: {e}",
                 affected_ids=[],
             )
         stale = [str(aid) for aid, age in rows if is_stale(int(age), threshold)]
