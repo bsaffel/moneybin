@@ -146,7 +146,6 @@ def _install_net_worth_sources(db: Database) -> None:
             published_date DATE
         )
     """)
-    db.execute("CREATE TABLE core.dim_unanchored_accounts (account_id VARCHAR)")
 
 
 def _balance(

@@ -17,12 +17,8 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import (
-    DateRange,
-    resolve_date_range,
-    unanchored_candidates_ctes,
-)
-from moneybin.tables import PROFILE_SETTINGS, REPORTS_NET_WORTH
+from moneybin.reports.definitions._shared import DateRange, resolve_date_range
+from moneybin.tables import REPORTS_NET_WORTH
 
 _REPORT_ID = "core:net_worth"
 
@@ -51,52 +47,15 @@ _BUCKET_EXPR: Mapping[str, str] = {
 
 
 def _source_cte(view_cols: str, rng: DateRange) -> tuple[str, list[Binding]]:
-    """The rows a read starts from: the view's filtered rows, plus one synthesized row.
-
-    The synthesized row appears only when an explicit range filtered to nothing
-    and an eligible candidate is dateable inside it — the one row the view cannot
-    date for a range it never saw.
-    """
-    base = f"""
-        filtered AS (
+    """The view's rows inside the requested range, and nothing else (Requirement 6)."""
+    sql = f"""
+        source AS (
             SELECT {view_cols}
             FROM {REPORTS_NET_WORTH.full_name}
             WHERE 1=1{rng.where_sql}
         )
     """  # noqa: S608  # TableRef interpolation, static column list
-    if not rng.is_ranged:
-        source = f"""
-            {base},
-            source AS (SELECT {view_cols} FROM filtered)
-        """  # noqa: S608  # static column list
-        return source, list(rng.params)
-    candidates_sql, candidate_params = unanchored_candidates_ctes(rng)
-    sql = f"""
-        {base},
-        {candidates_sql},
-        synthesized AS (
-            SELECT
-                (SELECT p.home_currency FROM {PROFILE_SETTINGS.full_name} AS p)
-                    AS home_currency_code,
-                MIN(synthesis_date) AS balance_date,
-                0 AS account_count,
-                0 AS carried_forward_count,
-                0 AS currency_count,
-                0 AS unpriced_currency_count,
-                CAST(COUNT(*) AS INTEGER) AS unanchored_account_count,
-                CAST(NULL AS DECIMAL(18, 2)) AS total_assets,
-                CAST(NULL AS DECIMAL(18, 2)) AS total_liabilities,
-                CAST(NULL AS DECIMAL(18, 2)) AS net_worth
-            FROM unanchored_candidates
-            HAVING COUNT(*) > 0 AND NOT EXISTS (SELECT 1 FROM filtered)
-        ),
-        source AS (
-            SELECT {view_cols} FROM filtered
-            UNION ALL
-            SELECT {view_cols} FROM synthesized
-        )
-    """  # noqa: S608  # TableRef interpolation, static column list
-    return sql, [*rng.params, *candidate_params]
+    return sql, list(rng.params)
 
 
 def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
@@ -331,15 +290,13 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "accounts excluded from net worth",
             "archived accounts after their archive date",
             "dates where any held currency is unpriced (measures are null)",
-            "dates where an eligible account holding value has no balance "
-            "observation (measures are null)",
+            "dates where an account in net worth holds value but has no balance observation (measures are null)",
         ),
         provenance=(
             "reports.net_worth",
             "core.fct_balances_daily",
             "core.dim_accounts",
             "core.fct_exchange_rates_effective",
-            "core.dim_unanchored_accounts",
         ),
     ),
     on_converted=_recompute_net_worth_and_change,
@@ -374,15 +331,9 @@ def net_worth(
     Args:
         db: Open read-only database connection.
         from_date: Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper
-            end open when given alone. An explicit range with no balance
-            rows, while an eligible account holding value has no balance
-            observation, returns one row dated inside the range with null
-            measures and unanchored_account_count set.
+            end open when given alone.
         to_date: Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower
-            end open when given alone. An explicit range with no balance
-            rows, while an eligible account holding value has no balance
-            observation, returns one row dated inside the range with null
-            measures and unanchored_account_count set.
+            end open when given alone.
         interval: daily | weekly | monthly — buckets the range into one row
             per bucket with change_abs/change_pct. Weekly buckets are ISO
             weeks starting Monday. Omitted returns the plain day-grain rows

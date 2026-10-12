@@ -660,3 +660,97 @@ def test_net_worth_runner_mirrors_declared_column_order(model_db: Database) -> N
         limit=100,
     )
     assert bucketed.columns == declared
+
+
+def _nw_rows(db: Database, **params: str) -> list[dict[str, object]]:
+    return _run(db, net_worth(db, **params))  # type: ignore[arg-type]
+
+
+def _acct_rows(db: Database, **params: str) -> list[dict[str, object]]:
+    return _run(db, net_worth_accounts(db, **params))  # type: ignore[arg-type]
+
+
+def _mixed(db: Database) -> None:
+    """Chk anchored 2025-01-01..2025-01-31; brk unanchored from 2025-01-20."""
+    _install_net_worth_sources(db)
+    _home(db, "USD")
+    _account(db, "chk", "Checking", "USD")
+    _account(db, "brk", "Brokerage", "USD", account_type="investment")
+    for day in range(1, 32):
+        _rate(db, "USD", "USD", f"2025-01-{day:02d}", "1", source="identity")
+    _balance(db, "chk", "2025-01-01", "100.00", "USD")
+    for day in range(2, 32):
+        _balance(db, "chk", f"2025-01-{day:02d}", "100.00", "USD", observed=False)
+    for day in range(20, 32):
+        _balance(db, "brk", f"2025-01-{day:02d}", None, "USD")
+    _install_report(db, "net_worth")
+    _install_report(db, "net_worth_accounts")
+
+
+def test_net_worth_ranged_and_unranged_reads_agree_on_the_latest_date(
+    model_db: Database,
+) -> None:
+    _mixed(model_db)
+    (unranged,) = _nw_rows(model_db)
+    ranged = _nw_rows(model_db, from_date="2025-01-25", to_date="2025-01-31")
+    assert ranged[-1] == unranged
+    assert unranged["unanchored_account_count"] == 1
+    assert unranged["net_worth"] is None
+
+
+def test_net_worth_range_before_first_evidence_has_no_unanchored_row(
+    model_db: Database,
+) -> None:
+    """Brk had no evidence before 2025-01-20, so the range is complete without it."""
+    _mixed(model_db)
+    rows = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-01-10")
+    assert len(rows) == 10
+    assert all(r["unanchored_account_count"] == 0 for r in rows)
+    assert all(r["net_worth"] == Decimal("100.00") for r in rows)
+
+
+def test_net_worth_range_after_the_spine_end_is_empty(model_db: Database) -> None:
+    _mixed(model_db)
+    assert _nw_rows(model_db, from_date="2025-02-01", to_date="2025-02-28") == []
+
+
+def test_net_worth_bucketed_read_withholds_the_bucket_with_a_null_balance(
+    model_db: Database,
+) -> None:
+    _mixed(model_db)
+    (row,) = _nw_rows(
+        model_db, from_date="2025-01-01", to_date="2025-01-31", interval="monthly"
+    )
+    assert str(row["balance_date"]) == "2025-01-31"
+    assert row["unanchored_account_count"] == 1
+    assert row["net_worth"] is None
+    assert row["change_abs"] is None
+
+
+def test_accounts_ranged_and_unranged_reads_agree_on_the_latest_date(
+    model_db: Database,
+) -> None:
+    _mixed(model_db)
+    unranged = _acct_rows(model_db)
+    ranged = _acct_rows(model_db, from_date="2025-01-31", to_date="2025-01-31")
+    assert ranged == unranged
+    assert {r["account_id"] for r in unranged} == {"chk", "brk"}
+
+
+def test_accounts_range_before_first_evidence_omits_the_unanchored_account(
+    model_db: Database,
+) -> None:
+    _mixed(model_db)
+    rows = _acct_rows(model_db, from_date="2025-01-01", to_date="2025-01-10")
+    assert {r["account_id"] for r in rows} == {"chk"}
+
+
+def test_runner_sql_reads_no_candidate_relation() -> None:
+    """Both runners filter the view by date and nothing else (Requirement 6)."""
+    for rq in (
+        net_worth(None, from_date="2025-01-01", to_date="2025-01-31"),  # type: ignore[arg-type]
+        net_worth_accounts(None, from_date="2025-01-01", to_date="2025-01-31"),  # type: ignore[arg-type]
+    ):
+        assert "unanchored_candidates" not in rq.sql
+        assert "dim_unanchored_accounts" not in rq.sql
+        assert "UNION ALL" not in rq.sql
