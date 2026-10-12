@@ -1,6 +1,6 @@
 # Sync — Overview
 
-> Last updated: 2026-07-03 — partial-payload provider guard + multi-device merge-at-matcher/provenance note
+> Last updated: 2026-10-11 — server address is saved per profile at login instead of requiring an environment variable
 > Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
@@ -113,6 +113,7 @@ sequenceDiagram
 
 ### Phase 1: Authenticate
 
+- Login needs a server address first. It comes from configuration (see [Server address](#server-address)) or is supplied at login and saved to the active profile.
 - Client calls `POST /auth/device/code`, displays verification URL and user code.
 - Client polls `POST /auth/device/token` until authorized, respecting `slow_down` backoff per RFC 8628 §3.5.
 - JWT and refresh token are stored in the OS keychain through `SecretStore`. Login and refresh require writable keychain storage.
@@ -189,6 +190,55 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 - `SyncConfig` in `src/moneybin/config.py` (already exists): `server_url`, request timeouts, polling intervals.
 - Env vars: `MONEYBIN_SYNC__SERVER_URL`, `MONEYBIN_SYNC__TIMEOUT`, etc. (`MONEYBIN_` prefix with `__` nesting per `CLAUDE.md`).
 
+#### Server address
+
+`sync.server_url` names the moneybin-sync server a profile talks to. The browser
+is sent there to authenticate and bank linking runs through it, so the address
+is a trust anchor: a wrong one is a phishing page, and a changed one must never
+inherit the old server's credentials.
+
+**Where it comes from.** Settings resolve the first source that supplies a
+value:
+
+| Priority | Source | Use |
+|---|---|---|
+| 1 | `MONEYBIN_SYNC__SERVER_URL` in the process environment | Override for CI, scripts, and development |
+| 2 | The same key in `<home>/.env.<profile>` or `<home>/.env` | Operator-managed override file |
+| 3 | `sync.server_url` in the profile's `config.yaml` | Where login saves it; the ordinary case |
+| 4 | Built-in default | Unset today. Becomes MoneyBin's hosted address when hosted sync ships, which makes login need no address at all |
+
+The profile `config.yaml` is a settings source for every setting, not only this
+one (see `moneybin-cli.md` → Profile config).
+
+**Saving it.** Login is the one place an address is saved, on either surface.
+The address is written to the active profile's `config.yaml` only after the
+server at that address answers `POST /auth/device/code` with a valid challenge,
+so a typo or an unreachable host is never saved.
+
+**Changing it.** Saving an address that differs from the profile's current one
+clears that profile's stored sync credentials before the new address is
+written. A token issued by one server is never sent to another.
+
+**When an override is in force.** If source 1 or 2 supplies the address and
+login is asked to save a different one, login refuses and names the variable:
+the saved value would be shadowed and the next command would silently talk to
+the overriding server.
+
+**Shape.** `http` or `https` with a host; no credentials, query, or fragment.
+Plain `http` to a host other than loopback is accepted, because a self-hosted
+server on a home network is a supported setup, and the prompt that saves it
+says the connection is unencrypted.
+
+**Observability.** `moneybin_sync_server_address_outcomes_total{surface, outcome}`
+counts each attempt to save an address: `saved`, `replaced`, `unreachable`,
+`declined`, `prompt_unavailable`, `override_conflict`. The address itself is
+never a label.
+
+**When it is missing.** Every sync operation fails with the code
+`sync_server_not_configured` and a hint naming
+`moneybin sync login --server <url>`. The message never tells a user to set an
+environment variable.
+
 **Response models** (Pydantic):
 
 All server responses are typed with Pydantic models: `AuthToken`,
@@ -233,7 +283,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 
 | Command | Description |
 |---|---|
-| `moneybin sync login` | Authenticate with moneybin-sync via Device Authorization Flow |
+| `moneybin sync login [--server URL]` | Authenticate with moneybin-sync via Device Authorization Flow. With no server address configured, a terminal session is asked for one; `--server` supplies it without a prompt. Either way the address is saved to the active profile once the server answers |
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
 | `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
 | `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
@@ -258,6 +308,7 @@ Per `.claude/rules/cli.md`, every interactive behavior has a flag equivalent for
 | Interactive behavior | Flag equivalent |
 |---|---|
 | Browser opens for login | `--no-browser` (prints URL only — for headless/SSH) |
+| Server address prompt at login | `--server URL`. Without a terminal and without the flag, login fails with `sync_server_not_configured` rather than waiting on input |
 | Browser opens for link | `--no-browser` |
 | Confirmation before disconnect | `--yes` / `-y` |
 | Institution selection when ambiguous | `--institution NAME` |
@@ -324,7 +375,7 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 |---|---|---|
 | `sync_pull` | Trigger a bank data sync, wait for completion, and load results | `institution: str \| None` |
 | `sync_status` | Show connected institutions and health, inspect one link session, or advance one device-login session | `session_id: str \| None` or `auth_session_id: str \| None` (mutually exclusive) |
-| `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`; returns session URL or device credentials |
+| `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`, `server_url: str \| None` (login only); returns session URL or device credentials |
 | `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `provider_item_id: str \| None` (mutually exclusive), `mode: "institution" \| "logout"`, `confirmation_token: str \| None` |
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
@@ -332,6 +383,18 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
 ### MCP authentication lifecycle
 
 - Start device login with `sync_link(mode="login")`.
+- When no server address is configured, that call fails with
+  `sync_server_not_configured`. The agent asks the user for the address and
+  retries with `server_url=<address>`. An agent never chooses the address: the
+  value must come from the user.
+- A `server_url` that differs from the profile's current address — including
+  the first one — is saved only through a prompt answered by a person, which
+  shows the full address and says when it replaces an existing one or is
+  unencrypted. No confirmation token is issued or accepted for it, because a
+  token is returned to the calling agent and would let it approve its own
+  choice of server. A client that cannot prompt is refused and pointed at
+  `moneybin sync login --server <url>`. A `server_url` equal to the current
+  address needs no prompt.
 - After the user completes the verification URL, advance that session with
   `sync_status(auth_session_id=...)`.
 - Disconnecting an institution is a two-call confirmation flow. First call
@@ -489,6 +552,7 @@ Sync errors fall into three categories with distinct recovery paths.
 | `401 Unauthorized` | JWT expired or invalid | Attempt automatic refresh via refresh token. If refresh fails, prompt user to run `moneybin sync login`. |
 | `403 Forbidden` | User denied authorization during device flow | Log error, exit cleanly with guidance. |
 | Token not found | No stored credential | Direct user to `moneybin sync login`. |
+| `sync_server_not_configured` | No server address from any source | Direct user to `moneybin sync login --server <url>`; over MCP, to `sync_link(mode="login", server_url=...)` with an address the user supplies. |
 
 ### Connection errors
 
