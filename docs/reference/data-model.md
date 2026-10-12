@@ -209,11 +209,11 @@ Resolved provider-code → canonical-category bridge. Grain: one row per `(sourc
 | `source_category_code` | VARCHAR | The provider's category code (e.g. `FOOD_AND_DRINK_COFFEE`) or an imported row's own category text. |
 | `source_subcategory_code` | VARCHAR | Second half of the source key. `''` is the sentinel for "no subcategory" (DuckDB primary keys reject NULL). |
 | `code_level` | VARCHAR | `detailed` \| `primary`. Detailed wins over primary on reverse lookup. |
-| `category_id` | VARCHAR | FK → `core.dim_categories.category_id`. Exactly one per code (canonical-by-PK). |
+| `category_id` | VARCHAR | FK → `core.dim_categories.category_id`. Exactly one per code (canonical-by-PK). NULL on a user row marks the term as ignored: it is known and categorizes nothing. |
 | `source_taxonomy_version` | VARCHAR | Provider taxonomy version the mapping was derived against (drift marker; not part of the key). |
 | `is_default` | BOOLEAN | TRUE for seed rows, FALSE for user overrides from `app.category_source_map`. |
 
-Two-tier reverse lookup — match a transaction's detailed and primary codes and let detailed win: `WHERE source_category_code IN (detailed, primary) ORDER BY code_level = 'detailed' DESC LIMIT 1`.
+Two-tier reverse lookup — match a transaction's detailed and primary codes and let detailed win: `WHERE source_category_code IN (detailed, primary) ORDER BY source_category_code = detailed DESC LIMIT 1`. Rank on the code itself, not on `code_level`, which is a label the writer supplies. A winning row with a NULL `category_id` means the code is ignored; do not fall back to the other row.
 
 ### `core.bridge_merchant_entities`
 

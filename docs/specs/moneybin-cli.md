@@ -437,10 +437,13 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       |         categorize and up to 3 suggestions drawn from active categories;
 |       |         largest count first. A term with nothing left to categorize is omitted.
 |       +-- set --namespace <source_origin> --category <text> [--subcategory <text>]
-|                 --into <category_id> | --new <name>
-|                 Map one term to an existing category (--into), or create a category and
-|                 map the term to it in one transaction (--new). The two flags are mutually
-|                 exclusive; omitting both exits 2.
+|                 --into <category_id> | --new <name> | --ignore
+|                 Map one term to an existing category (--into), create a category and
+|                 map the term to it in one transaction (--new), or ignore the term
+|                 (--ignore): it leaves the pending list and categorizes nothing. The three
+|                 flags are mutually exclusive; passing none or more than one exits 2. The
+|                 mapping applies at once, and a changed mapping withdraws and re-evaluates
+|                 the categorizations it produced; the receipt reports both counts.
 |
 +-- merchants                      -- Merchant mappings (reference data) and link-review
 |   +-- list
