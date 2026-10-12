@@ -323,6 +323,8 @@ Balances are positions in the account's own currency_code. Drift is asserted bal
 
 Rows interleave the currencies, worst drift first within each, so a truncated result still represents every currency. Compare drift_abs only between rows sharing a currency_code.
 
+An account with investment ledger events reports status investment-ledger and no computed balance or drift: the ledger's cash legs never reach the transactions a computed balance sums, and its positions need a price history to value on a past date, so no comparable figure exists.
+
 Usage: `moneybin reports balance-drift [OPTIONS]`
 
 **Options**
@@ -330,7 +332,7 @@ Usage: `moneybin reports balance-drift [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--account` | text |  | Filter to an account; accepts account_id or case-insensitive display_name. Ambiguous display_name matches raise; None for all. |
-| `--status` | text | `all` | drift \| warning \| clean \| no-data \| currency-mismatch \| all. Selects on the bucket in each row's own currency. A display- converted read re-buckets what it returns, so combining this with a display currency can return a row whose displayed status differs from the one asked for — the filter runs in SQL, before any rate is known. Filter on `all` and read the returned status when converting. |
+| `--status` | text | `all` | drift \| warning \| clean \| no-data \| currency-mismatch \| investment-ledger \| all. Selects on the bucket in each row's own currency. A display- converted read re-buckets what it returns, so combining this with a display currency can return a row whose displayed status differs from the one asked for — the filter runs in SQL, before any rate is known. Filter on `all` and read the returned status when converting. |
 | `--since` | text |  | ISO date; only assertions on or after. |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

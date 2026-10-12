@@ -282,6 +282,14 @@ encode: it keeps the first and last columns, which on `investments holdings`
 elides `market value` — the figure the command exists to report. The default
 set is curated rather than measured because width knows nothing about meaning.
 
+`--wide` on a terminal too narrow for the whole projection is curated the same
+way: pass `build_rows(optional=...)` the columns the default view omits, most
+important first. The renderer drops them last-first until the table fits, never
+touches the default set, and names what it omitted beneath the table with a
+wider terminal or `--output json` as the remedy — never `--wide`, which is
+already in force. `investments holdings`/`gains`/`list`/`lots list` are the
+examples.
+
 The reason either is needed: Rich folds an over-narrow cell, and a folded
 amount is *misread*, not merely ugly — `1,200.00` becomes `1,200.` above `00`.
 Folding an identifier is the accepted degradation; folding a number is the bug.
