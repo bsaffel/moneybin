@@ -98,6 +98,10 @@ class AccountSettingsRepo(BaseRepo):
         columns = tuple(c for c in _ACCOUNT_SETTINGS_COLUMNS if c in live)
         return self._fetch_one(ACCOUNT_SETTINGS, columns, "account_id", account_id)
 
+    def load(self, account_id: str) -> dict[str, Any] | None:
+        """Read one account's settings row (live columns only); ``None`` if absent."""
+        return self._fetch_row(account_id)
+
     def set(
         self,
         *,

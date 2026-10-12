@@ -34,7 +34,10 @@ from moneybin.repositories.categorization_decisions_repo import (
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services._text import build_match_inputs
-from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_links_service import (
+    AccountLinksService,
+    SettingsReconciliation,
+)
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
 from moneybin.services.merchant_links_service import MerchantLinksService
@@ -627,6 +630,11 @@ class ReviewDecisionsService:
             if material_accept
             else []
         )
+        settings = (
+            service.plan_settings(source_id, target_id)
+            if material_accept
+            else SettingsReconciliation()
+        )
         selections = [
             row
             for disposal_id in selection_disposal_ids
@@ -663,6 +671,7 @@ class ReviewDecisionsService:
                 "accepted_links": links,
                 "manual_identity": manual_identity,
                 "lot_selections": selections,
+                "settings": {"moved": settings.moved, "kept": settings.kept},
             }),
             affected_ids={
                 "accounts": tuple(dict.fromkeys((source_id, target_id)))
