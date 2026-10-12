@@ -110,6 +110,17 @@ def find_repo_root() -> Path | None:
     return None
 
 
+def running_checkout_root() -> Path | None:
+    """Return the checkout this ``moneybin`` package was loaded from, else None.
+
+    Answers how the package is installed, not where the command runs: a source
+    tree (``<root>/src/moneybin/config.py``) gives its root, while an installed
+    wheel sits under ``site-packages``, which is never a MoneyBin checkout.
+    """
+    root = Path(__file__).resolve().parents[2]
+    return root if _is_moneybin_repo(root) else None
+
+
 def _find_moneybin_repo_ancestor(path: Path) -> Path | None:
     """Return the nearest MoneyBin checkout containing ``path``."""
     for candidate in (path, *path.parents):
