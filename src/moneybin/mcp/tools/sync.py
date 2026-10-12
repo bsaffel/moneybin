@@ -68,7 +68,25 @@ from moneybin.services.sync_server_address import AddressPlan
 
 def _build_sync_client() -> Any:
     """Construct a SyncClient from current settings. Extracted for test mocking."""
-    return sync_server_address.build_sync_client()
+    try:
+        return sync_server_address.build_sync_client()
+    except UserError as e:
+        raise _agent_facing(e) from e
+
+
+def _agent_facing(error: UserError) -> UserError:
+    """Swap the terminal-command hint for one an agent can act on."""
+    if error.code != error_codes.SYNC_SERVER_NOT_CONFIGURED:
+        return error
+    return UserError(
+        error.message,
+        code=error.code,
+        hint=(
+            "Ask the user for their moneybin-sync server's address, then call "
+            "sync_link(mode='login', server_url=<that address>). Never choose "
+            "or guess the address yourself."
+        ),
+    )
 
 
 def _build_sync_auth_service() -> Any:
@@ -408,17 +426,7 @@ async def sync_link_coarse(
                     lambda: _build_sync_auth_service().begin()
                 )
             except UserError as e:
-                if e.code != error_codes.SYNC_SERVER_NOT_CONFIGURED:
-                    raise
-                raise UserError(
-                    e.message,
-                    code=e.code,
-                    hint=(
-                        "Ask the user for their moneybin-sync server's address, "
-                        "then retry with server_url=<that address>. Never choose "
-                        "or guess the address yourself."
-                    ),
-                ) from e
+                raise _agent_facing(e) from e
         data: SyncLinkCoarsePayload = SyncAuthView(
             auth_session_id=result.auth_session_id,
             status=result.status,

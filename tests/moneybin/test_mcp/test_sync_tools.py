@@ -355,3 +355,23 @@ async def test_sync_link_unconfigured_login_tells_the_agent_to_ask_the_user() ->
     assert envelope.error.code == "sync_server_not_configured"
     assert "server_url" in (envelope.error.hint or "")
     assert "ask the user" in (envelope.error.hint or "").lower()
+
+
+@pytest.mark.unit
+async def test_unconfigured_sync_status_points_the_agent_at_sync_link() -> None:
+    """An agent cannot act on a hint that names only a terminal command."""
+    not_configured = UserError(
+        "No sync server address is configured for this profile.",
+        code="sync_server_not_configured",
+        hint="Run 'moneybin sync login --server <url>'.",
+    )
+    with patch.object(
+        sync_module.sync_server_address,
+        "build_sync_client",
+        side_effect=not_configured,
+    ):
+        envelope = await sync_module.sync_status_coarse()
+
+    assert envelope.error is not None
+    assert envelope.error.code == "sync_server_not_configured"
+    assert "sync_link(mode='login', server_url=" in (envelope.error.hint or "")

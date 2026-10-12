@@ -135,6 +135,19 @@ class TestBuildSyncClient:
         assert "MONEYBIN_" not in excinfo.value.message
         assert "MONEYBIN_" not in (excinfo.value.hint or "")
 
+    def test_a_blank_override_counts_as_unconfigured(
+        self, events: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`MONEYBIN_SYNC__SERVER_URL=` in a dotenv must not build a hostless client."""
+        monkeypatch.setenv("MONEYBIN_SYNC__SERVER_URL", "")
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(UserError) as excinfo:
+            address.build_sync_client()
+
+        assert excinfo.value.code == error_codes.SYNC_SERVER_NOT_CONFIGURED
+
     def test_uses_the_saved_address(self, events: list[str]) -> None:
         ProfileService().set("alice", "sync.server_url", _A)
         clear_settings_cache()

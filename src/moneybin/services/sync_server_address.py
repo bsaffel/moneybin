@@ -116,7 +116,8 @@ def _clear_credentials(client: SyncClient) -> None:
 def build_sync_client() -> SyncClient:
     """Construct a SyncClient for the configured address."""
     server_url = get_settings().sync.server_url
-    if server_url is None:
+    # Falsy, not None: a blank override line must not build a hostless client.
+    if not server_url:
         raise UserError(
             "No sync server address is configured for this profile.",
             code=error_codes.SYNC_SERVER_NOT_CONFIGURED,
@@ -132,7 +133,7 @@ def plan_server_address(raw: str, *, surface: Surface = "cli") -> AddressPlan:
     """Validate an address and classify what saving it would change."""
     url = normalize_server_url(raw)
     settings = get_settings()
-    effective = settings.sync.server_url
+    effective = settings.sync.server_url or None
     saved = _saved_address(settings.profile)
     if effective is not None and effective.rstrip("/") == url:
         change: Change = "unchanged"
