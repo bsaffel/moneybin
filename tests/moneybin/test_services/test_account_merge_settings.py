@@ -15,9 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_mock import MockerFixture
 
-from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
 from moneybin.mcp.tools import accounts as mcp_accounts
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
@@ -507,29 +505,30 @@ def test_undo_restores_both_rows_without_moving_updated_at_back(
     assert survivor_after["updated_at"] == survivor_before["updated_at"]
 
 
-def test_undo_is_refused_whole_when_the_merge_created_a_survivor_row_holding_a_source(
+def test_undo_of_a_merge_that_created_a_survivor_row_holding_a_source_resets_it(
     svc: AccountLinksService, db: Database
 ) -> None:
-    """Known gap, pinned so a change to it is deliberate.
-
-    ``AccountSettingsRepo._delete_by_pk`` refuses to delete a settings row that
-    carries an investment source change time, and a merge that moves a source
-    onto a survivor with no row inserts exactly that. The undo then refuses as a
-    whole (nothing is half-reversed), exactly as it does for a first-ever
-    ``accounts set --investment-source``.
-    """
-    _put(db, _ABSORBED, investment_source_type="manual")
+    """The row carries a change time, so undo resets it to defaults, not deletes."""
+    _put(db, _ABSORBED, investment_source_type="manual", display_name="Vacation Fund")
+    absorbed_before = _row(db, _ABSORBED)
     with operation() as op:
         svc.set(_DECISION, target_account_id=_SURVIVOR)
+    merged = _row(db, _SURVIVOR)
+    assert merged is not None
 
-    with pytest.raises(UserError) as excinfo:
-        UndoService(db).undo(op, actor="cli")
+    UndoService(db).undo(op, actor="cli")
 
-    assert excinfo.value.code == error_codes.RECOVERY_NO_PATH
-    assert _decision_status(db, _DECISION) == "accepted"
     survivor = _row(db, _SURVIVOR)
     assert survivor is not None
-    assert survivor["investment_source_type"] == "manual"
+    assert survivor["investment_source_type"] is None
+    assert survivor["display_name"] is None
+    assert (survivor["archived"], survivor["include_in_net_worth"]) == (False, True)
+    assert (
+        survivor["investment_source_type_changed_at"]
+        > (merged["investment_source_type_changed_at"])
+    )
+    assert _row(db, _ABSORBED) == absorbed_before
+    assert _decision_status(db, _DECISION) == "pending"
 
 
 def test_undo_of_a_merge_that_created_a_survivor_row_without_a_source_deletes_it(

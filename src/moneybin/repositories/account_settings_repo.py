@@ -12,8 +12,6 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from moneybin import error_codes
-from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_SETTINGS
@@ -189,7 +187,7 @@ class AccountSettingsRepo(BaseRepo):
                 context=context,
             )
 
-    def _delete_by_pk(self, row: dict[str, Any]) -> None:
+    def _delete_by_pk(self, row: dict[str, Any]) -> dict[str, Any] | None:
         """Preserve the live ``archived_at`` in the capture before deleting it.
 
         ``BaseRepo.undo_event``'s ``before is None`` branch reaches here when
@@ -213,29 +211,26 @@ class AccountSettingsRepo(BaseRepo):
         catalog there is no ``archived_at`` column to read, and the SELECT
         below would raise.
 
-        Refuses outright when the LIVE row carries an investment source change
-        time (``row`` is the original insert's image, which can predate a
-        later choice): the delete would drop ``investment_source_type_changed_at``
-        with the row, so ledger rows that re-enter would report their old
-        ``created_at`` and rewind an incremental reader's watermark. A cleared
-        or undone choice keeps its change time, so the live row is the test.
+        When the LIVE row carries an investment source change time (``row`` is
+        the original insert's image, which can predate a later choice), deleting
+        it would drop ``investment_source_type_changed_at`` and rewind an
+        incremental reader's watermark. A cleared or undone choice keeps its
+        change time, so the live row is the test. Such a row is reset in place
+        instead: every setting returns to its table default, the source choice
+        clears, and the change time advances only if the choice actually
+        changes. ``dim_accounts`` reads a default row like an absent one. The
+        reset row is returned so the undo's audit row describes it.
         """
         if "investment_source_type_changed_at" in self._live_columns():
             where, where_params = self._pk_where(row)
             stamp_row = self._db.execute(
-                f"SELECT investment_source_type_changed_at "  # noqa: S608  # TableRef + sqlglot-quoted pk
+                f"SELECT investment_source_type_changed_at, investment_source_type "  # noqa: S608  # TableRef + sqlglot-quoted pk
                 f"FROM {self.table_ref.full_name} WHERE {where}",
                 where_params,
             ).fetchone()
             if stamp_row is not None and stamp_row[0] is not None:
-                raise UserError(
-                    "Undoing this would delete the account's settings, which "
-                    "carry its investment source history.",
-                    code=error_codes.RECOVERY_NO_PATH,
-                    hint=(
-                        "The settings row must stay. Change the other fields "
-                        "instead: moneybin accounts set <account> ..."
-                    ),
+                return self._reset_to_defaults(
+                    row, where, where_params, type_set=stamp_row[1] is not None
                 )
         if (
             row.get("archived") is True
@@ -253,7 +248,46 @@ class AccountSettingsRepo(BaseRepo):
                 if live_row is not None and live_row[0] is not None
                 else None
             )
-        super()._delete_by_pk(row)
+        return super()._delete_by_pk(row)
+
+    def _reset_to_defaults(
+        self,
+        row: dict[str, Any],
+        where: str,
+        where_params: list[Any],
+        *,
+        type_set: bool,
+    ) -> dict[str, Any] | None:
+        """Reset one settings row in place and return its audit image."""
+        live = self._live_columns()
+        values: dict[str, Any] = {
+            "display_name": None,
+            "official_name": None,
+            "last_four": None,
+            "account_subtype": None,
+            "holder_category": None,
+            "currency_code": None,
+            "credit_limit": None,
+            "archived": False,
+            "archived_at": None,
+            "include_in_net_worth": True,
+            "default_cost_basis_method": None,
+            "investment_source_type": None,
+        }
+        assignments = [f"{c} = ?" for c in values if c in live]
+        params: list[Any] = [v for c, v in values.items() if c in live]
+        if type_set:
+            assignments.append("investment_source_type_changed_at = ?")
+            params.append(self._now())
+        assignments.append("updated_at = NOW()")
+        self._db.execute(
+            f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + allowlisted literal columns; values parameterized
+            f"SET {', '.join(assignments)} WHERE {where}",
+            [*params, *where_params],
+        )
+        after = self._fetch_row(str(row["account_id"]), live=live)
+        # undo_event reuses this dict as the audit after-image.
+        return self._serialize_for_audit(after)
 
     def _insert_row(self, row: dict[str, Any]) -> None:
         """Normalize a legacy archived capture before an undo re-inserts it.

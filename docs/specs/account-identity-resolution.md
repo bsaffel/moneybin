@@ -578,9 +578,10 @@ for the merge (CLI prompt, MCP elicitation and grant, identity batch) names the
 fields that will move and the conflicting ones the survivor keeps, never their
 values, and the approval binds to that plan.
 
-Known gap: undoing a merge that created the survivor's first settings row
-holding an investment source is refused, because that row carries a source
-change time and `AccountSettingsRepo` will not delete such a row.
+Undoing a merge that created the survivor's first settings row restores it to
+"no settings": a row that carries an investment source change time is reset in
+place to the table defaults rather than deleted, with the change time advanced
+because the source choice clears.
 
 ## `transaction_id` stability under a mutable `account_id` (ADR-015)
 

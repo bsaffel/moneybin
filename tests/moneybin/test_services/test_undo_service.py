@@ -773,7 +773,7 @@ class TestUndoOfInvestmentSourceChoice:
         assert _source_row(db) == ("manual", _SOURCE_SET_AT)
         restate.assert_not_called()
 
-    def test_undo_that_would_delete_a_source_choice_is_refused(
+    def test_undo_that_would_delete_a_source_choice_resets_the_row_instead(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         restate = MagicMock()
@@ -784,19 +784,67 @@ class TestUndoOfInvestmentSourceChoice:
         with operation() as op:
             _settings_set(
                 db,
+                display_name="Brokerage",
+                archived=True,
+                archived_at=date(2026, 1, 2),
+                include_in_net_worth=False,
                 investment_source_type="manual",
                 investment_source_type_changed_at=_SOURCE_SET_AT,
             )
 
-        with pytest.raises(UserError) as caught:
-            UndoService(db).undo(op, actor="test")
+        result = UndoService(db).undo(op, actor="test")
 
-        assert caught.value.code == error_codes.RECOVERY_NO_PATH
-        assert caught.value.hint is not None
-        assert _source_row(db) == ("manual", _SOURCE_SET_AT)
-        restate.assert_not_called()
+        source, stamped = _source_row(db) or (None, None)
+        assert source is None
+        assert stamped is not None and stamped > _SOURCE_SET_AT
+        row = db.execute(
+            "SELECT display_name, archived, archived_at, include_in_net_worth "
+            "FROM app.account_settings WHERE account_id = 'acc_choice'"
+        ).fetchone()
+        assert row == (None, False, None, True)
+        assert result.reversed_row_count == 1
+        restate.assert_called_once_with(db, committed_change="undo")
 
-    def test_undo_that_would_drop_an_established_change_time_is_refused(
+    def test_the_reset_is_audited_as_the_row_that_remains_and_redo_restores_it(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            MagicMock(),
+        )
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                investment_source_type="manual",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+        undo = UndoService(db).undo(op, actor="test")
+        reset_stamp = (_source_row(db) or (None, None))[1]
+
+        audit = db.execute(
+            "SELECT after_value FROM app.audit_log WHERE operation_id = ? AND is_undo",
+            [undo.undo_operation_id],
+        ).fetchone()
+        assert audit is not None
+        after = json.loads(audit[0]) if isinstance(audit[0], str) else audit[0]
+        assert after is not None
+        assert after["display_name"] is None
+        assert after["investment_source_type"] is None
+
+        UndoService(db).undo(undo.undo_operation_id, actor="test")
+
+        source, stamped = _source_row(db) or (None, None)
+        assert source == "manual"
+        assert stamped is not None and reset_stamp is not None
+        assert stamped > reset_stamp
+        name = db.execute(
+            "SELECT display_name FROM app.account_settings "
+            "WHERE account_id = 'acc_choice'"
+        ).fetchone()
+        assert name == ("Brokerage",)
+
+    def test_undo_that_would_drop_an_established_change_time_resets_the_row(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
@@ -816,10 +864,9 @@ class TestUndoOfInvestmentSourceChoice:
         source, stamped = _source_row(db) or (None, None)
         assert source is None and stamped is not None
 
-        with pytest.raises(UserError) as caught:
-            UndoService(db).undo(op_a, actor="test")
+        UndoService(db).undo(op_a, actor="test")
 
-        assert caught.value.code == error_codes.RECOVERY_NO_PATH
+        # The type was already NULL, so the stamp is kept, not advanced.
         assert _source_row(db) == (None, stamped)
 
     def test_undo_of_a_never_chosen_first_write_still_deletes_the_row(
