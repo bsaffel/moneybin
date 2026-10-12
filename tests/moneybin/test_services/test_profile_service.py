@@ -472,7 +472,10 @@ class TestRecordedKeyMode:
         svc = ProfileService()
         assert svc.recorded_key_mode("ghost") is None
         svc.create("alice")
-        svc.set("alice", "database.encryption_key_mode", "bogus")
+        # Hand-edited: `profile set` refuses a mode the field rejects.
+        (tmp_path / "profiles" / "alice" / "config.yaml").write_text(
+            "database:\n  encryption_key_mode: bogus\n"
+        )
         assert svc.recorded_key_mode("alice") is None
 
 
@@ -527,10 +530,10 @@ class TestProfileSet:
         svc.create("alice")
 
         with caplog.at_level("INFO", logger="moneybin.services.profile_service"):
-            svc.set("alice", "logging.level", "synthetic-secret-value")
+            svc.set("alice", "sync.oauth_domain", "synthetic-secret-value")
 
         assert "synthetic-secret-value" not in caplog.text
-        assert "logging.level" in caplog.text
+        assert "sync.oauth_domain" in caplog.text
 
     def test_set_invalid_key_format_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -562,6 +565,75 @@ class TestProfileSet:
         svc = ProfileService()
         with pytest.raises(ProfileNotFoundError):
             svc.set("ghost", "logging.level", "DEBUG")
+
+    def test_set_undeclared_field_is_refused_and_names_valid_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key no setting reads would be a write that changes nothing."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="server_url"):
+            svc.set("alice", "sync.server_urll", "https://sync.example.test")
+
+        assert config_path.read_text() == before
+
+    def test_set_undeclared_section_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+
+        with pytest.raises(ValueError, match="nosuchsection"):
+            svc.set("alice", "nosuchsection.field", "value")
+
+    def test_set_secret_field_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """config.yaml is plain text; a secret must not land in it."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+
+        with pytest.raises(ValueError, match="secret"):
+            svc.set("alice", "sync.api_key", "synthetic-key-value")
+
+        assert "synthetic-key-value" not in config_path.read_text()
+
+    def test_set_rejected_value_leaves_the_file_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="logging.level"):
+            svc.set("alice", "logging.level", "LOUD")
+
+        assert config_path.read_text() == before
+
+    def test_set_value_is_read_back_by_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The write and the settings load agree on one file."""
+        from moneybin.config import MoneyBinSettings
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_SYNC__SERVER_URL", raising=False)
+        svc = ProfileService()
+        svc.create("alice")
+
+        svc.set("alice", "sync.server_url", "https://sync.example.test")
+
+        settings = MoneyBinSettings(profile="alice")
+        assert settings.sync.server_url == "https://sync.example.test"
 
 
 class TestIsRegistered:

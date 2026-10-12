@@ -9,13 +9,16 @@ import math
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast, get_args
 
+import yaml
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     SecretStr,
+    TypeAdapter,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -916,6 +919,91 @@ class CLISettings(BaseModel):
     )
 
 
+def settings_section_model(
+    settings_cls: type[BaseSettings], section: str
+) -> type[BaseModel] | None:
+    """The nested model behind a settings section, or None if it is not one."""
+    field = settings_cls.model_fields.get(section)
+    annotation = field.annotation if field else None
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def validate_profile_setting(section: str, name: str, raw: str) -> Any:
+    """Return ``raw`` as the value config.yaml should hold for ``section.name``.
+
+    Refuses a key no setting declares, a secret-typed field (the file is plain
+    text), and a value the field's type rejects.
+    """
+    model = settings_section_model(MoneyBinSettings, section)
+    if model is None:
+        sections = sorted(
+            s
+            for s in MoneyBinSettings.model_fields
+            if settings_section_model(MoneyBinSettings, s) is not None
+        )
+        raise ValueError(
+            f"Unknown settings section {section!r}. "
+            f"Valid sections: {', '.join(sections)}"
+        )
+    field = model.model_fields.get(name)
+    if field is None:
+        raise ValueError(
+            f"Unknown setting {section}.{name}. "
+            f"Valid fields in {section}: {', '.join(sorted(model.model_fields))}"
+        )
+    annotation = field.annotation
+    if annotation is SecretStr or SecretStr in get_args(annotation):
+        raise ValueError(
+            f"{section}.{name} is a secret and cannot be stored in config.yaml, "
+            "which is plain text."
+        )
+    adapter: TypeAdapter[Any] = TypeAdapter(annotation)
+    try:
+        value = adapter.validate_python(raw)
+    except ValidationError as e:
+        raise ValueError(f"{section}.{name}: {e.errors()[0]['msg']}") from e
+    return adapter.dump_python(value, mode="json")
+
+
+def _load_profile_config(
+    settings_cls: type[BaseSettings], path: Path
+) -> dict[str, Any]:
+    """Read a profile's config.yaml as a settings source.
+
+    Each declared ``section.field`` value is validated here rather than left to
+    the merged model, because only this function still knows which file a bad
+    value came from. Undeclared keys are dropped so an older file still loads.
+    """
+    if not path.exists():
+        return {}
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path} is not valid YAML: {e}") from e
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{path} must hold section.field settings as a mapping")
+    values: dict[str, Any] = {}
+    for section, fields in cast(dict[object, object], loaded).items():
+        model = settings_section_model(settings_cls, str(section))
+        if model is None or not isinstance(fields, dict):
+            continue
+        for name, value in cast(dict[object, object], fields).items():
+            field = model.model_fields.get(str(name))
+            if field is None:
+                continue
+            try:
+                TypeAdapter(field.annotation).validate_python(value)
+            except ValidationError as e:
+                reason = e.errors()[0]["msg"]
+                raise ValueError(f"{path}: {section}.{name}: {reason}") from e
+            values.setdefault(str(section), {})[str(name)] = value
+    return values
+
+
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.
 
@@ -1158,12 +1246,17 @@ class MoneyBinSettings(BaseSettings):
                 "logging": {"log_file_path": profile_dir / "logs" / "moneybin.log"},
             }
 
+        def profile_config() -> dict[str, Any]:
+            """Provide values saved to the profile's config.yaml."""
+            return _load_profile_config(settings_cls, profile_dir / "config.yaml")
+
         # Return sources in priority order: the first source wins.
         return (
             init_settings,
             env_settings,
             custom_dotenv,
             file_secret_settings,
+            profile_config,
             profile_path_defaults,
         )
 
