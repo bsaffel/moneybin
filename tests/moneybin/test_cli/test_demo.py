@@ -380,3 +380,15 @@ def test_demo_announces_the_default_profile_switch(mocker: Any) -> None:
     assert result.exit_code == 0, result.output
     assert "Default profile is now demo" in result.output
     assert "moneybin profile switch personal" in result.output
+
+
+@pytest.mark.unit
+def test_demo_receipt_names_where_it_wrote_the_inbox(mocker: Any) -> None:
+    """The inbox lives outside the data home; the receipt says where."""
+    from pathlib import Path
+
+    _patch_service(mocker, _fake_result(inbox_dir=Path("/synthetic/inbox-root/demo")))
+    result = runner.invoke(app, ["demo", "--yes"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    assert "Import inbox:" in result.stdout
+    assert "/synthetic/inbox-root/demo" in result.stdout

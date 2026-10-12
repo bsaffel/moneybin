@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-10-07 -->
 
 # Profiles
 
@@ -60,14 +60,15 @@ Creates a new profile end-to-end:
 - Writes a default `config.yaml` into the profile directory.
 - Generates a fresh AES-256 encryption key and stores it under the keychain service `moneybin-<name>`.
 - Initializes the encrypted DuckDB file at `<base>/profiles/<name>/moneybin.duckdb` and runs the baseline schema.
-- Optionally creates the import-inbox layout at `~/Documents/MoneyBin/<name>/{inbox,processed,failed}/` (`--init-inbox` to force, `--no-init-inbox` to skip; prompts interactively when neither is set).
+- Optionally creates the import-inbox layout at `<inbox_root>/<name>/{inbox,processed,failed,pending}/` (`--init-inbox` to force, `--no-init-inbox` to skip; prompts interactively when neither is set). `<inbox_root>` is `~/Documents/MoneyBin` unless `MONEYBIN_IMPORT___INBOX_ROOT` moves it, and the receipt prints the path it used. The inbox is created before the database, so a denied directory — macOS privacy controls on `~/Documents` are the usual cause — fails the command before any schema is built.
+- Makes the new profile the active one, so the next command runs against it. When another profile was active, the receipt ends with a `›` line naming the `profile switch` command back to it.
 
 ```bash
 moneybin profile create personal
 moneybin profile create business --init-inbox
 ```
 
-If any step fails while creating a brand-new profile, the directory `profile create` made is rolled back so you can retry without hitting a "profile already exists" error. A directory it did not make — see "Name collisions" below — is never rolled back, since it may already hold a database.
+If any step fails while creating a brand-new profile, the directory `profile create` made is rolled back so you can retry without hitting a "profile already exists" error, and the active profile is left where it was. A directory it did not make — see "Name collisions" below — is never rolled back, since it may already hold a database.
 
 #### Name collisions
 
@@ -148,7 +149,7 @@ Three ways to pick the profile a command runs against, in precedence order:
 
 1. **`--profile <name>` / `-p <name>` flag** — top-level flag, wins over everything (including an exported `MONEYBIN_PROFILE`). Use for one-off invocations against a non-active profile without changing the saved default or your shell environment.
 2. **`MONEYBIN_PROFILE` env var** — shell-session-scoped override. Wins over the saved default, loses to the flag.
-3. **Saved active profile** — the value persisted by `profile switch` (or set by the first-run wizard) in `<base>/config.yaml`.
+3. **Saved active profile** — the value persisted by `profile switch` or `profile create` (or set by the first-run wizard or `moneybin demo`) in `<base>/config.yaml`.
 
 ```bash
 # One-off: import into 'business' without changing the active profile,
@@ -222,7 +223,7 @@ The practical recipe for headless deployments:
 3. On the target, export `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY=<hex>` before invoking moneybin. Every command — CLI, `mcp serve`, cron jobs — needs the env var set in its environment.
 4. If the headless target *does* have a keyring (unusual but possible), `db init` with the env var set will persist the key into it and you can stop exporting the env var afterwards.
 
-Passphrase mode (`profile create --passphrase` once it lands; today via `db init --passphrase` on a freshly created profile) sidesteps the auto-key trap: the passphrase is the input, the derived key is held in memory for the command's lifetime, and an env-var fallback is still available via `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` after `db unlock`. See [`database-security.md`](database-security.md) "Headless and cron deployments" for Docker, systemd, and cron patterns.
+Passphrase mode (`profile create --passphrase` once it lands; today via `db init --passphrase` on a freshly created profile) sidesteps the auto-key trap: the passphrase is the input, the derived key is held in memory for the command's lifetime, and an env-var fallback is still available via `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` after `db unlock`. `db init` records the mode it used as `database.encryption_key_mode` in the profile's `config.yaml`, which is where `profile show` and `db info` read it. See [`database-security.md`](database-security.md) "Headless and cron deployments" for Docker, systemd, and cron patterns.
 
 Sync login and token refresh require a writable OS keychain, including on headless hosts. Existing profile-specific plaintext sync token files are imported into the keychain and removed only after both values are verified. If keychain storage fails, the file remains and authentication from it is refused; configure or unlock the keychain before retrying.
 
