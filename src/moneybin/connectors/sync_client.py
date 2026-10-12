@@ -285,9 +285,15 @@ class SyncClient:
             f"unexpected status {poll.status_code} from /auth/device/token"
         )
 
-    def login(self, *, open_browser: bool = True) -> None:
+    def login(
+        self,
+        *,
+        open_browser: bool = True,
+        challenge: DeviceAuthorizationChallenge | None = None,
+    ) -> None:
         """Run the blocking CLI wrapper over the nonblocking device flow."""
-        challenge = self.begin_login()
+        if challenge is None:
+            challenge = self.begin_login()
         uri = challenge.verification_uri_complete or challenge.verification_uri
         if uri is None:  # pragma: no cover — validated by the response model
             raise SyncAPIError("device authorization response omitted verification URI")

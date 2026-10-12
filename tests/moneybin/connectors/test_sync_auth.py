@@ -712,3 +712,22 @@ def test_profile_namespaces_do_not_share_sessions(
 
     assert set(patched_keyring.values) == {("moneybin-bob", "SYNC__AUTH_SESSIONS")}
     assert bob.status(bob_session.auth_session_id).status == "pending"
+
+
+def test_begin_reuses_a_supplied_challenge(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    """The address check already holds a device code; begin must not ask again."""
+    client = MagicMock()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    result = service.begin(challenge=_challenge())
+
+    client.begin_login.assert_not_called()
+    assert result.status == "pending"
+    assert result.user_code == "ABCD-EFGH"

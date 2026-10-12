@@ -15,6 +15,7 @@ from typing import Literal, cast
 from moneybin import error_codes
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_errors import SyncAPIError, SyncAuthError
+from moneybin.connectors.sync_models import DeviceAuthorizationChallenge
 from moneybin.errors import UserError
 from moneybin.secrets import SecretNotFoundError, SecretStore, SecretUnavailableError
 
@@ -100,9 +101,12 @@ class SyncAuthService:
         self._lock_path = lock_path
         self._now = now or (lambda: datetime.now(UTC))
 
-    def begin(self) -> SyncAuthResult:
+    def begin(
+        self, *, challenge: DeviceAuthorizationChallenge | None = None
+    ) -> SyncAuthResult:
         """Start a device flow and persist only its secret half in keychain storage."""
-        challenge = self._client.begin_login()
+        if challenge is None:
+            challenge = self._client.begin_login()
         auth_session_id = f"syncauth_{uuid.uuid4().hex}"
         now = self._now()
         expiration = now + timedelta(seconds=challenge.expires_in)

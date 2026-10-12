@@ -22,7 +22,11 @@ from moneybin.connectors.sync_errors import (
     SyncLinkError,
     SyncTimeoutError,
 )
-from moneybin.connectors.sync_models import SyncAckResponse, SyncDataResponse
+from moneybin.connectors.sync_models import (
+    DeviceAuthorizationChallenge,
+    SyncAckResponse,
+    SyncDataResponse,
+)
 from moneybin.secrets import SecretNotFoundError, SecretStore
 
 
@@ -818,3 +822,32 @@ def test_clear_tokens_for_profile_deletes_only_that_profiles_scoped_slots(
     # Sibling profile and legacy unscoped slot are untouched.
     assert bob._read_token() == "jwt-b"  # type: ignore[reportPrivateUsage]
     assert store[("moneybin-sync", _KEYRING_JWT_KEY)] == "legacy-jwt"
+
+
+@respx.mock
+def test_login_reuses_a_supplied_challenge(sync_client: SyncClient) -> None:
+    """The address check already holds a device code; login must not ask again."""
+    code_route = respx.post("https://test.api/auth/device/code")
+    respx.post("https://test.api/auth/device/token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "eyJ-jwt",  # test fixture, not a real credential
+                "refresh_token": "v1.refresh",  # test fixture, not a real credential
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+    )
+    challenge = DeviceAuthorizationChallenge.model_validate({
+        "device_code": "dc-supplied",
+        "user_code": "ABCD-EFGH",
+        "verification_uri": "https://x",
+        "expires_in": 900,
+        "interval": 0,
+    })
+
+    sync_client.login(open_browser=False, challenge=challenge)
+
+    assert not code_route.called
+    assert sync_client._read_token() == "eyJ-jwt"  # type: ignore[reportPrivateUsage]

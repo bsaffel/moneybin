@@ -1,0 +1,177 @@
+"""The moneybin-sync server address a profile talks to.
+
+The address is a trust anchor: the browser is sent there to authenticate and
+bank linking runs through it. It is saved to the profile's ``config.yaml`` only
+at login, only once the server answers, and changing it clears the credentials
+the previous server issued. See ``sync-overview.md`` → Server address.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import logging
+from dataclasses import dataclass
+from typing import Literal
+from urllib.parse import urlsplit
+
+from moneybin import error_codes
+from moneybin.config import get_settings, reload_settings
+from moneybin.connectors.sync_client import SyncClient
+from moneybin.connectors.sync_models import DeviceAuthorizationChallenge
+from moneybin.errors import UserError
+from moneybin.metrics.registry import SYNC_SERVER_ADDRESS_OUTCOMES
+from moneybin.services.profile_service import ProfileService
+from moneybin.utils.user_config import get_or_create_profile_id
+
+logger = logging.getLogger(__name__)
+
+_SETTING_KEY = "sync.server_url"
+_ENV_VAR = "MONEYBIN_SYNC__SERVER_URL"
+LOGIN_COMMAND = "moneybin sync login --server <url>"
+
+Surface = Literal["cli", "mcp"]
+Change = Literal["unchanged", "first", "replace"]
+
+
+@dataclass(frozen=True)
+class AddressPlan:
+    """A validated address and what saving it would do to the profile."""
+
+    url: str
+    change: Change
+    unencrypted: bool
+
+
+@dataclass(frozen=True)
+class LoginStart:
+    """A client bound to the address, plus the challenge that proved it answers."""
+
+    client: SyncClient
+    # None when the address was already in force: nothing had to be proven.
+    challenge: DeviceAuthorizationChallenge | None
+    outcome: Literal["unchanged", "saved", "replaced"]
+
+
+def normalize_server_url(raw: str) -> str:
+    """Return ``raw`` as a bare http(s) address, or refuse it."""
+    url = raw.strip().rstrip("/")
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        host, parts = None, None
+    if (
+        parts is None
+        or parts.scheme not in ("http", "https")
+        or not host
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+    ):
+        raise UserError(
+            "The sync server address must look like https://sync.example.com — "
+            "http or https, a host, and no credentials, query, or fragment.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    return url
+
+
+def is_unencrypted(url: str) -> bool:
+    """True for plain http to anything but this machine."""
+    parts = urlsplit(url)
+    if parts.scheme != "http":
+        return False
+    host = parts.hostname or ""
+    if host == "localhost":
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
+
+
+def _saved_address(profile: str) -> str | None:
+    config = ProfileService().show(profile)["config"]
+    section = config.get("sync") if isinstance(config, dict) else None
+    saved = section.get("server_url") if isinstance(section, dict) else None
+    return saved if isinstance(saved, str) else None
+
+
+def _new_client(server_url: str) -> SyncClient:
+    # Scope the broker identity to the active profile so each profile
+    # authenticates as a distinct user.
+    profile_id = get_or_create_profile_id(get_settings().profile_dir)
+    return SyncClient(server_url=server_url, profile_id=profile_id)
+
+
+def _clear_credentials(client: SyncClient) -> None:
+    from moneybin.connectors.sync_auth import SyncAuthService
+
+    SyncAuthService(client=client).logout()
+
+
+def build_sync_client() -> SyncClient:
+    """Construct a SyncClient for the configured address."""
+    server_url = get_settings().sync.server_url
+    if server_url is None:
+        raise UserError(
+            "No sync server address is configured for this profile.",
+            code=error_codes.SYNC_SERVER_NOT_CONFIGURED,
+            hint=(
+                f"Run '{LOGIN_COMMAND}' with your moneybin-sync server's address; "
+                "login saves it to this profile."
+            ),
+        )
+    return _new_client(server_url)
+
+
+def plan_server_address(raw: str, *, surface: Surface = "cli") -> AddressPlan:
+    """Validate an address and classify what saving it would change."""
+    url = normalize_server_url(raw)
+    settings = get_settings()
+    effective = settings.sync.server_url
+    saved = _saved_address(settings.profile)
+    if effective is not None and effective.rstrip("/") == url:
+        change: Change = "unchanged"
+    elif effective is not None and effective != saved:
+        # The environment or a dotenv outranks config.yaml, so a save here
+        # would be shadowed and the next command would use the other server.
+        SYNC_SERVER_ADDRESS_OUTCOMES.labels(
+            surface=surface, outcome="override_conflict"
+        ).inc()
+        raise UserError(
+            f"{_ENV_VAR} is set to a different sync server and overrides any "
+            "saved address.",
+            code=error_codes.SYNC_SERVER_OVERRIDE_CONFLICT,
+            hint=f"Unset {_ENV_VAR}, then run '{LOGIN_COMMAND}' again.",
+        )
+    else:
+        change = "first" if saved is None else "replace"
+    return AddressPlan(url=url, change=change, unencrypted=is_unencrypted(url))
+
+
+def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
+    """Bind a client to the planned address, saving it once the server answers."""
+    client = _new_client(plan.url)
+    if plan.change == "unchanged":
+        return LoginStart(client=client, challenge=None, outcome="unchanged")
+    try:
+        challenge = client.begin_login()
+    except Exception:
+        SYNC_SERVER_ADDRESS_OUTCOMES.labels(
+            surface=surface, outcome="unreachable"
+        ).inc()
+        raise
+    settings = get_settings()
+    if plan.change == "replace":
+        # A token one server issued must never be presented to another.
+        _clear_credentials(client)
+    ProfileService().set(settings.profile, _SETTING_KEY, plan.url)
+    reload_settings()
+    outcome: Literal["saved", "replaced"] = (
+        "replaced" if plan.change == "replace" else "saved"
+    )
+    SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface=surface, outcome=outcome).inc()
+    logger.info(f"Sync server address {outcome} for profile {settings.profile}")
+    return LoginStart(client=client, challenge=challenge, outcome=outcome)
