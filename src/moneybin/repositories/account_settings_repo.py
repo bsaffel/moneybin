@@ -338,28 +338,53 @@ class AccountSettingsRepo(BaseRepo):
     def _now(self) -> datetime:
         return self._db.execute("SELECT NOW()::TIMESTAMP").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
 
+    def _live_source_stamp(self, locate: dict[str, Any]) -> datetime | None:
+        """The row's current change time, read before a restore overwrites it."""
+        if "investment_source_type_changed_at" not in self._live_columns():
+            return None
+        where, where_params = self._pk_where(locate)
+        row = self._db.execute(
+            f"SELECT investment_source_type_changed_at "  # noqa: S608  # TableRef + sqlglot-quoted pk
+            f"FROM {self.table_ref.full_name} WHERE {where}",
+            where_params,
+        ).fetchone()
+        return None if row is None else row[0]
+
     def _stamp_source_change(
-        self, *, before: dict[str, Any], locate: dict[str, Any]
+        self,
+        *,
+        before: dict[str, Any],
+        locate: dict[str, Any],
+        live_stamp: datetime | None,
     ) -> None:
-        """Advance the change time when an undo moves ``investment_source_type``.
+        """Keep ``investment_source_type_changed_at`` from moving backwards on restore.
 
         Undoing the setting changes the ledger's rows just as setting it did, so
-        the restored change time must move forward, never back to the old value
-        ``before`` carries. Mutates ``before`` in place: ``undo_event`` emits its
+        a restore that moves ``investment_source_type`` advances the change time
+        to now. One that leaves the type alone keeps the live time whenever the
+        image's is NULL (older than any time) or older, because the image can
+        predate a later set and clear. ``live_stamp`` is read before the restore
+        overwrote it. Mutates ``before`` in place: ``undo_event`` emits its
         audit row from these same dicts (same reason as the archived_at paths).
         """
         if "investment_source_type_changed_at" not in self._live_columns():
             return
         if before.get("investment_source_type") == locate.get("investment_source_type"):
-            return
-        changed_at = self._now()
+            image = before.get("investment_source_type_changed_at")
+            if live_stamp is None or (
+                image is not None and datetime.fromisoformat(str(image)) >= live_stamp
+            ):
+                return
+            kept = live_stamp
+        else:
+            kept = self._now()
         where, where_params = self._pk_where(locate)
         self._db.execute(
             f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
             f"SET investment_source_type_changed_at = ? WHERE {where}",
-            [changed_at, *where_params],
+            [kept, *where_params],
         )
-        before["investment_source_type_changed_at"] = changed_at.isoformat()
+        before["investment_source_type_changed_at"] = kept.isoformat()
 
     def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
         """Restore, deriving ``archived_at`` when a legacy capture omits it.
@@ -413,8 +438,9 @@ class AccountSettingsRepo(BaseRepo):
         misleading "not reversible" error. A post-V063 capture always carries
         the key and takes the base-class path unchanged.
         """
+        live_stamp = self._live_source_stamp(locate)
         super()._restore_row(before=before, locate=locate)
-        self._stamp_source_change(before=before, locate=locate)
+        self._stamp_source_change(before=before, locate=locate, live_stamp=live_stamp)
         if "archived_at" in before:
             return
         if not self._archived_at_supported():

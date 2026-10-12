@@ -869,6 +869,64 @@ class TestUndoOfInvestmentSourceChoice:
         # The type was already NULL, so the stamp is kept, not advanced.
         assert _source_row(db) == (None, stamped)
 
+    def test_redo_of_a_reset_never_loses_the_change_time(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """First write has a NULL stamp; a later set and clear leaves stamp T."""
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            MagicMock(),
+        )
+        with operation() as op_a:
+            _settings_set(db, display_name="Brokerage")
+        with operation() as op_b:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                investment_source_type="plaid",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+        UndoService(db).undo(op_b, actor="test")
+        _, stamp_t = _source_row(db) or (None, None)
+        assert stamp_t is not None
+        undo_a = UndoService(db).undo(op_a, actor="test")
+        assert _source_row(db) == (None, stamp_t)
+
+        UndoService(db).undo(undo_a.undo_operation_id, actor="test")
+
+        assert _source_row(db) == (None, stamp_t)
+
+    def test_a_restore_never_moves_the_change_time_backwards(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
+            MagicMock(),
+        )
+        _settings_set(
+            db,
+            display_name="Brokerage",
+            investment_source_type="manual",
+            investment_source_type_changed_at=_SOURCE_SET_AT,
+        )
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Renamed",
+                investment_source_type="manual",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+        newer = _SOURCE_SET_AT.replace(year=_SOURCE_SET_AT.year + 1)
+        db.execute(
+            "UPDATE app.account_settings SET investment_source_type_changed_at = ? "
+            "WHERE account_id = 'acc_choice'",
+            [newer],
+        )
+
+        UndoService(db).undo(op, actor="test")
+
+        assert _source_row(db) == ("manual", newer)
+
     def test_undo_of_a_never_chosen_first_write_still_deletes_the_row(
         self, db: Database
     ) -> None:
