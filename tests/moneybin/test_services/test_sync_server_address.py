@@ -36,6 +36,14 @@ class _FakeClient:
         })
 
 
+def _unreachable_client(server_url: str) -> _FakeClient:
+    return _FakeClient(server_url, reachable=False)
+
+
+def _skip_database_init(*_args: object, **_kwargs: object) -> None:
+    return None
+
+
 @pytest.fixture
 def events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -44,7 +52,7 @@ def events(
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     monkeypatch.delenv("MONEYBIN_SYNC__SERVER_URL", raising=False)
     # Profile creation would otherwise initialize a database through the keychain.
-    monkeypatch.setattr(ProfileService, "_init_database", lambda *a, **k: None)
+    monkeypatch.setattr(ProfileService, "_init_database", _skip_database_init)
     ProfileService().create("alice")
     clear_settings_cache()
     set_current_profile("alice")
@@ -54,10 +62,11 @@ def events(
         log.append(f"contact {server_url}")
         return _FakeClient(server_url)
 
+    def clear_credentials(client: object) -> None:
+        log.append("clear credentials")
+
     monkeypatch.setattr(address, "_new_client", new_client)
-    monkeypatch.setattr(
-        address, "_clear_credentials", lambda client: log.append("clear credentials")
-    )
+    monkeypatch.setattr(address, "_clear_credentials", clear_credentials)
     yield log
     clear_settings_cache()
 
@@ -151,14 +160,14 @@ class TestStartLogin:
         assert start.challenge is not None
         assert _saved(tmp_path) == _A
         assert get_settings().sync.server_url == _A
-        assert events == [f"contact {_A}"]
+        # Cleared even with nothing saved before: credentials can outlive an
+        # address that came from the environment and has since been unset.
+        assert events == [f"contact {_A}", "clear credentials"]
 
     def test_unreachable_server_is_not_saved(
         self, events: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            address, "_new_client", lambda url: _FakeClient(url, reachable=False)
-        )
+        monkeypatch.setattr(address, "_new_client", _unreachable_client)
 
         with pytest.raises(SyncAPIError):
             address.start_login(address.plan_server_address(_A), surface="cli")
@@ -172,11 +181,11 @@ class TestStartLogin:
         address.start_login(address.plan_server_address(_A), surface="cli")
         events.clear()
         saved_when_cleared: list[object] = []
-        monkeypatch.setattr(
-            address,
-            "_clear_credentials",
-            lambda client: saved_when_cleared.append(_saved(tmp_path)),
-        )
+
+        def record_saved(client: object) -> None:
+            saved_when_cleared.append(_saved(tmp_path))
+
+        monkeypatch.setattr(address, "_clear_credentials", record_saved)
 
         plan = address.plan_server_address(_B)
         assert plan.change == "replace"
@@ -191,9 +200,7 @@ class TestStartLogin:
     ) -> None:
         address.start_login(address.plan_server_address(_A), surface="cli")
         events.clear()
-        monkeypatch.setattr(
-            address, "_new_client", lambda url: _FakeClient(url, reachable=False)
-        )
+        monkeypatch.setattr(address, "_new_client", _unreachable_client)
 
         with pytest.raises(SyncAPIError):
             address.start_login(address.plan_server_address(_B), surface="cli")

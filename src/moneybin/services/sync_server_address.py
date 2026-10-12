@@ -11,7 +11,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 from urllib.parse import urlsplit
 
 from moneybin import error_codes
@@ -92,9 +92,11 @@ def is_unencrypted(url: str) -> bool:
 
 
 def _saved_address(profile: str) -> str | None:
-    config = ProfileService().show(profile)["config"]
-    section = config.get("sync") if isinstance(config, dict) else None
-    saved = section.get("server_url") if isinstance(section, dict) else None
+    config = cast(dict[str, object], ProfileService().show(profile)["config"])
+    section = config.get("sync")
+    if not isinstance(section, dict):
+        return None
+    saved = cast(dict[str, object], section).get("server_url")
     return saved if isinstance(saved, str) else None
 
 
@@ -164,9 +166,11 @@ def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
         ).inc()
         raise
     settings = get_settings()
-    if plan.change == "replace":
-        # A token one server issued must never be presented to another.
-        _clear_credentials(client)
+    # A token or device code one server issued must never reach another. Not
+    # gated on a previously *saved* address: credentials can outlive one that
+    # came from the environment. SyncClient also binds each pair to its issuer,
+    # which covers the address changes that never pass through here.
+    _clear_credentials(client)
     ProfileService().set(settings.profile, _SETTING_KEY, plan.url)
     reload_settings()
     outcome: Literal["saved", "replaced"] = (

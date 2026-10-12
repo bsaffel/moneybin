@@ -57,6 +57,10 @@ logger = logging.getLogger(__name__)
 _KEYRING_JWT_KEY = "jwt"
 _KEYRING_REFRESH_KEY = "refresh_token"
 _PENDING_KEY = "pending"
+# The server that issued the stored pair. The address can change by five routes
+# (login, `profile set`, a hand edit, a dotenv, the environment) and only one of
+# them clears credentials, so the pair itself records where it may be presented.
+_KEYRING_SERVER_KEY = "server"
 
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 _LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
@@ -85,6 +89,11 @@ class SyncClient:
         self._store = secret_store or SecretStore.for_sync(profile_id)
         self._client = httpx.Client(base_url=self._server_url, timeout=_DEFAULT_TIMEOUT)
 
+    @property
+    def server_url(self) -> str:
+        """The server this client talks to, without a trailing slash."""
+        return self._server_url
+
     def _optional_key(self, name: str) -> str | None:
         try:
             return self._store.get_key(name)
@@ -107,9 +116,11 @@ class SyncClient:
         try:
             self._store.set_key(_KEYRING_JWT_KEY, access_token)
             self._store.set_key(_KEYRING_REFRESH_KEY, refresh_token)
+            self._store.set_key(_KEYRING_SERVER_KEY, self._server_url)
             if (
                 self._optional_key(_KEYRING_JWT_KEY) != access_token
                 or self._optional_key(_KEYRING_REFRESH_KEY) != refresh_token
+                or self._optional_key(_KEYRING_SERVER_KEY) != self._server_url
             ):
                 raise SecretStorageUnavailableError(
                     "Sync credential verification failed."
@@ -133,7 +144,12 @@ class SyncClient:
 
     @staticmethod
     def _delete_pair(store: SecretStore) -> None:
-        for name in (_KEYRING_JWT_KEY, _KEYRING_REFRESH_KEY, _PENDING_KEY):
+        for name in (
+            _KEYRING_JWT_KEY,
+            _KEYRING_REFRESH_KEY,
+            _KEYRING_SERVER_KEY,
+            _PENDING_KEY,
+        ):
             try:
                 store.delete_key(name)
             except SecretUnavailableError:
@@ -162,6 +178,15 @@ class SyncClient:
                 raise SecretStorageUnavailableError(
                     "Sync credential pair is incomplete. Run `moneybin sync login` again."
                 )
+            issuer = self._optional_key(_KEYRING_SERVER_KEY)
+            if issuer is None:
+                # Stored before pairs recorded their issuer. Bind to the server
+                # in force now: it is the one this pair was already being sent to.
+                self._store.set_key(_KEYRING_SERVER_KEY, self._server_url)
+            elif issuer != self._server_url:
+                # Kept, not deleted: an override that points elsewhere for one
+                # run must not log the profile out of its own server.
+                return None
             # A previous import may have stored both values but failed to remove
             # its plaintext source. Retry cleanup only when that exact pair matches.
             if self._profile_id is not None:

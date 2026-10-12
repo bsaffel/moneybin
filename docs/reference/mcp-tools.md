@@ -651,7 +651,7 @@ Access: write, destructive, not idempotent, open world. Sensitivity: at least `l
 
 ### sync_link
 
-Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries.
+Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries. In login mode, server_url names this profile's sync server: pass only an address the user gave you. A new or changed address is saved to the profile's config.yaml only after the user confirms a prompt, and signs the profile out of the previous server; log in with another address to change it back.
 
 Access: write, not idempotent, open world. Sensitivity: at least `medium`.
 
@@ -659,6 +659,7 @@ Access: write, not idempotent, open world. Sensitivity: at least `medium`.
 |---|---|---|---|
 | `institution` | string |  |  |
 | `mode` | one of `institution`, `login` | `institution` |  |
+| `server_url` | string |  |  |
 
 ### sync_pull
 

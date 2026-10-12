@@ -851,3 +851,55 @@ def test_login_reuses_a_supplied_challenge(sync_client: SyncClient) -> None:
 
     assert not code_route.called
     assert sync_client._read_token() == "eyJ-jwt"  # type: ignore[reportPrivateUsage]
+
+
+# --- Credentials are bound to the server that issued them -------------------
+
+
+def _clients_sharing_a_store() -> tuple[SyncClient, SyncClient, FakeSecretStore]:
+    store = FakeSecretStore()
+    issuer = SyncClient(server_url="https://a.example.test", secret_store=store)
+    other = SyncClient(server_url="https://b.example.test", secret_store=store)
+    return issuer, other, store
+
+
+def test_tokens_are_not_presented_to_a_different_server(
+    sync_client: SyncClient,
+) -> None:
+    """However the address changed, another server never sees these tokens."""
+    issuer, other, _ = _clients_sharing_a_store()
+    issuer._store_tokens(access_token="jwt-a", refresh_token="refresh-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a credential
+
+    assert other._read_token() is None  # type: ignore[reportPrivateUsage]
+    assert other._read_refresh_token() is None  # type: ignore[reportPrivateUsage]
+
+
+def test_tokens_survive_a_different_server_looking(sync_client: SyncClient) -> None:
+    """A temporary override must not log the profile out of its own server."""
+    issuer, other, _ = _clients_sharing_a_store()
+    issuer._store_tokens(access_token="jwt-a", refresh_token="refresh-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a credential
+
+    other._read_token()  # type: ignore[reportPrivateUsage]
+
+    assert issuer._read_token() == "jwt-a"  # type: ignore[reportPrivateUsage]
+
+
+def test_tokens_stored_before_binding_are_bound_on_first_read(
+    sync_client: SyncClient,
+) -> None:
+    """A pair with no recorded issuer belongs to the first server that reads it."""
+    issuer, other, store = _clients_sharing_a_store()
+    store.values[_KEYRING_JWT_KEY] = "jwt-old"
+    store.values["refresh_token"] = "refresh-old"  # noqa: S105  # test fixture, not a credential
+
+    assert issuer._read_token() == "jwt-old"  # type: ignore[reportPrivateUsage]
+    assert other._read_token() is None  # type: ignore[reportPrivateUsage]
+
+
+def test_logout_removes_the_server_binding(sync_client: SyncClient) -> None:
+    issuer, _, store = _clients_sharing_a_store()
+    issuer._store_tokens(access_token="jwt-a", refresh_token="refresh-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a credential
+
+    issuer.logout()
+
+    assert store.values == {}

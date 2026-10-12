@@ -67,6 +67,9 @@ class _StoredAuthSession:
     poll_interval_seconds: float = 5.0
     next_poll_at: str | None = None
     error_code: str | None = None
+    # The server that issued device_code; None on a session stored before this
+    # was recorded. A code approved at one server mints tokens for whoever polls.
+    server_url: str | None = None
 
     def safe_result(self, *, replayed: bool = False) -> SyncAuthResult:
         return SyncAuthResult(
@@ -122,6 +125,7 @@ class SyncAuthService:
             device_code=challenge.device_code.get_secret_value(),
             poll_interval_seconds=challenge.interval,
             next_poll_at=(now + timedelta(seconds=challenge.interval)).isoformat(),
+            server_url=self._client.server_url,
         )
         with self._acquire_lock():
             sessions = self._load_collection()
@@ -177,6 +181,15 @@ class SyncAuthService:
                 raise UserError(
                     "Authentication session cannot be resumed.",
                     code=error_codes.SYNC_AUTH_SESSION_INVALID,
+                )
+            if session.server_url not in (None, self._client.server_url):
+                if pruned:
+                    self._save_collection(sessions)
+                raise UserError(
+                    "Authentication session was started against a different "
+                    "sync server.",
+                    code=error_codes.SYNC_AUTH_SESSION_INVALID,
+                    hint="Start a new login for the current server.",
                 )
             try:
                 polled = self._client.poll_login(session.device_code)

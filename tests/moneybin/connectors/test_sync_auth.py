@@ -13,11 +13,13 @@ import keyring.errors
 import pytest
 from pydantic import SecretStr
 
+from moneybin import error_codes
 from moneybin.connectors.sync_auth import SyncAuthService
 from moneybin.connectors.sync_models import (
     DeviceAuthorizationChallenge,
     LoginPollResult,
 )
+from moneybin.errors import UserError
 from moneybin.secrets import SecretStore
 
 
@@ -65,7 +67,9 @@ def _service(
     client: object,
     store: SecretStore,
     lock_path: Path,
+    server_url: str = "https://a.example.test",
 ) -> SyncAuthService:
+    client.server_url = server_url  # type: ignore[attr-defined]  # MagicMock client
     return SyncAuthService(
         client=client,  # type: ignore[arg-type]
         secrets=store,
@@ -456,7 +460,7 @@ def test_slow_down_persists_and_enforces_increased_poll_interval(
     tmp_path: Path,
 ) -> None:
     now = [datetime(2026, 7, 19, tzinfo=UTC)]
-    client = MagicMock()
+    client = MagicMock(server_url="https://a.example.test")
     client.begin_login.return_value = _challenge(interval=5)
     client.poll_login.side_effect = [
         LoginPollResult(status="slow_down"),
@@ -494,7 +498,7 @@ def test_expired_session_never_calls_provider(
     patched_keyring: _PatchedKeyring,
     tmp_path: Path,
 ) -> None:
-    client = MagicMock()
+    client = MagicMock(server_url="https://a.example.test")
     client.begin_login.return_value = _challenge()
     times = iter([
         datetime(2026, 7, 19, tzinfo=UTC),
@@ -731,3 +735,28 @@ def test_begin_reuses_a_supplied_challenge(
     client.begin_login.assert_not_called()
     assert result.status == "pending"
     assert result.user_code == "ABCD-EFGH"
+
+
+def test_status_never_sends_a_device_code_to_a_different_server(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    """A device code the user approves at one server would mint tokens for another."""
+    issuer_client = MagicMock()
+    issuer_client.begin_login.return_value = _challenge()
+    store = SecretStore(profile="alice")
+    lock_path = tmp_path / "alice.sync-auth"
+    started = _service(client=issuer_client, store=store, lock_path=lock_path).begin()
+    other_client = MagicMock()
+    other = _service(
+        client=other_client,
+        store=store,
+        lock_path=lock_path,
+        server_url="https://b.example.test",
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        other.status(started.auth_session_id)
+
+    assert excinfo.value.code == error_codes.SYNC_AUTH_SESSION_INVALID
+    other_client.poll_login.assert_not_called()

@@ -215,9 +215,21 @@ The address is written to the active profile's `config.yaml` only after the
 server at that address answers `POST /auth/device/code` with a valid challenge,
 so a typo or an unreachable host is never saved.
 
-**Changing it.** Saving an address that differs from the profile's current one
-clears that profile's stored sync credentials before the new address is
-written. A token issued by one server is never sent to another.
+**Changing it.** A token or device code issued by one server is never sent to
+another. Two mechanisms hold that, because login is only one of five ways the
+address can change (login, `profile set`, a hand edit, a dotenv, the
+environment):
+
+- *At save.* Login clears the profile's stored tokens and pending device-login
+  sessions before it writes a new address — whether or not an address was
+  saved before, since credentials can outlive one that came from the
+  environment.
+- *At use.* Each stored token pair and each pending device-login session
+  records the server that issued it. A client bound to a different address
+  treats the pair as absent and refuses to poll the session. The pair is kept,
+  so an override that points elsewhere for one run does not sign the profile
+  out of its own server. A pair stored before issuers were recorded is bound
+  to the server in force the first time it is read.
 
 **When an override is in force.** If source 1 or 2 supplies the address and
 login is asked to save a different one, login refuses and names the variable:

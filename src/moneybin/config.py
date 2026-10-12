@@ -1229,7 +1229,7 @@ class MoneyBinSettings(BaseSettings):
             env_file_encoding="utf-8",
         )
 
-        profile_dir = get_base_dir() / "profiles" / profile
+        profile_dir: Path = get_base_dir() / "profiles" / cast(str, profile)
 
         def profile_path_defaults() -> dict[str, Any]:
             """Provide profile paths after operator configuration sources."""

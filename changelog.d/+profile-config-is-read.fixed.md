@@ -1,0 +1,1 @@
+`profile set <section>.<field>` now takes effect: settings read the profile's `config.yaml`, below environment variables and the dotenv file. Previously the value was written and shown by `profile show` but never loaded. `profile set` refuses unknown keys, secrets, and values the setting rejects.
