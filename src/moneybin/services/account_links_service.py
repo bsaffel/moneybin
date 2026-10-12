@@ -393,12 +393,23 @@ class AccountLinksService:
         )
 
     def plan_settings(
-        self, absorbed_account_id: str, survivor_account_id: str
+        self,
+        absorbed_account_id: str,
+        survivor_account_id: str,
+        *,
+        survivor_row: Mapping[str, Any] | None = None,
     ) -> SettingsReconciliation:
-        """Read both settings rows and plan the reconciliation (read-only)."""
+        """Read both settings rows and plan the reconciliation (read-only).
+
+        ``survivor_row`` stands in for the survivor's stored row when an earlier
+        merge in the same batch has already filled it, so a later plan sees what
+        execution will see.
+        """
         return plan_settings_reconciliation(
             self._settings.load(absorbed_account_id),
-            self._settings.load(survivor_account_id),
+            survivor_row
+            if survivor_row is not None
+            else self._settings.load(survivor_account_id),
         )
 
     def _frozen_names(

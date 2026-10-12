@@ -18,6 +18,10 @@ from pytest_mock import MockerFixture
 from moneybin.database import Database
 from moneybin.mcp.tools import accounts as mcp_accounts
 from moneybin.orchestration.refresh import RefreshResult
+from moneybin.protocol.write_contracts import (
+    AccountLinkDecisionRequest,
+    IdentityDecisionRequest,
+)
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
@@ -27,6 +31,7 @@ from moneybin.services.account_links_service import (
 )
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.mutation_context import operation
+from moneybin.services.review_decisions_service import ReviewDecisionsService
 from moneybin.services.undo_service import UndoService
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -551,3 +556,68 @@ def _decision_status(db: Database, decision_id: str) -> str | None:
         [decision_id],
     ).fetchone()
     return row[0] if row else None
+
+
+def test_a_batch_plans_each_merge_against_the_survivor_the_earlier_ones_leave(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """Two duplicates into one survivor: the first fills the gap, the second is kept."""
+    second = "absorbed_two"
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, source_type) "
+        "VALUES (?, ?, 'csv')",
+        [second, second],
+    )
+    AccountLinksRepo(db).insert(
+        link_id="link_absorbed_two",
+        account_id=second,
+        ref_kind="source_native",
+        ref_value="native-ref-two",
+        source_type="csv",
+        source_origin="bank_b",
+        decided_by="auto",
+        actor="system",
+        status="accepted",
+    )
+    AccountLinkDecisionsRepo(db).insert(
+        decision_id="merge_dec_002",
+        provisional_account_id=second,
+        candidate_account_id=_SURVIVOR,
+        confidence_score=0.9,
+        match_signals={"signal": "institution_last4", "value": "***"},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+    _put(db, _ABSORBED, display_name="First Name", holder_category="joint")
+    _put(db, second, display_name="Second Name", credit_limit=Decimal("700"))
+    requests: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=decision_id,
+            decision="accept",
+            target_id=_SURVIVOR,
+        )
+        for decision_id in (_DECISION, "merge_dec_002")
+    ]
+    reviews = ReviewDecisionsService(db, actor="cli")
+
+    plan = reviews.plan_identity(requests)
+
+    first, later = plan.items
+    assert (first.settings_moved, first.settings_kept) == (
+        ("display_name", "holder_category"),
+        (),
+    )
+    assert (later.settings_moved, later.settings_kept) == (
+        ("credit_limit",),
+        ("display_name",),
+    )
+
+    reviews.apply_identity(requests, verify=lambda _plan: None)
+
+    survivor = _row(db, _SURVIVOR)
+    assert survivor is not None
+    assert survivor["display_name"] == "First Name"
+    assert survivor["holder_category"] == "joint"
+    assert survivor["credit_limit"] == Decimal("700.00")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
@@ -119,6 +119,10 @@ class IdentityDecisionPlanItem:
     group_key: tuple[str, ...]
     before_state: JsonValue
     affected_ids: dict[str, tuple[str, ...]]
+    # Account merges only: the settings fields the merge moves onto the survivor
+    # and the conflicting ones it keeps, planned in batch order.
+    settings_moved: tuple[str, ...] = ()
+    settings_kept: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -559,6 +563,8 @@ class ReviewDecisionsService:
     def _prepare_account(
         self,
         request: AccountLinkDecisionRequest,
+        *,
+        survivor_images: dict[str, Mapping[str, Any]] | None = None,
     ) -> IdentityDecisionPlanItem:
         service = AccountLinksService(self._db, actor=self._actor)
         decision = _decision_row(
@@ -630,11 +636,17 @@ class ReviewDecisionsService:
             if material_accept
             else []
         )
+        images = survivor_images if survivor_images is not None else {}
         settings = (
-            service.plan_settings(source_id, target_id)
+            service.plan_settings(
+                source_id, target_id, survivor_row=images.get(target_id)
+            )
             if material_accept
             else SettingsReconciliation()
         )
+        if settings.moved and settings.row is not None:
+            # Later merges into this survivor see the image this one leaves.
+            images[target_id] = settings.row
         selections = [
             row
             for disposal_id in selection_disposal_ids
@@ -683,6 +695,8 @@ class ReviewDecisionsService:
                 "lots": (),
                 "price_marks": (),
             },
+            settings_moved=settings.moved,
+            settings_kept=settings.kept,
         )
 
     def _prepare_merchant(
@@ -1040,6 +1054,9 @@ class ReviewDecisionsService:
         prepared: list[IdentityDecisionPlanItem] = []
         seen_ids: set[tuple[str, str]] = set()
         seen_groups: set[tuple[str, ...]] = set()
+        # Apply order is batch order, so settings are planned against the
+        # survivor image the earlier merges in this batch leave behind.
+        survivor_images: dict[str, Mapping[str, Any]] = {}
         for index, request in enumerate(decisions):
             key = (request.kind, request.decision_id)
             if key in seen_ids:
@@ -1054,7 +1071,9 @@ class ReviewDecisionsService:
             seen_ids.add(key)
             try:
                 if isinstance(request, AccountLinkDecisionRequest):
-                    item = self._prepare_account(request)
+                    item = self._prepare_account(
+                        request, survivor_images=survivor_images
+                    )
                 elif isinstance(request, MerchantLinkDecisionRequest):
                     item = self._prepare_merchant(request)
                 else:
