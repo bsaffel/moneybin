@@ -244,6 +244,7 @@ SELECT
     CAST(NULL AS DATE) AS rate_published_date,
     0 AS account_count,
     0 AS carried_forward_count,
+    0 AS unanchored_account_count,
     0.00::DECIMAL(18, 2) AS total_assets,
     0.00::DECIMAL(18, 2) AS total_liabilities,
     0.00::DECIMAL(18, 2) AS net_worth,

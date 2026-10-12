@@ -85,7 +85,7 @@ SELECT
   rate_source, /* override / provider / identity; NULL when the pair is unpriced on this date */
   balance_date, /* Grain. Calendar date */
   rate_published_date, /* The day the applied rate was actually published; NULL when this currency is unpriced on this date */
-  account_count::INT AS account_count, /* Accounts contributing on this date in this currency */
+  account_count::INT AS account_count, /* Accounts with a known balance contributing on this date in this currency */
   carried_forward_count::INT AS carried_forward_count, /* How many of them are carried forward, not observed */
   unanchored_account_count::INT AS unanchored_account_count, /* Accounts in net worth holding value in this currency with no balance observation on this date; every measure on the row is NULL while it is above 0 */
   total_assets::DECIMAL(18, 2) AS total_assets, /* Sum of positive balances, in currency_code; NULL when unanchored_account_count > 0 */

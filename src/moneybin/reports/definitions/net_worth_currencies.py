@@ -92,7 +92,7 @@ def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> Non
         ),
         OutputColumn(
             "account_count",
-            "Accounts contributing on this date in this currency.",
+            "Accounts with a known balance contributing on this date in this currency.",
             DataClass.AGGREGATE,
             numeric=True,
             grouped=True,

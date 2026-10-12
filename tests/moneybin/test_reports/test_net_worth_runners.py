@@ -182,7 +182,6 @@ def test_currencies_runner_to_date_alone_stays_open_below(model_db: Database) ->
 def test_accounts_runner_rejects_an_inverted_range_before_querying(
     model_db: Database,
 ) -> None:
-
     with pytest.raises(UserError) as excinfo:
         net_worth_accounts(model_db, from_date="2026-03-01", to_date="2026-01-01")
     assert excinfo.value.code == "report_parameter_invalid_range"
