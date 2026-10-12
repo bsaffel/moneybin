@@ -235,9 +235,12 @@ class CurrencyService:
             # densifies by, so a report's SQL and Python halves agree. Online,
             # the provider answers instead: it can tell a holiday from a day
             # nobody fetched, which the cache cannot.
-            closed_since = self._closure_publication(base, quote, on)
-            if closed_since is not None:
-                stored = self._stored_rate(base, quote, closed_since)
+            closure = self._closure_publication(base, quote, on)
+            if closure is not None:
+                closed_since, provider = closure
+                stored = self._stored_rate(
+                    base, quote, closed_since, source_type=provider
+                )
                 if stored is not None:
                     rate, source = stored
                     FX_RATE_RESOLUTION_TOTAL.labels(outcome=_outcome_for(source)).inc()
@@ -403,14 +406,16 @@ class CurrencyService:
     # -------------------------------- storage --------------------------------
 
     def _stored_rate(
-        self, base: str, quote: str, day: date
+        self, base: str, quote: str, day: date, *, source_type: str | None = None
     ) -> tuple[Decimal, str] | None:
         """The best rate already on disk for one exact day, or ``None``.
 
         Override first: a correction outranks every cached provider rate for its
         own pair and date, and this is the single place that ordering is
         expressed — both the exact-date lookup and the weekend fallback go
-        through here, so the two cannot drift apart.
+        through here, so the two cannot drift apart. ``source_type`` narrows the
+        provider rows to the one provider whose publications proved a closure,
+        so the carried rate is that provider's, not a newer write from another.
         """
         override = self._override_rate(base, quote, day)
         if override is not None:
@@ -422,8 +427,9 @@ class CurrencyService:
         cached = self._db.execute(
             f"SELECT rate, source_type FROM {EXCHANGE_RATES.full_name} "  # TableRef + parameterized values
             "WHERE from_currency = ? AND to_currency = ? AND rate_date = ? "
+            "AND (? IS NULL OR source_type = ?) "
             "ORDER BY loaded_at DESC, source_type LIMIT 1",
-            [base, quote, day],
+            [base, quote, day, source_type, source_type],
         ).fetchone()
         if cached is None:
             return None
@@ -739,42 +745,74 @@ class CurrencyService:
             [[source_type, code] for code in sorted(published)],
         )
 
-    def _closure_publication(self, base: str, quote: str, on: date) -> date | None:
-        """The publication a market closure around ``on`` carries, or ``None``.
+    def _closure_publication(
+        self, base: str, quote: str, on: date
+    ) -> tuple[date, str] | None:
+        """The publication and provider a market closure around ``on`` carries.
 
-        Two proofs are required. A recorded coverage span must include ``on``:
-        the provider answered for that day and published nothing, so the gap is
-        a closed market. Stored rows alone cannot say that, because two separate
-        `fx rate` lookups leave the same rows as a full fetch with a real gap
-        between them. And stored provider rows must bracket ``on`` no more than
+        Two proofs are required, both from one provider. A coverage span that
+        provider recorded must include ``on``: it answered for that day and
+        published nothing, so the gap is a closed market. Stored rows alone
+        cannot say that, because two separate `fx rate` lookups leave the same
+        rows as a full fetch with a real gap between them. And that provider's
+        own stored rows must bracket ``on`` no more than
         ``MAX_MARKET_CLOSURE_DAYS`` apart, so a stopped series is not carried
-        forward indefinitely. Overrides count toward neither: a user's
-        correction says nothing about whether the market was open.
+        forward indefinitely. The proofs are not mixed across providers: one
+        provider's answer says nothing about a gap in another's sparser cache,
+        so a day covered only by A while B holds the nearer rows is not B's
+        closure. Overrides count toward neither: a user's correction says
+        nothing about whether the market was open. When several providers each
+        prove the closure, the latest publication wins, then the provider name,
+        so the choice is deterministic.
         """
         try:
             row = self._db.execute(
                 f"""
-                SELECT
-                    (SELECT MAX(rate_date) FROM {EXCHANGE_RATES.full_name}
-                      WHERE from_currency = ? AND to_currency = ? AND rate_date < ?),
-                    (SELECT MIN(rate_date) FROM {EXCHANGE_RATES.full_name}
-                      WHERE from_currency = ? AND to_currency = ? AND rate_date > ?),
-                    EXISTS (SELECT 1 FROM {EXCHANGE_RATE_COVERAGE.full_name}
-                      WHERE from_currency = ? AND to_currency = ?
-                        AND start_date <= ? AND end_date >= ?)
+                WITH covering AS (
+                    SELECT DISTINCT source_type
+                      FROM {EXCHANGE_RATE_COVERAGE.full_name}
+                     WHERE from_currency = ? AND to_currency = ?
+                       AND start_date <= ? AND end_date >= ?
+                ), bracketed AS (
+                    SELECT
+                        c.source_type,
+                        (SELECT MAX(rate_date) FROM {EXCHANGE_RATES.full_name} r
+                          WHERE r.from_currency = ? AND r.to_currency = ?
+                            AND r.rate_date < ? AND r.source_type = c.source_type
+                        ) AS before,
+                        (SELECT MIN(rate_date) FROM {EXCHANGE_RATES.full_name} r
+                          WHERE r.from_currency = ? AND r.to_currency = ?
+                            AND r.rate_date > ? AND r.source_type = c.source_type
+                        ) AS after
+                    FROM covering c
+                )
+                SELECT before, source_type FROM bracketed
+                 WHERE before IS NOT NULL AND after IS NOT NULL
+                   AND after - before <= ?
+                 ORDER BY before DESC, source_type
+                 LIMIT 1
                 """,  # TableRef + parameterized values
-                [base, quote, on, base, quote, on, base, quote, on, on],
+                [
+                    base,
+                    quote,
+                    on,
+                    on,
+                    base,
+                    quote,
+                    on,
+                    base,
+                    quote,
+                    on,
+                    MAX_MARKET_CLOSURE_DAYS,
+                ],
             ).fetchone()
         except duckdb.CatalogException:
             # A read-only open skips the migration runner, so an upgrading
             # profile can reach this before the coverage table exists.
             return None
-        if row is None or row[0] is None or row[1] is None or not row[2]:
+        if row is None:
             return None
-        before, after = row[0], row[1]
-        if (after - before).days > MAX_MARKET_CLOSURE_DAYS:
-            return None
-        return before
+        return row[0], str(row[1])
 
     def record_coverage(
         self,

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-10-07 -->
+<!-- Last reviewed: 2026-10-11 -->
 # Multi-currency
 
 Every transaction, balance, and investment event keeps the currency it arrived
@@ -225,8 +225,9 @@ it unsupported.
 A date inside a closure prices at the last rate published before it. Two
 conditions apply. The refresh, or an `fx rate` lookup, must have asked the
 provider about that date and got no rate back for it, so the missing day is a
-closure rather than a day nobody fetched. And stored rates on both sides must
-bracket it no more than a week apart. Past the newest stored rate a date stays
+closure rather than a day nobody fetched. And stored rates on both sides, from
+the same provider that answered, must bracket it no more than a week apart.
+Past the newest stored rate a date stays
 unpriced. `fx rate` names both days:
 
 ```console

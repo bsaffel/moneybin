@@ -448,6 +448,71 @@ def test_offline_a_closure_reads_the_override_on_the_publication_it_carries(
     assert resolved.rate_date == _XMAS_EVE
 
 
+def test_offline_a_closure_carries_the_rate_of_the_provider_that_proved_it(
+    db: Database,
+) -> None:
+    """The provider whose answer and rows prove the closure prices it.
+
+    A second provider wrote the 24th later, with a different rate, and holds
+    nothing nearer than mid-January: its cache is sparse there, not closed.
+    The carried rate is the proving provider's, not the newest write.
+    """
+    _cache_christmas(db)
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rates
+            (from_currency, to_currency, rate_date, rate, source_type, loaded_at)
+        VALUES ('EUR', 'USD', ?, ?, 'exchangerate_host', NOW() + INTERVAL '1' DAY)
+        """,
+        [_XMAS_EVE, Decimal("1.20000000")],
+    )
+    _cache(
+        db,
+        from_currency="EUR",
+        to_currency="USD",
+        rate_date=date(2026, 1, 15),
+        rate="1.21000000",
+        source_type="exchangerate_host",
+    )
+
+    resolved = CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    assert resolved.rate_date == _XMAS_EVE
+    assert resolved.rate == Decimal("1.17870000")
+    assert resolved.source == "frankfurter"
+
+
+def test_offline_another_providers_coverage_does_not_prove_a_closure(
+    db: Database,
+) -> None:
+    """Coverage from one provider cannot vouch for a gap in another's rows.
+
+    frankfurter's rows bracket Boxing Day five days apart but it recorded no
+    answer; exchangerate_host recorded the answer but its own publications sit
+    nine days apart. Mixed together they would read as a proven closure. Kept
+    apart, neither provider proves one, and the day stays unpriced.
+    """
+    _cache_christmas(db, covered=False)
+    for rate_date, rate in (
+        (date(2025, 12, 20), "1.17000000"),
+        (_NEXT_PUBLICATION, "1.17730000"),
+    ):
+        _cache(
+            db,
+            from_currency="EUR",
+            to_currency="USD",
+            rate_date=rate_date,
+            rate=rate,
+            source_type="exchangerate_host",
+        )
+    CurrencyService(db).record_coverage(
+        "EUR", "USD", date(2025, 12, 20), _NEXT_PUBLICATION, "exchangerate_host"
+    )
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+
 def test_offline_a_gap_wider_than_a_market_closure_stays_unpriced(
     db: Database,
 ) -> None:

@@ -36,7 +36,8 @@
    `_last_publication_day` exactly and stops exactly where it stops.
    Inside the window a day carries only across a market closure — the weekend
    after a Friday, or a day inside a recorded provider answer
-   (raw.exchange_rate_coverage) whose bracketing publications sit at most
+   (raw.exchange_rate_coverage) whose bracketing publications, from that same
+   provider, sit at most
    MAX_MARKET_CLOSURE_DAYS (7) apart, the rule resolve_rate's offline path
    applies — so a holiday prices at the publication before it and a wider
    hole stays unpriced. `MAX_BACKWARD_RESOLUTION_DAYS` (14) is not that
@@ -103,25 +104,45 @@ MODEL (
   grain (from_currency, to_currency, effective_date)
 );
 
-WITH provider_obs AS (
-  /* rate is the final tiebreak, matching core.fct_security_prices and
+WITH provider_series AS (
+  /* Each provider's own publication series, so a row knows the next day the
+     SAME provider published. The closure proof below is per provider: one
+     provider's answer says nothing about a gap in another's sparser cache, so
+     the bracket a carried row is measured against must come from the provider
+     that priced it, not from whichever provider happens to hold the next row.
+     rate is the final tiebreak, matching core.fct_security_prices and
      core.fct_exchange_rates: prep.stg_exchange_rates upper-cases from_currency/
-     to_currency, so two raw rows differing only by case collide on this grain.
-     Nothing writes such a pair today, but leaving the pick unresolved past
-     source_type would make a future collision's winner depend on scan order
-     rather than the row's own values. */
+     to_currency, so two raw rows differing only by case collide on this grain. */
   SELECT
     from_currency,
     to_currency,
     rate_date,
     rate,
     source_type AS provider_name,
-    loaded_at
+    loaded_at,
+    LEAD(rate_date) OVER (PARTITION BY from_currency, to_currency, source_type ORDER BY rate_date) AS provider_next_date
   FROM prep.stg_exchange_rates
   QUALIFY
     ROW_NUMBER() OVER (
+      PARTITION BY from_currency, to_currency, rate_date, source_type
+      ORDER BY loaded_at DESC, rate
+    ) = 1
+), provider_obs AS (
+  /* One observation per pair and day: freshest write, then provider name,
+     the same tie-break core.fct_exchange_rates applies to provider rows. */
+  SELECT
+    from_currency,
+    to_currency,
+    rate_date,
+    rate,
+    provider_name,
+    provider_next_date,
+    loaded_at
+  FROM provider_series
+  QUALIFY
+    ROW_NUMBER() OVER (
       PARTITION BY from_currency, to_currency, rate_date
-      ORDER BY loaded_at DESC, source_type, rate
+      ORDER BY loaded_at DESC, provider_name, rate
     ) = 1
 ), pair_bounds AS (
   SELECT
@@ -156,7 +177,7 @@ WITH provider_obs AS (
     LAST_VALUE(o.rate_date IGNORE NULLS) OVER pair_order AS published_date,
     LAST_VALUE(o.rate IGNORE NULLS) OVER pair_order AS rate,
     LAST_VALUE(o.provider_name IGNORE NULLS) OVER pair_order AS rate_vendor,
-    FIRST_VALUE(o.rate_date IGNORE NULLS) OVER pair_ahead AS next_published_date,
+    LAST_VALUE(o.provider_next_date IGNORE NULLS) OVER pair_order AS next_published_date,
     'provider' AS rate_source
   FROM pair_spine AS s
   LEFT JOIN provider_obs AS o
@@ -167,18 +188,17 @@ WITH provider_obs AS (
     PARTITION BY s.from_currency, s.to_currency
     ORDER BY s.effective_date
     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-  ), pair_ahead AS (
-    PARTITION BY s.from_currency, s.to_currency
-    ORDER BY s.effective_date
-    ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
   )
 ), provider_closures AS (
   /* A carried row survives only as a market closure: the weekend after a
-     Friday (_last_publication_day's hop), or a day a recorded provider answer
-     covered (raw.exchange_rate_coverage) whose two bracketing publications are
-     at most 7 days apart — MAX_MARKET_CLOSURE_DAYS in currency_service.py, the
+     Friday (_last_publication_day's hop), or a day the carrying provider's own
+     recorded answer covered (raw.exchange_rate_coverage, matched on
+     source_type) whose two bracketing publications BY THAT PROVIDER are at
+     most 7 days apart — MAX_MARKET_CLOSURE_DAYS in currency_service.py, the
      same rule resolve_rate's offline path applies, so the two answer the same
-     days. Without coverage the gap may be a day nobody fetched (two separate
+     days. next_published_date carries with published_date and rate_vendor
+     through the same window, so the bracket is the carrying provider's.
+     Without coverage the gap may be a day nobody fetched (two separate
      `fx rate` lookups leave the same rows as a full fetch); a wider gap is
      likelier a hole than a closed market. Both stay unpriced (Requirement 5). */
   SELECT
@@ -206,6 +226,7 @@ WITH provider_obs AS (
         WHERE
           c.from_currency = provider_filled.from_currency
           AND c.to_currency = provider_filled.to_currency
+          AND c.source_type = provider_filled.rate_vendor
           AND c.start_date <= provider_filled.effective_date
           AND c.end_date >= provider_filled.effective_date
       )

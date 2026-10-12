@@ -572,7 +572,11 @@ Numbered, testable. Tagged by phase.
     on a Monday and a Wednesday leave the same rows as a full fetch, with a
     Tuesday nobody asked for between them. Second, stored provider publications
     must bracket the date no more than `MAX_MARKET_CLOSURE_DAYS` (7) apart, so a
-    stopped series is not carried forward. Past the newest stored rate, or
+    stopped series is not carried forward. Both proofs come from one provider:
+    the span and the bracketing rows carry the same `source_type`, and the
+    carried rate is that provider's. One provider's answer says nothing about a
+    gap in another's sparser cache, so a date covered only by provider A while
+    provider B holds the nearer rows is not a closure for B. Past the newest stored rate, or
     outside any recorded span, the date stays unpriced. A cache filled before
     coverage was recorded gains its spans on the next refresh, which
     re-requests the whole window. The
