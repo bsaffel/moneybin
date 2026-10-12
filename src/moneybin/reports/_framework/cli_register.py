@@ -31,7 +31,7 @@ from moneybin.cli.output import (
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import Money, build_rows, count_wide_request, render_note
+from moneybin.cli.render import Money, build_rows, count_wide_request
 from moneybin.cli.utils import (
     generated_cli_command,
     get_terminal_policy,
@@ -116,7 +116,13 @@ def report_note_lines(
     quiet: bool = False,
     symbols: TerminalSymbols | None = None,
 ) -> tuple[str, ...]:
-    """Build report fidelity disclosures for one complete terminal answer."""
+    """Build report fidelity disclosures for one complete terminal answer.
+
+    ``quiet`` drops the next-step hints and nothing else: the conversion
+    disclosure and the two warnings say how far the numbers can be trusted,
+    and asking for less chatter is not a claim that truncation or a currency
+    conversion stopped happening.
+    """
     if symbols is None:
         symbols = get_terminal_policy().symbols
     lines: list[str] = []
@@ -176,34 +182,6 @@ def _next_step_line(action: NextStep | str) -> str:
         return action
     reason = action.reason[:1].upper() + action.reason[1:] if action.reason else ""
     return f"{reason}: {generated_cli_command(*action.cli)}"
-
-
-def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> None:
-    """Echo the envelope metadata the text path would otherwise drop.
-
-    ``quiet`` reaches the next-step hints and nothing else. Requirement 4 makes
-    ``-q`` the switch for an informational status line, and a hint is one: it
-    suggests a command to run next. The conversion disclosure and the two
-    warnings are not — they state how far the numbers above can be trusted, and
-    a flag asking for less chatter is not a claim that masking, truncation, or
-    a currency conversion stopped happening. Silencing those is the failure the
-    rest of this docstring describes, arriving through ``-q`` instead of
-    through the surface that skipped them.
-
-    ``render_or_json`` renders the envelope on the JSON path only, so every
-    text renderer of a report result has to say these three things itself.
-    Shared rather than copied: a hand-written report renderer that skips them
-    would let a conversion that fell back to per-currency segmentation show
-    segmented positions and never say why — the silent masking these echoes
-    exist to prevent, reappearing on the surface that skipped them.
-
-    All of it goes to stderr (``cli.md`` "Exit Codes & stderr"): these are
-    diagnostics about the answer, not the answer, and redirecting a report to a
-    file or a downstream parser must not append prose to the data stream.
-    """
-    symbols = get_terminal_policy().symbols
-    for line in report_note_lines(result, quiet=quiet, symbols=symbols):
-        render_note(line, warn=line.startswith(f"{symbols.attention} "))
 
 
 class ColumnView(NamedTuple):
@@ -480,7 +458,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         )
 
         output: OutputFormat = kwargs.pop("output")
-        # Reaches the next-step hints in `echo_report_notes` and nothing else —
+        # Reaches the next-step hints in `report_note_lines` and nothing else —
         # the table is data (requirement 5) and JSON output has no notes.
         quiet: bool = bool(kwargs.pop("quiet", False))
         # Popped for the same reason as `display_currency`: a framework option

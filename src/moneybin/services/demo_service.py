@@ -27,6 +27,8 @@ from moneybin.errors import UserError
 from moneybin.tables import OFX_TRANSACTIONS, TABULAR_TRANSACTIONS
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from moneybin.database import Database
     from moneybin.orchestration.refresh import RefreshResult
 
@@ -76,6 +78,7 @@ class DemoResult:
     # Text-only receipt context. JSON retains its established envelope shape.
     start_date: date | None = None
     end_date: date | None = None
+    inbox_dir: Path | None = None
 
 
 class DemoProfileNotOursError(UserError):
@@ -213,11 +216,11 @@ class DemoService:
             else:
                 set_current_profile(original)
 
-    def _guard_and_rebuild(self, *, reset_confirmed: bool) -> None:
-        """Verify an existing demo profile is ours, then rebuild its database.
+    def _guard_existing(self, *, reset_confirmed: bool) -> None:
+        """Verify an existing demo profile is ours and safe to rebuild.
 
         Refuses anything we can't prove the generator made and that holds no real
-        data — rebuilding destroys the database file.
+        data — the rebuild that follows destroys the database file. Reads only.
         """
         from moneybin.config import get_settings
         from moneybin.database import get_database
@@ -274,11 +277,8 @@ class DemoService:
                     )
         else:
             # The directory exists but was never `db init`'d — nothing to guard and
-            # nothing to lose. `_rebuild_database` creates the database below.
+            # nothing to lose. `_rebuild_database` creates the database in `run`.
             logger.info(f"⚙️  Demo profile {DEMO_PROFILE!r} has no database yet")
-
-        # Connection closed — safe to replace the database file.
-        _rebuild_database(DEMO_PROFILE)
 
     def run(
         self,
@@ -311,22 +311,31 @@ class DemoService:
         #    destroys the database file.
         profiles = ProfileService()
         existed = profiles.exists(DEMO_PROFILE)
-        if not existed:
-            profiles.create(DEMO_PROFILE, init_inbox=True)
-            logger.info(f"⚙️  Created demo profile {DEMO_PROFILE!r}")
 
         # 2. Point the process at it so we open the right database. The PERSISTED
         #    default switch happens only after a fully successful run (step 9).
         set_current_profile(DEMO_PROFILE)
 
-        # 3. An existing demo profile must be provably ours before we rebuild it.
+        # 3. An existing demo profile must be provably ours before we touch it.
         if existed:
-            self._guard_and_rebuild(reset_confirmed=reset_confirmed)
+            self._guard_existing(reset_confirmed=reset_confirmed)
+
+        # The inbox lives outside the data home (~/Documents/MoneyBin by default),
+        # where macOS privacy controls can deny the write. Create it before any
+        # database or schema work, so a denial fails first and names the path.
+        inbox_dir = profiles.ensure_inbox(DEMO_PROFILE)
+
+        if existed:
+            # Connection closed and guard cleared — safe to replace the file.
+            _rebuild_database(DEMO_PROFILE)
             # A bare `db init --profile demo` (directory + database, no config.yaml)
-            # lands here unregistered: `profile list` would hide it and it would
-            # have no inbox. Finish the setup we promised — only now that the guard
-            # has cleared, so we never scaffold a profile we then refuse.
-            profiles.ensure_registered(DEMO_PROFILE, init_inbox=True)
+            # lands here unregistered: `profile list` would hide it. Finish the
+            # setup we promised — only now that the guard has cleared, so we never
+            # scaffold a profile we then refuse.
+            profiles.ensure_registered(DEMO_PROFILE)
+        else:
+            profiles.create(DEMO_PROFILE)
+            logger.info(f"⚙️  Created demo profile {DEMO_PROFILE!r}")
 
         with get_database(read_only=False) as db:
             # 4. Generate persona data into the (now fresh) database.
@@ -433,4 +442,5 @@ class DemoService:
             previous_default=previous_default,
             start_date=result.start_date,
             end_date=result.end_date,
+            inbox_dir=inbox_dir,
         )

@@ -28,8 +28,7 @@ WITH eligible AS (
     ON t.account_id = a.account_id
   WHERE
     t.amount < 0
-    AND NOT t.is_transfer
-    AND NOT a.archived
+    AND @report_eligible_transaction(t, a)
     AND t.transaction_date >= CURRENT_DATE - INTERVAL '18' MONTHS
 ), with_intervals AS (
   /* LAG partitions include account_id so two accounts paying the same

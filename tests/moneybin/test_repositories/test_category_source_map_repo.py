@@ -233,3 +233,69 @@ def test_delete_removes_only_the_full_key(db: Database) -> None:
     assert db.execute("SELECT source_type FROM app.category_source_map").fetchall() == [
         ("excel",)
     ]
+
+
+def test_upsert_stores_an_ignored_term_as_a_null_category(db: Database) -> None:
+    """category_id=None is a real stored state: the term is known, maps nowhere."""
+    repo = CategorySourceMapRepo(db)
+
+    event = repo.upsert(
+        source_type="csv",
+        source_origin="chase_credit",
+        category="Uncategorized",
+        subcategory=None,
+        category_id=None,
+        actor="test",
+    )
+
+    assert event.after_value is not None
+    assert event.after_value["category_id"] is None
+    assert db.execute(
+        "SELECT source_category_code, category_id FROM app.category_source_map"
+    ).fetchall() == [("Uncategorized", None)]
+
+
+def test_ignoring_a_mapped_term_is_audited_and_undoable(db: Database) -> None:
+    """Undoing the ignore restores the category the term had before."""
+    repo = CategorySourceMapRepo(db)
+    for category_id in ("cat-coffee", None):
+        event = repo.upsert(
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Coffee Shops",
+            subcategory=None,
+            category_id=category_id,
+            actor="test",
+        )
+
+    assert event.before_value is not None
+    assert event.before_value["category_id"] == "cat-coffee"
+    assert db.execute("SELECT category_id FROM app.category_source_map").fetchall() == [
+        (None,)
+    ]
+
+    repo_for("app", "category_source_map", db).undo_event(event, actor="test")
+
+    assert db.execute("SELECT category_id FROM app.category_source_map").fetchall() == [
+        ("cat-coffee",)
+    ]
+
+
+def test_delete_by_category_leaves_ignored_terms(db: Database) -> None:
+    """An ignored term references no category, so no category's cascade takes it."""
+    repo = CategorySourceMapRepo(db)
+    for category, category_id in (("Coffee Shops", "cat-coffee"), ("Misc", None)):
+        repo.upsert(
+            source_type="csv",
+            source_origin="chase_credit",
+            category=category,
+            subcategory=None,
+            category_id=category_id,
+            actor="test",
+        )
+
+    repo.delete_by_category("cat-coffee", actor="test")
+
+    assert db.execute(
+        "SELECT source_category_code FROM app.category_source_map"
+    ).fetchall() == [("Misc",)]

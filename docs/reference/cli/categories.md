@@ -104,7 +104,7 @@ Usage: `moneybin categories mappings [OPTIONS] COMMAND [ARGS]...`
 | Command | Purpose |
 |---|---|
 | [`moneybin categories mappings pending`](#moneybin-categories-mappings-pending) | List imported category-vocabulary terms with no curated mapping. |
-| [`moneybin categories mappings set`](#moneybin-categories-mappings-set) | Map one imported category-vocabulary term to a MoneyBin category. |
+| [`moneybin categories mappings set`](#moneybin-categories-mappings-set) | Map one imported category-vocabulary term to a MoneyBin category, or ignore it. |
 
 ## moneybin categories mappings pending
 
@@ -130,7 +130,7 @@ Usage: `moneybin categories mappings pending [OPTIONS]`
 
 ## moneybin categories mappings set
 
-Map one imported category-vocabulary term to a MoneyBin category.
+Map one imported category-vocabulary term to a MoneyBin category, or ignore it.
 
 Identify the term with --namespace, --category, and (if applicable)
 --subcategory — the exact term `categories mappings pending` reported.
@@ -143,13 +143,20 @@ refused. Pass exactly one of:
 ```text
 --into <category_id>   map to this existing category
 --new <name>           create a new category, then map to it
+--ignore               keep the term known but categorize nothing by it
 ```
+
+The mapping applies at once: transactions carrying the term are
+categorized, and when a term's mapping changes, the categories it
+assigned earlier are withdrawn and re-evaluated. Categories you set by
+hand, by rule, or by merchant are never touched.
 
 Examples:
 
 ```console
 moneybin categories mappings set --namespace chase_credit --category Groceries --into cat-food
 moneybin categories mappings set --namespace mint --category "Home Improvement" --new "Housing"
+moneybin categories mappings set --namespace mint --category Uncategorized --ignore
 ```
 
 Usage: `moneybin categories mappings set [OPTIONS]`
@@ -164,4 +171,5 @@ Usage: `moneybin categories mappings set [OPTIONS]`
 | `--subcategory` | text |  | Term's imported subcategory text, if any |
 | `--into` | text |  | Map the term to this existing category_id |
 | `--new` | text |  | Create a new category with this name, then map the term to it |
+| `--ignore` | flag |  | Ignore the term: it leaves the pending list and categorizes nothing |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

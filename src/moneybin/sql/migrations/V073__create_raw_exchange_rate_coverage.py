@@ -1,4 +1,4 @@
-"""V071: create raw.exchange_rate_coverage.
+"""V073: create raw.exchange_rate_coverage.
 
 The spans a rate provider answered for completely, so the offline market-closure
 rule prices a date only when it is proven closed rather than merely unfetched
@@ -50,7 +50,7 @@ _COLUMN_COMMENTS: list[tuple[str, str]] = [
 
 def migrate(conn: object) -> None:
     """Create raw.exchange_rate_coverage. Idempotent."""
-    logger.debug("V071: creating raw.exchange_rate_coverage")
+    logger.debug("V073: creating raw.exchange_rate_coverage")
     conn.execute(_CREATE_TABLE_SQL)  # type: ignore[union-attr]
     conn.execute(_TABLE_COMMENT)  # type: ignore[union-attr]
     for column, comment in _COLUMN_COMMENTS:

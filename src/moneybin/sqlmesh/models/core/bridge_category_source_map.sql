@@ -2,7 +2,8 @@
    (provider rows, blank source_origin) plus app.category_source_map, user rows
    winning per (source_type, source_origin, source_category_code,
    source_subcategory_code). Exactly one row per key; reverse lookup prefers
-   code_level='detailed' then 'primary'. */
+   code_level='detailed' then 'primary'. A user row with a NULL category_id
+   ignores its term, and so switches off the seed row it overrides. */
 MODEL (
   name core.bridge_category_source_map,
   kind VIEW
@@ -14,7 +15,7 @@ SELECT
   s.source_category_code, /* Source category text, verbatim */
   COALESCE(s.source_subcategory_code, '') AS source_subcategory_code, /* Second half of the source key; '' means "no subcategory" (never a distinct real value) */
   s.code_level, /* 'detailed' or 'primary'; detailed wins in reverse lookup */
-  s.category_id, /* FK to core.dim_categories.category_id */
+  s.category_id, /* FK to core.dim_categories.category_id; NULL only on a user row, marking the term ignored (known, categorizes nothing) */
   s.source_taxonomy_version, /* Provider taxonomy revision curated against */
   TRUE AS is_default /* TRUE for seeded rows, FALSE for user overrides */
 FROM seeds.category_source_map AS s

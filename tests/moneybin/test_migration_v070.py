@@ -1,65 +1,119 @@
-"""V070: create raw.exchange_rate_currencies.
-
-Pure additive DDL (a new table), so the migration-realism rule does not require
-populated fixtures — the coverage that matters is the key and the dual path.
-"""
+"""V070: app.category_source_map.category_id accepts NULL (an ignored term)."""
 
 from __future__ import annotations
 
-import duckdb
 import pytest
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V070__create_raw_exchange_rate_currencies import migrate
-from tests.moneybin.migration_helpers import run_migration
+from moneybin.sql.migrations.V070__allow_ignored_category_source_mapping import (
+    migrate,
+)
+from tests.moneybin.migration_helpers import column_info, run_migration
 
-
-def _insert(db: Database, source_type: str = "frankfurter", code: str = "USD") -> None:
-    db.execute(
-        "INSERT INTO raw.exchange_rate_currencies (source_type, currency_code) "
-        "VALUES (?, ?)",
-        [source_type, code],
+_V069_CATEGORY_SOURCE_MAP_SQL = """
+CREATE TABLE app.category_source_map (
+    source_type VARCHAR NOT NULL,
+    source_origin VARCHAR NOT NULL,
+    source_category_code VARCHAR NOT NULL,
+    source_subcategory_code VARCHAR NOT NULL DEFAULT '',
+    code_level VARCHAR NOT NULL DEFAULT 'detailed'
+        CHECK (code_level IN ('detailed', 'primary')),
+    category_id VARCHAR NOT NULL,
+    source_taxonomy_version VARCHAR,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (
+        source_type, source_origin, source_category_code, source_subcategory_code
     )
+)
+"""
+
+_ROWS = [
+    ("csv", "chase_credit", "Coffee Shops", "", "detailed", "cat-coffee", None),
+    ("csv", "chase_credit", "Travel", "Air", "detailed", "cat-air", None),
+    ("plaid", "", "FOOD_AND_DRINK_COFFEE", "", "detailed", "FND-COF", "plaid_pfc_v2"),
+    ("plaid", "", "TRANSPORTATION", "", "primary", "TRP", "plaid_pfc_v2"),
+]
 
 
 @pytest.fixture
-def pre_v070_db(db: Database) -> Database:
-    """A database without the table, so migrate() does real work."""
-    db.execute("DROP TABLE IF EXISTS raw.exchange_rate_currencies")
+def v069_db(db: Database) -> Database:
+    """A populated table in the V069 shape, where category_id is NOT NULL."""
+    db.execute("DROP TABLE app.category_source_map")
+    db.execute(_V069_CATEGORY_SOURCE_MAP_SQL)
+    db.execute("""
+        INSERT INTO app.category_source_map
+            (source_type, source_origin, source_category_code,
+             source_subcategory_code, code_level, category_id,
+             source_taxonomy_version)
+        VALUES
+            ('csv', 'chase_credit', 'Coffee Shops', '', 'detailed', 'cat-coffee', NULL),
+            ('csv', 'chase_credit', 'Travel', 'Air', 'detailed', 'cat-air', NULL),
+            ('plaid', '', 'FOOD_AND_DRINK_COFFEE', '', 'detailed', 'FND-COF',
+             'plaid_pfc_v2'),
+            ('plaid', '', 'TRANSPORTATION', '', 'primary', 'TRP', 'plaid_pfc_v2')
+    """)
+    assert column_info(db, "app", "category_source_map", "category_id")[1] is False
     return db
 
 
-def test_v070_creates_the_table(pre_v070_db: Database) -> None:
-    run_migration(pre_v070_db, migrate)
-    _insert(pre_v070_db)
-    row = pre_v070_db.execute(
-        "SELECT source_type, currency_code, loaded_at IS NOT NULL "
-        "FROM raw.exchange_rate_currencies"
-    ).fetchone()
-    assert row == ("frankfurter", "USD", True)
+def _rows(db: Database) -> list[tuple[object, ...]]:
+    return db.execute(
+        "SELECT source_type, source_origin, source_category_code, "
+        "source_subcategory_code, code_level, category_id, source_taxonomy_version "
+        "FROM app.category_source_map "
+        "ORDER BY source_type, source_category_code"
+    ).fetchall()
 
 
-def test_v070_is_idempotent(pre_v070_db: Database) -> None:
-    run_migration(pre_v070_db, migrate)
-    _insert(pre_v070_db)
-    run_migration(pre_v070_db, migrate)
-    row = pre_v070_db.execute(
-        "SELECT COUNT(*) FROM raw.exchange_rate_currencies"
-    ).fetchone()
-    assert row is not None and row[0] == 1, "a second run must not drop the list"
+def test_v070_makes_category_id_nullable_and_keeps_every_row(
+    v069_db: Database,
+) -> None:
+    run_migration(v069_db, migrate)
+
+    assert column_info(v069_db, "app", "category_source_map", "category_id") == (
+        "VARCHAR",
+        True,
+    )
+    assert _rows(v069_db) == _ROWS
 
 
-def test_v070_one_row_per_provider_and_currency(pre_v070_db: Database) -> None:
-    """Two providers can both publish a currency; one provider lists it once."""
-    run_migration(pre_v070_db, migrate)
-    _insert(pre_v070_db, "frankfurter", "USD")
-    _insert(pre_v070_db, "exchangerate_host", "USD")
-    with pytest.raises(duckdb.ConstraintException):
-        _insert(pre_v070_db, "frankfurter", "USD")
+def test_v070_keeps_the_primary_key(v069_db: Database) -> None:
+    """Dropping the constraint in place must not lose the four-column key."""
+    run_migration(v069_db, migrate)
+
+    with pytest.raises(Exception, match="(?i)duplicate key|primary key"):
+        v069_db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_origin, source_category_code, category_id) "
+            "VALUES ('csv', 'chase_credit', 'Coffee Shops', 'cat-other')"
+        )
 
 
-def test_fresh_schema_has_the_table(db: Database) -> None:
-    """Dual-path: a fresh install gets the table from raw_exchange_rate_currencies.sql."""
-    _insert(db)
-    row = db.execute("SELECT COUNT(*) FROM raw.exchange_rate_currencies").fetchone()
-    assert row is not None and row[0] == 1
+def test_v070_admits_an_ignored_row(v069_db: Database) -> None:
+    run_migration(v069_db, migrate)
+
+    v069_db.execute(
+        "INSERT INTO app.category_source_map "
+        "(source_type, source_origin, source_category_code, category_id) "
+        "VALUES ('csv', 'chase_credit', 'Uncategorized', NULL)"
+    )
+    assert v069_db.execute(
+        "SELECT COUNT(*) FROM app.category_source_map WHERE category_id IS NULL"
+    ).fetchone() == (1,)
+
+
+def test_v070_idempotent_on_second_run(v069_db: Database) -> None:
+    run_migration(v069_db, migrate)
+    run_migration(v069_db, migrate)
+
+    assert _rows(v069_db) == _ROWS
+
+
+def test_v070_is_a_no_op_on_a_fresh_install(db: Database) -> None:
+    """A freshly-initialized database already has the nullable column."""
+    assert column_info(db, "app", "category_source_map", "category_id")[1] is True
+
+    run_migration(db, migrate)
+
+    assert db.execute("SELECT COUNT(*) FROM app.category_source_map").fetchone() == (0,)

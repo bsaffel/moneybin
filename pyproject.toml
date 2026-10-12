@@ -186,6 +186,7 @@ moneybin = [
     "sql/migrations/*.py",
     "sqlmesh/config.py",
     "sqlmesh/external_models.yaml",
+    "sqlmesh/macros/*.py",
     "sqlmesh/models/**/*.sql",
     "sqlmesh/models/**/*.py",
     "sqlmesh/models/seeds/*.csv",

@@ -151,6 +151,9 @@ from moneybin.secrets import SecretNotFoundError
 
 db_path = Path(os.environ["MONEYBIN_TEST_DB_PATH"])
 settings = SimpleNamespace(
+    # No profile of this name is registered under the test home, so `db init`
+    # records no key mode; that path is covered by the db-command unit tests.
+    profile="passphrase-e2e",
     database=SimpleNamespace(
         path=db_path,
         encryption_key_mode="passphrase",
@@ -159,7 +162,7 @@ settings = SimpleNamespace(
         argon2_memory_cost=1024,
         argon2_parallelism=1,
         argon2_hash_len=32,
-    )
+    ),
 )
 
 class Store:
@@ -198,7 +201,12 @@ with patch("moneybin.config.get_settings", return_value=settings), patch(
 print("roundtrip sentinel: hello")
 """
         process = spawn_python_pty(
-            program, request=request, env={"MONEYBIN_TEST_DB_PATH": str(db_path)}
+            program,
+            request=request,
+            env={
+                "MONEYBIN_HOME": str(tmp_path),
+                "MONEYBIN_TEST_DB_PATH": str(db_path),
+            },
         )
         process.child.expect("Enter passphrase")
         process.child.sendline(TEST_PASSPHRASE)
@@ -1697,6 +1705,38 @@ class TestCategoriesMappingsMutating:
         assert payload["data"]["action"] == "mapped"
         assert payload["data"]["category_id"]
         assert payload["data"]["source_type"] == term["source_type"]
+        # `set` sweeps at once, over the real prep and core models.
+        assert payload["data"]["categorized"] == term["transaction_count"]
+        assert payload["data"]["recategorized"] == 0
+
+        ignored = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            term["source_origin"],
+            "--category",
+            term["category"],
+            *subcategory,
+            "--ignore",
+            "--output",
+            "json",
+            env=env,
+        )
+        ignored.assert_success()
+        data = json.loads(ignored.stdout)["data"]
+        assert (data["action"], data["category_id"]) == ("ignored", None)
+        # Ignoring withdraws what the mapping categorized and keeps the term known.
+        assert data["recategorized"] == term["transaction_count"]
+        assert data["categorized"] == 0
+        still_pending = run_cli(
+            "categories", "mappings", "pending", "--output", "json", env=env
+        )
+        still_pending.assert_success()
+        assert (term["category"], term["subcategory"]) not in [
+            (t["category"], t["subcategory"])
+            for t in json.loads(still_pending.stdout)["data"]["terms"]
+        ]
 
     def test_categories_mappings_set_unknown_term_is_refused(
         self, _mutating_profile_template: Path, tmp_path: Path

@@ -78,6 +78,9 @@ from moneybin.secrets import SecretNotFoundError
 
 db_path = Path(os.environ["MONEYBIN_TEST_DB_PATH"])
 settings = SimpleNamespace(
+    # No profile of this name is registered under the test home, so `db init`
+    # records no key mode; that path is covered by the db-command unit tests.
+    profile="pp-test",
     database=SimpleNamespace(
         path=db_path,
         encryption_key_mode="passphrase",
@@ -86,7 +89,7 @@ settings = SimpleNamespace(
         argon2_memory_cost=1024,
         argon2_parallelism=1,
         argon2_hash_len=32,
-    )
+    ),
 )
 
 class Store:
@@ -125,7 +128,12 @@ with patch("moneybin.config.get_settings", return_value=settings), patch(
 print("roundtrip sentinel: hello")
 """
         process = spawn_python_pty(
-            program, request=request, env={"MONEYBIN_TEST_DB_PATH": str(db_path)}
+            program,
+            request=request,
+            env={
+                "MONEYBIN_HOME": str(tmp_path),
+                "MONEYBIN_TEST_DB_PATH": str(db_path),
+            },
         )
         process.child.expect("Enter passphrase")
         process.child.sendline("testpass123")

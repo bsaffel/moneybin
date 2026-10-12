@@ -1,4 +1,4 @@
-"""V071: create raw.exchange_rate_coverage.
+"""V073: create raw.exchange_rate_coverage.
 
 Pure additive DDL (a new table), so the migration-realism rule does not require
 populated fixtures — the coverage that matters is the key, the span CHECK, and
@@ -13,7 +13,7 @@ import duckdb
 import pytest
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V071__create_raw_exchange_rate_coverage import migrate
+from moneybin.sql.migrations.V073__create_raw_exchange_rate_coverage import migrate
 from tests.moneybin.migration_helpers import run_migration
 
 
@@ -27,26 +27,26 @@ def _insert(db: Database, start: date, end: date) -> None:
 
 
 @pytest.fixture
-def pre_v071_db(db: Database) -> Database:
+def pre_v073_db(db: Database) -> Database:
     """A database without the table, so migrate() does real work."""
     db.execute("DROP TABLE IF EXISTS raw.exchange_rate_coverage")
     return db
 
 
-def test_v071_creates_the_table_and_is_idempotent(pre_v071_db: Database) -> None:
-    run_migration(pre_v071_db, migrate)
-    _insert(pre_v071_db, date(2025, 12, 24), date(2025, 12, 29))
-    run_migration(pre_v071_db, migrate)
-    row = pre_v071_db.execute(
+def test_v073_creates_the_table_and_is_idempotent(pre_v073_db: Database) -> None:
+    run_migration(pre_v073_db, migrate)
+    _insert(pre_v073_db, date(2025, 12, 24), date(2025, 12, 29))
+    run_migration(pre_v073_db, migrate)
+    row = pre_v073_db.execute(
         "SELECT COUNT(*) FROM raw.exchange_rate_coverage"
     ).fetchone()
     assert row == (1,)
 
 
-def test_v071_refuses_a_backwards_span(pre_v071_db: Database) -> None:
-    run_migration(pre_v071_db, migrate)
+def test_v073_refuses_a_backwards_span(pre_v073_db: Database) -> None:
+    run_migration(pre_v073_db, migrate)
     with pytest.raises(duckdb.ConstraintException):
-        _insert(pre_v071_db, date(2025, 12, 29), date(2025, 12, 24))
+        _insert(pre_v073_db, date(2025, 12, 29), date(2025, 12, 24))
 
 
 def test_fresh_schema_has_the_table(db: Database) -> None:

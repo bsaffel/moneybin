@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Categorization
 
 How MoneyBin categorizes transactions: deterministic rules and merchant mappings first, LLM-assist as the human helper for what's left, source precedence enforced on every write so your manual choices outrank automation. The same workflow is reachable from CLI (`moneybin transactions categorize ...`) and the bounded MCP categorization tools. Both call the same services; the CLI's `--output json` returns the same response envelope MCP returns.
@@ -444,7 +444,7 @@ Two independent guards run on the write/accept path itself — refused before th
 - **Specificity floor.** A `contains` pattern shorter than `auto_rule_min_contains_length` (default 4 characters) is refused: a 2-character `contains "TO"` rule matches `STORE`, `AUTO`, and `TOTAL`. Applies to both manually authored rules (`rules create`) and auto-rule proposals at accept time. CLI `rules create --allow-broad` overrides it for a manual rule (use `--match-type exact` instead where possible); the MCP `transactions_categorize_rules_set` tool has no override.
 - **Blast-radius guard (auto-rule proposals only).** `moneybin transactions categorize auto review` flags a proposal broad when its `estimated_match_count` exceeds `auto_rule_broad_match_factor` (default 10) times its `trigger_count` — the pattern would recategorize far more rows than the evidence that produced it. Proposals matching fewer than `auto_rule_broad_match_min` (default 20) transactions are never flagged, however thin the evidence. The review listing marks a flagged proposal `Broad — requires --allow-broad` in its `review` column, against `Ready` for the rest, and repeats `Broad proposals require --allow-broad to accept.` below the table.
 
-`auto accept --allow-broad` (CLI) and `reviews_decide`'s per-decision `allow_broad` field for `kind="auto_rule"` items (MCP) both bypass the specificity floor and the blast-radius guard together for the accepted proposal — there is no way to waive one without the other on that path. Both thresholds live under `MoneyBinSettings.categorization` in `src/moneybin/config.py`.
+`auto accept --allow-broad` (CLI) and `reviews_decide`'s per-decision `allow_broad` field for `kind="auto_rule"` items (MCP) both bypass the specificity floor and the blast-radius guard together for the accepted proposal — there is no way to waive one without the other on that path. Without the flag, `auto accept` skips each refused proposal, names it on stderr with the guard that refused it, and exits 1; `--output json` lists the ids under `error.details.refused_broad` and `error.details.refused_unselective`. Both thresholds live under `MoneyBinSettings.categorization` in `src/moneybin/config.py`.
 
 ## Merchant exemplars and the snowball
 

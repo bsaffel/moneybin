@@ -735,6 +735,14 @@ class TransactionsAdapter:
             source_origin=connection.connection_id,
             import_id=_IMPORT_ID_PLACEHOLDER,  # overwritten in load() per-call
         )
+        if result.sign_correction_suggested:
+            # The file-import paths render this flag on their result; a sheet
+            # pull returns only rows, so the warning is its only signal.
+            logger.warning(
+                f"Running balance suggests inverted signs for gsheet connection "
+                f"{connection.connection_id}; amounts not auto-corrected — check "
+                f"the connection's sign convention"
+            )
         return result.transactions
 
     def load(
