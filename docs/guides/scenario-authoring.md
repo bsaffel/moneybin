@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Scenario Authoring Guide
 
 How to write a scenario test that exercises the whole pipeline end-to-end against a synthetic dataset or a hand-authored fixture, with assertions that survive code changes. Companion: [`synthetic-data.md`](synthetic-data.md) covers the generator that scenarios consume.
@@ -254,12 +254,10 @@ For multi-account or multi-year scenarios where aggregate-level assertions catch
 
 | Assertion | What it asserts | Use when |
 |---|---|---|
-| `assert_amount_distribution` | Min/max/mean within a plausible range | Synthetic-generator scenarios |
 | `assert_date_continuity` | No gaps larger than 31 days per account | Multi-year scenarios |
 | `assert_ground_truth_coverage` | ≥X% of `fct_transactions` are labeled in `synthetic.ground_truth` | Synthetic-generator scenarios |
-| `assert_category_distribution` | No single category swallows >X% of rows | Categorization scenarios |
 
-`ASSERTION_REGISTRY` in `tests/scenarios/_runner/_assertion_registry.py` owns the list; this table is a copy of it as reviewed on 2026-09-14. Two of these four rows come from the spec and are not registered — see [What is not built yet](#what-is-not-built-yet).
+`ASSERTION_REGISTRY` in `tests/scenarios/_runner/_assertion_registry.py` owns the list; this table is a copy of it as reviewed on 2026-10-07. Amount min/max/mean bounds use `assert_distribution_within_bounds` from Tier 2, pointed at an amount column.
 
 ### Tier 5 — operational (opt-in)
 
@@ -409,7 +407,7 @@ Same command runs in both places. When CI fails and local passes:
 ## What is not built yet
 
 - **MCP and CLI pipeline steps.** The step registry has no `invoke_mcp_tool` or `invoke_cli`; drive either by hand inside `scenario_env`, as in [MCP and CLI scenarios](#mcp-and-cli-scenarios).
-- **Two Tier 4 primitives.** `assert_amount_distribution` and `assert_category_distribution` are named in the spec and absent from `ASSERTION_REGISTRY`; a YAML calling either raises `KeyError: unknown assertion fn` when the runner resolves it. Use `assert_distribution_within_bounds` for amounts; there is no category-distribution check.
+- **A category-distribution check.** No registered assertion fails when one category swallows most rows; assert it in the test body if a scenario needs it.
 - **Automated fixture anonymization.** No `synthetic` subcommand anonymizes a real file; follow the manual recipe in [Fixture from real data](#fixture-from-real-data).
 - **Tier 5 enforcement.** Step durations are reported by `--durations` and fail nothing; `pytest-memray` is not wired, so there is no memory ceiling. Assert what you need in the test body.
 
