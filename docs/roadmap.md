@@ -131,7 +131,7 @@ Every planned way your money gets in lands cleanly — with the *ergonomics* (co
 |---|---|---|---|
 | **M1A** | File import: tabular (CSV/TSV/Excel/Parquet) + OFX/QFX/QBO + watched-folder inbox + refresh pipeline | ✅ | Auto-detects Tiller/Mint/YNAB/Maybe. [`smart-import-tabular.md`](specs/smart-import-tabular.md). |
 | **M1B** | Matching engine: cross-source dedup, transfer detection, golden-record, N-way collapse | ✅ / 🚧 | Content hashes + two-signal transfer scoring (date distance, keyword). **M1B.4 🚧:** centralize match-decision consequences and make matcher/`doctor` consume one read-only candidate plan. [`matching-consistency-boundaries.md`](specs/matching-consistency-boundaries.md). |
-| **M1C** | Categorization engine: auto-rules, bulk, cold-start, memo-aware matching | ✅ | Review queue surfaces proposed rules. |
+| **M1C** | Categorization engine: auto-rules, bulk, cold-start, memo-aware matching | ✅ | Review queue surfaces proposed rules. **M1C.1 📐 designed**: one definition of which transactions need a category — an `is_categorizable` column on `core.fct_transactions` replaces the `core.uncategorized_queue` view and the predicate copied into the categorization service, with no change to what the CLI or MCP returns. [`categorizable-transactions.md`](specs/categorizable-transactions.md). |
 | **M1D** | Account management: list/get/set/resolve, reversible merge | ✅ | [`account-management.md`](specs/account-management.md). |
 | **M1E** | Transaction curation: notes, tags, splits, manual entry, audit log | ✅ | [`transaction-curation.md`](specs/transaction-curation.md). |
 | **M1F** | Google Sheets connect (live tabular source via direct OAuth) | ✅ | Airtable/Smartsheet siblings planned. [`connect-gsheet.md`](specs/connect-gsheet.md). |
