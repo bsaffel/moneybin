@@ -1,7 +1,7 @@
 # Categorizable Transactions
 
-> Last updated: 2026-10-13
-> Status: draft
+> Last updated: 2026-10-14
+> Status: ready
 > Address: M1C.1 (Categorization engine — one definition of the categorization population)
 > Type: Feature
 > Owns: `core.fct_transactions.is_categorizable` and the removal of
@@ -76,6 +76,24 @@ NULL rather than FALSE. The expression must test the join explicitly:
 NOT is_transfer AND NOT a.account_id IS NULL AND NOT a.archived
 ```
 
+The `a` alias exists only inside the model's `enriched` CTE, while
+`is_transfer` is an alias that CTE defines. So the model computes the account
+half there, as an internal column the final projection does not publish, and
+combines it with `is_transfer` in the final projection:
+
+```sql
+-- in enriched
+(NOT a.account_id IS NULL AND NOT a.archived) AS account_resolved_unarchived
+-- in the final SELECT
+NOT is_transfer AND account_resolved_unarchived AS is_categorizable
+```
+
+This states the transfer condition once, through `is_transfer`, rather than
+re-deriving it from the two `bridge_transfers` joins. `is_transfer` is never
+NULL, and `dim_accounts.archived` is COALESCEd to FALSE
+(`dim_accounts.sql:363`), so an unresolved account gives `FALSE AND NULL`,
+which is FALSE.
+
 `NOT x IS NULL` is sqlmesh-format's canonical form (as at
 `fct_transactions.sql:83`). Today's queue INNER JOINs `dim_accounts`, so this
 reproduces its exclusion exactly. A version that treated an unresolved account
@@ -105,6 +123,11 @@ test that compared it with the view. Each query below filters
 | `categorization_stats` breakdown | `_CATEGORIZABLE_POPULATION` | `WHERE is_categorizable` |
 
 The `plaid_unmapped` count stays unscoped, as it deliberately is today.
+
+The pending list's join to `dim_accounts` is a LEFT JOIN. It only fetches
+`account_name`, and `is_categorizable` already requires a resolved account, so
+the two joins return the same rows in production. An INNER JOIN would quietly
+make the join a second membership condition beside the column.
 
 **R6 — The pending list keeps its response shape.** The pending list computes
 `age_days` and `priority_score` in its own query, with the expressions the view
@@ -217,15 +240,25 @@ failure a metric would show.
 - **The upgrade window (R7).** A `fct_transactions` fixture without the column
   makes the pending list raise `INFRA_SCHEMA_DRIFT`, and makes `categorize
   stats` return zeros without raising.
-- **Removal reaches an existing database (R8).** An integration test copies
-  the SQLMesh project to a temporary directory, writes the deleted view's
-  model SQL into the copy as a fixture, and builds a database from it through
-  `sqlmesh_context(db, sqlmesh_root=…)` (`database.py:1728`). It then deletes
-  that file from the copy, plans and applies again, and asserts that
-  `core.uncategorized_queue` no longer exists and that
-  `core.fct_transactions.is_categorizable` does.
-- **Fixtures.** `tests/moneybin/db_helpers.py` stops creating the queue view,
-  and the `fct_transactions` fixture DDL gains the column. That file is a
+- **Removal reaches an existing database (R8).** An integration test writes
+  a two-model project (a base model and a VIEW over it) to a temporary
+  directory and applies it through `TransformService.apply()`, with
+  `sqlmesh_context(db, sqlmesh_root=…)` (`database.py:1728`) pointed at it.
+  This follows the precedent in `test_transform_apply_refresh.py`. It then
+  deletes the VIEW's file, applies again, and asserts the view no longer
+  exists. `sqlmesh_context` builds its `Config` in code, so this project runs
+  under the same configuration as the real one, and `apply()` is the path
+  refresh takes. That makes it a test of demotion itself, at a fraction of
+  the cost of building the full project twice. A fresh full build without
+  the view is covered by the `reports-recipe-library` scenario, which moves
+  `core.uncategorized_queue` to its list of retired entities.
+- **Fixtures.** `tests/moneybin/db_helpers.py` stops creating the queue view.
+  The `fct_transactions` fixture DDL gains the column with `DEFAULT TRUE`,
+  the common case. A new `derive_is_categorizable(db)` replaces
+  `install_uncategorized_queue_view(db)` one for one. It reads the
+  expression from the shipped `fct_transactions.sql` and recomputes the
+  fixture column, so the unit tests that exercise the exclusions still bind
+  to the model's definition rather than a hand-typed copy. That file is a
   shared primitive, so the gate includes integration and scenarios.
 
 **Gate.** `make check`, `make format-sql`, `make test`,
@@ -243,6 +276,13 @@ data, alters a categorization query, and edits `tables.py`, `privacy/` and
 - `reports-foundation.md`: a dated amendment where it records the move into
   `core` (§ near line 206), pointing here. Its historical narrative stays as
   written.
+- `reports-recipe-library.md`: its dated "Current categorization queue"
+  banner is replaced with one naming the column. The surface-docs test that
+  reads that banner (`test_mcp_surface_docs.py`) moves with it.
+- `.claude/rules/reports.md`: the "`reports.*` membership means
+  user-facing" section cites the queue as its precedent. The principle
+  stands, but the example now names a view that no longer exists, so it
+  records that the queue later left `core` as well.
 - Other specs that name the queue in present tense (`reports-recipe-library.md`,
   `cli-output-coherence.md`, `moneybin-doctor.md`,
   `categorization-source-model.md`, `category-source-map.md`,
