@@ -1,7 +1,7 @@
 # Categorizable Transactions
 
 > Last updated: 2026-10-14
-> Status: ready
+> Status: in-progress
 > Address: M1C.1 (Categorization engine — one definition of the categorization population)
 > Type: Feature
 > Owns: `core.fct_transactions.is_categorizable` and the removal of
