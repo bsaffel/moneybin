@@ -2782,7 +2782,7 @@ def test_unanchored_accounts_reads_only_the_spines_last_date(
 ) -> None:
     """Archived before the last date: its pre-archive NULL rows never keep it red."""
     _net_worth_guard_ddl(db)
-    _spine_row(db, "anchor", 0)
+    _spine_row(db, "anchor", 0, observed=True)
     _spine_row(db, "brk", 3, balance=None)
     _spine_row(db, "brk", 0, balance=None, in_net_worth=False)
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
@@ -2790,23 +2790,49 @@ def test_unanchored_accounts_reads_only_the_spines_last_date(
 
 
 @pytest.mark.unit
-def test_unanchored_accounts_fails_for_an_account_archived_on_the_last_date(
+def test_unanchored_accounts_names_only_the_in_net_worth_null_rows(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Archived on the spine's last date still counts there, so the total is NULL."""
+    """A NULL row outside net worth on the last date is not named beside one inside."""
     _net_worth_guard_ddl(db)
-    _spine_row(db, "anchor", 0)
+    _spine_row(db, "anchor", 0, observed=True)
     _unanchored_today(db, "brk")
+    _unanchored_today(db, "out", in_net_worth=False)
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "fail"
     assert result.affected_ids == ["account:brk"]
 
 
 @pytest.mark.unit
+def test_unanchored_accounts_reads_the_spines_last_date_not_today(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spine ends 3 days ago: a CURRENT_DATE reference would find no row and pass."""
+    _net_worth_guard_ddl(db)
+    _spine_row(db, "brk", 3, balance=None)
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:brk"]
+
+
+@pytest.mark.unit
+def test_stale_balance_reads_the_spines_last_date_not_today(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spine ends 5 days ago: a CURRENT_DATE reference would find no counted account."""
+    _net_worth_guard_ddl(db)
+    _spine_row(db, "a", 45, observed=True)
+    _spine_row(db, "a", 5)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert result.affected_ids == ["account:a"]
+
+
+@pytest.mark.unit
 def test_stale_balance_warns_on_an_entirely_stale_profile(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No observation dated today at all: a CURRENT_DATE filter would pass silently."""
+    """Every account stale together: a shared balance_date = CURRENT_DATE filter fails."""
     _net_worth_guard_ddl(db)
     for acct in ("a", "b"):
         _observed_then_carried(db, acct, 45)
@@ -2929,8 +2955,8 @@ def test_net_worth_checks_leave_their_gauges_when_skipped(
 def test_net_worth_checks_read_no_reports_relation() -> None:
     """Both checks read core.fct_balances_daily, never a reports.* view (Requirement 7)."""
     for method in (
-        DoctorService._run_net_worth_unanchored_accounts,  # pyright: ignore[reportPrivateUsage]
-        DoctorService._run_net_worth_stale_balance,  # pyright: ignore[reportPrivateUsage]
+        DoctorService._run_net_worth_unanchored_accounts,  # pyright: ignore[reportPrivateUsage]  # source-scanning the private check directly
+        DoctorService._run_net_worth_stale_balance,  # pyright: ignore[reportPrivateUsage]  # source-scanning the private check directly
     ):
         source = inspect.getsource(method)
         assert "REPORTS_" not in source, method.__name__

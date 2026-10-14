@@ -2136,14 +2136,11 @@ class DoctorService:
                       AND c.balance IS NOT NULL
                 )
                 SELECT d.account_id,
-                       CAST(
-                           CURRENT_DATE - MAX(d.balance_date) FILTER (WHERE d.is_observed)
-                           AS INTEGER
-                       ) AS age_days
+                       CAST(CURRENT_DATE - MAX(d.balance_date) AS INTEGER) AS age_days
                 FROM {FCT_BALANCES_DAILY.full_name} AS d
                 JOIN counted AS k ON k.account_id = d.account_id
+                WHERE d.is_observed
                 GROUP BY d.account_id
-                HAVING COUNT(*) FILTER (WHERE d.is_observed) > 0
                 ORDER BY d.account_id
                 """  # TableRef constants, no user input
             ).fetchall()
