@@ -565,8 +565,6 @@ and the `balance_drift` model test): one test each with a NULL row present.
 - `test_tables.py`;
 - the taxonomy coverage tests;
 - `tests/moneybin/test_exports/test_bundle_snapshot.py` (snapshot refreshed);
-- `tests/privacy/fixtures/sql_lineage_corpus.yaml` (the
-  `dim_unanchored_accounts` entries removed);
 - `test_report_class_derivation.py`.
 
 ### Tier 2: Synthetic scenarios
@@ -619,12 +617,12 @@ merged.
   retired cascade's `include_in_net_worth` flips).
 - **Demo stale-balance warning.** Whether `moneybin demo` and the
   getting-started profile should raise `net_worth_stale_balance` is the
-  remaining MB-268 item, and it is decided separately.
-- **Audit of the other `core` relations.** This is the final task of this work's
-  implementation plan. It reviews every other `core` table and view against the
-  core-schema rule and records, for each, whether it could become a filterable
-  attribute on an existing table, any reason it should stay separate, and a
-  recommendation. The output is a list of findings to file as follow-ups; this
-  change makes no edits from it.
+  remaining open question from the net-worth correctness work, and it is
+  decided separately.
+- **Audit of the other `core` relations.** An audit of the other `core` tables
+  and views is planned. It reviews each one against the core-schema rule and
+  records whether it could become a filterable attribute on an existing table,
+  any reason it should stay separate, and a recommendation. Its findings become
+  follow-ups; this change makes no edits from it.
 - **Column order in `core.fct_balances_daily`.** It predates Rule A, and
   reordering it is its own public-contract change.
