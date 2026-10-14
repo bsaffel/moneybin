@@ -1236,6 +1236,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "has_splits": DataClass.AGGREGATE,
+        "is_categorizable": DataClass.TXN_TYPE,
         "is_pending": DataClass.TXN_TYPE,
         "is_transfer": DataClass.TXN_TYPE,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,

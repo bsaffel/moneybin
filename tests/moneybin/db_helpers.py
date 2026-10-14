@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     pending_transaction_id VARCHAR,
     is_transfer BOOLEAN,
     transfer_pair_id VARCHAR,
+    -- The common case; derive_is_categorizable() recomputes it from the model.
+    is_categorizable BOOLEAN DEFAULT TRUE,
     location_address VARCHAR,
     location_city VARCHAR,
     location_region VARCHAR,
