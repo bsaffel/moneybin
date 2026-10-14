@@ -2388,7 +2388,10 @@ the plan above:
   spine answers it from the recorded hop while `resolve_rate` re-fetches, which
   is the weekday-holiday gap `currency_service.py:197-205` describes as open.
   Assert that intended divergence by name, so a later author does not read it as
-  a parity failure and close it by widening the Python lookup.
+  a parity failure and close it by widening the Python lookup. *(Later closed:
+  `multi-currency.md` Requirement 13's market-closure rule gives the offline
+  `resolve_rate` and this spine one bounded rule, so the interior gap is now a
+  parity case.)*
 - **Carry-forward provenance.** A non-publication day inside the window carries
   the prior rate with `published_date` set to the publication day and
   `days_since_published` equal to the gap.

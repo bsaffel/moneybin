@@ -119,6 +119,74 @@ def fct_exchange_rates_daily_db(
         rate_date="2026-01-08",
         rate="2.0000",
     )
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rate_coverage
+            (from_currency, to_currency, start_date, end_date, source_type)
+        VALUES ('USD', 'CCC', '2026-01-05', '2026-01-08', 'frankfurter')
+        """  # test fixture, not executing user SQL
+    )
+
+    # Coverage from one provider over another's gap. frankfurter publishes the
+    # Monday and Thursday with no recorded answer between; exchangerate_host
+    # recorded an answer spanning the previous Monday to that Thursday, but
+    # its own publications sit ten days apart. Neither provider proves a
+    # closure on its own, so the interior weekdays stay unpriced.
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="MMM",
+        rate_date="2026-01-05",
+        rate="5.0000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="MMM",
+        rate_date="2026-01-08",
+        rate="5.5000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="MMM",
+        rate_date="2025-12-29",
+        rate="4.8000",
+        source_type="exchangerate_host",
+        loaded_at="2026-01-05 08:00:00",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="MMM",
+        rate_date="2026-01-08",
+        rate="5.4000",
+        source_type="exchangerate_host",
+        loaded_at="2026-01-05 08:00:00",
+    )
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rate_coverage
+            (from_currency, to_currency, start_date, end_date, source_type)
+        VALUES ('USD', 'MMM', '2025-12-29', '2026-01-08', 'exchangerate_host')
+        """  # test fixture, not executing user SQL
+    )
+
+    # A Friday, then a Tuesday eleven days on — wider than a market closure.
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="KKK",
+        rate_date="2026-01-09",
+        rate="4.0000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="KKK",
+        rate_date="2026-01-20",
+        rate="4.5000",
+    )
 
     # Two providers on the same pair/date: freshest loaded_at wins. Mirrors
     # test_two_providers_on_one_day_resolve_by_freshest_write in
@@ -275,6 +343,56 @@ def test_interior_gap_carries_forward_with_provenance(
     assert str(rows[3][1]) == "2026-01-08"
     assert float(rows[3][2]) == pytest.approx(2.0000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert rows[3][3] == 0
+
+
+@pytest.mark.slow
+def test_another_providers_coverage_does_not_prove_a_closure(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """The closure proof is one provider's answer over that provider's own gap.
+
+    Mixed across providers, exchangerate_host's recorded answer would vouch for
+    the three-day gap in frankfurter's rows and price the Tuesday and
+    Wednesday. Kept apart, frankfurter recorded nothing and
+    exchangerate_host's own publications sit ten days apart, so only the
+    publication days themselves are priced — the same answer
+    `resolve_rate`'s offline path gives.
+    """
+    rows = fct_exchange_rates_daily_db.execute(
+        "SELECT effective_date, published_date, rate_vendor "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'USD' AND to_currency = 'MMM' "
+        "ORDER BY effective_date"
+    ).fetchall()
+    assert [(str(r[0]), str(r[1]), r[2]) for r in rows] == [
+        ("2025-12-29", "2025-12-29", "exchangerate_host"),
+        ("2026-01-05", "2026-01-05", "frankfurter"),
+        ("2026-01-08", "2026-01-08", "frankfurter"),
+    ]
+
+
+@pytest.mark.slow
+def test_a_gap_wider_than_a_market_closure_carries_only_its_weekend(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """Eleven days between publications is not a closure, so the weekdays go unpriced.
+
+    The weekend straight after the Friday still carries it — no reference rate
+    is published on a weekend, whatever follows — which is the hop
+    `resolve_rate` takes from the calendar alone.
+    """
+    rows = fct_exchange_rates_daily_db.execute(
+        "SELECT effective_date, published_date "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'USD' AND to_currency = 'KKK' "
+        "ORDER BY effective_date"
+    ).fetchall()
+    assert [(str(r[0]), str(r[1])) for r in rows] == [
+        ("2026-01-09", "2026-01-09"),
+        ("2026-01-10", "2026-01-09"),
+        ("2026-01-11", "2026-01-09"),
+        ("2026-01-20", "2026-01-20"),
+    ]
 
 
 @pytest.mark.slow

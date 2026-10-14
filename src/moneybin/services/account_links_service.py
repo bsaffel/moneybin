@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -27,6 +28,7 @@ from moneybin.investments.identity import manual_identity_sql
 from moneybin.matching.reconciliation import record_account_merge_retirements
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.account_resolution_types import (
     PendingLinkCandidate,
@@ -72,6 +74,92 @@ class AccountLinkAcceptImpact:
     lot_selections_before: tuple[tuple[str, str, str], ...] = ()
     lot_selections_after: tuple[tuple[str, str, str], ...] = ()
     manual_identity: tuple[tuple[str | bool | None, ...], ...] = ()
+    #: Settings fields the absorbed account fills in on the survivor, and the
+    #: conflicting ones the survivor keeps. Names only, sorted: the binding must
+    #: be deterministic and the prompt never needs the values.
+    settings_moved: tuple[str, ...] = ()
+    settings_kept: tuple[str, ...] = ()
+    #: ``(account_id, updated_at ISO | None)`` for the absorbed and survivor
+    #: settings rows, sorted. Bound but never rendered: a moved value can change
+    #: while the moved/kept names stay identical, and every settings write
+    #: restamps ``updated_at``, so this catches the edit the names cannot.
+    settings_revision: tuple[tuple[str, str | None], ...] = ()
+
+
+#: Settings the surviving account inherits from the absorbed one when it has
+#: none of its own. The survivor wins a conflict; the duplicate only fills gaps.
+MERGED_SETTING_FIELDS = (
+    "display_name",
+    "official_name",
+    "last_four",
+    "account_subtype",
+    "holder_category",
+    "currency_code",
+    "credit_limit",
+    "default_cost_basis_method",
+    "investment_source_type",
+)
+
+#: Settings a merge never moves: users archive or exclude a duplicate before
+#: merging it, and carrying either flag over would hide or uncount the real
+#: account. Listed so the row built for the survivor names every column once.
+_UNMOVED_SETTING_DEFAULTS: dict[str, Any] = {
+    "archived": False,
+    "archived_at": None,
+    "include_in_net_worth": True,
+    "investment_source_type_changed_at": None,
+}
+
+
+@dataclass(frozen=True)
+class SettingsReconciliation:
+    """What an account merge does to ``app.account_settings`` (survivor wins)."""
+
+    moved: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()
+    #: The full row to write for the survivor; meaningful only when ``moved``.
+    row: Mapping[str, Any] | None = None
+
+
+def _has_setting(value: object) -> bool:
+    return value is not None and not (isinstance(value, str) and not value.strip())
+
+
+def plan_settings_reconciliation(
+    absorbed: Mapping[str, Any] | None, survivor: Mapping[str, Any] | None
+) -> SettingsReconciliation:
+    """Pure plan shared by the confirmation preview and the merge write.
+
+    A field moves when only the absorbed account has a value, is kept when both
+    have different values, and is left alone otherwise.
+    """
+    if not absorbed:
+        return SettingsReconciliation()
+    base = survivor or {}
+    moved: list[str] = []
+    kept: list[str] = []
+    row: dict[str, Any] = {**_UNMOVED_SETTING_DEFAULTS, **base}
+    for field_name in MERGED_SETTING_FIELDS:
+        theirs, ours = absorbed.get(field_name), base.get(field_name)
+        if not _has_setting(theirs) or theirs == ours:
+            continue
+        if _has_setting(ours):
+            kept.append(field_name)
+        else:
+            moved.append(field_name)
+            row[field_name] = theirs
+    return SettingsReconciliation(
+        moved=tuple(sorted(moved)), kept=tuple(sorted(kept)), row=row
+    )
+
+
+def plan_restate_fields(moved: Iterable[str]) -> frozenset[str]:
+    """The moved settings that change ledger or FX output, not just a label."""
+    return frozenset(moved) & {
+        "investment_source_type",
+        "currency_code",
+        "default_cost_basis_method",
+    }
 
 
 def _resolve_display_name(db: Database, account_id: str) -> str:
@@ -126,6 +214,7 @@ class AccountLinksService:
         self._actor = actor
         self._links = AccountLinksRepo(db)
         self._decisions = AccountLinkDecisionsRepo(db)
+        self._settings = AccountSettingsRepo(db)
         # Accepted transfers the account collapse retired inside set()'s
         # transaction, waiting for rematch_after_merge to disclose them. The
         # retirement has to happen before the commit (the FK invariant), the
@@ -135,6 +224,10 @@ class AccountLinksService:
         # reads-and-resets, so neither a failed accept nor a second merge can
         # disclose a retirement twice.
         self._transfers_retired_by_collapse = 0
+        # Moved settings the ledger must be restated for once the merge commits;
+        # same hand-off as the retirement count above, consumed by
+        # rematch_after_merge.
+        self._pending_restate: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Read-only methods
@@ -291,6 +384,7 @@ class AccountLinksService:
         sentence through one call — three renderings of one merge was the
         coherence failure this replaces.
         """
+        settings = self.plan_settings(absorbed_account_id, survivor_account_id)
         return AccountMergeFacts(
             absorbed=self.ledger_facts(absorbed_account_id),
             survivor=self.ledger_facts(survivor_account_id),
@@ -299,6 +393,42 @@ class AccountLinksService:
                 account_id=absorbed_account_id,
                 against_account_id=survivor_account_id,
             ),
+            settings_moved=settings.moved,
+            settings_kept=settings.kept,
+        )
+
+    def settings_revision(
+        self, absorbed_account_id: str, survivor_account_id: str
+    ) -> tuple[tuple[str, str | None], ...]:
+        """Stored ``updated_at`` of both settings rows, sorted by account id.
+
+        Reads the stored rows, never a batch's in-flight survivor image.
+        """
+        revision: list[tuple[str, str | None]] = []
+        for account_id in sorted({absorbed_account_id, survivor_account_id}):
+            row = self._settings.load(account_id)
+            stamp = row.get("updated_at") if row else None
+            revision.append((account_id, None if stamp is None else stamp.isoformat()))
+        return tuple(revision)
+
+    def plan_settings(
+        self,
+        absorbed_account_id: str,
+        survivor_account_id: str,
+        *,
+        survivor_row: Mapping[str, Any] | None = None,
+    ) -> SettingsReconciliation:
+        """Read both settings rows and plan the reconciliation (read-only).
+
+        ``survivor_row`` stands in for the survivor's stored row when an earlier
+        merge in the same batch has already filled it, so a later plan sees what
+        execution will see.
+        """
+        return plan_settings_reconciliation(
+            self._settings.load(absorbed_account_id),
+            survivor_row
+            if survivor_row is not None
+            else self._settings.load(survivor_account_id),
         )
 
     def _frozen_names(
@@ -457,6 +587,7 @@ class AccountLinksService:
             """,  # canonical repository identity query and parameterized accounts
             [provisional_id, target_account_id],
         ).fetchall()
+        settings = self.plan_settings(provisional_id, target_account_id)
         return AccountLinkAcceptImpact(
             provisional_account_id=provisional_id,
             candidate_account_id=str(decision["candidate_account_id"]),
@@ -474,6 +605,9 @@ class AccountLinksService:
             lot_selections_before=selections_before,
             lot_selections_after=selections_after,
             manual_identity=tuple(manual_identity),
+            settings_moved=settings.moved,
+            settings_kept=settings.kept,
+            settings_revision=self.settings_revision(provisional_id, target_account_id),
         )
 
     # ------------------------------------------------------------------
@@ -767,6 +901,7 @@ class AccountLinksService:
           (MUTATION_INVALID_INPUT).
         """
         collapsed = 0
+        restate: frozenset[str] = frozenset()
         if not in_outer_txn:
             self._db.begin()
         try:
@@ -850,6 +985,7 @@ class AccountLinksService:
                         actor=self._actor,
                         in_outer_txn=True,
                     )
+                restate = self._reconcile_settings(provisional_id, target_account_id)
                 # Carry existing match decisions onto the survivor in the same
                 # transaction. They store the account_id they were made under,
                 # and both the rejected-pair key and the active-edge NodeKey are
@@ -948,6 +1084,7 @@ class AccountLinksService:
         # would not roll back with it, and the next merge here would report a
         # transfer retired that is still accepted.
         self._transfers_retired_by_collapse += collapsed
+        self._pending_restate |= restate
         if in_outer_txn:
             return None
         # Accept/reject changed the pending count — refresh the gauge (only
@@ -960,6 +1097,60 @@ class AccountLinksService:
         if target_account_id is None:
             return None
         return self.rematch_after_merge()
+
+    def _reconcile_settings(
+        self, absorbed_account_id: str, survivor_account_id: str
+    ) -> frozenset[str]:
+        """Move the absorbed account's settings onto the survivor, in the caller's txn.
+
+        Returns the moved fields that need a ledger restatement after commit.
+        The absorbed row stays put so undoing the merge has nothing to un-delete.
+        """
+        plan = self.plan_settings(absorbed_account_id, survivor_account_id)
+        if not plan.moved or plan.row is None:
+            return frozenset()
+        row: dict[str, Any] = dict(plan.row)
+        changed_at: datetime | None = row["investment_source_type_changed_at"]
+        # archived, archived_at and include_in_net_worth never move (see
+        # _UNMOVED_SETTING_DEFAULTS): the survivor's own values ride through.
+        if "investment_source_type" in plan.moved:
+            # Same stamp AccountService.settings_update applies to a source change.
+            now_row = self._db.execute("SELECT NOW()::TIMESTAMP").fetchone()
+            changed_at = now_row[0] if now_row else None
+        self._settings.set(
+            account_id=survivor_account_id,
+            display_name=row.get("display_name"),
+            official_name=row.get("official_name"),
+            last_four=row.get("last_four"),
+            account_subtype=row.get("account_subtype"),
+            holder_category=row.get("holder_category"),
+            currency_code=row.get("currency_code"),
+            credit_limit=row.get("credit_limit"),
+            archived=row["archived"],
+            archived_at=row["archived_at"],
+            include_in_net_worth=row["include_in_net_worth"],
+            default_cost_basis_method=row.get("default_cost_basis_method"),
+            investment_source_type=row.get("investment_source_type"),
+            investment_source_type_changed_at=changed_at,
+            actor=self._actor,
+            in_outer_txn=True,
+        )
+        return plan_restate_fields(plan.moved)
+
+    def _restate_for_settings(self, moved: frozenset[str]) -> None:
+        """Rebuild what the moved settings feed, as ``AccountService`` would."""
+        # Function-local: fx_accounting_refresh pulls in the transform stack.
+        from moneybin.services.fx_accounting_refresh import (
+            restate_fx_accounting,
+            restate_investment_ledger,
+        )
+
+        if "investment_source_type" in moved:
+            restate_investment_ledger(self._db)
+        elif moved:
+            restate_fx_accounting(
+                self._db, account_currency_changed="currency_code" in moved
+            )
 
     def rematch_after_merge(self) -> RefreshResult:
         """Re-run matching now that the merge made two sources' rows co-resident.
@@ -1007,6 +1198,8 @@ class AccountLinksService:
 
         collapsed = self._transfers_retired_by_collapse
         self._transfers_retired_by_collapse = 0
+        restate = self._pending_restate
+        self._pending_restate = frozenset()
         # Emitted here rather than where the repo reverses, because this is the
         # one seam both paths reach only after their own commit — `set` calls it
         # at the end of its post-commit tail, and the batched caller calls it
@@ -1017,6 +1210,9 @@ class AccountLinksService:
         record_account_merge_retirements(collapsed)
         try:
             result = refresh(self._db, steps=["match", "transform"], actor=self._actor)
+            # Inside the same guard: a failed restate must not take the
+            # retirement disclosure with it any more than a failed rebuild does.
+            self._restate_for_settings(restate)
         except Exception:
             # The reversal committed with the merge, but `collapsed` has already
             # been taken off the instance and is only re-attached to the result

@@ -222,6 +222,14 @@
     exemplars: ARRAY<TEXT>
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."exchange_rate_coverage"'
+  columns:
+    from_currency: TEXT
+    to_currency: TEXT
+    start_date: DATE
+    end_date: DATE
+    source_type: TEXT
+    loaded_at: TIMESTAMPNTZ
 - name: '"moneybin"."raw"."exchange_rates"'
   columns:
     from_currency: TEXT
