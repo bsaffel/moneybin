@@ -447,6 +447,9 @@ class _ApprovedMerge:
     lot_selections_before: tuple[tuple[str, str, str], ...] = ()
     lot_selections_after: tuple[tuple[str, str, str], ...] = ()
     manual_identity: tuple[tuple[str | bool | None, ...], ...] = ()
+    settings_moved: tuple[str, ...] = ()
+    settings_kept: tuple[str, ...] = ()
+    settings_revision: tuple[tuple[str, str | None], ...] = ()
 
 
 def _merge_preview(
@@ -476,6 +479,9 @@ def _merge_preview(
         lot_selections_before=impact.lot_selections_before,
         lot_selections_after=impact.lot_selections_after,
         manual_identity=impact.manual_identity,
+        settings_moved=impact.settings_moved,
+        settings_kept=impact.settings_kept,
+        settings_revision=impact.settings_revision,
     )
     return approved, identity_confirm_message(
         plan.blast_radius, surface="cli", merges=[facts], kinds=["account_link"]
@@ -515,6 +521,9 @@ def _drift_check(
             or impact.lot_selections_before != approved.lot_selections_before
             or impact.lot_selections_after != approved.lot_selections_after
             or impact.manual_identity != approved.manual_identity
+            or impact.settings_moved != approved.settings_moved
+            or impact.settings_kept != approved.settings_kept
+            or impact.settings_revision != approved.settings_revision
         ):
             raise UserError(
                 "This merge changed while the confirmation was open, so nothing "

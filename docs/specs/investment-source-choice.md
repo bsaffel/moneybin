@@ -262,12 +262,15 @@ gains double-count and holdings are withheld. The doctor reports that state
 failed restate never reads as resolved.
 
 Undoing the account's first-ever settings write would delete the row and its
-change time with it. The refusal reads the live row, not the write's audit
+change time with it. The check reads the live row, not the write's audit
 image: it covers any account whose settings row has ever carried a source
 choice (a non-NULL `investment_source_type_changed_at`, which a cleared or
-undone choice keeps). That undo is refused with `recovery_no_path`, and the hint
-says the row must stay and to change the other fields instead. An account that
-never had a choice still deletes the row as before.
+undone choice keeps). Such a row is reset in place instead of deleted: every
+setting returns to its table default, the choice clears, and the change time
+advances only if the choice actually changed. `dim_accounts` reads a default row
+like an absent one. The undo's audit row describes the reset row, so undoing
+that undo restores the choice with a fresh change time. An account that never
+had a choice still deletes the row as before.
 
 ### Detection skips a chosen account
 
@@ -486,7 +489,7 @@ account labels, trade descriptions, or amounts.
 | set `manual` | clear | ledger is the union again; re-entered rows' `updated_at` ≥ the clear; doctor `fail` again |
 | set `plaid` | `investments add` | refused, `investment_source_excluded`, nothing written |
 | set `manual` | undo the set | restated; `investment_source_type_changed_at` advanced; overlap back |
-| an account whose settings row has ever carried a source choice (set, then cleared or undone) | undo the row's first-ever settings write | refused, `recovery_no_path`, row and change time kept; nothing changes |
+| an account whose settings row has ever carried a source choice (set, then cleared or undone) | undo the row's first-ever settings write | row reset to defaults in place, choice cleared, change time kept (advanced if the choice changed) |
 | Manual trades + Plaid holdings only | doctor | `fail`; Plaid side reads "holdings snapshot, no trades" |
 | No overlap | set `plaid` up front | accepted; later recorded trades refused; later sync never warns |
 | Unknown value | `accounts set … --investment-source-type ofx` | `mutation_invalid_input` naming `manual`, `plaid` |
