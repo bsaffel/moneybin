@@ -513,11 +513,11 @@ Cross-account daily net-worth rollup, converted to the profile's home currency. 
 |---|---|---|
 | `home_currency_code` | VARCHAR | `app.profile_settings.home_currency`; NULL until the user chooses one, and then every measure below is NULL. |
 | `balance_date` | DATE | Calendar date. |
-| `account_count` | INTEGER | Accounts contributing on this date, across every currency. |
+| `account_count` | INTEGER | Accounts with a known balance contributing on this date, across every currency. |
 | `carried_forward_count` | INTEGER | How many of them are carried forward rather than observed. |
 | `currency_count` | INTEGER | Distinct currencies held on this date; the unknown-currency segment counts as one. |
 | `unpriced_currency_count` | INTEGER | How many of them had no rate on this date; 0 means every currency is priced. The totals below are complete only when `unanchored_account_count` is 0 too. |
-| `unanchored_account_count` | INTEGER | Eligible accounts holding priced securities or transaction activity with no balance observation at all; 0 means none. |
+| `unanchored_account_count` | INTEGER | Accounts in net worth that hold value (a transaction, a trade, or a broker-reported position) but have no balance observation; 0 means none. |
 | `total_assets` | DECIMAL(18,2) | Sum of positive balances converted to `home_currency_code`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
 | `total_liabilities` | DECIMAL(18,2) | Sum of negative balances converted to `home_currency_code`, kept negative; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
 | `net_worth` | DECIMAL(18,2) | `total_assets + total_liabilities`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
@@ -533,7 +533,7 @@ Net worth per currency per day, in that currency and converted to home. Grain: o
 | `rate_source` | VARCHAR | `override` / `provider` / `identity` behind the rate that converted this `currency_code` to `home_currency_code`; NULL when this pair is unpriced on this date. A `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
 | `balance_date` | DATE | Grain. |
 | `rate_published_date` | DATE | The day the `currency_code`→`home_currency_code` rate was published; a `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
-| `account_count` | INTEGER | Accounts contributing on this date in this currency. |
+| `account_count` | INTEGER | Accounts with a known balance contributing on this date in this currency. |
 | `carried_forward_count` | INTEGER | How many of them are carried forward, not observed. |
 | `total_assets` | DECIMAL(18,2) | Sum of positive balances, in `currency_code`. |
 | `total_liabilities` | DECIMAL(18,2) | Sum of negative balances, kept negative, in `currency_code`. |

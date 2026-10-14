@@ -408,6 +408,7 @@ EXAMPLES: dict[str, list[Example]] = {
                 WHERE in_net_worth
                   AND balance_date = (
                       SELECT MAX(balance_date) FROM core.fct_balances_daily
+                      WHERE in_net_worth
                   )
                 GROUP BY currency_code, balance_date
                 ORDER BY balance_date, currency_code

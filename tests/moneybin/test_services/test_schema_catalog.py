@@ -199,6 +199,11 @@ def test_balance_spine_example_guards_its_sum() -> None:
     for sql in guarded:
         assert "balance IS NULL" in sql
         assert "in_net_worth" in sql
+        # The latest date is the rungs' one: the newest date anything counts.
+        assert (
+            "SELECT MAX(balance_date) FROM core.fct_balances_daily WHERE in_net_worth"
+            in " ".join(sql.split())
+        )
 
 
 def _present_tables(db: Database) -> set[str]:

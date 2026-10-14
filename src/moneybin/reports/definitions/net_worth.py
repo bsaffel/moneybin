@@ -170,7 +170,8 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         OutputColumn("balance_date", "Calendar date.", DataClass.TXN_DATE),
         OutputColumn(
             "account_count",
-            "Accounts contributing on this date, across every currency.",
+            "Accounts with a known balance contributing on this date, across "
+            "every currency.",
             DataClass.AGGREGATE,
             numeric=True,
             grouped=True,
@@ -200,9 +201,9 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         ),
         OutputColumn(
             "unanchored_account_count",
-            "Accounts in net worth that hold value (holdings or transaction "
-            "activity) but have no balance observation; 0 means none. The "
-            "totals are null while it is above 0.",
+            "Accounts in net worth that hold value (a transaction, a trade, or "
+            "a broker-reported position) but have no balance observation; 0 "
+            "means none. The totals are null while it is above 0.",
             DataClass.AGGREGATE,
             numeric=True,
             grouped=True,
