@@ -413,6 +413,27 @@ async def test_sync_link_declined_local_server_tells_the_agent_to_ask_the_user(
 
 
 @pytest.mark.unit
+async def test_sync_link_unanswered_local_server_prompt_does_not_rule_it_out(
+    unconfigured: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nobody answering is not a no: the agent should re-ask, not hunt elsewhere."""
+    unconfigured.plan_server_address.return_value = _plan("first")
+
+    async def _nobody_answers(prompt: object, **_kwargs: object) -> None:
+        prompt.close()  # type: ignore[attr-defined]  # the unawaited elicit coroutine
+
+    monkeypatch.setattr("moneybin.mcp.confirmation.elicit_bounded", _nobody_answers)
+    with _prompt(AcceptedElicitation(data=True)):
+        envelope = await sync_module.sync_link_coarse(mode="login")
+
+    assert envelope.error is not None
+    assert envelope.error.code == "mutation_confirmation_declined"
+    assert "ask the user" not in (envelope.error.hint or "").lower()
+    assert "again" in (envelope.error.hint or "")
+    unconfigured.start_login.assert_not_called()
+
+
+@pytest.mark.unit
 async def test_sync_link_local_server_is_never_used_unconfirmed(
     unconfigured: MagicMock,
 ) -> None:

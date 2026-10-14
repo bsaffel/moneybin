@@ -2066,7 +2066,7 @@ def test_sync_login_server_flag_matching_the_current_address_saves_nothing(
     result = runner.invoke(app, ["sync", "login", "--server", _SERVER])
 
     assert result.exit_code == 0, result.output
-    start.client.login.assert_called_once_with(open_browser=True)  # type: ignore[attr-defined]  # MagicMock client
+    start.client.login.assert_called_once_with(open_browser=True, challenge=None)  # type: ignore[attr-defined]  # MagicMock client
     assert "Server" not in result.stdout
 
 

@@ -923,43 +923,53 @@ class CLISettings(BaseModel):
 def settings_section_model(
     settings_cls: type[BaseSettings], section: str
 ) -> type[BaseModel] | None:
-    """The nested model behind a settings section, or None if it is not one."""
-    field = settings_cls.model_fields.get(section)
+    """The nested model behind a settings section, or None if it is not one.
+
+    Matches the alias too: ``import`` is the section's name in the environment,
+    in dotenv files, and in config.yaml, and ``import_`` only in Python.
+    """
+    field = settings_cls.model_fields.get(section) or next(
+        (f for f in settings_cls.model_fields.values() if f.alias == section), None
+    )
     annotation = field.annotation if field else None
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return annotation
     return None
 
 
-def _section_field_error(
-    model: type[BaseModel], values: dict[str, Any]
-) -> tuple[str, str] | None:
-    """The first ``(field, reason)`` the section model rejects, if any.
+def _section_error(
+    section: str, model: type[BaseModel], values: dict[str, Any]
+) -> str | None:
+    """Why the section model rejects ``values``, or None if it accepts them.
 
-    Validates through the model, not the bare annotation, so ``Field`` bounds
-    and field validators apply. Cross-field errors are left to the merged
-    settings: other fields here sit at defaults the real sources may override.
+    Validates through the model, not the bare annotation, so ``Field`` bounds,
+    field validators, and cross-field validators all apply. Fields absent from
+    ``values`` sit at their defaults; an environment override of one can make a
+    refused combination valid, and refusing it then is the safe error.
     """
     try:
         model.model_validate(values)
     except ValidationError as e:
-        for error in e.errors():
-            if error["loc"]:
-                return str(error["loc"][0]), error["msg"]
+        error = e.errors()[0]
+        where = f"{section}.{error['loc'][0]}" if error["loc"] else section
+        return f"{where}: {error['msg']}"
     return None
 
 
-def validate_profile_setting(section: str, name: str, raw: str) -> Any:
+def validate_profile_setting(
+    section: str, name: str, raw: str, saved: dict[str, Any] | None = None
+) -> Any:
     """Return ``raw`` as the value config.yaml should hold for ``section.name``.
 
     Refuses a key no setting declares, a secret-typed field (the file is plain
-    text), and a value the field's type rejects.
+    text), and a value the field's type rejects or that breaks a cross-field
+    rule together with the section's other ``saved`` values.
     """
     model = settings_section_model(MoneyBinSettings, section)
     if model is None:
         sections = sorted(
-            s
-            for s in MoneyBinSettings.model_fields
+            f.alias or s
+            for s, f in MoneyBinSettings.model_fields.items()
             if settings_section_model(MoneyBinSettings, s) is not None
         )
         raise ValueError(
@@ -978,9 +988,10 @@ def validate_profile_setting(section: str, name: str, raw: str) -> Any:
             f"{section}.{name} is a secret and cannot be stored in config.yaml, "
             "which is plain text."
         )
-    rejected = _section_field_error(model, {name: raw})
+    others = {k: v for k, v in (saved or {}).items() if k in model.model_fields}
+    rejected = _section_error(section, model, {**others, name: raw})
     if rejected is not None:
-        raise ValueError(f"{section}.{name}: {rejected[1]}")
+        raise ValueError(rejected)
     adapter: TypeAdapter[Any] = TypeAdapter(annotation)
     return adapter.dump_python(adapter.validate_python(raw), mode="json")
 
@@ -1016,9 +1027,9 @@ def _load_profile_config(
         }
         if not declared:
             continue
-        rejected = _section_field_error(model, declared)
+        rejected = _section_error(str(section), model, declared)
         if rejected is not None:
-            raise ValueError(f"{path}: {section}.{rejected[0]}: {rejected[1]}")
+            raise ValueError(f"{path}: {rejected}")
         values[str(section)] = declared
     return values
 

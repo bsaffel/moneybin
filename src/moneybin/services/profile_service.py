@@ -468,7 +468,13 @@ class ProfileService:
             raise ValueError(f"Key parts must be lowercase identifiers, got: {key!r}")
         # Validated before the file is touched: settings load this file, so an
         # undeclared key would be inert and a bad value would break every command.
-        coerced_value = validate_profile_setting(section, field, value)
+        saved = data.get(section)
+        coerced_value = validate_profile_setting(
+            section,
+            field,
+            value,
+            cast(dict[str, object], saved) if isinstance(saved, dict) else None,
+        )
         if section not in data or not isinstance(data[section], dict):
             data[section] = {}
         section_dict: dict[str, object] = data[section]  # type: ignore[assignment]  # narrowed above

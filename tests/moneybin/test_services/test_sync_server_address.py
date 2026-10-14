@@ -41,19 +41,24 @@ def _unreachable_client(server_url: str) -> _FakeClient:
     return _FakeClient(server_url, reachable=False)
 
 
-class _OtherWebServer:
-    def __init__(self, server_url: str) -> None:
+class _AnsweringWith:
+    def __init__(self, server_url: str, status: int) -> None:
         self.server_url = server_url
+        self._status = status
 
     def begin_login(self) -> DeviceAuthorizationChallenge:
         request = httpx.Request("POST", f"{self.server_url}/auth/device/code")
-        response = httpx.Response(404, request=request)
+        response = httpx.Response(self._status, request=request)
         response.raise_for_status()
         raise AssertionError("unreachable")
 
 
-def _other_web_server(server_url: str) -> _OtherWebServer:
-    return _OtherWebServer(server_url)
+def _other_web_server(server_url: str) -> _AnsweringWith:
+    return _AnsweringWith(server_url, 404)
+
+
+def _failing_sync_server(server_url: str) -> _AnsweringWith:
+    return _AnsweringWith(server_url, 503)
 
 
 def _skip_database_init(*_args: object, **_kwargs: object) -> None:
@@ -101,6 +106,21 @@ class TestNormalizeServerUrl:
     def test_keeps_port_and_path(self) -> None:
         url = "http://localhost:8000/sync"
         assert address.normalize_server_url(url) == url
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "HTTPS://A.Example.Test",
+            "https://a.example.test:443/",
+            "Https://a.EXAMPLE.test",
+        ],
+    )
+    def test_one_server_has_one_spelling(self, spelling: str) -> None:
+        """A second spelling would read as a replacement and sign the profile out."""
+        assert address.normalize_server_url(spelling) == _A
+
+    def test_keeps_a_bracketed_ipv6_host(self) -> None:
+        assert address.normalize_server_url("http://[::1]:8000") == "http://[::1]:8000"
 
     @pytest.mark.parametrize(
         "raw",
@@ -219,6 +239,29 @@ class TestStartLogin:
         assert _A in excinfo.value.message
         assert _saved(tmp_path) is None
         assert events == []
+
+    def test_a_failing_sync_server_is_unreachable_not_refused(
+        self, events: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 5xx is the right server failing; telling the user to fix it misleads."""
+        monkeypatch.setattr(address, "_new_client", _failing_sync_server)
+
+        with pytest.raises(SyncAPIError):
+            address.start_login(address.plan_server_address(_A), surface="cli")
+
+        assert _saved(tmp_path) is None
+        assert events == []
+
+    def test_an_address_saved_by_another_process_is_seen(
+        self, events: list[str], tmp_path: Path
+    ) -> None:
+        """A long-running MCP server must not plan against the address it cached."""
+        address.start_login(address.plan_server_address(_A), surface="cli")
+        get_settings()  # Cached at A, as a server started before the change would be.
+        ProfileService().set("alice", "sync.server_url", _B)  # Another process's save.
+
+        assert address.plan_server_address(_A).change == "replace"
+        assert address.plan_server_address(_B).change == "unchanged"
 
     def test_replacing_clears_credentials_before_the_new_address_is_saved(
         self, events: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch

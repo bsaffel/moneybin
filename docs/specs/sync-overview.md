@@ -227,11 +227,16 @@ The address is written to the active profile's `config.yaml` only after the
 server at that address answers `POST /auth/device/code` with a valid challenge,
 so a typo or an unreachable host is never saved. A host that answers with
 anything else, such as another web server's 404, is refused with
-`mutation_invalid_input` rather than an unclassified HTTP error.
+`mutation_invalid_input` rather than an unclassified HTTP error. A 5xx is the
+right server failing rather than the wrong one, so it is reported as
+unreachable and the address can be retried unchanged.
 
 The MCP path plans the save, shows the prompt, then plans again and verifies
 the result against what the person approved before saving, because the CLI can
-save another address while the prompt is open.
+save another address while the prompt is open. Each plan reloads settings
+rather than reading the server's cached copy: a long-running MCP server would
+otherwise treat an address the CLI has since replaced as unchanged and skip
+the prompt.
 
 **Changing it.** A token or device code issued by one server is never sent to
 another. Two mechanisms hold that, because login is only one of five ways the
@@ -247,7 +252,11 @@ environment):
   treats the pair as absent and refuses to poll the session. The pair is kept,
   so an override that points elsewhere for one run does not sign the profile
   out of its own server. A pair stored before issuers were recorded is bound
-  to the server in force the first time it is read.
+  to the server in force the first time it is read. Before this change the
+  address could come only from the environment, so that is the server the
+  pair was already being sent to. The one wrong guess, a first read under a
+  one-run override, signs the profile out of its own server rather than
+  sending a token anywhere new, and logging in again recovers it.
 
 **When an override is in force.** If source 1 or 2 supplies the address and
 login is asked to save a different one, login refuses and names the variable:
@@ -263,6 +272,9 @@ The reverse order would leave a window where a token pair stored before
 issuers were recorded is bound to the new server on first read.
 
 **Shape.** `http` or `https` with a host; no credentials, query, or fragment.
+Scheme and host are lowercased and a default port (80, 443) is dropped, so one
+server has one spelling; a second spelling would read as a replacement and
+sign the profile out of the server it already uses.
 Plain `http` to a host other than loopback is accepted, because a self-hosted
 server on a home network is a supported setup, and the prompt that saves it
 says the connection is unencrypted.
@@ -270,7 +282,8 @@ says the connection is unencrypted.
 **Observability.** `moneybin_sync_server_address_outcomes_total{surface, outcome}`
 counts each attempt to save an address: `saved`, `replaced`, `unreachable`,
 `rejected` (it answered, but not with a device code), `declined`,
-`prompt_unavailable`, `override_conflict`. The address itself is
+`timed_out` (the prompt was shown and nobody answered), `prompt_unavailable`,
+`override_conflict`. The address itself is
 never a label.
 
 **When it is missing.** Every sync operation other than login fails with the code

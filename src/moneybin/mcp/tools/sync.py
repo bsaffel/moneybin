@@ -399,11 +399,20 @@ async def _begin_login_at(
                 ),
             )
         except UserError as e:
-            declined = e.code == error_codes.MUTATION_CONFIRMATION_DECLINED
-            SYNC_SERVER_ADDRESS_OUTCOMES.labels(
-                surface="mcp",
-                outcome="declined" if declined else "prompt_unavailable",
-            ).inc()
+            # A timeout shares the declined code; nobody answered, so the
+            # local address was not ruled out.
+            timed_out = (e.details or {}).get("reason") == "timeout"
+            declined = (
+                e.code == error_codes.MUTATION_CONFIRMATION_DECLINED and not timed_out
+            )
+            outcome = (
+                "timed_out"
+                if timed_out
+                else "declined"
+                if declined
+                else "prompt_unavailable"
+            )
+            SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface="mcp", outcome=outcome).inc()
             if declined and suggested:
                 # Declining the default means the server is elsewhere.
                 raise UserError(
@@ -672,7 +681,8 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
             "credentials; present them to the user, but never include them in "
             "logs or summaries. In login mode, server_url names this profile's "
             "sync server: pass only an address the user gave you; omit it and, "
-            "if none is saved, the user is offered http://127.0.0.1:8000. A new or "
+            "if none is saved, the user is offered "
+            f"{sync_server_address.SUGGESTED_SERVER_URL}. A new or "
             "changed address is saved to the profile's config.yaml only after "
             "the user confirms a prompt, and signs the profile out of the "
             "previous server; log in with another address to change it back.",

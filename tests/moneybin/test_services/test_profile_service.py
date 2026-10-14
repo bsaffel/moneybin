@@ -634,6 +634,51 @@ class TestProfileSet:
 
         assert config_path.read_text() == before
 
+    @pytest.mark.parametrize(
+        ("saved_high", "review"),
+        [
+            # Breaks the rule against the default high threshold (0.95).
+            (None, "0.99"),
+            # Fine against the default; breaks it only against the saved 0.80.
+            ("0.80", "0.85"),
+        ],
+    )
+    def test_set_refuses_a_value_that_breaks_a_cross_field_rule(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        saved_high: str | None,
+        review: str,
+    ) -> None:
+        """Saved, it would fail every later settings load."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        if saved_high is not None:
+            svc.set("alice", "matching.high_confidence_threshold", saved_high)
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="matching"):
+            svc.set("alice", "matching.review_threshold", review)
+
+        assert config_path.read_text() == before
+
+    def test_set_accepts_the_import_section_by_its_public_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`import` is the name the environment uses; config.yaml must match."""
+        from moneybin.config import MoneyBinSettings
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+
+        svc.set("alice", "import.pdf_preview_size_limit_mb", "50")
+
+        settings = MoneyBinSettings(profile="alice")
+        assert settings.import_.pdf_preview_size_limit_mb == 50
+
     def test_set_value_is_read_back_by_settings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, NoReturn, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -34,6 +34,7 @@ LOGIN_COMMAND = "moneybin sync login --server <url>"
 # Where moneybin-sync's compose file publishes the server. Offered, never
 # assumed: a person accepts it once and it is saved like any other address.
 SUGGESTED_SERVER_URL = "http://127.0.0.1:8000"
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 Surface = Literal["cli", "mcp"]
 Change = Literal["unchanged", "first", "replace"]
@@ -59,17 +60,25 @@ class LoginStart:
 
 
 def normalize_server_url(raw: str) -> str:
-    """Return ``raw`` as a bare http(s) address, or refuse it."""
+    """Return ``raw`` as a bare http(s) address, or refuse it.
+
+    Scheme and host are lowercased and a default port dropped, so one server
+    has one spelling: a second spelling would read as a replacement and sign
+    the profile out of the server it is already using.
+    """
     url = raw.strip().rstrip("/")
     try:
         parts = urlsplit(url)
         host = parts.hostname
-        _ = parts.port  # Parsed lazily; raises on a non-numeric or out-of-range port.
+        port = (
+            parts.port
+        )  # Parsed lazily; raises on a non-numeric or out-of-range port.
     except ValueError:
-        host, parts = None, None
+        host, parts, port = None, None, None
+    scheme = parts.scheme.lower() if parts is not None else ""
     if (
         parts is None
-        or parts.scheme not in ("http", "https")
+        or scheme not in _DEFAULT_PORTS
         or not host
         or parts.username is not None
         or parts.password is not None
@@ -81,7 +90,10 @@ def normalize_server_url(raw: str) -> str:
             "http or https, a host, and no credentials, query, or fragment.",
             code=error_codes.MUTATION_INVALID_INPUT,
         )
-    return url
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None and port != _DEFAULT_PORTS[scheme]:
+        netloc = f"{netloc}:{port}"
+    return f"{scheme}://{netloc}{parts.path}"
 
 
 def is_unencrypted(url: str) -> bool:
@@ -105,6 +117,13 @@ def _saved_address(profile: str) -> str | None:
         return None
     saved = cast(dict[str, object], section).get("server_url")
     return saved if isinstance(saved, str) else None
+
+
+def _same_server(effective: str, url: str) -> bool:
+    try:
+        return normalize_server_url(effective) == url
+    except UserError:
+        return False
 
 
 def _new_client(server_url: str) -> SyncClient:
@@ -133,15 +152,20 @@ def build_sync_client() -> SyncClient:
                 "login saves it to this profile."
             ),
         )
-    return _new_client(server_url)
+    # Normalized so the issuer recorded beside a token pair matches however
+    # the override happens to spell the same server.
+    return _new_client(normalize_server_url(server_url))
 
 
 def plan_server_address(raw: str, *, surface: Surface = "cli") -> AddressPlan:
     """Validate an address and classify what saving it would change."""
     url = normalize_server_url(raw)
-    settings = get_settings()
+    # Reloaded, not cached: a long-running MCP server must see an address the
+    # CLI saved since it started, or "unchanged" would skip the prompt for a
+    # server this profile has already left.
+    settings = reload_settings()
     effective = settings.sync.server_url or None
-    if effective is not None and effective.rstrip("/") == url:
+    if effective is not None and _same_server(effective, url):
         change: Change = "unchanged"
     elif setting_override(settings.profile, "sync", "server_url") is not None:
         # The environment or a dotenv outranks config.yaml, so a save here
@@ -161,6 +185,19 @@ def plan_server_address(raw: str, *, surface: Surface = "cli") -> AddressPlan:
     return AddressPlan(url=url, change=change, unencrypted=is_unencrypted(url))
 
 
+def _refuse_as_not_moneybin_sync(
+    plan: AddressPlan, surface: Surface, cause: Exception
+) -> NoReturn:
+    # It answered, but not with a device code: most often a mistyped address
+    # that reached some other web server.
+    SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface=surface, outcome="rejected").inc()
+    raise UserError(
+        f"{plan.url} answered, but not as a moneybin-sync server.",
+        code=error_codes.MUTATION_INVALID_INPUT,
+        hint="Check the address, then run login again.",
+    ) from cause
+
+
 def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
     """Bind a client to the planned address, saving it once the server answers."""
     client = _new_client(plan.url)
@@ -173,15 +210,19 @@ def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
             surface=surface, outcome="unreachable"
         ).inc()
         raise
-    except (httpx.HTTPStatusError, ValueError) as e:
-        # It answered, but not with a device code: most often a mistyped
-        # address that reached some other web server.
-        SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface=surface, outcome="rejected").inc()
-        raise UserError(
-            f"{plan.url} answered, but not as a moneybin-sync server.",
-            code=error_codes.MUTATION_INVALID_INPUT,
-            hint="Check the address, then run login again.",
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code < 500:
+            _refuse_as_not_moneybin_sync(plan, surface, e)
+        # A 5xx is the right server failing, not the wrong one: keep the
+        # address, report it as unreachable, and let a retry succeed.
+        SYNC_SERVER_ADDRESS_OUTCOMES.labels(
+            surface=surface, outcome="unreachable"
+        ).inc()
+        raise SyncAPIError(
+            f"sync server at {plan.url} returned {e.response.status_code}"
         ) from e
+    except ValueError as e:
+        _refuse_as_not_moneybin_sync(plan, surface, e)
     settings = get_settings()
     # A token or device code one server issued must never reach another. Not
     # gated on a previously *saved* address: credentials can outlive one that

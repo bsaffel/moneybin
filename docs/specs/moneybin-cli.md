@@ -906,8 +906,12 @@ Three rules keep the file honest:
 - **`profile set` writes only keys that exist, with values the field accepts.**
   A `section.field` that `MoneyBinSettings` does not declare is refused with
   the list of valid fields in that section, and a value the field's type
-  rejects is refused before the file is touched. A write that changes nothing
-  downstream is a bug, not a convenience.
+  rejects is refused before the file is touched. So is a value that breaks a
+  cross-field rule together with the section's other saved values, such as a
+  `matching.review_threshold` above `matching.high_confidence_threshold`;
+  saved, it would fail every later load. A write that changes nothing
+  downstream is a bug, not a convenience. Section names match the environment
+  variables, so the import settings are `import.<field>`.
 - **Secrets never land here.** A field typed as a secret is refused by
   `profile set`, which names `SecretStore`-backed setup instead. The file is
   plain text at the umask default.
