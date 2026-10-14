@@ -1484,6 +1484,7 @@ async def test_real_auto_rule_success_reports_rows_and_aggregate_impact() -> Non
         (accept_id, "approved", True),
         (reject_id, "rejected", True),
     ]
+    assert [row.reason for row in response.data.results] == [None, None]
     assert response.data.applied_count == 2
     assert response.data.auto_rule_impact is not None
     assert response.data.auto_rule_impact.approved == 1
@@ -1528,6 +1529,72 @@ async def test_real_auto_rule_success_reports_rows_and_aggregate_impact() -> Non
         response.data.auto_rule_impact.rule_ids[0],
     )
     assert rejected_backfill is None
+
+
+def _seed_guarded_auto_rule_proposal(pattern: str, matching_rows: int) -> str:
+    """Seed one pending `contains` proposal over `matching_rows` hits."""
+    with get_database(read_only=False) as db:
+        for i in range(matching_rows):
+            db.execute(
+                """
+                INSERT INTO core.fct_transactions (
+                    transaction_id, account_id, transaction_date, amount,
+                    description, source_type
+                ) VALUES (?, 'ACC001', DATE '2026-07-18', -7.00, ?, 'ofx')
+                """,
+                [f"guarded-{i}", f"{pattern} STORE 1111"],
+            )
+        proposal_id = (
+            AutoRuleService(db)
+            ._proposed.insert(  # pyright: ignore[reportPrivateUsage]  # seeding a pre-guard proposal shape
+                merchant_pattern=pattern,
+                match_type="contains",
+                category="Synthetic Category",
+                subcategory=None,
+                category_id=None,
+                status="pending",
+                sample_txn_ids=["guarded-0"],
+                actor="test",
+            )
+            .target_id
+        )
+    assert proposal_id is not None
+    return proposal_id
+
+
+@pytest.mark.parametrize(
+    ("pattern", "matching_rows", "guard_prefix"),
+    [
+        # Long pattern, 40 hits against one trigger: only the breadth guard fires.
+        ("SAMPLE MART", 40, "broad:"),
+        # Short pattern, 5 hits (under the breadth floor): only the length guard.
+        ("SM", 5, "short pattern:"),
+    ],
+)
+async def test_refused_auto_rule_accept_names_its_reason(
+    pattern: str, matching_rows: int, guard_prefix: str
+) -> None:
+    proposal_id = _seed_guarded_auto_rule_proposal(pattern, matching_rows)
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule",
+                decision_id=proposal_id,
+                decision="accept",
+            )
+        ]
+    )
+
+    [row] = response.data.results
+    assert (row.status, row.changed) == ("pending", False)
+    assert row.reason is not None
+    assert row.reason.startswith(guard_prefix)
+    assert "allow_broad=true" in row.reason
+    # The reason is authored text, never the user's pattern echoed back.
+    assert pattern not in row.reason
+    assert response.data.auto_rule_impact is not None
+    assert response.data.auto_rule_impact.skipped == 1
 
 
 def test_auto_rule_reject_forbids_allow_broad() -> None:
