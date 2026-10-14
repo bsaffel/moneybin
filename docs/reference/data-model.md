@@ -391,36 +391,6 @@ account (several `source_origin`s) reduces in a fixed order: `TRUE`, then
 absent (no row at all), then `FALSE`, then `NULL` — one confirmed position
 always outranks a sibling item's silence, zero, or absence.
 
-### `core.dim_unanchored_accounts`
-
-Accounts carrying evidence of holding value with no balance observation at
-all — Requirement 14's candidate set
-([`reports-net-worth-sql-surface.md`](../specs/reports-net-worth-sql-surface.md)),
-stated once and read by both net-worth rungs, both report runners, and
-`moneybin system doctor`. `VIEW`. Grain: `account_id`.
-
-"No balance observation" means no row in `core.fct_balances_daily`, the
-rebuilt spine the net-worth totals sum — not the live `core.fct_balances`
-view. A balance recorded with `accounts balance assert` anchors the account
-only after `moneybin refresh` rebuilds the spine, so the account stays listed,
-and the total stays NULL, until then.
-
-| Column | Type | Description |
-|---|---|---|
-| `account_id` | VARCHAR | FK → `core.dim_accounts` (grain). |
-| `has_holdings` | BOOLEAN | Has an open lot in `core.dim_holdings`. |
-| `has_broker_position` | BOOLEAN | `core.dim_holdings_broker_reported.has_position` is `TRUE`. |
-| `has_transactions` | BOOLEAN | Has any row in `core.fct_transactions`. |
-| `has_investment_transactions` | BOOLEAN | Has any row in `core.fct_investment_transactions`. |
-
-Evidence is read existentially, never by `SUM` — a zero net cash effect is
-never proof of zero cash held, however it was reached. Carries **no**
-eligibility: `include_in_net_worth` and archival are applied by each reader
-at its own date, because the report rungs, the runner fallbacks, and system
-doctor each need that eligibility evaluated at a different point in time. An
-account with no evidence of any kind stays out of this view entirely —
-nothing distinguishes "never funded" from "not yet observed" for it.
-
 ### `core.fct_investment_transactions`
 
 The canonical investment-transaction ledger. Grain: one row per `investment_transaction_id`. `FULL` model (materialized table, not a view — unlike `fct_transactions`). Unions manual entry, Plaid transactions, and the Plaid opening-lot bootstrap (a reconstruction of pre-import-window lots, carrying the non-user-authorable `subtype = 'opening_bootstrap'` so it's always distinguishable from a real transfer).
@@ -814,7 +784,7 @@ ORDER BY balance_date DESC
 LIMIT 1;
 ```
 
-Use `reports.net_worth` for the snapshot; `reports.net_worth_accounts` for per-account detail. Reach down to `core.fct_balances_daily` only when you want to apply non-default account filters (e.g., include archived accounts) that the two views' own eligibility filter excludes.
+Use `reports.net_worth` for the snapshot; `reports.net_worth_accounts` for per-account detail. Reach down to `core.fct_balances_daily` only when you want a filter other than its `in_net_worth` column, for example to include archived accounts, and count its NULL `balance` rows before trusting a sum.
 
 ### Splits-sum invariant
 
