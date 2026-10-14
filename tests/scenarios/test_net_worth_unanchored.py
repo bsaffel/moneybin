@@ -174,7 +174,7 @@ def _invariant(db: Database, name: str) -> InvariantResult:
 
 
 def test_mixed_profile_guard() -> None:
-    """Tier 2 scenarios 1, 2, 5, 6, 7, 8, 9 on one mixed profile."""
+    """Tier 2 scenarios 1, 2, 5, 6, 7, 8, 9; Tier 3 'not for an excluded account' (S9)."""
     scenario = load_shipped_scenario("networth-correctness")
     assert scenario is not None
     with scenario_env(scenario) as (db, _tmp, env):
@@ -373,7 +373,7 @@ def test_mixed_profile_guard() -> None:
 
 
 def test_wholly_unanchored_profile_guard() -> None:
-    """Tier 2 scenarios 3, 4, 11; Tier 3 'fails the gate' / 'not for an excluded account'."""
+    """Tier 2 scenarios 3, 4, 11; Tier 3 'fails the gate'."""
     scenario = load_shipped_scenario("networth-correctness")
     assert scenario is not None
     with scenario_env(scenario) as (db, _tmp, env):
@@ -442,8 +442,10 @@ def test_wholly_unanchored_profile_guard() -> None:
         # last date anything counts: the unranged reads land there, count 2,
         # total withheld, never an empty "no net worth". The range
         # archived_on-30..archived_on+10 returns the 31 dates through
-        # archived_on. Nothing counts on the spine's last date (today), so the
-        # doctor passes.
+        # archived_on. The doctor reads that same date: the spine still ends
+        # today (w_broker's broker as_of), but archived_on is the newest date
+        # anything counts, and both rows there are NULL (COUNT(balance) = 0
+        # above), so the check fails naming both.
         archived_on = today - timedelta(days=40)
         _archive_on(db, "w_broker", archived_on)
         _archive_on(db, "w_cash", archived_on)
@@ -472,7 +474,9 @@ def test_wholly_unanchored_profile_guard() -> None:
         ]
         assert all(r["unanchored_account_count"] == 2 for r in hist)
         assert all(r["net_worth"] is None for r in hist)
-        assert _invariant(db, "net_worth_unanchored_accounts").status == "pass"
+        result = _invariant(db, "net_worth_unanchored_accounts")
+        assert result.status == "fail"
+        assert sorted(result.affected_ids) == ["account:w_broker", "account:w_cash"]
 
 
 def test_liquidated_investment_accounts_still_fail_the_guard() -> None:

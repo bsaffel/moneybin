@@ -2068,18 +2068,20 @@ class DoctorService:
 
         `fail`, because each one makes the net-worth total NULL: the account
         contributes nothing, and the release bar says a total is right or
-        visibly incomplete. Read on the spine's last date, which every account
-        runs to, so an account archived on or after that date still counts and
-        a closed account's pre-archive history does not.
+        visibly incomplete. Read on the newest date any account counts, the date
+        reports.net_worth's unranged read lands on, so a closed account's
+        pre-archive history does not keep it red once a later date counts.
         """
         name = "net_worth_unanchored_accounts"
         try:
             rows = self._db.execute(
                 f"""
-                SELECT DISTINCT d.account_id
+                SELECT d.account_id
                 FROM {FCT_BALANCES_DAILY.full_name} AS d
                 WHERE d.balance_date = (
-                    SELECT MAX(balance_date) FROM {FCT_BALANCES_DAILY.full_name}
+                    SELECT MAX(balance_date)
+                    FROM {FCT_BALANCES_DAILY.full_name}
+                    WHERE in_net_worth
                 )
                   AND d.in_net_worth
                   AND d.balance IS NULL
@@ -2117,9 +2119,9 @@ class DoctorService:
         Each account's OWN latest observed row, compared against today — never
         a shared balance_date = CURRENT_DATE filter, which finds nothing when
         every account has gone stale together. Scoped to the accounts that count
-        toward net worth with a known balance on the spine's last date; an
-        unknown balance is net_worth_unanchored_accounts' to report. `warn`: the
-        balance still counts; it is aging, not wrong.
+        toward net worth with a known balance on the newest date any account
+        counts; an unknown balance is net_worth_unanchored_accounts' to report.
+        `warn`: the balance still counts; it is aging, not wrong.
         """
         name = "net_worth_stale_balance"
         threshold = get_settings().doctor.balance_staleness_threshold_days
@@ -2130,7 +2132,9 @@ class DoctorService:
                     SELECT c.account_id
                     FROM {FCT_BALANCES_DAILY.full_name} AS c
                     WHERE c.balance_date = (
-                        SELECT MAX(balance_date) FROM {FCT_BALANCES_DAILY.full_name}
+                        SELECT MAX(balance_date)
+                        FROM {FCT_BALANCES_DAILY.full_name}
+                        WHERE in_net_worth
                     )
                       AND c.in_net_worth
                       AND c.balance IS NOT NULL

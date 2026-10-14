@@ -2816,6 +2816,33 @@ def test_unanchored_accounts_reads_the_spines_last_date_not_today(
 
 
 @pytest.mark.unit
+def test_unanchored_accounts_reads_the_newest_counting_date_not_the_spine_end(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Archived 5 days ago, so nothing counts at the spine end; it counts until then."""
+    _net_worth_guard_ddl(db)
+    _spine_row(db, "brk", 5, balance=None)
+    _spine_row(db, "brk", 0, balance=None, in_net_worth=False)
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:brk"]
+
+
+@pytest.mark.unit
+def test_stale_balance_reads_the_newest_counting_date_not_the_spine_end(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An excluded account ends the spine today; the counted one last counts 5 days ago."""
+    _net_worth_guard_ddl(db)
+    _spine_row(db, "a", 45, observed=True)
+    _spine_row(db, "a", 5)
+    _spine_row(db, "out", 0, observed=True, in_net_worth=False)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert result.affected_ids == ["account:a"]
+
+
+@pytest.mark.unit
 def test_stale_balance_reads_the_spines_last_date_not_today(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

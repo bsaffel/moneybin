@@ -177,17 +177,21 @@ it is edited.
      row is NULL when an account counted on it has no balance observation.
 7. **The doctor checks read the spine, not a `reports` view.**
    - **`net_worth_unanchored_accounts` (`fail`):** returns the accounts with a
-     NULL `balance` and `in_net_worth` TRUE on the spine's last date. On that
-     date this matches today's eligibility, which applies the archive date to
-     the latest `reports.net_worth` date.
+     NULL `balance` and `in_net_worth` TRUE on the latest date on which any
+     account counts toward net worth (`MAX(balance_date)` over the rows with
+     `in_net_worth` TRUE). That is the date an unranged `reports.net_worth`
+     read lands on, so the check reads the same total the user sees. It equals
+     the spine's last date unless every account that counts was archived
+     before it; then it is the newest archive date, and an account with no
+     balance observation on it still fails the check.
    - **`net_worth_stale_balance` (`warn`):** looks at the accounts that have
-     `in_net_worth` TRUE and a known balance on the spine's last date. For each
+     `in_net_worth` TRUE and a known balance on that same date. For each
      one it measures age as `CURRENT_DATE` minus its latest observed
      `balance_date`, against the same `doctor.balance_staleness_threshold_days`.
      Before this change the check excluded accounts that are archived now. This
-     version excludes accounts archived before the spine's last date. The two
-     differ only for an account archived on or after that date, which still
-     counts in the latest total and is now checked as well.
+     version excludes accounts archived before that date. The two differ only
+     for an account archived on or after that date, which still counts in the
+     latest total and is now checked as well.
    - **Unchanged:** both checks keep their gauges
      (`NET_WORTH_UNANCHORED_ACCOUNTS`, `NET_WORTH_STALE_BALANCE_ACCOUNTS`), their
      masked `affected_ids`, and `skipped` when the table is absent.
@@ -544,7 +548,8 @@ differ only in `ingestion_sequence`.
 **Doctor** (`tests/moneybin/test_services/test_doctor_service.py`):
 
 - both checks against the spine, including the archive-date boundary on the
-  spine's last date;
+  latest date on which any account counts, and a profile where that date is
+  earlier than the spine's last date;
 - a source scan asserts neither check reads a `reports.*` relation.
 
 **Balance surfaces** (`test_balance_service.py`, `test_accounts_balance.py`,
