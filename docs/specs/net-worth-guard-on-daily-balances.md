@@ -1,7 +1,7 @@
 # Feature: Net-Worth Guard on the Daily Balance Spine
 
 ## Status
-in-progress
+implemented
 
 ## Goal
 
@@ -73,9 +73,10 @@ all follow from having one.
 
 M2B.3 merged in PR #650 and has not been released (`CHANGELOG.md` names no
 `dim_unanchored_accounts`). The changelog fragments
-`changelog.d/+net-worth-unanchored-guard.added.md` and
-`+net-worth-unanchored-guard.changed.md` are therefore rewritten to describe
-the final behavior. No released contract changes.
+`changelog.d/+net-worth-unanchored-guard.added.md` is therefore rewritten to
+describe the final behavior; its `.changed.md` sibling, which records only the
+`unanchored_account_count` column position, stays. No released contract
+changes.
 
 ## What this supersedes in `reports-net-worth-sql-surface.md`
 
@@ -105,6 +106,11 @@ it is edited.
      `core.fct_investment_lots` is built only from
      `core.fct_investment_transactions`, and each lot carries the ledger row's
      `account_id` (`investments/sqlmesh_loader.py:109`).
+   - **A bootstrap trade is evidence.** A Plaid position with no in-window
+     trades gets an opening-lot trade (`prep.stg_plaid__opening_lots`), dated
+     one day before the transaction window starts. That row sits in
+     `core.fct_investment_transactions`, so it counts as a trade and its
+     account's NULL rows start on that date, not on the snapshot's `as_of`.
    - **An account with no observation** gets rows with `balance` NULL,
      `is_observed` FALSE, and NULL `observation_source` and
      `reconciliation_delta`.
@@ -126,7 +132,8 @@ it is edited.
      silent in exactly the case it exists for.
    - **No cap at today:** the end is never limited to `CURRENT_DATE`, which
      keeps the FULL model deterministic. A future-dated transaction extends the
-     spine.
+     spine: one transaction dated years ahead gives every account a row on every
+     day up to it, and moves the latest date of every rung to that date.
    - **Behavior change:** an anchored account whose transactions run past the
      newest statement is carried forward to the newest transaction, with those
      transactions applied. The existing carry-forward walk already does this
@@ -164,6 +171,10 @@ it is edited.
      it. The account had no evidence then.
    - **After the spine end:** a range gets no rows at all, so no total is
      reported for it.
+   - **Every account archived:** an unranged read returns the newest date on
+     which any account still counts, not an empty result, because the rungs
+     filter `in_net_worth` before taking the latest date. The total on that
+     row is NULL when an account counted on it has no balance observation.
 7. **The doctor checks read the spine, not a `reports` view.**
    - **`net_worth_unanchored_accounts` (`fail`):** returns the accounts with a
      NULL `balance` and `in_net_worth` TRUE on the spine's last date. On that
@@ -171,12 +182,12 @@ it is edited.
      the latest `reports.net_worth` date.
    - **`net_worth_stale_balance` (`warn`):** looks at the accounts that have
      `in_net_worth` TRUE and a known balance on the spine's last date. For each
-     one it compares `MAX(balance_date) FILTER (WHERE is_observed)` with
-     `CURRENT_DATE`, against the same `doctor.balance_staleness_threshold_days`.
-     Today the check excludes accounts that are archived now. This version
-     excludes accounts whose archive date falls on or before the spine's last
-     date. The two differ only for an account archived after that date, which
-     still counts in the latest total and is now checked as well.
+     one it measures age as `CURRENT_DATE` minus its latest observed
+     `balance_date`, against the same `doctor.balance_staleness_threshold_days`.
+     Before this change the check excluded accounts that are archived now. This
+     version excludes accounts archived before the spine's last date. The two
+     differ only for an account archived on or after that date, which still
+     counts in the latest total and is now checked as well.
    - **Unchanged:** both checks keep their gauges
      (`NET_WORTH_UNANCHORED_ACCOUNTS`, `NET_WORTH_STALE_BALANCE_ACCOUNTS`), their
      masked `affected_ids`, and `skipped` when the table is absent.
@@ -188,11 +199,12 @@ it is edited.
    filter on it. `investments/source_overlap.py` ranks transaction receipts,
    not snapshots, and stays as is.
 9. **The other spine readers handle a NULL balance correctly.**
-   - **`BalanceService`** (`current_balances`, `history`): returns
-     `balance: Decimal | None`. The `accounts balance` CLI renders "no balance
-     recorded" and the MCP `accounts_balances` schema marks `balance` nullable.
-     `reconcile` filters on `reconciliation_delta IS NOT NULL`, so it never
-     sees these rows.
+   - **`BalanceService`** (`current_balances`, `history`): passes the NULL
+     through; `BalanceObservationRow.balance` is `Decimal | None`. The
+     `accounts balance` CLI (`show`, `history`) renders "no balance recorded",
+     and the MCP `accounts_balances` description says `balance` is null for an
+     account that holds value but has no recorded balance. `reconcile` filters
+     on `reconciliation_delta IS NOT NULL`, so it never sees these rows.
    - **The export bundle `balances_daily`:** carries the NULL rows and the new
      column, with a refreshed bundle snapshot.
    - **Checked, no change needed:**
@@ -279,9 +291,14 @@ not a second walk:
 4. For each account with evidence and no observations, emit NULL-balance rows
    from its first evidence date to the spine end.
 5. Stamp `in_net_worth` on every row from that account's last counting date
-   (Requirement 4).
+   (Requirement 4). The "never" and "no end" values are the inline
+   `date.min` and `date.max`: SQLMesh serialises every module global a Python
+   model reaches and cannot serialise a module-level date.
 6. When there are no observations and no evidence at all, yield nothing, as
    today.
+
+The walk is split into pure functions (`_build_spine_rows`, `_evidence_sql`,
+`_counts_through`), so its unit tests run without SQLMesh.
 
 ### `prep.stg_plaid__investment_holdings_snapshots`
 
@@ -325,11 +342,12 @@ map in `reports/definitions/` gains or keeps `unanchored_account_count` as
 
 ### Files to Create
 
-- `changelog.d/+net-worth-guard-currency-rung.changed.md`, covering:
-  - the currency rung's new column and NULL rule;
-  - `core.fct_balances_daily.in_net_worth`;
-  - NULL-balance rows in `core.fct_balances_daily` and the `balances_daily`
-    export.
+- `changelog.d/+net-worth-guard-currency-rung.changed.md`: the currency rung's
+  new column and NULL rule.
+- `changelog.d/+net-worth-guard-balance-spine.changed.md`:
+  `core.fct_balances_daily.in_net_worth`, NULL-balance rows, the new spine end,
+  and the `balances_daily` export, `accounts balance` and `accounts_balances`
+  surfaces that carry them.
 
 ### Files to Modify
 
@@ -358,16 +376,20 @@ map in `reports/definitions/` gains or keeps `unanchored_account_count` as
 - `src/moneybin/reports/definitions/net_worth_currencies.py`: the new column,
   its class, and the `exclusions` text.
 - `src/moneybin/reports/definitions/_shared.py`: deletes
-  `unanchored_candidates_ctes`.
+  `unanchored_candidates_ctes`; `DateRange` loses `from_bound`, `to_bound` and
+  `is_ranged`, which only the deleted synthesis read.
 
 **Doctor**
 - `src/moneybin/services/doctor_service.py`: the two net-worth checks
   (Requirement 7) and `is_newest` in place of `_NEWEST_HOLDINGS_SNAPSHOT_CTE`.
 
 **Balance surfaces**
-- `src/moneybin/services/balance_service.py`,
-  `src/moneybin/privacy/payloads/balances.py` and
+- `src/moneybin/privacy/payloads/balances.py` (`balance` becomes nullable) and
   `src/moneybin/cli/commands/accounts/balance.py`: Requirement 9.
+  `src/moneybin/services/balance_service.py` needs no code change; it passes
+  the NULL through.
+- `src/moneybin/mcp/tools/accounts.py`: the `accounts_balances` description
+  gains the null-balance sentence (1,098 to 1,177 serialized bytes).
 
 **Bookkeeping**
 - `src/moneybin/database.py`: the `core.fct_balances_daily` column set.
@@ -377,14 +399,32 @@ map in `reports/definitions/` gains or keeps `unanchored_account_count` as
 - `src/moneybin/tables.py`: removes `DIM_UNANCHORED_ACCOUNTS`.
 
 **Changelog and docs**
-- `changelog.d/+net-worth-unanchored-guard.added.md` and `.changed.md`: rewritten
-  to the final behavior (§Unshipped state).
+- `changelog.d/+net-worth-unanchored-guard.added.md`: rewritten to the final
+  behavior (§Unshipped state); `.changed.md` is unchanged.
 - `docs/specs/reports-net-worth-sql-surface.md`: a one-line Status pointer.
 - `docs/specs/INDEX.md`: a new row for this spec.
 - `docs/roadmap.md`: the M2B.4 entry.
+- `docs/specs/moneybin-doctor.md`: the two net-worth check rows and their
+  pointer to this spec.
+- `docs/specs/document-account-binding.md` and
+  `tests/moneybin/test_architecture/test_table_reference_literals.py`: prose
+  that named the deleted `_NEWEST_HOLDINGS_SNAPSHOT_CTE`.
+- `docs/reference/data-model.md`: the `core.fct_balances_daily` section, and the
+  `core.dim_unanchored_accounts` section removed.
+- `docs/reference/cli/reports.md` and `docs/reference/mcp-tools.md`: generated
+  from the report and tool definitions.
+- `docs/decisions/016-bounded-mcp-tool-registry.md` and
+  `docs/specs/mcp-tool-surface-scaling.md`: the quoted `standard.json`
+  measurements (64,363 bytes, a -26,476-byte delta against the baseline).
 
 **Tests**
 - §Testing Strategy.
+- `tests/fixtures/mcp_surface/standard.json` (regenerated) and the
+  `accounts_balances` byte pin in
+  `tests/moneybin/test_mcp/test_tool_surface_budget.py`.
+- `tests/moneybin/test_mcp/test_capability_parity.py` and
+  `tests/e2e/test_e2e_reports.py`: stubs for the spine's `in_net_worth` and the
+  currency rung's `unanchored_account_count`.
 
 ### Files to Delete
 
@@ -438,12 +478,15 @@ The doctor check names and messages are unchanged.
 
 No tools are added or renamed.
 
-- **`accounts_balances`:** each observation's `balance` becomes nullable.
+- **`accounts_balances`:** each observation's `balance` becomes nullable, and
+  the description says so.
 - **`reports(report_id="core:net_worth_currencies")`:** gains
   `unanchored_account_count`.
-- **The MCP surface baseline fixture** (`tests/fixtures/mcp_surface/`):
-  regenerated. Its comparison test is integration-tier, so `make test` does not
-  catch it.
+- **The MCP surface snapshot** (`tests/fixtures/mcp_surface/standard.json`):
+  regenerated, because the `accounts_balances` description grew. The frozen
+  `baseline-2026-07-17.json` is unchanged; it is the historical figure the
+  budget tests compare against. The snapshot's comparison test is
+  integration-tier, so `make test` does not catch it.
 
 ## Testing Strategy
 

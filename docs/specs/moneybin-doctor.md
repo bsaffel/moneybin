@@ -112,7 +112,7 @@ Remedy: `moneybin refresh --step match --step transform` proposes the pairs and 
 | `net_worth_unanchored_accounts` | `fail`. Accounts with a NULL `balance` and `in_net_worth` TRUE on the last date of `core.fct_balances_daily`: they count toward net worth on that date and hold value (a transaction, a trade, or a broker-reported position), but have no balance observation. Each one makes `reports.net_worth`'s total NULL. `affected_ids` are masked `account:<id>` entries. Sets the `moneybin_net_worth_unanchored_accounts` gauge. Clears after `moneybin refresh` once a balance is recorded, the account is excluded, or it is archived before the spine's last date. |
 | `net_worth_stale_balance` | `warn`. Accounts with `in_net_worth` TRUE and a known balance on the spine's last date whose most recent observed balance is more than `doctor.balance_staleness_threshold_days` (default 30) days before today. Compares each account's own latest observed row, never a shared date. Warns only: the balance still counts toward the total. `affected_ids` are masked `account:<id>` entries. Sets the `moneybin_net_worth_stale_balance_accounts` gauge. |
 
-See [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md) §`moneybin system doctor` for the derivation of both checks.
+See [`net-worth-guard-on-daily-balances.md`](net-worth-guard-on-daily-balances.md) Requirement 7 for the derivation of both checks.
 
 ### Investment reconciliation (M1G.4)
 

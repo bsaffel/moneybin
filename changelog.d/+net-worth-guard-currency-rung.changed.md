@@ -1,0 +1,1 @@
+`reports.net_worth_currencies` gains `unanchored_account_count` between `carried_forward_count` and `total_assets` (a column position change per `.claude/rules/column-ordering.md`), and every measure on a currency row is NULL while that count is above 0.
