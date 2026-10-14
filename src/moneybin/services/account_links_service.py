@@ -79,6 +79,11 @@ class AccountLinkAcceptImpact:
     #: be deterministic and the prompt never needs the values.
     settings_moved: tuple[str, ...] = ()
     settings_kept: tuple[str, ...] = ()
+    #: ``(account_id, updated_at ISO | None)`` for the absorbed and survivor
+    #: settings rows, sorted. Bound but never rendered: a moved value can change
+    #: while the moved/kept names stay identical, and every settings write
+    #: restamps ``updated_at``, so this catches the edit the names cannot.
+    settings_revision: tuple[tuple[str, str | None], ...] = ()
 
 
 #: Settings the surviving account inherits from the absorbed one when it has
@@ -392,6 +397,20 @@ class AccountLinksService:
             settings_kept=settings.kept,
         )
 
+    def settings_revision(
+        self, absorbed_account_id: str, survivor_account_id: str
+    ) -> tuple[tuple[str, str | None], ...]:
+        """Stored ``updated_at`` of both settings rows, sorted by account id.
+
+        Reads the stored rows, never a batch's in-flight survivor image.
+        """
+        revision: list[tuple[str, str | None]] = []
+        for account_id in sorted({absorbed_account_id, survivor_account_id}):
+            row = self._settings.load(account_id)
+            stamp = row.get("updated_at") if row else None
+            revision.append((account_id, None if stamp is None else stamp.isoformat()))
+        return tuple(revision)
+
     def plan_settings(
         self,
         absorbed_account_id: str,
@@ -588,6 +607,7 @@ class AccountLinksService:
             manual_identity=tuple(manual_identity),
             settings_moved=settings.moved,
             settings_kept=settings.kept,
+            settings_revision=self.settings_revision(provisional_id, target_account_id),
         )
 
     # ------------------------------------------------------------------

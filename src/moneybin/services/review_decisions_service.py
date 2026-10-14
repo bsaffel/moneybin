@@ -683,7 +683,15 @@ class ReviewDecisionsService:
                 "accepted_links": links,
                 "manual_identity": manual_identity,
                 "lot_selections": selections,
-                "settings": {"moved": settings.moved, "kept": settings.kept},
+                "settings": {
+                    "moved": settings.moved,
+                    "kept": settings.kept,
+                    # Bound, never rendered: catches a moved value edited while
+                    # the confirmation was open (names alone cannot).
+                    "revision": service.settings_revision(source_id, target_id)
+                    if material_accept
+                    else (),
+                },
             }),
             affected_ids={
                 "accounts": tuple(dict.fromkeys((source_id, target_id)))

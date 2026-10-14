@@ -15,7 +15,9 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_mock import MockerFixture
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.mcp.tools import accounts as mcp_accounts
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.protocol.write_contracts import (
@@ -621,3 +623,143 @@ def test_a_batch_plans_each_merge_against_the_survivor_the_earlier_ones_leave(
     assert survivor["display_name"] == "First Name"
     assert survivor["holder_category"] == "joint"
     assert survivor["credit_limit"] == Decimal("700.00")
+
+
+# -- A moved value edited while the confirmation is open ----------------------
+# credit_limit stays "moved" across the edit, so only a bound revision of the
+# settings rows can see it. Each test approves, edits, and expects the surface's
+# own mismatch refusal with nothing written to the survivor.
+
+
+def _edit_absorbed_limit_after_preview(db: Database) -> None:
+    _put(db, _ABSORBED, credit_limit=Decimal("500"))
+
+
+def _edit_absorbed_limit_during_confirmation(db: Database) -> None:
+    _put(db, _ABSORBED, credit_limit=Decimal("5000"))
+
+
+def test_the_revision_moves_when_a_moved_value_changes_but_the_names_do_not(
+    svc: AccountLinksService, db: Database
+) -> None:
+    _edit_absorbed_limit_after_preview(db)
+    before = svc.accept_impact(_DECISION, target_account_id=_SURVIVOR)
+
+    _edit_absorbed_limit_during_confirmation(db)
+    after = svc.accept_impact(_DECISION, target_account_id=_SURVIVOR)
+
+    assert before.settings_moved == after.settings_moved == ("credit_limit",)
+    assert before.settings_revision != after.settings_revision
+    assert [account for account, _ in after.settings_revision] == sorted([
+        _ABSORBED,
+        _SURVIVOR,
+    ])
+    assert dict(after.settings_revision)[_SURVIVOR] is None
+
+
+def test_the_mcp_grant_refuses_a_moved_value_edited_after_approval(
+    svc: AccountLinksService, db: Database
+) -> None:
+    from moneybin.mcp.confirmation import ConfirmationBroker
+
+    _edit_absorbed_limit_after_preview(db)
+    previewed = svc.accept_impact(_DECISION, target_account_id=_SURVIVOR)
+    broker = ConfirmationBroker(ttl_seconds=60)
+    now = datetime.now()
+    token = broker.issue(
+        mcp_accounts._account_link_binding(  # pyright: ignore[reportPrivateUsage]  # test exercises confirmation seam
+            decision_id=_DECISION, target_account_id=_SURVIVOR, impact=previewed
+        ),
+        now=now,
+    )
+    grant = broker.consume(token, now=now)
+    _edit_absorbed_limit_during_confirmation(db)
+
+    def verify(impact: Any) -> None:
+        grant.verify(
+            mcp_accounts._account_link_binding(  # pyright: ignore[reportPrivateUsage]  # test exercises confirmation seam
+                decision_id=_DECISION, target_account_id=_SURVIVOR, impact=impact
+            )
+        )
+
+    with pytest.raises(UserError) as excinfo:
+        svc.set(
+            _DECISION,
+            target_account_id=_SURVIVOR,
+            decided_by="user",
+            verify_accept=verify,
+        )
+
+    assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert _row(db, _SURVIVOR) is None
+    assert _decision_status(db, _DECISION) == "pending"
+
+
+def test_the_cli_drift_check_refuses_a_moved_value_edited_after_approval(
+    svc: AccountLinksService, db: Database
+) -> None:
+    from moneybin.cli.commands.accounts import links as cli_links
+
+    _edit_absorbed_limit_after_preview(db)
+    previewed = svc.accept_impact(_DECISION, target_account_id=_SURVIVOR)
+    plan = cli_links._plan_merge(db, _DECISION, _SURVIVOR)  # pyright: ignore[reportPrivateUsage]  # test exercises the drift seam
+    approved = cli_links._ApprovedMerge(  # pyright: ignore[reportPrivateUsage]  # test exercises the drift seam
+        sentence=plan.blast_radius,
+        links=previewed.link_ids,
+        decisions=previewed.decision_ids,
+        lot_selections_before=previewed.lot_selections_before,
+        lot_selections_after=previewed.lot_selections_after,
+        manual_identity=previewed.manual_identity,
+        settings_moved=previewed.settings_moved,
+        settings_kept=previewed.settings_kept,
+        settings_revision=previewed.settings_revision,
+    )
+    _edit_absorbed_limit_during_confirmation(db)
+
+    with pytest.raises(UserError) as excinfo:
+        svc.set(
+            _DECISION,
+            target_account_id=_SURVIVOR,
+            decided_by="user",
+            verify_accept=cli_links._drift_check(db, _DECISION, approved),  # pyright: ignore[reportPrivateUsage]  # test exercises the drift seam
+        )
+
+    assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert _row(db, _SURVIVOR) is None
+    assert _decision_status(db, _DECISION) == "pending"
+
+
+def test_the_identity_batch_binding_refuses_a_moved_value_edited_after_approval(
+    svc: AccountLinksService, db: Database
+) -> None:
+    from moneybin.mcp.tools import reviews as mcp_reviews
+
+    _edit_absorbed_limit_after_preview(db)
+    requests: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=_DECISION,
+            decision="accept",
+            target_id=_SURVIVOR,
+        )
+    ]
+    reviews = ReviewDecisionsService(db, actor="mcp")
+    approved = mcp_reviews._identity_binding(  # pyright: ignore[reportPrivateUsage]  # test exercises confirmation seam
+        requests, reviews.plan_identity(requests)
+    )
+    _edit_absorbed_limit_during_confirmation(db)
+
+    def verify(plan: Any) -> None:
+        live = mcp_reviews._identity_binding(requests, plan)  # pyright: ignore[reportPrivateUsage]  # test exercises confirmation seam
+        if live.canonical_bytes() != approved.canonical_bytes():
+            raise UserError(
+                "Identity-link state changed after preflight.",
+                code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+            )
+
+    with pytest.raises(UserError) as excinfo:
+        reviews.apply_identity(requests, verify=verify)
+
+    assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert _row(db, _SURVIVOR) is None
+    assert _decision_status(db, _DECISION) == "pending"

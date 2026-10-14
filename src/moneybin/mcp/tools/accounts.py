@@ -670,6 +670,7 @@ def _account_link_binding(
             "manual_identity": [list(row) for row in impact.manual_identity],
             "settings_moved": list(impact.settings_moved),
             "settings_kept": list(impact.settings_kept),
+            "settings_revision": [list(row) for row in impact.settings_revision],
         },
         resolved_ids=(
             impact.provisional_account_id,

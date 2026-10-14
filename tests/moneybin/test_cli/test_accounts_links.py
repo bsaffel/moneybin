@@ -992,6 +992,31 @@ class TestLinksSet:
         assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
 
     @patch("moneybin.cli.commands.accounts.links._plan_merge")
+    def test_drift_refusal_catches_an_edit_the_moved_names_cannot_see(
+        self, mock_plan: MagicMock
+    ) -> None:
+        """A moved value edited while the prompt was open keeps its name moved."""
+        mock_plan.return_value = _merge_plan(transactions=("t1",))
+        approved = replace(
+            _approved_merge(),
+            settings_moved=("credit_limit",),
+            settings_revision=(("CAND001", None), ("PROV1", "2026-01-01T00:00:00")),
+        )
+        verify = _drift_check(MagicMock(), "dec001", approved)
+        assert verify is not None
+
+        drifted = replace(
+            _accept_impact(),
+            settings_moved=("credit_limit",),
+            settings_revision=(("CAND001", None), ("PROV1", "2026-01-02T00:00:00")),
+        )
+
+        with pytest.raises(UserError) as excinfo:
+            verify(drifted)
+
+        assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+
+    @patch("moneybin.cli.commands.accounts.links._plan_merge")
     def test_drift_refusal_catches_a_swap_that_leaves_every_count_intact(
         self, mock_plan: MagicMock
     ) -> None:
