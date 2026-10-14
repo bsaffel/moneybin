@@ -21,8 +21,8 @@
 <!-- markdownlint-enable MD033 MD041 -->
 
 Bring bank exports, linked accounts, and spreadsheets together to track spending,
-find recurring charges, and follow your net worth. The CLI and MCP server read the
-same tables; the SQL behind each report is available to inspect.
+find recurring charges, and follow your net worth. The CLI and 50-tool MCP server
+read the same tables; the SQL behind each report is available to inspect.
 
 <!-- markdownlint-disable MD033 -->
 <picture>
