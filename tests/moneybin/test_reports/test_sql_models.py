@@ -412,6 +412,31 @@ def test_balance_drift_without_reconciliation_adjustment_uses_daily_balance(
     assert row == (Decimal("1200.00"), Decimal("0.00"), "clean")
 
 
+def test_balance_drift_ignores_an_unanchored_account(model_db: Database) -> None:
+    """A NULL spine row has no assertion date to join, so drift never sees it."""
+    _install_balance_drift_sources(model_db)
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES (?, ?, ?)
+        """,
+        ["checking", "2026-04-01", Decimal("1200.00")],
+    )
+    for row in (
+        ["checking", "2026-04-01", Decimal("1200.00"), False, None, "USD"],
+        ["brokerage", "2026-04-01", None, False, None, "USD"],
+    ):
+        model_db.execute(
+            "INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?, ?)", row
+        )
+    _install_report(model_db, "balance_drift")
+
+    rows = model_db.execute(
+        "SELECT computed_balance, drift, status FROM reports.balance_drift"
+    ).fetchall()
+    assert rows == [(Decimal("1200.00"), Decimal("0.00"), "clean")]
+
+
 def test_balance_drift_first_observation_has_no_independent_position(
     model_db: Database,
 ) -> None:

@@ -69,6 +69,22 @@ def _insert_ofx_balance(
     )
 
 
+def _insert_ofx_transaction(
+    db: Database, *, txn_id: str, account_id: str, on_date: str, currency_code: str
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_transactions
+            (source_transaction_id, account_id, transaction_type, date_posted,
+             amount, payee, source_file, extracted_at, source_type,
+             source_origin, currency_code)
+        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, -5.00, 'Test Payee',
+                'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
+        """,  # test fixture, not executing user SQL
+        [txn_id, account_id, on_date, currency_code],
+    )
+
+
 @pytest.fixture(scope="module")
 def fct_exchange_rates_daily_db(
     tmp_path_factory: pytest.TempPathFactory,
@@ -185,6 +201,17 @@ def fct_exchange_rates_daily_db(
         balance="50.00",
         currency_code="EUR",
         extracted_at="2026-01-10 09:00:00",
+    )
+
+    # An unanchored account: a transaction, no balance. Its NULL spine rows
+    # must not break or widen the rate spine (Requirement 9).
+    _insert_ofx_account(db, account_id="acct_unanchored")
+    _insert_ofx_transaction(
+        db,
+        txn_id="txn_unanchored",
+        account_id="acct_unanchored",
+        on_date="2026-01-07",
+        currency_code="DDD",
     )
 
     with sqlmesh_context(db) as ctx:
@@ -362,6 +389,33 @@ def test_two_providers_on_one_day_resolve_by_freshest_write(
     assert float(row[0]) == pytest.approx(3.1000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert row[1] == "provider"
     assert row[2] == "exchangerate_host"
+
+
+@pytest.mark.slow
+def test_a_null_balance_row_leaves_the_identity_domain_unchanged(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """An unanchored account's NULL spine rows neither break nor widen the rate spine."""
+    # Hand-derived: first evidence is the 01-07 transaction; the spine runs to the
+    # newest evidence date in the profile, the 01-14 balance observation.
+    null_rows = fct_exchange_rates_daily_db.execute(
+        "SELECT CAST(balance_date AS VARCHAR), balance, is_observed, in_net_worth "
+        "FROM core.fct_balances_daily WHERE account_id = 'acct_unanchored' "
+        "ORDER BY balance_date"
+    ).fetchall()
+    assert [r[0] for r in null_rows] == [f"2026-01-{day:02d}" for day in range(7, 15)]
+    assert all(r[1:] == (None, False, True) for r in null_rows)
+    bounds = fct_exchange_rates_daily_db.execute(
+        "SELECT MIN(effective_date), MAX(effective_date), COUNT(*) "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'DDD' AND to_currency = 'DDD'"
+    ).fetchone()
+    assert bounds is not None
+    assert (str(bounds[0]), str(bounds[1]), bounds[2]) == (
+        "2026-01-01",
+        "2026-01-14",
+        14,
+    )
 
 
 @pytest.mark.slow
