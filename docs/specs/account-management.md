@@ -48,6 +48,7 @@ Related specs and docs:
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
 13. **Idempotent settings writes.** `accounts set` always upserts into `app.account_settings`. Setting the same value twice is a no-op (no error).
 14. **PII handling for `last_four` and `credit_limit`.** `last_four` is a 4-digit string (validated `^[0-9]{4}$`). `credit_limit` is `DECIMAL(18,2)`. Neither flows through logger output (logger only records the `account_id` and the affected fields by name). The full account number never enters the system.
+15. **Settings follow an accepted account merge.** When an account link is accepted, the survivor inherits the absorbed account's settings under one rule: the surviving account wins, the duplicate fills gaps. `display_name`, `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`, `default_cost_basis_method`, and `investment_source_type` move when only the absorbed account has a value, stay when only the survivor has one, and stay with the survivor when both differ. `archived`, `archived_at`, and `include_in_net_worth` never move: a duplicate is usually archived or excluded before it is merged, and carrying that over would hide or uncount the real account. The absorbed row is untouched, the write is audited under the merge's operation so undo reverses it, and the merge confirmation lists what moves. See [`account-identity-resolution.md`](account-identity-resolution.md#settings-follow-an-accepted-merge).
 
 ## Data Model
 

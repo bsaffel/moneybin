@@ -158,6 +158,12 @@ def _insert_rate_fixture(db: Database, *, window_end: date) -> None:
         """,  # same spine, minus the deliberate gap dates
         [_GBP_USD, _RATE_WINDOW_START, window_end, *_GBP_GAP_DATES],
     )
+    # A refresh records the span its range answer covered; without it the GBP
+    # gap would read as days nobody fetched rather than a closed market.
+    for currency in ("EUR", "CAD", "GBP"):
+        CurrencyService(db).record_coverage(
+            currency, "USD", _RATE_WINDOW_START, window_end, "frankfurter"
+        )
 
 
 def _run_cli_json(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
@@ -1360,9 +1360,14 @@ def _preview_identity_decisions(
         ]
         links = AccountLinksService(db, actor="mcp")
         merges = tuple(
-            links.merge_facts(
-                absorbed_account_id=item.source_id,
-                survivor_account_id=item.target_id,
+            # The plan, not a fresh read: it sequenced settings across the batch.
+            replace(
+                links.merge_facts(
+                    absorbed_account_id=item.source_id,
+                    survivor_account_id=item.target_id,
+                ),
+                settings_moved=item.settings_moved,
+                settings_kept=item.settings_kept,
             )
             for item in accepts
             if item.request.kind == "account_link"
