@@ -300,6 +300,20 @@ async def test_sync_link_prompt_says_when_it_replaces_or_is_unencrypted(
 
 
 @pytest.mark.unit
+async def test_sync_link_refuses_when_the_address_changed_during_the_prompt(
+    address: MagicMock,
+) -> None:
+    """Approval of a first save must not authorize a replace that appeared since."""
+    address.plan_server_address.side_effect = [_plan("first"), _plan("replace")]
+
+    with _prompt(AcceptedElicitation(data=True)):
+        envelope = await sync_module.sync_link_coarse(mode="login", server_url=_SERVER)
+
+    assert envelope.error is not None
+    address.start_login.assert_not_called()
+
+
+@pytest.mark.unit
 async def test_sync_link_declined_server_url_contacts_and_saves_nothing(
     address: MagicMock,
 ) -> None:
@@ -373,7 +387,7 @@ async def test_sync_link_unconfigured_login_offers_the_local_server(
         envelope = await sync_module.sync_link_coarse(mode="login")
 
     assert envelope.error is None, envelope.error
-    unconfigured.plan_server_address.assert_called_once_with(
+    unconfigured.plan_server_address.assert_called_with(
         "http://127.0.0.1:8000", surface="mcp"
     )
     message = elicit.call_args.args[0]

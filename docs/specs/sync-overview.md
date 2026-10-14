@@ -225,7 +225,13 @@ it.
 **Saving it.** Login is the one place an address is saved, on either surface.
 The address is written to the active profile's `config.yaml` only after the
 server at that address answers `POST /auth/device/code` with a valid challenge,
-so a typo or an unreachable host is never saved.
+so a typo or an unreachable host is never saved. A host that answers with
+anything else, such as another web server's 404, is refused with
+`mutation_invalid_input` rather than an unclassified HTTP error.
+
+The MCP path plans the save, shows the prompt, then plans again and verifies
+the result against what the person approved before saving, because the CLI can
+save another address while the prompt is open.
 
 **Changing it.** A token or device code issued by one server is never sent to
 another. Two mechanisms hold that, because login is only one of five ways the
@@ -246,7 +252,15 @@ environment):
 **When an override is in force.** If source 1 or 2 supplies the address and
 login is asked to save a different one, login refuses and names the variable:
 the saved value would be shadowed and the next command would silently talk to
-the overriding server.
+the overriding server. Login asks the sources themselves whether they supply
+the key, so an override equal to the saved address, or set to the empty
+string, still counts.
+
+**Order of clearing and saving.** Credentials are cleared before the new
+address is written. If the write then fails, the profile is signed out and
+still names its old server, which fails safe: logging in again recovers it.
+The reverse order would leave a window where a token pair stored before
+issuers were recorded is bound to the new server on first read.
 
 **Shape.** `http` or `https` with a host; no credentials, query, or fragment.
 Plain `http` to a host other than loopback is accepted, because a self-hosted
@@ -255,7 +269,8 @@ says the connection is unencrypted.
 
 **Observability.** `moneybin_sync_server_address_outcomes_total{surface, outcome}`
 counts each attempt to save an address: `saved`, `replaced`, `unreachable`,
-`declined`, `prompt_unavailable`, `override_conflict`. The address itself is
+`rejected` (it answered, but not with a device code), `declined`,
+`prompt_unavailable`, `override_conflict`. The address itself is
 never a label.
 
 **When it is missing.** Every sync operation other than login fails with the code

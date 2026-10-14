@@ -573,6 +573,22 @@ class TestProfileConfigFileSource:
         assert str(path) in str(excinfo.value)
         assert "logging.level" in str(excinfo.value)
 
+    def test_out_of_bounds_value_names_the_file_and_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Field bound (ge=1), not just the type, is checked against the file."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_MCP__MAX_ROWS", raising=False)
+        path = _write_profile_config(tmp_path, "alice", "mcp:\n  max_rows: 0\n")
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(ValueError) as excinfo:
+            get_settings()
+
+        assert str(path) in str(excinfo.value)
+        assert "mcp.max_rows" in str(excinfo.value)
+
     def test_non_mapping_file_names_the_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

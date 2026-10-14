@@ -619,6 +619,21 @@ class TestProfileSet:
 
         assert config_path.read_text() == before
 
+    def test_set_refuses_a_value_outside_the_fields_bounds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The type alone accepts 0; the field's ge=1 must still refuse it."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="mcp.max_rows"):
+            svc.set("alice", "mcp.max_rows", "0")
+
+        assert config_path.read_text() == before
+
     def test_set_value_is_read_back_by_settings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

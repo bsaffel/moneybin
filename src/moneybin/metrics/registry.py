@@ -931,7 +931,7 @@ SYNC_CONNECT_OUTCOMES = Counter(
 SYNC_SERVER_ADDRESS_OUTCOMES = Counter(
     "moneybin_sync_server_address_outcomes_total",
     "Attempts to save a profile's sync server address at login, by surface "
-    "(cli, mcp) and outcome (saved, replaced, unreachable, declined, "
+    "(cli, mcp) and outcome (saved, replaced, unreachable, rejected, declined, "
     "prompt_unavailable, override_conflict).",
     ["surface", "outcome"],
 )

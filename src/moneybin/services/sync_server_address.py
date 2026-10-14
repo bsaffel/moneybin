@@ -14,9 +14,12 @@ from dataclasses import dataclass
 from typing import Literal, cast
 from urllib.parse import urlsplit
 
+import httpx
+
 from moneybin import error_codes
-from moneybin.config import get_settings, reload_settings
+from moneybin.config import get_settings, reload_settings, setting_override
 from moneybin.connectors.sync_client import SyncClient
+from moneybin.connectors.sync_errors import SyncAPIError
 from moneybin.connectors.sync_models import DeviceAuthorizationChallenge
 from moneybin.errors import UserError
 from moneybin.metrics.registry import SYNC_SERVER_ADDRESS_OUTCOMES
@@ -61,6 +64,7 @@ def normalize_server_url(raw: str) -> str:
     try:
         parts = urlsplit(url)
         host = parts.hostname
+        _ = parts.port  # Parsed lazily; raises on a non-numeric or out-of-range port.
     except ValueError:
         host, parts = None, None
     if (
@@ -137,22 +141,22 @@ def plan_server_address(raw: str, *, surface: Surface = "cli") -> AddressPlan:
     url = normalize_server_url(raw)
     settings = get_settings()
     effective = settings.sync.server_url or None
-    saved = _saved_address(settings.profile)
     if effective is not None and effective.rstrip("/") == url:
         change: Change = "unchanged"
-    elif effective is not None and effective != saved:
+    elif setting_override(settings.profile, "sync", "server_url") is not None:
         # The environment or a dotenv outranks config.yaml, so a save here
         # would be shadowed and the next command would use the other server.
         SYNC_SERVER_ADDRESS_OUTCOMES.labels(
             surface=surface, outcome="override_conflict"
         ).inc()
         raise UserError(
-            f"{_ENV_VAR} is set to a different sync server and overrides any "
-            "saved address.",
+            f"{_ENV_VAR} is set, in the environment or a .env file, and "
+            "overrides any saved sync server address.",
             code=error_codes.SYNC_SERVER_OVERRIDE_CONFLICT,
             hint=f"Unset {_ENV_VAR}, then run '{LOGIN_COMMAND}' again.",
         )
     else:
+        saved = _saved_address(settings.profile)
         change = "first" if saved is None else "replace"
     return AddressPlan(url=url, change=change, unencrypted=is_unencrypted(url))
 
@@ -164,11 +168,20 @@ def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
         return LoginStart(client=client, challenge=None, outcome="unchanged")
     try:
         challenge = client.begin_login()
-    except Exception:
+    except SyncAPIError:
         SYNC_SERVER_ADDRESS_OUTCOMES.labels(
             surface=surface, outcome="unreachable"
         ).inc()
         raise
+    except (httpx.HTTPStatusError, ValueError) as e:
+        # It answered, but not with a device code: most often a mistyped
+        # address that reached some other web server.
+        SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface=surface, outcome="rejected").inc()
+        raise UserError(
+            f"{plan.url} answered, but not as a moneybin-sync server.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+            hint="Check the address, then run login again.",
+        ) from e
     settings = get_settings()
     # A token or device code one server issued must never reach another. Not
     # gated on a previously *saved* address: credentials can outlive one that

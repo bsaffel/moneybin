@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 
@@ -38,6 +39,21 @@ class _FakeClient:
 
 def _unreachable_client(server_url: str) -> _FakeClient:
     return _FakeClient(server_url, reachable=False)
+
+
+class _OtherWebServer:
+    def __init__(self, server_url: str) -> None:
+        self.server_url = server_url
+
+    def begin_login(self) -> DeviceAuthorizationChallenge:
+        request = httpx.Request("POST", f"{self.server_url}/auth/device/code")
+        response = httpx.Response(404, request=request)
+        response.raise_for_status()
+        raise AssertionError("unreachable")
+
+
+def _other_web_server(server_url: str) -> _OtherWebServer:
+    return _OtherWebServer(server_url)
 
 
 def _skip_database_init(*_args: object, **_kwargs: object) -> None:
@@ -95,6 +111,8 @@ class TestNormalizeServerUrl:
             "https://user:pw@a.example.test",
             "https://a.example.test/?next=x",
             "https://a.example.test/#frag",
+            "http://a.example.test:http",
+            "http://a.example.test:99999",
         ],
     )
     def test_refuses_anything_but_a_plain_http_address(self, raw: str) -> None:
@@ -188,6 +206,20 @@ class TestStartLogin:
         assert _saved(tmp_path) is None
         assert events == []
 
+    def test_a_server_that_is_not_moneybin_sync_is_refused_cleanly(
+        self, events: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A typo'd address that reaches some other web server must not traceback."""
+        monkeypatch.setattr(address, "_new_client", _other_web_server)
+
+        with pytest.raises(UserError) as excinfo:
+            address.start_login(address.plan_server_address(_A), surface="cli")
+
+        assert excinfo.value.code == error_codes.MUTATION_INVALID_INPUT
+        assert _A in excinfo.value.message
+        assert _saved(tmp_path) is None
+        assert events == []
+
     def test_replacing_clears_credentials_before_the_new_address_is_saved(
         self, events: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -252,6 +284,33 @@ class TestOverrideConflict:
         assert excinfo.value.code == error_codes.SYNC_SERVER_OVERRIDE_CONFLICT
         assert "MONEYBIN_SYNC__SERVER_URL" in excinfo.value.message
         assert _saved(tmp_path) is None
+
+    def test_an_override_equal_to_the_saved_address_still_shadows_a_new_one(
+        self, events: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving B here would leave the environment's A in force, signed out."""
+        ProfileService().set("alice", "sync.server_url", _A)
+        monkeypatch.setenv("MONEYBIN_SYNC__SERVER_URL", _A)
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(UserError) as excinfo:
+            address.plan_server_address(_B)
+
+        assert excinfo.value.code == error_codes.SYNC_SERVER_OVERRIDE_CONFLICT
+        assert _saved(tmp_path) == _A
+
+    def test_a_dotenv_override_is_refused_like_the_environment(
+        self, events: list[str], tmp_path: Path
+    ) -> None:
+        (tmp_path / ".env.alice").write_text(f"MONEYBIN_SYNC__SERVER_URL={_A}\n")
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(UserError) as excinfo:
+            address.plan_server_address(_B)
+
+        assert excinfo.value.code == error_codes.SYNC_SERVER_OVERRIDE_CONFLICT
 
     def test_the_overriding_address_itself_is_unchanged(
         self, events: list[str], monkeypatch: pytest.MonkeyPatch

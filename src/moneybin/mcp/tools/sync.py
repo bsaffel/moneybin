@@ -387,7 +387,7 @@ async def _begin_login_at(
         try:
             # elicitation_only: a fallback token would go back to the calling
             # agent, which could then approve its own choice of server.
-            await grant_confirmation_or_raise(
+            grant = await grant_confirmation_or_raise(
                 binding=_server_address_binding(plan),
                 message=_server_address_message(plan, suggested=suggested),
                 confirmation_token=None,
@@ -410,6 +410,12 @@ async def _begin_login_at(
                     e.message, code=e.code, details=e.details, hint=_ASK_FOR_ADDRESS
                 ) from e
             raise
+        # The prompt can sit open while the CLI saves another address; what
+        # the person approved must still be what saving does now.
+        plan = await asyncio.to_thread(
+            sync_server_address.plan_server_address, server_url, surface="mcp"
+        )
+        grant.verify(_server_address_binding(plan))
     start = await asyncio.to_thread(
         sync_server_address.start_login, plan, surface="mcp"
     )

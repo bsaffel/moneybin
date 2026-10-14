@@ -22,7 +22,12 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    SettingsConfigDict,
+)
 
 from moneybin.crypto_constants import (
     ARGON2_HASH_LEN,
@@ -926,6 +931,24 @@ def settings_section_model(
     return None
 
 
+def _section_field_error(
+    model: type[BaseModel], values: dict[str, Any]
+) -> tuple[str, str] | None:
+    """The first ``(field, reason)`` the section model rejects, if any.
+
+    Validates through the model, not the bare annotation, so ``Field`` bounds
+    and field validators apply. Cross-field errors are left to the merged
+    settings: other fields here sit at defaults the real sources may override.
+    """
+    try:
+        model.model_validate(values)
+    except ValidationError as e:
+        for error in e.errors():
+            if error["loc"]:
+                return str(error["loc"][0]), error["msg"]
+    return None
+
+
 def validate_profile_setting(section: str, name: str, raw: str) -> Any:
     """Return ``raw`` as the value config.yaml should hold for ``section.name``.
 
@@ -955,12 +978,11 @@ def validate_profile_setting(section: str, name: str, raw: str) -> Any:
             f"{section}.{name} is a secret and cannot be stored in config.yaml, "
             "which is plain text."
         )
+    rejected = _section_field_error(model, {name: raw})
+    if rejected is not None:
+        raise ValueError(f"{section}.{name}: {rejected[1]}")
     adapter: TypeAdapter[Any] = TypeAdapter(annotation)
-    try:
-        value = adapter.validate_python(raw)
-    except ValidationError as e:
-        raise ValueError(f"{section}.{name}: {e.errors()[0]['msg']}") from e
-    return adapter.dump_python(value, mode="json")
+    return adapter.dump_python(adapter.validate_python(raw), mode="json")
 
 
 def _load_profile_config(
@@ -987,17 +1009,46 @@ def _load_profile_config(
         model = settings_section_model(settings_cls, str(section))
         if model is None or not isinstance(fields, dict):
             continue
-        for name, value in cast(dict[object, object], fields).items():
-            field = model.model_fields.get(str(name))
-            if field is None:
-                continue
-            try:
-                TypeAdapter(field.annotation).validate_python(value)
-            except ValidationError as e:
-                reason = e.errors()[0]["msg"]
-                raise ValueError(f"{path}: {section}.{name}: {reason}") from e
-            values.setdefault(str(section), {})[str(name)] = value
+        declared = {
+            str(name): value
+            for name, value in cast(dict[object, object], fields).items()
+            if str(name) in model.model_fields
+        }
+        if not declared:
+            continue
+        rejected = _section_field_error(model, declared)
+        if rejected is not None:
+            raise ValueError(f"{path}: {section}.{rejected[0]}: {rejected[1]}")
+        values[str(section)] = declared
     return values
+
+
+def _profile_dotenv_source(
+    settings_cls: type[BaseSettings], profile: str
+) -> DotEnvSettingsSource:
+    """The profile's dotenv file, falling back to ``.env`` when it has none."""
+    base = get_base_dir()
+    profile_env_file = base / f".env.{profile}"
+    env_file = profile_env_file if profile_env_file.exists() else base / ".env"
+    return DotEnvSettingsSource(
+        settings_cls, env_file=str(env_file), env_file_encoding="utf-8"
+    )
+
+
+def setting_override(profile: str, section: str, name: str) -> object | None:
+    """What the environment or the profile's dotenv supply for ``section.name``.
+
+    Both outrank config.yaml, so a value saved there while one is present is
+    shadowed. An override set to the empty string still counts.
+    """
+    for source in (
+        EnvSettingsSource(MoneyBinSettings),
+        _profile_dotenv_source(MoneyBinSettings, profile),
+    ):
+        supplied = source().get(section)
+        if isinstance(supplied, dict) and name in supplied:
+            return cast(dict[str, object], supplied)[name]
+    return None
 
 
 class MoneyBinSettings(BaseSettings):
@@ -1207,23 +1258,7 @@ class MoneyBinSettings(BaseSettings):
         init_dict = init_settings.init_kwargs if init_settings else {}
         profile = init_dict.get("profile", "dev")  # type: ignore[reportUnknownMemberType] — Pydantic init_settings has incomplete type stubs
 
-        # Determine which env file to load based on profile
-        base = get_base_dir()
-        profile_env_file = base / f".env.{profile}"
-        if profile_env_file.exists():
-            env_file = str(profile_env_file)
-        else:
-            # Fall back to .env for backward compatibility
-            env_file = str(base / ".env")
-
-        # Create custom dotenv settings with the profile-specific file
-        from pydantic_settings import DotEnvSettingsSource
-
-        custom_dotenv = DotEnvSettingsSource(
-            settings_cls,
-            env_file=env_file,
-            env_file_encoding="utf-8",
-        )
+        custom_dotenv = _profile_dotenv_source(settings_cls, cast(str, profile))
 
         profile_dir: Path = get_base_dir() / "profiles" / cast(str, profile)
 
