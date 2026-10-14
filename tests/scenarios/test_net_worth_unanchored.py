@@ -13,6 +13,8 @@ core.fct_balances never anchors them. Account ids are synthetic.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from decimal import Decimal
+from typing import cast
 
 import pytest
 import time_machine
@@ -20,6 +22,7 @@ import time_machine
 from moneybin.database import Database, sqlmesh_context
 from moneybin.reports.definitions.net_worth import net_worth
 from moneybin.reports.definitions.net_worth_accounts import net_worth_accounts
+from moneybin.reports.definitions.net_worth_currencies import net_worth_currencies
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.account_service import AccountService
 from moneybin.services.doctor_service import DoctorService, InvariantResult
@@ -32,6 +35,14 @@ from tests.scenarios._runner.steps import run_step
 pytestmark = [pytest.mark.scenarios, pytest.mark.slow]
 
 _RESTATE_AFTER_SETTINGS = ["core.dim_accounts", "core.fct_balances_daily"]
+_CURRENCY_MEASURES = (
+    "total_assets",
+    "total_liabilities",
+    "net_worth",
+    "total_assets_home",
+    "total_liabilities_home",
+    "net_worth_home",
+)
 
 
 def _plaid_account(
@@ -213,30 +224,47 @@ def test_mixed_profile_guard() -> None:
         assert candidates | {"m2b3_dormant"} <= present, (
             "fixture accounts must reach core.dim_accounts under their raw ids"
         )
-        evidence = {
-            r[0]: r[1:]
-            for r in db.execute(
-                "SELECT account_id, has_holdings, has_broker_position, "
-                "has_transactions, has_investment_transactions "
-                "FROM core.dim_unanchored_accounts"
+        first_null = dict(
+            db.execute(
+                "SELECT account_id, MIN(balance_date) FROM core.fct_balances_daily "
+                "WHERE balance IS NULL GROUP BY account_id"
             ).fetchall()
+        )
+        # First evidence per account, read off the fixture above: m2b3_cash's one
+        # cash transaction, m2b3_dividend's one trade, m2b3_broker's broker as_of
+        # (_snapshot stamps extracted_at = CURRENT_TIMESTAMP). Dormant has no
+        # evidence (S5); the two CSV accounts are anchored by their assertions.
+        assert first_null == {
+            "m2b3_cash": date(2024, 1, 10),
+            "m2b3_dividend": date(2024, 1, 15),
+            "m2b3_broker": _today(db),
         }
-        assert set(evidence) == candidates  # dormant stays out (S5)
-        assert evidence["m2b3_broker"] == (False, True, False, False)
-        assert evidence["m2b3_cash"] == (False, False, True, False)
-        assert evidence["m2b3_dividend"] == (False, False, False, True)
 
         spine_row = db.execute(
             "SELECT MAX(balance_date) FROM core.fct_balances_daily"
         ).fetchone()
         assert spine_row is not None and spine_row[0] is not None
         spine_max: date = spine_row[0]
+        # The broker as_of (today) is the newest evidence; the newest assertion
+        # is 2024-01-31 and the newest transaction 2024-02-25 (savings.csv).
+        assert spine_max == _today(db)
 
-        # S1/S2/S7: every balance-driven row NULLs and counts all three.
-        rows = db.execute(
-            "SELECT unanchored_account_count, net_worth FROM reports.net_worth"
-        ).fetchall()
-        assert rows and all(r == (3, None) for r in rows)
+        # S1/S2/S7, per date. A candidate counts from its first evidence on:
+        #   2024-01-09: none yet, so the total stands. checking 5000 - 10 - 15
+        #     (Jan 05, Jan 07) = 4975, savings 5000 untouched -> 9975.00;
+        #   2024-01-31: cash (from 01-10) and dividend (from 01-15), not broker;
+        #   spine_max: all three.
+        day = {
+            r[0]: r[1:]
+            for r in db.execute(
+                "SELECT balance_date, unanchored_account_count, net_worth "
+                "FROM reports.net_worth"
+            ).fetchall()
+        }
+        assert day[date(2024, 1, 9)] == (0, Decimal("9975.00"))
+        assert day[date(2024, 1, 31)] == (2, None)
+        assert day[spine_max] == (3, None)
+        assert max(day) == spine_max
 
         # Account rung: each candidate is a row at the spine max; dormant absent.
         acct = _run(db, net_worth_accounts(db))
@@ -248,12 +276,31 @@ def test_mixed_profile_guard() -> None:
             assert by_id[cid]["account_balance_home"] is None
             assert by_id[cid]["is_observed"] is False
 
-        # S6: a range before every balance still synthesizes, dated at to_date.
-        (row,) = _run(db, net_worth(db, from_date="2023-06-01", to_date="2023-06-30"))
-        assert str(row["balance_date"]) == "2023-06-30"
-        assert row["unanchored_account_count"] == 3
+        # Currency rung. A Plaid account's currency is dim_accounts' COALESCE of
+        # its settings override and its raw.plaid_balances currency; the three
+        # candidates have neither, so all three land in the NULL segment. The two
+        # CSV accounts were set to USD above and stay priced and anchored there:
+        # checking 4900 (Jan 31 assertion, no later txn); savings 5510 (Jan 31)
+        # + 500 (Feb 10) + 10 (Feb 25) = 6020, carried to the spine end.
+        cur = {r["currency_code"]: r for r in _run(db, net_worth_currencies(db))}
+        assert set(cur) == {"USD", None}
+        assert sum(cast(int, r["unanchored_account_count"]) for r in cur.values()) == 3
+        assert cur[None]["unanchored_account_count"] == 3
+        for measure in _CURRENCY_MEASURES:
+            assert cur[None][measure] is None, measure
+        assert cur["USD"]["unanchored_account_count"] == 0
+        assert cur["USD"]["account_count"] == 2
+        assert cur["USD"]["net_worth"] == Decimal("10920.00")
 
-        # S8: range containing the spine max lists each candidate once...
+        # S6: a range before every evidence date and every anchored row (the
+        # assertions start 2024-01-01) has no rows; nothing is synthesized.
+        assert (
+            _run(db, net_worth(db, from_date="2023-06-01", to_date="2023-06-30")) == []
+        )
+
+        # S8: each candidate appears once per date it has rows. In
+        # spine_max-3..spine_max that is broker once (today only), cash and
+        # dividend on all four dates.
         ranged = _run(
             db,
             net_worth_accounts(
@@ -262,31 +309,38 @@ def test_mixed_profile_guard() -> None:
                 to_date=spine_max.isoformat(),
             ),
         )
-        for cid in candidates:
-            assert sum(r["account_id"] == cid for r in ranged) == 1
-        # ...and a range excluding it, with anchored rows inside, synthesizes each.
+        assert sum(r["account_id"] == "m2b3_broker" for r in ranged) == 1
+        assert sum(r["account_id"] == "m2b3_cash" for r in ranged) == 4
+        assert sum(r["account_id"] == "m2b3_dividend" for r in ranged) == 4
+        # spine_max-20..spine_max-10 (11 dates, all after 2024-01-15) holds cash
+        # and dividend on every date and broker on none: its rows start today.
+        early_from = spine_max - timedelta(days=20)
         early_to = spine_max - timedelta(days=10)
+        early_dates = [early_from + timedelta(days=d) for d in range(11)]
         early = _run(
             db,
             net_worth_accounts(
-                db,
-                from_date=(spine_max - timedelta(days=20)).isoformat(),
-                to_date=early_to.isoformat(),
+                db, from_date=early_from.isoformat(), to_date=early_to.isoformat()
             ),
         )
         assert {"networth-checking", "networth-savings"} <= {
             r["account_id"] for r in early
         }
-        for cid in candidates:
-            (hit,) = [r for r in early if r["account_id"] == cid]
-            assert hit["balance_date"] == early_to
+        for cid in ("m2b3_cash", "m2b3_dividend"):
+            assert [r["balance_date"] for r in early if r["account_id"] == cid] == (
+                early_dates
+            )
+        assert not [r for r in early if r["account_id"] == "m2b3_broker"]
 
         # Doctor fails naming exactly the three.
         result = _invariant(db, "net_worth_unanchored_accounts")
         assert result.status == "fail"
         assert set(result.affected_ids) == {f"account:{c}" for c in candidates}
 
-        # S9: archive m2b3_cash before the spine max.
+        # S9: archive m2b3_cash 5 days before the spine max. Its rows count
+        # through archived_on and no later, so the unranged read (spine_max)
+        # omits it, the early range (ending spine_max-10) keeps all 11 dates,
+        # and archived_on-2..spine_max holds exactly archived_on-2..archived_on.
         archived_on = spine_max - timedelta(days=5)
         _archive_on(db, "m2b3_cash", archived_on)
         _restate(db)
@@ -295,12 +349,12 @@ def test_mixed_profile_guard() -> None:
         spanning = _run(
             db,
             net_worth_accounts(
-                db,
-                from_date=(spine_max - timedelta(days=20)).isoformat(),
-                to_date=early_to.isoformat(),
+                db, from_date=early_from.isoformat(), to_date=early_to.isoformat()
             ),
         )
-        assert "m2b3_cash" in {r["account_id"] for r in spanning}
+        assert [
+            r["balance_date"] for r in spanning if r["account_id"] == "m2b3_cash"
+        ] == early_dates
         ranged_span = _run(
             db,
             net_worth_accounts(
@@ -310,7 +364,9 @@ def test_mixed_profile_guard() -> None:
             ),
         )
         cash_rows = [r for r in ranged_span if r["account_id"] == "m2b3_cash"]
-        assert [r["balance_date"] for r in cash_rows] == [archived_on]
+        assert [r["balance_date"] for r in cash_rows] == [
+            archived_on - timedelta(days=d) for d in (2, 1, 0)
+        ]
         assert set(_invariant(db, "net_worth_unanchored_accounts").affected_ids) == {
             f"account:{c}" for c in candidates - {"m2b3_cash"}
         }
@@ -329,35 +385,81 @@ def test_wholly_unanchored_profile_guard() -> None:
         ProfileSettingsRepo(db).set_home_currency("USD", actor="system")
         today = _today(db)
 
+        # First evidence: w_cash its one transaction, 2025-12-01. w_broker's
+        # snapshot holds quantity 3 against a transactions window starting
+        # 2024-01-01 with no in-window trade, so the opening-lot bootstrap
+        # (stg_plaid__opening_lots fallbacks) writes a transfer_in dated W - 1 =
+        # 2023-12-31 to core.fct_investment_transactions, which is ledger
+        # evidence older than its broker as_of (today). The spine ends today.
+        broker_from = date(2023, 12, 31)
+        cash_from = date(2025, 12, 1)
+        first_null = dict(
+            db.execute(
+                "SELECT account_id, MIN(balance_date) FROM core.fct_balances_daily "
+                "WHERE balance IS NULL GROUP BY account_id"
+            ).fetchall()
+        )
+        assert first_null == {"w_broker": broker_from, "w_cash": cash_from}
+        # One NULL row per account per date from first evidence to today.
         count_row = db.execute(
-            "SELECT COUNT(*) FROM core.fct_balances_daily"
+            "SELECT COUNT(*), COUNT(balance) FROM core.fct_balances_daily"
         ).fetchone()
-        assert count_row == (0,)
+        assert count_row == (
+            (today - broker_from).days + 1 + (today - cash_from).days + 1,
+            0,
+        )
 
-        # S3: bare view and unranged runner — one row today, count 2.
+        # S3: the bare view has a row per date, w_broker alone until w_cash's
+        # first evidence and both after; every total withheld.
         bare = db.execute(
             "SELECT balance_date, unanchored_account_count, net_worth "
-            "FROM reports.net_worth"
+            "FROM reports.net_worth ORDER BY balance_date"
         ).fetchall()
-        assert bare == [(today, 2, None)]
+        assert bare[0] == (broker_from, 1, None)
+        assert bare[-1] == (today, 2, None)
+        assert len(bare) == (today - broker_from).days + 1
+        assert all(r[2] is None for r in bare)
+        assert {r[0]: r[1] for r in bare}[cash_from - timedelta(days=1)] == 1
+        assert {r[0]: r[1] for r in bare}[cash_from] == 2
         (row,) = _run(db, net_worth(db))
         assert (row["balance_date"], row["unanchored_account_count"]) == (today, 2)
         acct = _run(db, net_worth_accounts(db))
         assert {r["account_id"] for r in acct} == {"w_broker", "w_cash"}
         assert {r["balance_date"] for r in acct} == {today}
+        # Currency rung: neither Plaid account has a balance row or an override,
+        # so both sit in the NULL segment, withheld.
+        (cur,) = _run(db, net_worth_currencies(db))
+        assert (cur["currency_code"], cur["unanchored_account_count"]) == (None, 2)
+        for measure in _CURRENCY_MEASURES:
+            assert cur[measure] is None, measure
 
         result = _invariant(db, "net_worth_unanchored_accounts")
         assert result.status == "fail"
         assert sorted(result.affected_ids) == ["account:w_broker", "account:w_cash"]
 
-        # S4/S11: archive both in the past; unranged empties, the range still answers.
+        # S4/S11: archive both 40 days ago (after both first-evidence dates).
+        # Both count through archived_on and not after, so archived_on is the
+        # last date anything counts: the unranged reads land there, count 2,
+        # total withheld, never an empty "no net worth". The range
+        # archived_on-30..archived_on+10 returns the 31 dates through
+        # archived_on. Nothing counts on the spine's last date (today), so the
+        # doctor passes.
         archived_on = today - timedelta(days=40)
         _archive_on(db, "w_broker", archived_on)
         _archive_on(db, "w_cash", archived_on)
         _restate(db)
-        assert _run(db, net_worth(db)) == []
-        assert _run(db, net_worth_accounts(db)) == []
-        (hist,) = _run(
+        (row,) = _run(db, net_worth(db))
+        assert (
+            row["balance_date"],
+            row["unanchored_account_count"],
+            row["net_worth"],
+        ) == (archived_on, 2, None)
+        acct = _run(db, net_worth_accounts(db))
+        assert sorted((r["account_id"], r["balance_date"]) for r in acct) == [
+            ("w_broker", archived_on),
+            ("w_cash", archived_on),
+        ]
+        hist = _run(
             db,
             net_worth(
                 db,
@@ -365,8 +467,11 @@ def test_wholly_unanchored_profile_guard() -> None:
                 to_date=(archived_on + timedelta(days=10)).isoformat(),
             ),
         )
-        assert hist["balance_date"] == archived_on  # archived_at_floor
-        assert hist["unanchored_account_count"] == 2
+        assert [r["balance_date"] for r in hist] == [
+            archived_on - timedelta(days=d) for d in range(30, -1, -1)
+        ]
+        assert all(r["unanchored_account_count"] == 2 for r in hist)
+        assert all(r["net_worth"] is None for r in hist)
         assert _invariant(db, "net_worth_unanchored_accounts").status == "pass"
 
 
@@ -436,6 +541,41 @@ def test_liquidated_investment_accounts_still_fail_the_guard() -> None:
         assert broker.get("liq_zero_row") is False
         assert broker.get("liq_empty") is False
         assert "liq_checking" not in broker  # receipt scope
+
+        # First evidence: both liquidated accounts' 2025-06-01 buys, the
+        # checking account's 2025-07-02 transaction. Neither snapshot is
+        # evidence (has_position FALSE; liq_zero_row's held quantity 0 also
+        # declines the opening-lot bootstrap), so nothing reaches today: the
+        # spine ends at the newest evidence, 2025-07-02.
+        first_null = dict(
+            db.execute(
+                "SELECT account_id, MIN(balance_date) FROM core.fct_balances_daily "
+                "WHERE balance IS NULL GROUP BY account_id"
+            ).fetchall()
+        )
+        assert first_null == {
+            "liq_zero_row": date(2025, 6, 1),
+            "liq_empty": date(2025, 6, 1),
+            "liq_checking": date(2025, 7, 2),
+        }
+        spine_row = db.execute(
+            "SELECT MAX(balance_date) FROM core.fct_balances_daily"
+        ).fetchone()
+        assert spine_row == (date(2025, 7, 2),)
+
+        # Day and currency rungs on that date: all three, NULL segment (no
+        # balance row, no override), totals withheld.
+        (row,) = _run(db, net_worth(db))
+        assert (
+            row["balance_date"],
+            row["unanchored_account_count"],
+            row["net_worth"],
+        ) == (date(2025, 7, 2), 3, None)
+        cur = _run(db, net_worth_currencies(db))
+        assert sum(cast(int, r["unanchored_account_count"]) for r in cur) == 3
+        assert [r["currency_code"] for r in cur] == [None]
+        for measure in _CURRENCY_MEASURES:
+            assert cur[0][measure] is None, measure
 
         result = _invariant(db, "net_worth_unanchored_accounts")
         assert result.status == "fail"
