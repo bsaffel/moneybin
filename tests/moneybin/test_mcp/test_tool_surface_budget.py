@@ -137,7 +137,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "system_status": (921, 2_728),
     "system_audit": (770, 1_961),
     "accounts": (843, 2_244),
-    "accounts_balances": (1_098, 2_790),
+    "accounts_balances": (1_177, 2_790),
     # Grew 116 bytes when display conversion gave the holdings total a currency
     # to be denominated in: `data.total_market_value` is now published across
     # currencies, so the description has to say which unit it is in and when it

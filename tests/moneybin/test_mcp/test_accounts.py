@@ -605,6 +605,29 @@ class TestStandardCoarseAccountReads:
         assert second.summary.has_more is False
 
     @pytest.mark.unit
+    async def test_balance_latest_returns_an_unanchored_account_with_null_balance(
+        self, mcp_db: Path
+    ) -> None:
+        """A value-holding account with no balance observation is listed, null."""
+        _seed_balance_data()
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta
+                ) VALUES ('ACC003', '2025-06-30', NULL, FALSE, NULL, NULL)
+                """
+            )
+
+        response = await accounts_balances_coarse(view="latest")
+
+        parsed = response.to_dict()
+        by_account = {row["account_id"]: row for row in parsed["data"]["observations"]}
+        assert by_account["ACC003"]["balance"] is None
+        assert by_account["ACC001"]["balance"] is not None
+
+    @pytest.mark.unit
     async def test_balance_latest_as_of_and_reconcile_are_paginated(
         self, mcp_db: Path
     ) -> None:

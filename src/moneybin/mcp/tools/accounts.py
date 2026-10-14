@@ -1526,7 +1526,8 @@ def register_accounts_coarse_reads(mcp: FastMCP) -> None:
         "accounts_balances",
         "Return balances by date, history, assertions, or reconciliation deltas. "
         "Resolve one account by reference; amounts are positions in "
-        "summary.display_currency.",
+        "summary.display_currency. `balance` is null for an account that "
+        "holds value but has no recorded balance.",
         privacy_actor="accounts_balances",
     )
 
