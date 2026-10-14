@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 _SETTING_KEY = "sync.server_url"
 _ENV_VAR = "MONEYBIN_SYNC__SERVER_URL"
 LOGIN_COMMAND = "moneybin sync login --server <url>"
+# Where moneybin-sync's compose file publishes the server. Offered, never
+# assumed: a person accepts it once and it is saved like any other address.
+SUGGESTED_SERVER_URL = "http://127.0.0.1:8000"
 
 Surface = Literal["cli", "mcp"]
 Change = Literal["unchanged", "first", "replace"]

@@ -1,6 +1,6 @@
 # Sync — Overview
 
-> Last updated: 2026-10-11 — server address is saved per profile at login instead of requiring an environment variable
+> Last updated: 2026-10-14 — server address is saved per profile at login instead of requiring an environment variable; login offers the local server address
 > Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
@@ -210,6 +210,18 @@ value:
 The profile `config.yaml` is a settings source for every setting, not only this
 one (see `moneybin-cli.md` → Profile config).
 
+**The offered address.** With nothing configured, login offers
+`http://127.0.0.1:8000`, where moneybin-sync's compose file publishes the
+server. It is offered, never assumed: the CLI prompt shows it as the default
+answer, and the MCP confirmation names it and asks the user to decline unless
+they run the server on this machine. An accepted offer is saved like a typed
+address, so a later change to the offer, such as the hosted address, never
+moves a profile that already chose. A silent built-in default was rejected for
+four reasons: it would skip the MCP confirmation entirely, it would never be
+saved and so would move with the next release, port 8000 is commonly held by
+another development server, and a user with no local server gains nothing from
+it.
+
 **Saving it.** Login is the one place an address is saved, on either surface.
 The address is written to the active profile's `config.yaml` only after the
 server at that address answers `POST /auth/device/code` with a valid challenge,
@@ -246,7 +258,7 @@ counts each attempt to save an address: `saved`, `replaced`, `unreachable`,
 `declined`, `prompt_unavailable`, `override_conflict`. The address itself is
 never a label.
 
-**When it is missing.** Every sync operation fails with the code
+**When it is missing.** Every sync operation other than login fails with the code
 `sync_server_not_configured` and a hint naming
 `moneybin sync login --server <url>`. The message never tells a user to set an
 environment variable.
@@ -395,9 +407,11 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
 ### MCP authentication lifecycle
 
 - Start device login with `sync_link(mode="login")`.
-- When no server address is configured, that call fails with
-  `sync_server_not_configured`. The agent asks the user for the address and
-  retries with `server_url=<address>`. An agent never chooses the address: the
+- When no server address is configured, that call offers the local address
+  (see [The offered address](#server-address)) through the same prompt as
+  below. If the user declines, the call fails with
+  `mutation_confirmation_declined` and a hint to ask the user for the address
+  and retry with `server_url=<address>`. An agent never chooses the address: the
   value must come from the user.
 - A `server_url` that differs from the profile's current address — including
   the first one — is saved only through a prompt answered by a person, which

@@ -250,6 +250,8 @@ def sync_login(
     """Authenticate with moneybin-sync via Device Authorization Flow."""
     pairs = [("Outcome", "Logged in")]
     with handle_cli_errors():
+        from moneybin.services import sync_server_address
+
         client = None
         if server is None:
             try:
@@ -260,12 +262,14 @@ def sync_login(
                     or not get_terminal_policy().interactive
                 ):
                     raise
-                server = typer.prompt("Sync server address", err=True)
+                server = typer.prompt(
+                    "Sync server address",
+                    default=sync_server_address.SUGGESTED_SERVER_URL,
+                    err=True,
+                )
         if client is not None:
             client.login(open_browser=not no_browser)
         elif server is not None:
-            from moneybin.services import sync_server_address
-
             plan = sync_server_address.plan_server_address(server, surface="cli")
             if plan.unencrypted and plan.change != "unchanged":
                 render_note(

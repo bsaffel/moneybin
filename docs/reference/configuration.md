@@ -88,7 +88,6 @@ Configuration for MoneyBin Sync service (optional paid tier).
 |---|---|---|---|
 | `MONEYBIN_SYNC__SERVER_URL` | text (optional) | unset | MoneyBin Sync server URL (e.g., https://sync.moneybin.app) |
 | `MONEYBIN_SYNC__API_KEY` | secret (optional) | unset | API key for MoneyBin Sync service (legacy - prefer OAuth) |
-| `MONEYBIN_SYNC__USE_LOCAL_SERVER` | bool | `true` | Use local server code directly (development mode) |
 | `MONEYBIN_SYNC__OAUTH_CLIENT_ID` | text (optional) | unset | OAuth2 client ID (for Auth0 integration) |
 | `MONEYBIN_SYNC__OAUTH_CLIENT_SECRET` | secret (optional) | unset | OAuth2 client secret (for Auth0 integration) |
 | `MONEYBIN_SYNC__OAUTH_DOMAIN` | text (optional) | unset | OAuth2/Auth0 domain (e.g., moneybin.auth0.com) |

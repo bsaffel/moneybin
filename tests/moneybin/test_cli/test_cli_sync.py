@@ -2108,3 +2108,24 @@ def test_sync_login_unconfigured_on_a_terminal_asks_for_the_address(
     start.client.login.assert_called_once_with(  # type: ignore[attr-defined]  # MagicMock client
         open_browser=True, challenge=start.challenge
     )
+
+
+@pytest.mark.unit
+@patch(f"{_ADDRESS}.start_login")
+@patch(f"{_ADDRESS}.plan_server_address")
+@patch("moneybin.cli.commands.sync._build_sync_client")
+def test_sync_login_prompt_offers_the_local_server_as_its_default(
+    mock_build: MagicMock, mock_plan: MagicMock, mock_start: MagicMock
+) -> None:
+    """Pressing Enter accepts the address moneybin-sync's compose file publishes."""
+    mock_build.side_effect = _not_configured()
+    mock_plan.return_value, mock_start.return_value = _login_start()
+
+    with patch(
+        "moneybin.cli.commands.sync.get_terminal_policy", side_effect=_pager_policy
+    ):
+        result = runner.invoke(app, ["sync", "login"], input="\n")
+
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:8000" in result.stderr
+    mock_plan.assert_called_once_with("http://127.0.0.1:8000", surface="cli")

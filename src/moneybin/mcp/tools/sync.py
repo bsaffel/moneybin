@@ -74,19 +74,18 @@ def _build_sync_client() -> Any:
         raise _agent_facing(e) from e
 
 
+_ASK_FOR_ADDRESS = (
+    "Ask the user for their moneybin-sync server's address, then call "
+    "sync_link(mode='login', server_url=<that address>). Never choose "
+    "or guess the address yourself."
+)
+
+
 def _agent_facing(error: UserError) -> UserError:
     """Swap the terminal-command hint for one an agent can act on."""
     if error.code != error_codes.SYNC_SERVER_NOT_CONFIGURED:
         return error
-    return UserError(
-        error.message,
-        code=error.code,
-        hint=(
-            "Ask the user for their moneybin-sync server's address, then call "
-            "sync_link(mode='login', server_url=<that address>). Never choose "
-            "or guess the address yourself."
-        ),
-    )
+    return UserError(error.message, code=error.code, hint=_ASK_FOR_ADDRESS)
 
 
 def _build_sync_auth_service() -> Any:
@@ -353,12 +352,21 @@ def _server_address_binding(plan: AddressPlan) -> ConfirmationBinding:
     )
 
 
-def _server_address_message(plan: AddressPlan) -> str:
-    lines = [
-        f"Use {plan.url} as this profile's sync server? You will be sent there "
-        "to sign in, and bank linking runs through it. Confirm only if you "
-        "gave this address yourself."
-    ]
+def _server_address_message(plan: AddressPlan, *, suggested: bool) -> str:
+    if suggested:
+        lines = [
+            "No sync server is set for this profile. Use the local default, "
+            f"{plan.url}? You will be sent there to sign in, and bank linking "
+            "runs through it. Confirm only if you run moneybin-sync on this "
+            "machine; otherwise decline and give your assistant your server's "
+            "address."
+        ]
+    else:
+        lines = [
+            f"Use {plan.url} as this profile's sync server? You will be sent "
+            "there to sign in, and bank linking runs through it. Confirm only "
+            "if you gave this address yourself."
+        ]
     if plan.change == "replace":
         lines.append(
             "This replaces the profile's current server and signs it out of that one."
@@ -368,8 +376,10 @@ def _server_address_message(plan: AddressPlan) -> str:
     return " ".join(lines)
 
 
-async def _begin_login_at(server_url: str) -> SyncAuthResult:
-    """Begin login at a caller-supplied address, saving it only with consent."""
+async def _begin_login_at(
+    server_url: str, *, suggested: bool = False
+) -> SyncAuthResult:
+    """Begin login at an address, saving it only with consent."""
     plan = await asyncio.to_thread(
         sync_server_address.plan_server_address, server_url, surface="mcp"
     )
@@ -379,18 +389,26 @@ async def _begin_login_at(server_url: str) -> SyncAuthResult:
             # agent, which could then approve its own choice of server.
             await grant_confirmation_or_raise(
                 binding=_server_address_binding(plan),
-                message=_server_address_message(plan),
+                message=_server_address_message(plan, suggested=suggested),
                 confirmation_token=None,
                 elicitation_only=True,
-                cli_equivalent=sync_server_address.LOGIN_COMMAND,
+                cli_equivalent=(
+                    "moneybin sync login"
+                    if suggested
+                    else sync_server_address.LOGIN_COMMAND
+                ),
             )
         except UserError as e:
+            declined = e.code == error_codes.MUTATION_CONFIRMATION_DECLINED
             SYNC_SERVER_ADDRESS_OUTCOMES.labels(
                 surface="mcp",
-                outcome="declined"
-                if e.code == error_codes.MUTATION_CONFIRMATION_DECLINED
-                else "prompt_unavailable",
+                outcome="declined" if declined else "prompt_unavailable",
             ).inc()
+            if declined and suggested:
+                # Declining the default means the server is elsewhere.
+                raise UserError(
+                    e.message, code=e.code, details=e.details, hint=_ASK_FOR_ADDRESS
+                ) from e
             raise
     start = await asyncio.to_thread(
         sync_server_address.start_login, plan, surface="mcp"
@@ -426,7 +444,11 @@ async def sync_link_coarse(
                     lambda: _build_sync_auth_service().begin()
                 )
             except UserError as e:
-                raise _agent_facing(e) from e
+                if e.code != error_codes.SYNC_SERVER_NOT_CONFIGURED:
+                    raise
+                result = await _begin_login_at(
+                    sync_server_address.SUGGESTED_SERVER_URL, suggested=True
+                )
         data: SyncLinkCoarsePayload = SyncAuthView(
             auth_session_id=result.auth_session_id,
             status=result.status,
@@ -643,7 +665,8 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
             "Returned link_url and user_code values are sensitive one-time "
             "credentials; present them to the user, but never include them in "
             "logs or summaries. In login mode, server_url names this profile's "
-            "sync server: pass only an address the user gave you. A new or "
+            "sync server: pass only an address the user gave you; omit it and, "
+            "if none is saved, the user is offered http://127.0.0.1:8000. A new or "
             "changed address is saved to the profile's config.yaml only after "
             "the user confirms a prompt, and signs the profile out of the "
             "previous server; log in with another address to change it back.",

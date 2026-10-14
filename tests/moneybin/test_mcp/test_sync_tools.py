@@ -14,7 +14,11 @@ import moneybin.mcp.tools.sync as sync_module
 from moneybin.connectors.sync_auth import SyncAuthResult, SyncLogoutResult
 from moneybin.errors import UserError
 from moneybin.mcp.tools.sync import register_sync_tools
-from moneybin.services.sync_server_address import AddressPlan, LoginStart
+from moneybin.services.sync_server_address import (
+    SUGGESTED_SERVER_URL,
+    AddressPlan,
+    LoginStart,
+)
 
 _EXPECTED_TOOLS = {
     "sync_link",
@@ -208,8 +212,8 @@ def test_sync_workflow_registrar_uses_public_privacy_actor_names() -> None:
 _SERVER = "https://sync.example.test"
 
 
-def _plan(change: str, *, unencrypted: bool = False) -> AddressPlan:
-    return AddressPlan(url=_SERVER, change=change, unencrypted=unencrypted)  # type: ignore[arg-type]  # test literal
+def _plan(change: str, *, unencrypted: bool = False, url: str = _SERVER) -> AddressPlan:
+    return AddressPlan(url=url, change=change, unencrypted=unencrypted)  # type: ignore[arg-type]  # test literal
 
 
 @pytest.fixture
@@ -339,22 +343,74 @@ async def test_sync_link_server_url_equal_to_the_current_one_needs_no_prompt(
     address.auth_service.return_value.begin.assert_called_once_with(challenge=None)
 
 
-@pytest.mark.unit
-async def test_sync_link_unconfigured_login_tells_the_agent_to_ask_the_user() -> None:
-    not_configured = UserError(
+def _not_configured() -> UserError:
+    return UserError(
         "No sync server address is configured for this profile.",
         code="sync_server_not_configured",
         hint="Run 'moneybin sync login --server <url>'.",
     )
+
+
+@pytest.fixture
+def unconfigured(address: MagicMock) -> Generator[MagicMock, None, None]:
+    """No address saved: a login without server_url must propose the local one."""
+    address.SUGGESTED_SERVER_URL = SUGGESTED_SERVER_URL
     with patch.object(
-        sync_module, "_build_sync_auth_service", side_effect=not_configured
+        sync_module, "_build_sync_auth_service", side_effect=_not_configured()
     ):
+        yield address
+
+
+@pytest.mark.unit
+async def test_sync_link_unconfigured_login_offers_the_local_server(
+    unconfigured: MagicMock,
+) -> None:
+    unconfigured.plan_server_address.return_value = _plan(
+        "first", url=SUGGESTED_SERVER_URL
+    )
+
+    with _prompt(AcceptedElicitation(data=True)) as elicit:
+        envelope = await sync_module.sync_link_coarse(mode="login")
+
+    assert envelope.error is None, envelope.error
+    unconfigured.plan_server_address.assert_called_once_with(
+        "http://127.0.0.1:8000", surface="mcp"
+    )
+    message = elicit.call_args.args[0]
+    assert "http://127.0.0.1:8000" in message
+    assert "this machine" in message
+    unconfigured.start_login.assert_called_once()
+
+
+@pytest.mark.unit
+async def test_sync_link_declined_local_server_tells_the_agent_to_ask_the_user(
+    unconfigured: MagicMock,
+) -> None:
+    unconfigured.plan_server_address.return_value = _plan("first")
+
+    with _prompt(AcceptedElicitation(data=False)):
         envelope = await sync_module.sync_link_coarse(mode="login")
 
     assert envelope.error is not None
-    assert envelope.error.code == "sync_server_not_configured"
+    assert envelope.error.code == "mutation_confirmation_declined"
     assert "server_url" in (envelope.error.hint or "")
     assert "ask the user" in (envelope.error.hint or "").lower()
+    unconfigured.start_login.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_sync_link_local_server_is_never_used_unconfirmed(
+    unconfigured: MagicMock,
+) -> None:
+    """A client that cannot prompt is sent to the CLI, which shows the default."""
+    unconfigured.plan_server_address.return_value = _plan("first")
+
+    envelope = await sync_module.sync_link_coarse(mode="login")
+
+    assert envelope.error is not None
+    assert envelope.error.code == "mutation_confirmation_required"
+    assert "moneybin sync login" in (envelope.error.hint or "")
+    unconfigured.start_login.assert_not_called()
 
 
 @pytest.mark.unit

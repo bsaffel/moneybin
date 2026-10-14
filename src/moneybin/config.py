@@ -432,10 +432,6 @@ class SyncConfig(BaseModel):
         default=None,
         description="API key for MoneyBin Sync service (legacy - prefer OAuth)",
     )
-    use_local_server: bool = Field(
-        default=True,
-        description="Use local server code directly (development mode)",
-    )
 
     # OAuth/Auth0 configuration (future)
     oauth_client_id: str | None = Field(
