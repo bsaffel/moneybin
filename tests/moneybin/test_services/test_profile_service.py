@@ -494,6 +494,18 @@ class TestProfileSet:
         data = yaml.safe_load(config_path.read_text())
         assert data["logging"]["level"] == "DEBUG"
 
+    def test_set_logging_level_stores_the_normalized_form(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lowercase input is accepted and written as the field's canonical form."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        svc.set("alice", "logging.level", "debug")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        data = yaml.safe_load(config_path.read_text())
+        assert data["logging"]["level"] == "DEBUG"
+
     def test_set_boolean_value(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
