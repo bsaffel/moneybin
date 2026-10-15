@@ -11,6 +11,7 @@ import respx
 
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_errors import SyncAPIError
+from tests.moneybin.connectors.test_sync_client import FakeSecretStore
 
 
 @pytest.fixture
@@ -24,10 +25,11 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SyncClient:
         "http_proxy",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
     result = SyncClient(
         server_url="https://test.api",
         profile_id="synthetic-profile",
-        token_path=tmp_path / "token",
+        secret_store=FakeSecretStore(),
     )
     result._store_tokens(  # pyright: ignore[reportPrivateUsage]  # synthetic token fixture
         access_token="synthetic-jwt",  # noqa: S106  # synthetic fixture credentials

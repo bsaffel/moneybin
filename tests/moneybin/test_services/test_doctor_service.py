@@ -20,6 +20,8 @@ from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
     FX_RATE_SPINE_ROWS,
+    NET_WORTH_STALE_BALANCE_ACCOUNTS,
+    NET_WORTH_UNANCHORED_ACCOUNTS,
     NET_WORTH_UNPRICED_DATES,
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
@@ -38,7 +40,9 @@ from moneybin.services.doctor_service import (
 )
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import (
+    CORE_DIM_ACCOUNTS_DDL,
     CORE_FCT_EXCHANGE_RATES_DAILY_DDL,
+    CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
     create_core_tables,
 )
 
@@ -900,11 +904,16 @@ def test_run_all_returns_expected_invariants(
     # + account_archive_intent_ambiguous (M2B.2: cascade-written exclusions
     # V063 could not tell from a chosen one).
     # + sync_completeness + sync_health + net_worth_stale_balance (MB-86).
-    assert len(report.invariants) == 67
+    # + net_worth_unanchored_accounts (M2B.3).
+    assert len(report.invariants) == 68
     names = [r.name for r in report.invariants]
-    assert "sync_completeness" in names
-    assert "sync_health" in names
-    assert "net_worth_stale_balance" in names
+    for name in (
+        "sync_completeness",
+        "sync_health",
+        "net_worth_unanchored_accounts",
+        "net_worth_stale_balance",
+    ):
+        assert names.count(name) == 1
     assert "app_audit_coverage_investment_match_decisions" in names
     assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
@@ -1136,14 +1145,16 @@ def _investment_result(
 
 @pytest.mark.unit
 def test_staging_rejects_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__investment_transactions "
-        "(investment_transaction_id VARCHAR, review_reason VARCHAR)"
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
     )
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
-        "('itx_1', 'split_underivable'), ('itx_2', NULL)"
+        "('itx_1', 'acc1', 'split_underivable'), ('itx_2', 'acc1', NULL)"
     )
     result = _investment_result(db, monkeypatch, "investment_staging_rejects")
     assert result.status == "warn"
@@ -1154,21 +1165,136 @@ def test_staging_rejects_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
 def test_staging_rejects_pass_when_no_review_reasons(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__investment_transactions "
-        "(investment_transaction_id VARCHAR, review_reason VARCHAR)"
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
     )
     db.execute(
-        "INSERT INTO prep.stg_plaid__investment_transactions VALUES ('itx_1', NULL)"
+        "INSERT INTO prep.stg_plaid__investment_transactions "
+        "VALUES ('itx_1', 'acc1', NULL)"
     )
     result = _investment_result(db, monkeypatch, "investment_staging_rejects")
     assert result.status == "pass"
     assert result.affected_ids == []
 
 
+def _seed_choice_account(db: Database, account_id: str, choice: str | None) -> None:
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, investment_source_type) "
+        "VALUES (?, ?)",
+        [account_id, choice],
+    )
+
+
+@pytest.mark.unit
+def test_staging_rejects_skip_a_manual_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plaid rows in an account choosing `manual` never reach its ledger."""
+    create_core_tables(db)
+    _seed_choice_account(db, "acc_manual", "manual")
+    _seed_choice_account(db, "acc_open", None)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_skip', 'acc_manual', 'unmapped_subtype')"
+    )
+    skipped = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert skipped.status == "pass"
+
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_warn', 'acc_open', 'split_underivable')"
+    )
+    warned = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert warned.status == "warn"
+    assert warned.affected_ids == ["itx_warn"]
+
+
+@pytest.mark.unit
+def test_staging_rejects_keep_a_split_reject_in_a_manual_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dim_holdings withholds per security, so a split reject stays explained."""
+    create_core_tables(db)
+    _seed_choice_account(db, "acc_manual", "manual")
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_split', 'acc_manual', 'split_underivable'), "
+        "('itx_other', 'acc_manual', 'unmapped_subtype')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert result.status == "warn"
+    assert result.affected_ids == ["itx_split"]
+
+
+@pytest.mark.unit
+def test_staging_rejects_still_warn_for_a_plaid_choice(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `plaid` choice keeps Plaid rows in the ledger, so their rejects count."""
+    create_core_tables(db)
+    _seed_choice_account(db, "acc_plaid", "plaid")
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc_plaid', 'split_underivable')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert result.status == "warn"
+
+
+@pytest.mark.unit
+def test_opening_lot_review_skips_a_manual_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_core_tables(db)
+    _seed_choice_account(db, "acc_manual", "manual")
+    _seed_choice_account(db, "acc_open", None)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__opening_lot_review "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__opening_lot_review VALUES "
+        "('acc_manual', 'sec1', 'k1', 'short_or_nonpositive')"
+    )
+    skipped = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert skipped.status == "pass"
+
+    db.execute(
+        "INSERT INTO prep.stg_plaid__opening_lot_review VALUES "
+        "('acc_open', 'sec2', 'k2', 'short_or_nonpositive')"
+    )
+    warned = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert warned.status == "warn"
+    assert warned.affected_ids == ["acc_open:sec2 (short_or_nonpositive)"]
+
+
 @pytest.mark.unit
 def test_opening_lot_review_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__opening_lot_review "
@@ -1195,6 +1321,7 @@ def test_opening_lot_review_unbound_security_shows_provider_key(
     stays addressable when the canonical id never resolved — the same
     fallback ``_run_investment_unreported_holdings`` already applies.
     """
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__opening_lot_review "
@@ -1208,6 +1335,57 @@ def test_opening_lot_review_unbound_security_shows_provider_key(
     result = _investment_result(db, monkeypatch, "investment_opening_lot_review")
     assert result.status == "warn"
     assert result.affected_ids == ["acc1:plaid_sec_unbound (short_or_nonpositive)"]
+
+
+def _drop_dim_source_choice_columns(db: Database) -> None:
+    """Leave `core.dim_accounts` as it was before V069 (migrated, not yet refreshed)."""
+    db.execute(
+        "ALTER TABLE core.dim_accounts DROP COLUMN investment_source_type_changed_at"
+    )
+    db.execute("ALTER TABLE core.dim_accounts DROP COLUMN investment_source_type")
+
+
+@pytest.mark.unit
+def test_staging_rejects_run_on_a_dim_accounts_without_the_choice_column(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No column means no choice: the check runs unfiltered, not `skipped`."""
+    create_core_tables(db)
+    _drop_dim_source_choice_columns(db)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'split_underivable')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert result.status == "warn"
+    assert result.affected_ids == ["itx_1"]
+
+
+@pytest.mark.unit
+def test_opening_lot_review_runs_on_a_dim_accounts_without_the_choice_column(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_core_tables(db)
+    _drop_dim_source_choice_columns(db)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__opening_lot_review "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__opening_lot_review VALUES "
+        "('acc1', 'sec1', 'k1', 'short_or_nonpositive')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:sec1 (short_or_nonpositive)"]
 
 
 @pytest.mark.unit
@@ -1286,6 +1464,7 @@ def test_opening_lot_review_pass_when_nothing_needs_review(
     life in. Without this, a query that silently matched everything would look
     identical to one that correctly matched nothing.
     """
+    create_core_tables(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__opening_lot_review "
@@ -1552,13 +1731,95 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
     )
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "fail"
-    assert result.affected_ids == ["ACC1"]
+    assert result.affected_ids == ["account:ACC1"]
     assert result.recovery_actions is not None
-    # Only the action that can actually leave one ledger behind. A disconnect
-    # is a remote-only operation — the rows it already pulled stay local, and
-    # this check reads exactly those rows — so offering it would hand the user
-    # a permanent disconnection and an unchanged failure.
-    assert [a.tool for a in result.recovery_actions] == ["import_revert"]
+    # One choice per source present; none deletes anything.
+    assert [a.tool for a in result.recovery_actions] == ["accounts_set"] * 2
+    assert [a.arguments["investment_source_type"] for a in result.recovery_actions] == [
+        "manual",
+        "plaid",
+    ]
+
+
+def _seed_overlap_account(db: Database, account_id: str) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_transactions (
+            investment_transaction_id, account_id, transaction_date, amount,
+            observation_version, source_origin
+        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
+        """  # test input, not user data
+    )
+    db.execute("""
+        INSERT INTO raw.plaid_investment_transaction_receipts (
+            investment_transaction_id, source_origin, source_file,
+            observation_version, extracted_at
+        ) VALUES ('p1', 'item1', 'sync_fixture', 'plaid_fixture', '2026-01-01')
+    """)
+    db.execute(
+        """
+        INSERT INTO app.account_links (
+            link_id, account_id, ref_kind, ref_value, source_type, source_origin,
+            status, decided_by, decided_at
+        ) VALUES ('lnk1', ?, 'source_native', 'plaid_acc1', 'plaid', 'item1',
+                   'accepted', 'auto', CURRENT_TIMESTAMP)
+        """,  # test input, not user data
+        [account_id],
+    )
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, type, trade_date, created_by
+        ) VALUES ('manual_1', 'imp1', ?, 'buy', '2026-01-02', 'cli')
+        """,  # test input, not user data
+        [account_id],
+    )
+
+
+@pytest.mark.unit
+def test_source_overlap_masks_affected_ids(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An account-number-shaped id reaches affected_ids masked, never raw."""
+    _seed_overlap_account(db, "acct-55551234")
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:acct-****1234"]
+    assert "55551234" not in " ".join(result.affected_ids)
+
+
+@pytest.mark.unit
+def test_source_overlap_detail_names_the_setting(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_overlap_account(db, "ACC1")
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    detail = result.detail or ""
+    assert "investment-source-type" in detail
+    assert "deletes nothing" in detail
+    assert "Revert" not in detail
+    assert "1 account has" in detail
+
+
+@pytest.mark.unit
+def test_source_choice_gauge_reports_each_choice(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for account_id, choice in (("a1", "manual"), ("a2", "manual"), ("a3", "plaid")):
+        db.execute(
+            "INSERT INTO app.account_settings (account_id, investment_source_type) "
+            "VALUES (?, ?)",
+            [account_id, choice],
+        )
+    _investment_result(db, monkeypatch, "investment_source_overlap")
+    for source_type, expected in (("manual", 2.0), ("plaid", 1.0)):
+        assert (
+            REGISTRY.get_sample_value(
+                "moneybin_investment_source_choice_accounts",
+                {"investment_source_type": source_type},
+            )
+            == expected
+        )
 
 
 def test_source_overlap_detects_holdings_before_bootstrap_transform(
@@ -1586,7 +1847,7 @@ def test_source_overlap_detects_holdings_before_bootstrap_transform(
     """)
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "fail"
-    assert result.affected_ids == ["ACC_HOLDINGS"]
+    assert result.affected_ids == ["account:ACC_HOLDINGS"]
     assert db.execute(
         "SELECT COUNT(*) FROM raw.plaid_investment_transactions"
     ).fetchone() == (0,)
@@ -1604,6 +1865,106 @@ def test_source_overlap_pass_when_only_one_source(
         ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
         """  # test input, not user data
     )
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def _seed_stale_choice(
+    db: Database, account_id: str, *, ledger_sources: tuple[str, ...]
+) -> None:
+    """A manual choice saved on an account; the ledger holds *ledger_sources*."""
+    db.execute(CORE_DIM_ACCOUNTS_DDL)
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    db.execute("INSERT INTO core.dim_accounts (account_id) VALUES (?)", [account_id])
+    db.execute(
+        "INSERT INTO app.account_settings (account_id, investment_source_type) "
+        "VALUES (?, 'manual')",
+        [account_id],
+    )
+    for n, source in enumerate(ledger_sources):
+        db.execute(
+            "INSERT INTO core.fct_investment_transactions "
+            "(investment_transaction_id, account_id, source_type) "
+            "VALUES (?, ?, ?)",
+            [f"itx_{n}", account_id, source],
+        )
+
+
+@pytest.mark.unit
+def test_source_overlap_fails_on_a_stale_choice_with_one_refresh_action(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved choice the ledger has not caught up with double-counts like an overlap."""
+    _seed_stale_choice(db, "acct-55551234", ledger_sources=("manual", "plaid"))
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "1 account has a saved source choice" in detail
+    assert "moneybin refresh" in detail
+    assert result.affected_ids == ["account:acct-****1234"]
+    assert "55551234" not in " ".join(result.affected_ids)
+    assert result.recovery_actions is not None
+    assert [a.tool for a in result.recovery_actions] == ["refresh_run"]
+    assert result.recovery_actions[0].idempotent is True
+
+
+@pytest.mark.unit
+def test_source_overlap_reports_both_stale_and_unresolved_accounts(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_overlap_account(db, "ACC1")
+    _seed_stale_choice(db, "ACC2", ledger_sources=("manual", "plaid"))
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "investment-source-type" in detail
+    assert "moneybin refresh" in detail
+    assert sorted(result.affected_ids) == ["account:ACC1", "account:ACC2"]
+    assert result.recovery_actions is not None
+    assert [a.tool for a in result.recovery_actions] == [
+        "accounts_set",
+        "accounts_set",
+        "refresh_run",
+    ]
+
+
+def _raise_ledger_unreadable(_db: Database) -> list[str]:
+    raise RuntimeError("ledger unreadable")
+
+
+@pytest.mark.unit
+def test_source_overlap_still_fails_when_the_stale_query_errors(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable ledger must not hide an overlap the raw detector found."""
+    _seed_overlap_account(db, "ACC1")
+    monkeypatch.setattr(
+        "moneybin.services.doctor_service.stale_source_choice_accounts",
+        _raise_ledger_unreadable,
+    )
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:ACC1"]
+
+
+@pytest.mark.unit
+def test_source_overlap_skips_when_only_the_stale_query_errors(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.services.doctor_service.stale_source_choice_accounts",
+        _raise_ledger_unreadable,
+    )
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "skipped"
+
+
+@pytest.mark.unit
+def test_source_overlap_passes_once_the_ledger_holds_only_the_chosen_source(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_stale_choice(db, "ACC1", ledger_sources=("manual",))
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "pass"
     assert result.affected_ids == []
@@ -2133,6 +2494,8 @@ def test_run_all_includes_investment_checks(
     assert "investment_unpriced_holdings" in names
     assert "investment_stale_prices" in names
     assert "investment_unmapped_price_source" in names
+    assert "net_worth_unanchored_accounts" in names
+    assert "net_worth_stale_balance" in names
 
 
 @pytest.mark.integration
@@ -2713,6 +3076,300 @@ def test_unmapped_price_source_ignores_a_row_with_no_accepted_binding(
     assert result.status == "pass"
 
 
+# --- M2B.3 net-worth unanchored-account guard -------------------------------
+
+
+def _net_worth_guard_ddl(db: Database) -> None:
+    """Only the columns the two net-worth checks read."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS core.dim_accounts (account_id VARCHAR, "
+        "include_in_net_worth BOOLEAN, archived BOOLEAN, archived_at DATE)"
+    )
+    db.execute("CREATE TABLE core.dim_unanchored_accounts (account_id VARCHAR)")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS core.fct_balances_daily "
+        "(account_id VARCHAR, balance_date DATE, is_observed BOOLEAN)"
+    )
+    db.execute("CREATE TABLE reports.net_worth (balance_date DATE)")
+    db.execute(
+        "CREATE TABLE reports.net_worth_accounts (account_id VARCHAR, "
+        "is_observed BOOLEAN, balance_date DATE)"
+    )
+
+
+def _nw_account(
+    db: Database,
+    account_id: str,
+    *,
+    include: bool = True,
+    archived: bool = False,
+    archived_days_ago: int | None = None,
+) -> None:
+    db.execute(
+        "INSERT INTO core.dim_accounts "
+        "(account_id, include_in_net_worth, archived, archived_at) "
+        "VALUES (?, ?, ?, CURRENT_DATE - ?::INTEGER)",
+        [account_id, include, archived, archived_days_ago],
+    )
+
+
+def _spine_row(
+    db: Database, account_id: str, days_ago: int, *, in_net_worth: bool = True
+) -> None:
+    """A balance-spine row; an included account's also dates a net-worth row."""
+    db.execute(
+        "INSERT INTO core.fct_balances_daily VALUES (?, CURRENT_DATE - ?::INTEGER, TRUE)",
+        [account_id, days_ago],
+    )
+    if in_net_worth:
+        db.execute(
+            "INSERT INTO reports.net_worth VALUES (CURRENT_DATE - ?::INTEGER)",
+            [days_ago],
+        )
+
+
+def _observed(db: Database, account_id: str, days_ago: int) -> None:
+    db.execute(
+        "INSERT INTO core.fct_balances_daily VALUES (?, CURRENT_DATE - ?::INTEGER, TRUE)",
+        [account_id, days_ago],
+    )
+    db.execute(
+        "INSERT INTO reports.net_worth_accounts VALUES (?, TRUE, CURRENT_DATE - ?::INTEGER)",
+        [account_id, days_ago],
+    )
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_fails_naming_each_eligible_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _net_worth_guard_ddl(db)
+    for acct in ("brk", "chk"):
+        _nw_account(db, acct)
+        db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [acct])
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:brk", "account:chk"]
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_names_the_rebuild_the_assert_receipt_names(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Doctor and `accounts balance assert` must send the reader to one command.
+
+    The assert receipt already ends on `refresh --step transform`; a doctor
+    remedy naming a different rebuild reads as a second, unrelated step.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "brk")
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('brk')")
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.detail is not None
+    assert "`moneybin refresh --step transform`" in result.detail
+    assert_published_commands_resolve(result.detail)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kwargs", [{"include": False}, {"archived": True}])
+def test_unanchored_accounts_passes_for_an_excluded_or_archived_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool]
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "brk", **kwargs)
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('brk')")
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_fails_for_an_account_archived_after_the_spine_ends(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Archived today, spine ends 3 days ago: the latest net-worth row is still NULL."""
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "m2b3_anchor")
+    _spine_row(db, "m2b3_anchor", 3)
+    _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=0)
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:m2b3_brk"]
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_passes_for_an_account_archived_before_the_spine_ends(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A closed account's pre-archive history never keeps the check red."""
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "m2b3_anchor")
+    _spine_row(db, "m2b3_anchor", 3)
+    _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=10)
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_dates_eligibility_at_the_latest_net_worth_row(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An excluded account's later balances must not move the eligibility date.
+
+    Included balances end 10 days ago, an excluded account's run to 2 days ago,
+    and the candidate was archived 5 days ago: the latest reports.net_worth row
+    (10 days ago) still counts it, so its total is NULL and doctor must fail.
+    """
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "m2b3_anchor")
+    _nw_account(db, "m2b3_excl", include=False)
+    _spine_row(db, "m2b3_anchor", 10)
+    _spine_row(db, "m2b3_excl", 2, in_net_worth=False)
+    _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=5)
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:m2b3_brk"]
+
+
+@pytest.mark.unit
+def test_stale_balance_warns_on_an_entirely_stale_profile(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No row dated today at all: a CURRENT_DATE filter would pass silently here."""
+    _net_worth_guard_ddl(db)
+    for acct in ("a", "b"):
+        _nw_account(db, acct)
+        _observed(db, acct, 45)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert result.affected_ids == []
+    assert result.detail is not None and "2 included accounts" in result.detail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kwargs", [{"include": False}, {"archived": True}])
+def test_stale_balance_skips_an_excluded_or_archived_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool]
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "live")
+    _nw_account(db, "closed", **kwargs)
+    _observed(db, "live", 46)
+    _observed(db, "closed", 46)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert result.affected_ids == []
+    assert result.detail is not None and "1 included accounts" in result.detail
+
+
+@pytest.mark.unit
+def test_stale_balance_threshold_is_exclusive(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "at_threshold")
+    _nw_account(db, "past_threshold")
+    _observed(db, "at_threshold", 30)
+    _observed(db, "past_threshold", 31)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert result.affected_ids == []
+    assert result.detail is not None and "1 included accounts" in result.detail
+
+
+@pytest.mark.unit
+def test_stale_balance_reads_the_latest_observed_row_not_a_carried_one(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "a")
+    _observed(db, "a", 40)
+    db.execute("INSERT INTO core.fct_balances_daily VALUES ('a', CURRENT_DATE, FALSE)")
+    db.execute(
+        "INSERT INTO reports.net_worth_accounts VALUES ('a', FALSE, CURRENT_DATE)"
+    )
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+
+
+@pytest.mark.unit
+def test_stale_balance_is_warn_so_it_never_counts_as_failing(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "a")
+    _observed(db, "a", 45)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert DoctorReport(invariants=[result], transaction_count=0).failing == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "check", ["net_worth_unanchored_accounts", "net_worth_stale_balance"]
+)
+def test_net_worth_checks_mask_a_source_native_account_id(
+    db: Database, monkeypatch: pytest.MonkeyPatch, check: str
+) -> None:
+    """Unanchored IDs are masked; stale-balance diagnostics disclose counts only."""
+    _net_worth_guard_ddl(db)
+    raw_id = "123456789012"  # synthetic account-number-shaped key
+    _nw_account(db, raw_id)
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [raw_id])
+    _observed(db, raw_id, 45)
+    result = _investment_result(db, monkeypatch, check)
+    assert result.status in ("fail", "warn")
+    if check == "net_worth_stale_balance":
+        assert result.affected_ids == []
+    else:
+        assert len(result.affected_ids) == 1
+        assert result.affected_ids[0].startswith("account:")
+    assert raw_id not in repr(result)
+
+
+@pytest.mark.unit
+def test_net_worth_checks_set_their_gauges(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both counts are scrape-visible, including a return to zero."""
+    _net_worth_guard_ddl(db)
+    for acct in ("a", "b"):
+        _nw_account(db, acct)
+        db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [acct])
+    _observed(db, "a", 45)
+    _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 2  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+    db.execute("DELETE FROM core.dim_unanchored_accounts")
+    db.execute("DELETE FROM core.fct_balances_daily")
+    db.execute("DELETE FROM reports.net_worth_accounts")
+    _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+@pytest.mark.unit
+def test_net_worth_checks_leave_their_gauges_when_skipped(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Views absent before the first transform: a scrape reads stale, not zero."""
+    NET_WORTH_UNANCHORED_ACCOUNTS.set(4242)
+    NET_WORTH_STALE_BALANCE_ACCOUNTS.set(4242)
+    for check in ("net_worth_unanchored_accounts", "net_worth_stale_balance"):
+        assert _investment_result(db, monkeypatch, check).status == "skipped"
+    assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
 @pytest.mark.unit
 def test_missing_registered_model_fails_an_invariant(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
@@ -2981,7 +3638,8 @@ def test_currency_integrity_fail_names_the_transform_that_applies_the_fix(
 
     assert result.status == "fail"
     detail = result.detail or ""
-    assert "transform apply" in detail
+    # The same rebuild `accounts set --currency` prints on its own receipt.
+    assert "`moneybin refresh --step transform`" in detail
     # "transform" alone is a substring of both the fixed text above and the
     # stale bare-`transform` invocation this test guards against, so it
     # cannot tell the two apart. The stale spelling was the exact substring
@@ -3150,12 +3808,13 @@ def test_currency_integrity_sets_fx_spine_and_unpriced_gauges(
         CREATE OR REPLACE VIEW reports.net_worth AS
         SELECT * FROM (
             VALUES
-                ('USD', DATE '2026-01-01', 1, 0, 1, 0,
+                ('USD', DATE '2026-01-01', 1, 0, 1, 0, 0,
                  100.00::DECIMAL(18, 2), 0.00::DECIMAL(18, 2), 100.00::DECIMAL(18, 2)),
-                ('USD', DATE '2026-01-02', 1, 0, 2, 1,
+                ('USD', DATE '2026-01-02', 1, 0, 2, 1, 0,
                  NULL::DECIMAL(18, 2), NULL::DECIMAL(18, 2), NULL::DECIMAL(18, 2))
         ) AS t(home_currency_code, balance_date, account_count,
                carried_forward_count, currency_count, unpriced_currency_count,
+               unanchored_account_count,
                total_assets, total_liabilities, net_worth)
     """)  # test input, not user data
 
@@ -5204,9 +5863,10 @@ def test_currency_integrity_plain_advice_unchanged_when_no_duplicate_overlap(
         "1 account(s) have an unknown currency. Their amounts "
         "are segmented out of every total until you assign one — "
         "run `moneybin accounts set <account> --currency <ISO 4217>`, "
-        "then `moneybin transform apply`: the setting is app state, and "
-        "core.* only picks it up on the next transform, so this check "
-        "keeps failing until you re-run one. "
+        "then the rebuild it names, `moneybin refresh --step "
+        "transform`: the setting is app state, and core.* only picks "
+        "it up on the next transform, so this check keeps failing "
+        "until you re-run one. "
         "MoneyBin never guesses a currency, because a wrong guess "
         "would silently blend into a figure nothing could flag."
     )

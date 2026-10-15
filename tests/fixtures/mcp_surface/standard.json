@@ -1,5 +1,5 @@
 {
-  "sha256": "5f89cbb6e86c7b67178c41fe5fdb9ac100f2a80e5e0052cf7cc0002275771e14",
+  "sha256": "feac5056adb864f93cff8bfc35cc9e4d55d455f1b8c944edd1a3a96388d007ce",
   "tool_count": 50,
   "tools": [
     {
@@ -406,7 +406,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Update an account's settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type accepts depository/credit/loan/investment/other without changing subtype; clear it to restore source evidence. account_subtype and holder_category allow noncanonical values with warnings. default_cost_basis_method accepts fifo/hifo/specific/average; invalid types or methods raise mutation_invalid_input. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not yet date-scoped. include_in_net_worth=False also excludes active accounts. Writes audited app.account_settings; restore prior values or use system_audit_undo. Amounts use summary.display_currency.",
+        "description": "Update account settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type: depository/credit/loan/investment/other; subtype unchanged; clear restores source evidence. Noncanonical account_subtype/holder_category values warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid types/methods raise mutation_invalid_input. investment_source_type: manual/plaid selects ledger history; clear uses both; evidence is retained. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not date-scoped. include_in_net_worth=False excludes active accounts too. Audited app.account_settings writes; restore values or use system_audit_undo. Amounts use summary.display_currency.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -515,6 +515,21 @@
               ],
               "default": null
             },
+            "investment_source_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "manual",
+                    "plaid"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "is_archived": {
               "anyOf": [
                 {
@@ -557,12 +572,12 @@
         "name": "accounts_set",
         "title": "Accounts Set"
       },
-      "description_bytes": 825,
-      "input_schema_bytes": 1082,
+      "description_bytes": 862,
+      "input_schema_bytes": 1194,
       "name": "accounts_set",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 2122
+      "total_bytes": 2271
     },
     {
       "annotation_bytes": 90,
@@ -5420,5 +5435,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 65011
+  "total_bytes": 65160
 }

@@ -15,6 +15,7 @@ from moneybin.config import SyncConfig, get_settings
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_errors import SyncAPIError
 from moneybin.database import Database
+from moneybin.metrics.registry import NET_WORTH_STALE_BALANCE_ACCOUNTS
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services import doctor_service
 from moneybin.services.doctor_service import DoctorService
@@ -298,3 +299,51 @@ def test_stale_diagnostic_withholds_bound_target_ids(
     assert result.affected_ids == []
     assert "1" in result.detail
     assert "canonical" not in repr(result)
+
+
+@pytest.mark.parametrize(("include", "archived"), [(False, False), (True, True)])
+def test_stale_gauge_uses_current_settings_before_transform(
+    db: Database, monkeypatch: pytest.MonkeyPatch, include: bool, archived: bool
+) -> None:
+    create_core_tables(db)
+    db.execute("""INSERT INTO core.dim_accounts
+        (account_id, account_type, currency_code, include_in_net_worth, archived)
+        VALUES ('settings-changed', 'depository', 'USD', TRUE, FALSE)""")
+    db.execute("""INSERT INTO core.fct_balances_daily
+        (account_id, balance_date, balance, is_observed, observation_source)
+        VALUES ('settings-changed', CURRENT_DATE - INTERVAL 40 DAY, 100, TRUE, 'ofx')""")
+
+    stale = _check(db, monkeypatch, "net_worth_stale_balance")
+    assert stale.status == "warn"
+    assert stale.affected_ids == []
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert stale.detail is not None
+    assert "moneybin accounts balance assert" in stale.detail
+    assert stale.recovery_actions is not None
+    assert [action.tool for action in stale.recovery_actions] == ["sync_pull"]
+
+    db.execute(
+        """INSERT INTO app.account_settings
+        (account_id, include_in_net_worth, archived) VALUES ('settings-changed', ?, ?)""",
+        [include, archived],
+    )
+
+    fresh = _check(db, monkeypatch, "net_worth_stale_balance")
+    assert fresh.status == "pass"
+    assert fresh.affected_ids == []
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+def test_unreadable_balance_evidence_warns_without_resetting_gauge(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_core_tables(db)
+    db.execute("ALTER TABLE core.fct_balances_daily DROP COLUMN balance_date")
+    NET_WORTH_STALE_BALANCE_ACCOUNTS.set(4242)
+
+    result = _check(db, monkeypatch, "net_worth_stale_balance")
+
+    assert result.status == "warn"
+    assert result.detail is not None and "unknown" in result.detail
+    assert result.affected_ids == []
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals

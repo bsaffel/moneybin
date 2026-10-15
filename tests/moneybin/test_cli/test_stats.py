@@ -498,3 +498,55 @@ def test_no_unit_is_declared_for_a_metric_that_does_not_exist() -> None:
         f"units declared for metrics that no longer exist: "
         f"{sorted(set(HISTOGRAM_UNITS) - registered)}"
     )
+
+
+def test_populated_stats_header_counts_metrics_across_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The header names the scope and how many metrics landed in how many domains."""
+    _patch_rows(
+        monkeypatch,
+        [
+            ("moneybin_import_records", "counter", "{}", 40.0, 1, _RECORDED),
+            ("moneybin_export_runs", "counter", "{}", 7.0, 1, _RECORDED),
+        ],
+    )
+
+    result = runner.invoke(_app(), ["--no-pager"])
+
+    assert result.exit_code == 0, result.output
+    assert "All recorded metrics" in result.stdout
+    assert "2 across 2 domains" in result.stdout
+
+
+def test_populated_stats_header_uses_the_singular_for_one_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_rows(
+        monkeypatch,
+        [("moneybin_import_records", "counter", "{}", 40.0, 1, _RECORDED)],
+    )
+
+    result = runner.invoke(_app(), ["--no-pager"])
+
+    assert result.exit_code == 0, result.output
+    assert "1 across 1 domain" in result.stdout
+    assert "1 domains" not in result.stdout
+
+
+def test_populated_stats_header_names_the_requested_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--since` and `--metric` narrow the scope line, not only the query."""
+    _patch_rows(
+        monkeypatch,
+        [("moneybin_import_records", "counter", "{}", 40.0, 1, _RECORDED)],
+    )
+
+    result = runner.invoke(
+        _app(), ["--no-pager", "--since", "7d", "--metric", "import"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Recorded metrics — metric family 'import', last 7d" in result.stdout
+    assert "All recorded metrics" not in result.stdout

@@ -29,12 +29,17 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_human_text
+from moneybin.cli.render import render_human_text, render_note
 from moneybin.cli.utils import (
     _flags,  # pyright: ignore[reportPrivateUsage]
     get_terminal_policy,
 )
-from moneybin.config import canonical_checkout_root, find_repo_root, get_base_dir
+from moneybin.config import (
+    canonical_checkout_root,
+    find_repo_root,
+    get_base_dir,
+    running_checkout_root,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.utils.user_config import get_default_profile
 
@@ -95,13 +100,18 @@ _CODEX_STARTUP_TIMEOUT_SEC = 30
 def _emit_diagnostic(
     message: str,
     *,
-    level: Literal["error", "info", "warning"],
+    level: Literal["error", "warning"],
 ) -> None:
-    """Send a human diagnostic to stderr with the active terminal symbol policy."""
+    """Send a human diagnostic to stderr with the active terminal symbol policy.
+
+    Only for the two states that warrant a symbol (failure, attention). A
+    plain note uses `render_note`; a reported completion uses the success
+    symbol explicitly at its call site — `_emit_diagnostic` never infers
+    "done" from "informational" (rule 14: checkmark means completed, not noted).
+    """
     policy = get_terminal_policy()
     symbol = {
         "error": policy.symbols.failure,
-        "info": policy.symbols.success,
         "warning": policy.symbols.attention,
     }[level]
     rendered = render_human_text(f"{symbol} {message}", terminal=policy).rstrip("\n")
@@ -300,15 +310,13 @@ def mcp_install(
     # it so we can pin it in the generated client config env block. `--home`
     # writes through to the same variable, so it pins here too.
     moneybin_home = os.getenv("MONEYBIN_HOME")
-    repo_root = find_repo_root()
+    # The launch shape follows how this package is installed, never the cwd:
+    # running a checkout's code from `src/` or another directory must not swap
+    # in a published-package config, and vice versa.
+    checkout_root = running_checkout_root()
 
-    if moneybin_home:
-        # Explicit override — pin the home so it survives the client's launch context.
-        env["MONEYBIN_HOME"] = str(Path(moneybin_home).expanduser().resolve())
-
-    if repo_root is not None:
-        # Repo checkout (the dev path): anchor uv at the repo root so repo
-        # detection resolves the checkout's .moneybin/ at server-launch time.
+    if checkout_root is not None:
+        # Source checkout (the dev path): anchor uv at the checkout root.
         #
         # A linked worktree anchors at its MAIN checkout, not itself. The
         # destination file already resolves that way (via get_base_dir), so a
@@ -317,15 +325,17 @@ def mcp_install(
         # and break the main checkout's launch with nothing naming the cause.
         # An installed client config has to outlive the worktree it was
         # generated from.
-        canonical_root = canonical_checkout_root(repo_root)
-        if canonical_root != repo_root:
-            _emit_diagnostic(
+        canonical_root = canonical_checkout_root(checkout_root)
+        if canonical_root != checkout_root:
+            render_note(
                 "Installing from a linked worktree. Anchoring the config at "
                 f"the main checkout ({canonical_root}) so it stays valid after "
-                "this worktree is removed.",
-                level="info",
+                "this worktree is removed."
             )
         args: list[str] = ["run", "--directory", str(canonical_root)]
+        # `uv run --directory` starts the server in the checkout, so its repo
+        # detection resolves the checkout's own data home.
+        launch_home = canonical_root / ".moneybin"
     else:
         # Installed path: run the PUBLISHED package, pinned. Unpinned would let
         # a new release auto-install on the client's next restart and migrate
@@ -333,14 +343,25 @@ def mcp_install(
         #
         # Accepted pre-launch gap: until the first tag publishes moneybin to
         # PyPI, this pinned `--from moneybin==X.Y.Z` config is unresolvable, so a
-        # user who runs `mcp install` from outside the repo checkout during the
-        # pre-launch window gets a config `uv tool run` can't satisfy. Narrow and
-        # self-resolving — the documented pre-launch install is the git-clone dev
-        # path (which takes the repo_root branch above), and README/
-        # ai-client-compatibility.md present the published path as arriving with
-        # the first release. No fallback is added: once published the pin is
-        # correct, and a permanent warning would be post-launch noise.
+        # user running a non-checkout install during the pre-launch window gets
+        # a config `uv tool run` can't satisfy. Narrow and self-resolving — the
+        # documented pre-launch install is the git-clone dev path (which takes
+        # the checkout branch above), and README/ai-client-compatibility.md
+        # present the published path as arriving with the first release. No
+        # fallback is added: once published the pin is correct, and a permanent
+        # warning would be post-launch noise.
         args = ["tool", "run", "--from", f"moneybin=={get_version()}"]
+        # Assumes the client starts the tool outside any checkout, where the
+        # default home resolves. A client that starts it inside a checkout
+        # opens that checkout's home instead; the guide states the assumption.
+        launch_home = Path.home() / ".moneybin"
+
+    # Pin the home whenever the server would not land on the one this install
+    # resolved — the profile named above lives there. An explicit
+    # MONEYBIN_HOME is always pinned so it survives the client's launch context.
+    install_home = get_base_dir()
+    if moneybin_home or install_home != launch_home.resolve():
+        env["MONEYBIN_HOME"] = str(install_home)
 
     args += ["moneybin", "--profile", resolved_profile, "mcp", "serve"]
 
@@ -490,7 +511,13 @@ def _confirm_and_merge(
         _merge_toml_config(config_path, snippet)
     else:
         _merge_client_config(config_path, snippet)
-    _emit_diagnostic(f"Config written to {config_path}", level="info")
+    # The write just completed, so this is the one info-level line that earns
+    # the success symbol — set explicitly rather than through _emit_diagnostic,
+    # which no longer infers a completion from "info".
+    typer.echo(
+        f"{get_terminal_policy().symbols.success} Config written to {config_path}",
+        err=True,
+    )
     return True
 
 
@@ -847,9 +874,15 @@ def mcp_list_prompts(
         )
         return
 
+    header = f"{len(sorted_prompts)} registered prompt" + (
+        "s:" if len(sorted_prompts) != 1 else ":"
+    )
     catalog = "\n".join(
-        f"  {prompt.name}  {getattr(prompt, 'description', None) or ''}"
-        for prompt in sorted_prompts
+        [header]
+        + [
+            f"  {prompt.name}  {getattr(prompt, 'description', None) or ''}"
+            for prompt in sorted_prompts
+        ]
     )
     emit_human_result(
         catalog,

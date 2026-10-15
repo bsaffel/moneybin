@@ -85,11 +85,15 @@ MoneyBin does not write the encryption key into the init script or command argum
      OS keychain until explicitly locked. Stronger posture for shared machines.
 
 ### Key Management
-5. Key retrieval chain: OS keychain (`keyring` library) → `MONEYBIN_DATABASE__ENCRYPTION_KEY`
+5. Key retrieval chain: OS keychain (`keyring` library) → `MONEYBIN_PROFILE__<PROFILE>__DATABASE__ENCRYPTION_KEY`
    env var → `DatabaseKeyError` with actionable instructions.
 6. OS keychain is the primary storage backend: macOS Keychain, Linux Secret Service,
    Windows Credential Manager — all abstracted by `keyring`.
-7. Env var fallback (`MONEYBIN_DATABASE__ENCRYPTION_KEY`) is the CI/headless path. The
+7. Profile names are normalized, uppercased, and hyphens become underscores in
+   secret environment names. Named profiles never consult the unscoped legacy
+   variable. For example, `alice-work` uses
+   `MONEYBIN_PROFILE__ALICE_WORK__DATABASE__ENCRYPTION_KEY`.
+   Env var fallback (`MONEYBIN_PROFILE__<PROFILE>__DATABASE__ENCRYPTION_KEY`) is the CI/headless path. The
    user/CI system is responsible for securing the env var.
 8. The encryption key is never stored in config files, `.env` files, settings, or any
    file on disk.
@@ -102,7 +106,7 @@ MoneyBin does not write the encryption key into the init script or command argum
 ### Secret Retrieval (`SecretStore`)
 11. A `SecretStore` class centralizes all local secret management. It is the only
     module that imports `keyring`. Three operations:
-    - **`get_key(name)`**: OS keychain → `MONEYBIN_{NAME}` env var →
+    - **`get_key(name)`**: OS keychain → `MONEYBIN_PROFILE__{PROFILE}__{NAME}` env var →
       `SecretNotFoundError`. If the keychain backend itself reports the read as
       denied/locked rather than a routine miss (e.g. a locked Linux secret
       service), raises `SecretUnavailableError` instead — a subclass of
@@ -116,7 +120,13 @@ MoneyBin does not write the encryption key into the init script or command argum
       lifecycle logic — it provides the keychain interface.
     - **`get_env(name)`**: `MONEYBIN_{NAME}` env var → `SecretNotFoundError`. Used
       for API keys, server credentials — secrets that don't need keychain storage.
-12. `SecretStore` does not cache, derive, rotate, or orchestrate secret lifecycle.
+12. Sync tokens also use `SecretStore`, preserving the existing `moneybin-sync`
+    keychain service and opaque profile-ID usernames. Sync login and refresh
+    require writable keychain storage; tokens have no environment or plaintext
+    write fallback. Legacy profile-specific token files are imported only after
+    both values are stored and read back successfully, then removed. Failed
+    imports retain the file and refuse authentication from it.
+    `SecretStore` does not cache, derive, rotate, or orchestrate secret lifecycle.
     Passphrase derivation (Argon2id) and rotation sequencing live in the CLI commands
     that call `set_key()` / `delete_key()`. `SecretStore` is the keychain and env var
     interface — nothing more.
@@ -452,7 +462,7 @@ this spec — the CLI is the primary interface for infrastructure concerns.
 
 ### Unit: `SecretStore`
 - **`get_key` keychain hit:** keychain contains secret → returns it.
-- **`get_key` env fallback:** keychain miss + `MONEYBIN_{NAME}` set → returns env var.
+- **`get_key` env fallback:** keychain miss + the matching `MONEYBIN_PROFILE__{PROFILE}__{NAME}` set → returns env var; another profile's variable and the old global variable are refused for named profiles.
 - **`get_key` missing:** both miss → raises `SecretNotFoundError` with actionable
   instructions.
 - **`get_key` denied:** keychain backend reports the read as denied/locked

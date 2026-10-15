@@ -45,15 +45,18 @@ def system_db(db: Database) -> Database:
             institution_slug, institution_fid, source_type, source_file,
             extracted_at, loaded_at, updated_at, display_name,
             display_name_is_user_set, official_name, last_four, account_subtype,
-            holder_category, currency_code, credit_limit, archived,
-            include_in_net_worth, archived_at
+            holder_category, currency_code, investment_source_type, credit_limit,
+            archived, include_in_net_worth, archived_at,
+            investment_source_type_changed_at
         ) VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-         'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE, NULL),
+         'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, NULL, FALSE, TRUE, NULL,
+         NULL),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', 'other_bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-         'Other Bank SAVINGS ...0002', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE, NULL)
+         'Other Bank SAVINGS ...0002', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, NULL, FALSE, TRUE, NULL,
+         NULL)
     """)  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
@@ -217,13 +220,14 @@ def _insert_dim_account(
             institution_slug, institution_fid, source_type, source_file,
             extracted_at, loaded_at, updated_at, display_name,
             display_name_is_user_set, official_name, last_four, account_subtype,
-            holder_category, currency_code, credit_limit, archived,
-            include_in_net_worth, archived_at
+            holder_category, currency_code, investment_source_type, credit_limit,
+            archived, include_in_net_worth, archived_at,
+            investment_source_type_changed_at
         ) VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', ?, CURRENT_TIMESTAMP, ?,
          'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD',
-         NULL, FALSE, TRUE, NULL)
+         NULL, NULL, FALSE, TRUE, NULL, NULL)
         """,
         [dim_extracted_at, dim_updated_at],
     )

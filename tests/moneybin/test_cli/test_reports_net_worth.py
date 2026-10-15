@@ -53,6 +53,7 @@ def test_net_worth_text_renders_the_day_grain_headline() -> None:
                 "carried_forward_count": 0,
                 "currency_count": 1,
                 "unpriced_currency_count": 0,
+                "unanchored_account_count": 0,
                 "total_assets": Decimal("15000.00"),
                 "total_liabilities": Decimal("-2500.00"),
                 "net_worth": Decimal("12500.00"),
@@ -65,6 +66,7 @@ def test_net_worth_text_renders_the_day_grain_headline() -> None:
             "carried_forward_count",
             "currency_count",
             "unpriced_currency_count",
+            "unanchored_account_count",
             "total_assets",
             "total_liabilities",
             "net_worth",
@@ -76,6 +78,7 @@ def test_net_worth_text_renders_the_day_grain_headline() -> None:
             "carried_forward_count": DataClass.AGGREGATE,
             "currency_count": DataClass.AGGREGATE,
             "unpriced_currency_count": DataClass.AGGREGATE,
+            "unanchored_account_count": DataClass.AGGREGATE,
             "total_assets": DataClass.BALANCE,
             "total_liabilities": DataClass.BALANCE,
             "net_worth": DataClass.BALANCE,
@@ -93,8 +96,11 @@ def test_net_worth_text_renders_the_day_grain_headline() -> None:
 
     assert invocation.exit_code == 0, invocation.output
     out = invocation.stdout
-    # The default text projection: balance_date, unpriced_currency_count,
-    # net_worth — total_assets/total_liabilities stay --wide-only.
+    # The default text projection: home_currency_code, balance_date,
+    # unpriced_currency_count, net_worth — total_assets/total_liabilities stay
+    # --wide-only. Requirement 9: net_worth is a home-currency total with no
+    # other column naming its denomination, so the currency must be visible.
+    assert "USD" in out
     assert "12,500.00" in out
     assert "15,000.00" not in out
     call = mock_catalog.return_value.execute.call_args

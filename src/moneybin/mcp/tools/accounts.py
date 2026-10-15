@@ -223,6 +223,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
     "credit_limit",
     "display_name",
     "default_cost_basis_method",
+    "investment_source_type",
 })
 
 
@@ -238,6 +239,7 @@ def accounts_set(
     credit_limit: float | None = None,
     display_name: str | None = None,
     default_cost_basis_method: str | None = None,
+    investment_source_type: Literal["manual", "plaid"] | None = None,
     include_in_net_worth: bool | None = None,
     is_archived: bool | None = None,
     clear_fields: list[str] | None = None,
@@ -260,14 +262,19 @@ def accounts_set(
         investment disposals: one of ``"fifo"``, ``"hifo"``, ``"specific"``,
         ``"average"``. ``None`` falls back to the global FIFO default. An
         unrecognized value raises ``mutation_invalid_input`` before the write.
-      ``include_in_net_worth`` — toggle inclusion in net-worth aggregates.
+      ``investment_source_type`` — which investment history feeds the
+        account's ledger: ``"manual"`` (recorded trades) or ``"plaid"``
+        (synced). Nothing is deleted; clearing it uses both. A set or clear
+        answers in ``actions`` with the trades now used and ignored.
+      ``include_in_net_worth``— toggle inclusion in net-worth aggregates.
       ``is_archived`` — archive / unarchive flag.
 
     Pass ``None`` to leave a field unchanged. To explicitly clear a text field
     back to NULL, include its name in ``clear_fields``. Valid clearable names:
     ``"official_name"``, ``"last_four"``, ``"account_subtype"``, ``"account_type"``,
     ``"holder_category"``, ``"currency_code"``, ``"credit_limit"``,
-    ``"display_name"``, ``"default_cost_basis_method"``. Booleans
+    ``"display_name"``, ``"default_cost_basis_method"``,
+    ``"investment_source_type"``. Booleans
     (``include_in_net_worth``, ``is_archived``) are not clearable — pass the
     explicit value.
 
@@ -295,6 +302,7 @@ def accounts_set(
         else None,
         "display_name": display_name,
         "default_cost_basis_method": default_cost_basis_method,
+        "investment_source_type": investment_source_type,
         "include_in_net_worth": include_in_net_worth,
         # MCP param `is_archived` → service kwarg `archived`.
         "archived": is_archived,
@@ -315,6 +323,11 @@ def accounts_set(
             actor="mcp",
             **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
         )
+        confirmation = (
+            AccountService(db).investment_source_confirmation(account_id)
+            if kwargs["investment_source_type"] is not None
+            else None
+        )
     d = settings.to_dict()
     payload = AccountSettingsPayload(
         account_id=str(d["account_id"]),
@@ -327,12 +340,15 @@ def accounts_set(
         currency_code=d.get("currency_code"),  # type: ignore[arg-type]
         credit_limit=d.get("credit_limit"),  # type: ignore[arg-type]
         default_cost_basis_method=d.get("default_cost_basis_method"),  # type: ignore[arg-type]
+        investment_source_type=d.get("investment_source_type"),  # type: ignore[arg-type]
         include_in_net_worth=bool(d["include_in_net_worth"]),
         archived=bool(d["archived"]),
         archived_at=d.get("archived_at"),  # type: ignore[arg-type]
         warnings=[w.get("message", str(w)) for w in warnings] if warnings else [],
     )
-    return build_envelope(data=payload)
+    return build_envelope(
+        data=payload, actions=[confirmation] if confirmation else None
+    )
 
 
 # ─── Read tools (balance) ──────────────────────────────────────────────────
@@ -660,6 +676,9 @@ def _account_link_binding(
             ],
             "lot_selections_after": [list(row) for row in impact.lot_selections_after],
             "manual_identity": [list(row) for row in impact.manual_identity],
+            "settings_moved": list(impact.settings_moved),
+            "settings_kept": list(impact.settings_kept),
+            "settings_revision": [list(row) for row in impact.settings_revision],
         },
         resolved_ids=(
             impact.provisional_account_id,
@@ -1797,19 +1816,19 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_set,
         "accounts_set",
-        "Update an account's settings. None leaves fields unchanged; clear_fields "
-        "resets nullable fields, never booleans. account_type accepts "
-        "depository/credit/loan/investment/other without changing subtype; clear "
-        "it to restore source evidence. account_subtype and holder_category allow "
-        "noncanonical values with warnings. default_cost_basis_method accepts "
-        "fifo/hifo/specific/average; invalid types or methods raise "
-        "mutation_invalid_input. Other fields: display_name, official_name, "
-        "last_four, currency_code, credit_limit. is_archived and "
-        "include_in_net_worth are independent: archiving excludes all net-worth "
-        "history; archived_at is not yet date-scoped. include_in_net_worth=False "
-        "also excludes active accounts. Writes audited app.account_settings; "
-        "restore prior values or use system_audit_undo. Amounts use "
-        "summary.display_currency.",
+        "Update account settings. None leaves fields unchanged; clear_fields resets"
+        " nullable fields, never booleans. account_type: "
+        "depository/credit/loan/investment/other; subtype unchanged; clear restores"
+        " source evidence. Noncanonical account_subtype/holder_category values "
+        "warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid "
+        "types/methods raise mutation_invalid_input. investment_source_type: "
+        "manual/plaid selects ledger history; clear uses both; evidence is "
+        "retained. Other fields: display_name, official_name, last_four, "
+        "currency_code, credit_limit. is_archived and include_in_net_worth are "
+        "independent: archiving excludes all net-worth history; archived_at is not "
+        "date-scoped. include_in_net_worth=False excludes active accounts too. "
+        "Audited app.account_settings writes; restore values or use "
+        "system_audit_undo. Amounts use summary.display_currency.",
     )
     register(
         mcp,

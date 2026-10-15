@@ -14,6 +14,7 @@ import re
 import shutil
 from collections.abc import Generator
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -175,7 +176,7 @@ class ProfileService:
             (profile_dir / "logs").mkdir(mode=0o700, exist_ok=True)
             (profile_dir / "temp").mkdir(mode=0o700, exist_ok=True)
         if init_inbox:
-            self._init_inbox(normalized)
+            self.ensure_inbox(normalized)
         if not (profile_dir / "config.yaml").exists():
             generate_profile_config(profile_dir, normalized)
             logger.debug(f"Completed registration for profile: {normalized}")
@@ -198,7 +199,7 @@ class ProfileService:
         Args:
             name: Profile name (will be normalized to lowercase with hyphens).
             init_inbox: When True, also create the import-inbox layout at
-                ``<inbox_root>/<normalized_name>/{inbox,processed,failed}/``.
+                ``<inbox_root>/<normalized_name>/{inbox,processed,failed,pending}/``.
 
         Returns:
             Path to the profile directory.
@@ -235,6 +236,10 @@ class ProfileService:
             # than keeping perms we never chose.
             profile_dir.chmod(0o700)
         try:
+            # Inbox first: a denied inbox root (macOS TCC on ~/Documents) must
+            # fail before the database and its schema are built, not after.
+            if init_inbox:
+                self.ensure_inbox(normalized)
             # Database before registration: `_init_database` is the step that
             # actually fails in the field (a locked or unavailable OS keychain), and
             # `ensure_registered` writes the `config.yaml` commit marker. Registering
@@ -242,7 +247,7 @@ class ProfileService:
             # `create()` — stranding the user exactly as before.
             if not (profile_dir / "moneybin.duckdb").exists():
                 self._init_database(profile_dir, normalized)
-            self.ensure_registered(normalized, init_inbox=init_inbox)
+            self.ensure_registered(normalized)
         except Exception:
             # Roll back only a directory we made ourselves. An adopted directory
             # may hold a `db init`'d database — the thing the caller is trying to
@@ -255,18 +260,39 @@ class ProfileService:
         return profile_dir
 
     @staticmethod
-    def _init_inbox(profile: str) -> Path:
-        """Create the import-inbox layout for ``profile`` and return its root."""
+    def inbox_root(name: str) -> Path:
+        """Where ``name``'s import-inbox layout lives: ``<inbox_root>/<profile>/``."""
         from moneybin.config import MoneyBinSettings
-        from moneybin.services.inbox_service import InboxService
 
         # Don't pass import_= explicitly — let MoneyBinSettings build it via
         # its default_factory so MONEYBIN_IMPORT___INBOX_ROOT env overrides
         # apply (e.g. test isolation in tests/conftest.py).
-        settings = MoneyBinSettings(profile=profile)
+        return MoneyBinSettings(profile=normalize_profile_name(name)).profile_inbox_dir
+
+    @staticmethod
+    def ensure_inbox(name: str) -> Path:
+        """Create the import-inbox layout for ``name`` and return its root."""
+        from moneybin.config import MoneyBinSettings
+        from moneybin.services.inbox_service import InboxService
+
+        settings = MoneyBinSettings(profile=normalize_profile_name(name))
         service = InboxService(db=None, settings=settings)
         service.ensure_layout()
         return service.root
+
+    def recorded_key_mode(self, name: str) -> str | None:
+        """The ``database.encryption_key_mode`` the profile's config.yaml records."""
+        try:
+            config = _read_yaml(self._profile_dir(name) / "config.yaml")
+        except ValueError:
+            return None
+        database = config.get("database")
+        if not isinstance(database, dict):
+            return None
+        mode = cast(dict[str, object], database).get("encryption_key_mode")
+        return (
+            mode if isinstance(mode, str) and mode in ("auto", "passphrase") else None
+        )
 
     def _init_database(self, profile_dir: Path, profile: str) -> None:
         """Initialize an encrypted database for the profile.
@@ -336,6 +362,8 @@ class ProfileService:
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
+        if profile_dir.is_symlink():
+            raise ValueError("Cannot delete a profile through a symbolic link")
         if not profile_dir.exists():
             raise ProfileNotFoundError(f"Profile '{normalized}' not found")
         if normalized == get_default_profile():
@@ -343,32 +371,33 @@ class ProfileService:
                 f"Cannot delete the active profile '{normalized}'. "
                 "Switch to another profile first: moneybin profile switch <name>"
             )
-        # Capture the opaque sync id before the dir (and its profile_id file) are
-        # removed, so the broker tokens scoped to it can be cleared afterward.
+        # Capture the opaque sync id to clear credentials before removing it.
         sync_id_file = profile_dir / "profile_id"
         sync_profile_id = (
             sync_id_file.read_text().strip() if sync_id_file.exists() else None
         )
-        shutil.rmtree(profile_dir)
-        # Clear the profile's keychain entries — each profile has its own
-        # service ("moneybin-<profile>"), so this never touches sibling profiles.
-        from moneybin.secrets import SecretStore
-
-        store = SecretStore(profile=normalized)
-        for key_name in ("DATABASE__ENCRYPTION_KEY", "DATABASE__PASSPHRASE_SALT"):
-            try:
-                store.delete_key(key_name)
-            except Exception as e:  # best-effort cleanup; data dir is already gone
-                # Don't turn a successful directory removal into a hard failure
-                # if keyring cleanup fails (e.g. NoKeyringError on headless
-                # systems, locked keychain, network keyring unreachable).
-                logger.debug(f"Keychain cleanup for {key_name} failed: {e}")
-        # Clear the profile's scoped broker sync tokens (a separate keyring
-        # service from the SecretStore above), so a delete leaves nothing behind.
+        # Clear broker credentials while the profile identity still exists, so
+        # a denied cleanup leaves enough information for a safe retry.
         if sync_profile_id:
             from moneybin.connectors.sync_client import SyncClient
 
             SyncClient.clear_tokens_for_profile(sync_profile_id)
+        # Keep the root for cleanup retries, but preserve keys until all data is gone.
+        for entry in profile_dir.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        from moneybin.crypto_constants import KEY_NAME, SALT_NAME
+        from moneybin.secrets import SecretNotFoundError, SecretStore
+
+        store = SecretStore(profile=normalized)
+        for key_name in (KEY_NAME, SALT_NAME):
+            try:
+                store.delete_key(key_name)
+            except SecretNotFoundError:
+                pass
+        profile_dir.rmdir()
         logger.debug(f"Deleted profile directory: {normalized}")
 
     def show(

@@ -18,9 +18,7 @@ from moneybin.db_lock.lock import (
     _LOCK_SUFFIX,  # type: ignore[reportPrivateUsage]  # test-only access to the canonical lock-file suffix
     _read_writer_metadata,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
 )
-from moneybin.mcp.tools.system import (
-    _database_connections_block,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
-)
+from moneybin.services.system_service import database_connections
 
 
 @contextmanager
@@ -60,11 +58,11 @@ def test_block_reports_writer_while_lock_is_held(tmp_path: Path) -> None:
     with (
         _holding_write_lock(db_path, operation_type="transform_apply"),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.services.system_service.find_blocking_processes",
             return_value=[],
         ),
     ):
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
     assert len(block["writers"]) == 1
     assert block["writers"][0]["pid"] == os.getpid()
     assert block["writers"][0]["operation_type"] == "transform_apply"
@@ -84,7 +82,7 @@ def test_block_sanitizes_reader_command_to_friendly_name(tmp_path: Path) -> None
     with (
         _holding_write_lock(db_path),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.services.system_service.find_blocking_processes",
             return_value=[
                 {
                     "pid": 9999,
@@ -94,7 +92,7 @@ def test_block_sanitizes_reader_command_to_friendly_name(tmp_path: Path) -> None
             ],
         ),
     ):
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
     assert len(block["readers"]) == 1
     assert block["readers"][0]["command"] == "run.py"
     assert "/home/alice" not in block["readers"][0]["command"]
@@ -121,10 +119,10 @@ def test_block_omits_stale_lock_file_when_no_writer_holds(tmp_path: Path) -> Non
         })
     )
     with patch(
-        "moneybin.mcp.tools.system.find_blocking_processes",
+        "moneybin.services.system_service.find_blocking_processes",
         return_value=[],
     ):
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
     assert block["writers"] == []
 
 
@@ -136,7 +134,7 @@ def test_block_reports_readers_from_lsof_when_diagnosing_a_writer(
     with (
         _holding_write_lock(db_path),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.services.system_service.find_blocking_processes",
             return_value=[
                 {
                     "pid": 9999,
@@ -146,7 +144,7 @@ def test_block_reports_readers_from_lsof_when_diagnosing_a_writer(
             ],
         ),
     ):
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
     assert len(block["writers"]) == 1
     assert len(block["readers"]) == 1
     assert block["readers"][0]["pid"] == 9999
@@ -162,14 +160,14 @@ def test_block_excludes_writer_pid_from_readers_to_avoid_double_listing(
     with (
         _holding_write_lock(db_path, operation_type="interactive"),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.services.system_service.find_blocking_processes",
             return_value=[
                 {"pid": writer_pid, "command": "moneybin", "cmdline": "moneybin sync"},
                 {"pid": 6666, "command": "moneybin", "cmdline": "moneybin reports"},
             ],
         ),
     ):
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
     reader_pids = [r["pid"] for r in block["readers"]]
     assert writer_pid not in reader_pids
     assert 6666 in reader_pids
@@ -189,11 +187,11 @@ def test_block_resolves_symlinked_db_path(tmp_path: Path) -> None:
     with (
         _holding_write_lock(link_path, operation_type="migration"),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.services.system_service.find_blocking_processes",
             return_value=[],
         ),
     ):
-        block = _database_connections_block(link_path)
+        block = database_connections(link_path)
     assert len(block["writers"]) == 1
     assert block["writers"][0]["operation_type"] == "migration"
 
@@ -204,10 +202,10 @@ def test_block_returns_empty_when_no_lock_file_and_no_lsof_output(
     db_path = tmp_path / "status.duckdb"
     db_path.touch()
     with patch(
-        "moneybin.mcp.tools.system.find_blocking_processes",
+        "moneybin.services.system_service.find_blocking_processes",
         return_value=[],
     ):
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
     assert block == {"writers": [], "readers": []}
 
 
@@ -216,7 +214,7 @@ def test_block_reports_readers_without_live_writer(tmp_path: Path) -> None:
     db_path = tmp_path / "status.duckdb"
     db_path.touch()
     with patch(
-        "moneybin.mcp.tools.system.find_blocking_processes",
+        "moneybin.services.system_service.find_blocking_processes",
         return_value=[
             {
                 "pid": 9999,
@@ -225,7 +223,7 @@ def test_block_reports_readers_without_live_writer(tmp_path: Path) -> None:
             }
         ],
     ) as find_processes:
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
 
     assert block == {
         "writers": [],
@@ -242,14 +240,14 @@ def test_block_tolerates_corrupted_lock_file_while_held(tmp_path: Path) -> None:
     with (
         _holding_write_lock(db_path),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.services.system_service.find_blocking_processes",
             return_value=[],
         ) as find_processes,
     ):
         # Overwrite the held lock file's contents in place (same inode, so the
         # holder's fcntl lock is unaffected) with invalid JSON.
         lock_path.write_text("not-json{{")
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
     assert block["writers"] == []
     find_processes.assert_called_once_with(db_path.resolve())
 
@@ -266,12 +264,12 @@ def test_block_tolerates_non_dict_json_while_held(tmp_path: Path) -> None:
     with (
         _holding_write_lock(db_path),
         patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
+            "moneybin.services.system_service.find_blocking_processes",
             return_value=[],
         ) as find_processes,
     ):
         lock_path.write_text("null")
-        block = _database_connections_block(db_path)
+        block = database_connections(db_path)
     assert block["writers"] == []
     find_processes.assert_called_once_with(db_path.resolve())
 

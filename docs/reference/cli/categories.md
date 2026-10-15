@@ -15,6 +15,7 @@ Usage: `moneybin categories [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin categories create`](#moneybin-categories-create) | Create a new category. |
 | [`moneybin categories set`](#moneybin-categories-set) | Update a category's settings (is_active is the only modifiable field). |
 | [`moneybin categories delete`](#moneybin-categories-delete) | Hard-delete a user-created category. |
+| [`moneybin categories mappings`](#moneybin-categories-mappings) | Curate imported category text mappings |
 
 ## moneybin categories list
 
@@ -90,4 +91,85 @@ Usage: `moneybin categories delete [OPTIONS] {category_id}`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--force` | flag |  | Cascade-delete referencing transactions and budgets instead of refusing |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+
+## moneybin categories mappings
+
+Curate imported category text mappings
+
+Usage: `moneybin categories mappings [OPTIONS] COMMAND [ARGS]...`
+
+**Commands**
+
+| Command | Purpose |
+|---|---|
+| [`moneybin categories mappings pending`](#moneybin-categories-mappings-pending) | List imported category-vocabulary terms with no curated mapping. |
+| [`moneybin categories mappings set`](#moneybin-categories-mappings-set) | Map one imported category-vocabulary term to a MoneyBin category, or ignore it. |
+
+## moneybin categories mappings pending
+
+List imported category-vocabulary terms with no curated mapping.
+
+Each term is a distinct (source type, namespace, category, subcategory)
+tuple pulled from imported transaction data — the decision unit is the term, not the
+transaction, so a handful of terms can stand behind many transactions.
+Shows how many uncategorized transactions mapping each term would
+categorize, and up to 3 suggested MoneyBin categories.
+Use `categories mappings set` to resolve each term.
+
+Usage: `moneybin categories mappings pending [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--namespace` | text |  | Filter to one source_origin (e.g. an exporter slug) |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
+
+## moneybin categories mappings set
+
+Map one imported category-vocabulary term to a MoneyBin category, or ignore it.
+
+Identify the term with --namespace, --category, and (if applicable)
+--subcategory — the exact term `categories mappings pending` reported.
+--source-type is optional: when omitted it is derived from the imported
+rows and mappings carrying the term, and refused if several types do
+(the same origin exported as csv and as excel is two vocabularies).
+A term no imported transaction carries, and that has no mapping yet, is
+refused. Pass exactly one of:
+
+```text
+--into <category_id>   map to this existing category
+--new <name>           create a new category, then map to it
+--ignore               keep the term known but categorize nothing by it
+```
+
+The mapping applies at once: transactions carrying the term are
+categorized, and when a term's mapping changes, the categories it
+assigned earlier are withdrawn and re-evaluated. Categories you set by
+hand, by rule, or by merchant are never touched.
+
+Examples:
+
+```console
+moneybin categories mappings set --namespace chase_credit --category Groceries --into cat-food
+moneybin categories mappings set --namespace mint --category "Home Improvement" --new "Housing"
+moneybin categories mappings set --namespace mint --category Uncategorized --ignore
+```
+
+Usage: `moneybin categories mappings set [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--namespace` | text |  | Required. Term's source_origin (e.g. an exporter slug) |
+| `--source-type` | text |  | Term's source type (csv, excel, ...); derived when only one carries it |
+| `--category` | text |  | Required. Term's imported category text |
+| `--subcategory` | text |  | Term's imported subcategory text, if any |
+| `--into` | text |  | Map the term to this existing category_id |
+| `--new` | text |  | Create a new category with this name, then map the term to it |
+| `--ignore` | flag |  | Ignore the term: it leaves the pending list and categorizes nothing |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

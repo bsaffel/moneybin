@@ -374,9 +374,11 @@ class BaseRepo:
             return None
 
         with self._transaction(in_outer_txn=in_outer_txn):
+            resulting = before
             if before is None and after is not None:
                 self._require_capture(after, self.pk_columns, event)
-                self._delete_by_pk(after)
+                # None unless a repo keeps the row (see AccountSettingsRepo).
+                resulting = self._delete_by_pk(after)
             elif after is None and before is not None:
                 self._require_capture(before, self._not_null_columns(), event)
                 self._require_admissible(before, event)
@@ -402,7 +404,7 @@ class BaseRepo:
                     self._row_target_id(result_row),
                 ),
                 before=after,
-                after=before,
+                after=resulting,
                 actor=actor,
                 is_undo=True,
                 undoes_operation_id=event.operation_id,
@@ -516,13 +518,17 @@ class BaseRepo:
         clauses = [f"{quote_ident(col)} = ?" for col in self.pk_columns]
         return " AND ".join(clauses), [row[col] for col in self.pk_columns]
 
-    def _delete_by_pk(self, row: dict[str, Any]) -> None:
-        """Delete the row whose primary key matches ``row`` (undo of an INSERT)."""
+    def _delete_by_pk(self, row: dict[str, Any]) -> dict[str, Any] | None:
+        """Delete the row whose primary key matches ``row`` (undo of an INSERT).
+
+        Returns the audit image of the row left behind; ``None`` when it is gone.
+        """
         where, params = self._pk_where(row)
         self._db.execute(
             f"DELETE FROM {self.table_ref.full_name} WHERE {where}",  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
             params,
         )
+        return None
 
     def _insert_row(self, row: dict[str, Any]) -> None:
         """Re-insert a full captured row (undo of a DELETE)."""

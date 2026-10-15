@@ -21,6 +21,13 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from moneybin.crypto_constants import (
+    ARGON2_HASH_LEN,
+    ARGON2_MEMORY_COST,
+    ARGON2_PARALLELISM,
+    ARGON2_TIME_COST,
+)
+
 # Direct-path imports of provider configs. We import from the concrete
 # config modules (not the package ``__init__``) to avoid triggering
 # tabular/__init__.py's lazy ``__getattr__``, which gates polars and is
@@ -103,6 +110,17 @@ def find_repo_root() -> Path | None:
     return None
 
 
+def running_checkout_root() -> Path | None:
+    """Return the checkout this ``moneybin`` package was loaded from, else None.
+
+    Answers how the package is installed, not where the command runs: a source
+    tree (``<root>/src/moneybin/config.py``) gives its root, while an installed
+    wheel sits under ``site-packages``, which is never a MoneyBin checkout.
+    """
+    root = Path(__file__).resolve().parents[2]
+    return root if _is_moneybin_repo(root) else None
+
+
 def _find_moneybin_repo_ancestor(path: Path) -> Path | None:
     """Return the nearest MoneyBin checkout containing ``path``."""
     for candidate in (path, *path.parents):
@@ -177,16 +195,18 @@ class DatabaseConfig(BaseModel):
     # WARNING: changing these after a database is created locks you out —
     # the derived key will differ and the database will be unreadable.
     argon2_time_cost: int = Field(
-        default=3, ge=1, description="Argon2id time cost (iterations)"
+        default=ARGON2_TIME_COST, ge=1, description="Argon2id time cost (iterations)"
     )
     argon2_memory_cost: int = Field(
-        default=65536, ge=8192, description="Argon2id memory cost in KiB"
+        default=ARGON2_MEMORY_COST, ge=8192, description="Argon2id memory cost in KiB"
     )
     argon2_parallelism: int = Field(
-        default=4, ge=1, description="Argon2id degree of parallelism"
+        default=ARGON2_PARALLELISM, ge=1, description="Argon2id degree of parallelism"
     )
     argon2_hash_len: int = Field(
-        default=32, ge=16, description="Argon2id output hash length in bytes"
+        default=ARGON2_HASH_LEN,
+        ge=16,
+        description="Argon2id output hash length in bytes",
     )
     no_auto_upgrade: bool = Field(
         default=False,
@@ -547,7 +567,8 @@ class ImportSettings(BaseModel):
         default_factory=lambda: Path.home() / "Documents" / "MoneyBin",
         description=(
             "Parent directory for the user-facing import workspace. "
-            "Per-profile subdirs (<inbox_root>/<profile>/{inbox,processed,failed}/) "
+            "Per-profile subdirs "
+            "(<inbox_root>/<profile>/{inbox,processed,failed,pending}/) "
             "are created on first use. Defaults to ~/Documents/MoneyBin."
         ),
     )
@@ -573,12 +594,6 @@ class DoctorSettings(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True)
-
-    balance_staleness_threshold_days: int = Field(
-        default=30,
-        ge=1,
-        description="Warn when an included account's latest balance observation is older than this many days.",
-    )
 
     audit_coverage_lookback_days: int = Field(
         default=7,
@@ -616,6 +631,15 @@ class DoctorSettings(BaseModel):
             "duplicate_account_overlap will judge a pair. Two savings accounts "
             "posting the same interest every month mirror each other perfectly "
             "on one amount; a duplicated account mirrors many."
+        ),
+    )
+    balance_staleness_threshold_days: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "net_worth_stale_balance warns when an account's latest observed "
+            "balance is more than this many days before today. 30 absorbs a "
+            "monthly statement cycle."
         ),
     )
 

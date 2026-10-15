@@ -219,9 +219,17 @@ def test_cli_privacy_log_pager_fallback_prints_the_complete_answer(
 
 
 def test_cli_privacy_log_caps_limit_keeps_tool_call_details_and_names_filtered_empty_scope(
-    runner: CliRunner, db: Database
+    runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The text log preserves complete tool-call facts without inventing totals."""
+    """The text log preserves complete tool-call facts without inventing totals.
+
+    Width pinned to 100 columns — the terminal width `privacy log`'s wrapping
+    defect was reported against. `When`, `Action`, and `Actor` are now
+    declared `nowrap=`, so `Details` (the comma-joined class list included) is
+    the only column that yields, and at this width it never has to: no
+    `key=value` segment splits mid-token the way `TXN_A` / `MOUNT` used to.
+    """
+    monkeypatch.setenv("COLUMNS", "100")
     write_privacy_event(
         build_tool_call_event(
             actor="tool-actor",
@@ -239,9 +247,8 @@ def test_cli_privacy_log_caps_limit_keeps_tool_call_details_and_names_filtered_e
     assert detailed.exit_code == 0, detailed.output
     assert "Showing last 1000 events" in detailed.output
     assert "sensitivity=critical" in detailed.output
-    assert "ACCOUNT_ID" in detailed.output
-    assert "TXN_A" in detailed.output
-    assert "MOUNT rows=17" in detailed.output
+    assert "classes=ACCOUNT_ID,TXN_AMOUNT" in detailed.output
+    assert "rows=17" in detailed.output
     assert "rows=17" in detailed.output
     assert "total matching events unknown" in detailed.output
     assert empty.exit_code == 0, empty.output

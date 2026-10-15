@@ -151,6 +151,12 @@ FCT_INVESTMENT_TRANSACTIONS = TableRef(
 FCT_INVESTMENT_LOTS = TableRef("core", "fct_investment_lots", audience="interface")
 FCT_REALIZED_GAINS = TableRef("core", "fct_realized_gains", audience="interface")
 DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
+DIM_HOLDINGS_BROKER_REPORTED = TableRef(
+    "core", "dim_holdings_broker_reported", audience="interface"
+)
+DIM_UNANCHORED_ACCOUNTS = TableRef(
+    "core", "dim_unanchored_accounts", audience="interface"
+)
 SECURITY_PRICES = TableRef("raw", "security_prices")
 SECURITY_PRICE_OVERRIDES = TableRef("app", "security_price_overrides")
 FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interface")
@@ -159,6 +165,8 @@ FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interfac
 # Internal audience: the cache is read through CurrencyService, never queried
 # directly, so it carries no schema-catalog examples.
 EXCHANGE_RATES = TableRef("raw", "exchange_rates")
+EXCHANGE_RATE_CURRENCIES = TableRef("raw", "exchange_rate_currencies")
+EXCHANGE_RATE_COVERAGE = TableRef("raw", "exchange_rate_coverage")
 EXCHANGE_RATE_OVERRIDES = TableRef("app", "exchange_rate_overrides")
 BRIDGE_CURRENCY_CONVERSIONS = TableRef("core", "bridge_currency_conversions")
 FCT_CURRENCY_LOTS = TableRef("core", "fct_currency_lots")

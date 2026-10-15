@@ -3142,22 +3142,20 @@ def _seed_bridge_mapping(
     category: str,
     subcategory: str | None,
     source_type: str = "plaid",
+    source_origin: str = "",
     source_subcategory_code: str = "",
 ) -> None:
     """Seed one core.bridge_category_source_map row, real mechanism.
 
-    Inserts into ``seeds.category_source_map`` (the bridge's seed tier —
-    mirrors ``test_bridge_category_source_map.py``'s ``_insert_seed_row``)
-    plus a matching ``seeds.categories`` row so
-    ``core.dim_categories``/``core.bridge_category_source_map`` — both real
-    views, not stubs — resolve ``category_id`` to a ``(category,
-    subcategory)`` pair the same way production does. Callers must call
-    ``refresh_views(db)`` first so the seed tables exist.
+    A provider row (blank ``source_origin``, the default) goes into
+    ``seeds.category_source_map`` — the bridge's seed tier, mirroring
+    ``test_bridge_category_source_map.py``'s ``_insert_seed_row``. An imported
+    mapping (``source_type='csv'``, ``source_origin='chase_credit'``) goes into
+    ``app.category_source_map``, where curation writes it. Either way a matching
+    ``seeds.categories`` row lets ``core.dim_categories`` resolve ``category_id``
+    as production does. Callers must call ``refresh_views(db)`` first so the
+    seed tables exist.
 
-    ``source_type`` defaults to ``'plaid'`` for the existing Plaid-bridge
-    tests; the imported-category-text tests (``TestApplySourceCategoryMap``)
-    pass an exporter's ``source_origin`` value instead (``'chase_credit'``,
-    ``'manual'``) — that column holds either, per the owner's ruling.
     ``source_subcategory_code`` defaults to ``''`` (the "no subcategory"
     sentinel) — Plaid's own predicate never reads this column, so the
     Plaid-bridge tests are indifferent to it; the imported-category-text
@@ -3170,19 +3168,35 @@ def _seed_bridge_mapping(
     (``NULL``) rather than assuming a name or position for a column this
     test doesn't exercise.
     """
-    db.execute(
-        "INSERT INTO seeds.category_source_map "
-        "(source_type, source_category_code, source_subcategory_code, "
-        "code_level, category_id, source_taxonomy_version) "
-        "VALUES (?, ?, ?, ?, ?, 'plaid_pfc_v2')",
-        [
-            source_type,
-            source_category_code,
-            source_subcategory_code,
-            code_level,
-            category_id,
-        ],
-    )
+    if source_origin:
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_origin, source_category_code, "
+            "source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                source_type,
+                source_origin,
+                source_category_code,
+                source_subcategory_code,
+                code_level,
+                category_id,
+            ],
+        )
+    else:
+        db.execute(
+            "INSERT INTO seeds.category_source_map "
+            "(source_type, source_category_code, source_subcategory_code, "
+            "code_level, category_id, source_taxonomy_version) "
+            "VALUES (?, ?, ?, ?, ?, 'plaid_pfc_v2')",
+            [
+                source_type,
+                source_category_code,
+                source_subcategory_code,
+                code_level,
+                category_id,
+            ],
+        )
     db.execute(
         "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
         "VALUES (?, ?, ?, 'test category')",
@@ -3332,6 +3346,175 @@ class TestApplyPlaidCategories:
             is None
         )
 
+    @pytest.mark.unit
+    def test_ignored_detailed_code_does_not_fall_back_to_primary(
+        self, db: Database
+    ) -> None:
+        """An ignored detailed code ends the lookup; the primary is not consulted."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK",
+            code_level="primary",
+            category_id="FND",
+            category="Food & Drink",
+            subcategory=None,
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK_COFFEE", code_level="detailed")
+        for transaction_id, detailed in (
+            ("t_ignored", "FOOD_AND_DRINK_COFFEE"),
+            # Control: an unmapped detailed code still falls back.
+            ("t_unmapped", "FOOD_AND_DRINK_FAST_FOOD"),
+        ):
+            _insert_plaid_txn(
+                db,
+                transaction_id,
+                category_detailed=detailed,
+                plaid_category="FOOD_AND_DRINK",
+                category_confidence="HIGH",
+            )
+            _seed_gold_transaction(db, transaction_id)
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        assert db.execute(
+            "SELECT transaction_id, category_id FROM app.transaction_categories"
+        ).fetchall() == [("t_unmapped", "FND")]
+
+    @pytest.mark.unit
+    def test_user_ignore_switches_off_a_seeded_translation(self, db: Database) -> None:
+        """A user row overrides the seed row for its key, even with no category."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK_COFFEE", code_level="detailed")
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_gold_transaction(db, "t1")
+
+        assert db.execute(
+            "SELECT category_id, is_default FROM core.bridge_category_source_map "
+            "WHERE source_category_code = 'FOOD_AND_DRINK_COFFEE'"
+        ).fetchall() == [(None, False)]
+        assert apply_plaid_categories(db) == 0
+        # An ignored code is known, not a coverage gap.
+        stats = CategorizationService(db).categorization_stats()
+        assert stats["plaid_unmapped"] == 0
+
+    @pytest.mark.unit
+    def test_ignored_primary_code_leaves_a_mapped_detailed_code_working(
+        self, db: Database
+    ) -> None:
+        """Detailed still outranks primary when it is the primary that is ignored."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK", code_level="primary")
+        for transaction_id, detailed in (
+            ("t_detailed", "FOOD_AND_DRINK_COFFEE"),
+            ("t_primary_only", "FOOD_AND_DRINK_FAST_FOOD"),
+        ):
+            _insert_plaid_txn(
+                db,
+                transaction_id,
+                category_detailed=detailed,
+                plaid_category="FOOD_AND_DRINK",
+                category_confidence="HIGH",
+            )
+            _seed_gold_transaction(db, transaction_id)
+
+        assert apply_plaid_categories(db) == 1
+        assert db.execute(
+            "SELECT transaction_id, category_id FROM app.transaction_categories"
+        ).fetchall() == [("t_detailed", "FND-COF")]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("mapped_first", [True, False])
+    def test_mislabelled_primary_ignore_does_not_suppress_a_detailed_code(
+        self, db: Database, mapped_first: bool
+    ) -> None:
+        """The ranking reads the transaction's codes, not the row's ``code_level``.
+
+        The ignore is written without ``code_level``, so it carries the
+        ``'detailed'`` default and ties with the real detailed row on label.
+        """
+        refresh_views(db)
+        db.execute(
+            "INSERT INTO seeds.categories "
+            "(category_id, category, subcategory, description) "
+            "VALUES ('FND-COF', 'Food & Drink', 'Coffee Shops', 'test category')"
+        )
+        # Both written as user rows, in each order, so neither scan order hides a tie.
+        writes: list[tuple[str, str | None]] = [
+            ("FOOD_AND_DRINK_COFFEE", "FND-COF"),
+            ("FOOD_AND_DRINK", None),
+        ]
+        for code, category_id in writes if mapped_first else reversed(writes):
+            CategorySourceMapRepo(db).upsert(
+                source_type="plaid",
+                source_origin="",
+                category=code,
+                subcategory=None,
+                category_id=category_id,
+                actor="test",
+            )
+        _insert_plaid_txn(
+            db,
+            "t0",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        # A tie resolves by scan order, which only varies once the join output
+        # spans DuckDB vectors (2,048 rows); a handful of rows cannot expose it.
+        transaction_count = 5000
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged "
+            "SELECT 't' || n, 'FOOD_AND_DRINK_COFFEE', 'FOOD_AND_DRINK', 'HIGH' "
+            "FROM range(1, ?) AS r(n)",
+            [transaction_count],
+        )
+
+        candidates = CategorizationService(db)._orchestrator._plaid_bridge_candidates(  # pyright: ignore[reportPrivateUsage]  # the ranking, without 5,000 writes
+            "uncategorized"
+        )
+
+        assert len(candidates) == transaction_count
+        assert {(row[1], row[2]) for row in candidates} == {
+            ("Food & Drink", "Coffee Shops")
+        }
+
+
+def _ignore_plaid_code(db: Database, code: str, *, code_level: str) -> None:
+    """Store a user row that ignores one provider-wide Plaid code."""
+    CategorySourceMapRepo(db).upsert(
+        source_type="plaid",
+        source_origin="",
+        category=code,
+        subcategory=None,
+        category_id=None,
+        code_level=code_level,
+        actor="test",
+    )
+
 
 # ---------------------------------------------------------------------------
 # apply_source_category_map — imported (tabular/manual) category text ->
@@ -3411,12 +3594,13 @@ class TestApplySourceCategoryMap:
             category_id="cat-groceries",
             category="Food & Dining",
             subcategory="Groceries",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t1",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Groceries",
             subcategory="Produce",
@@ -3430,7 +3614,7 @@ class TestApplySourceCategoryMap:
             "SELECT category_id, categorized_by, source_type, confidence "
             "FROM app.transaction_categories WHERE transaction_id='t1'"
         ).fetchone()
-        assert row == ("cat-groceries", "provider_native", "tabular", Decimal("1.00"))
+        assert row == ("cat-groceries", "provider_native", "csv", Decimal("1.00"))
 
     @pytest.mark.unit
     def test_matches_with_no_subcategory(self, db: Database) -> None:
@@ -3444,12 +3628,13 @@ class TestApplySourceCategoryMap:
             category="Housing",
             subcategory="Rent",
             source_type="manual",
+            source_origin="user",
         )
         _insert_matched_txn(
             db,
             "t2",
             source_type="manual",
-            source_origin="manual",
+            source_origin="user",
             category="Rent",
             subcategory=None,
         )
@@ -3468,13 +3653,12 @@ class TestApplySourceCategoryMap:
     def test_two_exporters_map_the_same_text_to_different_categories(
         self, db: Database
     ) -> None:
-        """Keying on source_origin, not source_type, lets exporters disagree.
+        """Keying on source_origin within a source_type lets exporters disagree.
 
         Both rows carry the SAME category string ("Auto") from the SAME
-        generic ``source_type`` ('tabular'), but two different exporters
+        ``source_type`` ('csv'), but two different exporters
         (``chase_credit`` vs ``amex_gold``) map it to two different
-        MoneyBin categories — proving the bridge is keyed per-exporter, not
-        per the generic tabular discriminator.
+        MoneyBin categories.
         """
         refresh_views(db)
         _seed_bridge_mapping(
@@ -3484,22 +3668,23 @@ class TestApplySourceCategoryMap:
             category_id="cat-transportation",
             category="Transportation",
             subcategory=None,
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
-        db.execute(
-            "INSERT INTO seeds.category_source_map "
-            "(source_type, source_category_code, source_subcategory_code, "
-            "code_level, category_id, source_taxonomy_version) VALUES "
-            "('amex_gold', 'Auto', '', 'detailed', 'cat-insurance', 'na')"
-        )
-        db.execute(
-            "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
-            "VALUES ('cat-insurance', 'Insurance', 'Auto', 'test category')"
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Auto",
+            code_level="detailed",
+            category_id="cat-insurance",
+            category="Insurance",
+            subcategory="Auto",
+            source_type="csv",
+            source_origin="amex_gold",
         )
         _insert_matched_txn(
             db,
             "t3",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Auto",
             subcategory=None,
@@ -3507,7 +3692,7 @@ class TestApplySourceCategoryMap:
         _insert_matched_txn(
             db,
             "t4",
-            source_type="tabular",
+            source_type="csv",
             source_origin="amex_gold",
             category="Auto",
             subcategory=None,
@@ -3539,12 +3724,13 @@ class TestApplySourceCategoryMap:
             category_id="cat-coffee",
             category="Food & Dining",
             subcategory="Coffee Shops",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t5",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Coffee",
             subcategory=None,
@@ -3571,7 +3757,7 @@ class TestApplySourceCategoryMap:
         _insert_matched_txn(
             db,
             "t6",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Some Unmapped Category",
             subcategory=None,
@@ -3618,12 +3804,13 @@ class TestApplySourceCategoryMap:
             category_id="cat-groceries",
             category="Food & Dining",
             subcategory="Groceries",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t_mixed",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Groceries",
             subcategory="Produce",
@@ -3656,7 +3843,8 @@ class TestApplySourceCategoryMap:
             "description) VALUES ('cat-utilities', 'Utilities', NULL, 'test category')"
         )
         CategorySourceMapRepo(db).upsert(
-            source_type="amex_gold",
+            source_type="csv",
+            source_origin="amex_gold",
             category="Electric",
             subcategory=None,
             category_id="cat-utilities",
@@ -3665,7 +3853,7 @@ class TestApplySourceCategoryMap:
         _insert_matched_txn(
             db,
             "t_no_subcat",
-            source_type="tabular",
+            source_type="csv",
             source_origin="amex_gold",
             category="Electric",
             subcategory=None,
@@ -3704,12 +3892,13 @@ class TestApplySourceCategoryMap:
             category_id="cat-gas",
             category="Auto",
             subcategory="Gas",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t_superseded",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Gas",
             subcategory=None,
@@ -3721,13 +3910,13 @@ class TestApplySourceCategoryMap:
             "VALUES ('t_superseded', 't_live', CURRENT_TIMESTAMP)"
         )
         before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-            source_type="tabular", trigger="sweep"
+            source_type="csv", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_source_category_map(db)
 
         after = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-            source_type="tabular", trigger="sweep"
+            source_type="csv", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 1
         assert after == before + 1, "a superseded id dropped its metric increment"
@@ -3751,12 +3940,13 @@ class TestCategorizePendingSourceCategoryMapPass:
             category_id="cat-groceries",
             category="Food & Dining",
             subcategory="Groceries",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t7",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Groceries",
             subcategory=None,
@@ -3765,7 +3955,7 @@ class TestCategorizePendingSourceCategoryMapPass:
             "INSERT INTO core.fct_transactions "
             "(transaction_id, account_id, transaction_date, amount, "
             "description, source_type) VALUES "
-            "('t7', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'tabular')"
+            "('t7', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'csv')"
         )
 
         result = categorize_pending(db)
@@ -3791,12 +3981,13 @@ class TestCategorizePendingSourceCategoryMapPass:
             category_id="cat-groceries",
             category="Food & Dining",
             subcategory="Groceries",
-            source_type="chase_credit",
+            source_type="csv",
+            source_origin="chase_credit",
         )
         _insert_matched_txn(
             db,
             "t8",
-            source_type="tabular",
+            source_type="csv",
             source_origin="chase_credit",
             category="Groceries",
             subcategory=None,
@@ -3805,7 +3996,7 @@ class TestCategorizePendingSourceCategoryMapPass:
             "INSERT INTO core.fct_transactions "
             "(transaction_id, account_id, transaction_date, amount, "
             "description, source_type) VALUES "
-            "('t8', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'tabular')"
+            "('t8', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'csv')"
         )
 
         result = CategorizationService(db).categorize_run()

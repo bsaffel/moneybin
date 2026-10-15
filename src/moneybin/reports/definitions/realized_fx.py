@@ -195,11 +195,13 @@ from moneybin.tables import REPORTS_REALIZED_FX
             "executed_rate",
             "Actual received units per sent unit.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "valuation_rate",
             "Rate used for Home-currency proceeds.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "updated_at",

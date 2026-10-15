@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # direct scans plus receipt-backed coverage equal `raw_tables_read_by_models()`,
 # so a new model input cannot go silently unwatched.
 _RAW_LANDING_COLUMNS: dict[str, str] = {
+    "exchange_rate_coverage": "loaded_at",
     "exchange_rates": "loaded_at",
     "ofx_accounts": "loaded_at",
     "ofx_balances": "loaded_at",

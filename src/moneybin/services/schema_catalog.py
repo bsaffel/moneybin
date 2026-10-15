@@ -202,12 +202,13 @@ EXAMPLES: dict[str, list[Example]] = {
     "core.bridge_category_source_map": [
         Example(
             question="Resolve a Plaid category code to a MoneyBin category "
-            "(substitute YOUR_DETAILED_CODE and YOUR_PRIMARY_CODE)",
+            "(substitute YOUR_DETAILED_CODE and YOUR_PRIMARY_CODE; a NULL "
+            "category_id means the code is ignored and categorizes nothing)",
             sql="""
                 SELECT category_id FROM core.bridge_category_source_map
-                WHERE source_type = 'plaid'
+                WHERE source_type = 'plaid' AND source_origin = ''
                 AND source_category_code IN ('YOUR_DETAILED_CODE', 'YOUR_PRIMARY_CODE')
-                ORDER BY code_level = 'detailed' DESC LIMIT 1
+                ORDER BY source_category_code = 'YOUR_DETAILED_CODE' DESC LIMIT 1
             """,
         ),
     ],
@@ -413,6 +414,7 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Net worth today, in the profile's home currency",
             sql="""
                 SELECT home_currency_code, balance_date, account_count,
+                       unpriced_currency_count, unanchored_account_count,
                        total_assets, total_liabilities, net_worth
                 FROM reports.net_worth
                 WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)
@@ -705,6 +707,31 @@ EXAMPLES: dict[str, list[Example]] = {
                 FROM core.dim_holdings
                 WHERE valuation_status IN ('unpriced', 'withheld', 'source_overlap')
                 ORDER BY account_id, security_id
+            """,
+        ),
+    ],
+    "core.dim_holdings_broker_reported": [
+        Example(
+            question="Which accounts does the broker say still hold a position, "
+            "and as of when?",
+            sql="""
+                SELECT account_id, has_position, as_of
+                FROM core.dim_holdings_broker_reported
+                ORDER BY account_id
+            """,
+        ),
+    ],
+    "core.dim_unanchored_accounts": [
+        Example(
+            question="Which accounts hold value but have no balance observation, "
+            "and what shows they hold value?",
+            sql="""
+                SELECT u.account_id, a.display_name, u.has_holdings,
+                       u.has_broker_position, u.has_transactions,
+                       u.has_investment_transactions
+                FROM core.dim_unanchored_accounts AS u
+                JOIN core.dim_accounts AS a USING (account_id)
+                ORDER BY a.display_name
             """,
         ),
     ],

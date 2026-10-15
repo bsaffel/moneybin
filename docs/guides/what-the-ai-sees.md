@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-27 -->
 # What the AI Provider Sees
 
 When you drive MoneyBin with an AI agent, some of your financial data reaches
@@ -200,7 +200,7 @@ before an agent ever sees one:
 
 ```console
 $ uv run moneybin transactions categorize assist --limit 2 --output json
-{"status": "ok", "summary": {"total_count": 2, "returned_count": 2, "has_more": false, "sensitivity": "medium", "display_currency": null}, "data": {"transactions": [{"transaction_id": "cba9b820cd9d30f9", "description_scrubbed": "TRANSFER TO SAVINGS", "memo_scrubbed": "", "source_type": "ofx", "transaction_type": "XFER", "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "+"}, {"transaction_id": "87bdacd90507c1be", "description_scrubbed": "ONLINE PAYMENT CHASE CARD", "memo_scrubbed": "", "source_type": "ofx", "transaction_type": "XFER", "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "-"}]}, "actions": []}
+{"status": "ok", "summary": {"total_count": 2, "returned_count": 2, "has_more": false, "sensitivity": "medium", "display_currency": null}, "data": {"transactions": [{"transaction_id": "5bbc2331ca753a4b", "description_scrubbed": "TARGET", "memo_scrubbed": "", "source_type": "csv", "transaction_type": null, "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "-"}, {"transaction_id": "8621e03e0d342b35", "description_scrubbed": "ONLINE PAYMENT CHASE CARD", "memo_scrubbed": "", "source_type": "csv", "transaction_type": null, "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "+"}]}, "actions": []}
 ```
 
 There is no `amount`, no `transaction_date`, and no `account_id` field in that
@@ -343,20 +343,21 @@ each:
 $ uv run moneybin privacy log --last 2
 Showing last 2 events (all actors; total matching events unknown)
 Returned: 2
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ When                         ┃ Action    ┃ Actor                 ┃ Details                       ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ 2026-09-24T03:15:22.071567+0 │ tool_call │ cli.categorize_assist │ sensitivity=medium            │
-│ 0:00                         │           │                       │ classes=description,record_id │
-│                              │           │                       │ ,txn_type rows=2              │
-│ 2026-09-24T03:15:05.059142+0 │ tool_call │ cli.sql_query         │ sensitivity=critical          │
-│ 0:00                         │           │                       │ classes=institution,instituti │
-│                              │           │                       │ on_account_number,routing_num │
-│                              │           │                       │ ber,user_note rows=3          │
-└──────────────────────────────┴───────────┴───────────────────────┴───────────────────────────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ When                             ┃ Action    ┃ Actor                 ┃ Details                   ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 2026-09-27T16:05:10.573911+00:00 │ tool_call │ cli.categorize_assist │ sensitivity=medium        │
+│                                  │           │                       │ classes=description,recor │
+│                                  │           │                       │ d_id,txn_type rows=2      │
+│ 2026-09-27T16:05:03.347128+00:00 │ tool_call │ cli.sql_query         │ sensitivity=critical      │
+│                                  │           │                       │ classes=institution,insti │
+│                                  │           │                       │ tution_account_number,rou │
+│                                  │           │                       │ ting_number,user_note     │
+│                                  │           │                       │ rows=3                    │
+└──────────────────────────────────┴───────────┴───────────────────────┴───────────────────────────┘
 ```
 
-The timestamps and class lists wrap mid-token at this 100-column width: `2026-09-24T03:15:22.071567+00:00` is one value split across two rows, as is `classes=institution,institution_account_number,routing_number,user_note`.
+Each timestamp renders whole at this 100-column width. The class lists still wrap mid-token: `classes=institution,institution_account_number,routing_number,user_note` is one value split across three rows.
 
 The SQL text, the account names, and the descriptions those calls returned are
 absent — the line carries the tier, the classes, and the row count and nothing

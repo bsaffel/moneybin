@@ -210,6 +210,16 @@ the truncation stopped. Required recovery actions also remain visible. Commands
 that emit only results and recovery disclosures should document why quiet has
 no additional output to suppress.
 
+**Next-step hints.** A report runner authors one `NextStep` (`src/moneybin/errors.py`)
+per hint instead of a raw string, so MCP and CLI stop sharing one grammar:
+`NextStep.for_mcp()` renders `{verb} {mcp} for {reason}` for the MCP envelope's
+`actions[]`, and the CLI renders `› {Reason capitalized}: {generated_cli_command(*step.cli)}`
+— the command always last on the line, satisfying requirement 7's "explicit,
+executable CLI command" (`docs/specs/cli-human-experience.md`). A service
+raising `UserError(hint=...)` outside the report framework is not a `NextStep`:
+it authors its hint as prose that quotes the CLI form inline (`'moneybin ...'`),
+the pattern `account_service.py` and `fx_accounting_refresh.py` already use.
+
 **Amounts.** `format_money` is the only place an amount becomes text, and every
 money column declares a **money kind** — `flow`, `magnitude`, `delta`, or
 `balance` — that decides its sign glyph and colour. The renderer never reads
@@ -272,6 +282,14 @@ encode: it keeps the first and last columns, which on `investments holdings`
 elides `market value` — the figure the command exists to report. The default
 set is curated rather than measured because width knows nothing about meaning.
 
+`--wide` on a terminal too narrow for the whole projection is curated the same
+way: pass `build_rows(optional=...)` the columns the default view omits, most
+important first. The renderer drops them last-first until the table fits, never
+touches the default set, and names what it omitted beneath the table with a
+wider terminal or `--output json` as the remedy — never `--wide`, which is
+already in force. `investments holdings`/`gains`/`list`/`lots list` are the
+examples.
+
 The reason either is needed: Rich folds an over-narrow cell, and a folded
 amount is *misread*, not merely ugly — `1,200.00` becomes `1,200.` above `00`.
 Folding an identifier is the accepted degradation; folding a number is the bug.
@@ -294,6 +312,14 @@ column it leaves Rich nothing wrappable to give up, and it then crops
 `1,234,567.89` to `1,234`, which is the same misread by another route. The
 ellipsis is the floor under that: a cell too narrow even after the squeeze
 reads `1,234,5…`, which cannot pass for a whole number.
+
+Two further keywords refine `numeric=`. `grouped=` names the subset of
+`numeric=` columns whose `int` or `Decimal` values are grouped by thousands —
+row counts, table sizes, a dynamic `sql query` column — so a count reads
+`1,381` beside an amount that reads `1,381.00`; a per-unit price or FX rate
+stays out of it. `nowrap=` gives a text column the same no-fold guarantee
+without right-aligning it: a timestamp, an actor, an action name that would
+be misread split across two lines.
 
 Curation is still the answer for a table that is simply too wide. The renderer
 guarantees no amount is *wrong*; only the author can decide which columns are

@@ -15,7 +15,17 @@ runner = CliRunner()
 
 
 def _pager_policy(*, no_pager: bool = False) -> TerminalPolicy:
-    """Make a synthetic terminal small enough that complete reads page."""
+    """Make a synthetic terminal small enough that complete reads page.
+
+    Height 1 alone already forces pagination (`emit_human_result` pages on
+    height, never width), so width is a realistic terminal size (100, the
+    width `cli-output-coherence.md`'s wrapping requirements are measured
+    against) rather than an artificially narrow one: at 20 columns, a label
+    as long as `Applied migrations:` alone consumes the whole line and
+    `build_summary`'s label/value grid wraps both columns hard enough that
+    these tests' `_compact()` substring checks can no longer reconstruct the
+    original text, which was never what this fixture's narrowness was for.
+    """
     return TerminalPolicy(
         output="text",
         interactive=True,
@@ -25,7 +35,7 @@ def _pager_policy(*, no_pager: bool = False) -> TerminalPolicy:
         animate_progress=False,
         stage_chatter=False,
         ascii=True,
-        width=20,
+        width=100,
         height=1,
         symbols=TerminalSymbols("OK", "!", "X", ">"),
         minus="-",

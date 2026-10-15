@@ -77,6 +77,7 @@ def update_account_settings(
     credit_limit: Decimal | None | object = None,
     display_name: str | None | object = None,
     default_cost_basis_method: str | None | object = None,
+    investment_source_type: str | None | object = None,
     include_in_net_worth: bool | None = None,
     archived: bool | None = None,
 ) -> tuple[AccountSettings, list[dict[str, str]]]:
@@ -98,6 +99,7 @@ def update_account_settings(
             credit_limit=credit_limit,
             display_name=display_name,
             default_cost_basis_method=default_cost_basis_method,
+            investment_source_type=investment_source_type,
             include_in_net_worth=include_in_net_worth,
             archived=archived,
         )

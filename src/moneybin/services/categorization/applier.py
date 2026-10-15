@@ -44,6 +44,7 @@ from moneybin.matching.aliasing import (
 )
 from moneybin.metrics.registry import (
     CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
+    CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL,
     MERCHANT_EXEMPLAR_COUNT,
     RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL,
 )
@@ -78,6 +79,7 @@ from moneybin.services.categorization._shared import (
     canonical_matcher_key,
     is_unselective_contains,
     resolve_category_id,
+    source_category_bridge_match_predicate,
 )
 from moneybin.services.categorization.conflicts import (
     ActiveRule,
@@ -97,6 +99,7 @@ from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
     CATEGORY_SOURCE_MAP,
+    INT_TRANSACTIONS_MATCHED,
     PROPOSED_RULES,
     TRANSACTION_CATEGORIES,
     TRANSACTION_SPLITS,
@@ -106,6 +109,9 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The one provider whose vocabulary is seeded; `set` curates imported terms only.
+_PROVIDER_SOURCE_TYPE = "plaid"
 
 
 def _normalized_taxonomy_text(value: str | None) -> str | None:
@@ -148,6 +154,12 @@ class RuleCreationResult:
     conflicts: int = 0
     conflict_ids: list[str] = field(default_factory=list)
     conflict_details: list[RuleConflictDetail] = field(default_factory=list)
+    # None when reapply was not requested (or requested but nothing was
+    # created, so no sweep ran) — never a bare 0, which would claim a sweep
+    # ran and found nothing. Set by the facade's ``create_rules`` after its
+    # post-commit ``categorize_pending()`` sweep; ``create_rules_core`` never
+    # populates this.
+    recategorized: int | None = None
 
     def to_payload(self) -> RulesCreatePayload:
         """Return a typed payload for the MCP/CLI envelope boundary."""
@@ -160,6 +172,7 @@ class RuleCreationResult:
             conflicts=self.conflicts,
             conflict_ids=list(self.conflict_ids),
             conflict_details=list(self.conflict_details),
+            recategorized=self.recategorized,
         )
 
     def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:
@@ -368,6 +381,58 @@ class TaxonomyTargetResult:
     target_id: str | None
     state: Literal["present", "inactive", "absent"]
     changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTermMapping:
+    """One imported term as ``app.category_source_map`` stored it, and its target.
+
+    ``category_id`` is ``None`` when the term is ignored. ``withdrawn_ids``
+    are the transactions whose earlier categorization from this term was
+    removed because the mapping changed; ``categorized`` is how many
+    transactions the follow-up sweep newly categorized through it.
+    """
+
+    source_type: str
+    source_origin: str
+    category: str
+    subcategory: str | None
+    category_id: str | None
+    withdrawn_ids: frozenset[str] = frozenset()
+    categorized: int = 0
+
+    @property
+    def recategorized(self) -> int:
+        """Transactions whose earlier categorization from this term was withdrawn."""
+        return len(self.withdrawn_ids)
+
+
+def _normalized_source_term(
+    source_type: str | None,
+    source_origin: str,
+    category: str,
+    subcategory: str | None,
+) -> tuple[str | None, str, str, str | None]:
+    """Return the term as staging stores it; refuse a blank category or type.
+
+    Staging trims category text with a class equal to ``str.strip()`` and
+    NULLs a blank, so an untrimmed key would store and never match, and a
+    blank one names nothing. An origin that trims to ``''`` is a real value
+    (an import whose account label slugs to nothing), not a missing one. No
+    length cap: imports bound none of the parts, and
+    :meth:`MatchApplier.resolve_source_term` accepts only a term already in
+    the database, which bounds it by construction.
+    """
+    source_type = source_type.strip() if source_type is not None else None
+    source_origin = source_origin.strip()
+    category = category.strip()
+    subcategory = subcategory.strip() if subcategory is not None else None
+    if source_type == "" or not category or subcategory == "":
+        raise UserError(
+            "source_type, category, and any subcategory must be non-blank",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    return source_type, source_origin, category, subcategory
 
 
 class MatchApplier:
@@ -785,9 +850,28 @@ class MatchApplier:
                             f"Pattern {item.merchant_pattern!r} is too short to be a "
                             "'contains' rule — it would match unrelated merchants "
                             "(e.g. a 2-char pattern like 'TO' matches STORE, AUTO, "
-                            "TOTAL). Use match_type='exact' for a short pattern, or "
-                            "re-run with allow_broad=True to accept the risk."
+                            "TOTAL). Use an exact match for a short pattern, or "
+                            "allow a broad match explicitly to accept the risk."
                         ),
+                        # Surfaced (not logged — this is shared with MCP via
+                        # error_details) so the CLI renderer can offer a
+                        # concrete, runnable rerun command instead of
+                        # repeating Python keyword syntax at the caller.
+                        "merchant_pattern": item.merchant_pattern,
+                        "category": item.category,
+                        "subcategory": item.subcategory or "",
+                        # The row's own scoping, so the rerun recreates this
+                        # rule rather than an account- or amount-agnostic one.
+                        # Strings, like every value here: `error_details` is
+                        # `list[dict[str, str]]` on the MCP payload; "" is unset.
+                        "account_id": item.account_id or "",
+                        "min_amount": ""
+                        if item.min_amount is None
+                        else str(item.min_amount),
+                        "max_amount": ""
+                        if item.max_amount is None
+                        else str(item.max_amount),
+                        "priority": str(item.priority),
                     })
                     continue
                 conflict = detect_conflict(
@@ -1343,6 +1427,343 @@ class MatchApplier:
             raise RuntimeError("UserCategoriesRepo.insert returned no category_id")
         return event.target_id
 
+    def resolve_source_term(
+        self,
+        *,
+        source_type: str | None = None,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        category_id: str | None = None,
+        new_category: str | None = None,
+        ignore: bool = False,
+        actor: str,
+    ) -> SourceTermMapping:
+        """Map one imported vocabulary term to a MoneyBin category, or ignore it.
+
+        ``(source_type, source_origin, category, subcategory)`` identifies the
+        term being resolved — the row's own type and origin plus an imported
+        category/subcategory string pair, never displayed as a category, only
+        ever used to match or mint one (the owner's ruling on this curation
+        surface). ``source_type`` may be omitted when the imported rows and
+        mappings carrying the rest of the term name exactly one type;
+        several is refused, never guessed. ``plaid`` is refused: provider
+        vocabularies are not curated here. Exactly one of
+        ``category_id`` (bind to an existing category), ``new_category``
+        (create a category named ``new_category``, then bind), or ``ignore``
+        (store the term with no category: it is known, so it leaves the
+        pending inbox, and it categorizes nothing) must be given.
+
+        A changed mapping follows through to history. When the term was
+        mapped to a different category, the ``provider_native``
+        categorizations it produced are removed in the same transaction as
+        the mapping write, so the caller's next sweep re-evaluates those
+        rows; they are returned as ``withdrawn_ids``. Categorizations from any
+        other source are never touched.
+
+        The create path routes through :meth:`create_category` — never a
+        direct ``app.user_categories`` write — and the mapping write through
+        :attr:`_category_source_map` (``CategorySourceMapRepo.upsert``),
+        which itself normalizes an absent ``subcategory`` to ``""`` (the
+        "no subcategory" sentinel DuckDB's NULL-rejecting primary key
+        requires); this method does not re-normalize it. Both writes commit
+        atomically: if the mapping upsert fails, a category just created for
+        it must not survive as an orphan nobody chose.
+
+        Only a term an imported row carries, or one already mapped, is
+        accepted: a mistyped term would otherwise store a mapping that never
+        matches anything, with nothing to say so.
+
+        Returns the term as stored — trimmed — so a receipt names the row
+        actually written rather than the caller's padded input.
+
+        Raises:
+            UserError(code=error_codes.MUTATION_INVALID_INPUT): none or
+                several of ``category_id`` / ``new_category`` / ``ignore``
+                were given, a part of the term is blank, or ``source_type``
+                is ``plaid``.
+            UserError(code=error_codes.MUTATION_AMBIGUOUS): ``source_type``
+                was omitted and several types carry the term; the candidates
+                are in ``details``.
+            UserError(code=error_codes.MUTATION_NOT_FOUND): no imported row
+                carries the term and it has no mapping to change.
+            UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND):
+                ``category_id`` does not name an active category.
+            UserError(code=error_codes.TAXONOMY_CATEGORY_ALREADY_EXISTS):
+                ``new_category`` collides with an existing category name.
+        """
+        try:
+            source_type, source_origin, category, subcategory = _normalized_source_term(
+                source_type, source_origin, category, subcategory
+            )
+            if sum([category_id is not None, new_category is not None, ignore]) != 1:
+                raise UserError(
+                    "Specify exactly one of category_id, new_category, or ignore",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            with self._transaction():
+                if source_type is None:
+                    source_type = self._derive_source_type(
+                        source_origin, category, subcategory
+                    )
+                elif source_type == _PROVIDER_SOURCE_TYPE:
+                    raise UserError(
+                        "Provider category vocabularies are not curated here",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                if not self._is_known_source_term(
+                    source_type, source_origin, category, subcategory
+                ):
+                    raise UserError(
+                        "No imported transaction carries this term, and it has "
+                        "no mapping to change",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
+                resolved_category_id: str | None
+                if ignore:
+                    resolved_category_id = None
+                elif new_category is not None:
+                    resolved_category_id = self.create_category(
+                        new_category, actor=actor, in_outer_txn=True
+                    )
+                else:
+                    resolved_category_id = cast(str, category_id)
+                    target = self._db.execute(
+                        f"SELECT is_active FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
+                        [resolved_category_id],
+                    ).fetchone()
+                    if target is None:
+                        raise UserError(
+                            f"Category {resolved_category_id} not found",
+                            code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+                        )
+                    # set refuses an inactive category as a target, as the
+                    # review-decision writer does.
+                    if not target[0]:
+                        raise UserError(
+                            f"Category {resolved_category_id} is inactive; "
+                            "activate it or map the term to an active category",
+                            code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+                        )
+                event = self._category_source_map.upsert(
+                    source_type=source_type,
+                    source_origin=source_origin,
+                    category=category,
+                    subcategory=subcategory,
+                    category_id=resolved_category_id,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+                previous_category_id = cast(
+                    "str | None", (event.before_value or {}).get("category_id")
+                )
+                withdrawn_ids: frozenset[str] = frozenset()
+                if (
+                    previous_category_id is not None
+                    and previous_category_id != resolved_category_id
+                ):
+                    withdrawn = self._tx_categories.delete_provider_native(
+                        sorted(
+                            self._source_term_categorized_ids(
+                                source_type,
+                                source_origin,
+                                category,
+                                subcategory,
+                                previous_category_id,
+                            )
+                        ),
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    withdrawn_ids = frozenset(
+                        str(withdrawal.target_id) for withdrawal in withdrawn
+                    )
+        except UserError:
+            CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(outcome="refused").inc()
+            raise
+        # Recorded only after the transaction commits, so a rollback never counts.
+        CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(
+            outcome="added" if event.before_value is None else "updated"
+        ).inc()
+        return SourceTermMapping(
+            source_type=source_type,
+            source_origin=source_origin,
+            category=category,
+            subcategory=subcategory,
+            category_id=resolved_category_id,
+            withdrawn_ids=withdrawn_ids,
+        )
+
+    def source_term_categorized_ids(self, mapping: SourceTermMapping) -> set[str]:
+        """Transactions categorized through this term's current mapping."""
+        if mapping.category_id is None:
+            return set()
+        return self._source_term_categorized_ids(
+            mapping.source_type,
+            mapping.source_origin,
+            mapping.category,
+            mapping.subcategory,
+            mapping.category_id,
+        )
+
+    def _source_term_categorized_ids(
+        self,
+        source_type: str,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        category_id: str,
+    ) -> set[str]:
+        """Transactions whose categorization this term's mapping accounts for.
+
+        ``app.transaction_categories`` records no term, so the attribution is
+        derived: an imported row of the transaction carries the term (the
+        sweep's own predicate), and the categorization holds the mapping's
+        category and that row's ``source_type``, which only the
+        category-source sweep stamps. The ``provider_native`` rank itself is
+        enforced where rows are removed
+        (``TransactionCategoriesRepo.delete_provider_native``).
+
+        Carrier ids go through the curation seam before they are compared:
+        the sweep writes under the live id, so a superseded matched id would
+        otherwise find nothing to withdraw.
+        """
+        try:
+            carriers = self._db.execute(
+                f"""
+                SELECT DISTINCT m.transaction_id
+                FROM (
+                    SELECT ? AS source_type, ? AS source_origin,
+                        ? AS source_category_code,
+                        ? AS source_subcategory_code
+                ) AS b
+                JOIN {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                    ON {
+                    source_category_bridge_match_predicate(
+                        "m.source_type",
+                        "m.source_origin",
+                        "m.category",
+                        "m.subcategory",
+                    )
+                }
+                """,  # TableRef constants + code-constant bridge predicate
+                [source_type, source_origin, category, subcategory or ""],
+            ).fetchall()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Nothing imported yet: prep.int_transactions__matched is absent.
+            return set()
+        carrier_ids = [str(row[0]) for row in carriers]
+        resolved = resolve_curation_transaction_ids(self._db, carrier_ids)
+        live_ids = {resolved.get(tid, tid) for tid in carrier_ids}
+        held = self._db.execute(
+            f"""
+            SELECT transaction_id FROM {TRANSACTION_CATEGORIES.full_name}
+            WHERE source_type = ? AND category_id = ?
+            """,  # TableRef constant
+            [source_type, category_id],
+        ).fetchall()
+        return live_ids & {str(row[0]) for row in held}
+
+    def _derive_source_type(
+        self, source_origin: str, category: str, subcategory: str | None
+    ) -> str:
+        """Name the one imported source type carrying the term, or refuse.
+
+        Reads the types of imported rows and existing mappings that carry
+        ``(source_origin, category, subcategory)``; provider rows are not
+        candidates. None is the not-found refusal; several is ambiguous.
+        """
+        params = [source_origin, category, subcategory or ""]
+        rows = self._db.execute(
+            f"""
+            SELECT source_type FROM {CATEGORY_SOURCE_MAP.full_name}
+            WHERE source_origin = ? AND source_category_code = ?
+                AND source_subcategory_code = ?
+            """,  # TableRef constant
+            params,
+        ).fetchall()
+        try:
+            rows += self._db.execute(
+                f"""
+                SELECT DISTINCT source_type FROM {INT_TRANSACTIONS_MATCHED.full_name}
+                WHERE source_origin = ? AND category = ?
+                    AND COALESCE(subcategory, '') = ?
+                """,  # TableRef constant
+                params,
+            ).fetchall()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Nothing imported yet: prep.int_transactions__matched is absent.
+            pass
+        candidates = sorted({str(row[0]) for row in rows} - {_PROVIDER_SOURCE_TYPE})
+        if not candidates:
+            raise UserError(
+                "No imported transaction carries this term, and it has "
+                "no mapping to change",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        if len(candidates) > 1:
+            raise UserError(
+                "Several source types carry this term "
+                f"({', '.join(candidates)}); pass source_type to choose one",
+                code=error_codes.MUTATION_AMBIGUOUS,
+                details={"candidate_source_types": candidates},
+            )
+        return candidates[0]
+
+    def _is_known_source_term(
+        self,
+        source_type: str,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+    ) -> bool:
+        """Whether an imported row carries the term, or it is already mapped.
+
+        The imported side keys through the sweep's own predicate, so this
+        accepts exactly the terms the sweep can apply. An existing mapping is
+        accepted too, so a mapping whose rows have since gone can still change.
+        """
+        params = [source_type, source_origin, category, subcategory or ""]
+        mapped = self._db.execute(
+            f"""
+            SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name}
+            WHERE source_type = ?
+                AND source_origin = ?
+                AND source_category_code = ?
+                AND source_subcategory_code = ?
+            """,  # TableRef constant
+            params,
+        ).fetchone()
+        if mapped is not None:
+            return True
+        try:
+            carried = self._db.execute(
+                f"""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM (
+                        SELECT ? AS source_type, ? AS source_origin,
+                            ? AS source_category_code,
+                            ? AS source_subcategory_code
+                    ) AS b
+                    JOIN {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                        ON {
+                    source_category_bridge_match_predicate(
+                        "m.source_type",
+                        "m.source_origin",
+                        "m.category",
+                        "m.subcategory",
+                    )
+                }
+                )
+                """,  # TableRef constant + code-constant bridge predicate
+                params,
+            ).fetchone()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Nothing imported yet: prep.int_transactions__matched is absent.
+            return False
+        return bool(carried and carried[0])
+
     def _complete_rows(
         self,
         table: TableRef,
@@ -1443,7 +1864,12 @@ class MatchApplier:
                 (PROPOSED_RULES, ("proposed_rule_id",), "proposed_rules"),
                 (
                     CATEGORY_SOURCE_MAP,
-                    ("source_type", "source_category_code"),
+                    (
+                        "source_type",
+                        "source_origin",
+                        "source_category_code",
+                        "source_subcategory_code",
+                    ),
                     "source_mappings",
                 ),
             )

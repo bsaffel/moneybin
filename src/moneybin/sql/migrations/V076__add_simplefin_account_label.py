@@ -1,4 +1,4 @@
-"""V070: append a safe derived label without rewriting retained account evidence."""
+"""V076: append a safe derived label without rewriting retained account evidence."""
 
 from __future__ import annotations
 

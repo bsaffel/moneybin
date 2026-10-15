@@ -1,9 +1,9 @@
-<!-- Last reviewed: 2026-09-22 -->
+<!-- Last reviewed: 2026-10-07 -->
 # Synthetic Data
 
 MoneyBin ships a synthetic-data generator that builds a multi-year transaction history from a declared persona. It reads no real statement: every input is a persona YAML file shipped in the repo. This guide covers what the generator produces, how to drive it from the CLI, and how it stays isolated from any real data on the same machine.
 
-The examples were captured against an isolated synthetic profile at 80 columns. Profile paths are normalized to `<MONEYBIN_HOME>`; a third-party SQLMesh warning and path-bearing initialization trace are omitted.
+The examples were captured against an isolated synthetic profile at 80 columns. Every line carrying an absolute path is trimmed, as are the two SQLMesh `Target data object ... dropping it` lines, a third-party SQLMesh `FutureWarning`, and the DuckDB initialization trace. Each trim is named beside its block.
 
 ## What it generates
 
@@ -60,14 +60,23 @@ If you want to reseed the *same* profile with a different seed or year count wit
 ## Quick start
 
 Create the target profile first. `synthetic generate` does not create it: against a
-missing profile the command exits 1 without writing anything (see Limitations).
+missing profile the command exits 1 without writing anything and names the command
+that would:
 
 ```console
+$ moneybin synthetic generate --persona family --seed 42
+× Profile 'bob' does not exist.
+› Create it first: moneybin profile create bob
 $ moneybin profile create bob --no-init-inbox
 Profile created
-Profile:  bob
-Location: <MONEYBIN_HOME>/profiles/bob
+Profile:  bob (active)
 ```
+
+Four lines are trimmed above the closing fence: the `Location:` label and the three
+lines its absolute path wrapped onto. Two SQLMesh `Target data object ... dropping
+it` lines above `Profile created` are trimmed as well. `profile create` makes `bob`
+the active profile; `synthetic generate` writes into the profile its persona names
+(or `--profile`), not the active one, and leaves the active profile as it found it.
 
 Then generate. The command writes raw rows, then runs SQLMesh to build core and reports.
 
@@ -134,7 +143,8 @@ $ moneybin --profile bob reports net-worth-accounts
 4 of 14 columns shown — --wide for all
 ```
 
-The three trailing next-step hints are trimmed above. `account_balance_home` is `-`
+A blank line and three trailing next-step hints, which wrap onto five lines at
+this width, are trimmed above. `account_balance_home` is `-`
 because the profile has no home currency yet. `reports net-worth-accounts` shows
 each generated account's latest balance; `reports cash-flow`
 rolls up monthly inflow, outflow, and net, grouped by account, category, or both;
@@ -172,6 +182,9 @@ $ moneybin --profile bob db query "SELECT COUNT(*) AS ground_truth_rows FROM syn
 | 2886              |
 +-------------------+
 ```
+
+The four-line privacy notice and the initialization trace, both shown in the
+previous block, are trimmed above.
 
 The ground-truth row count matches the receipt's `Transactions saved: 2886`: one
 ground-truth row per generated transaction.
@@ -245,7 +258,7 @@ moneybin synthetic generate --persona <name> [--profile <name>] [--years <N>] [-
 
 Every flag, its type, and its bounds: [`moneybin synthetic generate`](../reference/cli/synthetic.md#moneybin-synthetic-generate), generated from the command tree. Behaviour `--help` does not carry:
 
-- **The target profile must already exist.** `generate` does not create it. Run `moneybin profile create <name>` first; against a missing profile the command exits 1 and reports a missing encryption key rather than a missing profile.
+- **The target profile must already exist.** `generate` does not create it. Run `moneybin profile create <name>` first; against a missing profile the command exits 1, says the profile does not exist, and names that command.
 - **It refuses to write into a profile that already holds imported data.** Exits 1 and points you at `synthetic reset`.
 - **Omitting `--seed` picks a value in `1..9999`.** The completion receipt shows the chosen seed; save it for reproducibility.
 
@@ -357,4 +370,4 @@ Practical implications for CI and regression tests:
 - **No inferred conversion.** Accounts carry their own `currency_code` (see the `international` persona). A same-currency transfer moves one magnitude to both sides. A cross-currency transfer must declare `received_amount` in the persona YAML; the generator writes the two declared magnitudes and looks up no rate, and a cross-currency transfer without `received_amount` is refused at persona load (`src/moneybin/synthetic/models.py`). Without a home currency set, reports sub-total per currency — see [Multi-currency](multi-currency.md).
 - **No manual entries or rule training.** The generator produces raw transactions and ground truth; it does not seed `app.*` user-state tables (manual entries, custom rules, budgets).
 - **Save the random seed for reproducibility.** If you omit `--seed`, the generator picks a value in `1..9999` and shows it in the completion receipt. Save that value or pass an explicit seed.
-- **`generate` does not create the target profile.** Run `moneybin profile create <name>` first. Against a missing profile the command exits 1 and reports a missing encryption key, which names the symptom rather than the cause.
+- **`generate` does not create the target profile.** Run `moneybin profile create <name>` first; the command refuses a missing profile and says so.

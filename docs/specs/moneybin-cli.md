@@ -430,6 +430,20 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- create <name> [--parent] [--icon] [--output text|json]
 |   +-- set <category_id> --active/--inactive [--output text|json]
 |   +-- delete <category_id> [--force]
+|   +-- mappings                   -- Map a source's own category text to a MoneyBin category
+|       +-- pending [--namespace <source_origin>] [--output json] [--quiet]
+|       |         Distinct unmapped (source_origin, category, subcategory) terms, one row per
+|       |         term with the count of uncategorized transactions mapping it would
+|       |         categorize and up to 3 suggestions drawn from active categories;
+|       |         largest count first. A term with nothing left to categorize is omitted.
+|       +-- set --namespace <source_origin> --category <text> [--subcategory <text>]
+|                 --into <category_id> | --new <name> | --ignore
+|                 Map one term to an existing category (--into), create a category and
+|                 map the term to it in one transaction (--new), or ignore the term
+|                 (--ignore): it leaves the pending list and categorizes nothing. The three
+|                 flags are mutually exclusive; passing none or more than one exits 2. The
+|                 mapping applies at once, and a changed mapping withdraws and re-evaluates
+|                 the categorizations it produced; the receipt reports both counts.
 |
 +-- merchants                      -- Merchant mappings (reference data) and link-review
 |   +-- list
@@ -656,7 +670,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- list-prompts               -- Show available MCP prompts
 |   +-- config path                -- Print the install-target config path for a client
 |   +-- install                    -- Install MoneyBin into a client's MCP config
-|         [--client claude-desktop|claude-code|cursor|vscode|windsurf|codex|gemini-cli]
+|         [--client claude-desktop|claude-code|cursor|vscode|windsurf|codex|chatgpt-desktop|gemini-cli]
 |         [--profile NAME]           Profile to configure (default: active)
 |         [--print]                  Print the snippet instead of writing
 |         [--yes]                    Skip the install confirmation prompt

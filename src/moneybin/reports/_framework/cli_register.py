@@ -31,9 +31,14 @@ from moneybin.cli.output import (
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import Money, build_rows, count_wide_request, render_note
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.render import Money, build_rows, count_wide_request
+from moneybin.cli.utils import (
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
+from moneybin.errors import NextStep
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
     ReportSpec,
@@ -111,10 +116,21 @@ def report_note_lines(
     quiet: bool = False,
     symbols: TerminalSymbols | None = None,
 ) -> tuple[str, ...]:
-    """Build report fidelity disclosures for one complete terminal answer."""
+    """Build report fidelity disclosures for one complete terminal answer.
+
+    ``quiet`` drops the next-step hints and nothing else: the conversion
+    disclosure and the two warnings say how far the numbers can be trusted,
+    and asking for less chatter is not a claim that truncation or a currency
+    conversion stopped happening.
+    """
     if symbols is None:
         symbols = get_terminal_policy().symbols
     lines: list[str] = []
+    if not result.records:
+        # Requirement 6: an empty table says nothing on its own. State what was
+        # searched before any hint below, so "nothing matched the filter" and
+        # "nothing exists at all" are never the same silence.
+        lines.append(_empty_result_scope(result))
     if conversion_note := applied_rates_note(
         result.applied_rates, result.display_currency
     ):
@@ -127,36 +143,45 @@ def report_note_lines(
             "Raise --limit or narrow the report to see the rest."
         )
     if not quiet:
-        lines.extend(f"{symbols.action} {action}" for action in result.actions)
+        lines.extend(
+            f"{symbols.action} {_next_step_line(action)}" for action in result.actions
+        )
     return tuple(lines)
 
 
-def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> None:
-    """Echo the envelope metadata the text path would otherwise drop.
+def _empty_result_scope(result: CatalogReportResult) -> str:
+    """Requirement 6's line for zero rows: what was searched, not just that nothing came back.
 
-    ``quiet`` reaches the next-step hints and nothing else. Requirement 4 makes
-    ``-q`` the switch for an informational status line, and a hint is one: it
-    suggests a command to run next. The conversion disclosure and the two
-    warnings are not — they state how far the numbers above can be trusted, and
-    a flag asking for less chatter is not a claim that masking, truncation, or
-    a currency conversion stopped happening. Silencing those is the failure the
-    rest of this docstring describes, arriving through ``-q`` instead of
-    through the surface that skipped them.
-
-    ``render_or_json`` renders the envelope on the JSON path only, so every
-    text renderer of a report result has to say these three things itself.
-    Shared rather than copied: a hand-written report renderer that skips them
-    would let a conversion that fell back to per-currency segmentation show
-    segmented positions and never say why — the silent masking these echoes
-    exist to prevent, reappearing on the surface that skipped them.
-
-    All of it goes to stderr (``cli.md`` "Exit Codes & stderr"): these are
-    diagnostics about the answer, not the answer, and redirecting a report to a
-    file or a downstream parser must not append prose to the data stream.
+    Names the effective parameters and period the caller already knows rather
+    than distinguishing "no records at all" from "no matches for this filter"
+    — no report here can tell the two apart without a second, unfiltered
+    query. ``getattr`` covers a test double built from the base
+    ``ReportResult`` (no ``report_id``/``parameters``), which never reaches a
+    real terminal.
     """
-    symbols = get_terminal_policy().symbols
-    for line in report_note_lines(result, quiet=quiet, symbols=symbols):
-        render_note(line, warn=line.startswith(f"{symbols.attention} "))
+    report_label = getattr(result, "report_id", "report").split(":", 1)[-1]
+    parameters: Mapping[str, Any] = getattr(result, "parameters", {})
+    scope = [
+        f"{name}={value}" for name, value in parameters.items() if value is not None
+    ]
+    if result.period:
+        scope.insert(0, result.period)
+    if not scope:
+        return f"No rows matched {report_label}."
+    return f"No rows matched {report_label} ({', '.join(scope)})."
+
+
+def _next_step_line(action: NextStep | str) -> str:
+    """Render one next-step hint for the terminal: reason, then a runnable command.
+
+    A ``NextStep`` renders its own ``cli`` argv so the command is last on the
+    line, per requirement 7 of ``cli-human-experience.md``. A legacy string
+    (a dedup caveat authored outside this module's allotment) prints as-is.
+    """
+    if not isinstance(action, NextStep):
+        return action
+    reason = action.reason[:1].upper() + action.reason[1:] if action.reason else ""
+    return f"{reason}: {generated_cli_command(*action.cli)}"
 
 
 class ColumnView(NamedTuple):
@@ -314,12 +339,34 @@ def money_columns(spec: ReportSpec) -> dict[str, Money]:
     }
 
 
+def numeric_columns(spec: ReportSpec) -> tuple[str, ...]:
+    """Columns declaring a bare number (a count, a score) for `build_rows(numeric=...)`.
+
+    Mirrors :func:`money_columns`: the declaration lives beside the column, and
+    a report that declares nothing renders its numbers left-aligned exactly as
+    it did before this field existed.
+    """
+    return tuple(column.name for column in spec.columns if column.numeric)
+
+
+def grouped_columns(spec: ReportSpec) -> tuple[str, ...]:
+    """The `numeric` columns that are counts, for `build_rows(grouped=...)`.
+
+    A strict subset of :func:`numeric_columns`: `.claude/rules/cli.md` groups
+    a row count by thousands and prints a rate or a per-unit price exactly as
+    stored, so the two are declared apart and never equated here.
+    """
+    return tuple(column.name for column in spec.columns if column.grouped)
+
+
 def render_report_result(
     result: CatalogReportResult,
     output: OutputFormat,
     *,
     cli_actor: str,
     money: Mapping[str, Money] | None = None,
+    numeric: Sequence[str] | None = None,
+    grouped: Sequence[str] | None = None,
     quiet: bool = False,
     columns: Sequence[str] | None = None,
     fit: bool = False,
@@ -334,6 +381,12 @@ def render_report_result(
     ``money`` carries the report's own column declarations, from
     :func:`money_columns`. Both callers resolve it from the spec, so one report
     renders its amounts identically whichever command ran it.
+
+    ``numeric`` carries the report's bare-number declarations, from
+    :func:`numeric_columns` — requirement 9's right-alignment for a column
+    that is a count or a score rather than an amount. ``grouped`` is the
+    count subset of it, from :func:`grouped_columns`, that also gets thousands
+    grouping; a rate declared ``numeric`` alone prints as stored.
 
     ``columns`` is the text branch's narrowed view, from
     :func:`visible_columns`. It never reaches the JSON envelope — requirement 8
@@ -368,6 +421,8 @@ def render_report_result(
                 for record in result.records
             ],
             money=money,
+            numeric=numeric,
+            grouped=grouped,
             total_columns=len(result.columns),
             fit=fit,
             terminal=policy,
@@ -403,7 +458,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         )
 
         output: OutputFormat = kwargs.pop("output")
-        # Reaches the next-step hints in `echo_report_notes` and nothing else —
+        # Reaches the next-step hints in `report_note_lines` and nothing else —
         # the table is data (requirement 5) and JSON output has no notes.
         quiet: bool = bool(kwargs.pop("quiet", False))
         # Popped for the same reason as `display_currency`: a framework option
@@ -441,6 +496,8 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 output,
                 cli_actor=cli_actor,
                 money=money_columns(spec),
+                numeric=numeric_columns(spec),
+                grouped=grouped_columns(spec),
                 quiet=quiet,
                 columns=view.columns,
                 fit=view.fit,

@@ -53,9 +53,9 @@ Usage: `moneybin investments add [OPTIONS]`
 
 List ledger events from the canonical investment-transaction fact table.
 
-Shows the trade date, event type, security, quantity, and the signed amount
-with the currency it is denominated in. There is no ``--wide``: all six
-columns fit an 80-column terminal, so none is held back.
+Shows the trade date, event type, security (its ticker, or its catalog name
+when it has none), quantity, and the signed amount with the currency it is
+denominated in. ``--wide`` adds the security's catalog id.
 
 Usage: `moneybin investments list [OPTIONS]`
 
@@ -70,6 +70,7 @@ Usage: `moneybin investments list [OPTIONS]`
 | `--to` | text |  | End trade date YYYY-MM-DD (inclusive) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments holdings
@@ -81,8 +82,10 @@ before today. A position with no usable price, one whose share count is
 known wrong, or one in an account whose investment ledger arrives from two
 sources at once shows ``-`` rather than a zero, and the ``status`` column
 beside it says which — it prints by default, because the three cases have
-different remedies. ``--wide`` adds the cost basis, the average cost, and
-the date the price was observed.
+different remedies. A position is named by its ticker. ``--wide`` adds the
+security's catalog id, the cost basis, the average cost, and the date the
+price was observed, omitting those it cannot fit the terminal and saying
+which.
 
 The closing portfolio line reports ``max_days_since_observed``: the age in
 days of the stalest close behind any figure above, or ``-`` when no
@@ -108,9 +111,11 @@ Realized gain/loss (the 1099-B surface) from the realized-gains fact table.
 
 Shows when each position was disposed, what it was, what it fetched, the
 gain or loss, the currency those figures are denominated in, and whether
-the holding term was short or long. ``--wide`` adds the quantity and cost
-basis the gain was computed from, and a ``note`` column marking each row
-whose basis is known to be incomplete.
+the holding term was short or long. A security is named by its ticker.
+``--wide`` adds its catalog id, the quantity and cost basis the gain was
+computed from, and a ``note`` column marking each row whose basis is known
+to be incomplete, omitting those it cannot fit the terminal and saying
+which.
 
 When any row's basis is incomplete the command says so on stderr, and
 ``-q`` does not silence it: the gain shown for such a row is a conservative
@@ -154,12 +159,13 @@ Usage: `moneybin investments lots [OPTIONS] COMMAND [ARGS]...`
 
 List tax lots with remaining quantity and basis. Open lots only by default.
 
-Shows the lot, its security, when it was acquired, how much remains, the
-remaining basis, and a note marking any basis known to be incomplete.
-``--all`` adds an open/closed ``state`` column, since that view returns
-both. ``--wide`` shows every declared column: the currency, the cost-basis
-method, and ``state`` — which under the default ``--open`` reads ``open``
-on every row.
+Shows the lot, its security (by ticker), when it was acquired, how much
+remains, the remaining basis, and a note marking any basis known to be
+incomplete. ``--all`` adds an open/closed ``state`` column, since that view
+returns both. ``--wide`` shows every declared column: the security's
+catalog id, the currency, the cost-basis method, and ``state`` — which
+under the default ``--open`` reads ``open`` on every row — omitting those
+it cannot fit the terminal and saying which.
 
 Lots in an account whose investment ledger arrives from two sources at once
 double-count, because the two ledgers interleave rather than merge. The

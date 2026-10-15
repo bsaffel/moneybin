@@ -100,11 +100,14 @@ def _install_ledger_chain(
         CREATE TABLE core.dim_accounts (
             account_id VARCHAR,
             currency_code VARCHAR,
-            updated_at TIMESTAMP
+            updated_at TIMESTAMP,
+            investment_source_type VARCHAR,
+            investment_source_type_changed_at TIMESTAMP
         )
     """)
     db.execute(
-        "INSERT INTO core.dim_accounts VALUES (?, ?, ?::TIMESTAMP)",
+        "INSERT INTO core.dim_accounts (account_id, currency_code, updated_at) "
+        "VALUES (?, ?, ?::TIMESTAMP)",
         [_ACCOUNT_ID, account_currency, account_updated_at],
     )
     db.execute(  # shipped model body, not user SQL

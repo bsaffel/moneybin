@@ -1,4 +1,4 @@
-"""V068: add immutable SimpleFIN observations and job/source receipts."""
+"""V074: add immutable SimpleFIN observations and job/source receipts."""
 
 from __future__ import annotations
 

@@ -168,7 +168,7 @@ jobs:
             --cov=src --cov-report= --cov-fail-under=0 --durations=25
 
       - name: Upload coverage data
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: coverage-data-unit-${{ matrix.group }}
@@ -206,7 +206,7 @@ jobs:
           uv run coverage report
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: coverage
@@ -294,7 +294,7 @@ jobs:
             --cov=src --cov-report= --cov-fail-under=0 --durations=25
 
       - name: Upload coverage data
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: coverage-data-integration-${{ matrix.group }}
@@ -353,7 +353,7 @@ jobs:
             --cov=src --cov-report= --cov-fail-under=0 --durations=25
 
       - name: Upload coverage data
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: coverage-data-e2e-${{ matrix.group }}
@@ -387,7 +387,7 @@ jobs:
 
       - name: Record durations on the CI runner
         env:
-          MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
+          MONEYBIN_PROFILE__SCENARIO__DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: |
           uv run pytest tests/ -m "unit or integration or e2e or (scenarios and not perf)" \
             -n logical --store-durations

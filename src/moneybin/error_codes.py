@@ -317,6 +317,7 @@ INVESTMENT_PRICE_MARK_CURRENCY_INVALID = "investment_price_mark_currency_invalid
 INVESTMENT_PRICE_MARK_UNREPRESENTABLE = "investment_price_mark_unrepresentable"
 INVESTMENT_SECURITY_NOT_BOUND = "investment_security_not_bound"
 INVESTMENT_SECURITY_NOT_IN_CATALOG = "investment_security_not_in_catalog"
+INVESTMENT_SOURCE_EXCLUDED = "investment_source_excluded"
 
 
 # ---------------------------------------------------------------------------

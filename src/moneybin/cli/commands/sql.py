@@ -126,6 +126,12 @@ def sql_query_command(
                 for record in result.records
             ],
             numeric=numeric,
+            # Dynamic SQL declares no column semantics, so an `int`/`Decimal`
+            # numeric column is grouped by thousands the way a hand-authored
+            # command would (rule 9): there is no per-column author judgement
+            # here to protect from grouping, unlike a declared FX rate or
+            # per-unit price.
+            grouped=numeric,
             # SQL's cap returns `limit + 1` as a lower-bound sentinel, never
             # an exact total. Only frame an exact count when no continuation
             # exists; otherwise the visible --limit remedy is the truth.

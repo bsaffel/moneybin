@@ -464,6 +464,55 @@ def test_a_money_kind_outside_the_vocabulary_is_refused() -> None:
         )
 
 
+def test_numeric_defaults_to_false() -> None:
+    """Every column declared before this field existed renders as it always did."""
+    column = OutputColumn(
+        name="rows", description="A count.", data_class=DataClass.AGGREGATE
+    )
+
+    assert column.numeric is False
+
+
+def test_a_numeric_column_needs_no_money_kind() -> None:
+    column = OutputColumn(
+        name="rows",
+        description="A count.",
+        data_class=DataClass.AGGREGATE,
+        numeric=True,
+    )
+
+    assert column.numeric is True
+    assert column.money_kind is None
+
+
+def test_numeric_and_money_kind_together_are_refused() -> None:
+    """A bare number is one or the other, never both (`.claude/rules/cli.md`).
+
+    `format_money` would round a `numeric` column's value to two places and
+    add a sign glyph neither declaration asked for if both survived to the
+    renderer.
+    """
+    with pytest.raises(ValueError, match="numeric"):
+        OutputColumn(
+            name="value",
+            description="Confused.",
+            data_class=DataClass.AGGREGATE,
+            money_kind="magnitude",
+            numeric=True,
+        )
+
+
+def test_grouped_without_numeric_is_refused() -> None:
+    """Thousands grouping refines a bare-number column; it is not a third state."""
+    with pytest.raises(ValueError, match="grouped"):
+        OutputColumn(
+            name="rows",
+            description="Count.",
+            data_class=DataClass.AGGREGATE,
+            grouped=True,
+        )
+
+
 def test_a_currency_basis_outside_the_vocabulary_is_refused() -> None:
     """The same runtime gate as `money_kind`, for the same reason.
 

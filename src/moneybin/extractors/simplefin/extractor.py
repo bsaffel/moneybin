@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Self, cast
 from uuid import UUID
 
@@ -159,6 +160,10 @@ class SimpleFINExtractor:
     def __init__(self, db: Database) -> None:
         """Use the caller-owned warehouse connection."""
         self.db = db
+
+    def schema_files(self) -> list[Path]:
+        """Return the bundled raw.simplefin_* DDL files."""
+        return sorted((Path(__file__).parent / "schema").glob("raw_simplefin_*.sql"))
 
     def source_accounts(self, source: SimpleFINSource) -> list[SourceAccount]:
         """Build resolver inputs from retained scopes touched by this delivery."""

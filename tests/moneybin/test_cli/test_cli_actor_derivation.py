@@ -447,11 +447,13 @@ def test_gsheet_list_failure_audits_as_gsheet_list(
 
 
 @patch("moneybin.synthetic.reset.reset_synthetic_rows")
+@patch("moneybin.cli.commands.synthetic._require_profile_database")
 @patch("moneybin.cli.commands.synthetic._reset_safety_check")
 @patch("moneybin.database.get_database")
 def test_synthetic_reset_regeneration_failure_audits_as_reset(
     mock_get_database: MagicMock,
     _mock_safety_check: MagicMock,
+    _mock_profile_check: MagicMock,
     _mock_reset_rows: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

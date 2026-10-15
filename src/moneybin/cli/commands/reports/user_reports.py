@@ -29,7 +29,12 @@ from moneybin.cli.output import (
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.render import (
+    build_code,
+    build_rows,
+    build_summary,
+    compose_human_result,
+)
 from moneybin.cli.utils import (
     format_cli_attention,
     get_terminal_policy,
@@ -182,7 +187,9 @@ def reports_run(
     )
     from moneybin.reports._framework.cli_register import (
         column_view,
+        grouped_columns,
         money_columns,
+        numeric_columns,
         render_report_result,
     )
 
@@ -203,6 +210,8 @@ def reports_run(
             # and another through `reports run spending-trend`.
             spec = catalog.resolve(handle)
             money = money_columns(spec)
+            numeric = numeric_columns(spec)
+            grouped = grouped_columns(spec)
             result = catalog.execute(
                 db,
                 report_id=handle,
@@ -222,6 +231,8 @@ def reports_run(
         output,
         cli_actor="reports_run",
         money=money,
+        numeric=numeric,
+        grouped=grouped,
         quiet=quiet,
         columns=view.columns,
         fit=view.fit,
@@ -309,12 +320,16 @@ def reports_explain(
                 "No executed form — supply a value for "
                 f"{', '.join(explanation.sql_suppressed_by)} with --param"
             )
+        # A code block, never `build_summary`: a summary value reflows as
+        # prose (rule 10 treats a code block as data), which breaks
+        # identifiers mid-token exactly the way a path value does. It rides
+        # inside the one renderable so the pager holds the whole answer.
         for label, form in (
             ("SQL", explanation.sql),
             ("Template", explanation.sql_template),
         ):
             if form is not None:
-                parts.append(build_summary([(label, form)]))
+                parts.append(build_code(f"\n{label}:\n{form}"))
         emit_human_result(
             compose_human_result(parts, disclosures=disclosures),
             policy=policy,

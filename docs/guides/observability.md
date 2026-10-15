@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Observability
 
 What MoneyBin records about itself, how to read it, and what's intentionally NOT recorded. Three surfaces: structured logs (per-profile log files + stderr), persisted metrics (in the `app.metrics` table), and the `system doctor` integrity sweep. The privacy threat model lives in [`threat-model.md`](threat-model.md); this guide is operational.
@@ -140,6 +140,11 @@ Every metric is recorded manually (`METRIC.labels(...).inc()` / `.observe()`) at
 
 ```console
 $ uv run moneybin stats
+Metrics
+Scope:   All recorded metrics
+Metrics: 73 across 16 domains
+Investment matching
+Investment Match Duration Seconds (operation: plan): 1 snapshots (sum=0.49 s)
 Import pipeline
 Import Batch Size:           1 snapshots (sum=0.00 files)
 Inbox Sync Duration Seconds: 1 snapshots (sum=0.00 s)
@@ -151,10 +156,13 @@ Smart import confirmation
 Import Detection Score: 1 snapshots (sum=0.00 score)
 ```
 
-Another 46 lines follow, under the headers from Deduplication through User-created reports. This profile was built by `moneybin demo`, which flushed each metric once; `snapshots` counts those flushes, not observations. `--metric` narrows to one family by name substring — it matches the header's metrics, not the header:
+Another 78 lines follow, under the headers from SQLMesh transforms through User-created reports. The three header lines lead with the scope and the totals — 73 metrics across 16 domains — before the first subsystem block. This profile was built by `moneybin demo` and then refreshed with `moneybin refresh`, which flushed each metric once; `snapshots` counts those flushes, not observations. `--metric` narrows to one family by name substring — it matches the header's metrics, not the header, and the `Scope:` line restates the filter:
 
 ```console
 $ uv run moneybin stats --metric import
+Metrics
+Scope:   Recorded metrics — metric family 'import'
+Metrics: 2 across 2 domains
 Import pipeline
 Import Batch Size: 1 snapshots (sum=0.00 files)
 Smart import confirmation
@@ -175,13 +183,19 @@ Two details of that line are worth reading precisely:
 
 A read-only sweep that asks: is the pipeline internally consistent right now?
 
-A clean sweep prints one line. On the family demo profile, immediately after `moneybin refresh`:
+A clean sweep prints one line. On the family demo profile, immediately after `moneybin refresh`, the synthetic history's fixed end date (2025-12-31) is now more than 30 days in the past, so it warns instead:
 
 ```console
 $ uv run moneybin system doctor
+! net_worth_stale_balance — 4 account(s) in net worth have no balance observed in the last 30 days,
+so their balances are carried forward — import a recent statement, sync, or record one with
+`moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
+   Affected: account:****0001, account:****0002, account:****0003, account:****0004
 
-67 invariants checked across 2,886 transactions — all passing
+69 invariants checked across 2,886 transactions — 68 passing, 1 warn, 0 skipped
 ```
+
+`Affected` prints each account as `account:` and the last four digits of its id (`SYN00420001` shows as `****0001`), so the line identifies the account without printing the id. The trailing HTML comment on the `refresh` line is not CLI output: the docs gate needs it on any transcript line that quotes two commands.
 
 `--verbose` names each invariant that ran, plus the affected IDs on anything failing:
 
@@ -196,7 +210,7 @@ $ uv run moneybin system doctor --verbose
 ✓ transform_model_presence
 ```
 
-The other 60 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
+The other 62 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
 
 What it audits, via `DoctorService`:
 
@@ -227,9 +241,9 @@ $ uv run moneybin system doctor --output json | jq .
     "display_currency": null
   },
   "data": {
-    "passing": 67,
+    "passing": 68,
     "failing": 0,
-    "warning": 0,
+    "warning": 1,
     "skipped": 0,
     "transaction_count": 2886,
     "invariants": [
@@ -253,7 +267,7 @@ $ uv run moneybin system doctor --output json | jq .
 }
 ```
 
-The 65 `invariants` entries between the first and the last are cut; this command writes nothing to stderr. `summary.total_count` counts the sweep, not its invariants — the per-invariant tallies are `data.passing` and `data.failing`.
+The 67 `invariants` entries between the first and the last are cut; this command writes nothing to stderr. `summary.total_count` counts the sweep, not its invariants — the per-invariant tallies are `data.passing` and `data.failing`.
 
 On failure (exit `1`), the top-level `status` flips to `"error"`, an `error` object appears (`{"code": "audit_invariant_failure", "message": "N invariant(s) failing"}`), and the offending entries in `data.invariants[]` carry `"status": "fail"` with `detail` set to `"N violation(s)"`. Match on `data.invariants[].status == "fail"` (or top-level `status == "error"`) to drive alerts. `affected_ids` is populated only when `--verbose` is passed.
 
@@ -334,7 +348,8 @@ After=network-online.target
 [Service]
 Type=simple
 User=moneybin
-Environment=MONEYBIN_DATABASE__ENCRYPTION_KEY=...
+Environment=MONEYBIN_PROFILE=default
+Environment=MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY=...
 Environment=MONEYBIN_LOGGING__LOG_TO_FILE=false
 Environment=MONEYBIN_LOGGING__FORMAT=human
 ExecStart=/usr/local/bin/moneybin mcp serve

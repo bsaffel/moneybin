@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-10-08 -->
 # Data Model
 
 The user-facing data model. Tables in `core.*`, `reports.*`, and `app.*` are the surfaces consumers (CLI, MCP, your own SQL) read from for analysis; `raw.*` and `prep.*` are readable for inspection through the agent-safe SQL paths. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
@@ -200,19 +200,20 @@ Logical grain key: `category_id`.
 
 ### `core.bridge_category_source_map`
 
-Resolved provider-code → canonical-category bridge. Grain: one row per `(source_type, source_category_code, source_subcategory_code)`. `VIEW` that unions the `seeds.category_source_map` defaults with `app.category_source_map` user overrides — a user row for a given key always wins over the seed default. This is the reverse-lookup key for turning an aggregator's category code (e.g. Plaid PFC) or an imported row's own category text into a MoneyBin `category_id`, with no schema change per new aggregator.
+Resolved provider-code → canonical-category bridge. Grain: one row per `(source_type, source_origin, source_category_code, source_subcategory_code)`. `VIEW` that unions the `seeds.category_source_map` defaults with `app.category_source_map` user overrides — a user row for a given key always wins over the seed default. This is the reverse-lookup key for turning an aggregator's category code (e.g. Plaid PFC) or an imported row's own category text into a MoneyBin `category_id`, with no schema change per new aggregator.
 
 | Column | Type | Description |
 |---|---|---|
-| `source_type` | VARCHAR | Taxonomy namespace: a provider tag (e.g. `plaid`) or a `source_origin` slug for imported mappings. |
+| `source_type` | VARCHAR | The row's own `source_type`: `plaid` for provider rows; `csv`, `tsv`, `excel`, `parquet`, `feather`, `pdf`, or `manual` for imported mappings. |
+| `source_origin` | VARCHAR | The row's own `source_origin` for an imported mapping (e.g. `chase_credit`). `''` on a provider row means provider-wide. |
 | `source_category_code` | VARCHAR | The provider's category code (e.g. `FOOD_AND_DRINK_COFFEE`) or an imported row's own category text. |
 | `source_subcategory_code` | VARCHAR | Second half of the source key. `''` is the sentinel for "no subcategory" (DuckDB primary keys reject NULL). |
 | `code_level` | VARCHAR | `detailed` \| `primary`. Detailed wins over primary on reverse lookup. |
-| `category_id` | VARCHAR | FK → `core.dim_categories.category_id`. Exactly one per code (canonical-by-PK). |
+| `category_id` | VARCHAR | FK → `core.dim_categories.category_id`. Exactly one per code (canonical-by-PK). NULL on a user row marks the term as ignored: it is known and categorizes nothing. |
 | `source_taxonomy_version` | VARCHAR | Provider taxonomy version the mapping was derived against (drift marker; not part of the key). |
 | `is_default` | BOOLEAN | TRUE for seed rows, FALSE for user overrides from `app.category_source_map`. |
 
-Two-tier reverse lookup — match a transaction's detailed and primary codes and let detailed win: `WHERE source_category_code IN (detailed, primary) ORDER BY code_level = 'detailed' DESC LIMIT 1`.
+Two-tier reverse lookup — match a transaction's detailed and primary codes and let detailed win: `WHERE source_category_code IN (detailed, primary) ORDER BY source_category_code = detailed DESC LIMIT 1`. Rank on the code itself, not on `code_level`, which is a label the writer supplies. A winning row with a NULL `category_id` means the code is ignored; do not fall back to the other row.
 
 ### `core.bridge_merchant_entities`
 
@@ -366,6 +367,57 @@ Current positions: the sum of open lots per `(account_id, security_id)` — a "n
 
 Logical grain key: `(account_id, security_id)`.
 
+### `core.dim_holdings_broker_reported`
+
+What each Plaid item's newest holdings snapshot says about an account's
+position, reduced to one row per account — the broker's claim, not
+MoneyBin's ledger. Closes the gap `core.dim_holdings` cannot: `dim_holdings`
+sums open lots, so it has no row for a broker-reported position with no
+matching lot (an unbound security, a declined bootstrap, a snapshot that
+landed before its transactions). `VIEW`. Grain: `account_id`.
+
+| Column | Type | Description |
+|---|---|---|
+| `account_id` | VARCHAR | FK → `core.dim_accounts` (grain). |
+| `has_position` | BOOLEAN | `TRUE`: a newest snapshot reports a nonzero quantity or value. `FALSE`: every investment-typed item pulled and reported only definitive zeros, or no rows at all. `NULL`: pulled, nothing nonzero, but inconclusive — a snapshot with any row NULL on both figures (including one mixing zero and NULL rows), or investment-typed items that disagree (one a definitive zero, another inconclusive). |
+| `as_of` | DATE | Date of the stalest receipt behind `has_position` (MIN across contributing items — a newer item's receipt says nothing about an older item's own silence). |
+
+Reads only `quantity` and `institution_value`; `cost_basis` is a
+reconciliation reference and never evidence of a position. A relinked
+account (several `source_origin`s) reduces in a fixed order: `TRUE`, then
+absent (no row at all), then `FALSE`, then `NULL` — one confirmed position
+always outranks a sibling item's silence, zero, or absence.
+
+### `core.dim_unanchored_accounts`
+
+Accounts carrying evidence of holding value with no balance observation at
+all — Requirement 14's candidate set
+([`reports-net-worth-sql-surface.md`](../specs/reports-net-worth-sql-surface.md)),
+stated once and read by both net-worth rungs, both report runners, and
+`moneybin system doctor`. `VIEW`. Grain: `account_id`.
+
+"No balance observation" means no row in `core.fct_balances_daily`, the
+rebuilt spine the net-worth totals sum — not the live `core.fct_balances`
+view. A balance recorded with `accounts balance assert` anchors the account
+only after `moneybin refresh` rebuilds the spine, so the account stays listed,
+and the total stays NULL, until then.
+
+| Column | Type | Description |
+|---|---|---|
+| `account_id` | VARCHAR | FK → `core.dim_accounts` (grain). |
+| `has_holdings` | BOOLEAN | Has an open lot in `core.dim_holdings`. |
+| `has_broker_position` | BOOLEAN | `core.dim_holdings_broker_reported.has_position` is `TRUE`. |
+| `has_transactions` | BOOLEAN | Has any row in `core.fct_transactions`. |
+| `has_investment_transactions` | BOOLEAN | Has any row in `core.fct_investment_transactions`. |
+
+Evidence is read existentially, never by `SUM` — a zero net cash effect is
+never proof of zero cash held, however it was reached. Carries **no**
+eligibility: `include_in_net_worth` and archival are applied by each reader
+at its own date, because the report rungs, the runner fallbacks, and system
+doctor each need that eligibility evaluated at a different point in time. An
+account with no evidence of any kind stays out of this view entirely —
+nothing distinguishes "never funded" from "not yet observed" for it.
+
 ### `core.fct_investment_transactions`
 
 The canonical investment-transaction ledger. Grain: one row per `investment_transaction_id`. `FULL` model (materialized table, not a view — unlike `fct_transactions`). Unions manual entry, Plaid transactions, and the Plaid opening-lot bootstrap (a reconstruction of pre-import-window lots, carrying the non-user-authorable `subtype = 'opening_bootstrap'` so it's always distinguishable from a real transfer).
@@ -491,10 +543,11 @@ Cross-account daily net-worth rollup, converted to the profile's home currency. 
 | `account_count` | INTEGER | Accounts contributing on this date, across every currency. |
 | `carried_forward_count` | INTEGER | How many of them are carried forward rather than observed. |
 | `currency_count` | INTEGER | Distinct currencies held on this date; the unknown-currency segment counts as one. |
-| `unpriced_currency_count` | INTEGER | How many of them had no rate on this date; 0 means the totals below are complete. |
-| `total_assets` | DECIMAL(18,2) | Sum of positive balances converted to `home_currency_code`; NULL when `unpriced_currency_count > 0`. |
-| `total_liabilities` | DECIMAL(18,2) | Sum of negative balances converted to `home_currency_code`, kept negative; NULL when `unpriced_currency_count > 0`. |
-| `net_worth` | DECIMAL(18,2) | `total_assets + total_liabilities`; NULL when `unpriced_currency_count > 0`. |
+| `unpriced_currency_count` | INTEGER | How many of them had no rate on this date; 0 means every currency is priced. The totals below are complete only when `unanchored_account_count` is 0 too. |
+| `unanchored_account_count` | INTEGER | Eligible accounts holding priced securities or transaction activity with no balance observation at all; 0 means none. |
+| `total_assets` | DECIMAL(18,2) | Sum of positive balances converted to `home_currency_code`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
+| `total_liabilities` | DECIMAL(18,2) | Sum of negative balances converted to `home_currency_code`, kept negative; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
+| `net_worth` | DECIMAL(18,2) | `total_assets + total_liabilities`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
 
 ### `reports.net_worth_currencies`
 
@@ -527,15 +580,20 @@ Net worth per included account per day, in its own currency and converted to hom
 | `currency_code` | VARCHAR | The account's own denomination; NULL is the unknown segment and is never priced. |
 | `home_currency_code` | VARCHAR | `app.profile_settings.home_currency`. |
 | `account_type` | VARCHAR | `depository` / `credit` / `loan` / `investment` / `other`. |
-| `is_observed` | BOOLEAN | `FALSE` means the balance is carried forward from an earlier observation. |
-| `observation_source` | VARCHAR | `ofx` / `tabular` / `assertion` / `plaid`; NULL when interpolated. |
+| `is_observed` | BOOLEAN | `FALSE` means the balance is carried forward from an earlier observation, or, with `account_balance` NULL, that the account holds value but has no balance observation at all. |
+| `observation_source` | VARCHAR | `ofx` / `tabular` / `assertion` / `plaid`; NULL when interpolated or when the account has no balance observation. |
 | `rate_source` | VARCHAR | `override` / `provider` / `identity` behind the rate that converted the account's `currency_code` to `home_currency_code`; NULL when unpriced. A `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
 | `balance_date` | DATE | Grain. |
 | `rate_published_date` | DATE | The day the `currency_code`→`home_currency_code` rate was published; a `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
-| `days_since_observed` | INTEGER | 0 on an observed day. |
-| `reconciliation_delta` | DECIMAL(18,2) | Observed minus transaction-derived; NULL on interpolated days. |
-| `account_balance` | DECIMAL(18,2) | In `currency_code`. |
-| `account_balance_home` | DECIMAL(18,2) | In `home_currency_code`; NULL when the pair is unpriced. |
+| `days_since_observed` | INTEGER | 0 on an observed day; NULL when the account has no balance observation. |
+| `reconciliation_delta` | DECIMAL(18,2) | Observed minus transaction-derived; NULL on interpolated days and when the account has no balance observation. |
+| `account_balance` | DECIMAL(18,2) | In `currency_code`; NULL when the account holds value but has no balance observation. |
+| `account_balance_home` | DECIMAL(18,2) | In `home_currency_code`; NULL when the pair is unpriced or the account has no balance observation. |
+
+An eligible account with no balance observation at all still gets a row
+here — synthesized with `account_balance` and every other balance-derived
+column NULL and `is_observed = FALSE`, so an unanchored account is visible
+per-account rather than only as a count on `reports.net_worth`.
 
 ### `reports.cash_flow`
 
@@ -628,11 +686,11 @@ Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed bala
 |---|---|---|
 | `account_id` | VARCHAR | Joinable to `core.dim_accounts.account_id`. |
 | `account_name` | VARCHAR | Resolved display name. |
-| `status` | VARCHAR | `clean` (< $1) \| `warning` (< $10) \| `drift` (≥ $10) \| `no-data` (computed NULL). |
+| `status` | VARCHAR | `clean` (< $1) \| `warning` (< $10) \| `drift` (≥ $10) \| `no-data` (computed NULL) \| `currency-mismatch` (the account's currency and the observation's disagree) \| `investment-ledger` (the account has investment ledger events, so no transaction-derived balance compares to the assertion; wins over `currency-mismatch` when both hold). |
 | `assertion_date` | DATE | User-asserted balance date. |
 | `days_since_assertion` | INTEGER | `CURRENT_DATE − assertion_date`. |
 | `asserted_balance` | DECIMAL(18,2) | User-entered value. |
-| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation. |
+| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation, on a currency mismatch, and for an account with investment ledger events: their buys, sells, and dividends never reach `core.fct_transactions`, and the assertion counts positions at a market value nothing reconstructs for a past date. |
 | `drift_abs` | DECIMAL(18,2) | For default sort. |
 | `drift_pct` | DECIMAL | `drift / asserted_balance`; NULL when asserted is zero. |
 | `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |
@@ -807,7 +865,7 @@ Tables here capture state that cannot be re-derived from raw sources: categoriza
 | `app.user_merchants` | One row per `merchant_id` | Mutable merchant entries. Surfaced via `core.dim_merchants`. |
 | `app.user_categories` | One row per `category_id` | User-created categories. Combined with seeds via `core.dim_categories`. |
 | `app.category_overrides` | One row per `category_id` | User soft-deletions on seed categories. |
-| `app.category_source_map` | One row per `(source_type, source_category_code, source_subcategory_code)` | User overrides for provider-code → `category_id` mappings. Combined with `seeds.category_source_map` via `core.bridge_category_source_map`. |
+| `app.category_source_map` | One row per `(source_type, source_origin, source_category_code, source_subcategory_code)` | Curated imported-term mappings and user overrides for provider-code → `category_id` mappings. Combined with `seeds.category_source_map` via `core.bridge_category_source_map`. |
 | `app.budgets` | One row per `budget_id` | Monthly spending targets by category over a `start_month`–`end_month` window. |
 | `app.imports` | One row per labeled `import_id` | User-applied labels on import batches. FK → `app.import_log.import_id`. |
 | `app.audit_log` | One row per mutation | Unified audit log; emitted synchronously in the same transaction as the mutation. |

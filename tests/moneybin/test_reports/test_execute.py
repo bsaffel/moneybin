@@ -8,7 +8,7 @@ import pytest
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import UserError, next_step_text
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.contract import (
     Binding,
@@ -175,7 +175,8 @@ def test_masked_output_carries_the_inspection_hint(reports_db: Database) -> None
     """
     result = run_report(_spec(), reports_db, max_rows=50)
 
-    hints = [action for action in result.actions if "reports explain" in action]
+    texts = [next_step_text(action) for action in result.actions]
+    hints = [text for text in texts if "reports explain" in text]
     assert len(hints) == 1
     assert "test:summary" in hints[0]
     assert "account_id" in hints[0]
@@ -254,7 +255,7 @@ def test_unset_home_currency_names_the_setting_that_fills_the_total(
     result = redact_catalog_execution(spec, execution)
 
     assert result.actions == ["reports.next", HOME_CURRENCY_HINT]
-    assert "moneybin profile set home_currency <CODE>" in HOME_CURRENCY_HINT
+    assert HOME_CURRENCY_HINT.cli == ("profile", "set", "home_currency", "<CODE>")
 
 
 def test_set_home_currency_carries_no_hint(reports_db: Database) -> None:

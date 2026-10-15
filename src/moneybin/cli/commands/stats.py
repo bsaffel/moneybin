@@ -46,6 +46,18 @@ _ACRONYM_CASING = {
 _UNDECLARED_DOMAIN = "Other"
 
 
+def _scope_description(since: str | None, metric: str | None) -> str:
+    """The scope line shared by the empty and populated headers (requirement 1)."""
+    parts: list[str] = []
+    if metric:
+        parts.append(f"metric family '{metric}'")
+    if since:
+        parts.append(f"last {since}")
+    if not parts:
+        return "All recorded metrics"
+    return "Recorded metrics — " + ", ".join(parts)
+
+
 def _leading_word(metric_name: str) -> str:
     """The first word after the ``moneybin_`` namespace, cased for a reader."""
     word = metric_name.removeprefix("moneybin_").split("_", 1)[0]
@@ -268,7 +280,7 @@ def stats_command(
                     compose_human_result([
                         build_summary(
                             [
-                                ("Scope", "All recorded metrics"),
+                                ("Scope", _scope_description(since, metric)),
                                 ("Result", "No metrics recorded yet."),
                                 ("Next", "Run an import, refresh, or report."),
                             ],
@@ -286,9 +298,21 @@ def stats_command(
             # startup path of every command, not just this one.
             from moneybin.metrics.registry import HISTOGRAM_UNITS, METRIC_DOMAINS
 
-            parts = [
-                build_summary(pairs, title=domain)
-                for domain, pairs in _grouped(rows, HISTOGRAM_UNITS, METRIC_DOMAINS)
+            grouped = list(_grouped(rows, HISTOGRAM_UNITS, METRIC_DOMAINS))
+            metric_count = sum(len(pairs) for _, pairs in grouped)
+            header = build_summary(
+                [
+                    ("Scope", _scope_description(since, metric)),
+                    (
+                        "Metrics",
+                        f"{metric_count} across "
+                        f"{len(grouped)} domain{'s' if len(grouped) != 1 else ''}",
+                    ),
+                ],
+                title="Metrics",
+            )
+            parts = [header] + [
+                build_summary(pairs, title=domain) for domain, pairs in grouped
             ]
             emit_human_result(
                 compose_human_result(parts),

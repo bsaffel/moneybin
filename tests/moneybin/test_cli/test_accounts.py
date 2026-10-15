@@ -342,12 +342,15 @@ class TestAccountsHumanPresentation:
             last_four="1234",
             routing_number=None,
             archived_at=None,
+            investment_source_type="manual",
             source_type="plaid",
         )
 
         result = runner.invoke(app, ["accounts", "get", "acct_a"])
 
         assert result.exit_code == 0, result.stderr
+        assert "Investment source:" in result.stdout
+        assert "manual" in result.stdout
         assert "Account" in result.stdout
         assert "Everyday Checking" in result.stdout
         assert "Account ID:" in result.stdout
@@ -504,6 +507,7 @@ class TestAccountsGet:
             archived=False,
             archived_at=None,
             include_in_net_worth=True,
+            investment_source_type=None,
             source_type="ofx",
         )
 
@@ -713,6 +717,54 @@ class TestAccountsSet:
         assert "flag" in result.stderr.lower() or "required" in result.stderr.lower()
 
     @pytest.mark.unit
+    def test_set_currency_warns_reports_need_a_rebuild(self, runner: CliRunner) -> None:
+        """A currency change reaches `core.dim_accounts` (a FULL model) only.
+
+        Reports won't reflect it until `refresh --step transform`; the
+        receipt must say so (rule 34).
+        """
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.update_account_settings"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class
+            mock_service.return_value = (
+                MagicMock(currency_code="EUR"),
+                [],
+            )
+            result = runner.invoke(
+                app, ["accounts", "set", "acct_a", "--currency", "EUR"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "moneybin refresh --step transform" in result.output
+
+    @pytest.mark.unit
+    def test_set_display_name_alone_has_no_rebuild_warning(
+        self, runner: CliRunner
+    ) -> None:
+        """A field the report pipeline never reads gets no rebuild disclosure."""
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.update_account_settings"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class
+            mock_service.return_value = (
+                MagicMock(display_name="Checking"),
+                [],
+            )
+            result = runner.invoke(
+                app, ["accounts", "set", "acct_a", "--display-name", "Checking"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "refresh --step transform" not in result.output
+
+    @pytest.mark.unit
     def test_set_writes_canonical_subtype(self, runner: CliRunner) -> None:
         from unittest.mock import MagicMock, patch
 
@@ -758,6 +810,111 @@ class TestAccountsSet:
         assert result.exit_code == 0, result.stderr
         call_kwargs = mock_service.call_args.kwargs
         assert call_kwargs.get("credit_limit") is CLEAR
+
+    @pytest.mark.unit
+    def test_set_investment_source_type_passes_the_value_and_confirms(
+        self, runner: CliRunner
+    ) -> None:
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.update_account_settings",
+                return_value=(MagicMock(), []),
+            ) as mock_update,
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.investment_source_confirmation.return_value = (
+                "Using 2 recorded trades; ignoring 3 synced trades (kept, not deleted)"
+            )
+            result = runner.invoke(
+                app,
+                ["accounts", "set", "acct_a", "--investment-source-type", "manual"],
+            )
+
+        assert result.exit_code == 0, result.output
+        kwargs = mock_update.call_args.kwargs
+        assert kwargs["investment_source_type"] == "manual"
+        assert "Using 2 recorded trades; ignoring 3 synced trades" in result.output
+
+    @pytest.mark.unit
+    def test_set_choice_before_any_rows_prints_the_choice_not_every_source(
+        self, runner: CliRunner
+    ) -> None:
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.update_account_settings",
+                return_value=(MagicMock(), []),
+            ) as mock_update,
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.investment_source_confirmation.return_value = (
+                "Using synced trades (none yet)"
+            )
+            result = runner.invoke(
+                app,
+                ["accounts", "set", "acct_a", "--investment-source-type", "plaid"],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_update.assert_called_once()
+        assert "Using synced trades (none yet)" in result.output
+        assert "every source" not in result.output
+
+    @pytest.mark.unit
+    def test_set_clear_investment_source_type_passes_clear(
+        self, runner: CliRunner
+    ) -> None:
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.update_account_settings",
+                return_value=(MagicMock(), []),
+            ) as mock_update,
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.investment_source_confirmation.return_value = None
+            result = runner.invoke(
+                app,
+                ["accounts", "set", "acct_a", "--clear-investment-source-type"],
+            )
+
+        assert result.exit_code == 0, result.output
+        kwargs = mock_update.call_args.kwargs
+        assert kwargs["investment_source_type"] is CLEAR
+        assert "every source" in result.output
+
+    @pytest.mark.unit
+    def test_set_other_fields_do_not_ask_for_a_confirmation(
+        self, runner: CliRunner
+    ) -> None:
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.update_account_settings",
+                return_value=(MagicMock(), []),
+            ) as mock_update,
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            result = runner.invoke(
+                app, ["accounts", "set", "acct_a", "--display-name", "Checking"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_update.assert_called_once()
+        mock_service.investment_source_confirmation.assert_not_called()
 
     @pytest.mark.unit
     def test_set_unknown_subtype_non_tty_no_yes_exits_2(

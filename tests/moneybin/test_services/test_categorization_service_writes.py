@@ -18,6 +18,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
+from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization import (
@@ -29,6 +30,7 @@ from moneybin.services.categorization import (
     validate_rule_items,
 )
 from moneybin.services.categorization.applier import MatchApplier
+from moneybin.services.undo_dispatch import repo_for
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
@@ -510,6 +512,9 @@ class TestCreateRulesUnselectiveContainsGate:
                 category="Transfer",
                 subcategory="Internal Transfer",
                 match_type="contains",
+                account_id="acct00000001",
+                min_amount=5.0,
+                priority=7,
             )
         ]
         result = CategorizationService(db).create_rules(items)
@@ -519,8 +524,22 @@ class TestCreateRulesUnselectiveContainsGate:
         assert result.rule_ids == []
         assert len(result.error_details) == 1
         assert result.error_details[0]["name"] == "Transfer TO"
-        assert "too short" in result.error_details[0]["reason"].lower()
-        assert "allow_broad" in result.error_details[0]["reason"]
+        reason = result.error_details[0]["reason"].lower()
+        assert "too short" in reason
+        # Surface-neutral: no Python keyword syntax (match_type=..., allow_broad=...)
+        # since this reason string is shared with MCP through error_details.
+        assert "=" not in result.error_details[0]["reason"]
+        assert "allow a broad match" in reason
+        # Enough structured detail for the CLI to build a real rerun command.
+        assert result.error_details[0]["merchant_pattern"] == "TO"
+        assert result.error_details[0]["category"] == "Transfer"
+        assert result.error_details[0]["subcategory"] == "Internal Transfer"
+        # The row's own scoping, so a rerun hint recreates this rule and not
+        # an account- or amount-agnostic one — in a --from-file batch too.
+        assert result.error_details[0]["account_id"] == "acct00000001"
+        assert result.error_details[0]["min_amount"] == "5.0"
+        assert result.error_details[0]["max_amount"] == ""
+        assert result.error_details[0]["priority"] == "7"
 
         row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
         assert row == (0,)
@@ -617,6 +636,117 @@ class TestCreateRulesUnselectiveContainsGate:
         assert second.skipped == 0
         assert second.rule_ids == [original_rule_id]
         assert second.error_details == []
+
+
+class TestCreateRulesRecategorizedCount:
+    """``create_rules(..., reapply=True)`` reports the post-commit sweep total."""
+
+    @pytest.mark.unit
+    def test_reapply_reports_the_sweep_total(self, db: Database) -> None:
+        """Two uncategorized rows match the new rule; both get swept in."""
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, amount, transaction_date, description) VALUES "
+            "('t1', -10, '2026-05-01', 'AMAZON MARKETPLACE'), "
+            "('t2', -20, '2026-05-02', 'AMAZON PRIME')"
+        )
+        items = [
+            CategorizationRuleInput(
+                name="Amazon", merchant_pattern="AMAZON", category="Shopping"
+            )
+        ]
+        result = CategorizationService(db).create_rules(items, reapply=True)
+
+        assert result.created == 1
+        assert result.recategorized == 2
+
+        row = db.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories WHERE category = 'Shopping'"
+        ).fetchone()
+        assert row == (2,)
+
+    @pytest.mark.unit
+    def test_reapply_counts_the_rule_pass_not_the_whole_cascade(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sweep also runs merchant and provider passes; those rows are not rules'.
+
+        Reporting the cascade total made a new rule look effective when only
+        a merchant mapping matched (Codex on #649).
+        """
+        svc = CategorizationService(db)
+
+        def sweep(*, include_provider_native: bool = True) -> dict[str, int]:
+            return {
+                "rule": 1,
+                "merchant": 3,
+                "plaid": 0,
+                "source_category_map": 0,
+                "total": 4,
+            }
+
+        monkeypatch.setattr(
+            svc._orchestrator,  # pyright: ignore[reportPrivateUsage]  # the sweep's counts, not the insert, are under test
+            "categorize_pending",
+            sweep,
+        )
+        items = [
+            CategorizationRuleInput(
+                name="Amazon", merchant_pattern="AMAZON", category="Shopping"
+            )
+        ]
+
+        result = svc.create_rules(items, reapply=True)
+
+        assert result.created == 1
+        assert result.recategorized == 1
+
+    @pytest.mark.unit
+    def test_recategorized_is_none_without_reapply(self, db: Database) -> None:
+        items = [
+            CategorizationRuleInput(
+                name="Amazon", merchant_pattern="AMAZON", category="Shopping"
+            )
+        ]
+        result = CategorizationService(db).create_rules(items)
+
+        assert result.created == 1
+        assert result.recategorized is None
+
+    @pytest.mark.unit
+    def test_recategorized_is_none_when_reapply_requested_but_nothing_created(
+        self, db: Database
+    ) -> None:
+        """Every proposed rule was refused, so no sweep ran."""
+        items = [
+            CategorizationRuleInput(
+                name="Transfer TO",
+                merchant_pattern="TO",
+                category="Transfer",
+                match_type="contains",
+            )
+        ]
+        result = CategorizationService(db).create_rules(items, reapply=True)
+
+        assert result.created == 0
+        assert result.recategorized is None
+
+    @pytest.mark.unit
+    def test_recategorized_survives_to_payload(self, db: Database) -> None:
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, amount, transaction_date, description) VALUES "
+            "('t1', -10, '2026-05-01', 'NETFLIX')"
+        )
+        items = [
+            CategorizationRuleInput(
+                name="Netflix", merchant_pattern="NETFLIX", category="Entertainment"
+            )
+        ]
+        result = CategorizationService(db).create_rules(items, reapply=True)
+
+        payload = result.to_payload()
+        assert payload.recategorized == result.recategorized == 1
 
 
 class TestDeactivateRule:
@@ -1393,9 +1523,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("MappedCat")
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, code_level, category_id) "
-            "VALUES (?, ?, ?, ?)",
-            ["plaid", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
+            "(source_type, source_origin, source_category_code, code_level, "
+            "category_id) VALUES (?, ?, ?, ?, ?)",
+            ["plaid", "", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
@@ -1560,9 +1690,9 @@ class TestDeleteCategory:
         cat_id = svc.create_category("MappedForceCat")
         db.execute(
             "INSERT INTO app.category_source_map "
-            "(source_type, source_category_code, code_level, category_id) "
-            "VALUES (?, ?, ?, ?)",
-            ["plaid", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
+            "(source_type, source_origin, source_category_code, code_level, "
+            "category_id) VALUES (?, ?, ?, ?, ?)",
+            ["plaid", "", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
         )
         svc.delete_category(cat_id, force=True)
 
@@ -1673,6 +1803,76 @@ class TestDeleteCategory:
             ).fetchall()
             == []
         )
+
+    @pytest.mark.unit
+    def test_delete_plan_source_mappings_sharing_code_are_each_restorable(
+        self, db: Database, applier: MatchApplier
+    ) -> None:
+        """Two mappings sharing source_type/source_category_code stay distinct.
+
+        Regression guard: the cascade-delete snapshot's key columns
+        previously omitted ``source_subcategory_code`` — the table's actual
+        third primary-key column — so both mappings collapsed to one
+        ``target_id`` in the plan's ``source_mappings`` reference group,
+        leaving the confirmation preview unable to tell them apart.
+        """
+        cat_id = CategorizationService(db).create_category("SharedCodeCat")
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_origin, source_category_code, "
+            " source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, 'detailed', ?)",
+            ["plaid", "", "INCOME", "SALARY", cat_id],
+        )
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_origin, source_category_code, "
+            " source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, 'detailed', ?)",
+            ["plaid", "", "INCOME", "BONUS", cat_id],
+        )
+
+        plan = applier.plan_category_delete(cat_id, force=True)
+        source_group = next(
+            group for group in plan.references if group.label == "source_mappings"
+        )
+        target_ids = {row.target_id for row in source_group.rows}
+        assert len(target_ids) == 2, "each subcategory must keep its own identity"
+
+        repo = CategorySourceMapRepo(db)
+        events = repo.delete_by_category(cat_id, actor="test")
+        assert len(events) == 2
+        owner = repo_for("app", "category_source_map", db)
+        for event in events:
+            owner.undo_event(event, actor="test")
+
+        rows = db.execute(
+            "SELECT source_subcategory_code FROM app.category_source_map "
+            "WHERE category_id = ? ORDER BY source_subcategory_code",
+            [cat_id],
+        ).fetchall()
+        assert rows == [("BONUS",), ("SALARY",)]
+
+    @pytest.mark.unit
+    def test_delete_plan_source_mappings_differing_only_by_origin_stay_distinct(
+        self, db: Database, applier: MatchApplier
+    ) -> None:
+        """Same type, term, and subcategory under two origins keep separate identities."""
+        cat_id = CategorizationService(db).create_category("SharedTermCat")
+        for origin in ("chase_credit", "amex_gold"):
+            db.execute(
+                "INSERT INTO app.category_source_map "
+                "(source_type, source_origin, source_category_code, "
+                " source_subcategory_code, code_level, category_id) "
+                "VALUES ('csv', ?, 'Coffee Shops', '', 'detailed', ?)",
+                [origin, cat_id],
+            )
+
+        plan = applier.plan_category_delete(cat_id, force=True)
+        source_group = next(
+            group for group in plan.references if group.label == "source_mappings"
+        )
+        assert len({row.target_id for row in source_group.rows}) == 2
 
 
 class TestWriteCategorizationSourceType:

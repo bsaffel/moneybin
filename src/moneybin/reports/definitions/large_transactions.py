@@ -124,6 +124,7 @@ def _blank_original_currency_analytics(
             "account's own currency and cannot be restated at per-date rates. A "
             "row already in the display currency keeps its score.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "amount_zscore_category",
@@ -131,6 +132,7 @@ def _blank_original_currency_analytics(
             "baseline. Null on a row this read repriced, for the same reason as "
             "the account score.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "is_top_100",

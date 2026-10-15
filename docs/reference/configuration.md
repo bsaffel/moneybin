@@ -113,11 +113,11 @@ Transaction matching and dedup configuration.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `MONEYBIN_DOCTOR__BALANCE_STALENESS_THRESHOLD_DAYS` | int (≥ 1) | `30` | Warn when an included account's latest balance observation is older than this many days. |
 | `MONEYBIN_DOCTOR__AUDIT_COVERAGE_LOOKBACK_DAYS` | int (≥ 1) | `7` | Audit-coverage checks only inspect protected app.* rows mutated within this many days. Bounds the cost on large profiles and lets users suppress pre-migration noise by lowering it after rollout. |
 | `MONEYBIN_DOCTOR__AUDIT_COVERAGE_SAMPLE_CAP` | int (≥ 1) | `1000` | Maximum rows sampled per table for the audit-coverage check. `moneybin system doctor --full` bypasses the cap and scans every row. |
 | `MONEYBIN_DOCTOR__DUPLICATE_ACCOUNT_OVERLAP_RATIO` | float (> 0.0, ≤ 1.0) | `0.5` | duplicate_account_overlap warns when this fraction of one account's transactions have a same-amount counterpart within the matcher's date window on a sibling account at the same institution. Below it, the shared rows read as coincidence. |
 | `MONEYBIN_DOCTOR__DUPLICATE_ACCOUNT_MIN_DISTINCT_AMOUNTS` | int (≥ 1) | `10` | Minimum distinct amounts among the mirrored rows before duplicate_account_overlap will judge a pair. Two savings accounts posting the same interest every month mirror each other perfectly on one amount; a duplicated account mirrors many. |
+| `MONEYBIN_DOCTOR__BALANCE_STALENESS_THRESHOLD_DAYS` | int (≥ 1) | `30` | net_worth_stale_balance warns when an account's latest observed balance is more than this many days before today. 30 absorbs a monthly statement cycle. |
 
 ## investments
 
@@ -164,7 +164,7 @@ File-import related settings (inbox layout + confirmation gate).
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `MONEYBIN_IMPORT___PDF_PREVIEW_SIZE_LIMIT_MB` | int (≥ 1) | `100` | Maximum PDF size in MB that import_preview may materialize and persist as an immutable confirmation snapshot. Override with MONEYBIN_IMPORT___PDF_PREVIEW_SIZE_LIMIT_MB. |
-| `MONEYBIN_IMPORT___INBOX_ROOT` | Path | `~/Documents/MoneyBin` | Parent directory for the user-facing import workspace. Per-profile subdirs (\<inbox_root>/\<profile>/{inbox,processed,failed}/) are created on first use. Defaults to ~/Documents/MoneyBin. |
+| `MONEYBIN_IMPORT___INBOX_ROOT` | Path | `~/Documents/MoneyBin` | Parent directory for the user-facing import workspace. Per-profile subdirs (\<inbox_root>/\<profile>/{inbox,processed,failed,pending}/) are created on first use. Defaults to ~/Documents/MoneyBin. |
 | `MONEYBIN_IMPORT___CONFIDENCE__T_HIGH` | float (≥ 0.0, ≤ 1.0) | `0.9` | Score at or above which a detection is banded high. |
 | `MONEYBIN_IMPORT___CONFIDENCE__T_MED` | float (≥ 0.0, ≤ 1.0) | `0.7` | Score at or above which a detection is banded medium; below it, low. |
 | `MONEYBIN_IMPORT___SELF_ACCEPT_HIGH` | bool | `false` | When True, MCP-driven imports auto-accept a `high`-tier first encounter. Gated off until the calibration corpus proves the `high` band clears the precision bar (smart-import-confirmation.md Req 12). The CLI human path always prompts regardless. |

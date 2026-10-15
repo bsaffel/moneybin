@@ -155,3 +155,26 @@ def test_settings_without_new_warehouse_eligibility_do_not_refresh(
     )
     if kind == "display_only":
         assert settings.display_name == "New name"
+
+
+@pytest.mark.parametrize("actor", ["cli", "mcp"])
+def test_settings_wrapper_persists_and_clears_investment_source(
+    account_db: Database, actor: str
+) -> None:
+    from moneybin.services.account_service import CLEAR
+
+    settings, warnings = update_account_settings(
+        account_db, "account", actor=actor, investment_source_type="manual"
+    )
+    assert settings.investment_source_type == "manual"
+    assert settings.investment_source_type_changed_at is not None
+    assert warnings == []
+    cleared, _ = update_account_settings(
+        account_db, "account", actor=actor, investment_source_type=CLEAR
+    )
+    assert cleared.investment_source_type is None
+    assert cleared.investment_source_type_changed_at is not None
+    assert (
+        cleared.investment_source_type_changed_at
+        >= settings.investment_source_type_changed_at
+    )

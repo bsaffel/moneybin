@@ -42,6 +42,8 @@
     default_cost_basis_method: TEXT
     updated_at: TIMESTAMPNTZ
     archived_at: DATE
+    investment_source_type: TEXT
+    investment_source_type_changed_at: TIMESTAMPNTZ
     account_type: TEXT
 - name: '"moneybin"."app"."audit_log"'
   columns:
@@ -75,6 +77,7 @@
 - name: '"moneybin"."app"."category_source_map"'
   columns:
     source_type: TEXT
+    source_origin: TEXT
     source_category_code: TEXT
     source_subcategory_code: TEXT
     code_level: TEXT
@@ -220,6 +223,14 @@
     exemplars: ARRAY<TEXT>
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."exchange_rate_coverage"'
+  columns:
+    from_currency: TEXT
+    to_currency: TEXT
+    start_date: DATE
+    end_date: DATE
+    source_type: TEXT
+    loaded_at: TIMESTAMPNTZ
 - name: '"moneybin"."raw"."exchange_rates"'
   columns:
     from_currency: TEXT

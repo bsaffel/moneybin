@@ -8,7 +8,7 @@ composes this instead of raw SQL; reads (``load``) stay in the service.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -32,6 +32,8 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "archived_at",
     "include_in_net_worth",
     "default_cost_basis_method",
+    "investment_source_type",
+    "investment_source_type_changed_at",
     "updated_at",
     "account_type",
 )
@@ -44,6 +46,23 @@ class AccountSettingsRepo(BaseRepo):
 
     table_ref = ACCOUNT_SETTINGS
     pk_columns = ("account_id",)
+
+    def _live_columns(self) -> frozenset[str]:
+        """The settings columns the live catalog has.
+
+        A profile opened with ``no_auto_upgrade=True`` skips migrations, so a
+        column a later migration added may be absent. One probe feeds
+        ``_fetch_row`` and ``set()``, so reads and writes agree on the set.
+        """
+        rows = self._db.execute(
+            """
+            SELECT column_name FROM duckdb_columns()
+            WHERE schema_name = ? AND table_name = ?
+            """,
+            [ACCOUNT_SETTINGS.schema, ACCOUNT_SETTINGS.name],
+        ).fetchall()
+        live = {str(r[0]) for r in rows}
+        return frozenset(c for c in _ACCOUNT_SETTINGS_COLUMNS if c in live)
 
     def _archived_at_supported(self) -> bool:
         """True when the live ``app.account_settings`` catalog has ``archived_at``.
@@ -71,21 +90,19 @@ class AccountSettingsRepo(BaseRepo):
         gated by this probe may overwrite a value that a migrated catalog
         actually holds.
         """
-        return has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
+        return "archived_at" in self._live_columns()
 
     def _fetch_row(
-        self, account_id: str, *, has_archived_at: bool | None = None
+        self, account_id: str, *, live: frozenset[str] | None = None
     ) -> dict[str, Any] | None:
-        if has_archived_at is None:
-            has_archived_at = self._archived_at_supported()
-        has_account_type = has_column(self._db, ACCOUNT_SETTINGS, "account_type")
-        columns = tuple(
-            c
-            for c in _ACCOUNT_SETTINGS_COLUMNS
-            if (has_archived_at or c != "archived_at")
-            and (has_account_type or c != "account_type")
-        )
+        if live is None:
+            live = self._live_columns()
+        columns = tuple(c for c in _ACCOUNT_SETTINGS_COLUMNS if c in live)
         return self._fetch_one(ACCOUNT_SETTINGS, columns, "account_id", account_id)
+
+    def load(self, account_id: str) -> dict[str, Any] | None:
+        """Read one account's settings row (live columns only); ``None`` if absent."""
+        return self._fetch_row(account_id)
 
     def set(
         self,
@@ -102,6 +119,8 @@ class AccountSettingsRepo(BaseRepo):
         archived_at: date | None,
         include_in_net_worth: bool,
         default_cost_basis_method: str | None,
+        investment_source_type: str | None,
+        investment_source_type_changed_at: datetime | None,
         actor: str,
         account_type: str | None = None,
         parent_audit_id: str | None = None,
@@ -115,25 +134,26 @@ class AccountSettingsRepo(BaseRepo):
         refreshes ``updated_at`` in the ``DO UPDATE`` clause: DuckDB parses
         ``CURRENT_TIMESTAMP`` as an identifier in that position, not a call.
 
-        The INSERT/ON CONFLICT column list drops ``archived_at`` when the live
-        catalog lacks it (pre-V063, ``no_auto_upgrade=True`` -- see
-        ``_archived_at_supported``): there is no column to write the caller's
-        value into, so it is silently not persisted rather than raising a raw
-        ``duckdb.BinderException``.
+        The INSERT/ON CONFLICT column list drops every column the live catalog
+        lacks (``archived_at`` pre-V063, the investment-source pair pre-V069,
+        ``no_auto_upgrade=True`` -- see ``_live_columns``): there is no column
+        to write the caller's value into, so it is silently not persisted
+        rather than raising a raw ``duckdb.BinderException``. A caller that
+        needs the value persisted (``AccountService`` for a source choice)
+        checks the column itself and refuses first.
 
         ``context`` rides the audit row's ``context_json`` (caller-intent the
         full-row snapshot cannot carry).
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            has_archived_at = self._archived_at_supported()
-            has_account_type = has_column(self._db, ACCOUNT_SETTINGS, "account_type")
-            if account_type is not None and not has_account_type:
+            live = self._live_columns()
+            if account_type is not None and "account_type" not in live:
                 raise UserError(
                     "Account type overrides require a database upgrade.",
                     code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
                     hint="Run 'moneybin db migrate apply' before setting account type.",
                 )
-            before = self._fetch_row(account_id, has_archived_at=has_archived_at)
+            before = self._fetch_row(account_id, live=live)
 
             values_by_column: dict[str, Any] = {
                 "account_id": account_id,
@@ -149,13 +169,10 @@ class AccountSettingsRepo(BaseRepo):
                 "archived_at": archived_at,
                 "include_in_net_worth": include_in_net_worth,
                 "default_cost_basis_method": default_cost_basis_method,
+                "investment_source_type": investment_source_type,
+                "investment_source_type_changed_at": investment_source_type_changed_at,
             }
-            columns = [
-                c
-                for c in values_by_column
-                if (has_archived_at or c != "archived_at")
-                and (has_account_type or c != "account_type")
-            ]
+            columns = [c for c in values_by_column if c in live]
             col_sql = ", ".join(columns)
             placeholders = ", ".join("?" for _ in columns)
             update_sql = ", ".join(
@@ -171,7 +188,7 @@ class AccountSettingsRepo(BaseRepo):
                 """,  # noqa: S608  # TableRef + allowlisted literal column names + parameterized values
                 [values_by_column[c] for c in columns],
             )
-            after = self._fetch_row(account_id, has_archived_at=has_archived_at)
+            after = self._fetch_row(account_id, live=live)
             return self._emit_audit(
                 action="account_settings.set",
                 target=(*self._audit_target, account_id),
@@ -182,7 +199,7 @@ class AccountSettingsRepo(BaseRepo):
                 context=context,
             )
 
-    def _delete_by_pk(self, row: dict[str, Any]) -> None:
+    def _delete_by_pk(self, row: dict[str, Any]) -> dict[str, Any] | None:
         """Preserve the live ``archived_at`` in the capture before deleting it.
 
         ``BaseRepo.undo_event``'s ``before is None`` branch reaches here when
@@ -205,7 +222,33 @@ class AccountSettingsRepo(BaseRepo):
         that method's invariant: on a pre-V063, ``no_auto_upgrade=True``
         catalog there is no ``archived_at`` column to read, and the SELECT
         below would raise.
+
+        When the LIVE row carries an investment source change time (``row`` is
+        the original insert's image, which can predate a later choice), deleting
+        it would drop ``investment_source_type_changed_at`` and rewind an
+        incremental reader's watermark. A cleared or undone choice keeps its
+        change time, so the live row is the test. Such a row is reset in place
+        instead: every setting returns to its table default, the source choice
+        clears, and the change time advances only if the choice actually
+        changes. ``dim_accounts`` reads a default row like an absent one. The
+        reset row is returned so the undo's audit row describes it.
         """
+        if "account_type" not in row and has_column(
+            self._db, ACCOUNT_SETTINGS, "account_type"
+        ):
+            live = self._fetch_row(str(row["account_id"]))
+            row["account_type"] = live["account_type"] if live is not None else None
+        if "investment_source_type_changed_at" in self._live_columns():
+            where, where_params = self._pk_where(row)
+            stamp_row = self._db.execute(
+                f"SELECT investment_source_type_changed_at, investment_source_type "  # noqa: S608  # TableRef + sqlglot-quoted pk
+                f"FROM {self.table_ref.full_name} WHERE {where}",
+                where_params,
+            ).fetchone()
+            if stamp_row is not None and stamp_row[0] is not None:
+                return self._reset_to_defaults(
+                    row, where, where_params, type_set=stamp_row[1] is not None
+                )
         if (
             row.get("archived") is True
             and "archived_at" not in row
@@ -222,12 +265,58 @@ class AccountSettingsRepo(BaseRepo):
                 if live_row is not None and live_row[0] is not None
                 else None
             )
-        if "account_type" not in row and has_column(
-            self._db, ACCOUNT_SETTINGS, "account_type"
+        return super()._delete_by_pk(row)
+
+    def _reset_to_defaults(
+        self,
+        row: dict[str, Any],
+        where: str,
+        where_params: list[Any],
+        *,
+        type_set: bool,
+    ) -> dict[str, Any] | None:
+        """Reset one settings row in place and return its audit image."""
+        live = self._live_columns()
+        # Redo compares this legacy capture with the full reset image below.
+        current = self._serialize_for_audit(
+            self._fetch_row(str(row["account_id"]), live=live)
+        )
+        for field in (
+            "archived_at",
+            "investment_source_type",
+            "investment_source_type_changed_at",
         ):
-            live = self._fetch_row(str(row["account_id"]))
-            row["account_type"] = live["account_type"] if live is not None else None
-        super()._delete_by_pk(row)
+            if current is not None and field in current:
+                row.setdefault(field, current[field])
+        values: dict[str, Any] = {
+            "display_name": None,
+            "official_name": None,
+            "last_four": None,
+            "account_subtype": None,
+            "account_type": None,
+            "holder_category": None,
+            "currency_code": None,
+            "credit_limit": None,
+            "archived": False,
+            "archived_at": None,
+            "include_in_net_worth": True,
+            "default_cost_basis_method": None,
+            "investment_source_type": None,
+        }
+        assignments = [f"{c} = ?" for c in values if c in live]
+        params: list[Any] = [v for c, v in values.items() if c in live]
+        if type_set:
+            assignments.append("investment_source_type_changed_at = ?")
+            params.append(self._now())
+        assignments.append("updated_at = NOW()")
+        self._db.execute(
+            f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + allowlisted literal columns; values parameterized
+            f"SET {', '.join(assignments)} WHERE {where}",
+            [*params, *where_params],
+        )
+        after = self._fetch_row(str(row["account_id"]), live=live)
+        # undo_event reuses this dict as the audit after-image.
+        return self._serialize_for_audit(after)
 
     def _insert_row(self, row: dict[str, Any]) -> None:
         """Normalize a legacy archived capture before an undo re-inserts it.
@@ -257,6 +346,10 @@ class AccountSettingsRepo(BaseRepo):
         backfill into, and adding the key here would make the generic
         ``BaseRepo._insert_row`` (which inserts every key ``row`` holds) try
         to write a column that does not exist.
+
+        A re-inserted row that holds a source choice also gets a fresh
+        ``investment_source_type_changed_at``: its ledger rows re-enter the
+        ledger now, so the stored time must not be older than that.
         """
         if (
             row.get("archived") is True
@@ -266,7 +359,63 @@ class AccountSettingsRepo(BaseRepo):
             row["archived_at"] = date.today().isoformat()
         if has_column(self._db, ACCOUNT_SETTINGS, "account_type"):
             row.setdefault("account_type", None)
+        if (
+            row.get("investment_source_type") is not None
+            and "investment_source_type_changed_at" in self._live_columns()
+        ):
+            row["investment_source_type_changed_at"] = self._now().isoformat()
         super()._insert_row(row)
+
+    def _now(self) -> datetime:
+        return self._db.execute("SELECT NOW()::TIMESTAMP").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+
+    def _live_source_stamp(self, locate: dict[str, Any]) -> datetime | None:
+        """The row's current change time, read before a restore overwrites it."""
+        if "investment_source_type_changed_at" not in self._live_columns():
+            return None
+        where, where_params = self._pk_where(locate)
+        row = self._db.execute(
+            f"SELECT investment_source_type_changed_at "  # noqa: S608  # TableRef + sqlglot-quoted pk
+            f"FROM {self.table_ref.full_name} WHERE {where}",
+            where_params,
+        ).fetchone()
+        return None if row is None else row[0]
+
+    def _stamp_source_change(
+        self,
+        *,
+        before: dict[str, Any],
+        locate: dict[str, Any],
+        live_stamp: datetime | None,
+    ) -> None:
+        """Keep ``investment_source_type_changed_at`` from moving backwards on restore.
+
+        Undoing the setting changes the ledger's rows just as setting it did, so
+        a restore that moves ``investment_source_type`` advances the change time
+        to now. One that leaves the type alone keeps the live time whenever the
+        image's is NULL (older than any time) or older, because the image can
+        predate a later set and clear. ``live_stamp`` is read before the restore
+        overwrote it. Mutates ``before`` in place: ``undo_event`` emits its
+        audit row from these same dicts (same reason as the archived_at paths).
+        """
+        if "investment_source_type_changed_at" not in self._live_columns():
+            return
+        if before.get("investment_source_type") == locate.get("investment_source_type"):
+            image = before.get("investment_source_type_changed_at")
+            if live_stamp is None or (
+                image is not None and datetime.fromisoformat(str(image)) >= live_stamp
+            ):
+                return
+            kept = live_stamp
+        else:
+            kept = self._now()
+        where, where_params = self._pk_where(locate)
+        self._db.execute(
+            f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
+            f"SET investment_source_type_changed_at = ? WHERE {where}",
+            [kept, *where_params],
+        )
+        before["investment_source_type_changed_at"] = kept.isoformat()
 
     def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
         """Restore, deriving ``archived_at`` when a legacy capture omits it.
@@ -328,7 +477,9 @@ class AccountSettingsRepo(BaseRepo):
             value = live["account_type"] if live is not None else None
             before["account_type"] = value
             locate["account_type"] = value
+        live_stamp = self._live_source_stamp(locate)
         super()._restore_row(before=before, locate=locate)
+        self._stamp_source_change(before=before, locate=locate, live_stamp=live_stamp)
         if "archived_at" in before:
             return
         if not self._archived_at_supported():
