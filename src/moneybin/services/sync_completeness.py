@@ -341,8 +341,7 @@ class SyncCompletenessService:
             for receipt in retained[connection]:
                 for outcome in receipt.local_outcomes:
                     if (
-                        outcome.account_id is not None
-                        and outcome.error_code in _SKIPPED_CHILD_ERRORS
+                        outcome.error_code in _SKIPPED_CHILD_ERRORS
                         and not self._local_hold_resolved(
                             receipt, outcome, retained[connection]
                         )
@@ -471,7 +470,8 @@ class SyncCompletenessService:
         candidates: list[_Receipt],
     ) -> bool:
         window = outcome.window
-        if window is None:
+        # Unknown identity cannot be matched to later evidence of recovery.
+        if window is None or outcome.account_id is None or outcome.native_scope is None:
             return False
         scope = self._outcome_scope(held.source, outcome)
         for candidate in candidates:

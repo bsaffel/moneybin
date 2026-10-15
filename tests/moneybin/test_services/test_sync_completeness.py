@@ -539,6 +539,56 @@ def test_newer_complete_covering_scope_resolves_local_hold(db: Database) -> None
     assert "invalid_observation" not in _kinds(_assess(db))
 
 
+@pytest.mark.parametrize("generation", [1, 2], ids=["same-credentials", "replacement"])
+@pytest.mark.parametrize(
+    "later_scope", ["different-window", "covering-account", "covering-general"]
+)
+def test_unidentified_account_hold_survives_later_success(
+    db: Database, generation: int, later_scope: str
+) -> None:
+    initial = source()
+    initial.history = _history(1)
+    load(db, initial)
+    _bind(db)
+    assert _assess(db).complete is True
+
+    malformed = source(batch=2, day=2, account_changes={"id": None})
+    malformed.history = _history(2)
+    load(db, malformed, job=2, day=2)
+    assert "invalid_observation" in _kinds(_assess(db))
+
+    later = source(batch=3, day=3)
+    later.credential_generation = generation
+    later.history = _history(3)
+    window = later.batches[0].window
+    assert window is not None
+    if later_scope == "different-window":
+        window = window.model_copy(
+            update={"start": window.end, "end": window.end + timedelta(days=1)}
+        )
+        later.batches[0].window = window
+    general = later_scope == "covering-general"
+    later.outcomes = [
+        ScopeOutcome(
+            account_id=None if general else "acct",
+            native_scope=None if general else later.history.accounts[0].native_scope,
+            window=window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    load(db, later, job=3, day=3)
+
+    result = _assess(db)
+
+    assert result.complete is False
+    assert _kinds(result) == {"invalid_observation"}
+    reason = result.reasons[0]
+    assert reason.affected_account_ids == ()
+    assert reason.affected_account_count == 0
+    assert reason.unresolved_scope_count == 1
+
+
 def test_accepted_legacy_native_target_is_not_disclosed_as_canonical(
     db: Database,
 ) -> None:
