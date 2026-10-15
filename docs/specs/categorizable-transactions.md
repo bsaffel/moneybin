@@ -1,7 +1,7 @@
 # Categorizable Transactions
 
 > Last updated: 2026-10-14
-> Status: in-progress
+> Status: implemented
 > Address: M1C.1 (Categorization engine — one definition of the categorization population)
 > Type: Feature
 > Owns: `core.fct_transactions.is_categorizable` and the removal of
@@ -68,7 +68,7 @@ when all three hold:
 It is never NULL.
 
 **R2 — An unresolved account is FALSE.** `fct_transactions` LEFT JOINs
-`dim_accounts` (`fct_transactions.sql:107`), so `a.archived` is NULL for a row
+`dim_accounts` (`fct_transactions.sql:110`), so `a.archived` is NULL for a row
 whose account never resolved. `NOT a.archived` alone would then make the column
 NULL rather than FALSE. The expression must test the join explicitly:
 
@@ -95,7 +95,7 @@ NULL, and `dim_accounts.archived` is COALESCEd to FALSE
 which is FALSE.
 
 `NOT x IS NULL` is sqlmesh-format's canonical form (as at
-`fct_transactions.sql:83`). Today's queue INNER JOINs `dim_accounts`, so this
+`fct_transactions.sql:85`). Today's queue INNER JOINs `dim_accounts`, so this
 reproduces its exclusion exactly. A version that treated an unresolved account
 as categorizable would grow the queue by every such row.
 
@@ -166,7 +166,7 @@ upgrades and before the first refresh, the database still holds the previous
   reports `skipped`. Both keep that behavior; the doctor's `detail` text names
   only `fct_transactions`, since coverage no longer joins `dim_accounts`.
 
-`_transactions_with_pending_matches` (`queries.py:609`) already catches
+`_transactions_with_pending_matches` (`queries.py:557`) already catches
 `BinderException` for the same window, so this is the existing pattern, not a
 new one.
 
@@ -236,7 +236,9 @@ failure a metric would show.
   their assertions and run against the new queries. Before the model file is
   deleted, one test builds both the old view and the new column on the same
   fixture and asserts the pending list returns identical rows. It is deleted
-  with the view, and its result is recorded in the PR.
+  with the view, and its result is recorded in the PR. It passed at commit
+  `be7a1f40a` (`PASSED tests/moneybin/test_fct_transactions_categorizable.py::test_pending_list_matches_the_view_it_replaces`)
+  and was deleted with the view in `dd3ededa1`.
 - **The upgrade window (R7).** A `fct_transactions` fixture without the column
   makes the pending list raise `INFRA_SCHEMA_DRIFT`, and makes `categorize
   stats` return zeros without raising.
@@ -260,6 +262,9 @@ failure a metric would show.
   fixture column, so the unit tests that exercise the exclusions still bind
   to the model's definition rather than a hand-typed copy. That file is a
   shared primitive, so the gate includes integration and scenarios.
+- **The scenario schema snapshot.** `FCT_TRANSACTIONS_SCHEMA` in
+  `tests/scenarios/_tier1_backfill.py` lists every `fct_transactions` column
+  and its type, and gains `is_categorizable BOOLEAN`.
 
 **Gate.** `make check`, `make format-sql`, `make test`,
 `make test-integration`, `make test-scenarios`, and
