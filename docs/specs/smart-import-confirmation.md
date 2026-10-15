@@ -306,9 +306,15 @@ shapes or verbs.** The confirm flow uses the existing import tools plus
 | `gsheet_connect` | `_connect` lifecycle | Its `connection_id` mode re-detects and reconnects a binding; its `url` mode creates one. Both retain inline `confirm_mapping` / `column_mapping` and share the confidence bands + `resolve_or_confirm` primitive underneath. |
 
 **CLI (human, TTY).** `import files X` on a new layout prints the mapping + sample rows +
-flagged fields and prompts `[Y / edit / n]` (tier shapes the default: `high` → `[Y/n]`,
-`low` → must `edit`). `edit` corrects individual fields (partial-merge). Non-TTY or
-`--output json` returns the `confirmation_required` envelope; the caller re-runs with
+flagged fields and offers explicit accept, edit, or cancel choices (`low` → must
+edit). Editing prioritizes missing and flagged destinations and offers all mapped
+and unmapped source columns. Corrections merge in memory through the shared mapping
+validator; the corrected mapping must be reviewed and explicitly confirmed before
+the existing import/account retry/inbox completion path runs. Sign and account
+gates remain independent, and structural refusals retain their specific recovery.
+This field correction does not implement the broader presenter consolidation.
+Non-TTY text retains its recovery receipt; `--output json` returns the
+`confirmation_required` envelope. The caller re-runs with
 `--confirm` / `--mapping field=col,…`. A tabular sign proposal then offers two lossless
 `import confirm` commands: `--confirm-sign` to approve the inferred inversion, or
 `--sign negative_is_expense` to keep amounts as printed (non-interactive parity per

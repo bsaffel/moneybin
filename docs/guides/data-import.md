@@ -334,6 +334,8 @@ $ moneybin sql query "SELECT transaction_date, description, amount FROM raw.tabu
 | Parquet | `.parquet` | |
 | Feather | `.feather` | |
 
+**Review a new layout.** In an interactive terminal, `moneybin import files` shows the proposed columns and offers accept, edit, or cancel. Low-confidence proposals require editing. Choose a destination field (missing and flagged fields come first), then any mapped or unmapped source column. Review the corrected mapping and confirm it explicitly, edit another field, or cancel. Corrections are validated together before importing; sign and account confirmations remain separate. JSON and redirected calls keep the explicit `--confirm` / `--mapping` workflow.
+
 **Sign conventions.** Different institutions encode expenses and income differently. Auto-detection usually picks the right one; `--sign` overrides:
 
 | Convention | Meaning | Typical sources |

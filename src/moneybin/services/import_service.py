@@ -127,10 +127,17 @@ class ImportRefreshError(RuntimeError):
     been and callers catch it as such; the narrower type only adds the payload.
     """
 
-    def __init__(self, message: str, *, transfers_retired: int) -> None:
-        """Carry ``transfers_retired`` — the reversals already committed."""
+    def __init__(
+        self,
+        message: str,
+        *,
+        transfers_retired: int,
+        result: "ImportResult | None" = None,
+    ) -> None:
+        """Carry committed import and transfer state past a failed refresh."""
         super().__init__(message)
         self.transfers_retired = transfers_retired
+        self.result = result
 
 
 @dataclass(frozen=True, slots=True)
@@ -6170,15 +6177,12 @@ class ImportService:
             result.transfers_retired = refresh_result.transfers_retired
             result.refresh_steps = _step_outcome(refresh_result)
             if not refresh_result.applied:
-                # The raise discards `result`, and this exception escapes past
-                # the success path's warning rather than landing in
-                # `_single_file_failure`. So the count travels on the exception
-                # — the reversal is the user's own decision being undone, and it
-                # is disclosed whether or not the transform that followed it
-                # succeeded.
+                # Carry committed state so confirmation can archive the file
+                # without retrying the import after a failed refresh.
                 raise ImportRefreshError(
                     f"SQLMesh transforms failed: {refresh_result.error}",
                     transfers_retired=refresh_result.transfers_retired,
+                    result=result,
                 )
             result.core_tables_rebuilt = True
 

@@ -697,9 +697,6 @@ def import_files_command(
             # json callers get JSON directly; interactive callers see a
             # human-readable summary with re-run instructions.
             #
-            # TODO(v1-edit): Full interactive field-walk (prompt per flagged
-            # field) is deferred.  The interactive path below directs the user
-            # to re-run with --confirm or --mapping instead.
             outcome = _exc.outcome
             file_path_str = str(file_paths[0]) if len(file_paths) == 1 else ""
             quoted_path = shlex.quote(file_path_str)
@@ -837,6 +834,45 @@ def import_files_command(
                 sign=sign,
                 read_options=read_options,
             )
+            if (
+                len(file_paths) == 1
+                and get_terminal_policy().interactive
+                and outcome.channel == "tabular"
+                and outcome.reason in ("unknown_layout", "validation_failure")
+            ):
+                reviewed_mapping = _review_import_mapping(outcome, overrides)
+                if reviewed_mapping is not None:
+                    _complete_import_confirmation(
+                        file_path=file_paths[0],
+                        accept=True,
+                        mapping=[f"{k}={v}" for k, v in reviewed_mapping.items()],
+                        format_name=format_name,
+                        bridge_response=None,
+                        confirm=False,
+                        confirm_sign=confirm_sign,
+                        sign=sign,
+                        date_format=date_format,
+                        number_format=number_format,
+                        sheet=sheet,
+                        delimiter=delimiter,
+                        encoding=encoding,
+                        no_row_limit=no_row_limit,
+                        no_size_limit=no_size_limit,
+                        institution=institution,
+                        account_id=account_id,
+                        account_name=account_name,
+                        account_binding=[
+                            f"{k}={v}" for k, v in (account_bindings or {}).items()
+                        ],
+                        account_meta=[],
+                        save_format=save_format,
+                        output=output,
+                        quiet=quiet,
+                        refresh=refresh,
+                        force=force,
+                        auto_accept=yes,
+                    )
+                    return
             raise typer.Exit(1) from _exc
 
         # Everything else belongs to handle_cli_errors: it classifies every
@@ -1978,6 +2014,128 @@ def _render_sign_convention_prompt(
     typer.echo()
 
 
+def _review_import_mapping(
+    outcome: ConfirmationRequired,
+    initial_mapping: dict[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Review tabular corrections in memory before the authoritative import call."""
+    from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+    from moneybin.services.import_confirmation import (
+        MappingValidationError,
+        ProposedMapping,
+        tabular_required_fields,
+        validate_partial_mapping,
+    )
+
+    if not isinstance(outcome.proposed, ProposedMapping):
+        return None
+    proposed = outcome.proposed.field_mapping
+    columns = tuple(
+        dict.fromkeys([*proposed.values(), *outcome.proposed.unmapped_columns])
+    )
+    policy = get_terminal_policy()
+    cancel = Choice("cancel", "Cancel")
+    actions = [Choice("edit", "Edit fields"), cancel]
+    if outcome.confidence.tier != "low":
+        actions.insert(0, Choice("accept", "Accept proposed mapping"))
+    typer.echo("Choices: " + " / ".join(choice.label for choice in actions))
+    action = choose_required(
+        None, choices=actions, flag="mapping review", policy=policy
+    )
+    if action == "cancel":
+        return None
+    if action == "accept" and outcome.confidence.tier != "low" and not initial_mapping:
+        return {}
+    corrections = dict(initial_mapping or {})
+    while True:
+        destinations = list(
+            dict.fromkeys([
+                *outcome.confidence.missing_required,
+                *outcome.confidence.flagged,
+                *FIELD_ALIASES,
+            ])
+        )
+        typer.echo("Fields: " + ", ".join(destinations) + " / Cancel")
+        dest = choose_required(
+            None,
+            choices=[
+                *(
+                    Choice(field, field)
+                    for field in destinations
+                    if field in FIELD_ALIASES
+                ),
+                cancel,
+            ],
+            flag="destination field",
+            policy=policy,
+        )
+        if dest == "cancel":
+            return None
+        typer.echo(
+            "Columns: "
+            + " / ".join(f"Column: {column}" for column in columns)
+            + " / Cancel"
+        )
+        source = choose_required(
+            None,
+            choices=[
+                *(
+                    Choice(f"column:{column}", f"Column: {column}")
+                    for column in columns
+                ),
+                cancel,
+            ],
+            flag="source column",
+            policy=policy,
+        )
+        if source == "cancel":
+            return None
+        source = source.removeprefix("column:")
+        if dest == "amount":
+            corrections.pop("debit_amount", None)
+            corrections.pop("credit_amount", None)
+        elif dest in ("debit_amount", "credit_amount"):
+            corrections.pop("amount", None)
+        corrections[dest] = source
+        try:
+            merged = validate_partial_mapping(
+                proposed=proposed,
+                override=corrections,
+                available_columns=columns,
+                required_fields=tabular_required_fields(
+                    proposed_keys=set(proposed),
+                    override_keys=set(corrections),
+                ),
+                valid_destinations=tuple(FIELD_ALIASES),
+            )
+        except MappingValidationError as exc:
+            typer.echo(f"Mapping needs correction: {exc}")
+            continue
+        typer.echo("\nCorrected column mapping:")
+        samples_by_source = {
+            column: outcome.samples.get(field, []) for field, column in proposed.items()
+        }
+        for field, column in merged.items():
+            samples = samples_by_source.get(column, [])[:3]
+            suffix = f"  (e.g. {', '.join(samples)})" if samples else ""
+            typer.echo(f"  {field} ← {column}{suffix}")
+        typer.echo("Choices: Confirm corrected mapping / Edit another field / Cancel")
+        action = choose_required(
+            None,
+            choices=[
+                Choice("confirm", "Confirm corrected mapping"),
+                Choice("edit", "Edit another field"),
+                cancel,
+            ],
+            flag="mapping confirmation",
+            policy=policy,
+        )
+        if action == "confirm":
+            return merged
+        if action == "cancel":
+            return None
+
+
 def _render_confirmation_prompt(
     outcome: ConfirmationRequired,
     file_path_str: str,
@@ -1994,12 +2152,7 @@ def _render_confirmation_prompt(
     sign: SignConventionType | None = None,
     read_options: TabularReadOptions | None = None,
 ) -> None:
-    """Print a human-readable confirmation summary for an unknown-layout encounter.
-
-    Interactive edit-flow (walking each flagged field one at a time) is deferred
-    to a future task.  This v1 implementation shows the proposal and instructs
-    the user to re-run with the appropriate flags.
-    """
+    """Print the proposal and explicit-flag recovery for a confirmation gate."""
     import shlex
 
     from moneybin.services.import_confirmation import (
@@ -2322,6 +2475,63 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/card.csv --accept --sign negative_is_expense
         moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
+    _complete_import_confirmation(
+        file_path=file_path,
+        accept=accept,
+        mapping=mapping,
+        format_name=format_name,
+        bridge_response=bridge_response,
+        confirm=confirm,
+        confirm_sign=confirm_sign,
+        sign=sign,
+        date_format=date_format,
+        number_format=number_format,
+        sheet=sheet,
+        delimiter=delimiter,
+        encoding=encoding,
+        no_row_limit=no_row_limit,
+        no_size_limit=no_size_limit,
+        institution=institution,
+        account_id=account_id,
+        account_name=account_name,
+        account_binding=account_binding,
+        account_meta=account_meta,
+        save_format=save_format,
+        output=output,
+        quiet=quiet,
+    )
+
+
+def _complete_import_confirmation(
+    *,
+    file_path: Path,
+    accept: bool,
+    mapping: list[str],
+    format_name: str | None,
+    bridge_response: Path | None,
+    confirm: bool,
+    confirm_sign: bool,
+    sign: SignConventionType | None,
+    date_format: str | None,
+    number_format: NumberFormatType | None,
+    sheet: str | None,
+    delimiter: str | None,
+    encoding: str | None,
+    no_row_limit: bool,
+    no_size_limit: bool,
+    institution: str | None,
+    account_id: str | None,
+    account_name: str | None,
+    account_binding: list[str],
+    account_meta: list[str],
+    save_format: bool,
+    output: OutputFormat,
+    quiet: bool,
+    refresh: bool = False,
+    force: bool = False,
+    auto_accept: bool = False,
+) -> None:
+    """Complete one reviewed import through the existing account and inbox lifecycle."""
     from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database
@@ -2486,10 +2696,14 @@ def import_confirm_command(
         no_size_limit=no_size_limit,
     )
     quoted_path = shlex.quote(str(file_path))
+    refresh_failed = False
 
     def run_confirmation(
         bindings: dict[str, str] | None,
     ) -> tuple[ImportResult | None, BridgeApplyResult | None]:
+        nonlocal refresh_failed
+        from moneybin.services.import_service import ImportRefreshError
+
         with handle_cli_errors(cli_actor="import_confirm_command"):
             with get_database(read_only=False) as db:
                 service = ImportService(db)
@@ -2516,7 +2730,9 @@ def import_confirm_command(
                         "save_format": save_format,
                         "sign": sign,
                         "actor_kind": "human",
-                        "refresh": False,
+                        "refresh": refresh,
+                        "force": force,
+                        "auto_accept": auto_accept,
                         "format_name": format_name,
                         "date_format": date_format,
                         "number_format": number_format,
@@ -2528,7 +2744,16 @@ def import_confirm_command(
                     }
                     if confirm_sign:
                         confirm_kwargs["human_sign_confirmation"] = True
-                    return service.import_file(**confirm_kwargs), None
+                    try:
+                        return service.import_file(**confirm_kwargs), None
+                    except ImportRefreshError as exc:
+                        if exc.result is None:
+                            raise
+                        refresh_failed = True
+                        warn_transfers_retired(
+                            exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                        )
+                        return exc.result, None
 
     try:
         try:
@@ -2845,6 +3070,22 @@ def import_confirm_command(
 
     InboxService.for_active_profile_no_db().archive_confirmed_file(file_path)
 
+    if refresh_failed:
+        _confirm_receipt(
+            "Import saved; refresh failed",
+            [
+                ("File", str(file_path)),
+                ("Saved", f"{result.rows_loaded} rows"),
+                ("Import", str(result.import_id)),
+                ("Recovery", "Run 'moneybin refresh'; do not repeat the import"),
+            ],
+        )
+        raise typer.Exit(1)
+
+    if refresh:
+        warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
+        warn_refresh_steps(result.refresh_steps)
+
     if output == OutputFormat.JSON:
         data: dict[str, Any] = {
             # Mirror the confirmation_required envelope's top-level status
@@ -2893,7 +3134,9 @@ def import_confirm_command(
             ("Import", str(result.import_id)),
             (
                 "Derived data",
-                "Run 'moneybin transform apply' to rebuild derived tables",
+                "Refreshed"
+                if result.core_tables_rebuilt
+                else "Run 'moneybin transform apply' to rebuild derived tables",
             ),
         ],
     )

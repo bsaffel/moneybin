@@ -1,0 +1,1 @@
+Interactive tabular imports now offer accept, edit, and cancel choices, validate column corrections together, and require explicit review before importing. Sign and account confirmations remain separate; JSON and redirected calls retain the explicit flag workflow.
