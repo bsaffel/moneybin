@@ -781,7 +781,8 @@ def test_named_cleanup_preserves_unscoped_and_sibling_credentials(
     assert ("moneybin-sync", _KEYRING_REFRESH_KEY) not in store
     assert ("moneybin-sync", "pending") not in store
     assert not legacy_file.exists()
-    assert sibling_file.exists()
+    # Bob's own reads above already removed his issuer-less plaintext file.
+    assert not sibling_file.exists()
     assert bob._read_token() == "jwt-b"  # type: ignore[reportPrivateUsage]  # sibling credential isolation
 
 

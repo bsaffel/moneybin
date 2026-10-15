@@ -120,18 +120,20 @@ def test_partial_keychain_pair_is_not_combined_with_file(
     client = SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")
     with pytest.raises(SecretStorageUnavailableError):
         client._read_token()
-    assert path.exists()
+    assert not path.exists()
     assert ("moneybin-sync", "aaaaaaaaaaaa:refresh_token") not in vault
 
 
 def test_keychain_pair_wins_over_stale_file(vault: Vault, tmp_path: Path) -> None:
-    legacy_file(tmp_path)
+    path = legacy_file(tmp_path)
     vault[("moneybin-sync", "aaaaaaaaaaaa:jwt")] = "new-access"
     vault[("moneybin-sync", "aaaaaaaaaaaa:refresh_token")] = "new-refresh"
     vault[("moneybin-sync", "aaaaaaaaaaaa:server")] = "https://test.api"
     client = SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")
     assert client._read_token() == "new-access"
     assert client._read_refresh_token() == "new-refresh"
+    # The leftover file is removed even though a keychain pair answered.
+    assert not path.exists()
 
 
 def test_denied_logout_does_not_report_success(

@@ -171,6 +171,15 @@ class SyncClient:
             )
         access = self._optional_key(_KEYRING_JWT_KEY)
         refresh = self._optional_key(_KEYRING_REFRESH_KEY)
+        if self._profile_id is not None:
+            # A plaintext file from before keychain storage records no issuer. It
+            # can never be presented, so remove it rather than leave a token on
+            # disk, whether or not a keychain pair exists beside it.
+            path = self._legacy_token_path(self._profile_id)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(f"Could not remove the legacy sync token file {path}")
         if access is not None or refresh is not None:
             if not access or not refresh or not access.strip() or not refresh.strip():
                 raise SecretStorageUnavailableError(
@@ -183,15 +192,6 @@ class SyncClient:
             if self._optional_key(_KEYRING_SERVER_KEY) != self._server_url:
                 return None
             return access, refresh
-        if self._profile_id is not None:
-            # A plaintext file from before keychain storage records no issuer
-            # either. It can never be presented, so remove it rather than leave
-            # a token on disk.
-            path = self._legacy_token_path(self._profile_id)
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning(f"Could not remove the legacy sync token file {path}")
         return None
 
     def _read_token(self) -> str | None:
