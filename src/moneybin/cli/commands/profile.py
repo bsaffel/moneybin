@@ -450,7 +450,10 @@ def profile_set(
 ) -> None:
     """Set a configuration value on a profile.
 
-    Dotted ``section.field`` keys write the profile's ``config.yaml``. Undotted
+    Dotted ``section.field`` keys write the profile's ``config.yaml``. The next
+    run reads ``logging.*`` keys back unless a ``MONEYBIN_LOGGING__*`` environment
+    variable or ``.env.<profile>`` sets the same field; other sections are
+    recorded but not read. Undotted
     managed keys (``home_currency``, ``display_currency_targets``) write ``app.profile_settings`` in the
     profile's database, where the report guards can read them.
     """

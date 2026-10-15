@@ -23,6 +23,7 @@ from moneybin.metrics.registry import FX_RATE_BACKFILL_PAIRS_TOTAL
 from moneybin.services._validators import validate_currency_code
 from moneybin.services.currency_service import (
     MAX_BACKWARD_RESOLUTION_DAYS,
+    MAX_MARKET_CLOSURE_DAYS,
     CurrencyService,
     canonical_currency,
     is_storable_after_rounding,
@@ -169,8 +170,8 @@ def run_rate_backfill(
             observations = adapter.fetch_range(
                 window.from_currency,
                 window.to_currency,
-                # Asked for earlier than the window opens, by exactly the span
-                # `_within_window` already accepts. A profile whose earliest row
+                # Asked for earlier than the window opens, from the day
+                # `_within_window` anchors its bound on. A profile whose earliest row
                 # falls on a closed market opens its window on a day no provider
                 # publishes, and nothing resolves that day forward: a request
                 # starting on it could not come back covering it, so the check
@@ -477,15 +478,13 @@ def _usable_targets(
 
 
 def _request_start(window: RateWindow) -> date:
-    """The first day a backfill asks the provider for, and the lower bound it keeps.
+    """The first day a backfill asks the provider for.
 
     ``MAX_BACKWARD_RESOLUTION_DAYS`` before the window, stepped back off a
-    weekend. A provider resolves a closed start day to the publication before
-    it, so a request opening on a Saturday comes back from the Friday; asked
-    from the Saturday, that Friday would fall outside the bound and the pair
-    would be reported short on every refresh. A start on a weekday holiday still
-    resolves past the bound — the weekend is the case the calendar alone can
-    rule out.
+    weekend so the request opens on a day the calendar alone says is published.
+    A provider resolves a closed start day to the publication before it; a
+    weekday holiday start cannot be ruled out by the calendar, so
+    ``_within_window`` accepts that resolution instead.
     """
     start = window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
     return start - timedelta(days=max(0, start.isoweekday() - 5))
@@ -512,10 +511,15 @@ def _within_window(
     The lower bound allows the same publication-day slack a single fetch does —
     a window opening on a closed market is legitimately answered with the last
     trading day before it — and the request deliberately reaches that far back
-    rather than waiting to be offered it, so this bound is the span asked for
-    rather than a tolerance around a narrower one.
+    rather than waiting to be offered it, so the span asked for is the bound's
+    anchor rather than a tolerance around a narrower one. The bound sits
+    ``MAX_MARKET_CLOSURE_DAYS`` below the request start because the start itself
+    can fall on a weekday holiday, which the provider resolves to the
+    publication before it; seven days is the longest closure
+    ``core.fct_exchange_rates_daily`` tolerates between publications, so a
+    resolution any further back is not one a real calendar explains.
     """
-    earliest = _request_start(window)
+    earliest = _request_start(window) - timedelta(days=MAX_MARKET_CLOSURE_DAYS)
     return tuple(
         observation
         for observation in observations

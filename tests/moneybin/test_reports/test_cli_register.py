@@ -1226,3 +1226,99 @@ def test_json_output_is_unaffected_by_wide() -> None:
 
     assert result.exit_code == 0, result.output
     assert "columns shown" not in result.output
+
+
+def _invoke_balance_drift(
+    monkeypatch: pytest.MonkeyPatch, *args: str, width: int
+) -> Result:
+    """Run the real `balance_drift` command — eleven columns — at ``width``."""
+    from moneybin.reports._framework.registry import spec_of
+    from moneybin.reports.definitions.balance_drift import balance_drift
+
+    spec = spec_of(balance_drift)
+    app = typer.Typer()
+    register_report_cli(spec, app)
+    app.command("noop")(lambda: None)
+    record: dict[str, object] = {
+        "account_id": "acct_5678abcd",
+        "account_name": "Checking",
+        "currency_code": "USD",
+        "status": "drift",
+        "assertion_date": date(2026, 1, 31),
+        "days_since_assertion": 256,
+        "asserted_balance": Decimal("1234.56"),
+        "computed_balance": Decimal("1194.56"),
+        "drift_abs": Decimal("40.00"),
+        "drift_pct": Decimal("0.0324"),
+        "drift": Decimal("40.00"),
+    }
+    result = ReportResult(
+        records=[record],
+        columns=[column.name for column in spec.columns],
+        output_classes={column.name: column.data_class for column in spec.columns},
+        tier=Tier.HIGH,
+        total_count=1,
+        truncated=False,
+    )
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy",
+        lambda *, no_pager=False: replace(_ascii_policy(), width=width),
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = result
+        return _runner_cli.invoke(app, ["balance-drift", *args])
+
+
+def test_wide_drops_non_default_columns_until_the_table_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--wide` on a terminal narrower than the projection omits, not squeezes.
+
+    Eleven columns squeezed into 100 fold every text header to one character
+    per line. The default set is never omitted; the rest drop in projection
+    order — the id first, the last measure last — and the frame names them.
+    """
+    result = _invoke_balance_drift(monkeypatch, "--wide", width=100)
+
+    assert result.exit_code == 0, result.output
+    header = next(line for line in result.output.splitlines() if "drift_pct" in line)
+    frame = next(line for line in result.output.splitlines() if "omitted" in line)
+    assert "columns fit" in frame
+    assert "widen the terminal or use --output json" in frame
+    omitted = frame.split("— ", 1)[1].split(" omitted", 1)[0].split(", ")
+    assert omitted
+    for name in ("account_name", "currency_code", "assertion_date", "drift_pct"):
+        assert name not in omitted
+        assert name in header, f"default column {name!r} folded or dropped"
+    for name in (
+        "account_id",
+        "status",
+        "days_since_assertion",
+        "asserted_balance",
+        "computed_balance",
+        "drift_abs",
+    ):
+        assert (name in omitted) != (name in header), name
+    # Projection order decides: the id is the first extra to go, drift_abs the last.
+    assert "account_id" in omitted
+    assert "drift_abs" in header
+    table = [line for line in result.output.splitlines() if line[:1] in "+|"]
+    assert all(len(line) <= 100 for line in table)
+
+
+def test_the_narrow_balance_drift_view_is_unchanged_by_the_drop_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without `--wide` the default set renders and points at `--wide`."""
+    result = _invoke_balance_drift(monkeypatch, width=80)
+
+    assert result.exit_code == 0, result.output
+    assert "5 of 11 columns shown — --wide for all" in result.output
+    assert "columns fit" not in result.output
+    assert "account_id" not in result.output

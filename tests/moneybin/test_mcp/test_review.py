@@ -1563,16 +1563,16 @@ def _seed_guarded_auto_rule_proposal(pattern: str, matching_rows: int) -> str:
 
 
 @pytest.mark.parametrize(
-    ("pattern", "matching_rows", "guard_prefix"),
+    ("pattern", "matching_rows", "guard_prefix", "details_key"),
     [
         # Long pattern, 40 hits against one trigger: only the breadth guard fires.
-        ("SAMPLE MART", 40, "broad:"),
+        ("SAMPLE MART", 40, "broad:", "refused_broad"),
         # Short pattern, 5 hits (under the breadth floor): only the length guard.
-        ("SM", 5, "short pattern:"),
+        ("SM", 5, "short pattern:", "refused_unselective"),
     ],
 )
 async def test_refused_auto_rule_accept_names_its_reason(
-    pattern: str, matching_rows: int, guard_prefix: str
+    pattern: str, matching_rows: int, guard_prefix: str, details_key: str
 ) -> None:
     proposal_id = _seed_guarded_auto_rule_proposal(pattern, matching_rows)
 
@@ -1595,6 +1595,52 @@ async def test_refused_auto_rule_accept_names_its_reason(
     assert pattern not in row.reason
     assert response.data.auto_rule_impact is not None
     assert response.data.auto_rule_impact.skipped == 1
+    # A batch that applied nothing is an error, but data keeps the outcomes.
+    assert response.data.applied_count == 0
+    assert response.status == "error"
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
+    assert response.error.details == {details_key: [proposal_id]}
+    assert pattern not in response.error.message
+
+
+async def test_partial_auto_rule_batch_with_a_refusal_stays_ok() -> None:
+    refused_id = _seed_guarded_auto_rule_proposal("SAMPLE MART", 40)
+    with get_database(read_only=False) as db:
+        rejected_id = (
+            AutoRuleService(db)
+            ._proposed.insert(  # pyright: ignore[reportPrivateUsage]  # seeding a pre-guard proposal shape
+                merchant_pattern="OTHER STORE",
+                match_type="contains",
+                category="Synthetic Category",
+                subcategory=None,
+                category_id=None,
+                status="pending",
+                sample_txn_ids=["guarded-0"],
+                actor="test",
+            )
+            .target_id
+        )
+    assert rejected_id is not None
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule", decision_id=refused_id, decision="accept"
+            ),
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule", decision_id=rejected_id, decision="reject"
+            ),
+        ]
+    )
+
+    assert response.status == "ok"
+    assert response.error is None
+    assert response.data.applied_count == 1
+    by_id = {row.decision_id: row for row in response.data.results}
+    assert (by_id[refused_id].status, by_id[refused_id].changed) == ("pending", False)
+    assert by_id[refused_id].reason is not None
+    assert by_id[rejected_id].changed is True
 
 
 def test_auto_rule_reject_forbids_allow_broad() -> None:

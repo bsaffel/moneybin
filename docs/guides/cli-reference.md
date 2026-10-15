@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-10-07 -->
+<!-- Last reviewed: 2026-10-14 -->
 # CLI Reference
 
 Run `moneybin` for a short menu of common commands, or `moneybin --help` for
@@ -156,7 +156,9 @@ command tree and checked against it in CI.
 
 Per-user profile lifecycle. Each profile has an isolated encrypted database,
 config, and log directory. `profile set <key> <value>` writes one config value
-(for example `logging.level info`) to the profile; `profile show` prints the
+(for example `logging.level INFO`) to the profile, and `logging.*` values take
+effect at the next run unless an environment variable or `.env.<profile>` sets
+them; `profile show` prints the
 resolved settings, and `profile delete` removes the database, logs, and config
 together after a confirmation. Commands:
 [`reference/cli/profile.md`](../reference/cli/profile.md).

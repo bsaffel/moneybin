@@ -1022,7 +1022,9 @@ def render_configuration(settings_cls: type[BaseSettings]) -> str:
         f"sections with `{delimiter}` (`{prefix}MCP{delimiter}MAX_ROWS`), or "
         "put the same lines in `.env.<profile>` under the data home, falling "
         "back to `.env`. Precedence is explicit constructor values, then the "
-        "process environment, then the dotenv file. `MONEYBIN_HOME` itself "
+        "process environment, then the dotenv file, then the `logging` section "
+        "of the profile's `config.yaml` (what `moneybin profile set logging.<field>` "
+        "writes; no other section of that file is read). `MONEYBIN_HOME` itself "
         "must come from the environment or `--home`: the dotenv file lives "
         "inside the home it would name.",
         "",

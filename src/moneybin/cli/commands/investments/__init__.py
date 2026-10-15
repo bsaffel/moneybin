@@ -37,6 +37,7 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    share_count,
     wide_option,
 )
 from moneybin.cli.render import (
@@ -196,7 +197,7 @@ _EVENTS_COLUMNS: tuple[tuple[str, Callable[[EventRow], object]], ...] = (
         ),
     ),
     ("security id", lambda r: r.security_id or "-"),
-    ("quantity", lambda r: r.quantity),
+    ("quantity", lambda r: share_count(r.quantity)),
     ("amount", lambda r: r.amount),
     ("currency", lambda r: currency_label(r.currency_code)),
 )
@@ -278,7 +279,7 @@ def investments_list(
                 view.names,
                 view.rows,
                 # An event's amount is cash moving in or out, so it signs itself. The
-                # quantity is a share count, not an amount, and is left as stored.
+                # quantity is a share count, not an amount, so it is never rounded.
                 money={"amount": Money("flow")},
                 numeric=("quantity",),
                 total_columns=view.total,
@@ -323,7 +324,7 @@ _HOLDINGS_COLUMNS: tuple[tuple[str, Callable[[HoldingRow], object]], ...] = (
         ),
     ),
     ("security id", lambda r: r.security_id),
-    ("quantity", lambda r: r.quantity),
+    ("quantity", lambda r: share_count(r.quantity)),
     ("cost basis", lambda r: r.cost_basis),
     # A per-unit cost is DECIMAL(28,10); `format_money` rounds to two places,
     # which renders a sub-cent price as 0.00. It is left as stored for the same
@@ -446,7 +447,7 @@ def investments_holdings(
                 "unrealized": Money("delta", polarity="income"),
             },
             # Neither is an amount — one is a share count, the other a
-            # DECIMAL(28,10) per-unit cost — so both print as stored. They are
+            # DECIMAL(28,10) per-unit cost — so neither is rounded. They are
             # named here for the no-fold guarantee alone.
             numeric=("quantity", "avg cost"),
             total_columns=view.total,
@@ -542,7 +543,7 @@ _GAINS_COLUMNS: tuple[tuple[str, Callable[[RealizedGainRow], object]], ...] = (
         ),
     ),
     ("security id", lambda r: r.security_id),
-    ("quantity", lambda r: r.quantity),
+    ("quantity", lambda r: share_count(r.quantity)),
     ("proceeds", lambda r: r.proceeds),
     ("basis", lambda r: r.cost_basis),
     ("gain", lambda r: r.gain_loss),

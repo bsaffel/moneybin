@@ -33,6 +33,27 @@ logger = logging.getLogger(__name__)
 _SAFE_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+def _validate_logging_value(field: str, value: object) -> None:
+    """Refuse a ``logging.*`` write the settings model would reject.
+
+    Settings read this section back on every later command, so a bad value
+    written here would stop all of them with a validation traceback; the
+    one command that can still name the accepted values is this write.
+    """
+    from pydantic import ValidationError
+
+    from moneybin.config import LoggingConfig
+
+    if field not in LoggingConfig.model_fields:
+        accepted = ", ".join(LoggingConfig.model_fields)
+        raise ValueError(f"Unknown logging setting {field!r}; accepted: {accepted}")
+    try:
+        LoggingConfig.model_validate({field: value})
+    except ValidationError as e:
+        detail = "; ".join(err["msg"] for err in e.errors())
+        raise ValueError(f"Invalid value for logging.{field}: {detail}") from None
+
+
 @contextlib.contextmanager
 def _restrictive_umask() -> Generator[None, None, None]:
     """Force ``os.umask(0o077)`` for the wrapped block.
@@ -477,6 +498,8 @@ class ProfileService:
             coerced_value = int(value)
         else:
             coerced_value = value
+        if section == "logging":
+            _validate_logging_value(field, coerced_value)
         section_dict[field] = coerced_value
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)

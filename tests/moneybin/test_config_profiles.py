@@ -463,6 +463,127 @@ class TestProfileDirectoryLayout:
         assert settings.logging.level == "ERROR"
 
 
+class TestProfileConfigYamlSource:
+    """The profile's config.yaml feeds its ``logging`` section, and only that."""
+
+    @staticmethod
+    def _write_profile_yaml(home: Path, text: str) -> None:
+        profile_dir = home / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text(text)
+
+    def test_profile_yaml_logging_level_reaches_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What `profile set logging.level DEBUG` writes takes effect."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        self._write_profile_yaml(tmp_path, "logging:\n  level: DEBUG\n")
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "DEBUG"
+        # The yaml merges with, not replaces, the profile-derived log path.
+        assert settings.logging.log_file_path == (
+            tmp_path / "profiles" / "alice" / "logs" / "moneybin.log"
+        )
+
+    def test_env_var_overrides_profile_yaml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exported MONEYBIN_LOGGING__LEVEL outranks the profile yaml."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.setenv("MONEYBIN_LOGGING__LEVEL", "ERROR")
+        self._write_profile_yaml(tmp_path, "logging:\n  level: DEBUG\n")
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "ERROR"
+
+    def test_profile_dotenv_overrides_profile_yaml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The profile's .env file outranks the profile yaml."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        (tmp_path / ".env.alice").write_text("MONEYBIN_LOGGING__LEVEL=WARNING\n")
+        self._write_profile_yaml(tmp_path, "logging:\n  level: DEBUG\n")
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "WARNING"
+
+    def test_profile_yaml_database_section_is_not_a_settings_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The recorded key mode stays a record, not a configured setting."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        self._write_profile_yaml(
+            tmp_path,
+            "database:\n  encryption_key_mode: passphrase\nlogging:\n  level: DEBUG\n",
+        )
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "DEBUG"
+        assert settings.database.encryption_key_mode == "auto"
+        assert "encryption_key_mode" not in settings.database.model_fields_set
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("logging: [unclosed\n", id="malformed-yaml"),
+            pytest.param("logging: 5\n", id="logging-not-a-mapping"),
+            pytest.param("- just\n- a list\n", id="top-level-not-a-mapping"),
+            pytest.param("", id="empty-file"),
+        ],
+    )
+    def test_unusable_profile_yaml_contributes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+    ) -> None:
+        """A yaml the source cannot use leaves settings constructible and default."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        self._write_profile_yaml(tmp_path, text)
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "INFO"
+
+    def test_missing_profile_yaml_contributes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unregistered profile has no config.yaml yet; settings still build."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "INFO"
+
+    def test_unreadable_profile_yaml_contributes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An OSError on read is not a startup failure."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        # A directory in the file's place raises IsADirectoryError, even as root.
+        (tmp_path / "profiles" / "alice" / "config.yaml").mkdir(parents=True)
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "INFO"
+
+    def test_unknown_logging_key_in_profile_yaml_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key LoggingConfig does not declare is dropped, not an error."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        self._write_profile_yaml(
+            tmp_path, "logging:\n  level: WARNING\n  max_file_size_mb: 50\n"
+        )
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "WARNING"
+        assert not hasattr(settings.logging, "max_file_size_mb")
+
+
 def test_tabular_config_balance_validation_defaults() -> None:
     """TabularProviderConfig exposes balance validation tunables with safe defaults."""
     from moneybin.extractors.tabular.config import TabularProviderConfig

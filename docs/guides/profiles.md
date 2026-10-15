@@ -31,7 +31,7 @@ What lives inside a profile:
 - **Logs.** `<base>/profiles/<name>/logs/` — daily-rotating files written by the `SanitizedLogFormatter`. One profile's logs never mix with another's.
 - **Metrics.** The `app.metrics` table lives inside each profile's database, so metric counters are profile-internal.
 - **Audit trail.** The `app.audit_log` table is also profile-internal — privacy consent grants, redaction decisions, and tool invocations are scoped to the profile that recorded them.
-- **Config.** A profile-level `<base>/profiles/<name>/config.yaml` records the per-profile values `profile create` and `profile set` write: `database.encryption_key_mode`, which `profile show` and `db info` read back, and `logging.*` keys, which `profile show` displays. Its presence also marks the profile as registered. It is not a settings source: runtime configuration comes from environment variables and `<base>/.env.<profile>` (see the [configuration reference](../reference/configuration.md)). The user-level `<base>/config.yaml` holds the active-profile pointer.
+- **Config.** A profile-level `<base>/profiles/<name>/config.yaml` records the per-profile values `profile create` and `profile set` write: `database.encryption_key_mode`, which `profile show` and `db info` read back, and `logging.*` keys, which runtime settings read. Its presence also marks the profile as registered. Only its `logging` section is a settings source, and the lowest-ranked one: precedence runs environment variables, then `<base>/.env.<profile>` (falling back to `<base>/.env`), then this file's `logging` section, then built-in defaults (see the [configuration reference](../reference/configuration.md)). The user-level `<base>/config.yaml` holds the active-profile pointer.
 - **Backups.** `db backup` writes into `<base>/profiles/<name>/backups/` by default; `profile delete` removes the entire profile directory, including backups stored there.
 
 ### Base directory resolution
@@ -119,7 +119,7 @@ moneybin profile set logging.level DEBUG
 moneybin profile set logging.log_to_file false --profile business
 ```
 
-This only updates the per-profile YAML, and nothing reads `logging.*` back into runtime settings: to change the log level or any other setting for a run, set its environment variable (`MONEYBIN_LOGGING__LEVEL`) or put it in `.env.<profile>`. Every variable, with its type and default, is in the [configuration reference](../reference/configuration.md).
+`logging.*` keys take effect at the profile's next run. An environment variable (`MONEYBIN_LOGGING__LEVEL`) or the same line in `.env.<profile>` still wins over the YAML, so use either to change a setting for one run. A `logging.*` value the settings model rejects — lowercase `debug`, or a field it does not have — is refused by `profile set` itself, exit 1 with the accepted values named, and nothing is written. Keys in other sections are recorded, not read back. Every variable, with its type, accepted values, and default, is in the [configuration reference](../reference/configuration.md).
 
 ### `moneybin profile delete <name>`
 

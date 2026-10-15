@@ -9,7 +9,7 @@ import math
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -1143,6 +1143,36 @@ class MoneyBinSettings(BaseSettings):
 
         profile_dir = get_base_dir() / "profiles" / profile
 
+        def profile_config_yaml() -> dict[str, Any]:
+            """Contribute the ``logging`` section of the profile's config.yaml.
+
+            Only ``logging`` is read back. ``database.encryption_key_mode`` there
+            is a record of how the database was initialized, and ``db`` commands
+            tell a configured mode (in ``model_fields_set``) from that record;
+            feeding the section in here would erase the distinction.
+
+            A file this cannot use contributes nothing, silently: settings are
+            built before logging is configured, a raise would stop every command
+            that loads settings over a file that only tunes logging, and an
+            unregistered profile (``db init`` runs first) has no file at all.
+            ``profile show`` and ``profile set`` parse the file themselves and
+            surface a malformed one there.
+            """
+            import yaml  # already on the cold-start path; local like the dotenv import
+
+            # profile_dir is partially Unknown via the untyped init_settings.
+            config_path = cast(Path, profile_dir / "config.yaml")
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    loaded: object = yaml.safe_load(f)
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                return {}
+            document: dict[str, object] = loaded if isinstance(loaded, dict) else {}
+            section = document.get("logging")
+            fields: dict[str, object] = section if isinstance(section, dict) else {}
+            declared = LoggingConfig.model_fields
+            return {"logging": {k: v for k, v in fields.items() if k in declared}}
+
         def profile_path_defaults() -> dict[str, Any]:
             """Provide profile paths after operator configuration sources."""
             return {
@@ -1164,6 +1194,7 @@ class MoneyBinSettings(BaseSettings):
             env_settings,
             custom_dotenv,
             file_secret_settings,
+            profile_config_yaml,
             profile_path_defaults,
         )
 

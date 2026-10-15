@@ -527,10 +527,36 @@ class TestProfileSet:
         svc.create("alice")
 
         with caplog.at_level("INFO", logger="moneybin.services.profile_service"):
-            svc.set("alice", "logging.level", "synthetic-secret-value")
+            svc.set("alice", "custom.token", "synthetic-secret-value")
 
         assert "synthetic-secret-value" not in caplog.text
-        assert "logging.level" in caplog.text
+        assert "custom.token" in caplog.text
+
+    def test_set_refuses_a_logging_value_the_settings_model_rejects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bad `logging.*` write fails here, not on every later command."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="Invalid value for logging.level"):
+            svc.set("alice", "logging.level", "debug")
+
+        assert config_path.read_text() == before
+
+    def test_set_refuses_an_unknown_logging_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A field `LoggingConfig` lacks is named back with the accepted ones."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+
+        with pytest.raises(ValueError, match="Unknown logging setting 'bogus'"):
+            svc.set("alice", "logging.bogus", "x")
 
     def test_set_invalid_key_format_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
