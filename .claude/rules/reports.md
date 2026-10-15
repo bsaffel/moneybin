@@ -175,9 +175,12 @@ if the checked-in file has drifted from what derivation produces now.
 Per the reports-overview umbrella's D3: **being in `reports.*` *is* the
 definition of "is a report."** A view that exists only to back an internal
 service (not a CLI/MCP report surface) does not belong in `reports.*` — put it
-in `core` or `prep`. Precedent: `core.uncategorized_queue` (the categorization
-curator queue) moved out of `reports.*` because its only reader is
-`services/categorization/queries.py`, not the public `reports` catalog.
+in `core` or `prep`. Precedent: the categorization curator queue moved out of `reports.*` because
+its only reader was `services/categorization/queries.py`, not the public
+`reports` catalog — and later out of `core` as well, becoming the
+`is_categorizable` column on `core.fct_transactions`
+(`categorizable-transactions.md`), because a filter over one table did not
+clear the bar for a relation of its own.
 
 ## A reports.* model reads only `core.*` / `app.*`
 

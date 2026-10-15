@@ -1,0 +1,1 @@
+`moneybin sync disconnect --purge` and `sync_disconnect(state="absent")` also delete every row a bank connection pulled into the local database, reverse its account links, and withdraw merge proposals only its accounts describe; by `--provider-item-id` the purge also reaches a connection the sync server no longer lists, which is what left duplicate accounts behind after a relink.

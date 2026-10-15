@@ -251,7 +251,6 @@ def test_derives_every_derivable_core_view() -> None:
     derived, _excluded = derive_core_view_classes()
     assert set(derived) == {
         ("core", "dim_merchants"),
-        ("core", "uncategorized_queue"),
     }
 
 
@@ -322,23 +321,6 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
             or "SELECT *" in reason
             or "without a schema" in reason
         ), f"{name}: exclusion reason does not say why: {reason!r}"
-
-
-def test_uncategorized_queue_age_days_and_priority_score_derive_correctly() -> None:
-    """The two columns #330's finding singled out as the least-verified.
-
-    ``age_days`` is ``CURRENT_DATE - transaction_date`` (a date arithmetic
-    expression referencing only ``transaction_date``) and ``priority_score``
-    is ``ABS(amount) * age_days`` (referencing both ``amount`` and
-    ``transaction_date``, whose classes are TXN_AMOUNT/HIGH and
-    TXN_DATE/MEDIUM respectively) — derivation's max-tier-referenced-column
-    rule must answer TXN_DATE and TXN_AMOUNT, matching what taxonomy.py
-    declares.
-    """
-    derived, _excluded = derive_core_view_classes()
-    queue = derived[("core", "uncategorized_queue")]
-    assert queue["age_days"] is DataClass.TXN_DATE
-    assert queue["priority_score"] is DataClass.TXN_AMOUNT
 
 
 # ---------------------------------------------------------------------------

@@ -315,3 +315,51 @@ def test_undo_of_a_repoint_is_itself_undoable(db: Database) -> None:
 
     UndoService(db).undo(undone.undo_operation_id, actor="cli")
     assert _accepted_account_id(db) == "acct_canonical_2"
+
+
+def test_reverse_frees_ref_and_audits_the_reversal(db: Database) -> None:
+    """A reversed link frees its native ref, records who reversed it, and audits."""
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="l1")
+    before_metric = _metric("account_link.reverse")
+
+    event = repo.reverse(link_id="l1", reversed_by="user", actor="cli")
+
+    row = db.conn.execute(
+        "SELECT status, reversed_by, reversed_at FROM app.account_links "
+        "WHERE link_id = 'l1'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "reversed"
+    assert row[1] == "user"
+    assert row[2] is not None
+    assert event.action == "account_link.reverse"
+    audits = _audit_rows_for(db, "l1")
+    assert any(r[0] == "account_link.reverse" for r in audits)
+    assert _metric("account_link.reverse") == before_metric + 1
+    _insert(repo, link_id="l2")  # same ref coordinates -> free again
+    assert _accepted_account_id(db) == "acct_canonical_1"
+
+
+def test_reverse_refuses_a_second_reversal(db: Database) -> None:
+    """Re-reversing would overwrite the original reversal's audit trail."""
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="l1")
+    repo.reverse(link_id="l1", reversed_by="user", actor="cli")
+    with pytest.raises(ValueError, match="already reversed"):
+        repo.reverse(link_id="l1", reversed_by="user", actor="cli")
+    with pytest.raises(ValueError, match="not found"):
+        repo.reverse(link_id="missing", reversed_by="user", actor="cli")
+
+
+def test_undo_of_a_reverse_restores_the_accepted_link(db: Database) -> None:
+    """The reversal is one audited UPDATE, so the undo engine restores it."""
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="l1")
+    with operation() as op:
+        repo.reverse(link_id="l1", reversed_by="user", actor="cli")
+    assert _accepted_account_id(db) is None
+
+    UndoService(db).undo(op, actor="cli")
+
+    assert _accepted_account_id(db) == "acct_canonical_1"

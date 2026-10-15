@@ -42,6 +42,7 @@ def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "default_cost_basis_method": None,
         "investment_source_type": None,
         "investment_source_type_changed_at": None,
+        "archived_changed_at": None,
         "actor": "cli",
     }
     kwargs.update(overrides)
@@ -588,24 +589,22 @@ def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
         operation_id="op-legacy6",
     )
 
-    # Undo #1: before is None -> deletes the row via _delete_by_pk.
+    # Undo #1: before is None -> _delete_by_pk. Deleting would unarchive the
+    # account with no archived_changed_at, so the row is reset in place.
     undo_result = repo.undo_event(first_write_event, actor="cli")
     assert undo_result is not None
-    assert (
-        db.conn.execute(
-            "SELECT 1 FROM app.account_settings WHERE account_id = ?",
-            ["acct_legacy6"],
-        ).fetchone()
-        is None
-    )
+    assert db.conn.execute(
+        "SELECT archived, archived_at, archived_changed_at IS NOT NULL "
+        "FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy6"],
+    ).fetchone() == (False, None, True)
     # The real live date must survive into the undo's own before_value
     # capture -- not be reported as an unrecoverable NULL/missing key, which
     # is what a later redo would restore from.
     assert undo_result.before_value is not None
     assert undo_result.before_value["archived_at"] == "2024-06-01"
 
-    # Undo #2 (redo): after is None -> reinserts via _insert_row, not
-    # _restore_row.
+    # Undo #2 (redo): both images present -> _restore_row over the reset row.
     redo_result = repo.undo_event(undo_result, actor="cli")
     assert redo_result is not None
 
@@ -679,6 +678,8 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
     ) -> Generator[Database, None, None]:
         """A real write-mode Database reopened over account_settings missing archived_at."""
         db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_at")
+        # Added by V074, after V063: a pre-V063 table cannot hold it either.
+        db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_changed_at")
         db_path = db.path
         db.close()
         rw_db = Database(
@@ -819,6 +820,8 @@ class TestPreV069SchemaToleranceOnAccountSettingsWrite:
         db.execute(
             "ALTER TABLE app.account_settings DROP COLUMN investment_source_type"
         )
+        # Added by V074, after V069: a pre-V069 table cannot hold it either.
+        db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_changed_at")
         db_path = db.path
         db.close()
         rw_db = Database(

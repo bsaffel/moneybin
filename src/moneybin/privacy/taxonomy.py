@@ -214,6 +214,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "investment_source_type": DataClass.TXN_TYPE,
         # When the choice last moved; ledger-freshness bookkeeping, like updated_at.
         "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        # When archived last moved; freshness bookkeeping, like updated_at.
+        "archived_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -895,6 +897,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # Same classification as the app.account_settings entries above.
         "investment_source_type": DataClass.TXN_TYPE,
         "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "archived_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "official_name": DataClass.INSTITUTION,
@@ -937,8 +940,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # fct_security_prices.source_type.
         "price_source": DataClass.TXN_TYPE,
         # CURRENT_DATE - price_date: CURRENT_DATE is public, so this is bijective
-        # with price_date (uncategorized_queue.age_days precedent) and inherits its
-        # class rather than TXN_DATE.
+        # with price_date (the PendingTxnRow.age_days precedent) and inherits its class
+        # rather than TXN_DATE.
         "days_since_observed": DataClass.TIMESTAMP_OBSERVABILITY,
         "valuation_status": DataClass.TXN_TYPE,
         # The broker's non-authoritative claim about the same position. Being a
@@ -1229,6 +1232,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "has_splits": DataClass.AGGREGATE,
+        "is_categorizable": DataClass.TXN_TYPE,
         "is_pending": DataClass.TXN_TYPE,
         "is_transfer": DataClass.TXN_TYPE,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -1268,32 +1272,6 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "transaction_year_quarter": DataClass.TXN_DATE,
         "transfer_pair_id": DataClass.RECORD_ID,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
-    },
-    ("core", "uncategorized_queue"): {
-        # Curator-impact queue for the categorization surface
-        # (services/categorization/queries.py, transactions_categorize_pending);
-        # moved out of reports.* per reports-foundation.md R5. account_id is
-        # RECORD_ID here to match every other account_id in this registry
-        # (spec D6) — NOT ACCOUNT_IDENTIFIER, unlike the deleted
-        # _bridged_classes.py entry this mirrors.
-        "transaction_id": DataClass.RECORD_ID,
-        "account_id": DataClass.RECORD_ID,
-        "account_name": DataClass.USER_NOTE,
-        "txn_date": DataClass.TXN_DATE,
-        "amount": DataClass.TXN_AMOUNT,
-        "currency_code": DataClass.CURRENCY,
-        "description": DataClass.DESCRIPTION,
-        "merchant_id": DataClass.RECORD_ID,
-        "merchant_normalized": DataClass.MERCHANT_NAME,
-        # CURRENT_DATE is public, so age_days is bijective with txn_date
-        # (txn_date = CURRENT_DATE - age_days) — a date, not an aggregate.
-        "age_days": DataClass.TXN_DATE,
-        # ABS(amount) * age_days: exact once age_days is visible (>= MEDIUM
-        # tier), so priority_score recovers ABS(amount) by division at any
-        # tier that unmasks age_days but not amount. Must stay HIGH.
-        "priority_score": DataClass.TXN_AMOUNT,
-        "source_type": DataClass.TXN_TYPE,
-        "source_id": DataClass.RECORD_ID,
     },
 }
 

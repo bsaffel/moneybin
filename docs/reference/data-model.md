@@ -41,7 +41,6 @@ The signed amount lives on `core.fct_transactions.amount`: **negative = expense,
 | `reports.merchant_activity.total_outflow` | **Negative** (preserved). |
 | `reports.large_transactions.amount` | Signed (preserved from source). |
 | `reports.realized_fx.gain_loss` | Signed; positive is a gain. |
-| `core.uncategorized_queue.amount` | Signed (preserved from source). |
 | `reports.net_worth.total_liabilities` | **Negative** (preserved). |
 
 If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in the same query, one is negative and the other is positive. Don't.
@@ -116,6 +115,7 @@ This is a `VIEW` over `prep.int_transactions__merged` joined to category, mercha
 | `updated_at` | TIMESTAMP | `GREATEST(loaded_at, categorized_at, notes_latest, tags_latest, splits_latest)`. Does not advance on idempotent SQLMesh re-applies. |
 | `is_transfer` | BOOLEAN | TRUE if part of a confirmed transfer pair. |
 | `transfer_pair_id` | VARCHAR | FK → `core.bridge_transfers.transfer_id`. NULL if not a transfer. |
+| `is_categorizable` | BOOLEAN | TRUE when categorization works on the row: not a confirmed transfer leg, and its account resolved in `core.dim_accounts` and is not archived. Never NULL. A transaction needs a category when `is_categorizable AND category IS NULL`. |
 | `transaction_year`, `transaction_month`, `transaction_day`, `transaction_day_of_week` | INTEGER | Calendar parts. Day-of-week: 0 = Sunday. |
 | `transaction_year_month`, `transaction_year_quarter` | VARCHAR | `YYYY-MM` / `YYYY-QN` period-grouping keys. |
 | `notes` | LIST(STRUCT) | `(note_id, text, author, created_at)`; chronological. NULL when no notes — filter via `note_count > 0`. |
@@ -298,26 +298,6 @@ An account that holds value (a transaction, a trade, or a broker-reported positi
 
 Logical grain key: `(account_id, balance_date)`.
 
-### `core.uncategorized_queue`
-
-Uncategorized transactions ranked by curator-impact. Grain: one row per uncategorized transaction. Excludes transfers and archived accounts. Service-internal — its only reader is the categorization surface (`moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`), not a standalone `reports.*` view.
-
-| Column | Type | Description |
-|---|---|---|
-| `transaction_id` | VARCHAR | Joinable to `core.fct_transactions.transaction_id`. |
-| `account_id` | VARCHAR | Owning account; RECORD_ID (opaque, unmasked — spec D6), same as everywhere else. |
-| `account_name` | VARCHAR | Resolved display name; NULL only if `dim_accounts.display_name` itself is NULL (uncommon). |
-| `txn_date` | DATE | Transaction date. |
-| `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
-| `currency_code` | VARCHAR | ISO 4217 the amount is denominated in; NULL when unknown. |
-| `description` | VARCHAR | Source description. |
-| `merchant_id` | VARCHAR | FK → `core.dim_merchants.merchant_id`. NULL when no canonical merchant was resolved. |
-| `merchant_normalized` | VARCHAR | Resolved merchant; NULL when no `dim_merchants` match and no source merchant value. |
-| `age_days` | INTEGER | `CURRENT_DATE − txn_date`. |
-| `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. Compares nominal magnitudes, so it only ranks meaningfully within one `currency_code`. |
-| `source_type` | VARCHAR | Provenance source. |
-| `source_id` | VARCHAR | **NULL placeholder today.** Reserved column pending `source_id` surfacing on `fct_transactions`. Don't filter or join on it. |
-
 ### Investments
 
 `core.fct_investment_transactions` is the only authored/ingested investment surface — lots, holdings, and realized gains all derive from it (Invariant 8: never write to a derived table directly). Sign convention mirrors `fct_transactions.amount`: negative = cash out, positive = cash in.
@@ -361,7 +341,7 @@ Current positions: the sum of open lots per `(account_id, security_id)` — a "n
 | `price_date` | DATE | Date of the close used (may be earlier than today). NULL exactly when `market_value` is NULL. |
 | `price_source` | VARCHAR | `source_type` that supplied the close (see `core.fct_security_prices`). NULL exactly when `price_date` is NULL. |
 | `days_since_observed` | INTEGER | `CURRENT_DATE − price_date`. NULL exactly when `price_date` is NULL. |
-| `valuation_status` | VARCHAR | `valued` (priced as of today) \| `carried_forward` (priced, but the close predates today) \| `unpriced` (no usable close resolved) \| `withheld` (the figure cannot be trusted — either a known-wrong share count, from a broker snapshot contradiction, an unreconciled split, or a fresh snapshot that dropped a position the ledger still carries; or open lots that disagree on currency, including one lot with a known currency beside one with none, which leaves no single close to value the combined quantity against) \| `source_overlap` (the account's investment ledger arrives from more than one source at once — a broker file import beside a connector sync — so the two ledgers interleave, lots double-count, and cost basis mixes two accountings). A `withheld` or `source_overlap` row publishes **no** pricing at all: `market_value`, `unrealized_gain`, `price_date`, `price_source`, `days_since_observed` are all NULL even if a fresh close did resolve — the close itself is not lost, it stays queryable in `core.fct_security_prices`. The two stay distinct because their remedies do: `withheld` wants the share count reconciled, while `source_overlap` wants one of the two feeds removed — `import_revert` on the redundant batch, the only remedy that clears it. `sync_disconnect` cannot: it stops future pulls but leaves every already-pulled row in place, so the overlap persists. `system doctor`'s `investment_source_overlap` check fails until `import_revert` runs. |
+| `valuation_status` | VARCHAR | `valued` (priced as of today) \| `carried_forward` (priced, but the close predates today) \| `unpriced` (no usable close resolved) \| `withheld` (the figure cannot be trusted — either a known-wrong share count, from a broker snapshot contradiction, an unreconciled split, or a fresh snapshot that dropped a position the ledger still carries; or open lots that disagree on currency, including one lot with a known currency beside one with none, which leaves no single close to value the combined quantity against) \| `source_overlap` (the account's investment ledger arrives from more than one source at once — a broker file import beside a connector sync — so the two ledgers interleave, lots double-count, and cost basis mixes two accountings). A `withheld` or `source_overlap` row publishes **no** pricing at all: `market_value`, `unrealized_gain`, `price_date`, `price_source`, `days_since_observed` are all NULL even if a fresh close did resolve — the close itself is not lost, it stays queryable in `core.fct_security_prices`. The two stay distinct because their remedies do: `withheld` wants the share count reconciled, while `source_overlap` wants one of the two feeds removed — `import_revert` on the redundant batch, the only remedy that clears it. A default `sync_disconnect` cannot: it stops future pulls but leaves every already-pulled row in place, so the overlap persists, and its purging form (`state="absent"`) removes the whole connection, cash accounts included, so it is no remedy either. `system doctor`'s `investment_source_overlap` check fails until `import_revert` runs. |
 | `provider_reported_quantity` | DECIMAL(28,10) | **NON-AUTHORITATIVE.** The broker's claimed open units from its newest holdings snapshot; reconciliation reference only, never blended into `quantity`. NULL when the broker's newest snapshot doesn't report this position. |
 | `provider_reported_cost_basis` | DECIMAL(18,2) | NON-AUTHORITATIVE broker claim; same NULL rule. |
 | `provider_reported_value` | DECIMAL(18,2) | NON-AUTHORITATIVE broker claim; MoneyBin's own `market_value` is never derived from this. |
@@ -501,7 +481,7 @@ All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `rep
 | Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; query it directly; `moneybin system doctor` does not read it. |
 | What gain or loss did a currency conversion realize? | `reports.realized_fx` | One row per consumed Currency lot; unmatched inventory remains visible as an incomplete placeholder. |
 
-What's not categorized yet is answered by `core.uncategorized_queue` (above) rather than a `reports.*` view — it's service-internal, reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a standalone report.
+What's not categorized yet is `core.fct_transactions` filtered `WHERE is_categorizable AND category IS NULL` — the same filter `moneybin transactions categorize pending` and MCP `reviews(kind="categorization", status="pending")` use.
 
 When `cash_flow`, `spending_trend`, and `merchant_activity` overlap (e.g., "spend by category last month"), pick the one whose **grain** matches the question: `cash_flow` for `(month, account, category)`, `spending_trend` for `(month, category)` with windowed comparisons, `merchant_activity` for lifetime-per-merchant.
 
@@ -817,7 +797,6 @@ What not to do, and why.
 - **Don't analyze from `prep.*` or `raw.*`.** The agent-safe SQL paths read both, but for inspection only — column shapes change without notice, no catalog comments are emitted, and masking there is a value-shape scan rather than a declared class. Answer questions from `core.*`; reach for `prep.*` / `raw.*` only when `core.*` cannot say what an importer actually produced.
 - **Don't `SUM(amount)` across mixed currencies.** The `reports.*` views already group by `currency_code`, but a query of your own over `core.fct_transactions`, `core.fct_transaction_lines`, or `core.fct_balances` does not — nothing converts, so adding dollars to euros yields a number in no currency. Group by `currency_code`, or filter to one.
 - **Don't drop `currency_code` when you re-aggregate a `reports.*` view.** Every money-summing view is one row per grain **per currency**; a `GROUP BY` that omits it silently re-blends the currencies the view separated.
-- **Don't filter on `core.uncategorized_queue.source_id`.** It's a NULL placeholder today.
 - **Don't mix sign conventions.** If you join `cash_flow.outflow` (negative) and `spending_trend.total_spend` (positive) in the same expression, the math is wrong. Pick one view per question.
 - **Don't query `app.transaction_notes` / `app.transaction_tags` / `app.transaction_splits` directly when you need them per-transaction.** They're already aggregated as nested `LIST(STRUCT(...))` columns on `core.fct_transactions`. Direct queries miss the resolved shape and bypass the audit-emitting service layer for writes.
 
