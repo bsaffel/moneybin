@@ -127,6 +127,9 @@ def _pull_result(*, partial: bool = False) -> PullResult:
         )
     return PullResult(
         job_id="job-1",
+        ack_state="confirmed",
+        setup_state="complete",
+        refresh_state="complete",
         transactions_loaded=28,
         accounts_loaded=1,
         balances_loaded=1,

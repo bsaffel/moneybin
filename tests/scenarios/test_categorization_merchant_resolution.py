@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.account_resolver import AccountResolver
@@ -88,7 +88,7 @@ def test_same_entity_id_collapses_to_one_merchant() -> None:
         pipeline=[],
     )
     with scenario_env(scenario) as (db, _tmp, env):
-        sync_data = SyncDataResponse.model_validate(_PAYLOAD)
+        sync_data = PlaidSyncDataResponse.model_validate(_PAYLOAD)
         loader = PlaidExtractor(db)
         loader.load(sync_data, job_id=sync_data.metadata.job_id)
 

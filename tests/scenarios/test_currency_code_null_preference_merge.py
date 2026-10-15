@@ -35,7 +35,7 @@ from decimal import Decimal
 import polars as pl
 import pytest
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
@@ -163,7 +163,7 @@ def test_merge_prefers_known_currency_over_higher_priority_null() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         # --- Load Plaid, resolve its account → canonical id C ---
-        sync_data = SyncDataResponse.model_validate(_PLAID_PAYLOAD)
+        sync_data = PlaidSyncDataResponse.model_validate(_PLAID_PAYLOAD)
         loader = PlaidExtractor(db)
         loader.load(sync_data, job_id=sync_data.metadata.job_id)
 

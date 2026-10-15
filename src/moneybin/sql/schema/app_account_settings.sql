@@ -16,5 +16,6 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
     updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last modification time
     archived_at          DATE,                                     -- The date the account stopped being part of the position. NULL while active. Lets a stock-measure report (net worth) exclude the account only for dates after this one, instead of retroactively; set by AccountService on the archived FALSE->TRUE transition, cleared on unarchive. Appended last (not beside `archived`) because DuckDB's ALTER TABLE ADD COLUMN always appends, and init_schemas() must produce the same column order as an upgraded database (database-migration.md's "key invariant")
     investment_source_type VARCHAR,                                -- The source type whose investment rows feed this account's ledger (manual or plaid); NULL uses every source
-    investment_source_type_changed_at TIMESTAMP                    -- When investment_source_type last changed, including a clear and an undo; NULL if it never changed. Folded into the investment ledger's updated_at so re-entered rows do not rewind it
+    investment_source_type_changed_at TIMESTAMP,                    -- When investment_source_type last changed, including a clear and an undo; NULL if it never changed. Folded into the investment ledger's updated_at so re-entered rows do not rewind it
+    account_type         VARCHAR                                   -- Canonical user type override; NULL uses merged source evidence without changing subtype
 );

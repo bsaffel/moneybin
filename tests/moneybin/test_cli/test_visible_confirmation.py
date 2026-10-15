@@ -62,6 +62,8 @@ def test_sync_link_reauth_refuses_when_prompt_output_is_redirected(
         build_service.return_value.__enter__.return_value = service
         sync_link(
             institution=None,
+            provider=None,
+            connection_id=None,
             no_pull=False,
             no_browser=False,
             yes=False,

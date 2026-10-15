@@ -193,6 +193,17 @@ Metric definitions live in `src/moneybin/metrics/registry.py` (single source of 
 
 ### Instrumentation API
 
+Sync phase counters retain the existing end-to-end pull metrics and distinguish
+`moneybin_sync_ingestion_outcomes_total` (committed/failed),
+`moneybin_sync_refresh_outcomes_total` (complete/failed), and
+`moneybin_sync_partial_scopes_total` (partial/failed/deferred). Labels are only
+the bounded provider and status. A committed job is counted after its database
+commit, independently of acknowledgement or refresh success. Replay and local
+recovery do not count ingestion again; each actual refresh attempt counts.
+Process metrics can miss the commit-to-publication crash window and do not
+replace immutable receipts as durable evidence. See `sync-simplefin.md` for
+source-completeness and broker/client responsibilities.
+
 Every metric is recorded manually — a `Counter`/`Histogram`/`Gauge` constant
 imported from `moneybin.metrics.registry` and called directly at the call
 site that matters. There is no generic instrumentation decorator or context

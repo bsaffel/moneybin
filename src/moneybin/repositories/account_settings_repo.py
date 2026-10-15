@@ -12,6 +12,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from moneybin import error_codes
+from moneybin.database import has_column
+from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_SETTINGS
@@ -32,6 +35,7 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "investment_source_type",
     "investment_source_type_changed_at",
     "updated_at",
+    "account_type",
 )
 
 
@@ -118,6 +122,7 @@ class AccountSettingsRepo(BaseRepo):
         investment_source_type: str | None,
         investment_source_type_changed_at: datetime | None,
         actor: str,
+        account_type: str | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
         context: dict[str, Any] | None = None,
@@ -142,6 +147,12 @@ class AccountSettingsRepo(BaseRepo):
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             live = self._live_columns()
+            if account_type is not None and "account_type" not in live:
+                raise UserError(
+                    "Account type overrides require a database upgrade.",
+                    code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
+                    hint="Run 'moneybin db migrate apply' before setting account type.",
+                )
             before = self._fetch_row(account_id, live=live)
 
             values_by_column: dict[str, Any] = {
@@ -150,6 +161,7 @@ class AccountSettingsRepo(BaseRepo):
                 "official_name": official_name,
                 "last_four": last_four,
                 "account_subtype": account_subtype,
+                "account_type": account_type,
                 "holder_category": holder_category,
                 "currency_code": currency_code,
                 "credit_limit": credit_limit,
@@ -221,6 +233,11 @@ class AccountSettingsRepo(BaseRepo):
         changes. ``dim_accounts`` reads a default row like an absent one. The
         reset row is returned so the undo's audit row describes it.
         """
+        if "account_type" not in row and has_column(
+            self._db, ACCOUNT_SETTINGS, "account_type"
+        ):
+            live = self._fetch_row(str(row["account_id"]))
+            row["account_type"] = live["account_type"] if live is not None else None
         if "investment_source_type_changed_at" in self._live_columns():
             where, where_params = self._pk_where(row)
             stamp_row = self._db.execute(
@@ -260,11 +277,23 @@ class AccountSettingsRepo(BaseRepo):
     ) -> dict[str, Any] | None:
         """Reset one settings row in place and return its audit image."""
         live = self._live_columns()
+        # Redo compares this legacy capture with the full reset image below.
+        current = self._serialize_for_audit(
+            self._fetch_row(str(row["account_id"]), live=live)
+        )
+        for field in (
+            "archived_at",
+            "investment_source_type",
+            "investment_source_type_changed_at",
+        ):
+            if current is not None and field in current:
+                row.setdefault(field, current[field])
         values: dict[str, Any] = {
             "display_name": None,
             "official_name": None,
             "last_four": None,
             "account_subtype": None,
+            "account_type": None,
             "holder_category": None,
             "currency_code": None,
             "credit_limit": None,
@@ -328,6 +357,8 @@ class AccountSettingsRepo(BaseRepo):
             and self._archived_at_supported()
         ):
             row["archived_at"] = date.today().isoformat()
+        if has_column(self._db, ACCOUNT_SETTINGS, "account_type"):
+            row.setdefault("account_type", None)
         if (
             row.get("investment_source_type") is not None
             and "investment_source_type_changed_at" in self._live_columns()
@@ -438,6 +469,14 @@ class AccountSettingsRepo(BaseRepo):
         misleading "not reversible" error. A post-V063 capture always carries
         the key and takes the base-class path unchanged.
         """
+        # Legacy omission preserves the live override; explicit null clears it.
+        if "account_type" not in before and has_column(
+            self._db, ACCOUNT_SETTINGS, "account_type"
+        ):
+            live = self._fetch_row(str(locate["account_id"]))
+            value = live["account_type"] if live is not None else None
+            before["account_type"] = value
+            locate["account_type"] = value
         live_stamp = self._live_source_stamp(locate)
         super()._restore_row(before=before, locate=locate)
         self._stamp_source_change(before=before, locate=locate, live_stamp=live_stamp)

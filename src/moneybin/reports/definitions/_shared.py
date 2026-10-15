@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime
 from moneybin import error_codes
 from moneybin.errors import NextStep, UserError
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import Binding
+from moneybin.reports._framework.contract import Binding, SyncReportScope
 from moneybin.tables import TableRef
 
 # Month bound as YYYY-MM. Enforced because the runners canonicalize with
@@ -191,6 +191,23 @@ class DateRange:
     """Positional bindings for ``where_sql``'s ``?`` placeholders, in order."""
     period: str | None
     """Human window for ``ReportQuery.period``; ``None`` for the latest-day default."""
+
+
+def net_worth_sync_scope(
+    from_date: str | None,
+    to_date: str | None,
+    *,
+    view: TableRef,
+    default_latest: bool = True,
+) -> SyncReportScope:
+    """Carry the already-validated range's archive policy to source assessment."""
+    return SyncReportScope(
+        include_archived=True,
+        from_date=date.fromisoformat(from_date) if from_date else None,
+        latest_date_relation=view
+        if default_latest and from_date is None and to_date is None
+        else None,
+    )
 
 
 def resolve_date_range(

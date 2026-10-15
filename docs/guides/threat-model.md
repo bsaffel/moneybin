@@ -35,7 +35,7 @@ Concurrent writers across machines via a sync folder will corrupt the database (
 
 Interactive CLI output and MCP tool results don't print SSNs, raw account numbers, or full balances in the clear:
 
-- Reports and queries that surface account references render masked identifiers (`****1234`) rather than the full account number. A `sql_query` read of `raw` or `prep` masks 33 declared columns the same way and scans every other value by shape — strings and integers only, so in an undeclared column an account number of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as `DECIMAL` or `FLOAT` prints in full.
+- Reports and queries that surface account references render masked identifiers (`****1234`) rather than the full account number. A `sql_query` read of `raw` or `prep` masks 58 declared columns the same way and scans every other value by shape — strings and integers only, so in an undeclared column an account number of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as `DECIMAL` or `FLOAT` prints in full.
 - The `SanitizedLogFormatter` (see below) masks the same patterns in any log output that incidentally captures them.
 
 This is a partial protection. Descriptions, merchant names, dates, and amounts ARE in plain output by design — you asked the tool for them. If "the screen behind you" is in your threat model, prefer non-shoulder-surfable environments over relying on this layer.
@@ -98,11 +98,22 @@ Plaid is the upstream banking provider. When you use sync:
 
 If "Plaid sees my transactions" is incompatible with your threat model, use file-based imports (OFX/QFX/QBO/CSV/PDF) only. MoneyBin opens no network connection on those paths. One caveat, and it is not a MoneyBin network call: when an **agent** drives a PDF import and the deterministic extractor can't crack the layout, MoneyBin hands the statement's verbatim text to that agent for parsing, and the MCP client forwards it to its model provider. Import from the CLI to avoid it entirely — see [PDF privacy posture](data-import.md#pdf-native-text).
 
+### SimpleFIN and the broker
+
+The SimpleFIN path sends the setup token to the broker-hosted claim page. The
+broker claims and stores the resulting Access URL encrypted at rest, then uses
+it to fetch Account Sets. Its operator can access the credential and financial
+payloads while processing them; local database encryption does not hide data
+from that operator. MoneyBin receives credential-free provider data from the
+broker and never needs the Access URL. Self-hosting changes who operates this
+boundary. Disconnect preserves local history and requires separate provider-side
+revocation in Bridge. See [setup and recovery](data-import.md#simplefin-sync).
+
 ### `moneybin-sync` (broker) compromise
 
-`moneybin-sync` is the thin broker that holds your Plaid `access_token` and runs sync pulls on your behalf. If you use a hosted broker, that operator sees:
+`moneybin-sync` is the broker that holds your Plaid `access_token` or SimpleFIN Access URL and runs sync pulls on your behalf. If you use a hosted broker, that operator sees:
 
-- Your long-lived Plaid `access_token` (stored server-side, encrypted at rest, but readable to anyone who controls the server).
+- Your long-lived Plaid `access_token` or SimpleFIN Access URL (stored server-side, encrypted at rest, but readable to anyone who controls the server).
 - Transaction payloads transiently during the pull, then in a short-TTL store until your client fetches them.
 
 See [Self-hosted moneybin-sync trust delta](#self-hosted-moneybin-sync-trust-delta) below for what self-hosting changes and what it doesn't, and the [server API contract](../reference/server-api-contract.md) for the data-flow table that maps which secret lives where.
@@ -201,7 +212,7 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 | OFX / QFX / QBO / CSV / PDF imports | None | Pure file path; never reads `sync.server_url`. An agent-driven PDF import can still egress *through the MCP client* when extraction escalates to the agent — outbound from the client, not from MoneyBin. See [PDF privacy posture](data-import.md#pdf-native-text). |
 | `moneybin mcp serve` startup / local tools | None | stdio JSON-RPC only; no listening port; no telemetry. Explicit connector tool calls follow the rows below. |
 | `moneybin db ...`, `moneybin transform apply`, `moneybin reports ...` | None | All local. |
-| `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — you supply the broker URL at `sync login --server <url>`, which saves it to the profile once the server answers. Over MCP an agent can pass an address, but it is saved only after you confirm a prompt showing it; a client that cannot prompt is refused. Stored tokens are bound to the server that issued them and are never presented to a different address. |
+| `moneybin sync ...` (Plaid/SimpleFIN paths) | `sync.server_url` only | Default is `None` — you supply the broker URL at `sync login --server <url>`, which saves it to the profile once the server answers. Over MCP an agent can pass an address, but it is saved only after you confirm a prompt showing it; a client that cannot prompt is refused. Stored tokens are bound to the server that issued them and are never presented to a different address. |
 | `moneybin gsheet ...` / `gsheet_*` | Google OAuth and Sheets APIs | Only when the user invokes the connector; credentials remain in `SecretStore`. |
 | `moneybin export bundle\|report --to sheets:<name>` / `export_run` | Google Sheets API | Only when the user explicitly selects a saved Sheets export destination; export data is written to its managed tabs. |
 | Categorization assist (MCP tool) | None | The LLM call originates in the MCP client process, not in MoneyBin. |
@@ -300,7 +311,7 @@ What to do when something has gone wrong. None of these paths are forensic-grade
 
 ### Suspected Plaid token leak (broker compromise or stolen device with broker auth)
 
-1. `moneybin sync disconnect --institution <name>` revokes the connection for that institution at the broker. Add `--purge` to also delete every row that connection pulled into the local database.
+1. `moneybin sync disconnect --institution <name>` revokes the connection for that institution at the broker. For Plaid, add `--purge` to also delete every row that connection pulled into the local database. SimpleFIN purge is refused; ordinary disconnect preserves imported history and reports any separate grant-revocation action required.
 2. Re-link via `moneybin sync link` only if you have a clean machine and a clean broker.
 3. Plaid itself retains transaction history for as long as the broker holds the item; disconnect cuts off future pulls but does not retroactively delete history Plaid already saw.
 

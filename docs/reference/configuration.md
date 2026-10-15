@@ -102,7 +102,7 @@ Transaction matching and dedup configuration.
 | `MONEYBIN_MATCHING__HIGH_CONFIDENCE_THRESHOLD` | float (≥ 0.0, ≤ 1.0) | `0.95` | Auto-merge score floor. Necessary but not sufficient: a pair must also have agreeing descriptions before it merges without review. |
 | `MONEYBIN_MATCHING__REVIEW_THRESHOLD` | float (≥ 0.0, ≤ 1.0) | `0.7` | Dedup review floor. No longer admits or discards a duplicate candidate — every cross-source pair that survives assignment is reviewable, and the within-source tier has no review queue. It still bounds the scoring weights (a window-edge pair scores only _WEIGHT_DESCRIPTION, which must stay at or above this) and is validated against high_confidence_threshold. Transfer review uses transfer_review_threshold, not this. |
 | `MONEYBIN_MATCHING__DATE_WINDOW_DAYS` | int (≥ 0) | `5` | Maximum days between transaction dates for candidate pairs |
-| `MONEYBIN_MATCHING__SOURCE_PRIORITY` | list of text | `manual`, `gsheet`, `ofx`, `plaid`, `csv`, `excel`, `tsv`, `parquet`, `feather`, `pipe` | Source types in priority order (first = highest priority) |
+| `MONEYBIN_MATCHING__SOURCE_PRIORITY` | list of text | `manual`, `gsheet`, `ofx`, `plaid`, `csv`, `excel`, `tsv`, `parquet`, `feather`, `pipe`, `simplefin` | Source types in priority order (first = highest priority) |
 | `MONEYBIN_MATCHING__TRANSFER_REVIEW_THRESHOLD` | float (≥ 0.0, ≤ 1.0) | `0.55` | Review queue threshold for transfer pairs |
 | `MONEYBIN_MATCHING__TRANSFER_SIGNAL_WEIGHTS` | mapping of text to float | `{"date_distance": 0.6, "keyword": 0.4}` | Per-signal weights for transfer confidence scoring |
 

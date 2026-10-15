@@ -725,10 +725,15 @@ class TestUndoOfInvestmentSourceChoice:
         stamped = json.loads(audit[0])["investment_source_type_changed_at"]
         assert datetime.fromisoformat(stamped) == changed_at
 
+    @pytest.mark.parametrize("account_type", [None, "investment"])
     def test_undo_of_a_source_change_restates_the_ledger(
-        self, db: Database, monkeypatch: pytest.MonkeyPatch
+        self, db: Database, monkeypatch: pytest.MonkeyPatch, account_type: str | None
     ) -> None:
         restate = MagicMock()
+        restate_fx = MagicMock()
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting", restate_fx
+        )
         monkeypatch.setattr(
             "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
             restate,
@@ -739,12 +744,14 @@ class TestUndoOfInvestmentSourceChoice:
                 db,
                 display_name="Brokerage",
                 investment_source_type="manual",
+                account_type=account_type,
                 investment_source_type_changed_at=_SOURCE_SET_AT,
             )
 
         UndoService(db).undo(op, actor="test")
 
         restate.assert_called_once_with(db, committed_change="undo")
+        restate_fx.assert_not_called()
 
     def test_undo_of_an_unrelated_setting_leaves_the_change_time(
         self, db: Database, monkeypatch: pytest.MonkeyPatch

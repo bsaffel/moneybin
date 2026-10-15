@@ -27,11 +27,11 @@ class FilePath:
 class SyncResponse:
     """An already-fetched response payload from a mediated sync provider.
 
-    Plaid Hosted Link delivers a SyncDataResponse via moneybin-sync; the
+    Plaid Hosted Link delivers a PlaidSyncDataResponse via moneybin-sync; the
     response payload is passed in directly rather than re-fetched.
     """
 
-    payload: Any  # provider-specific: SyncDataResponse, dict, etc.
+    payload: Any  # provider-specific: PlaidSyncDataResponse, dict, etc.
     job_id: str | None = None
 
 

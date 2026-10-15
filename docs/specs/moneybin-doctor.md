@@ -53,6 +53,35 @@ Each audit returns the offending `transaction_id` (or `debit_transaction_id` for
 
 ### DoctorService extras (hardcoded)
 
+**`sync_completeness`** — Local SimpleFIN receipt, native account, binding and
+settings evidence, including accounts absent from financial projections and
+zero-batch outcomes. Missing history, held observations and pending cross-source
+account-link reviews produce `warn`; no local sync evidence produces `skipped`.
+Detail reports affected-account and unresolved-scope counts for each reason;
+`affected_ids` stays empty. Accepted bindings can retain legacy native IDs and
+do not prove minted-ID provenance, so these diagnostics withhold all IDs.
+Users resolve the gaps through the account and review surfaces rather than
+direct ID targeting. A pass means no known local gap, not proof of all provider
+history or agreement with a bank statement.
+
+**`sync_health`** — Reads the configured broker's connection listing using the
+existing profile identity and session. It never creates an identity, launches
+login or initiates provider retrieval. Unconfigured sync is `skipped`; an
+unreadable configured session or unreachable broker is `warn` with explicit
+unknown current health. Error/revoked connections warn. Successful reachability
+does not certify local projection or history coverage.
+
+**`net_worth_stale_balance`** — Warns when an included, currently nonarchived
+account's latest actual balance observation is more than
+`DoctorSettings.balance_staleness_threshold_days` old (default 30). Reads the
+canonical daily balance spine, where the net-worth views obtain their observed
+rows, with current account settings applied. Compares against today without
+requiring a row dated today; fetch time and carried-forward rows do not reset
+observation age. Stale values remain in totals. Detail reports the stale-account
+count and `affected_ids` stays empty under the same privacy rule. Missing
+observations and unsupported source coverage are separate checks; this does not implement the
+unanchored-account milestone in `reports-net-worth-sql-surface.md`.
+
 **`dedup_reconciliation`** — Cross-layer count check that every imported row which disappears between the unioned staging layer and the core fact table is explained by recorded dedup decisions. The invariant is `raw_total - core_count == dedup_absorbed`, where `raw_total` is the row count of `prep.int_transactions__unioned`, `core_count` is the distinct `transaction_id` count of `core.fct_transactions`, and `dedup_absorbed` is `Σ(group_size - 1)` over every connected component in `prep.int_transactions__matched` — computed as `COUNT(*) - COUNT(DISTINCT match_group_id)` over rows where `match_group_id IS NOT NULL`. This formula is exact for any group topology: N-way merges, cyclic accepted-edge sets (e.g. three edges over a 3-node group still absorbs only 2 rows), and the common 1:1 pair case. `fail` when the counts disagree (a leak: rows vanished without a decision; or an un-applied match: a recorded decision didn't collapse its rows); `skipped` before the first transform (prep/core views absent). See `_run_dedup_reconciliation()` in `src/moneybin/services/doctor_service.py`.
 
 **`duplicate_account_overlap`** — One real account imported under two canonical identities. `warn` when two accounts at the same `institution_slug` mirror each other's transactions; `pass` otherwise; `skipped` before the first transform. Reported once per unordered pair, at the higher of the two directional coverage ratios.

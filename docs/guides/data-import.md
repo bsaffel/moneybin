@@ -445,6 +445,124 @@ Plaid rows land in `raw.plaid_*` and flow through SQLMesh into the same `core.fc
 moneybin sync status                               # connected institutions, last sync, health
 ```
 
+## SimpleFIN sync
+
+SimpleFIN delivery is in progress for Early Access. Synthetic acceptance passes
+locally; final delivery review, deployment and consenting non-author live
+acceptance remain open. Use a reviewed, compatible broker/client pair.
+
+SimpleFIN sync uses the same MoneyBin sync journey through `moneybin-sync`.
+You provide your own SimpleFIN Bridge subscription. The setup token is entered
+on the broker-hosted page, never in a CLI argument or an agent conversation.
+The broker claims and encrypts the resulting access credential, requests your
+financial data, and temporarily holds credential-free response payloads for
+MoneyBin to download. Your financial data therefore crosses the broker;
+self-hosting changes who operates that boundary, not the data route.
+
+Deploy the broker's additive contract-v2 support before upgrading the client.
+Pin compatible broker/client revisions in your deployment. Broker contract v2
+is distinct from SimpleFIN protocol 1.0.7 or 2.0.0-draft: the connection retains
+its negotiated SimpleFIN version and never silently switches after a malformed
+response. Legacy Plaid contract-v1 handling remains guarded; a downgraded client
+must not ingest part of a mixed-provider job.
+
+```bash
+moneybin sync login
+moneybin sync link --provider simplefin
+moneybin sync status
+moneybin sync pull --connection-id <connection-id>
+```
+
+Review each account's identity, type and subtype using the existing account
+review/settings workflow before relying on totals. SimpleFIN does not provide
+MoneyBin's account classification. Supported monetary projections cover cash
+and credit accounts with an explicit compatible subtype; unresolved or
+unsupported scopes remain visible as incomplete coverage. Credit debt retains
+its negative signed balance, and overpayment retains its positive balance.
+Available balance is separate from current balance.
+
+```bash
+moneybin accounts list
+moneybin accounts set <cash-account-id> --type depository --subtype checking
+moneybin accounts set <credit-account-id> --type credit --subtype "credit card"
+moneybin accounts links pending
+moneybin system doctor
+```
+
+Choose the cash subtype supported by the account's evidence; checking is an
+example. Resolve pending account links through the existing review flow before
+trusting cross-source totals.
+
+Where a file import already represents an account, review the proposed account
+link before accepting it. Matching then reconciles overlapping transactions
+through the ordinary pipeline. Two identical purchases with different native
+transaction IDs remain separate events. Corrected observations remain auditable
+in Raw, and repeated delivery does not duplicate an event.
+
+SimpleFIN uses bounded windows of at most 90 days and overlapping incremental
+retrieval. Older history varies by institution; an empty result does not prove
+that all history exists locally. Use `--history-start YYYY-MM-DD` to request
+older recovery; `--force` repeats the standard lookback rather than retrieving
+unlimited history. Each request covers complete UTC days, with five days of
+overlap. The broker caps a job at four upstream data requests and a grant at
+24 requests in a rolling 24 hours; retries and historical backfill consume that
+same budget. `--force` and `--history-start` cannot be combined and neither
+bypasses those limits.
+
+Custom currency URLs, unsupported currency codes and values that cannot fit
+the exact supported precision are retained but withheld from monetary projections. Pending transactions do not enter the posted ledger.
+Provider disappearance is not a deletion instruction: missing accounts or
+transactions remain evidence, and MoneyBin cannot infer provider tombstones.
+
+For daily operation, use your existing cron or service timer at a stable minute
+of your choosing, for example `17 6 * * *` for 06:17 in that scheduler's timezone,
+invoking `moneybin sync pull --provider simplefin`. Set the scheduler's executable
+path and environment explicitly. No MoneyBin daemon is installed; the existing
+`sync schedule` commands remain unimplemented. Respect deferred/rate-limited
+outcomes instead of retrying continuously.
+
+`sync status`, reports and `moneybin system doctor` distinguish connection health,
+provider balance age, history coverage and local processing. A successful fetch
+alone does not certify complete history or fresh provider balances. Reports
+assess local evidence without contacting the broker. Broker unreachability is
+unknown health, not evidence that a connection is healthy.
+
+A public history/outcome `account_id` may be NULL even for a resolved account.
+Use its safe display name and explicit completion/recovery fields; NULL is not
+proof that the account disappeared or that another identity repair is needed.
+Report/doctor caveats retain affected-account and unresolved-scope counts while
+withholding unproven identifiers.
+
+If data is committed but account setup or local refresh fails, recover the
+reported job without another upstream fetch:
+
+```bash
+moneybin sync pull --job-id <job-id> --local-only
+```
+
+Local-only recovery does not confirm an unknown broker acknowledgement. Follow
+the returned action for acknowledgement recovery or a new scoped retrieval when
+the original payload/job can no longer be used. Reconnection changes credential
+generation; older job acknowledgements cannot silently earn new-generation
+coverage.
+
+Credential generation authenticates job receipts and checkpoint credit. It is
+not part of stable account/event identity: replacing credentials for an unchanged
+broker grant, pinned protocol and native scope does not create a new transaction
+merely because the generation changed. Changed or ambiguous scopes require the
+existing account review and conservative coverage recovery.
+
+```bash
+moneybin sync disconnect --connection-id <connection-id>
+```
+
+Confirm the exact grant and its account impact. Disconnect removes broker
+access and preserves local imported history, but SimpleFIN has no standard
+remote-revocation operation: separately revoke the grant in SimpleFIN Bridge
+using the returned guidance. Back up the broker database/result-store
+state and retain its encryption key under the broker deployment's key-custody
+procedure; do not put a credential or encryption key in a support transcript.
+
 ## Live tabular sync (Google Sheets)
 
 Google Sheets connects via direct OAuth — no aggregator, no moneybin-sync mediation — and re-pulls on every `moneybin refresh`. Use for a Tiller-style ledger sheet (full matching/categorization pipeline) or any other sheet you maintain (lands as queryable JSON + typed views).

@@ -1,0 +1,60 @@
+{
+  "job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "contract_version": 2,
+  "status": "partial",
+  "sources": [
+    {
+      "provider": "simplefin",
+      "connection_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "credential_generation": 1,
+      "protocol_version": "2.0.0-draft",
+      "batches": [
+        {
+          "batch_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          "fetched_at": "2026-09-30T12:00:00Z",
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "payload": {
+            "errlist": [
+              {
+                "code": "con.auth",
+                "msg": "Synthetic connection needs attention",
+                "conn_id": "native-connection-2"
+              }
+            ],
+            "connections": [],
+            "accounts": []
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "account_id": null,
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "status": "partial",
+          "error_code": "connection_auth_required",
+          "retry_at": "2026-10-02T00:00:00Z",
+          "native_scope": {
+            "kind": "simplefin_v2_connection",
+            "conn_id": "native-connection-2"
+          }
+        },
+        {
+          "account_id": null,
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "status": "deferred",
+          "error_code": "upstream_unavailable",
+          "native_scope": null
+        }
+      ]
+    }
+  ]
+}

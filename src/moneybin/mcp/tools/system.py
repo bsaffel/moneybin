@@ -239,7 +239,7 @@ def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     )
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, timeout_seconds=180.0)
 def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayload]:
     """Reverse every app.* mutation in one operation as a unit, keyed on operation_id.
 
@@ -263,10 +263,10 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     calling system_audit_undo again on the returned undo_operation_id.
     """
     from moneybin.database import get_database
-    from moneybin.services.undo_service import UndoService
+    from moneybin.orchestration.account_mutations import undo_operation
 
     with get_database(read_only=False) as db:
-        result = UndoService(db).undo(operation_id, actor="mcp")
+        result = undo_operation(db, operation_id, actor="mcp")
     return build_envelope(
         data=SystemAuditUndoPayload(
             undo_operation_id=result.undo_operation_id,

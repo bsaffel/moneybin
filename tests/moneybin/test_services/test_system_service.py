@@ -40,7 +40,15 @@ def system_db(db: Database) -> Database:
     create_core_tables_raw(conn)
 
     conn.execute("""
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO core.dim_accounts (
+            account_id, routing_number, account_type, institution_name,
+            institution_slug, institution_fid, source_type, source_file,
+            extracted_at, loaded_at, updated_at, display_name,
+            display_name_is_user_set, official_name, last_four, account_subtype,
+            holder_category, currency_code, investment_source_type, credit_limit,
+            archived, include_in_net_worth, archived_at,
+            investment_source_type_changed_at
+        ) VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, NULL, FALSE, TRUE, NULL,
@@ -207,7 +215,15 @@ def _insert_dim_account(
     """Insert one dim_accounts row with the given extracted_at and updated_at."""
     db.conn.execute(
         """
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO core.dim_accounts (
+            account_id, routing_number, account_type, institution_name,
+            institution_slug, institution_fid, source_type, source_file,
+            extracted_at, loaded_at, updated_at, display_name,
+            display_name_is_user_set, official_name, last_four, account_subtype,
+            holder_category, currency_code, investment_source_type, credit_limit,
+            archived, include_in_net_worth, archived_at,
+            investment_source_type_changed_at
+        ) VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', ?, CURRENT_TIMESTAMP, ?,
          'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD',

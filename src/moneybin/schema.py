@@ -48,6 +48,7 @@ _EXTRACTORS_DIR = Path(__file__).resolve().parent / "extractors"
 _PROVIDER_SCHEMA_DIRS: list[Path] = [
     _EXTRACTORS_DIR / "ofx" / "schema",
     _EXTRACTORS_DIR / "plaid" / "schema",
+    _EXTRACTORS_DIR / "simplefin" / "schema",
     _EXTRACTORS_DIR / "tabular" / "schema",
 ]
 
@@ -109,6 +110,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_transaction_tags.sql",
     "app_transaction_splits.sql",
     "app_import_log.sql",
+    "app_sync_job_state.sql",
     "app_imports.sql",
     "app_import_previews.sql",
     "raw_import_preview_snapshots.sql",

@@ -25,10 +25,15 @@ from moneybin.connectors.sync_errors import (
 )
 from moneybin.connectors.sync_models import (
     DeviceAuthorizationChallenge,
-    SyncAckResponse,
-    SyncDataResponse,
+    PlaidSyncDataResponse,
+    SyncAckV2Response,
+    SyncEnvelopeV2,
 )
 from moneybin.secrets import SecretNotFoundError, SecretStore
+
+JOB_ID = "00000000-0000-4000-8000-000000000abc"
+CONNECTION_ID = "00000000-0000-4000-8000-000000000def"
+BATCH_ID = "00000000-0000-4000-8000-000000000123"
 
 
 class FakeSecretStore(SecretStore):
@@ -65,7 +70,11 @@ def sync_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SyncClient:
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    return SyncClient(server_url="https://test.api", secret_store=FakeSecretStore())
+    return SyncClient(
+        server_url="https://test.api",
+        profile_id="test-consumer",
+        secret_store=FakeSecretStore(),
+    )
 
 
 def test_sync_client_initial_state_has_no_token(sync_client: SyncClient) -> None:
@@ -448,8 +457,12 @@ def test_poll_link_failed_raises(sync_client: SyncClient) -> None:
         )
     )
     sync_client._sleep = lambda _: None  # type: ignore[method-assign]
-    with pytest.raises(SyncLinkError, match="user cancelled"):
+    with pytest.raises(
+        SyncLinkError,
+        match="Link failed; inspect connection status before starting a new link",
+    ) as exc_info:
         sync_client.poll_link_status("sess_abc")
+    assert "user cancelled flow" not in str(exc_info.value)
 
 
 class _FakeClock:
@@ -501,14 +514,15 @@ def test_trigger_sync_returns_synchronous_result(sync_client: SyncClient) -> Non
         return_value=httpx.Response(
             201,
             json={
-                "job_id": "job-abc",
+                "job_id": JOB_ID,
+                "contract_version": 2,
                 "status": "completed",
                 "transaction_count": 42,
             },
         )
     )
     result = sync_client.trigger_sync()
-    assert result.job_id == "job-abc"
+    assert str(result.job_id) == JOB_ID
     assert result.status == "completed"
     assert result.transaction_count == 42
 
@@ -519,12 +533,22 @@ def test_trigger_sync_passes_provider_item_id_and_force(
 ) -> None:
     sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
     route = respx.post("https://test.api/sync/trigger").mock(
-        return_value=httpx.Response(201, json={"job_id": "j", "status": "completed"})
+        return_value=httpx.Response(
+            201,
+            json={
+                "job_id": JOB_ID,
+                "contract_version": 2,
+                "status": "completed",
+                "transaction_count": 0,
+            },
+        )
     )
     sync_client.trigger_sync(provider_item_id="item_x", reset_cursor=True)
     body = route.calls.last.request.content
     assert b"item_x" in body
-    assert b'"reset_cursor":true' in body or b'"reset_cursor": true' in body
+    assert b'"force":true' in body or b'"force": true' in body
+    assert b'"contract_version":2' in body or b'"contract_version": 2' in body
+    assert sync_client.consumer_id.encode() in body
 
 
 @respx.mock
@@ -534,61 +558,113 @@ def test_get_data_returns_parsed_sync_data(sync_client: SyncClient) -> None:
         return_value=httpx.Response(
             200,
             json={
-                "accounts": [
+                "job_id": JOB_ID,
+                "contract_version": 2,
+                "status": "completed",
+                "sources": [
                     {
-                        "account_id": "a1",
-                        "account_type": "depository",
-                        "account_subtype": "checking",
-                        "institution_name": "Chase",
-                        "official_name": "Total",
-                        "mask": "0001",
+                        "provider": "plaid",
+                        "connection_id": CONNECTION_ID,
+                        "credential_generation": 1,
+                        "batches": [
+                            {
+                                "batch_id": BATCH_ID,
+                                "fetched_at": "2026-04-08T00:00:00Z",
+                                "window": None,
+                                "payload": {
+                                    "accounts": [
+                                        {
+                                            "account_id": "a1",
+                                            "account_type": "depository",
+                                            "account_subtype": "checking",
+                                            "institution_name": "Chase",
+                                            "official_name": "Total",
+                                            "mask": "0001",
+                                        }
+                                    ],
+                                    "transactions": [
+                                        {
+                                            "transaction_id": "t1",
+                                            "account_id": "a1",
+                                            "transaction_date": "2026-04-07",
+                                            "amount": "10.00",
+                                            "description": "x",
+                                            "pending": False,
+                                        }
+                                    ],
+                                    "balances": [],
+                                    "removed_transactions": [],
+                                    "metadata": {
+                                        "job_id": JOB_ID,
+                                        "synced_at": "2026-04-08T00:00:00Z",
+                                        "institutions": [
+                                            {
+                                                "provider_item_id": "item_x",
+                                                "status": "completed",
+                                                "transaction_count": 1,
+                                            }
+                                        ],
+                                    },
+                                },
+                            }
+                        ],
+                        "outcomes": [
+                            {
+                                "account_id": None,
+                                "native_scope": {
+                                    "kind": "plaid_item",
+                                    "provider_item_id": "item_x",
+                                },
+                                "window": None,
+                                "status": "complete",
+                                "error_code": None,
+                            }
+                        ],
                     }
                 ],
-                "transactions": [
-                    {
-                        "transaction_id": "t1",
-                        "account_id": "a1",
-                        "transaction_date": "2026-04-07",
-                        "amount": "10.00",
-                        "description": "x",
-                        "pending": False,
-                    }
-                ],
-                "balances": [],
-                "removed_transactions": [],
-                "metadata": {
-                    "job_id": "job-abc",
-                    "synced_at": "2026-04-08T00:00:00Z",
-                    "institutions": [
-                        {
-                            "provider_item_id": "item_x",
-                            "status": "completed",
-                            "transaction_count": 1,
-                        }
-                    ],
-                },
             },
         )
     )
-    result = sync_client.get_data("job-abc")
-    assert isinstance(result, SyncDataResponse)
-    assert result.metadata.job_id == "job-abc"
-    assert len(result.transactions) == 1
+    result = sync_client.get_data(JOB_ID)
+    assert isinstance(result, SyncEnvelopeV2)
+    assert str(result.job_id) == JOB_ID
+    assert result.sources[0].provider == "plaid"
+    plaid = PlaidSyncDataResponse.model_validate(result.sources[0].batches[0].payload)
+    assert plaid.transactions[0].transaction_id == "t1"
 
 
 @respx.mock
 def test_ack_posts_job_id_and_returns_ack_response(sync_client: SyncClient) -> None:
     sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
     route = respx.post("https://test.api/sync/ack").mock(
-        return_value=httpx.Response(200, json={"job_id": "job-123", "status": "acked"})
+        return_value=httpx.Response(
+            200,
+            json={
+                "job_id": JOB_ID,
+                "contract_version": 2,
+                "status": "acked",
+                "acked_at": "2026-04-08T00:01:00Z",
+                "results": [
+                    {
+                        "provider": "plaid",
+                        "connection_id": CONNECTION_ID,
+                        "credential_generation": 1,
+                        "outcomes": [],
+                    }
+                ],
+            },
+        )
     )
 
-    result = sync_client.ack("job-123")
+    result = sync_client.ack(JOB_ID)
 
-    assert isinstance(result, SyncAckResponse)
-    assert result.job_id == "job-123"
+    assert isinstance(result, SyncAckV2Response)
+    assert str(result.job_id) == JOB_ID
     assert result.status == "acked"
-    assert json.loads(route.calls.last.request.content) == {"job_id": "job-123"}
+    assert json.loads(route.calls.last.request.content) == {
+        "job_id": JOB_ID,
+        "consumer_id": sync_client.consumer_id,
+    }
 
 
 def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:

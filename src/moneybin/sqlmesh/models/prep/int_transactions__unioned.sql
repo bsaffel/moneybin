@@ -159,6 +159,50 @@ WITH ofx AS (
     extracted_at::TIMESTAMP AS source_extracted_at,
     loaded_at
   FROM prep.stg_plaid__transactions
+), simplefin AS (
+  /* Keep the shared UTC-naive timestamp contract without promoting other sources. */
+  SELECT
+    source_transaction_id,
+    account_id,
+    source_account_key,
+    posted_date AS transaction_date,
+    NULL::DATE AS authorized_date,
+    amount::DECIMAL(18, 2) AS amount,
+    description,
+    NULL::TEXT AS original_description,
+    NULL::TEXT AS merchant_name,
+    NULL::TEXT AS merchant_entity_id,
+    NULL::TEXT AS memo,
+    NULL::TEXT AS category,
+    NULL::TEXT AS subcategory,
+    NULL::TEXT AS category_detailed,
+    NULL::TEXT AS plaid_category,
+    NULL::TEXT AS category_confidence,
+    NULL::TEXT AS payment_channel,
+    NULL::TEXT AS transaction_type,
+    NULL::TEXT AS check_number,
+    FALSE AS is_pending,
+    NULL::TEXT AS pending_transaction_id,
+    NULL::TEXT AS location_address,
+    NULL::TEXT AS location_city,
+    NULL::TEXT AS location_region,
+    NULL::TEXT AS location_postal_code,
+    NULL::TEXT AS location_country,
+    NULL::DOUBLE AS location_latitude,
+    NULL::DOUBLE AS location_longitude,
+    currency_code,
+    NULL::TEXT AS to_currency,
+    NULL::DECIMAL(18, 2) AS to_amount,
+    source_type,
+    source_origin,
+    source_file,
+    (
+      extracted_at AT TIME ZONE 'UTC'
+    ) AS source_extracted_at,
+    (
+      loaded_at AT TIME ZONE 'UTC'
+    ) AS loaded_at
+  FROM prep.stg_simplefin__transactions
 )
 SELECT
   *
@@ -175,3 +219,7 @@ UNION ALL
 SELECT
   *
 FROM plaid
+UNION ALL
+SELECT
+  *
+FROM simplefin

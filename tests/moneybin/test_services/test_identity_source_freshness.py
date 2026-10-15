@@ -9,7 +9,7 @@ from pytest_mock import MockerFixture
 from sqlglot import exp
 from sqlmesh.core.dialect import parse
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.plaid.extractor import PlaidExtractor
@@ -28,7 +28,7 @@ from tests.moneybin.test_services.test_manual_identity_projection import (
 )
 
 
-def _seed_plaid(db: Database, payload: SyncDataResponse) -> SyncDataResponse:
+def _seed_plaid(db: Database, payload: PlaidSyncDataResponse) -> PlaidSyncDataResponse:
     seed_account_selections(db)
     payload = payload.model_copy(deep=True)
     payload.securities = []
@@ -101,7 +101,7 @@ def _seed_plaid(db: Database, payload: SyncDataResponse) -> SyncDataResponse:
 )
 def test_deferred_plaid_change_refuses_account_merge_atomically(
     db: Database,
-    receipt_payload: SyncDataResponse,
+    receipt_payload: PlaidSyncDataResponse,
     mocker: MockerFixture,
     change: str,
 ) -> None:
@@ -161,7 +161,7 @@ def test_deferred_plaid_change_refuses_account_merge_atomically(
 
 def test_current_plaid_selection_allows_complete_account_merge(
     db: Database,
-    receipt_payload: SyncDataResponse,
+    receipt_payload: PlaidSyncDataResponse,
     mocker: MockerFixture,
 ) -> None:
     _seed_plaid(db, receipt_payload)
@@ -174,7 +174,7 @@ def test_current_plaid_selection_allows_complete_account_merge(
 
 def test_second_plaid_account_merge_before_transform_refuses_atomically(
     db: Database,
-    receipt_payload: SyncDataResponse,
+    receipt_payload: PlaidSyncDataResponse,
     mocker: MockerFixture,
 ) -> None:
     _seed_plaid(db, receipt_payload)

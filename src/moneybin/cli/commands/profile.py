@@ -272,6 +272,9 @@ def profile_delete(
         except (ProfileNotFoundError, ValueError) as e:
             logger.error(str(e))
             raise typer.Exit(1) from e
+        typer.echo(
+            "Local profile deleted. Remote grants remain; disconnect them before deletion or revoke SimpleFIN grants directly in Bridge."
+        )
         _emit_receipt("Profile deleted", [("Profile", normalized)])
 
 

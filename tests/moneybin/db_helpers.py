@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     account_id VARCHAR PRIMARY KEY,
     routing_number VARCHAR,
     account_type VARCHAR,
+    account_type_override VARCHAR,
+    source_account_type VARCHAR,
     institution_name VARCHAR,
     institution_slug VARCHAR,
     institution_fid VARCHAR,

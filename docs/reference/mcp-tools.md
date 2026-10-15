@@ -11,7 +11,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`accounts_balance_assert`](#accounts_balance_assert) | Declare a manual balance assertion present or absent for one resolved account and date. | write, destructive, idempotent | at least `medium` |
 | [`accounts_balances`](#accounts_balances) | Return balances by date, history, assertions, or reconciliation deltas. | read-only, idempotent | up to `high` |
 | [`accounts_links_run`](#accounts_links_run) | Propose account merges: sweep for duplicates, or link two accounts by id. | write, not idempotent | at least `low` |
-| [`accounts_set`](#accounts_set) | Partial update of an account's settings. | write, idempotent | at least `critical` |
+| [`accounts_set`](#accounts_set) | Update account settings. | write, idempotent | at least `critical` |
 | [`export_run`](#export_run) | Publish one canonical bundle or registered report to a named local or Sheets destination. | write, not idempotent, open world | at least `medium` |
 | [`exports_set`](#exports_set) | Assert one named export destination's local or Sheets target state. | write, destructive, idempotent, open world | at least `medium` |
 | [`gsheet`](#gsheet) | Read connections or connection health. | read-only, idempotent | up to `medium` |
@@ -40,7 +40,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. | write, idempotent | at least `low` |
 | [`sql_query`](#sql_query) | Execute a read-only SQL query against the database. | read-only, idempotent | up to `critical` |
 | [`sql_schema`](#sql_schema) | Return the curated database schema. | read-only, idempotent | up to `critical` |
-| [`sync_disconnect`](#sync_disconnect) | Disconnect one institution connection or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `low` |
+| [`sync_disconnect`](#sync_disconnect) | Disconnect one institution connection or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `medium` |
 | [`sync_link`](#sync_link) | Start a hosted institution-link or nonblocking device-login session. | write, not idempotent, open world | at least `medium` |
 | [`sync_pull`](#sync_pull) | Pull connected financial data. | write, not idempotent, open world | at least `medium` |
 | [`sync_status`](#sync_status) | Read global health, one link session, or advance one device-login session. | write, idempotent, open world | up to `medium` |
@@ -117,7 +117,7 @@ Access: write, not idempotent. Sensitivity: at least `low`.
 
 ### accounts_set
 
-Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average), investment_source_type (manual/plaid picks which investment history feeds the account's ledger; nothing is deleted, clearing it uses both), include_in_net_worth, is_archived. Invalid values raise mutation_invalid_input. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Omitted fields are unchanged; name a text field in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving excludes the account from net worth entirely, history included; include_in_net_worth=False excludes it regardless of archived status. Writes app.account_settings; revert by calling again with prior values. Amounts are in the currency named by `summary.display_currency`.
+Update account settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type: depository/credit/loan/investment/other; subtype unchanged; clear restores source evidence. Noncanonical account_subtype/holder_category values warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid types/methods raise mutation_invalid_input. investment_source_type: manual/plaid selects ledger history; clear uses both; evidence is retained. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not date-scoped. include_in_net_worth=False excludes active accounts too. Audited app.account_settings writes; restore values or use system_audit_undo. Amounts use summary.display_currency.
 
 Access: write, idempotent. Sensitivity: at least `critical`.
 
@@ -127,6 +127,7 @@ Access: write, idempotent. Sensitivity: at least `critical`.
 | `official_name` | string |  |  |
 | `last_four` | string |  |  |
 | `account_subtype` | string |  |  |
+| `account_type` | string |  |  |
 | `holder_category` | string |  |  |
 | `currency_code` | string |  |  |
 | `credit_limit` | number |  |  |
@@ -618,7 +619,7 @@ explicit priority, ``cancel`` leaves live state alone.
 
 ### sql_query
 
-Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****\<last4>). core/app/reports declare a class for every column. raw and prep declare 33 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes — a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.
+Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****\<last4>). core/app/reports declare a class for every column. raw and prep declare 58 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes — a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.
 
 Access: read-only, idempotent. Sensitivity: up to `critical`.
 
@@ -638,13 +639,14 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### sync_disconnect
 
-Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection — required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution. state='absent' also deletes the item's locally pulled raw rows (raw.plaid_* and its prices), reverses its account links, and withdraws merge proposals only its accounts describe; by provider_item_id it also reaches an item the server no longer lists. Confirmed destructive write; run refresh_run afterwards.
+Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge. Run refresh_run afterwards.
 
-Access: write, destructive, not idempotent, open world. Sensitivity: at least `low`.
+Access: write, destructive, not idempotent, open world. Sensitivity: at least `medium`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `institution` | string |  |  |
+| `connection_id` | string |  |  |
 | `provider_item_id` | string |  |  |
 | `mode` | one of `institution`, `logout` | `institution` |  |
 | `state` | one of `disconnected`, `absent` | `disconnected` |  |
@@ -659,6 +661,8 @@ Access: write, not idempotent, open world. Sensitivity: at least `medium`.
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `institution` | string |  |  |
+| `provider` | one of `plaid`, `simplefin` |  |  |
+| `connection_id` | string |  |  |
 | `mode` | one of `institution`, `login` | `institution` |  |
 | `server_url` | string |  |  |
 
@@ -671,6 +675,13 @@ Access: write, not idempotent, open world. Sensitivity: at least `medium`.
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `institution` | string |  |  |
+| `provider` | one of `plaid`, `simplefin` |  |  |
+| `connection_id` | string |  |  |
+| `history_start` | string |  |  |
+| `force` | boolean | `false` |  |
+| `refresh` | boolean | `true` |  |
+| `job_id` | string |  |  |
+| `local_only` | boolean | `false` |  |
 
 ### sync_status
 

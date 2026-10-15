@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -799,6 +800,60 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
         )
 
 
+def test_type_override_set_clear_restore(db: Database) -> None:
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_type="depository")
+    cleared = _set(repo, account_type=None)
+    assert cleared.before_value is not None
+    assert cleared.after_value is not None
+    assert cleared.before_value["account_type"] == "depository"
+    assert cleared.after_value["account_type"] is None
+    restored = repo.undo_event(cleared, actor="cli")
+    assert restored is not None and restored.after_value is not None
+    assert restored.after_value["account_type"] == "depository"
+    assert db.execute(
+        "SELECT account_type, account_subtype, display_name "
+        "FROM app.account_settings WHERE account_id = 'acct_a'"
+    ).fetchone() == ("depository", "checking", "Checking")
+    repo.undo_event(restored, actor="cli")
+    assert db.execute(
+        "SELECT account_type FROM app.account_settings WHERE account_id = 'acct_a'"
+    ).fetchone() == (None,)
+
+
+def test_legacy_type_omission_preserves_live_override_and_complete_undo(
+    db: Database,
+) -> None:
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy_type", account_type="credit")
+    event = _legacy_undo_event(
+        account_id="acct_legacy_type", before_archived=False, after_archived=True
+    )
+    undone = repo.undo_event(event, actor="cli")
+    assert undone is not None
+    assert undone.before_value is not None and undone.after_value is not None
+    assert undone.before_value["account_type"] == "credit"
+    assert undone.after_value["account_type"] == "credit"
+    redone = repo.undo_event(undone, actor="cli")
+    assert redone is not None and redone.after_value is not None
+    assert redone.after_value["account_type"] == "credit"
+
+
+def test_legacy_first_write_redo_recovers_live_type(db: Database) -> None:
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy_type", account_type="credit")
+    event = _legacy_undo_event(
+        account_id="acct_legacy_type", before_archived=False, after_archived=True
+    )
+    event = replace(event, before_value=None)
+    undone = repo.undo_event(event, actor="cli")
+    assert undone is not None and undone.before_value is not None
+    assert undone.before_value["account_type"] == "credit"
+    redone = repo.undo_event(undone, actor="cli")
+    assert redone is not None and redone.after_value is not None
+    assert redone.after_value["account_type"] == "credit"
+
+
 class TestPreV069SchemaToleranceOnAccountSettingsWrite:
     """A write-mode open must tolerate account_settings predating V069.
 
@@ -851,3 +906,36 @@ class TestPreV069SchemaToleranceOnAccountSettingsWrite:
         assert "archived_at" in live
         assert "investment_source_type" not in live
         assert "investment_source_type_changed_at" not in live
+
+
+def test_legacy_first_write_with_source_watermark_redo_recovers_live_type(
+    db: Database,
+) -> None:
+    repo = AccountSettingsRepo(db)
+    stamp = datetime(2020, 1, 1)
+    _set(
+        repo,
+        account_id="acct_legacy_type",
+        account_type="credit",
+        investment_source_type="manual",
+        investment_source_type_changed_at=stamp,
+    )
+    event = replace(
+        _legacy_undo_event(
+            account_id="acct_legacy_type", before_archived=False, after_archived=True
+        ),
+        before_value=None,
+    )
+    undone = repo.undo_event(event, actor="cli")
+    assert undone is not None and undone.before_value is not None
+    assert undone.before_value["account_type"] == "credit"
+    assert undone.after_value is not None
+    assert undone.after_value["account_type"] is None
+    redone = repo.undo_event(undone, actor="cli")
+    assert redone is not None and redone.after_value is not None
+    assert redone.after_value["account_type"] == "credit"
+    assert redone.after_value["investment_source_type"] == "manual"
+    assert (
+        datetime.fromisoformat(redone.after_value["investment_source_type_changed_at"])
+        >= stamp
+    )

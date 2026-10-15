@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +14,7 @@ from fastmcp.server.elicitation import AcceptedElicitation
 
 import moneybin.mcp.tools.sync as sync_module
 from moneybin.connectors.sync_auth import SyncAuthResult, SyncLogoutResult
+from moneybin.connectors.sync_models import LinkInitiateResponse
 from moneybin.errors import UserError
 from moneybin.mcp.tools.sync import register_sync_tools
 from moneybin.services.sync_server_address import (
@@ -273,6 +276,66 @@ async def test_sync_link_server_url_is_login_only(address: MagicMock) -> None:
     assert envelope.error is not None
     assert envelope.error.code == "sync_link_mode_conflict"
     address.plan_server_address.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_link_async_institution_forwards_provider_and_connection(
+    mock_build: MagicMock,
+) -> None:
+    service = mock_build.return_value.__enter__.return_value
+    service.initiate_link.return_value = LinkInitiateResponse(
+        session_id="sess_simplefin",
+        link_url="https://sync.example.test/link/session",
+        link_type="token_paste",
+        expiration=datetime(2026, 7, 19, tzinfo=UTC),
+    )
+
+    envelope = await sync_module.sync_link_coarse(
+        institution="Example Bank", provider="simplefin", connection_id="connection-1"
+    )
+
+    assert envelope.error is None
+    assert envelope.data.session_id == "sess_simplefin"
+    assert envelope.data.link_type == "token_paste"
+    service.initiate_link.assert_called_once_with(
+        institution="Example Bank", provider="simplefin", connection_id="connection-1"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("server_url", [None, _SERVER])
+@pytest.mark.parametrize(
+    ("institution", "provider", "connection_id"),
+    [
+        ("Example Bank", None, None),
+        (None, "simplefin", None),
+        (None, None, "connection-1"),
+    ],
+)
+async def test_sync_link_login_refuses_institution_selectors_before_side_effects(
+    address: MagicMock,
+    institution: str | None,
+    provider: Literal["plaid", "simplefin"] | None,
+    connection_id: str | None,
+    server_url: str | None,
+) -> None:
+    with patch.object(sync_module, "grant_confirmation_or_raise") as prompt:
+        envelope = await sync_module.sync_link_coarse(
+            mode="login",
+            institution=institution,
+            provider=provider,
+            connection_id=connection_id,
+            server_url=server_url,
+        )
+
+    assert envelope.error is not None
+    assert envelope.error.code == "sync_link_mode_conflict"
+    prompt.assert_not_called()
+    address.plan_server_address.assert_not_called()
+    address.start_login.assert_not_called()
+    address.build_sync_client.assert_not_called()
+    address.auth_service.assert_not_called()
 
 
 @pytest.mark.unit

@@ -93,6 +93,7 @@ MERGED_SETTING_FIELDS = (
     "official_name",
     "last_four",
     "account_subtype",
+    "account_type",
     "holder_category",
     "currency_code",
     "credit_limit",
@@ -156,6 +157,8 @@ def plan_settings_reconciliation(
 def plan_restate_fields(moved: Iterable[str]) -> frozenset[str]:
     """The moved settings that change ledger or FX output, not just a label."""
     return frozenset(moved) & {
+        "account_type",
+        "account_subtype",
         "investment_source_type",
         "currency_code",
         "default_cost_basis_method",
@@ -1123,6 +1126,7 @@ class AccountLinksService:
             official_name=row.get("official_name"),
             last_four=row.get("last_four"),
             account_subtype=row.get("account_subtype"),
+            account_type=row.get("account_type"),
             holder_category=row.get("holder_category"),
             currency_code=row.get("currency_code"),
             credit_limit=row.get("credit_limit"),
@@ -1147,6 +1151,12 @@ class AccountLinksService:
 
         if "investment_source_type" in moved:
             restate_investment_ledger(self._db)
+        elif moved & {"account_type", "account_subtype"}:
+            restate_fx_accounting(
+                self._db,
+                account_currency_changed="currency_code" in moved,
+                account_type_changed=True,
+            )
         elif moved:
             restate_fx_accounting(
                 self._db, account_currency_changed="currency_code" in moved

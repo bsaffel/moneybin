@@ -17,7 +17,11 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import DateRange, resolve_date_range
+from moneybin.reports.definitions._shared import (
+    DateRange,
+    net_worth_sync_scope,
+    resolve_date_range,
+)
 from moneybin.tables import REPORTS_NET_WORTH
 
 _REPORT_ID = "core:net_worth"
@@ -380,7 +384,13 @@ def net_worth(
                 mcp="reports(report_id='core:net_worth_currencies')",
             ),
         ]
-        return ReportQuery(sql, params, actions=actions, period=rng.period)
+        return ReportQuery(
+            sql,
+            params,
+            actions=actions,
+            period=rng.period,
+            sync_scope=net_worth_sync_scope(from_date, to_date, view=REPORTS_NET_WORTH),
+        )
 
     rng = resolve_date_range(
         from_date,
@@ -442,4 +452,12 @@ def net_worth(
             ),
         ),
     ]
-    return ReportQuery(sql, params, actions=actions, period=rng.period)
+    return ReportQuery(
+        sql,
+        params,
+        actions=actions,
+        period=rng.period,
+        sync_scope=net_worth_sync_scope(
+            from_date, to_date, view=REPORTS_NET_WORTH, default_latest=False
+        ),
+    )

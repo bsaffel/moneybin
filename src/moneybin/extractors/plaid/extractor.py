@@ -16,23 +16,25 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from itertools import chain
 from pathlib import Path
+from uuid import UUID
 
 import polars as pl
 
 from moneybin.connectors.sync_models import (
     InstitutionResult,
-    SyncAccount,
-    SyncBalance,
-    SyncDataResponse,
+    PlaidSyncAccount,
+    PlaidSyncBalance,
+    PlaidSyncDataResponse,
+    PlaidSyncTransaction,
     SyncHolding,
     SyncInvestmentTransaction,
     SyncSecurity,
-    SyncTransaction,
 )
 from moneybin.database import Database
 from moneybin.extractors._types import ExtractionResult, ProviderSource, SyncResponse
 from moneybin.extractors.plaid.config import PlaidProviderConfig
 from moneybin.investments.observation_versions import observation_version
+from moneybin.metrics.observations import MetricObservations, record_counter
 from moneybin.metrics.registry import (
     INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL,
     PRICE_ROWS_WRITTEN_TOTAL,
@@ -291,15 +293,23 @@ class PlaidExtractor:
     source_type = "plaid"
     """Written into source_type column on every row produced by this provider."""
 
-    def __init__(self, db: Database, config: PlaidProviderConfig | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        config: PlaidProviderConfig | None = None,
+        *,
+        observations: MetricObservations | None = None,
+    ) -> None:
         """Initialize with an active Database connection.
 
         Args:
             db: An active Database connection (caller-managed per ADR-010).
             config: Provider configuration; defaults to empty PlaidProviderConfig.
+            observations: Optional outer-transaction metric buffer.
         """
         self.db = db
         self.config = config or PlaidProviderConfig()
+        self.observations = observations
 
     def extract(self, source: ProviderSource) -> ExtractionResult:
         """Provider Protocol entry point.
@@ -322,13 +332,22 @@ class PlaidExtractor:
         schema_dir = Path(__file__).parent / "schema"
         return sorted(schema_dir.glob("raw_plaid_*.sql"))
 
-    def load(self, sync_data: SyncDataResponse, job_id: str) -> LoadResult:
+    def load(
+        self,
+        sync_data: PlaidSyncDataResponse,
+        job_id: str,
+        *,
+        batch_id: UUID | None = None,
+        in_outer_txn: bool = False,
+    ) -> LoadResult:
         """Load accounts, transactions, balances from one sync response.
 
         Returns per-table counts. Does NOT handle removed_transactions —
         call handle_removed_transactions() separately.
         """
-        source_file = f"sync_{job_id}"
+        source_file = (
+            f"sync_{job_id}" if batch_id is None else f"sync_{job_id}_{batch_id}"
+        )
         extracted_at = sync_data.metadata.synced_at
         loaded_at = datetime.now(UTC)
         item_by_account = self.build_account_to_item_map(sync_data)
@@ -366,7 +385,11 @@ class PlaidExtractor:
             sync_data.securities, extracted_at, loaded_at
         )
         investment_transactions_loaded = self._load_investment_transactions(
-            sync_data.investment_transactions, source_file, extracted_at, loaded_at
+            sync_data.investment_transactions,
+            source_file,
+            extracted_at,
+            loaded_at,
+            in_outer_txn=in_outer_txn,
         )
         holdings_loaded, holding_lots_loaded = self._load_investment_holdings(
             sync_data.investment_holdings,
@@ -419,7 +442,9 @@ class PlaidExtractor:
                     "the opening-lot bootstrap cannot classify lots without it"
                 )
 
-    def build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
+    def build_account_to_item_map(
+        self, sync_data: PlaidSyncDataResponse
+    ) -> dict[str, str]:
         """Map each account_id to its provider_item_id (its ``source_origin``).
 
         Public so the sync service can attribute each account to the same
@@ -516,7 +541,7 @@ class PlaidExtractor:
 
     def _load_accounts(
         self,
-        accounts: list[SyncAccount],
+        accounts: list[PlaidSyncAccount],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,
@@ -543,12 +568,12 @@ class PlaidExtractor:
         # typer.echo, which never reaches the log file — so these row counts
         # are the only durable record of what a sync loaded. Denylisted from
         # the console instead, where "Plaid account" misnames a Chase card.
-        logger.info(f"Loaded {len(df)} Plaid accounts")
+        logger.debug(f"Prepared {len(df)} Plaid accounts")
         return len(df)
 
     def _load_transactions(
         self,
-        transactions: list[SyncTransaction],
+        transactions: list[PlaidSyncTransaction],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,
@@ -573,12 +598,12 @@ class PlaidExtractor:
             schema=_TRANSACTIONS_SCHEMA,
         )
         self.db.ingest_dataframe(PLAID_TRANSACTIONS.full_name, df, on_conflict="upsert")
-        logger.info(f"Loaded {len(df)} Plaid transactions")
+        logger.debug(f"Prepared {len(df)} Plaid transactions")
         return len(df)
 
     def _load_balances(
         self,
-        balances: list[SyncBalance],
+        balances: list[PlaidSyncBalance],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,
@@ -602,7 +627,7 @@ class PlaidExtractor:
             schema=_BALANCES_SCHEMA,
         )
         self.db.ingest_dataframe(PLAID_BALANCES.full_name, df, on_conflict="upsert")
-        logger.info(f"Loaded {len(df)} Plaid balance snapshots")
+        logger.debug(f"Prepared {len(df)} Plaid balance snapshots")
         return len(df)
 
     def _load_securities(
@@ -629,8 +654,14 @@ class PlaidExtractor:
             schema=_SECURITIES_SCHEMA,
         )
         self.db.ingest_dataframe(PLAID_SECURITIES.full_name, df, on_conflict="upsert")
-        SYNC_INVESTMENTS_RECORDS_LOADED.labels(table="plaid_securities").inc(len(df))
-        logger.info(f"Loaded {len(df)} Plaid securities")
+        record_counter(
+            SYNC_INVESTMENTS_RECORDS_LOADED,
+            labels={"table": "plaid_securities"},
+            amount=len(df),
+            emit_metrics=True,
+            observations=self.observations,
+        )
+        logger.debug(f"Prepared {len(df)} Plaid securities")
         return len(df)
 
     def _load_security_prices(
@@ -695,8 +726,14 @@ class PlaidExtractor:
         # advances, so counting the batch would make this counter climb
         # steadily through a fully stalled upstream feed — the one condition it
         # exists to expose.
-        PRICE_ROWS_WRITTEN_TOTAL.labels(source_type="plaid").inc(written)
-        logger.info(f"Loaded {written} security price observations")
+        record_counter(
+            PRICE_ROWS_WRITTEN_TOTAL,
+            labels={"source_type": "plaid"},
+            amount=written,
+            emit_metrics=True,
+            observations=self.observations,
+        )
+        logger.debug(f"Prepared {written} security price observations")
         return written
 
     def _load_investment_transactions(
@@ -705,6 +742,8 @@ class PlaidExtractor:
         source_file: str,
         extracted_at: datetime,
         loaded_at: datetime,
+        *,
+        in_outer_txn: bool = False,
     ) -> int:
         if not transactions:
             return 0
@@ -736,7 +775,8 @@ class PlaidExtractor:
             "extracted_at",
             "loaded_at",
         ).with_columns(pl.Series("observation_version", versions))
-        self.db.begin()
+        if not in_outer_txn:
+            self.db.begin()
         try:
             self.db.ingest_dataframe(
                 PLAID_INVESTMENT_TRANSACTIONS.full_name,
@@ -748,14 +788,20 @@ class PlaidExtractor:
                 receipts,
                 on_conflict="ignore",
             )
-            self.db.commit()
+            if not in_outer_txn:
+                self.db.commit()
         except BaseException:
-            self.db.rollback()
+            if not in_outer_txn:
+                self.db.rollback()
             raise
-        SYNC_INVESTMENTS_RECORDS_LOADED.labels(
-            table="plaid_investment_transactions"
-        ).inc(written)
-        logger.info(f"Recorded {written} Plaid investment transaction receipts")
+        record_counter(
+            SYNC_INVESTMENTS_RECORDS_LOADED,
+            labels={"table": "plaid_investment_transactions"},
+            amount=written,
+            emit_metrics=True,
+            observations=self.observations,
+        )
+        logger.debug(f"Prepared {written} Plaid investment transaction receipts")
         return written
 
     def _load_investment_holdings(
@@ -809,8 +855,12 @@ class PlaidExtractor:
         self.db.ingest_dataframe(
             PLAID_INVESTMENT_HOLDINGS.full_name, df_holdings, on_conflict="upsert"
         )
-        SYNC_INVESTMENTS_RECORDS_LOADED.labels(table="plaid_investment_holdings").inc(
-            len(df_holdings)
+        record_counter(
+            SYNC_INVESTMENTS_RECORDS_LOADED,
+            labels={"table": "plaid_investment_holdings"},
+            amount=len(df_holdings),
+            emit_metrics=True,
+            observations=self.observations,
         )
         lots_loaded = 0
         if lot_rows:
@@ -818,12 +868,16 @@ class PlaidExtractor:
             self.db.ingest_dataframe(
                 PLAID_INVESTMENT_HOLDING_LOTS.full_name, df_lots, on_conflict="upsert"
             )
-            SYNC_INVESTMENTS_RECORDS_LOADED.labels(
-                table="plaid_investment_holding_lots"
-            ).inc(len(df_lots))
+            record_counter(
+                SYNC_INVESTMENTS_RECORDS_LOADED,
+                labels={"table": "plaid_investment_holding_lots"},
+                amount=len(df_lots),
+                emit_metrics=True,
+                observations=self.observations,
+            )
             lots_loaded = len(df_lots)
-        logger.info(
-            f"Loaded {len(df_holdings)} Plaid holdings rows, {lots_loaded} tax lots"
+        logger.debug(
+            f"Prepared {len(df_holdings)} Plaid holdings rows, {lots_loaded} tax lots"
         )
         return len(df_holdings), lots_loaded
 
@@ -895,10 +949,14 @@ class PlaidExtractor:
         written = self.db.ingest_dataframe(
             PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name, df, on_conflict="ignore"
         )
-        SYNC_INVESTMENTS_RECORDS_LOADED.labels(
-            table="plaid_investment_holdings_snapshots"
-        ).inc(written)
-        logger.info(f"Recorded {written} Plaid holdings-snapshot receipt(s)")
+        record_counter(
+            SYNC_INVESTMENTS_RECORDS_LOADED,
+            labels={"table": "plaid_investment_holdings_snapshots"},
+            amount=written,
+            emit_metrics=True,
+            observations=self.observations,
+        )
+        logger.debug(f"Prepared {written} Plaid holdings-snapshot receipt(s)")
         return written
 
     def _warn_amount_drift(self, transactions: list[SyncInvestmentTransaction]) -> None:

@@ -54,6 +54,9 @@ class AccountSummary:
     last_four: Annotated[str | None, DataClass.INSTITUTION_ACCOUNT_NUMBER]
     credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
 
+    account_type_override: Annotated[str | None, DataClass.TXN_TYPE] = None
+    source_account_type: Annotated[str | None, DataClass.TXN_TYPE] = None
+
 
 @row_set("rows")
 @dataclass(frozen=True, slots=True)
@@ -83,6 +86,9 @@ class AccountDetail:
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     investment_source_type: Annotated[str | None, DataClass.TXN_TYPE]
     source_type: Annotated[str | None, DataClass.TXN_TYPE]
+
+    account_type_override: Annotated[str | None, DataClass.TXN_TYPE] = None
+    source_account_type: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +260,7 @@ class AccountSettingsPayload:
     field existed, reading the ``archived`` FALSE->TRUE transition out of
     ``app.audit_log``. An inferred date a caller cannot read back is an
     inference nobody can check."""
+    account_type: Annotated[str | None, DataClass.TXN_TYPE] = None
     warnings: Annotated[list[str], DataClass.DESCRIPTION] = field(default_factory=list)
 
 

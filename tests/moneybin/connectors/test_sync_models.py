@@ -12,8 +12,8 @@ from moneybin.connectors.sync_models import (
     InstitutionResult,
     LinkInitiateResponse,
     LinkStatusResponse,
-    SyncDataResponse,
-    SyncTransaction,
+    PlaidSyncDataResponse,
+    PlaidSyncTransaction,
     SyncTriggerResponse,
 )
 
@@ -64,7 +64,7 @@ def test_link_status_pending() -> None:
 
 
 def test_sync_transaction_preserves_decimal() -> None:
-    txn = SyncTransaction(
+    txn = PlaidSyncTransaction(
         transaction_id="txn_001",
         account_id="acc_001",
         transaction_date=date(2026, 4, 7),
@@ -77,7 +77,7 @@ def test_sync_transaction_preserves_decimal() -> None:
 
 
 def test_sync_transaction_parses_extended_plaid_fields() -> None:
-    txn = SyncTransaction.model_validate({
+    txn = PlaidSyncTransaction.model_validate({
         "transaction_id": "txn_001",
         "account_id": "acc_001",
         "transaction_date": "2026-06-13",
@@ -106,7 +106,7 @@ def test_sync_transaction_parses_extended_plaid_fields() -> None:
 def test_sync_transaction_extended_fields_default_none() -> None:
     # A broker that predates the capture change omits the extended fields; they
     # must default to None rather than failing validation.
-    txn = SyncTransaction(
+    txn = PlaidSyncTransaction(
         transaction_id="t",
         account_id="a",
         transaction_date=date(2026, 6, 13),
@@ -164,7 +164,7 @@ def test_sync_data_response_parses_full_payload() -> None:
             ],
         },
     }
-    parsed = SyncDataResponse.model_validate(payload)
+    parsed = PlaidSyncDataResponse.model_validate(payload)
     assert len(parsed.transactions) == 1
     assert parsed.transactions[0].amount == Decimal("42.50")
     assert parsed.removed_transactions == ["txn_old"]
@@ -218,7 +218,7 @@ def test_removed_transactions_accepts_provider_native_records() -> None:
         },
     }
 
-    parsed = SyncDataResponse.model_validate(payload)
+    parsed = PlaidSyncDataResponse.model_validate(payload)
 
     assert parsed.removed_transactions == ["txn_old"]
 
@@ -244,4 +244,4 @@ def test_removed_transactions_missing_transaction_id_rejects_the_batch() -> None
     }
 
     with pytest.raises(ValidationError):
-        SyncDataResponse.model_validate(payload)
+        PlaidSyncDataResponse.model_validate(payload)

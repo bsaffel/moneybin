@@ -26,6 +26,13 @@ class TableRef(NamedTuple):
         return f"{self.schema}.{self.name}"
 
 
+SIMPLEFIN_ACCOUNTS = TableRef("raw", "simplefin_accounts")
+SIMPLEFIN_TRANSACTIONS = TableRef("raw", "simplefin_transactions")
+SIMPLEFIN_BALANCES = TableRef("raw", "simplefin_balances")
+SIMPLEFIN_RESPONSES = TableRef("raw", "simplefin_responses")
+SIMPLEFIN_SYNC_RECEIPTS = TableRef("raw", "simplefin_sync_receipts")
+
+
 # -- Core layer (canonical tables built by SQLMesh transforms) --
 DIM_ACCOUNTS = TableRef("core", "dim_accounts", audience="interface")
 FCT_TRANSACTIONS = TableRef("core", "fct_transactions", audience="interface")
@@ -72,6 +79,7 @@ TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
 TRANSACTION_TAGS = TableRef("app", "transaction_tags", audience="interface")
 TRANSACTION_SPLITS = TableRef("app", "transaction_splits", audience="interface")
 IMPORT_LOG = TableRef("app", "import_log")
+SYNC_JOB_STATE = TableRef("app", "sync_job_state")
 IMPORTS = TableRef("app", "imports", audience="interface")
 IMPORT_PREVIEWS = TableRef("app", "import_previews")
 IMPORT_PREVIEW_SNAPSHOTS = TableRef("raw", "import_preview_snapshots")

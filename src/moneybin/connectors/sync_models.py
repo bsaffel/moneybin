@@ -7,11 +7,13 @@ related types live together.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal, Self, cast
+from uuid import UUID
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -128,7 +130,18 @@ class LinkStatusResponse(BaseModel):
     """Response from GET /sync/link/status."""
 
     session_id: str
-    status: Literal["pending", "linked", "failed"]
+    status: Literal["pending", "claiming", "linked", "failed", "claim_outcome_unknown"]
+    provider: Literal["plaid", "simplefin"] = "plaid"
+    connection_id: str | None = None
+    action: (
+        Literal[
+            "check_setup_token",
+            "disable_token_and_relink",
+            "resume_setup",
+            "start_new_link",
+        ]
+        | None
+    ) = None
     provider_item_id: str | None = None
     institution_name: str | None = None
     error: str | None = None
@@ -150,7 +163,7 @@ class SyncAckResponse(BaseModel):
     status: Literal["acked"]
 
 
-class SyncAccount(BaseModel):
+class PlaidSyncAccount(BaseModel):
     """One account entry in GET /sync/data response.
 
     Every field the broker sends must be declared here. Pydantic's default
@@ -171,7 +184,7 @@ class SyncAccount(BaseModel):
     mask: str | None = Field(default=None, max_length=8)
 
 
-class SyncTransaction(BaseModel):
+class PlaidSyncTransaction(BaseModel):
     """One transaction in GET /sync/data response.
 
     NOTE: amount preserves Plaid convention (positive = expense). The sign
@@ -207,11 +220,11 @@ class SyncTransaction(BaseModel):
     category_confidence: str | None = None
 
 
-class SyncBalance(BaseModel):
+class PlaidSyncBalance(BaseModel):
     """One balance snapshot in GET /sync/data response.
 
     Every field the broker sends must be declared here, for the reason
-    :class:`SyncAccount` states above. ``margin_loan_amount`` is the one that
+    :class:`PlaidSyncAccount` states above. ``margin_loan_amount`` is the one that
     carries money: Plaid reports an investment account's ``current_balance`` as
     the total value of *assets*, with the funds borrowed against them in a
     separate field, so ``core.fct_balances`` has to net the two. While the field
@@ -347,12 +360,12 @@ class SyncMetadata(BaseModel):
     institutions: list[InstitutionResult]
 
 
-class SyncDataResponse(BaseModel):
+class PlaidSyncDataResponse(BaseModel):
     """Full response shape from GET /sync/data."""
 
-    accounts: list[SyncAccount]
-    transactions: list[SyncTransaction]
-    balances: list[SyncBalance]
+    accounts: list[PlaidSyncAccount]
+    transactions: list[PlaidSyncTransaction]
+    balances: list[PlaidSyncBalance]
     removed_transactions: list[RemovedTransactionId]
     securities: list[SyncSecurity] = Field(default_factory=list)
     investment_transactions: list[SyncInvestmentTransaction] = Field(
@@ -362,11 +375,290 @@ class SyncDataResponse(BaseModel):
     metadata: SyncMetadata
 
 
+JobTerminalStatus = Literal["completed", "partial", "failed", "deferred"]
+
+
+class _ContractModel(BaseModel):
+    """Reject undeclared broker fields instead of silently dropping them."""
+
+    model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
+
+
+class UTCWindow(_ContractModel):
+    """Requested half-open UTC interval."""
+
+    start: AwareDatetime
+    end: AwareDatetime
+
+    @model_validator(mode="after")
+    def _validate_utc_window(self) -> Self:
+        if self.start.utcoffset() != timedelta(0) or self.end.utcoffset() != timedelta(
+            0
+        ):
+            raise ValueError("Window boundaries must be UTC")
+        if self.start >= self.end:
+            raise ValueError("Window end must be after start")
+        return self
+
+
+class ProviderBatch(_ContractModel):
+    """One immutable provider-native result for a requested window."""
+
+    batch_id: UUID
+    fetched_at: AwareDatetime
+    window: UTCWindow | None
+    payload: dict[str, object]
+
+
+class PlaidItemScope(_ContractModel):
+    """Native Plaid item containing an account outcome."""
+
+    kind: Literal["plaid_item"]
+    provider_item_id: str = Field(min_length=1)
+
+
+class SimpleFINV1Organization(_ContractModel):
+    """Version-1 organization fields retained as native identity evidence."""
+
+    sfin_url: str = Field(alias="sfin-url", min_length=1)
+    id: str | None = None
+    domain: str | None = None
+    name: str | None = None
+    url: str | None = None
+
+    @model_validator(mode="after")
+    def _require_label(self) -> Self:
+        if not self.domain and not self.name:
+            raise ValueError("Organization requires domain or name")
+        return self
+
+
+class SimpleFINV1OrgScope(_ContractModel):
+    """Version-1 organization containing an account outcome."""
+
+    kind: Literal["simplefin_v1_org"]
+    org: SimpleFINV1Organization
+
+
+class SimpleFINV2ConnectionScope(_ContractModel):
+    """Version-2 upstream connection containing an account outcome."""
+
+    kind: Literal["simplefin_v2_connection"]
+    conn_id: str = Field(min_length=1)
+
+
+NativeScope = Annotated[
+    PlaidItemScope | SimpleFINV1OrgScope | SimpleFINV2ConnectionScope,
+    Field(discriminator="kind"),
+]
+
+
+class ScopeOutcome(_ContractModel):
+    """Retrieval result for one native account or an unscoped error."""
+
+    account_id: str | None
+    native_scope: NativeScope | None
+    window: UTCWindow | None
+    status: Literal["complete", "partial", "failed", "deferred"]
+    error_code: str | None
+    retry_at: AwareDatetime | None = None
+
+
+class PlaidSource(_ContractModel):
+    """Plaid source with its existing provider-native wire values."""
+
+    provider: Literal["plaid"]
+    connection_id: UUID
+    credential_generation: int = Field(gt=0)
+    batches: list[ProviderBatch]
+    outcomes: list[ScopeOutcome]
+
+    @model_validator(mode="after")
+    def _validate_outcome_scopes(self) -> Self:
+        if any(item.window is not None for item in [*self.batches, *self.outcomes]):
+            raise ValueError("Plaid results require a null window")
+        for outcome in self.outcomes:
+            scope = outcome.native_scope
+            if scope is None and outcome.account_id is not None:
+                raise ValueError("Account outcome requires native scope")
+            if scope is not None and not isinstance(scope, PlaidItemScope):
+                raise ValueError("Plaid outcome requires Plaid item scope")
+        return self
+
+
+class SimpleFINAccountHistory(_ContractModel):
+    """Broker-acknowledged complete-day intervals and remaining older intent."""
+
+    account_id: str = Field(min_length=1)
+    native_scope: Annotated[
+        SimpleFINV1OrgScope | SimpleFINV2ConnectionScope, Field(discriminator="kind")
+    ]
+    acknowledged_intervals: list[UTCWindow] = Field(max_length=2)
+    history_target: date | None
+
+    @model_validator(mode="after")
+    def _validate_intervals(self) -> Self:
+        previous = None
+        for interval in self.acknowledged_intervals:
+            if any(
+                (point.hour, point.minute, point.second, point.microsecond)
+                != (0, 0, 0, 0)
+                for point in (interval.start, interval.end)
+            ):
+                raise ValueError("Acknowledged intervals require complete UTC days")
+            if previous is not None and interval.start <= previous:
+                raise ValueError("Acknowledged intervals must be ordered and disjoint")
+            previous = interval.end
+        return self
+
+
+class SimpleFINHistorySnapshot(_ContractModel):
+    """Last observed broker credit; absence of a target does not certify completeness."""
+
+    observed_at: AwareDatetime
+    replay_required: bool
+    discovery_history_target: date | None
+    accounts: list[SimpleFINAccountHistory]
+
+    @model_validator(mode="after")
+    def _validate_accounts(self) -> Self:
+        if self.observed_at.utcoffset() != timedelta(0):
+            raise ValueError("History observation time must be UTC")
+        keys = [
+            (account.native_scope.model_dump_json(), account.account_id)
+            for account in self.accounts
+        ]
+        if len(keys) != len(set(keys)):
+            raise ValueError("History requires unique scoped accounts")
+        return self
+
+
+class SimpleFINSource(_ContractModel):
+    """SimpleFIN source with its pinned upstream protocol version."""
+
+    provider: Literal["simplefin"]
+    connection_id: UUID
+    credential_generation: int = Field(gt=0)
+    protocol_version: Literal["1.0.7", "2.0.0-draft"]
+    batches: list[ProviderBatch]
+    outcomes: list[ScopeOutcome]
+    history: SimpleFINHistorySnapshot | None = None
+
+    @model_validator(mode="after")
+    def _validate_outcome_scopes(self) -> Self:
+        if any(item.window is None for item in [*self.batches, *self.outcomes]):
+            raise ValueError("SimpleFIN results require a requested window")
+        scope_type = (
+            SimpleFINV1OrgScope
+            if self.protocol_version == "1.0.7"
+            else SimpleFINV2ConnectionScope
+        )
+        if self.history is not None and any(
+            account.native_scope.kind
+            != (
+                "simplefin_v1_org"
+                if self.protocol_version == "1.0.7"
+                else "simplefin_v2_connection"
+            )
+            for account in self.history.accounts
+        ):
+            raise ValueError("SimpleFIN history scope does not match protocol")
+        for outcome in self.outcomes:
+            scope = outcome.native_scope
+            if scope is None and outcome.account_id is not None:
+                raise ValueError("Account outcome requires native scope")
+            if scope is not None and not isinstance(scope, scope_type):
+                raise ValueError("SimpleFIN outcome scope does not match protocol")
+        return self
+
+
+ProviderSource = Annotated[
+    PlaidSource | SimpleFINSource, Field(discriminator="provider")
+]
+
+
+class SyncEnvelopeV2(_ContractModel):
+    """Completed broker result, independent of upstream protocol version."""
+
+    job_id: UUID
+    contract_version: Literal[2]
+    status: JobTerminalStatus
+    sources: list[ProviderSource]
+
+
+class SyncAccountScope(BaseModel):
+    """Native account scope currently discovered under a broker credential grant."""
+
+    account_id: str
+    native_scope: NativeScope
+    name: str
+
+    @property
+    def identity(self) -> tuple[str, ...]:
+        """Native account identity, independent of display labels and order."""
+        scope = self.native_scope
+        if isinstance(scope, SimpleFINV1OrgScope):
+            org = scope.org
+            kind, value = (
+                ("id", org.id)
+                if org.id
+                else ("domain", org.domain)
+                if org.domain
+                else ("name", org.name)
+            )
+            return (scope.kind, org.sfin_url, kind, value or "", self.account_id)
+        if isinstance(scope, SimpleFINV2ConnectionScope):
+            return (scope.kind, scope.conn_id, self.account_id)
+        return (scope.kind, scope.provider_item_id, self.account_id)
+
+
+class SyncHistoryAccountView(BaseModel):
+    """Coverage for an accepted local account, or an explicitly unresolved scope."""
+
+    account_id: str | None
+    display_name: str
+    acknowledged_intervals: list[UTCWindow]
+    history_target: date | None
+
+
+class SyncHistoryView(BaseModel):
+    """Safe observed history; absence and pending intent remain distinct."""
+
+    observed_at: datetime
+    replay_required: bool
+    discovery_history_target: date | None
+    accounts: list[SyncHistoryAccountView]
+
+
+class SyncScopeView(BaseModel):
+    """A retrieval scope using local account identity, never provider-native text."""
+
+    account_id: str | None
+    display_name: str
+    scope_kind: Literal["account", "connection", "general"]
+    status: str
+    error_code: str | None
+    window: UTCWindow | None
+    retry_at: AwareDatetime | None = None
+
+
+class SyncSourceView(BaseModel):
+    """One broker source's retrieval and independently confirmed history."""
+
+    provider: str
+    connection_id: str
+    credential_generation: int
+    protocol_version: str | None
+    history_phase: Literal["unknown", "pre_ack", "post_ack", "current"]
+    history: SyncHistoryView | None
+    outcomes: list[SyncScopeView] = Field(default_factory=list)
+
+
 class ConnectedInstitution(BaseModel):
     """One entry in GET /institutions response."""
 
     id: str
-    provider_item_id: str
+    provider_item_id: str | None
     provider: str
     institution_name: str | None = None
     status: Literal["active", "error", "revoked"]
@@ -377,14 +669,45 @@ class ConnectedInstitution(BaseModel):
         description="Provider error code (e.g. ITEM_LOGIN_REQUIRED). Advisory — treat as None when absent.",
     )
 
+    credential_generation: int = Field(default=1, gt=0)
+    protocol_version: str | None = None
+    accounts: list[SyncAccountScope] = Field(default_factory=list)
+    history: SimpleFINHistorySnapshot | None = None
+    history_unavailable_reason: Literal["unbound", "consumer_mismatch"] | None = None
+
 
 # ---- Service-layer result types ----
+
+
+class SyncDisconnectResponse(BaseModel):
+    """Broker custody removal and the remaining upstream revocation obligation."""
+
+    connection_id: UUID
+    credential_generation: int = Field(gt=0)
+    accounts: list[SyncAccountScope]
+    remote_revocation: Literal["revoked", "user_action_required"]
+
+
+class SyncDisconnectResult(ConnectedInstitution):
+    """The selected grant and the broker's actual revocation outcome."""
+
+    remote_revocation: Literal["revoked", "user_action_required"]
 
 
 class PullResult(BaseModel):
     """Return value from SyncService.pull()."""
 
     job_id: str
+    job_status: JobTerminalStatus = "completed"
+    ingestion_state: Literal["committed"] = "committed"
+    ack_state: Literal["pending", "confirmed", "unknown", "unavailable"] = "pending"
+    ack_error_code: str | None = None
+    setup_state: Literal["pending", "complete", "failed"] = "pending"
+    setup_error_code: str | None = None
+    inspection_error_code: Literal["local_inspection_failed"] | None = None
+    refresh_state: Literal["pending", "deferred", "complete", "failed"] = "pending"
+    source_results: list[ProviderSourceResult] = Field(default_factory=list)
+    sources: list[SyncSourceView] = Field(default_factory=list)
     transactions_loaded: int
     accounts_loaded: int
     balances_loaded: int
@@ -416,27 +739,195 @@ class PullResult(BaseModel):
     security_resolution: dict[str, int] = Field(default_factory=dict)
     security_resolution_error: str | None = None
 
+    @property
+    def complete(self) -> bool:
+        """Whether retrieval, acknowledgement and requested local work are complete."""
+        return (
+            self.inspection_error_code is None
+            and self.job_status == "completed"
+            and self.ack_state == "confirmed"
+            and self.setup_state == "complete"
+            and self.refresh_state in {"complete", "deferred"}
+            and not self.transforms_error
+            and not self.security_resolution_error
+            and not (self.refresh_steps and self.refresh_steps.has_failure)
+            and {
+                (
+                    source.connection_id,
+                    source.credential_generation,
+                    source.protocol_version,
+                )
+                for source in self.sources
+                if source.provider == "simplefin"
+            }
+            == {
+                (
+                    str(source.connection_id),
+                    source.credential_generation,
+                    source.protocol_version,
+                )
+                for source in self.source_results
+                if isinstance(source, SimpleFINSourceResult)
+            }
+            and all(
+                source.provider != "simplefin"
+                or (
+                    source.history is not None
+                    and not source.history.replay_required
+                    and source.history.discovery_history_target is None
+                    and bool(source.history.accounts)
+                    and all(
+                        account.account_id is not None
+                        and account.history_target is None
+                        and len(account.acknowledged_intervals) == 1
+                        for account in source.history.accounts
+                    )
+                    and any(
+                        isinstance(native, SimpleFINSourceResult)
+                        and str(native.connection_id) == source.connection_id
+                        and native.credential_generation == source.credential_generation
+                        and native.protocol_version == source.protocol_version
+                        and native.outcomes_cover_history
+                        for native in self.source_results
+                    )
+                )
+                for source in self.sources
+            )
+            and all(item.status != "failed" for item in self.institutions)
+            and all(
+                outcome.status == "complete"
+                for source in self.source_results
+                for outcome in source.outcomes
+            )
+        )
+
 
 class LinkResult(BaseModel):
     """Return value from SyncService.link()."""
 
+    status: Literal[
+        "pending", "claiming", "linked", "failed", "claim_outcome_unknown"
+    ] = "linked"
+    action: str | None = None
+    provider: str = "plaid"
+    connection_id: str | None = None
     provider_item_id: str
     institution_name: str | None = None
     pull_result: PullResult | None = None
 
 
-class SyncConnectionView(BaseModel):
-    """Return value from SyncService.list_connections() — enriched with user-facing guidance."""
+class SyncConnectionView(ConnectedInstitution):
+    """Current broker grant with safe client guidance."""
 
-    id: str
-    provider_item_id: str
-    institution_name: str | None
-    provider: str
-    status: Literal["active", "error", "revoked"]
-    last_sync: datetime | None
-    created_at: datetime
-    error_code: str | None = Field(
-        default=None,
-        description="Provider error code (e.g. ITEM_LOGIN_REQUIRED). Advisory — treat as None when absent.",
-    )
-    guidance: str | None = None  # user-facing next-step message when status != 'active'
+    guidance: str | None = None
+    safe_history: SyncHistoryView | None = None
+    history_phase: Literal["unknown", "current"] = "unknown"
+    provider_balance_at: datetime | None = None
+    setup_state: str = "unknown"
+    refresh_state: str = "unknown"
+
+
+class PlaidSourceResult(_ContractModel):
+    """Durable source outcome without its expiring native batch payload."""
+
+    provider: Literal["plaid"]
+    connection_id: UUID
+    credential_generation: int = Field(gt=0)
+    outcomes: list[ScopeOutcome]
+
+
+class SimpleFINSourceResult(_ContractModel):
+    """Durable SimpleFIN outcome and the history observed before or after ack."""
+
+    provider: Literal["simplefin"]
+    connection_id: UUID
+    credential_generation: int = Field(gt=0)
+    protocol_version: Literal["1.0.7", "2.0.0-draft"]
+    outcomes: list[ScopeOutcome]
+    history: SimpleFINHistorySnapshot | None = None
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> Self:
+        SimpleFINSource.model_validate({**self.model_dump(), "batches": []})
+        return self
+
+    @property
+    def outcomes_cover_history(self) -> bool:
+        """Every known native account needs retrieval evidence, even after merging."""
+        if self.history is None or not self.history.accounts:
+            return False
+        expected = {
+            SyncAccountScope(
+                account_id=account.account_id,
+                native_scope=account.native_scope,
+                name="",
+            ).identity
+            for account in self.history.accounts
+        }
+        observed = {
+            SyncAccountScope(
+                account_id=outcome.account_id,
+                native_scope=outcome.native_scope,
+                name="",
+            ).identity
+            for outcome in self.outcomes
+            if outcome.account_id is not None and outcome.native_scope is not None
+        }
+        return expected <= observed
+
+
+ProviderSourceResult = Annotated[
+    PlaidSourceResult | SimpleFINSourceResult, Field(discriminator="provider")
+]
+
+
+class SyncTriggerV2Response(_ContractModel):
+    """Explicit broker v2 negotiation, independent of provider protocol."""
+
+    job_id: UUID
+    contract_version: Literal[2]
+    status: JobTerminalStatus
+    transaction_count: int
+
+
+class SyncStatusV2Response(_ContractModel):
+    """Durable authenticated job metadata available after held-data expiry."""
+
+    job_id: UUID
+    contract_version: Literal[2]
+    status: Literal["pending", "running", "completed", "partial", "failed", "deferred"]
+    transaction_count: int
+    error: str | None
+    started_at: AwareDatetime | None
+    completed_at: AwareDatetime | None
+    acked_at: AwareDatetime | None
+    results: list[ProviderSourceResult]
+
+
+class SyncAckV2Response(_ContractModel):
+    """Stored post-ack evidence, shared with the durable status result."""
+
+    job_id: UUID
+    contract_version: Literal[2]
+    status: Literal["acked"]
+    acked_at: AwareDatetime
+    results: list[ProviderSourceResult]
+
+
+class SyncJobSource(BaseModel):
+    """Durable references needed to resume local setup without a held payload."""
+
+    source: ProviderSourceResult
+    batch_ids: list[UUID]
+    plaid_item_ids: list[str] = Field(default_factory=list)
+
+
+class SyncJobDetails(BaseModel):
+    """Protected local operational evidence; source-native records stay in Raw."""
+
+    sources: list[SyncJobSource]
+    result: PullResult
+    acknowledgement: SyncAckV2Response | None = None
+
+
+PullResult.model_rebuild()

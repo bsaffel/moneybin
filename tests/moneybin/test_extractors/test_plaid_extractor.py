@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.plaid import PlaidExtractor
 
@@ -17,13 +17,13 @@ FIXTURE = Path(__file__).parent / "fixtures" / "plaid_sync_response.yaml"
 
 
 @pytest.fixture
-def sync_data() -> SyncDataResponse:
+def sync_data() -> PlaidSyncDataResponse:
     with FIXTURE.open() as f:
         payload = yaml.safe_load(f)
-    return SyncDataResponse.model_validate(payload)
+    return PlaidSyncDataResponse.model_validate(payload)
 
 
-def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> None:
+def test_loader_writes_accounts(db: Database, sync_data: PlaidSyncDataResponse) -> None:
     loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
     assert result.accounts_loaded == 2
@@ -46,11 +46,11 @@ def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> No
 
 
 def test_loader_writes_persistent_account_id_and_name(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """Both columns must reach raw, or the wire model's copy dies at the loader.
 
-    ``_ACCOUNTS_SCHEMA`` selects which keys of ``SyncAccount.model_dump()``
+    ``_ACCOUNTS_SCHEMA`` selects which keys of ``PlaidSyncAccount.model_dump()``
     become columns, so declaring the fields on the model is only half the path
     — an unlisted key is dropped again here, just as silently. ``raw`` is where
     a later backfill would have to read them from, and nothing upstream retains
@@ -72,7 +72,7 @@ def test_loader_writes_persistent_account_id_and_name(
 
 
 def test_loader_writes_transactions_preserving_plaid_sign(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
@@ -95,7 +95,7 @@ def test_loader_writes_transactions_preserving_plaid_sign(
 
 
 def test_loader_writes_extended_plaid_fields(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
@@ -128,7 +128,7 @@ def test_loader_writes_extended_plaid_fields(
 
 
 def test_loader_upserts_on_same_transaction_id_and_source_origin(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
@@ -153,7 +153,7 @@ def test_loader_upserts_on_same_transaction_id_and_source_origin(
 
 
 def test_loader_pending_to_posted_transition(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A pending transaction in sync 1, posted (pending=false) in sync 2 → single row, pending=false."""
     loader = PlaidExtractor(db)
@@ -175,7 +175,7 @@ def test_loader_pending_to_posted_transition(
     assert rows[0][0] is False
 
 
-def test_loader_writes_balances(db: Database, sync_data: SyncDataResponse) -> None:
+def test_loader_writes_balances(db: Database, sync_data: PlaidSyncDataResponse) -> None:
     loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
     assert result.balances_loaded == 2
@@ -191,11 +191,11 @@ def test_loader_writes_balances(db: Database, sync_data: SyncDataResponse) -> No
 
 
 def test_loader_writes_the_balance_fields_the_client_used_to_drop(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """All three must reach raw, or the wire model's copy dies one layer later.
 
-    ``_BALANCES_SCHEMA`` selects which keys of ``SyncBalance.model_dump()``
+    ``_BALANCES_SCHEMA`` selects which keys of ``PlaidSyncBalance.model_dump()``
     become columns, and Polars silently ignores a dict key the schema omits — so
     declaring the fields on the model is only half the path, exactly as it was
     for ``persistent_account_id`` above. ``raw`` is where a backfill would read
@@ -246,7 +246,7 @@ def test_loader_writes_the_balance_fields_the_client_used_to_drop(
 
 
 def test_balance_as_of_time_lands_as_a_utc_wall_clock_in_a_non_utc_session(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A provider wire datetime stores the UTC wall clock, whatever the zone.
 
@@ -286,7 +286,9 @@ def test_balance_as_of_time_lands_as_a_utc_wall_clock_in_a_non_utc_session(
     assert row == (datetime(2026, 3, 10, 1, 30),)
 
 
-def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) -> None:
+def test_handle_removed_transactions(
+    db: Database, sync_data: PlaidSyncDataResponse
+) -> None:
     loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
 
@@ -314,7 +316,7 @@ def test_handle_removed_transactions_empty_list_is_noop(db: Database) -> None:
 
 
 def test_loader_writes_balance_currency(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     payload = sync_data.model_copy(deep=True)
     payload.balances = [
@@ -344,7 +346,7 @@ def test_loader_writes_balance_currency(
 @pytest.mark.integration
 @pytest.mark.slow
 def test_loader_writes_balance_unofficial_currency(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A balance with only unofficial_currency_code must still land non-NULL.
 

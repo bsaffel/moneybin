@@ -27,6 +27,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import NextStep, RecoveryAction, UserError, next_step_text
 from moneybin.log_sanitizer import sql_digest
+from moneybin.privacy.payloads.sync_completeness import SyncCompleteness
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
 from moneybin.privacy.sensitivity import tier_to_sensitivity
 from moneybin.privacy.sql_lineage import derive_query_tier
@@ -105,6 +106,7 @@ class ReportResult:
     #: Structured next steps for an agent, beside the prose ``actions`` the CLI
     #: prints — a caveat's remedy an agent can call without parsing a hint.
     recovery_actions: tuple[RecoveryAction, ...] = ()
+    sync_completeness: SyncCompleteness | None = None
 
     @property
     def classes_returned(self) -> list[str]:
@@ -134,6 +136,7 @@ class ReportResult:
             recovery_actions=list(self.recovery_actions) or None,
             applied_rates=[rate.as_provenance() for rate in self.applied_rates] or None,
             home_currency=self.home_currency,
+            sync_completeness=self.sync_completeness,
         )
 
 
@@ -192,6 +195,7 @@ class CatalogReportExecution:
     applied_rates: tuple[ResolvedRate, ...] = ()
     #: See ``ReportResult.recovery_actions``.
     recovery_actions: tuple[RecoveryAction, ...] = ()
+    sync_completeness: SyncCompleteness | None = None
     #: The row cap this execution still owes, or ``None`` once one has been
     #: applied. Set only on the converting path, where the cap has to wait for
     #: ``on_converted`` — see ``truncate_execution``.
@@ -683,6 +687,7 @@ def redact_catalog_execution(
         applied_rates=execution.applied_rates,
         home_currency=_priced_home_currency(execution),
         recovery_actions=execution.recovery_actions,
+        sync_completeness=execution.sync_completeness,
     )
 
 
@@ -732,7 +737,7 @@ def execute_catalog_report(
     ]
     rows = cursor.fetchall() if max_rows is None else cursor.fetchmany(max_rows + 1)
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    return build_catalog_execution(
+    execution = build_catalog_execution(
         spec,
         parameters=cast(Mapping[str, JsonValue], params),
         sql=rq.sql,
@@ -743,6 +748,42 @@ def execute_catalog_report(
         period=rq.period,
         max_rows=max_rows,
         defer_truncation=defer_truncation,
+    )
+    scope = rq.sync_scope
+    if scope is None:
+        return execution
+    # Lazy import: report discovery and CLI startup do not load source extractors.
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    from_date = scope.from_date
+    if scope.latest_date_relation is not None:
+        latest = db.execute(
+            f"SELECT MAX(balance_date) FROM {scope.latest_date_relation.full_name}"  # noqa: S608  # runner-declared TableRef
+        ).fetchone()
+        from_date = latest[0] if latest else None
+    coverage = SyncCompletenessService(
+        db,
+        net_worth=scope.net_worth,
+        include_archived=scope.include_archived,
+        from_date=from_date,
+    ).assess(account_ids=scope.account_ids)
+    if not coverage.applicable:
+        return execution
+    if coverage.complete:
+        return replace(execution, sync_completeness=coverage)
+    reason = "Local sync coverage is incomplete: " + ", ".join(
+        reason.kind for reason in coverage.reasons
+    )
+    return replace(
+        execution,
+        sync_completeness=coverage,
+        degraded_reason="; ".join(filter(None, (execution.degraded_reason, reason))),
+        actions=[
+            *execution.actions,
+            "Run system_status(sections=['doctor']) "
+            "(CLI: 'moneybin system doctor') and inspect sync_status "
+            "for source coverage and local account setup",
+        ],
     )
 
 

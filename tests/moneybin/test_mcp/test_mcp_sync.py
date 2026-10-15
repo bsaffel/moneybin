@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -15,11 +16,16 @@ from moneybin.connectors.sync_models import (
     LinkInitiateResponse,
     PullResult,
     SyncConnectionView,
+    SyncDisconnectResult,
 )
 from moneybin.errors import UserError
 from moneybin.mcp.tools.sync import register_sync_tools
 from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 from moneybin.services.sync_service import SyncPurgePlan
+
+
+def _disconnected(connection: ConnectedInstitution) -> SyncDisconnectResult:
+    return SyncDisconnectResult(**connection.model_dump(), remote_revocation="revoked")
 
 
 @pytest.mark.unit
@@ -230,18 +236,18 @@ async def test_sync_status_returns_low_sensitivity(mock_build: MagicMock) -> Non
 
 
 @pytest.mark.unit
-@patch("moneybin.mcp.tools.sync._build_sync_client")
+@patch("moneybin.mcp.tools.sync._build_sync_service")
 async def test_sync_link_returns_link_url_with_medium_sensitivity(
-    mock_client_builder: MagicMock,
+    mock_build: MagicMock,
 ) -> None:
-    client = MagicMock()
-    client.initiate_link.return_value = LinkInitiateResponse(
+    service = MagicMock()
+    service.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_abc",
         link_url="https://hosted.plaid.com/link/xyz",
         link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    mock_client_builder.return_value = client
+    mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_link
 
     envelope = sync_link()
@@ -250,6 +256,9 @@ async def test_sync_link_returns_link_url_with_medium_sensitivity(
     assert envelope.data.link_url == "https://hosted.plaid.com/link/xyz"
     # Agent should know about expiration to decide when to give up polling
     assert envelope.data.expiration is not None
+    service.initiate_link.assert_called_once_with(
+        institution=None, provider=None, connection_id=None
+    )
 
 
 @pytest.mark.unit
@@ -316,12 +325,14 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution == "Chase"
         assert provider_item_id is None
-        verify(connection)  # type: ignore[operator]
-        return connection
+        assert connection_id is None
+        verify(connection)
+        return _disconnected(connection)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -340,9 +351,9 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
     )
 
     service.disconnect_confirmed.assert_called_once()
-    # SyncInstitutionDisconnectView has only TXN_TYPE + INSTITUTION + RECORD_ID
-    # fields → Tier.LOW derived sensitivity
-    assert envelope.summary.sensitivity == "low"
+    # Affected account names are USER_NOTE, so the disconnect view is medium.
+    assert envelope.summary.sensitivity == "medium"
+    assert envelope.data.remote_revocation == "revoked"
 
 
 @pytest.mark.unit
@@ -366,12 +377,14 @@ async def test_sync_disconnect_refuses_confirmation_after_live_target_changes(
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution == "Chase"
         assert provider_item_id is None
-        verify(changed)  # type: ignore[operator]
-        return changed
+        assert connection_id is None
+        verify(changed)
+        return _disconnected(changed)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -411,12 +424,14 @@ async def test_sync_disconnect_by_provider_item_id_threads_through_to_service(
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution is None
         assert provider_item_id == "item_b"
-        verify(connection)  # type: ignore[operator]
-        return connection
+        assert connection_id is None
+        verify(connection)
+        return _disconnected(connection)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -424,7 +439,7 @@ async def test_sync_disconnect_by_provider_item_id_threads_through_to_service(
 
     required = await sync_disconnect(provider_item_id="item_b")
     service.plan_disconnect.assert_called_once_with(
-        institution=None, provider_item_id="item_b"
+        institution=None, provider_item_id="item_b", connection_id=None
     )
     assert required.error is not None
 
@@ -462,12 +477,14 @@ async def test_sync_disconnect_keeps_nameless_institution_null(
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution is None
         assert provider_item_id == "item_c"
-        verify(connection)  # type: ignore[operator]
-        return connection
+        assert connection_id is None
+        verify(connection)
+        return _disconnected(connection)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -512,10 +529,14 @@ async def test_sync_disconnect_result_distinguishes_same_named_connections(
             *,
             institution: str | None,
             provider_item_id: str | None,
-            verify: object,
-        ) -> ConnectedInstitution:
-            verify(target)  # type: ignore[operator]
-            return target
+            connection_id: str | None,
+            verify: Callable[[ConnectedInstitution], None],
+        ) -> SyncDisconnectResult:
+            assert institution is None
+            assert provider_item_id == target.provider_item_id
+            assert connection_id is None
+            verify(target)
+            return _disconnected(target)
 
         service.disconnect_confirmed.side_effect = disconnect_confirmed
         mock_build.return_value.__enter__.return_value = service
@@ -589,12 +610,14 @@ async def test_sync_disconnect_both_selectors_retry_does_not_consume_token(
         *,
         institution: str | None,
         provider_item_id: str | None,
-        verify: object,
-    ) -> ConnectedInstitution:
+        connection_id: str | None,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> SyncDisconnectResult:
         assert institution is None
         assert provider_item_id == "item_x"
-        verify(connection)  # type: ignore[operator]
-        return connection
+        assert connection_id is None
+        verify(connection)
+        return _disconnected(connection)
 
     service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
@@ -982,3 +1005,159 @@ def test_sync_purge_binding_and_message_quote_the_exact_item_and_counts() -> Non
     orphan = _sync_purge_message(_purge_plan(connected=False))
     assert "no longer lists" in orphan
     assert "item_a" in orphan
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_purge_connection_selector_reaches_both_phases(
+    mock_build: MagicMock,
+) -> None:
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    plan = _purge_plan()
+    service = MagicMock()
+
+    def plan_purge(**selectors: object) -> SyncPurgePlan:
+        if selectors.get("connection_id") != "conn_a":
+            raise ValueError("Missing connection selector")
+        return plan
+
+    def purge_confirmed(**selectors: object) -> SyncPurgePlan:
+        selected = plan_purge(**selectors)
+        selectors["verify"](selected)  # type: ignore[operator]
+        return selected
+
+    service.plan_purge.side_effect = plan_purge
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    preview = await sync_disconnect(connection_id="conn_a", state="absent")
+    assert preview.error is not None
+    assert preview.error.code == "mutation_confirmation_required"
+    assert preview.error.details is not None
+    result = await sync_disconnect(
+        connection_id="conn_a",
+        state="absent",
+        confirmation_token=str(preview.error.details["confirmation_token"]),
+    )
+    assert result.error is None
+    assert result.data.purged is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("changed", ["generation", "account_identity"])
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_purge_refuses_changed_grant_scope(
+    mock_build: MagicMock, changed: str
+) -> None:
+    from dataclasses import replace
+
+    from moneybin.connectors.sync_models import SyncAccountScope
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    plan = _purge_plan()
+    assert plan.connection is not None
+    account = SyncAccountScope.model_validate({
+        "account_id": "acct_a",
+        "name": "Checking",
+        "native_scope": {"kind": "plaid_item", "provider_item_id": "item_a"},
+    })
+    plan = replace(
+        plan, connection=plan.connection.model_copy(update={"accounts": [account]})
+    )
+    assert plan.connection is not None
+    update = (
+        {"credential_generation": 2}
+        if changed == "generation"
+        else {"accounts": [account.model_copy(update={"account_id": "acct_b"})]}
+    )
+    live = replace(plan, connection=plan.connection.model_copy(update=update))
+    service = MagicMock()
+    service.plan_purge.return_value = plan
+
+    def purge_confirmed(**kwargs: object) -> SyncPurgePlan:
+        kwargs["verify"](live)  # type: ignore[operator]
+        return live
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    preview = await sync_disconnect(provider_item_id="item_a", state="absent")
+    assert preview.error is not None
+    assert preview.error.details is not None
+    result = await sync_disconnect(
+        provider_item_id="item_a",
+        state="absent",
+        confirmation_token=str(preview.error.details["confirmation_token"]),
+    )
+    assert result.error is not None
+    assert result.error.code == "mutation_confirmation_mismatch"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_purge_reports_actual_broker_outcome(mock_build: MagicMock) -> None:
+    from dataclasses import replace
+
+    from moneybin.connectors.sync_models import SyncDisconnectResponse
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    plan = _purge_plan()
+    outcome = SyncDisconnectResponse.model_validate({
+        "connection_id": "00000000-0000-0000-0000-000000000001",
+        "credential_generation": 1,
+        "accounts": [
+            {
+                "account_id": "acct_a",
+                "name": "Checking",
+                "native_scope": {"kind": "plaid_item", "provider_item_id": "item_a"},
+            }
+        ],
+        "remote_revocation": "user_action_required",
+    })
+    service = MagicMock()
+    service.plan_purge.return_value = plan
+
+    def purge_confirmed(**kwargs: object) -> SyncPurgePlan:
+        kwargs["verify"](plan)  # type: ignore[operator]
+        return replace(plan, remote_result=outcome)
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    preview = await sync_disconnect(provider_item_id="item_a", state="absent")
+    assert preview.error is not None
+    assert preview.error.details is not None
+    result = await sync_disconnect(
+        provider_item_id="item_a",
+        state="absent",
+        confirmation_token=str(preview.error.details["confirmation_token"]),
+    )
+    assert result.error is None
+    assert result.data.remote_revocation == "user_action_required"
+    assert result.data.affected_accounts == ["Checking"]
+    assert result.data.connection_id == "00000000-0000-0000-0000-000000000001"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_disconnect_token_cannot_authorize_purge(mock_build: MagicMock) -> None:
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    plan = _purge_plan()
+    service = MagicMock()
+    service.plan_disconnect.return_value = plan.connection
+
+    def purge_confirmed(**kwargs: object) -> SyncPurgePlan:
+        kwargs["verify"](plan)  # type: ignore[operator]
+        raise AssertionError("Plain disconnect token must not authorize a purge")
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    preview = await sync_disconnect(provider_item_id="item_a")
+    assert preview.error is not None
+    assert preview.error.details is not None
+    result = await sync_disconnect(
+        provider_item_id="item_a",
+        state="absent",
+        confirmation_token=str(preview.error.details["confirmation_token"]),
+    )
+    assert result.error is not None
+    assert result.error.code == "mutation_confirmation_mismatch"

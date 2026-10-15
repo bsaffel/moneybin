@@ -51,6 +51,9 @@ _RAW_LANDING_COLUMNS: dict[str, str] = {
     "plaid_securities": "loaded_at",
     "plaid_transactions": "loaded_at",
     "security_prices": "loaded_at",
+    "simplefin_accounts": "loaded_at",
+    "simplefin_transactions": "loaded_at",
+    "simplefin_balances": "loaded_at",
     "tabular_accounts": "loaded_at",
     "tabular_transactions": "loaded_at",
     # The two manual-entry tables record their insert as `created_at` and have
@@ -62,6 +65,17 @@ _RAW_LANDING_COLUMNS: dict[str, str] = {
 # Revisions and receipts commit atomically; only receipts carry landing time.
 _RAW_RECEIPT_COVERAGE: dict[str, str] = {
     "plaid_investment_transactions": "plaid_investment_transaction_receipts",
+}
+
+# SyncCompletenessService consumes receipt outcomes even when no model input
+# rows arrived. A zero-batch job still owes the normal local refresh boundary.
+# Keep these separate so the exact SQLMesh input-coverage assertion stays exact.
+_OPERATIONAL_RAW_LANDING_COLUMNS: dict[str, str] = {
+    "simplefin_sync_receipts": "loaded_at",
+}
+_ALL_RAW_LANDING_COLUMNS = {
+    **_RAW_LANDING_COLUMNS,
+    **_OPERATIONAL_RAW_LANDING_COLUMNS,
 }
 
 # Those of the above whose rows name the import batch that wrote them, so a
@@ -117,7 +131,7 @@ def _build_raw_landing_scan(
     """
     arms: list[str] = []
     for table in sorted(tables):
-        column = _RAW_LANDING_COLUMNS[table]
+        column = _ALL_RAW_LANDING_COLUMNS[table]
         batch = (
             "import_id" if table in _RAW_IMPORT_SCOPED else "NULL::VARCHAR AS import_id"
         )
@@ -150,7 +164,7 @@ def _build_raw_landing_scan(
     """  # identifiers come from the module constants above
 
 
-_RAW_LANDING_SCAN = _build_raw_landing_scan(_RAW_LANDING_COLUMNS)
+_RAW_LANDING_SCAN = _build_raw_landing_scan(_ALL_RAW_LANDING_COLUMNS)
 
 # SQLMesh calls a model *symbolic* when it never executes it, so it never
 # records an interval for one and `last_executed_at` stays NULL forever.
@@ -715,7 +729,7 @@ class TransformService:
         has_import_log = any(
             schema == "app" and name == "import_log" for schema, name in rows
         )
-        return frozenset(raw_names & set(_RAW_LANDING_COLUMNS)), has_import_log
+        return frozenset(raw_names & set(_ALL_RAW_LANDING_COLUMNS)), has_import_log
 
     def _oldest_model_execution_at(self) -> datetime | None:
         """When the least-recently-rebuilt SQLMesh model was last backfilled.

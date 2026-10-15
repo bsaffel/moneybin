@@ -78,6 +78,18 @@ WITH ofx_balances AS (
     ON a.source_account_key = b.source_account_key AND a.source_origin = b.source_origin
   WHERE
     NOT b.current_balance IS NULL AND NOT a.account_type IS NULL
+), simplefin_balances AS (
+  SELECT
+    account_id,
+    balance_date,
+    current_balance AS balance,
+    source_type,
+    source_file AS source_ref,
+    (
+      loaded_at AT TIME ZONE 'UTC'
+    ) AS updated_at,
+    currency_code
+  FROM prep.stg_simplefin__balances
 ), unioned AS (
   SELECT
     *
@@ -94,6 +106,10 @@ WITH ofx_balances AS (
   SELECT
     *
   FROM plaid_balances
+  UNION ALL
+  SELECT
+    *
+  FROM simplefin_balances
 )
 SELECT
   u.account_id, /* Source-system account identifier */

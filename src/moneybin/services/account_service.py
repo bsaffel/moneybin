@@ -7,13 +7,17 @@ both MCP tools and CLI commands.
 
 from __future__ import annotations
 
+import csv
 import dataclasses
+import io
 import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from difflib import SequenceMatcher, get_close_matches
+from functools import lru_cache
+from importlib import resources
 from typing import Any, cast
 
 from moneybin import error_codes
@@ -149,6 +153,18 @@ COST_BASIS_METHODS: frozenset[str] = frozenset({
 })
 
 
+@lru_cache(maxsize=1)
+def canonical_account_types() -> frozenset[str]:
+    """Canonical type values from the same registry the staging models use."""
+    raw = (
+        resources
+        .files("moneybin")
+        .joinpath("sqlmesh/models/seeds/account_type_map.csv")
+        .read_text()
+    )
+    return frozenset(row["account_type"] for row in csv.DictReader(io.StringIO(raw)))
+
+
 def is_canonical_subtype(value: str) -> bool:
     """Whether the value matches Plaid's documented subtype list (case-insensitive)."""
     return value.lower() in PLAID_CANONICAL_SUBTYPES
@@ -251,6 +267,7 @@ class AccountSettings:
     archived_at: date | None = None
     include_in_net_worth: bool = True
     default_cost_basis_method: str | None = None
+    account_type: str | None = None
     investment_source_type: str | None = None
     investment_source_type_changed_at: datetime | None = None
 
@@ -262,6 +279,7 @@ class AccountSettings:
             "official_name": self.official_name,
             "last_four": self.last_four,
             "account_subtype": self.account_subtype,
+            "account_type": self.account_type,
             "holder_category": self.holder_category,
             "currency_code": self.currency_code,
             "credit_limit": self.credit_limit,
@@ -289,6 +307,11 @@ class AccountSettings:
                 raise ValueError("official_name must be 1-200 characters")
         if self.last_four is not None and not _LAST_FOUR_RE.match(self.last_four):
             raise ValueError("last_four must be exactly 4 digits")
+        if self.account_type is not None:
+            normalized_type = self.account_type.strip().lower()
+            if normalized_type not in canonical_account_types():
+                raise ValueError("account_type must be a canonical registry type")
+            object.__setattr__(self, "account_type", normalized_type)
         if self.account_subtype is not None:
             if not 1 <= len(self.account_subtype) <= 32:
                 raise ValueError("account_subtype must be 1-32 characters")
@@ -451,6 +474,7 @@ class AccountService:
         the moment any settings write (``accounts set``) reaches this read.
         """
         has_archived_at = has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
+        has_account_type = has_column(self._db, ACCOUNT_SETTINGS, "account_type")
         # Same drift guard for the V069 pair: absent on a no_auto_upgrade profile.
         source_fields = [
             c
@@ -470,6 +494,7 @@ class AccountService:
             *(["archived_at"] if has_archived_at else []),
             "include_in_net_worth",
             "default_cost_basis_method",
+            *(["account_type"] if has_account_type else []),
             *source_fields,
         ]
         field_list = ", ".join(fields)
@@ -497,6 +522,7 @@ class AccountService:
             archived_at=r.get("archived_at"),  # type: ignore[arg-type]
             include_in_net_worth=r["include_in_net_worth"],  # type: ignore[arg-type]
             default_cost_basis_method=r["default_cost_basis_method"],  # type: ignore[arg-type]
+            account_type=r.get("account_type"),  # type: ignore[arg-type]
             investment_source_type=r.get("investment_source_type"),  # type: ignore[arg-type]
             investment_source_type_changed_at=r.get(
                 "investment_source_type_changed_at"
@@ -589,6 +615,11 @@ class AccountService:
             "last_four",
             "credit_limit",
         ]
+        fields.extend(
+            name
+            for name in ("account_type_override", "source_account_type")
+            if has_column(self._db, DIM_ACCOUNTS, name)
+        )
         field_list = ", ".join(fields)
         sql = f"""
             SELECT {field_list}
@@ -606,6 +637,8 @@ class AccountService:
                     display_name=r["display_name"],  # type: ignore[arg-type]
                     institution_name=r["institution_name"],  # type: ignore[arg-type]
                     account_type=r["account_type"],  # type: ignore[arg-type]
+                    account_type_override=r.get("account_type_override"),  # type: ignore[arg-type]
+                    source_account_type=r.get("source_account_type"),  # type: ignore[arg-type]
                     account_subtype=r["account_subtype"],  # type: ignore[arg-type]
                     holder_category=r["holder_category"],  # type: ignore[arg-type]
                     currency_code=r["currency_code"],  # type: ignore[arg-type]
@@ -649,6 +682,11 @@ class AccountService:
             "routing_number",
             "official_name",
         ]
+        fields.extend(
+            name
+            for name in ("account_type_override", "source_account_type")
+            if has_column(self._db, DIM_ACCOUNTS, name)
+        )
         field_list = ", ".join(fields)
         row = self._db.execute(
             f"""
@@ -667,6 +705,8 @@ class AccountService:
             official_name=r["official_name"],  # type: ignore[arg-type]
             institution_name=r["institution_name"],  # type: ignore[arg-type]
             account_type=r["account_type"],  # type: ignore[arg-type]
+            account_type_override=r.get("account_type_override"),  # type: ignore[arg-type]
+            source_account_type=r.get("source_account_type"),  # type: ignore[arg-type]
             account_subtype=r["account_subtype"],  # type: ignore[arg-type]
             holder_category=r["holder_category"],  # type: ignore[arg-type]
             currency_code=r["currency_code"],  # type: ignore[arg-type]
@@ -798,6 +838,7 @@ class AccountService:
         official_name: str | None | object = None,
         last_four: str | None | object = None,
         account_subtype: str | None | object = None,
+        account_type: str | None | object = None,
         holder_category: str | None | object = None,
         currency_code: str | None | object = None,
         credit_limit: Decimal | None | object = None,
@@ -840,6 +881,14 @@ class AccountService:
         working. See docs/specs/investment-source-choice.md.
         """
         self._assert_account_exists(account_id)
+        if account_type is not None and not has_column(
+            self._db, ACCOUNT_SETTINGS, "account_type"
+        ):
+            raise UserError(
+                "Account type overrides require a database upgrade.",
+                code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
+                hint="Run 'moneybin db migrate apply' before setting or clearing account type.",
+            )
         current = self._load_or_default(account_id)
         diff: dict[str, object] = {}
         warnings: list[dict[str, str]] = []
@@ -865,6 +914,7 @@ class AccountService:
         _resolve("official_name", official_name)
         _resolve("last_four", last_four)
         _resolve("account_subtype", account_subtype)
+        _resolve("account_type", account_type)
         _resolve("holder_category", holder_category)
         _resolve("currency_code", currency_code)
         _resolve("credit_limit", credit_limit)
@@ -888,6 +938,20 @@ class AccountService:
             pending = diff.get(field_name)
             if isinstance(pending, str):
                 diff[field_name] = normalize_setting_text(pending)
+
+        pending_type = diff.get("account_type")
+        if pending_type is not None:
+            normalized_type = (
+                pending_type.strip().lower() if isinstance(pending_type, str) else None
+            )
+            if normalized_type not in canonical_account_types():
+                valid = ", ".join(sorted(canonical_account_types()))
+                raise UserError(
+                    f"Invalid account type. Valid types: {valid}.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint="Set a canonical type; subtype is a separate setting.",
+                )
+            diff["account_type"] = normalized_type
 
         subtype = diff.get("account_subtype")
         if isinstance(subtype, str) and not is_canonical_subtype(subtype):
@@ -969,6 +1033,7 @@ class AccountService:
             official_name=target.official_name,
             last_four=target.last_four,
             account_subtype=target.account_subtype,
+            account_type=target.account_type,
             holder_category=target.holder_category,
             currency_code=target.currency_code,
             credit_limit=target.credit_limit,
@@ -994,14 +1059,26 @@ class AccountService:
             )
 
             restate_investment_ledger(self._db)
-        elif diff.keys() & {"currency_code", "default_cost_basis_method"}:
+        elif diff.keys() & {
+            "currency_code",
+            "default_cost_basis_method",
+            "account_type",
+            "account_subtype",
+        }:
             from moneybin.services.fx_accounting_refresh import (
                 restate_fx_accounting,
             )
 
-            restate_fx_accounting(
-                self._db, account_currency_changed="currency_code" in diff
-            )
+            if diff.keys() & {"account_type", "account_subtype"}:
+                restate_fx_accounting(
+                    self._db,
+                    account_currency_changed="currency_code" in diff,
+                    account_type_changed=True,
+                )
+            else:
+                restate_fx_accounting(
+                    self._db, account_currency_changed="currency_code" in diff
+                )
         # Re-read rather than return `target`: on a pre-V063 catalog opened
         # with no_auto_upgrade=True, AccountSettingsRepo.set() silently drops
         # archived_at from the write (its own docstring says so), so `target`

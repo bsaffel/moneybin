@@ -72,7 +72,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `profile_set` | `display_currency_targets`, `home_currency` | Set profile currency settings | Audited write / at least low |
 | `reports` | `display_currency`, `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / up to critical / report-derived |
 | `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / up to critical / view-derived |
-| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `investment_source_type`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / at least critical |
+| `accounts_set` | `account_id`, `account_subtype`, `account_type`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `investment_source_type`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / at least critical |
 | `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / up to high / balance-derived |
 | `accounts_balance_assert` | `account`, `amount`, `as_of`, `confirmation_token`, `state` | Record a balance assertion | Audited write / at least medium |
 | `accounts_links_run` | `account_id`, `candidate_account_id` | Propose account merges — sweep, or one named pair | Audited write / at least low |
@@ -100,10 +100,10 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch or delete a saved format | Confirmed destructive / at least low — rollback is permanent with no undo; format deletion is audited and `system_audit_undo`-recoverable |
 | `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / at least critical |
 | `import_labels_set` | `import_id`, `labels` | Import-label target state | Audited write / at least medium |
-| `sync_link` | `institution`, `mode`, `server_url` | Start mediated provider linking | Credential flow / at least medium |
+| `sync_link` | `connection_id`, `institution`, `mode`, `provider`, `server_url` | Start mediated provider linking | Credential flow / at least medium |
 | `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / up to medium / session-derived |
-| `sync_pull` | `institution` | Pull linked-provider data | External mutation / at least medium |
-| `sync_disconnect` | `confirmation_token`, `institution`, `mode`, `provider_item_id`, `state` | Disconnect provider or credentials; `state="absent"` also purges the item's local rows | Institution disconnect is a confirmed destructive write; logout is recoverable / at least low |
+| `sync_pull` | `connection_id`, `force`, `history_start`, `institution`, `job_id`, `local_only`, `provider`, `refresh` | Pull linked-provider data | External mutation / at least medium |
+| `sync_disconnect` | `confirmation_token`, `connection_id`, `institution`, `mode`, `provider_item_id`, `state` | Disconnect provider or credentials; `state="absent"` also purges a Plaid item's local rows | Institution disconnect is a confirmed destructive write; logout is recoverable / at least medium |
 | `gsheet` | `connection_id`, `view` | Google Sheets connections | Read / dynamic / up to medium / connection-derived |
 | `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `url` | Bind user-controlled storage | Credential flow / dynamic / up to medium / connection-derived |
 | `gsheet_pull` | `connection_id` | Pull sheet data | External mutation / at least medium |
