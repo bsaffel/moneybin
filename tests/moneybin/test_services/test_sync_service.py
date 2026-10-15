@@ -23,6 +23,7 @@ from moneybin.connectors.sync_models import (
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.plaid import PlaidExtractor
+from moneybin.metrics.registry import SYNC_DISCONNECT_OUTCOMES
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services import sync_service
 from moneybin.services.sync_service import SyncService
@@ -1878,6 +1879,10 @@ def _propose_merge(db: Database, provisional: str, candidate: str) -> str:
     return decision_id
 
 
+def _remote_disconnects() -> float:
+    return SYNC_DISCONNECT_OUTCOMES.labels(scope="remote")._value.get()  # pyright: ignore[reportPrivateUsage]  # no public counter getter
+
+
 def _decision_status(db: Database, decision_id: str) -> tuple[str, str]:
     row = db.execute(
         "SELECT status, decided_by FROM app.account_link_decisions "
@@ -2082,6 +2087,7 @@ def test_purge_confirmed_names_the_orphan_when_the_local_half_fails(
     service = _pull_both_items(mock_client, db, loader)
     mock_client.list_institutions.return_value = [_chase_connection()]
     before_links = _accepted_link_rows(db, _CHASE_ITEM)
+    remote_before = _remote_disconnects()
 
     with (
         patch.object(sync_service, "AccountLinksRepo") as links_repo,
@@ -2098,6 +2104,56 @@ def test_purge_confirmed_names_the_orphan_when_the_local_half_fails(
     mock_client.disconnect.assert_called_once_with("conn_chase")
     assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
     assert _accepted_link_rows(db, _CHASE_ITEM) == before_links
+    # The server half did happen, so the metric records it under its own scope.
+    assert _remote_disconnects() == remote_before + 1
+
+
+def test_purge_confirmed_logs_the_orphan_when_interrupted_after_the_server_half(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An interrupt cannot be wrapped, so the log names the id to re-run with."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+
+    with (
+        patch.object(sync_service, "AccountLinksRepo") as links_repo,
+        caplog.at_level("WARNING", logger="moneybin.services.sync_service"),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        links_repo.return_value.reverse.side_effect = KeyboardInterrupt()
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+
+    mock_client.disconnect.assert_called_once_with("conn_chase")
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
+    assert any(
+        _CHASE_ITEM in record.getMessage() and "did not complete" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_purge_tables_cover_every_plaid_raw_schema_file() -> None:
+    """A raw.plaid_* table the loader writes but the purge skips would survive a purge that reports everything gone."""
+    import moneybin.extractors.plaid as plaid_package
+
+    schema_dir = Path(plaid_package.__file__).parent / "schema"
+    declared = {
+        path.stem.removeprefix("raw_"): path
+        for path in schema_dir.glob("raw_plaid_*.sql")
+    }
+    purged = {
+        table.full_name.removeprefix("raw.")
+        for table in sync_service._PURGE_TABLES  # pyright: ignore[reportPrivateUsage]
+    }
+
+    assert declared, "the Plaid raw schema directory moved; point this guard at it"
+    assert set(declared) == purged
+    for name, path in declared.items():
+        assert "source_origin" in path.read_text(), (
+            f"{name} has no source_origin column"
+        )
 
 
 def test_purge_confirmed_propagates_a_local_failure_for_an_orphan_as_is(

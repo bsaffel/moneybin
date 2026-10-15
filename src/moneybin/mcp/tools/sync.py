@@ -591,7 +591,9 @@ def _sync_purge_binding(plan: SyncPurgePlan) -> ConfirmationBinding:
     The counts are part of the binding, so a pull that lands between the
     preview and the confirm — adding rows the user never saw quoted — changes
     the digest and the confirm is refused rather than deleting more than it
-    described.
+    described. The fields are exactly ``SyncPurgePlan.binding``'s, so the CLI
+    and MCP surfaces bind one purge to the same facts and volatile connection
+    metadata (``status``, ``last_sync``) cannot spuriously refuse a confirm.
     """
     connection = plan.connection
     return ConfirmationBinding(
@@ -599,16 +601,7 @@ def _sync_purge_binding(plan: SyncPurgePlan) -> ConfirmationBinding:
             "mode": "institution",
             "state": "absent",
             "provider_item_id": plan.provider_item_id,
-            "connection": (
-                None
-                if connection is None
-                else {
-                    "id": connection.id,
-                    "institution_name": connection.institution_name,
-                    "provider": connection.provider,
-                    "status": connection.status,
-                }
-            ),
+            "connection_id": None if connection is None else connection.id,
             "table_counts": [[name, int(count)] for name, count in plan.table_counts],
             "account_link_ids": list(plan.account_link_ids),
             "decision_ids": list(plan.decision_ids),

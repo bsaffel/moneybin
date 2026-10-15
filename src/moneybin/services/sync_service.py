@@ -728,12 +728,21 @@ class SyncService:
             try:
                 self._purge_local(live, actor)
                 self.db.commit()
-            except Exception as exc:
+            except BaseException as exc:
                 if live.connection is None:
                     raise
                 # The server half already landed and `sync status` no longer
-                # lists the item, so the error has to carry the one id that
-                # still reaches the orphan.
+                # lists the item, so the one id that still reaches the orphan
+                # has to be named — in the log for an interrupt, which cannot be
+                # wrapped, and in the error for everything else.
+                SYNC_DISCONNECT_OUTCOMES.labels(scope="remote").inc()
+                logger.warning(
+                    f"Server connection for sync item {live.provider_item_id} "
+                    f"was removed but its local purge did not complete; re-run "
+                    f"sync disconnect --purge with that provider_item_id"
+                )
+                if not isinstance(exc, Exception):
+                    raise
                 raise UserError(
                     f"The server connection was removed, but the local purge of "
                     f"provider_item_id '{live.provider_item_id}' failed and was "
