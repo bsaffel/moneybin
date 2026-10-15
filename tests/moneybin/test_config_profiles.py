@@ -589,6 +589,25 @@ class TestProfileConfigFileSource:
         assert str(path) in str(excinfo.value)
         assert "mcp.max_rows" in str(excinfo.value)
 
+    def test_secret_in_the_file_is_refused_without_echoing_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """config.yaml is plain text, so it is never a secret source."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_SYNC__API_KEY", raising=False)
+        path = _write_profile_config(
+            tmp_path, "alice", "sync:\n  api_key: plaintext-secret-value\n"
+        )
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(ValueError) as excinfo:
+            get_settings()
+
+        assert str(path) in str(excinfo.value)
+        assert "sync.api_key" in str(excinfo.value)
+        assert "plaintext-secret-value" not in str(excinfo.value)
+
     def test_non_mapping_file_names_the_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

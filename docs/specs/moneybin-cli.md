@@ -913,7 +913,8 @@ Three rules keep the file honest:
   downstream is a bug, not a convenience. Section names match the environment
   variables, so the import settings are `import.<field>`.
 - **Secrets never land here.** A field typed as a secret is refused by
-  `profile set`, which names `SecretStore`-backed setup instead. The file is
+  `profile set`, which names `SecretStore`-backed setup instead, and one written
+  into the file by hand fails settings load like a bad value below. The file is
   plain text at the umask default.
 - **A bad value fails loudly.** A value the field's type rejects fails settings
   load with the file path and the key, on the next command — never a silent

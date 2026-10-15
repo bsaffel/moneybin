@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from pathlib import Path
 
@@ -214,6 +215,16 @@ class TestStartLogin:
         # Cleared even with nothing saved before: credentials can outlive an
         # address that came from the environment and has since been unset.
         assert events == [f"contact {_A}", "clear credentials"]
+
+    def test_the_log_never_names_the_profile(
+        self, events: list[str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A profile name can be a person's name, which logs must never carry."""
+        with caplog.at_level(logging.DEBUG, logger=address.__name__):
+            address.start_login(address.plan_server_address(_A), surface="cli")
+
+        assert caplog.records
+        assert not any("alice" in r.getMessage() for r in caplog.records)
 
     def test_unreachable_server_is_not_saved(
         self, events: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch

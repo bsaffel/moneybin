@@ -68,7 +68,8 @@ class _StoredAuthSession:
     next_poll_at: str | None = None
     error_code: str | None = None
     # The server that issued device_code; None on a session stored before this
-    # was recorded. A code approved at one server mints tokens for whoever polls.
+    # was recorded, which is then never polled. A code approved at one server
+    # mints tokens for whoever polls.
     server_url: str | None = None
 
     def safe_result(self, *, replayed: bool = False) -> SyncAuthResult:
@@ -182,11 +183,11 @@ class SyncAuthService:
                     "Authentication session cannot be resumed.",
                     code=error_codes.SYNC_AUTH_SESSION_INVALID,
                 )
-            if session.server_url not in (None, self._client.server_url):
+            if session.server_url != self._client.server_url:
                 if pruned:
                     self._save_collection(sessions)
                 raise UserError(
-                    "Authentication session was started against a different "
+                    "Authentication session was not started against the current "
                     "sync server.",
                     code=error_codes.SYNC_AUTH_SESSION_INVALID,
                     hint="Start a new login for the current server.",

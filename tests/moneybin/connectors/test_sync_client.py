@@ -13,6 +13,7 @@ from moneybin.connectors.sync_client import (
     _DEFAULT_TIMEOUT,  # type: ignore[reportPrivateUsage]
     _KEYRING_JWT_KEY,  # type: ignore[reportPrivateUsage]
     _KEYRING_REFRESH_KEY,  # type: ignore[reportPrivateUsage]
+    _KEYRING_SERVER_KEY,  # type: ignore[reportPrivateUsage]
     _LINK_POLL_DEADLINE,  # type: ignore[reportPrivateUsage]
     _LONG_TIMEOUT,  # type: ignore[reportPrivateUsage]
     SyncClient,
@@ -884,16 +885,17 @@ def test_tokens_survive_a_different_server_looking(sync_client: SyncClient) -> N
     assert issuer._read_token() == "jwt-a"  # type: ignore[reportPrivateUsage]
 
 
-def test_tokens_stored_before_binding_are_bound_on_first_read(
+def test_tokens_with_no_recorded_issuer_are_never_presented(
     sync_client: SyncClient,
 ) -> None:
-    """A pair with no recorded issuer belongs to the first server that reads it."""
+    """The address may have changed since the pair was stored, so no server gets it."""
     issuer, other, store = _clients_sharing_a_store()
     store.values[_KEYRING_JWT_KEY] = "jwt-old"
     store.values["refresh_token"] = "refresh-old"  # noqa: S105  # test fixture, not a credential
 
-    assert issuer._read_token() == "jwt-old"  # type: ignore[reportPrivateUsage]
+    assert issuer._read_token() is None  # type: ignore[reportPrivateUsage]
     assert other._read_token() is None  # type: ignore[reportPrivateUsage]
+    assert _KEYRING_SERVER_KEY not in store.values
 
 
 def test_logout_removes_the_server_binding(sync_client: SyncClient) -> None:

@@ -436,6 +436,7 @@ def test_status_upgrades_stored_session_without_poll_schedule_fields(
             "expiration": "2026-07-19T00:15:00+00:00",
             "device_code": "secret-device-code",
             "error_code": None,
+            "server_url": "https://a.example.test",
         }
     })
     client = MagicMock()
@@ -760,3 +761,34 @@ def test_status_never_sends_a_device_code_to_a_different_server(
 
     assert excinfo.value.code == error_codes.SYNC_AUTH_SESSION_INVALID
     other_client.poll_login.assert_not_called()
+
+
+def test_status_never_sends_a_device_code_with_no_recorded_server(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    """A session stored before sessions recorded their server may be another's."""
+    auth_session_id = "syncauth_unbound"
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps({
+        auth_session_id: {
+            "auth_session_id": auth_session_id,
+            "status": "pending",
+            "user_code": "ABCD-EFGH",
+            "verification_url": "https://auth.example/activate",
+            "expiration": "2026-07-19T00:15:00+00:00",
+            "device_code": "secret-device-code",
+            "error_code": None,
+        }
+    })
+    client = MagicMock()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        service.status(auth_session_id)
+
+    assert excinfo.value.code == error_codes.SYNC_AUTH_SESSION_INVALID
+    client.poll_login.assert_not_called()

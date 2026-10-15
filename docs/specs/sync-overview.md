@@ -178,7 +178,7 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 **Auth handling:**
 
 - JWT and refresh token are stored through `SecretStore`, preserving the `moneybin-sync` service and opaque profile-ID usernames.
-- No new plaintext token files are written. A legacy `~/.moneybin/.sync_token-<profile_id>` is imported only for that exact profile: validate both values, persist and read back both keychain entries, then remove the file. Existing keychain credentials are authoritative. On failure, retain the source file and refuse authentication from it; never adopt an unscoped legacy file into a named profile.
+- No new plaintext token files are written. A legacy `~/.moneybin/.sync_token-<profile_id>` records no issuing server, so it is never imported or presented: reading credentials for that exact profile removes it, and the profile logs in again (see [Server address](#server-address) → Changing it). Existing keychain credentials are authoritative. Never touch an unscoped legacy file from a named profile.
 - Headless sync requires a working OS keychain (for example Linux Secret Service); an unavailable or locked backend produces an actionable error. Database environment-key injection does not provide storage for rotating sync tokens.
 - `Authorization: Bearer {token}` header on all authenticated requests.
 - Automatic refresh via refresh token when JWT expires (transparent to callers).
@@ -251,12 +251,12 @@ environment):
   records the server that issued it. A client bound to a different address
   treats the pair as absent and refuses to poll the session. The pair is kept,
   so an override that points elsewhere for one run does not sign the profile
-  out of its own server. A pair stored before issuers were recorded is bound
-  to the server in force the first time it is read. Before this change the
-  address could come only from the environment, so that is the server the
-  pair was already being sent to. The one wrong guess, a first read under a
-  one-run override, signs the profile out of its own server rather than
-  sending a token anywhere new, and logging in again recovers it.
+  out of its own server. A pair or session stored before issuers were
+  recorded counts as absent for every server, and a legacy plaintext token
+  file is removed rather than imported. The address may have changed since
+  either was written, and binding it to whichever server reads it first would
+  send it to that server. The cost is one `moneybin sync login` after
+  upgrading.
 
 **When an override is in force.** If source 1 or 2 supplies the address and
 login is asked to save a different one, login refuses and names the variable:
@@ -268,8 +268,8 @@ string, still counts.
 **Order of clearing and saving.** Credentials are cleared before the new
 address is written. If the write then fails, the profile is signed out and
 still names its old server, which fails safe: logging in again recovers it.
-The reverse order would leave a window where a token pair stored before
-issuers were recorded is bound to the new server on first read.
+The issuer binding already keeps the old pair from the new server; clearing
+removes credentials the profile has stopped using.
 
 **Shape.** `http` or `https` with a host; no credentials, query, or fragment.
 Scheme and host are lowercased and a default port (80, 443) is dropped, so one

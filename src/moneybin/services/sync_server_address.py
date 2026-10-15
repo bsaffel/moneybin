@@ -235,5 +235,5 @@ def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
         "replaced" if plan.change == "replace" else "saved"
     )
     SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface=surface, outcome=outcome).inc()
-    logger.info(f"Sync server address {outcome} for profile {settings.profile}")
+    logger.info(f"Sync server address {outcome}")
     return LoginStart(client=client, challenge=challenge, outcome=outcome)

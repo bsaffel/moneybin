@@ -4,8 +4,8 @@ Pure transport — no business logic, no database access. Methods correspond
 1:1 to server endpoints. Service-layer orchestration lives in SyncService.
 
 Token storage uses SecretStore and requires a writable secure OS keychain.
-Exact-profile legacy plaintext files are imported once after verified storage;
-new credentials are never written to plaintext files.
+A legacy plaintext token file records no issuing server, so it is removed, never
+imported; new credentials are never written to plaintext files.
 
 Timeouts:
 - _DEFAULT_TIMEOUT (15s) for most endpoints
@@ -17,13 +17,11 @@ Per design — no per-endpoint configuration knobs unless evidence demands them.
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import time
 import webbrowser
 from pathlib import Path
-from typing import cast
 
 import httpx
 
@@ -178,66 +176,23 @@ class SyncClient:
                 raise SecretStorageUnavailableError(
                     "Sync credential pair is incomplete. Run `moneybin sync login` again."
                 )
-            issuer = self._optional_key(_KEYRING_SERVER_KEY)
-            if issuer is None:
-                # Stored before pairs recorded their issuer. Bind to the server
-                # in force now: it is the one this pair was already being sent to.
-                self._store.set_key(_KEYRING_SERVER_KEY, self._server_url)
-            elif issuer != self._server_url:
-                # Kept, not deleted: an override that points elsewhere for one
-                # run must not log the profile out of its own server.
+            # A pair stored before pairs recorded their issuer counts as absent:
+            # the address may have changed since, so no server is known to own it.
+            # Kept, not deleted: an override that points elsewhere for one run
+            # must not log the profile out of its own server.
+            if self._optional_key(_KEYRING_SERVER_KEY) != self._server_url:
                 return None
-            # A previous import may have stored both values but failed to remove
-            # its plaintext source. Retry cleanup only when that exact pair matches.
-            if self._profile_id is not None:
-                path = self._legacy_token_path(self._profile_id)
-                try:
-                    payload = json.loads(path.read_text())
-                except (OSError, UnicodeError, ValueError):
-                    payload = None
-                if isinstance(payload, dict) and (
-                    cast(dict[str, object], payload).get("jwt") == access
-                    and cast(dict[str, object], payload).get("refresh_token") == refresh
-                ):
-                    self._remove_legacy_file(path)
             return access, refresh
-        if self._profile_id is None:
-            return None
-        path = self._legacy_token_path(self._profile_id)
-        if not path.exists():
-            return None
-        try:
-            payload = json.loads(path.read_text())
-            if not isinstance(payload, dict):
-                raise ValueError
-            values = cast(dict[str, object], payload)
-            access = values.get("jwt")
-            refresh = values.get("refresh_token")
-            if (
-                not isinstance(access, str)
-                or not access.strip()
-                or not isinstance(refresh, str)
-                or not refresh.strip()
-            ):
-                raise ValueError
-        except (OSError, UnicodeError, ValueError):
-            raise SecretStorageUnavailableError(
-                "Legacy sync credential file is unreadable or invalid; it was preserved. "
-                "Run `moneybin sync login` again."
-            ) from None
-        self._store_tokens(access_token=access, refresh_token=refresh)
-        self._remove_legacy_file(path)
-        return access, refresh
-
-    @staticmethod
-    def _remove_legacy_file(path: Path) -> None:
-        try:
-            path.unlink()
-        except OSError:
-            raise SecretStorageUnavailableError(
-                "Sync credentials were stored, but the legacy plaintext file "
-                "could not be removed. Restore file permissions and retry."
-            ) from None
+        if self._profile_id is not None:
+            # A plaintext file from before keychain storage records no issuer
+            # either. It can never be presented, so remove it rather than leave
+            # a token on disk.
+            path = self._legacy_token_path(self._profile_id)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(f"Could not remove the legacy sync token file {path}")
+        return None
 
     def _read_token(self) -> str | None:
         pair = self._read_pair()

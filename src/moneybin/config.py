@@ -956,6 +956,18 @@ def _section_error(
     return None
 
 
+def _is_secret(model: type[BaseModel], name: str) -> bool:
+    annotation = model.model_fields[name].annotation
+    return annotation is SecretStr or SecretStr in get_args(annotation)
+
+
+def _secret_refusal(section: str, name: str) -> str:
+    return (
+        f"{section}.{name} is a secret and cannot be stored in config.yaml, "
+        "which is plain text."
+    )
+
+
 def validate_profile_setting(
     section: str, name: str, raw: str, saved: dict[str, Any] | None = None
 ) -> Any:
@@ -983,11 +995,8 @@ def validate_profile_setting(
             f"Valid fields in {section}: {', '.join(sorted(model.model_fields))}"
         )
     annotation = field.annotation
-    if annotation is SecretStr or SecretStr in get_args(annotation):
-        raise ValueError(
-            f"{section}.{name} is a secret and cannot be stored in config.yaml, "
-            "which is plain text."
-        )
+    if _is_secret(model, name):
+        raise ValueError(_secret_refusal(section, name))
     others = {k: v for k, v in (saved or {}).items() if k in model.model_fields}
     rejected = _section_error(section, model, {**others, name: raw})
     if rejected is not None:
@@ -1003,7 +1012,8 @@ def _load_profile_config(
 
     Each declared ``section.field`` value is validated here rather than left to
     the merged model, because only this function still knows which file a bad
-    value came from. Undeclared keys are dropped so an older file still loads.
+    value came from. A secret is refused like a bad value: the file is plain
+    text. Undeclared keys are dropped so an older file still loads.
     """
     if not path.exists():
         return {}
@@ -1027,6 +1037,9 @@ def _load_profile_config(
         }
         if not declared:
             continue
+        secret = next((n for n in declared if _is_secret(model, n)), None)
+        if secret is not None:
+            raise ValueError(f"{path}: {_secret_refusal(str(section), secret)}")
         rejected = _section_error(str(section), model, declared)
         if rejected is not None:
             raise ValueError(f"{path}: {rejected}")
