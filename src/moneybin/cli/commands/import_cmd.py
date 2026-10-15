@@ -2029,7 +2029,7 @@ def _review_import_mapping(
 
     if not isinstance(outcome.proposed, ProposedMapping):
         return None
-    proposed = outcome.proposed.field_mapping
+    proposed = dict(outcome.proposed.field_mapping)
     columns = tuple(
         dict.fromkeys([*proposed.values(), *outcome.proposed.unmapped_columns])
     )
@@ -2048,6 +2048,15 @@ def _review_import_mapping(
         return {}
     corrections = dict(initial_mapping or {})
     while True:
+        invalid_destinations = [
+            field
+            for field in dict.fromkeys([*proposed, *corrections])
+            if field not in FIELD_ALIASES
+        ]
+        removal_choices = [
+            Choice(f"remove:{field}", f"Remove invalid mapping: {field}")
+            for field in invalid_destinations
+        ]
         destinations = list(
             dict.fromkeys([
                 *outcome.confidence.missing_required,
@@ -2055,7 +2064,12 @@ def _review_import_mapping(
                 *FIELD_ALIASES,
             ])
         )
-        typer.echo("Fields: " + ", ".join(destinations) + " / Cancel")
+        typer.echo(
+            "Fields: "
+            + ", ".join(destinations)
+            + " / "
+            + " / ".join([*(choice.label for choice in removal_choices), "Cancel"])
+        )
         dest = choose_required(
             None,
             choices=[
@@ -2064,6 +2078,7 @@ def _review_import_mapping(
                     for field in destinations
                     if field in FIELD_ALIASES
                 ),
+                *removal_choices,
                 cancel,
             ],
             flag="destination field",
@@ -2071,32 +2086,37 @@ def _review_import_mapping(
         )
         if dest == "cancel":
             return None
-        typer.echo(
-            "Columns: "
-            + " / ".join(f"Column: {column}" for column in columns)
-            + " / Cancel"
-        )
-        source = choose_required(
-            None,
-            choices=[
-                *(
-                    Choice(f"column:{column}", f"Column: {column}")
-                    for column in columns
-                ),
-                cancel,
-            ],
-            flag="source column",
-            policy=policy,
-        )
-        if source == "cancel":
-            return None
-        source = source.removeprefix("column:")
-        if dest == "amount":
-            corrections.pop("debit_amount", None)
-            corrections.pop("credit_amount", None)
-        elif dest in ("debit_amount", "credit_amount"):
-            corrections.pop("amount", None)
-        corrections[dest] = source
+        if dest.startswith("remove:"):
+            invalid_field = dest.removeprefix("remove:")
+            proposed.pop(invalid_field, None)
+            corrections.pop(invalid_field, None)
+        else:
+            typer.echo(
+                "Columns: "
+                + " / ".join(f"Column: {column}" for column in columns)
+                + " / Cancel"
+            )
+            source = choose_required(
+                None,
+                choices=[
+                    *(
+                        Choice(f"column:{column}", f"Column: {column}")
+                        for column in columns
+                    ),
+                    cancel,
+                ],
+                flag="source column",
+                policy=policy,
+            )
+            if source == "cancel":
+                return None
+            source = source.removeprefix("column:")
+            if dest == "amount":
+                corrections.pop("debit_amount", None)
+                corrections.pop("credit_amount", None)
+            elif dest in ("debit_amount", "credit_amount"):
+                corrections.pop("amount", None)
+            corrections[dest] = source
         try:
             merged = validate_partial_mapping(
                 proposed=proposed,

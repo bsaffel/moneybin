@@ -451,6 +451,136 @@ def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 
+    @pytest.mark.parametrize(
+        "cancel_invalid,replace_invalid", [(False, True), (False, False), (True, False)]
+    )
+    def test_interactive_mapping_explicitly_removes_invalid_destination(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        cancel_invalid: bool,
+        replace_invalid: bool,
+    ) -> None:
+        """The real detector/validator refusal is repairable without losing valid edits."""
+        import polars as pl
+
+        from moneybin.extractors.tabular.column_mapper import (
+            collect_field_samples,
+            map_columns,
+        )
+        from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+        from moneybin.services.import_confirmation import (
+            Override,
+            Resolved,
+            resolve_or_confirm,
+            tabular_required_fields,
+        )
+
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text(
+            "Date,Amount,Memo,Notes,Total\n2025-01-01,-50,Coffee,Shop,-60\n"
+        )
+        frame = pl.DataFrame({
+            "Date": ["2025-01-01"],
+            "Amount": ["-50"],
+            "Memo": ["Coffee"],
+            "Notes": ["Shop"],
+            "Total": ["-60"],
+        })
+        refusals: list[ConfirmationRequired] = []
+
+        def import_file(**kwargs: Any) -> ImportResult:
+            overrides = kwargs["overrides"]
+            detected = map_columns(frame, overrides=overrides)
+            proposed = ProposedMapping(
+                detected.field_mapping,
+                collect_field_samples(frame, detected.field_mapping),
+                tuple(detected.unmapped_columns),
+            )
+            resolved = resolve_or_confirm(
+                channel="tabular",
+                confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
+                proposed=proposed,
+                available_columns=frame.columns,
+                required_fields=tabular_required_fields(
+                    proposed_keys=set(proposed.field_mapping),
+                    override_keys=set(overrides),
+                ),
+                signal=Override(overrides),
+                self_accept_enabled=False,
+                actor_kind="human",
+                valid_destinations=tuple(FIELD_ALIASES),
+            )
+            if isinstance(resolved, ConfirmationRequired):
+                assert resolved.reason == "validation_failure"
+                assert isinstance(resolved.proposed, ProposedMapping)
+                assert resolved.proposed.field_mapping["descrption"] == "Notes"
+                refusals.append(resolved)
+                raise ImportConfirmationRequiredError(resolved)
+            assert isinstance(resolved, Resolved)
+            assert resolved.field_mapping == {
+                "transaction_date": "Date",
+                "amount": "Total",
+                "description": "Notes" if replace_invalid else "Memo",
+                # Notes is a memo alias once removing the typo frees that column.
+                "memo": "Memo" if replace_invalid else "Notes",
+            }
+            return _make_import_result(field_mapping=resolved.field_mapping)
+
+        mock_import_file.side_effect = import_file
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        answers = iter(
+            ["edit", "cancel"]
+            if cancel_invalid
+            else [
+                "edit",
+                "remove:descrption",
+                *(["description", "column:Notes"] if replace_invalid else []),
+                "confirm",
+            ]
+        )
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            assert mock_import_file.call_count == 1
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--mapping",
+                "descrption=Notes",
+                "--mapping",
+                "amount=Total",
+                *([] if replace_invalid else ["--mapping", "description=Memo"]),
+                "--no-refresh",
+            ],
+        )
+        assert result.exit_code == (1 if cancel_invalid else 0), result.output
+        assert mock_import_file.call_count == (1 if cancel_invalid else 2)
+        assert len(refusals) == 1
+        assert isinstance(refusals[0].proposed, ProposedMapping)
+        assert "descrption" in refusals[0].proposed.field_mapping
+
     def test_interactive_mapping_preserves_explicit_partial_corrections(
         self,
         mock_db: MagicMock,
