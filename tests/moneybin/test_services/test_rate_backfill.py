@@ -868,6 +868,60 @@ def test_a_pair_the_provider_does_not_publish_is_reported_as_unsupported(
     assert result.rates_written == 0
 
 
+def test_an_unsupported_verdict_reaches_a_later_cache_only_read(db: Database) -> None:
+    """A report read cannot ask the provider, so refresh records its list.
+
+    Without it, a report missing a JPY rate could only guess whether refresh or
+    `moneybin fx set` is the fix.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="JPY")
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=_SilentAdapter())
+
+    assert CurrencyService(db).unsupported("JPY", "USD") == {"JPY"}
+
+
+def test_a_fully_successful_refresh_still_records_the_provider_list(
+    db: Database,
+) -> None:
+    """Every pair answering is the normal case, and the list must stay current.
+
+    A report reading an ad-hoc display currency the provider never publishes
+    needs that list to say so, whatever the refresh's own pairs answered.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=_SpanAdapter())
+
+    assert CurrencyService(db).unsupported("AED", "USD") == {"AED"}
+
+
+def test_a_range_answer_records_the_span_it_proves_complete(db: Database) -> None:
+    """From the first to the last kept publication, every date is accounted for."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(date(2026, 3, 9), date(2026, 3, 13))
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    rows = db.execute(
+        "SELECT from_currency, to_currency, start_date, end_date "
+        "FROM raw.exchange_rate_coverage"
+    ).fetchall()
+    assert rows == [("EUR", "USD", date(2026, 3, 9), date(2026, 3, 13))]
+
+
+def test_a_range_answer_missing_a_rate_records_no_span(db: Database) -> None:
+    """A rate dropped as unstorable leaves a hole that is not a closed market."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    run_rate_backfill(
+        db, home_currency="USD", through=_TODAY, adapter=_UnstorableAdapter()
+    )
+
+    row = db.execute("SELECT COUNT(*) FROM raw.exchange_rate_coverage").fetchone()
+    assert row == (0,)
+
+
 def test_a_home_currency_the_provider_does_not_publish_is_reported_as_unsupported(
     db: Database,
 ) -> None:
@@ -1234,3 +1288,36 @@ def test_a_rate_resolved_back_to_the_last_publication_day_is_kept(
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
 
     assert result.rates_written == 1
+
+
+def test_a_request_opening_on_a_weekend_keeps_the_friday_it_resolves_to(
+    db: Database,
+) -> None:
+    """A weekend request start is answered from the Friday before it, not reported short.
+
+    The window opens on a Saturday, so the request reaching back two weeks opens
+    on a Saturday too. The provider resolves that day to the Friday before it;
+    if the request still began on the Saturday, that Friday would land outside
+    the bound, be discarded, and name the pair on every refresh although every
+    rate a report reads was stored. The coverage span starts on that Friday —
+    a real publication — not on the weekend nobody published.
+    """
+    saturday = date(2026, 3, 14)
+    friday_before_request = saturday - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS + 1)
+    _add_transaction(db, on=saturday, currency="EUR")
+    adapter = _DatedAdapter(
+        friday_before_request,
+        date(2026, 3, 2),
+        date(2026, 3, 13),
+        _TODAY - timedelta(days=1),
+    )
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ()
+    assert result.rates_written == 4
+    assert adapter.ranges == [("EUR", "USD", friday_before_request, _TODAY)]
+    assert db.execute(
+        "SELECT start_date, end_date FROM raw.exchange_rate_coverage "
+        "WHERE from_currency = 'EUR' AND to_currency = 'USD'"
+    ).fetchall() == [(friday_before_request, _TODAY - timedelta(days=1))]

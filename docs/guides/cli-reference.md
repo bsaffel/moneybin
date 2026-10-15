@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-10-07 -->
 # CLI Reference
 
 Run `moneybin` for a short menu of common commands, or `moneybin --help` for
@@ -160,6 +160,17 @@ config, and log directory. `profile set <key> <value>` writes one config value
 resolved settings, and `profile delete` removes the database, logs, and config
 together after a confirmation. Commands:
 [`reference/cli/profile.md`](../reference/cli/profile.md).
+
+`profile create` makes the new profile the active default, so the next command
+runs against it with no `profile switch` and no first-run wizard. Its receipt
+marks the profile `(active)` and, when it displaced another active profile,
+prints a `›` line with the `profile switch` command back. Activation is the
+default because every first command after a create expects the new profile;
+leaving it inactive sent that command to the previous profile, or to the wizard
+on a fresh home, which aborts without a terminal. The first-run wizard, and
+`moneybin demo` once its build passes doctor, activate the profile they build
+for the same reason.
+`synthetic generate` does not change the active profile.
 
 **Related guides:** [`profiles.md`](profiles.md).
 
@@ -325,7 +336,11 @@ Category taxonomy: list, create (with `--parent`), set, delete. Default
 passed. `mappings pending` lists distinct imported category-source vocabulary
 terms with no curated mapping (grouped by term, not by transaction) with
 `did_you_mean` suggestions; `mappings set` maps one term via
-`--into <category_id>` or `--new <name>`. `set` accepts a term only when an
+`--into <category_id>` or `--new <name>`, or ignores it with `--ignore` (the
+term leaves the pending list and categorizes nothing). The mapping applies at
+once: its transactions are categorized, and when a term's mapping changes, the
+categories it assigned earlier are withdrawn and re-evaluated — ones you set by
+hand, by rule, or by merchant are never touched. `set` accepts a term only when an
 imported transaction carries it or it is already mapped, so a mistyped term is
 refused rather than stored as a mapping that never matches. It also refuses an
 inactive `--into` category. A term belongs to one source type (`csv`, `excel`,
@@ -641,8 +656,9 @@ by `--since <duration>` and `--metric <family>`. Commands:
 
 Generate and manage synthetic financial data for testing and demos. Each
 profile is isolated, so synthetic data never collides with real data.
-`synthetic generate` writes a persona's data into a fresh profile; `synthetic
-reset` wipes and regenerates from scratch. Commands:
+`synthetic generate` writes a persona's data into an empty profile that
+`profile create` already made, and names that command when the profile is
+missing; `synthetic reset` wipes and regenerates from scratch. Commands:
 [`reference/cli/synthetic.md`](../reference/cli/synthetic.md).
 
 Whole-pipeline scenarios live under `tests/scenarios/` and are driven via `make test-scenarios` rather than a CLI command.
@@ -741,7 +757,8 @@ moneybin system doctor
 ### Status-check a long-running pipeline from a script
 
 ```bash
-moneybin system status --output json | jq -e '.summary.total_count > 0' \
+moneybin system status --output json \
+  | jq -e '.data.sections[0].overview.transactions.count > 0' \
   && echo "data present" \
   || moneybin transactions categorize run
 ```

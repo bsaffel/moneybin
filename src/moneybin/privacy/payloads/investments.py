@@ -90,6 +90,10 @@ class InvestmentEventRow:
     investment_transaction_id: Annotated[str, DataClass.RECORD_ID]
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str | None, DataClass.RECORD_ID]
+    ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    security_name: Annotated[str | None, DataClass.TXN_TYPE]
+    exchange: Annotated[str | None, DataClass.TXN_TYPE]
+    ticker_shared: Annotated[bool, DataClass.TXN_TYPE]
     trade_date: Annotated[date, DataClass.TXN_DATE]
     settlement_date: Annotated[date | None, DataClass.TXN_DATE]
     original_acquisition_date: Annotated[date | None, DataClass.TXN_DATE]
@@ -110,6 +114,10 @@ class InvestmentEventRow:
             investment_transaction_id=row.investment_transaction_id,
             account_id=row.account_id,
             security_id=row.security_id,
+            ticker=row.ticker,
+            security_name=row.security_name,
+            exchange=row.exchange,
+            ticker_shared=row.ticker_shared,
             trade_date=row.trade_date,
             settlement_date=row.settlement_date,
             original_acquisition_date=row.original_acquisition_date,
@@ -163,6 +171,10 @@ class InvestmentHoldingRow:
 
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str, DataClass.RECORD_ID]
+    ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    security_name: Annotated[str | None, DataClass.TXN_TYPE]
+    exchange: Annotated[str | None, DataClass.TXN_TYPE]
+    ticker_shared: Annotated[bool, DataClass.TXN_TYPE]
     quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
     cost_basis: Annotated[Decimal, DataClass.BALANCE]
     average_cost: Annotated[Decimal | None, DataClass.BALANCE]
@@ -180,6 +192,10 @@ class InvestmentHoldingRow:
         return cls(
             account_id=row.account_id,
             security_id=row.security_id,
+            ticker=row.ticker,
+            security_name=row.security_name,
+            exchange=row.exchange,
+            ticker_shared=row.ticker_shared,
             quantity=row.quantity,
             cost_basis=row.cost_basis,
             average_cost=row.average_cost,
@@ -252,6 +268,10 @@ class InvestmentLotRow:
     lot_id: Annotated[str, DataClass.RECORD_ID]
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str, DataClass.RECORD_ID]
+    ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    security_name: Annotated[str | None, DataClass.TXN_TYPE]
+    exchange: Annotated[str | None, DataClass.TXN_TYPE]
+    ticker_shared: Annotated[bool, DataClass.TXN_TYPE]
     acquisition_date: Annotated[date, DataClass.TXN_DATE]
     acquisition_type: Annotated[str, DataClass.TXN_TYPE]
     original_quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
@@ -270,6 +290,10 @@ class InvestmentLotRow:
             lot_id=row.lot_id,
             account_id=row.account_id,
             security_id=row.security_id,
+            ticker=row.ticker,
+            security_name=row.security_name,
+            exchange=row.exchange,
+            ticker_shared=row.ticker_shared,
             acquisition_date=row.acquisition_date,
             acquisition_type=row.acquisition_type,
             original_quantity=row.original_quantity,
@@ -313,6 +337,10 @@ class InvestmentGainRow:
     realized_gain_id: Annotated[str, DataClass.RECORD_ID]
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str, DataClass.RECORD_ID]
+    ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    security_name: Annotated[str | None, DataClass.TXN_TYPE]
+    exchange: Annotated[str | None, DataClass.TXN_TYPE]
+    ticker_shared: Annotated[bool, DataClass.TXN_TYPE]
     disposal_txn_id: Annotated[str, DataClass.RECORD_ID]
     lot_id: Annotated[str, DataClass.RECORD_ID]
     quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
@@ -333,6 +361,10 @@ class InvestmentGainRow:
             realized_gain_id=row.realized_gain_id,
             account_id=row.account_id,
             security_id=row.security_id,
+            ticker=row.ticker,
+            security_name=row.security_name,
+            exchange=row.exchange,
+            ticker_shared=row.ticker_shared,
             disposal_txn_id=row.disposal_txn_id,
             lot_id=row.lot_id,
             quantity=row.quantity,

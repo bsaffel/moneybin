@@ -3346,6 +3346,175 @@ class TestApplyPlaidCategories:
             is None
         )
 
+    @pytest.mark.unit
+    def test_ignored_detailed_code_does_not_fall_back_to_primary(
+        self, db: Database
+    ) -> None:
+        """An ignored detailed code ends the lookup; the primary is not consulted."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK",
+            code_level="primary",
+            category_id="FND",
+            category="Food & Drink",
+            subcategory=None,
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK_COFFEE", code_level="detailed")
+        for transaction_id, detailed in (
+            ("t_ignored", "FOOD_AND_DRINK_COFFEE"),
+            # Control: an unmapped detailed code still falls back.
+            ("t_unmapped", "FOOD_AND_DRINK_FAST_FOOD"),
+        ):
+            _insert_plaid_txn(
+                db,
+                transaction_id,
+                category_detailed=detailed,
+                plaid_category="FOOD_AND_DRINK",
+                category_confidence="HIGH",
+            )
+            _seed_gold_transaction(db, transaction_id)
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        assert db.execute(
+            "SELECT transaction_id, category_id FROM app.transaction_categories"
+        ).fetchall() == [("t_unmapped", "FND")]
+
+    @pytest.mark.unit
+    def test_user_ignore_switches_off_a_seeded_translation(self, db: Database) -> None:
+        """A user row overrides the seed row for its key, even with no category."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK_COFFEE", code_level="detailed")
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_gold_transaction(db, "t1")
+
+        assert db.execute(
+            "SELECT category_id, is_default FROM core.bridge_category_source_map "
+            "WHERE source_category_code = 'FOOD_AND_DRINK_COFFEE'"
+        ).fetchall() == [(None, False)]
+        assert apply_plaid_categories(db) == 0
+        # An ignored code is known, not a coverage gap.
+        stats = CategorizationService(db).categorization_stats()
+        assert stats["plaid_unmapped"] == 0
+
+    @pytest.mark.unit
+    def test_ignored_primary_code_leaves_a_mapped_detailed_code_working(
+        self, db: Database
+    ) -> None:
+        """Detailed still outranks primary when it is the primary that is ignored."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK", code_level="primary")
+        for transaction_id, detailed in (
+            ("t_detailed", "FOOD_AND_DRINK_COFFEE"),
+            ("t_primary_only", "FOOD_AND_DRINK_FAST_FOOD"),
+        ):
+            _insert_plaid_txn(
+                db,
+                transaction_id,
+                category_detailed=detailed,
+                plaid_category="FOOD_AND_DRINK",
+                category_confidence="HIGH",
+            )
+            _seed_gold_transaction(db, transaction_id)
+
+        assert apply_plaid_categories(db) == 1
+        assert db.execute(
+            "SELECT transaction_id, category_id FROM app.transaction_categories"
+        ).fetchall() == [("t_detailed", "FND-COF")]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("mapped_first", [True, False])
+    def test_mislabelled_primary_ignore_does_not_suppress_a_detailed_code(
+        self, db: Database, mapped_first: bool
+    ) -> None:
+        """The ranking reads the transaction's codes, not the row's ``code_level``.
+
+        The ignore is written without ``code_level``, so it carries the
+        ``'detailed'`` default and ties with the real detailed row on label.
+        """
+        refresh_views(db)
+        db.execute(
+            "INSERT INTO seeds.categories "
+            "(category_id, category, subcategory, description) "
+            "VALUES ('FND-COF', 'Food & Drink', 'Coffee Shops', 'test category')"
+        )
+        # Both written as user rows, in each order, so neither scan order hides a tie.
+        writes: list[tuple[str, str | None]] = [
+            ("FOOD_AND_DRINK_COFFEE", "FND-COF"),
+            ("FOOD_AND_DRINK", None),
+        ]
+        for code, category_id in writes if mapped_first else reversed(writes):
+            CategorySourceMapRepo(db).upsert(
+                source_type="plaid",
+                source_origin="",
+                category=code,
+                subcategory=None,
+                category_id=category_id,
+                actor="test",
+            )
+        _insert_plaid_txn(
+            db,
+            "t0",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        # A tie resolves by scan order, which only varies once the join output
+        # spans DuckDB vectors (2,048 rows); a handful of rows cannot expose it.
+        transaction_count = 5000
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged "
+            "SELECT 't' || n, 'FOOD_AND_DRINK_COFFEE', 'FOOD_AND_DRINK', 'HIGH' "
+            "FROM range(1, ?) AS r(n)",
+            [transaction_count],
+        )
+
+        candidates = CategorizationService(db)._orchestrator._plaid_bridge_candidates(  # pyright: ignore[reportPrivateUsage]  # the ranking, without 5,000 writes
+            "uncategorized"
+        )
+
+        assert len(candidates) == transaction_count
+        assert {(row[1], row[2]) for row in candidates} == {
+            ("Food & Drink", "Coffee Shops")
+        }
+
+
+def _ignore_plaid_code(db: Database, code: str, *, code_level: str) -> None:
+    """Store a user row that ignores one provider-wide Plaid code."""
+    CategorySourceMapRepo(db).upsert(
+        source_type="plaid",
+        source_origin="",
+        category=code,
+        subcategory=None,
+        category_id=None,
+        code_level=code_level,
+        actor="test",
+    )
+
 
 # ---------------------------------------------------------------------------
 # apply_source_category_map — imported (tabular/manual) category text ->

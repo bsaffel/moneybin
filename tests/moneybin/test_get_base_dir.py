@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.config import canonical_checkout_root, get_base_dir
+from moneybin.config import (
+    canonical_checkout_root,
+    get_base_dir,
+    running_checkout_root,
+)
 
 
 def _make_worktree(tmp_path: Path) -> tuple[Path, Path]:
@@ -210,3 +214,23 @@ class TestCanonicalCheckoutRoot:
         """Anything that is not a `gitdir:` pointer falls back to the input."""
         (tmp_path / ".git").write_text("not a gitdir pointer\n")
         assert canonical_checkout_root(tmp_path) == tmp_path
+
+
+class TestRunningCheckoutRoot:
+    """running_checkout_root() names where the package lives, not the cwd."""
+
+    def test_source_tree_names_its_checkout_whatever_the_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The test suite runs from the source tree, so the root is this repo."""
+        repo = Path(__file__).resolve().parents[2]
+        monkeypatch.chdir(tmp_path)
+        assert running_checkout_root() == repo
+
+    def test_installed_package_has_no_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wheel under site-packages sits in no MoneyBin checkout."""
+        installed = tmp_path / "lib" / "site-packages" / "moneybin" / "config.py"
+        monkeypatch.setattr("moneybin.config.__file__", str(installed))
+        assert running_checkout_root() is None

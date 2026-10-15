@@ -89,7 +89,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_rules` | `view` | Current categorization rules | Read / at least high |
 | `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state; fails the whole batch with `taxonomy_rule_conflict` when a target claims an active rule's matcher under a different category | Confirmed write / at least low |
 | `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows and both sides of each `kind='rule_conflicts'` row | Read / dynamic / up to critical / queue-derived |
-| `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad`, `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least low |
+| `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` (an accept refused by the broad or short-pattern guard stays `pending`, `changed: false`, with a result `reason` naming the guard), `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least low |
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / at least medium (prompt-disclosed) |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / up to medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / at least low |
@@ -392,6 +392,12 @@ sits at the 50-tool hard limit exactly — admitting another means retiring one:
 - `system_status(sections=["exports"])` reports destination readiness through
   the existing orientation tool, so status does not consume a third export
   slot.
+- `moneybin system status --output json` returns the same `data` and
+  `summary` as `system_status(sections=["overview", "exports"])`: one
+  sectioned payload, built once in `moneybin.adapters.system_status_adapters`,
+  and one derived sensitivity. Only `actions` differ: MCP names tools, and
+  the CLI emits none. Under a held write lock MCP degrades to a zero-filled
+  overview naming the holder; the CLI returns an error envelope instead.
 
 Sheets destinations are output-only and cannot overlap an inbound `gsheet`
 connection. Publication replaces only MoneyBin-managed tabs after staging and

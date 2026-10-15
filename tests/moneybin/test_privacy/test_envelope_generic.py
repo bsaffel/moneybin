@@ -84,6 +84,10 @@ def _holding(currency: str) -> InvestmentHoldingRow:
     return InvestmentHoldingRow(
         account_id="acct-1",
         security_id="sec-1",
+        ticker=None,
+        security_name=None,
+        exchange=None,
+        ticker_shared=False,
         quantity=Decimal("1"),
         cost_basis=Decimal("10.00"),
         average_cost=Decimal("10.00"),
