@@ -73,7 +73,10 @@ Related specs:
 ## Requirements
 
 1. **Store an append-only daily price history.** One row per security, date,
-   quote currency, and source. A stored row is never updated or deleted.
+   quote currency, and source. A stored row is never updated or deleted. The
+   one exception is a purging sync disconnect (`sync-overview.md`), which
+   removes a connection's whole `(source_type, source_origin)` partition with
+   the connection that supplied it, never one row of it.
 2. **Record what each source claimed it sent.** Every row carries a declared
    adjustment basis. Ingest rejects a row whose basis the adapter cannot state.
 3. **Resolve one price per security per date**, deterministically, with the
@@ -135,7 +138,8 @@ flowchart LR
 
 ### New table: `raw.security_prices`
 
-The provider cache. Immutable, append-only, one row per observation.
+The provider cache. Immutable, append-only, one row per observation; the only
+delete is the whole-partition one a purging sync disconnect performs.
 
 | Column | Type | Notes |
 |---|---|---|

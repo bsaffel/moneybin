@@ -558,6 +558,18 @@ class TestProfileConfigFileSource:
 
         assert settings.profile == "alice"
 
+    def test_lowercase_level_on_disk_loads_uppercased(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file `profile set` wrote before it validated values still loads."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_LOGGING__LEVEL", raising=False)
+        _write_profile_config(tmp_path, "alice", "logging:\n  level: debug\n")
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "DEBUG"
+
     def test_rejected_value_names_the_file_and_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

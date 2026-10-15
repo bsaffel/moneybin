@@ -1,6 +1,8 @@
 /* Daily price observations per security, date, quote currency, and source. APPEND-ONLY:
    a stored row is never updated or deleted, because a historical close is an immutable
-   fact. Writers pass on_conflict="ignore" so a re-reported observation keeps the row
+   fact. The one exception is a purging sync disconnect, which deletes a whole
+   (source_type, source_origin) partition: a connection's history leaves with the
+   connection, never one row of it. Writers pass on_conflict="ignore" so a re-reported observation keeps the row
    first written — "insert" would raise on the second sync and "upsert" would silently
    mutate history. Deliberately unlike raw.plaid_securities, whose close_price is
    upsert-overwritten on every pull and therefore cannot carry a history.

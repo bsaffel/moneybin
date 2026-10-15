@@ -167,13 +167,16 @@ which history the user trusts, so no agent picks one unprompted. Full design:
 deliberate delete of recorded history (`REVERT_TABLES['manual']` covers
 `raw.manual_investment_transactions`), but as the suggested remedy it answered
 a question of trust with a permanent loss. `sync_disconnect` is deliberately
-**not** offered either. It is a remote operation — `SyncService.disconnect_confirmed`
+**not** offered either. By default it is a remote operation — `SyncService.disconnect_confirmed`
 calls `client.disconnect` and deletes nothing locally, as its own confirmation
 says ("Previously pulled local rows remain") — and this check joins exactly
 those retained rows, as does `core.dim_holdings`'s `source_overlap_accounts`.
 Following it would cost the user their connection permanently and leave the
 check failing and the holdings withheld, which is worse than no suggestion: a
-`RecoveryAction` is a claim that running it fixes the failure. Someone whose
+`RecoveryAction` is a claim that running it fixes the failure. Its purging
+form (`state="absent"`, `--purge`) would clear the check, but it takes the
+whole connection and every account on it, so it is the same permanent loss
+`import_revert` was withdrawn for. Someone whose
 file import is the ledger they want may still reach for a disconnect on their
 own; choosing `manual` gets the same ledger and keeps the connection.
 

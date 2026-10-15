@@ -272,17 +272,29 @@ class SyncDisconnectPayload:
     status: Annotated[str, DataClass.TXN_TYPE]
     institution: Annotated[str | None, DataClass.INSTITUTION]
     provider_item_id: Annotated[str, DataClass.RECORD_ID]
+    purged: Annotated[bool, DataClass.TXN_TYPE] = False
+    rows_deleted: Annotated[int, DataClass.AGGREGATE] = 0
+    account_links_reversed: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 class SyncInstitutionDisconnectView(BaseModel):
-    """Confirmation that one institution was disconnected."""
+    """Confirmation that one institution was disconnected, optionally purged.
+
+    ``purged`` carries the local half: with ``state="absent"`` every locally
+    pulled row of the item was deleted and ``rows_deleted`` counts them.
+    ``institution`` is ``None`` when the server no longer listed the item and
+    only the local rows were removed.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
-    status: Annotated[Literal["disconnected"], DataClass.TXN_TYPE]
+    status: Annotated[Literal["disconnected", "purged"], DataClass.TXN_TYPE]
     institution: Annotated[str | None, DataClass.INSTITUTION]
     provider_item_id: Annotated[str, DataClass.RECORD_ID]
+    purged: Annotated[bool, DataClass.TXN_TYPE] = False
+    rows_deleted: Annotated[int, DataClass.AGGREGATE] = 0
+    account_links_reversed: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 class SyncLogoutView(BaseModel):
