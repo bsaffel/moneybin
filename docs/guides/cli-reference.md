@@ -191,13 +191,15 @@ Commands: [`reference/cli/system.md`](../reference/cli/system.md).
 What needs your attention, across every queue that holds a pending decision.
 A bare `moneybin review` prints the counts for all five queues: matches,
 uncategorized, account-links, merchant-links, security-links. `--type` narrows
-to one queue; `--confirm <id>` and `--reject <id>` decide one pending match
-without opening a queue command and require `--type matches`; `--confirm-all`
-accepts the whole match queue. To see the rows behind a count, use that queue's
-own command — `transactions matches pending`, `transactions categorize
-pending`, `accounts links pending`, `merchants links pending`, `investments
-securities links pending`. The item-by-item walk (`--interactive`) is not built
-yet. Commands: [`reference/cli/review.md`](../reference/cli/review.md).
+to one queue. `--interactive` walks pending decisions in a terminal, with
+accept, reject, skip, and quit actions; `--limit` bounds the items shown.
+For scripted match decisions, use `--type matches` with `--confirm <id>`,
+`--reject <id>`, or `--confirm-all`. To reject a categorization attempt, discover
+its ID with `transactions categorize pending --pending-only`, then pass
+`--type categorize --reject <decision-id>`. To inspect the queues, use
+`transactions matches pending`, `transactions categorize pending`,
+`accounts links pending`, `merchants links pending`, or `investments securities
+links pending`. Commands: [`reference/cli/review.md`](../reference/cli/review.md).
 
 ## Ingestion
 
