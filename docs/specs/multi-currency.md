@@ -723,7 +723,9 @@ Numbered, testable. Tagged by phase.
     in leaves those dates needing a live fetch, and waiting cannot fill the gap:
     the window opens at the profile's earliest row and moves back only when
     earlier data is imported. The publication slack lives in the *request*
-    instead, which opens `MAX_BACKWARD_RESOLUTION_DAYS` before the window does,
+    instead, which opens `MAX_BACKWARD_RESOLUTION_DAYS` before the window does
+    — stepped back to the Friday when that day is a weekend, because the
+    provider resolves a closed request start to the publication before it —
     so a profile whose earliest row falls on a closed market is covered by the
     last publication day before it rather than reported short forever. The
     closing bound allows that same span, because a missing recent date is

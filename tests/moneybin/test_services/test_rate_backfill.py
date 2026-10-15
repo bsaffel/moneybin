@@ -1288,3 +1288,36 @@ def test_a_rate_resolved_back_to_the_last_publication_day_is_kept(
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
 
     assert result.rates_written == 1
+
+
+def test_a_request_opening_on_a_weekend_keeps_the_friday_it_resolves_to(
+    db: Database,
+) -> None:
+    """A weekend request start is answered from the Friday before it, not reported short.
+
+    The window opens on a Saturday, so the request reaching back two weeks opens
+    on a Saturday too. The provider resolves that day to the Friday before it;
+    if the request still began on the Saturday, that Friday would land outside
+    the bound, be discarded, and name the pair on every refresh although every
+    rate a report reads was stored. The coverage span starts on that Friday —
+    a real publication — not on the weekend nobody published.
+    """
+    saturday = date(2026, 3, 14)
+    friday_before_request = saturday - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS + 1)
+    _add_transaction(db, on=saturday, currency="EUR")
+    adapter = _DatedAdapter(
+        friday_before_request,
+        date(2026, 3, 2),
+        date(2026, 3, 13),
+        _TODAY - timedelta(days=1),
+    )
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ()
+    assert result.rates_written == 4
+    assert adapter.ranges == [("EUR", "USD", friday_before_request, _TODAY)]
+    assert db.execute(
+        "SELECT start_date, end_date FROM raw.exchange_rate_coverage "
+        "WHERE from_currency = 'EUR' AND to_currency = 'USD'"
+    ).fetchall() == [(friday_before_request, _TODAY - timedelta(days=1))]

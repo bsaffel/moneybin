@@ -179,7 +179,7 @@ def run_rate_backfill(
                 # before the window instead — the row `resolve_rate`'s hop then
                 # reads — so the opening date converts offline rather than
                 # merely being reported as short.
-                window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+                _request_start(window),
                 window.end,
             )
         except FeedError:
@@ -476,6 +476,21 @@ def _usable_targets(
     )
 
 
+def _request_start(window: RateWindow) -> date:
+    """The first day a backfill asks the provider for, and the lower bound it keeps.
+
+    ``MAX_BACKWARD_RESOLUTION_DAYS`` before the window, stepped back off a
+    weekend. A provider resolves a closed start day to the publication before
+    it, so a request opening on a Saturday comes back from the Friday; asked
+    from the Saturday, that Friday would fall outside the bound and the pair
+    would be reported short on every refresh. A start on a weekday holiday still
+    resolves past the bound — the weekend is the case the calendar alone can
+    rule out.
+    """
+    start = window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    return start - timedelta(days=max(0, start.isoweekday() - 5))
+
+
 def _within_window(
     observations: Sequence[RateObservation], window: RateWindow
 ) -> tuple[RateObservation, ...]:
@@ -500,7 +515,7 @@ def _within_window(
     rather than waiting to be offered it, so this bound is the span asked for
     rather than a tolerance around a narrower one.
     """
-    earliest = window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    earliest = _request_start(window)
     return tuple(
         observation
         for observation in observations

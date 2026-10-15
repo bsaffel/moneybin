@@ -172,6 +172,42 @@ def fct_exchange_rates_daily_db(
         """  # test fixture, not executing user SQL
     )
 
+    # A provider's trailing edge. frankfurter publishes the Monday and the
+    # Wednesday and records an answer through the Friday, then stops;
+    # exchangerate_host publishes the next Wednesday, which extends the spine
+    # past frankfurter's last row. Thursday and Friday sit inside frankfurter's
+    # answer but after its final publication, so nothing brackets them.
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="NNN",
+        rate_date="2026-01-05",
+        rate="6.0000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="NNN",
+        rate_date="2026-01-07",
+        rate="6.1000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="NNN",
+        rate_date="2026-01-14",
+        rate="6.5000",
+        source_type="exchangerate_host",
+    )
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rate_coverage
+            (from_currency, to_currency, start_date, end_date, source_type)
+        VALUES ('USD', 'NNN', '2026-01-05', '2026-01-09', 'frankfurter'),
+               ('USD', 'NNN', '2026-01-14', '2026-01-14', 'exchangerate_host')
+        """  # test fixture, not executing user SQL
+    )
+
     # A Friday, then a Tuesday eleven days on — wider than a market closure.
     _insert_provider(
         db,
@@ -368,6 +404,31 @@ def test_another_providers_coverage_does_not_prove_a_closure(
         ("2025-12-29", "2025-12-29", "exchangerate_host"),
         ("2026-01-05", "2026-01-05", "frankfurter"),
         ("2026-01-08", "2026-01-08", "frankfurter"),
+    ]
+
+
+@pytest.mark.slow
+def test_a_providers_last_publication_proves_no_closure_after_it(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """A covered day past a provider's final row has no bracket, so it stays unpriced.
+
+    The Tuesday is a closure frankfurter proves (Monday and Wednesday bracket
+    it inside its answer). Thursday and Friday are inside that answer too, but
+    no frankfurter row follows them — `resolve_rate`'s offline path needs one —
+    so only exchangerate_host's own publication prices the next week.
+    """
+    rows = fct_exchange_rates_daily_db.execute(
+        "SELECT effective_date, published_date, rate_vendor "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'USD' AND to_currency = 'NNN' "
+        "ORDER BY effective_date"
+    ).fetchall()
+    assert [(str(r[0]), str(r[1]), r[2]) for r in rows] == [
+        ("2026-01-05", "2026-01-05", "frankfurter"),
+        ("2026-01-06", "2026-01-05", "frankfurter"),
+        ("2026-01-07", "2026-01-07", "frankfurter"),
+        ("2026-01-14", "2026-01-14", "exchangerate_host"),
     ]
 
 

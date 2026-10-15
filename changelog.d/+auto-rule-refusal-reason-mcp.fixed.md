@@ -1,0 +1,1 @@
+MCP `reviews_decide` now says why it left an auto-rule accept `pending`: each result the broad or short-pattern guard refused carries a `reason` naming the guard and that `allow_broad=true` accepts it. The refusal used to surface only as an unexplained `skipped` count.
