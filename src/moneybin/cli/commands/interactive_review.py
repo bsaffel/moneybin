@@ -60,20 +60,42 @@ def load_items(type_: str, limit: int | None = None) -> list[ReviewItem]:
                 break
             pending: list[ReviewItem] = []
             if queue == "matches":
-                for row in MatchingService(db).get_pending(limit=remaining):
-                    pending.append(
-                        ReviewItem(
-                            queue,
-                            str(row["match_id"]),
-                            tuple(
-                                (key.replace("_", " "), str(value))
-                                for key, value in sorted(row.items())
+                match_service = MatchingService(db)
+                for row in match_service.get_pending(limit=remaining):
+                    evidence = [
+                        (key.replace("_", " "), str(value))
+                        for key, value in sorted(row.items())
+                    ]
+                    for side in ("a", "b"):
+                        account_id = row.get("account_id_b") if side == "b" else None
+                        observation = match_service.get_source_observation(
+                            source_type=str(row[f"source_type_{side}"]),
+                            source_transaction_id=str(
+                                row[f"source_transaction_id_{side}"]
                             ),
+                            account_id=str(account_id or row["account_id"]),
                         )
+                        if observation is None:
+                            evidence.append((
+                                f"Transaction {side.upper()}",
+                                "Source observation unavailable; refresh before deciding",
+                            ))
+                            continue
+                        evidence.extend(
+                            (
+                                f"Transaction {side.upper()} {key.replace('_', ' ')}",
+                                format_money(value, "flow", minus="-")
+                                if key == "amount"
+                                else str(value or "-"),
+                            )
+                            for key, value in observation.items()
+                        )
+                    pending.append(
+                        ReviewItem(queue, str(row["match_id"]), tuple(evidence))
                     )
             elif queue == "categorize":
                 svc = CategorizationService(db)
-                rows = svc.list_uncategorized_transactions(limit=remaining) or []
+                rows = svc.list_uncategorized_transactions(limit=None) or []
                 attempts = svc.project_pending_review_attempts([
                     str(row["transaction_id"]) for row in rows
                 ])
@@ -210,7 +232,8 @@ def load_items(type_: str, limit: int | None = None) -> list[ReviewItem]:
                             ),
                         )
                     )
-            pending.sort(key=lambda item: item.item_id)
+            if queue not in {"matches", "categorize"}:
+                pending.sort(key=lambda item: item.item_id)
             items.extend(pending if remaining is None else pending[:remaining])
     return items
 

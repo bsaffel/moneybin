@@ -518,3 +518,118 @@ def test_target_time_staleness_counts_in_session_receipt(
     out = capsys.readouterr().out
     assert re.search(r"Stale items:?\s+1\b", out)
     assert re.search(r"Decisions saved:?\s+0\b", out)
+
+
+def test_rejected_newest_does_not_hide_older_pending_next_session(db: object) -> None:
+    from contextlib import nullcontext
+    from typing import cast
+
+    from moneybin.cli.commands.interactive_review import apply_decision, load_items
+    from moneybin.database import Database
+    from tests.moneybin.db_helpers import create_core_tables
+
+    database = cast(Database, db)
+    create_core_tables(database)
+    database.execute("""
+        INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount,
+             currency_code, description, source_type)
+        VALUES ('a', 'acct', DATE '2026-10-02', -2.00, 'USD', 'Newest purchase', 'manual'),
+               ('b', 'acct', DATE '2026-10-01', -1.00, 'USD', 'Older purchase', 'manual')
+    """)
+    database.execute("""
+        CREATE OR REPLACE VIEW core.uncategorized_queue AS
+        SELECT transaction_id, account_id, 'Synthetic account' AS account_name,
+               transaction_date AS txn_date, amount, currency_code, description,
+               merchant_id, NULL::VARCHAR AS merchant_normalized, 1 AS age_days,
+               ABS(amount) AS priority_score, source_type, transaction_id AS source_id
+        FROM core.fct_transactions WHERE category IS NULL
+    """)
+    with patch(
+        "moneybin.cli.commands.interactive_review.get_database",
+        return_value=nullcontext(database),
+    ):
+        first = load_items("categorize", 1)
+        assert len(first) == 1
+        assert dict(first[0].evidence)["transaction id"] == "a"
+        assert apply_decision(
+            first[0], "reject", replace(get_terminal_policy(), interactive=True)
+        )
+        next_session = load_items("categorize", 1)
+    assert len(next_session) == 1
+    assert dict(next_session[0].evidence)["transaction id"] == "b"
+
+
+def test_match_load_and_render_show_both_actual_source_observations(
+    db: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from contextlib import nullcontext
+    from typing import cast
+
+    from moneybin.cli.commands.interactive_review import run_review
+    from moneybin.database import Database
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+    from tests.moneybin.db_helpers import create_core_tables
+
+    database = cast(Database, db)
+    create_core_tables(database)
+    database.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    database.execute("""
+        CREATE TABLE prep.int_transactions__unioned (
+            source_transaction_id VARCHAR, account_id VARCHAR, source_type VARCHAR,
+            transaction_date DATE, amount DECIMAL(18,2), currency_code VARCHAR,
+            description VARCHAR
+        )
+    """)
+    database.execute("""
+        INSERT INTO prep.int_transactions__unioned VALUES
+        ('shared-id', 'first', 'manual', DATE '2026-10-01', -12.34, 'USD', 'First source purchase'),
+        ('shared-id', 'second', 'csv', DATE '2026-10-02', 12.34, 'USD', 'Second source receipt'),
+        ('shared-id', 'wrong', 'manual', DATE '2026-10-03', 999.00, 'EUR', 'Wrong account decoy')
+    """)
+    database.execute("""
+        INSERT INTO core.dim_accounts (account_id, display_name)
+        VALUES ('first', 'Synthetic checking'), ('second', 'Synthetic savings')
+    """)
+    MatchDecisionsRepo(database).insert(
+        match_id="pair",
+        source_transaction_id_a="shared-id",
+        source_type_a="manual",
+        source_origin_a="user",
+        source_transaction_id_b="shared-id",
+        source_type_b="csv",
+        source_origin_b="bank",
+        account_id="first",
+        account_id_b="second",
+        confidence_score=0.9,
+        match_signals={},
+        match_tier=None,
+        match_type="transfer",
+        match_status="pending",
+        decided_by="matcher",
+        actor="test",
+    )
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.get_database",
+            return_value=nullcontext(database),
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="skip",
+        ),
+    ):
+        run_review("matches", 1, replace(get_terminal_policy(), interactive=True))
+    output = capsys.readouterr().out
+    for expected in (
+        "First source purchase",
+        "Second source receipt",
+        "12.34",
+        "USD",
+        "2026-10-01",
+        "2026-10-02",
+        "Synthetic checking",
+        "Synthetic savings",
+    ):
+        assert expected in output
+    assert "Wrong account decoy" not in output
