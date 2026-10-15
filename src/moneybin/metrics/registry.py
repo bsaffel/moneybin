@@ -928,6 +928,14 @@ SYNC_CONNECT_OUTCOMES = Counter(
     ["status"],
 )
 
+SYNC_SERVER_ADDRESS_OUTCOMES = Counter(
+    "moneybin_sync_server_address_outcomes_total",
+    "Attempts to save a profile's sync server address at login, by surface "
+    "(cli, mcp) and outcome (saved, replaced, unreachable, rejected, declined, "
+    "timed_out, prompt_unavailable, override_conflict).",
+    ["surface", "outcome"],
+)
+
 # ── Investments sync ─────────────────────────────────────────────────────────
 
 SYNC_INVESTMENTS_RECORDS_LOADED = Counter(
@@ -1339,6 +1347,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_sync_institution_errors": "Sync",
     "moneybin_sync_auth_refresh_outcomes": "Sync",
     "moneybin_sync_connect_outcomes": "Sync",
+    "moneybin_sync_server_address_outcomes": "Sync",
     # Investments sync
     "moneybin_sync_investments_records_loaded": "Investments sync",
     "moneybin_investment_amount_drift_rows": "Investments sync",

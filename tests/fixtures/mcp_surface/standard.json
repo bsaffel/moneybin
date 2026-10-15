@@ -1,5 +1,5 @@
 {
-  "sha256": "b1ee6d6bdd2d8eeb7be5bcc479e1b9673b4cf2ac9019949b8b93a017892e3c86",
+  "sha256": "b71107a68a7a831315f88bc937944c1c23f19fb57ada851e6bb095b310f3c30c",
   "tool_count": 50,
   "tools": [
     {
@@ -3451,7 +3451,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries.",
+        "description": "Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries. In login mode, server_url names this profile's sync server: pass only an address the user gave you; omit it and, if none is saved, the user is offered http://127.0.0.1:8000. A new or changed address is saved to the profile's config.yaml only after the user confirms a prompt, and signs the profile out of the previous server; log in with another address to change it back.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3473,6 +3473,17 @@
                 "login"
               ],
               "type": "string"
+            },
+            "server_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "type": "object"
@@ -3480,12 +3491,12 @@
         "name": "sync_link",
         "title": "Sync Link"
       },
-      "description_bytes": 214,
-      "input_schema_bytes": 216,
+      "description_bytes": 587,
+      "input_schema_bytes": 290,
       "name": "sync_link",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 639
+      "total_bytes": 1086
     },
     {
       "annotation_bytes": 90,
@@ -5327,5 +5338,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 64405
+  "total_bytes": 64852
 }

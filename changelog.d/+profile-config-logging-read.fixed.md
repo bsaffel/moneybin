@@ -1,1 +1,0 @@
-`moneybin profile set logging.level DEBUG` (and any other `logging.*` key) now takes effect at the profile's next run; before, the value was written to the profile's `config.yaml` and never read. A `MONEYBIN_LOGGING__*` environment variable or the same line in `.env.<profile>` still wins over the file.

@@ -201,7 +201,7 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 | OFX / QFX / QBO / CSV / PDF imports | None | Pure file path; never reads `sync.server_url`. An agent-driven PDF import can still egress *through the MCP client* when extraction escalates to the agent — outbound from the client, not from MoneyBin. See [PDF privacy posture](data-import.md#pdf-native-text). |
 | `moneybin mcp serve` startup / local tools | None | stdio JSON-RPC only; no listening port; no telemetry. Explicit connector tool calls follow the rows below. |
 | `moneybin db ...`, `moneybin transform apply`, `moneybin reports ...` | None | All local. |
-| `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — the user supplies the broker URL via env / config. Set to your self-hosted instance or to the hosted broker if you choose one. |
+| `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — you supply the broker URL at `sync login --server <url>`, which saves it to the profile once the server answers. Over MCP an agent can pass an address, but it is saved only after you confirm a prompt showing it; a client that cannot prompt is refused. Stored tokens are bound to the server that issued them and are never presented to a different address. |
 | `moneybin gsheet ...` / `gsheet_*` | Google OAuth and Sheets APIs | Only when the user invokes the connector; credentials remain in `SecretStore`. |
 | `moneybin export bundle\|report --to sheets:<name>` / `export_run` | Google Sheets API | Only when the user explicitly selects a saved Sheets export destination; export data is written to its managed tabs. |
 | Categorization assist (MCP tool) | None | The LLM call originates in the MCP client process, not in MoneyBin. |

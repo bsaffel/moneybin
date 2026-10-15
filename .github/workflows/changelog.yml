@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   fragments:
@@ -18,10 +19,30 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Validate fragments and release scope
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          SKIP_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
-          RELEASE_PREPARATION: ${{ contains(github.event.pull_request.labels.*.name, 'release-preparation') }}
         run: |
+          # The event payload's labels are a snapshot taken when the event
+          # fired. Dependabot labels a PR a second or two after opening it, so
+          # the `opened` run saw no skip-changelog label and failed while the
+          # `labeled` runs passed, and every Actions bump still showed a red
+          # check (#671, #672). Read the labels as they are now instead. That
+          # narrows the window rather than closing it: a label applied after
+          # this lookup still fails this run, and the `labeled` event's re-run
+          # is the one that passes.
+          if ! LABELS="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.labels[].name')"; then
+            echo "Could not read the labels of PR #${PR_NUMBER}, so skip-changelog and release-preparation cannot be evaluated. Re-run this job." >&2
+            exit 1
+          fi
+          SKIP_CHANGELOG=false
+          RELEASE_PREPARATION=false
+          if grep -qx 'skip-changelog' <<< "$LABELS"; then
+            SKIP_CHANGELOG=true
+          fi
+          if grep -qx 'release-preparation' <<< "$LABELS"; then
+            RELEASE_PREPARATION=true
+          fi
           # actions/checkout builds the ephemeral GitHub merge commit for
           # pull_request events: HEAD^1 is the base branch's current tip and
           # HEAD^2 is the PR head. github.event.pull_request.base.sha is only

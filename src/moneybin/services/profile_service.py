@@ -19,7 +19,7 @@ from typing import cast
 import yaml
 
 from moneybin import error_codes
-from moneybin.config import get_base_dir
+from moneybin.config import get_base_dir, validate_profile_setting
 from moneybin.errors import UserError
 from moneybin.utils.user_config import (
     generate_profile_config,
@@ -31,27 +31,6 @@ from moneybin.utils.user_config import (
 logger = logging.getLogger(__name__)
 
 _SAFE_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
-
-
-def _validate_logging_value(field: str, value: object) -> None:
-    """Refuse a ``logging.*`` write the settings model would reject.
-
-    Settings read this section back on every later command, so a bad value
-    written here would stop all of them with a validation traceback; the
-    one command that can still name the accepted values is this write.
-    """
-    from pydantic import ValidationError
-
-    from moneybin.config import LoggingConfig
-
-    if field not in LoggingConfig.model_fields:
-        accepted = ", ".join(LoggingConfig.model_fields)
-        raise ValueError(f"Unknown logging setting {field!r}; accepted: {accepted}")
-    try:
-        LoggingConfig.model_validate({field: value})
-    except ValidationError as e:
-        detail = "; ".join(err["msg"] for err in e.errors())
-        raise ValueError(f"Invalid value for logging.{field}: {detail}") from None
 
 
 @contextlib.contextmanager
@@ -459,9 +438,8 @@ class ProfileService:
     def set(self, name: str, key: str, value: str) -> None:
         """Set a config value in a profile's config.yaml.
 
-        Only supports two-level dot-notation keys (``section.field``).
-        Boolean strings (``"true"``/``"false"``) and digit-only strings
-        are coerced to their native types before writing.
+        Only supports two-level dot-notation keys (``section.field``) that
+        ``MoneyBinSettings`` declares; the value is coerced to the field's type.
 
         Args:
             name: Profile name (normalized before lookup).
@@ -470,8 +448,9 @@ class ProfileService:
 
         Raises:
             ProfileNotFoundError: If the named profile directory does not exist.
-            ValueError: If ``key`` is not in ``section.field`` format, or if
-                the name contains no valid characters.
+            ValueError: If ``key`` is not a declared, non-secret
+                ``section.field``, the value is rejected by the field's type,
+                or the name contains no valid characters.
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
@@ -487,19 +466,18 @@ class ProfileService:
         section, field = parts
         if not _SAFE_KEY.match(section) or not _SAFE_KEY.match(field):
             raise ValueError(f"Key parts must be lowercase identifiers, got: {key!r}")
+        # Validated before the file is touched: settings load this file, so an
+        # undeclared key would be inert and a bad value would break every command.
+        saved = data.get(section)
+        coerced_value = validate_profile_setting(
+            section,
+            field,
+            value,
+            cast(dict[str, object], saved) if isinstance(saved, dict) else None,
+        )
         if section not in data or not isinstance(data[section], dict):
             data[section] = {}
         section_dict: dict[str, object] = data[section]  # type: ignore[assignment]  # narrowed above
-        # Coerce booleans and integers from string representation
-        coerced_value: str | bool | int
-        if value.lower() in ("true", "false"):
-            coerced_value = value.lower() == "true"
-        elif value.isdigit():
-            coerced_value = int(value)
-        else:
-            coerced_value = value
-        if section == "logging":
-            _validate_logging_value(field, coerced_value)
         section_dict[field] = coerced_value
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
