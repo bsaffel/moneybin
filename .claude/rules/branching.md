@@ -118,11 +118,12 @@ Add incremental sync for Plaid transactions
 
 ## Skipping the AI reviewer on a single push
 
-The `AI Code Review` workflow re-runs on **every** push to an open PR
-(`synchronize`) — it does not check approval state. To skip a redundant review
-on the final nit-fix commit of an already-approved PR you're about to merge,
-put `[skip-review]` (or `[skip review]`) in **that commit's** message. The
-workflow reads the tip commit message and skips that push only.
+The `AI Code Review` workflow re-runs on **every** push to an open, non-draft
+PR (`synchronize`) — it does not check approval state. Draft PRs skip it
+automatically, so a draft push never needs the marker below. To skip a
+redundant review on the final nit-fix commit of an already-approved PR you're
+about to merge, put `[skip-review]` (or `[skip review]`) in **that commit's**
+message. The workflow reads the tip commit message and skips that push only.
 
 Apply this narrowly — it is for the merge-prep push, not a way to dodge
 review. Only use it when **all** hold: the PR already carries a green
