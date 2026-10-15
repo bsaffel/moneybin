@@ -31,7 +31,7 @@ What lives inside a profile:
 - **Logs.** `<base>/profiles/<name>/logs/` — daily-rotating files written by the `SanitizedLogFormatter`. One profile's logs never mix with another's.
 - **Metrics.** The `app.metrics` table lives inside each profile's database, so metric counters are profile-internal.
 - **Audit trail.** The `app.audit_log` table is also profile-internal — privacy consent grants, redaction decisions, and tool invocations are scoped to the profile that recorded them.
-- **Config.** A profile-level `<base>/profiles/<name>/config.yaml` holds overridable defaults (logging level, sync enable flag, encryption mode); the user-level `<base>/config.yaml` holds the active-profile pointer.
+- **Config.** A profile-level `<base>/profiles/<name>/config.yaml` holds overridable defaults (logging level, sync server address, encryption mode); the user-level `<base>/config.yaml` holds the active-profile pointer.
 - **Backups.** `db backup` writes into `<base>/profiles/<name>/backups/` by default; `profile delete` removes the entire profile directory, including backups stored there.
 
 ### Base directory resolution

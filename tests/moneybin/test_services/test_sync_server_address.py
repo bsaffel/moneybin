@@ -134,6 +134,7 @@ class TestNormalizeServerUrl:
             "https://a.example.test/#frag",
             "http://a.example.test:http",
             "http://a.example.test:99999",
+            "https://a.example.test/\x1b[31m",
         ],
     )
     def test_refuses_anything_but_a_plain_http_address(self, raw: str) -> None:
@@ -318,8 +319,20 @@ class TestStartLogin:
 
         assert plan.change == "unchanged"
         assert start.outcome == "unchanged"
-        assert start.challenge is None
+        assert start.challenge is not None
         assert "clear credentials" not in events
+
+    def test_same_address_that_now_fails_is_translated(
+        self, events: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An address already in force gets the clean failure, not a raw HTTP error."""
+        address.start_login(address.plan_server_address(_A), surface="cli")
+        monkeypatch.setattr(address, "_new_client", _failing_sync_server)
+
+        with pytest.raises(SyncAPIError):
+            address.start_login(address.plan_server_address(_A), surface="cli")
+
+        assert _saved(tmp_path) == _A
 
 
 class TestOverrideConflict:

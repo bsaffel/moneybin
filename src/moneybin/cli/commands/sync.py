@@ -279,7 +279,7 @@ def sync_login(
                 )
             start = sync_server_address.start_login(plan, surface="cli")
             start.client.login(open_browser=not no_browser, challenge=start.challenge)
-            if start.challenge is not None:
+            if start.outcome != "unchanged":
                 pairs.append(("Server", f"{plan.url} ({start.outcome})"))
     _emit_sync_receipt("Login complete", pairs)
 

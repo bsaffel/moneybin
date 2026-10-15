@@ -54,7 +54,6 @@ class LoginStart:
     """A client bound to the address, plus the challenge that proved it answers."""
 
     client: SyncClient
-    # None when the address was already in force: nothing had to be proven.
     challenge: DeviceAuthorizationChallenge | None
     outcome: Literal["unchanged", "saved", "replaced"]
 
@@ -77,7 +76,8 @@ def normalize_server_url(raw: str) -> str:
         host, parts, port = None, None, None
     scheme = parts.scheme.lower() if parts is not None else ""
     if (
-        parts is None
+        not url.isprintable()
+        or parts is None
         or scheme not in _DEFAULT_PORTS
         or not host
         or parts.username is not None
@@ -202,8 +202,6 @@ def _refuse_as_not_moneybin_sync(
 def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
     """Bind a client to the planned address, saving it once the server answers."""
     client = _new_client(plan.url)
-    if plan.change == "unchanged":
-        return LoginStart(client=client, challenge=None, outcome="unchanged")
     try:
         challenge = client.begin_login()
     except SyncAPIError:
@@ -224,6 +222,9 @@ def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
         ) from e
     except ValueError as e:
         _refuse_as_not_moneybin_sync(plan, surface, e)
+    if plan.change == "unchanged":
+        # Already in force: the challenge is fresh, so nothing is saved or cleared.
+        return LoginStart(client=client, challenge=challenge, outcome="unchanged")
     settings = get_settings()
     # A token or device code one server issued must never reach another. Not
     # gated on a previously *saved* address: credentials can outlive one that

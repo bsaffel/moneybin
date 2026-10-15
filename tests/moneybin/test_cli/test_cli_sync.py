@@ -2003,7 +2003,7 @@ def _login_start(*, outcome: str = "saved", unencrypted: bool = False):
 
     change = "unchanged" if outcome == "unchanged" else "first"
     plan = AddressPlan(url=_SERVER, change=change, unencrypted=unencrypted)  # type: ignore[arg-type]  # test literal
-    challenge = None if outcome == "unchanged" else MagicMock(name="challenge")
+    challenge = MagicMock(name="challenge")
     start = LoginStart(client=MagicMock(), challenge=challenge, outcome=outcome)  # type: ignore[arg-type]  # test literal
     return plan, start
 
@@ -2066,7 +2066,9 @@ def test_sync_login_server_flag_matching_the_current_address_saves_nothing(
     result = runner.invoke(app, ["sync", "login", "--server", _SERVER])
 
     assert result.exit_code == 0, result.output
-    start.client.login.assert_called_once_with(open_browser=True, challenge=None)  # type: ignore[attr-defined]  # MagicMock client
+    start.client.login.assert_called_once_with(  # type: ignore[attr-defined]  # MagicMock client
+        open_browser=True, challenge=start.challenge
+    )
     assert "Server" not in result.stdout
 
 
