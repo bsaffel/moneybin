@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 import math
 import re
@@ -44,6 +45,7 @@ from tests.moneybin.db_helpers import (
     CORE_FCT_EXCHANGE_RATES_DAILY_DDL,
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
     create_core_tables,
+    install_prep_view,
 )
 
 _COVERAGE_PREFIX: Final = "app_audit_coverage_"
@@ -2019,20 +2021,13 @@ def test_unresolved_securities_pass_when_resolved(
 
 
 def _create_snapshot_receipts_table(db: Database) -> None:
-    """Create the per-item, per-pull holdings-snapshot receipts staging view.
+    """Install the shipped receipts staging view over the raw receipts table.
 
-    Both holdings checks read "the newest snapshot for this item" from HERE,
-    not from the presence of holdings rows: an item whose pull returned zero
-    positions writes no holdings rows at all, so a row-derived newest snapshot
-    silently stays the last NON-EMPTY one.
+    Both holdings checks read "the newest snapshot for this item" from its
+    is_newest, not from the presence of holdings rows: an item whose pull
+    returned zero positions writes no holdings rows at all.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute(
-        "CREATE TABLE prep.stg_plaid__investment_holdings_snapshots "
-        "(source_origin VARCHAR, source_file VARCHAR, holdings_date DATE, "
-        "holdings_count INTEGER, extracted_at TIMESTAMP, "
-        "ingestion_sequence BIGINT DEFAULT nextval('raw.investment_ingestion_sequence'))"
-    )
+    install_prep_view(db, "stg_plaid__investment_holdings_snapshots")
 
 
 def _receipt(
@@ -2044,9 +2039,11 @@ def _receipt(
 ) -> None:
     """Record that ``source_origin`` reported its holdings in pull ``source_file``."""
     db.execute(
-        "INSERT INTO prep.stg_plaid__investment_holdings_snapshots "
-        "(source_origin, source_file, holdings_date, holdings_count, extracted_at) "
-        "VALUES (?, ?, CAST(? AS TIMESTAMP)::DATE, ?, CAST(? AS TIMESTAMP))",
+        "INSERT INTO raw.plaid_investment_holdings_snapshots "
+        "(source_origin, source_file, holdings_date, holdings_count, "
+        "transactions_window_start, extracted_at) "
+        "VALUES (?, ?, CAST(? AS TIMESTAMP)::DATE, ?, DATE '2024-01-01', "
+        "CAST(? AS TIMESTAMP))",
         [source_origin, source_file, extracted_at, holdings_count, extracted_at],
     )
 
@@ -3069,65 +3066,46 @@ def test_unmapped_price_source_ignores_a_row_with_no_accepted_binding(
     assert result.status == "pass"
 
 
-# --- M2B.3 net-worth unanchored-account guard -------------------------------
+# --- Net-worth guard on the daily balance spine (M2B.4) ----------------------
 
 
 def _net_worth_guard_ddl(db: Database) -> None:
     """Only the columns the two net-worth checks read."""
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
-    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(
-        "CREATE TABLE IF NOT EXISTS core.dim_accounts (account_id VARCHAR, "
-        "include_in_net_worth BOOLEAN, archived BOOLEAN, archived_at DATE)"
-    )
-    db.execute("CREATE TABLE core.dim_unanchored_accounts (account_id VARCHAR)")
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS core.fct_balances_daily "
-        "(account_id VARCHAR, balance_date DATE)"
-    )
-    db.execute("CREATE TABLE reports.net_worth (balance_date DATE)")
-    db.execute(
-        "CREATE TABLE reports.net_worth_accounts (account_id VARCHAR, "
-        "is_observed BOOLEAN, balance_date DATE)"
-    )
-
-
-def _nw_account(
-    db: Database,
-    account_id: str,
-    *,
-    include: bool = True,
-    archived: bool = False,
-    archived_days_ago: int | None = None,
-) -> None:
-    db.execute(
-        "INSERT INTO core.dim_accounts "
-        "(account_id, include_in_net_worth, archived, archived_at) "
-        "VALUES (?, ?, ?, CURRENT_DATE - ?::INTEGER)",
-        [account_id, include, archived, archived_days_ago],
+        "CREATE TABLE IF NOT EXISTS core.fct_balances_daily (account_id VARCHAR, "
+        "balance_date DATE, balance DECIMAL(18, 2), is_observed BOOLEAN, "
+        "in_net_worth BOOLEAN)"
     )
 
 
 def _spine_row(
-    db: Database, account_id: str, days_ago: int, *, in_net_worth: bool = True
+    db: Database,
+    account_id: str,
+    days_ago: int,
+    *,
+    balance: str | None = "100.00",
+    observed: bool = False,
+    in_net_worth: bool = True,
 ) -> None:
-    """A balance-spine row; an included account's also dates a net-worth row."""
     db.execute(
-        "INSERT INTO core.fct_balances_daily VALUES (?, CURRENT_DATE - ?::INTEGER)",
-        [account_id, days_ago],
+        "INSERT INTO core.fct_balances_daily "
+        "(account_id, balance_date, balance, is_observed, in_net_worth) "
+        "VALUES (?, CURRENT_DATE - ?::INTEGER, ?, ?, ?)",
+        [account_id, days_ago, balance, observed, in_net_worth],
     )
-    if in_net_worth:
-        db.execute(
-            "INSERT INTO reports.net_worth VALUES (CURRENT_DATE - ?::INTEGER)",
-            [days_ago],
-        )
 
 
-def _observed(db: Database, account_id: str, days_ago: int) -> None:
-    db.execute(
-        "INSERT INTO reports.net_worth_accounts VALUES (?, TRUE, CURRENT_DATE - ?::INTEGER)",
-        [account_id, days_ago],
-    )
+def _unanchored_today(db: Database, account_id: str, **kwargs: bool) -> None:
+    _spine_row(db, account_id, 0, balance=None, **kwargs)
+
+
+def _observed_then_carried(
+    db: Database, account_id: str, observed_days_ago: int
+) -> None:
+    """Observed N days ago and carried to today, the spine's last date."""
+    _spine_row(db, account_id, observed_days_ago, observed=True)
+    _spine_row(db, account_id, 0)
 
 
 @pytest.mark.unit
@@ -3136,8 +3114,7 @@ def test_unanchored_accounts_fails_naming_each_eligible_account(
 ) -> None:
     _net_worth_guard_ddl(db)
     for acct in ("brk", "chk"):
-        _nw_account(db, acct)
-        db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [acct])
+        _unanchored_today(db, acct)
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "fail"
     assert result.affected_ids == ["account:brk", "account:chk"]
@@ -3155,8 +3132,7 @@ def test_unanchored_accounts_names_the_rebuild_the_assert_receipt_names(
     from tests.cli_command_helpers import assert_published_commands_resolve
 
     _net_worth_guard_ddl(db)
-    _nw_account(db, "brk")
-    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('brk')")
+    _unanchored_today(db, "brk")
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.detail is not None
     assert "`moneybin refresh --step transform`" in result.detail
@@ -3164,94 +3140,128 @@ def test_unanchored_accounts_names_the_rebuild_the_assert_receipt_names(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("kwargs", [{"include": False}, {"archived": True}])
-def test_unanchored_accounts_passes_for_an_excluded_or_archived_account(
-    db: Database, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool]
+def test_unanchored_accounts_passes_for_a_null_row_outside_net_worth(
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _net_worth_guard_ddl(db)
-    _nw_account(db, "brk", **kwargs)
-    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('brk')")
+    _unanchored_today(db, "brk", in_net_worth=False)
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "pass"
 
 
 @pytest.mark.unit
-def test_unanchored_accounts_fails_for_an_account_archived_after_the_spine_ends(
+def test_unanchored_accounts_reads_only_the_spines_last_date(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Archived today, spine ends 3 days ago: the latest net-worth row is still NULL."""
+    """Archived before the last date: its pre-archive NULL rows never keep it red."""
     _net_worth_guard_ddl(db)
-    _nw_account(db, "m2b3_anchor")
-    _spine_row(db, "m2b3_anchor", 3)
-    _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=0)
-    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
-    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
-    assert result.status == "fail"
-    assert result.affected_ids == ["account:m2b3_brk"]
-
-
-@pytest.mark.unit
-def test_unanchored_accounts_passes_for_an_account_archived_before_the_spine_ends(
-    db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A closed account's pre-archive history never keeps the check red."""
-    _net_worth_guard_ddl(db)
-    _nw_account(db, "m2b3_anchor")
-    _spine_row(db, "m2b3_anchor", 3)
-    _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=10)
-    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
+    _spine_row(db, "anchor", 0, observed=True)
+    _spine_row(db, "brk", 3, balance=None)
+    _spine_row(db, "brk", 0, balance=None, in_net_worth=False)
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "pass"
 
 
 @pytest.mark.unit
-def test_unanchored_accounts_dates_eligibility_at_the_latest_net_worth_row(
+def test_unanchored_accounts_names_only_the_in_net_worth_null_rows(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An excluded account's later balances must not move the eligibility date.
-
-    Included balances end 10 days ago, an excluded account's run to 2 days ago,
-    and the candidate was archived 5 days ago: the latest reports.net_worth row
-    (10 days ago) still counts it, so its total is NULL and doctor must fail.
-    """
+    """A NULL row outside net worth on the last date is not named beside one inside."""
     _net_worth_guard_ddl(db)
-    _nw_account(db, "m2b3_anchor")
-    _nw_account(db, "m2b3_excl", include=False)
-    _spine_row(db, "m2b3_anchor", 10)
-    _spine_row(db, "m2b3_excl", 2, in_net_worth=False)
-    _nw_account(db, "m2b3_brk", archived=True, archived_days_ago=5)
-    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('m2b3_brk')")
+    _spine_row(db, "anchor", 0, observed=True)
+    _unanchored_today(db, "brk")
+    _unanchored_today(db, "out", in_net_worth=False)
     result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     assert result.status == "fail"
-    assert result.affected_ids == ["account:m2b3_brk"]
+    assert result.affected_ids == ["account:brk"]
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_reads_the_spines_last_date_not_today(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spine ends 3 days ago: a CURRENT_DATE reference would find no row and pass."""
+    _net_worth_guard_ddl(db)
+    _spine_row(db, "brk", 3, balance=None)
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:brk"]
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_reads_the_newest_counting_date_not_the_spine_end(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Archived 5 days ago, so nothing counts at the spine end; it counts until then."""
+    _net_worth_guard_ddl(db)
+    _spine_row(db, "brk", 5, balance=None)
+    _spine_row(db, "brk", 0, balance=None, in_net_worth=False)
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:brk"]
+
+
+@pytest.mark.unit
+def test_stale_balance_reads_the_newest_counting_date_not_the_spine_end(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An excluded account ends the spine today; the counted one last counts 5 days ago."""
+    _net_worth_guard_ddl(db)
+    _spine_row(db, "a", 45, observed=True)
+    _spine_row(db, "a", 5)
+    _spine_row(db, "out", 0, observed=True, in_net_worth=False)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert result.affected_ids == ["account:a"]
+
+
+@pytest.mark.unit
+def test_stale_balance_reads_the_spines_last_date_not_today(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spine ends 5 days ago: a CURRENT_DATE reference would find no counted account."""
+    _net_worth_guard_ddl(db)
+    _spine_row(db, "a", 45, observed=True)
+    _spine_row(db, "a", 5)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert result.affected_ids == ["account:a"]
 
 
 @pytest.mark.unit
 def test_stale_balance_warns_on_an_entirely_stale_profile(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No row dated today at all: a CURRENT_DATE filter would pass silently here."""
+    """Every account stale together: a shared balance_date = CURRENT_DATE filter fails."""
     _net_worth_guard_ddl(db)
     for acct in ("a", "b"):
-        _nw_account(db, acct)
-        _observed(db, acct, 45)
+        _observed_then_carried(db, acct, 45)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.status == "warn"
     assert result.affected_ids == ["account:a", "account:b"]
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("kwargs", [{"include": False}, {"archived": True}])
-def test_stale_balance_skips_an_excluded_or_archived_account(
-    db: Database, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool]
+def test_stale_balance_skips_an_account_outside_net_worth_on_the_last_date(
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _net_worth_guard_ddl(db)
-    _nw_account(db, "live")
-    _nw_account(db, "closed", **kwargs)
-    _observed(db, "live", 46)
-    _observed(db, "closed", 46)
+    _observed_then_carried(db, "live", 46)
+    _spine_row(db, "closed", 46, observed=True)
+    _spine_row(db, "closed", 0, in_net_worth=False)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.affected_ids == ["account:live"]
+
+
+@pytest.mark.unit
+def test_stale_balance_skips_an_unanchored_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No known balance on the last date: net_worth_unanchored_accounts owns it."""
+    _net_worth_guard_ddl(db)
+    _unanchored_today(db, "brk")
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "pass"
 
 
 @pytest.mark.unit
@@ -3259,10 +3269,8 @@ def test_stale_balance_threshold_is_exclusive(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _net_worth_guard_ddl(db)
-    _nw_account(db, "at_threshold")
-    _nw_account(db, "past_threshold")
-    _observed(db, "at_threshold", 30)
-    _observed(db, "past_threshold", 31)
+    _observed_then_carried(db, "at_threshold", 30)
+    _observed_then_carried(db, "past_threshold", 31)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.affected_ids == ["account:past_threshold"]
 
@@ -3272,11 +3280,7 @@ def test_stale_balance_reads_the_latest_observed_row_not_a_carried_one(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _net_worth_guard_ddl(db)
-    _nw_account(db, "a")
-    _observed(db, "a", 40)
-    db.execute(
-        "INSERT INTO reports.net_worth_accounts VALUES ('a', FALSE, CURRENT_DATE)"
-    )
+    _observed_then_carried(db, "a", 40)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.status == "warn"
 
@@ -3286,8 +3290,7 @@ def test_stale_balance_is_warn_so_it_never_counts_as_failing(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _net_worth_guard_ddl(db)
-    _nw_account(db, "a")
-    _observed(db, "a", 45)
+    _observed_then_carried(db, "a", 45)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.status == "warn"
     assert DoctorReport(invariants=[result], transaction_count=0).failing == 0
@@ -3303,9 +3306,10 @@ def test_net_worth_checks_mask_a_source_native_account_id(
     """An unlinked account surfaces its raw source key; affected_ids must mask it."""
     _net_worth_guard_ddl(db)
     raw_id = "123456789012"  # synthetic account-number-shaped key
-    _nw_account(db, raw_id)
-    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [raw_id])
-    _observed(db, raw_id, 45)
+    if check == "net_worth_unanchored_accounts":
+        _unanchored_today(db, raw_id)
+    else:
+        _observed_then_carried(db, raw_id, 45)
     result = _investment_result(db, monkeypatch, check)
     assert result.status in ("fail", "warn")
     assert len(result.affected_ids) == 1
@@ -3319,17 +3323,15 @@ def test_net_worth_checks_set_their_gauges(
 ) -> None:
     """Both counts are scrape-visible, including a return to zero."""
     _net_worth_guard_ddl(db)
-    for acct in ("a", "b"):
-        _nw_account(db, acct)
-        db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [acct])
-    _observed(db, "a", 45)
+    _unanchored_today(db, "u1")
+    _unanchored_today(db, "u2")
+    _observed_then_carried(db, "a", 45)
     _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 2  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
     assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
 
-    db.execute("DELETE FROM core.dim_unanchored_accounts")
-    db.execute("DELETE FROM reports.net_worth_accounts")
+    db.execute("DELETE FROM core.fct_balances_daily")
     _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
     _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
@@ -3340,13 +3342,25 @@ def test_net_worth_checks_set_their_gauges(
 def test_net_worth_checks_leave_their_gauges_when_skipped(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Views absent before the first transform: a scrape reads stale, not zero."""
+    """Spine absent before the first transform: a scrape reads stale, not zero."""
     NET_WORTH_UNANCHORED_ACCOUNTS.set(4242)
     NET_WORTH_STALE_BALANCE_ACCOUNTS.set(4242)
     for check in ("net_worth_unanchored_accounts", "net_worth_stale_balance"):
         assert _investment_result(db, monkeypatch, check).status == "skipped"
     assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
     assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+@pytest.mark.unit
+def test_net_worth_checks_read_no_reports_relation() -> None:
+    """Both checks read core.fct_balances_daily, never a reports.* view (Requirement 7)."""
+    for method in (
+        DoctorService._run_net_worth_unanchored_accounts,  # pyright: ignore[reportPrivateUsage]  # source-scanning the private check directly
+        DoctorService._run_net_worth_stale_balance,  # pyright: ignore[reportPrivateUsage]  # source-scanning the private check directly
+    ):
+        source = inspect.getsource(method)
+        assert "REPORTS_" not in source, method.__name__
+        assert "FCT_BALANCES_DAILY" in source, method.__name__
 
 
 @pytest.mark.unit

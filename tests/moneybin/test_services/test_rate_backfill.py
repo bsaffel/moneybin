@@ -144,6 +144,63 @@ def test_a_foreign_currency_yields_one_window_from_its_earliest_row(
     )
 
 
+def test_a_null_balance_row_adds_no_window_beyond_its_transactions(
+    db: Database,
+) -> None:
+    """An unanchored account's rows start at its first transaction, already covered."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    db.execute(
+        """
+        INSERT INTO core.fct_balances_daily
+            (account_id, balance_date, balance, currency_code)
+        VALUES ('acct-1', ?, NULL, 'EUR')
+        """,
+        [date(2026, 3, 10)],
+    )
+
+    windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == (
+        RateWindow(
+            from_currency="EUR",
+            to_currency="USD",
+            start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+    )
+
+
+def test_a_null_balance_row_is_the_sole_source_of_its_currency_window(
+    db: Database,
+) -> None:
+    """An unpriced holding leaves the spine's NULL row as the only dated evidence."""
+    db.execute(
+        """
+        INSERT INTO core.dim_holdings (account_id, security_id, currency_code)
+        VALUES ('acct-1', 'sec-1', 'GBP')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO core.fct_balances_daily
+            (account_id, balance_date, balance, currency_code)
+        VALUES ('acct-1', ?, NULL, 'GBP')
+        """,
+        [date(2026, 5, 4)],
+    )
+
+    windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == (
+        RateWindow(
+            from_currency="GBP",
+            to_currency="USD",
+            start=date(2026, 5, 4),
+            end=_TODAY,
+        ),
+    )
+
+
 def test_declared_display_targets_add_held_to_target_windows_without_duplicates(
     db: Database,
 ) -> None:

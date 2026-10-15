@@ -426,12 +426,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic current
 [`standard.json`](../../tests/fixtures/mcp_surface/standard.json) snapshot
-contains 50 tools, 64,852 bytes of serialized metadata, zero advertised output schemas,
+contains 50 tools, 64,931 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`b71107a68a7a831315f88bc937944c1c23f19fb57ada851e6bb095b310f3c30c`.
+`f8023c818e78994c49ae5bd0d3f10e2e90d33446c795f0796d70f158fef8b68a`.
 The frozen baseline is 90,839 bytes with SHA-256
 `b789459f13f3e7e5caa476ca7d4d1e2fa4f19f9b107bc93f2edbceeeb2abe7a7`.
-The delta is -25,987 bytes (-28.6%). The deterministic estimate is 16,213
+The delta is -25,908 bytes (-28.5%). The deterministic estimate is 16,233
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.

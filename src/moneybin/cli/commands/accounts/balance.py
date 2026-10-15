@@ -68,10 +68,17 @@ def _emit_observations(
     )
     rows: list[tuple[object, ...]] = []
     for obs in observations:
+        # format_money passes a non-empty string through, so the absence reads
+        # as a statement rather than the "-" a merely missing amount gets.
+        balance_cell: object = (
+            "no balance recorded"
+            if obs.balance is None
+            else MoneyWithCurrency(obs.balance, currency_label(obs.currency_code))
+        )
         row = [
             obs.account_id,
             obs.balance_date,
-            MoneyWithCurrency(obs.balance, currency_label(obs.currency_code)),
+            balance_cell,
             obs.is_observed,
             obs.observation_source,
             obs.reconciliation_delta,
