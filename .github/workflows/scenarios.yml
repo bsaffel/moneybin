@@ -20,17 +20,10 @@ jobs:
   run-scenarios:
     name: Run Scenarios (shard ${{ matrix.group }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # 4-way pytest-split shard, matching ci.yml's unit and integration
-    # matrices; `--splits` reads strategy.job-total, so it tracks this array.
-    # Balancing uses the CI-recorded `.test_durations` cache rather than test
-    # count, so the shards hold uneven counts by design. Four rather than two
-    # because
-    # runner speed varies about 1.8x on identical work — shard 1 ran the same
-    # 36 items in 320s and then 574s — and a 2-way split left only ~1.9x
-    # headroom under timeout-minutes, thin enough that one slow runner
-    # cancelled a shard mid-suite. Keep nominal per-shard runtime well under
-    # half the ceiling.
+    # Observed progress projects about 12 minutes for classification-heavy shards;
+    # leave setup/reporting headroom without changing individual test timeouts.
+    timeout-minutes: 15
+    # Four duration-balanced shards; strategy.job-total keeps --splits in sync.
     strategy:
       fail-fast: false
       matrix:
