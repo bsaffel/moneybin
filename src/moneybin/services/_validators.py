@@ -43,7 +43,7 @@ def validate_category_text(value: str, field: str) -> None:
     same rule for the two split paths that reach the service without passing
     through a Pydantic model — ``add_split`` and the granular ``set_splits``.
     Storing the blank instead would put a third answer beside the two the
-    pipeline already gives: ``core.uncategorized_queue`` selects
+    pipeline already gives: the pending filter selects
     ``category IS NULL``, and the staging models NULL a blank out, so a blank
     stored here counts under no category at all while claiming to have one.
 

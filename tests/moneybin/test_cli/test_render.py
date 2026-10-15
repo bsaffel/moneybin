@@ -1037,7 +1037,7 @@ def test_a_blank_category_is_not_counted_as_absent(
 
     A whitespace-only category is reachable — Polars reads an empty CSV cell as
     NULL, but a cell holding spaces keeps them — and it is tempting to treat it
-    as a gap. `core.uncategorized_queue` selects `WHERE category IS NULL`, so
+    as a gap. the pending filter selects `category IS NULL`, so
     such a row is not in the queue: counting it would advertise a gap
     `transactions categorize run` cannot act on, which is the same class of lie
     as the provider code this milestone removed from the column. Making the two

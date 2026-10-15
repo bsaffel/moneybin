@@ -319,8 +319,8 @@ fallback for skipped-`LOW` rows, flagged as low-priority cleanup once
 provider-native coverage is proven.
 
 > **Removed 2026-09-03 (PR #515), ahead of that trigger and for a stronger
-> reason.** The passthrough was not only cosmetic. `core.uncategorized_queue`
-> selects `WHERE t.category IS NULL`, so a non-NULL PFC code sitting in
+> reason.** The passthrough was not only cosmetic. the pending
+> filter selects `category IS NULL`, so a non-NULL PFC code sitting in
 > `category` excluded every skipped-`LOW` Plaid row from the curation queue —
 > the rows most in need of curation were the ones it hid, and the queue read
 > near-empty on a Plaid-sourced profile. It also put two vocabularies in one

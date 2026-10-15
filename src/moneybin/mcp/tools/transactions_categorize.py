@@ -337,7 +337,7 @@ def transactions_categorize_stats(
     The coverage figures — everything except ``plaid_unmapped`` — cover the
     transactions that need categorizing, not the whole ledger: confirmed
     transfer legs, archived accounts, and transactions whose account never
-    resolved are excluded, matching core.uncategorized_queue. So
+    resolved are excluded, matching is_categorizable. So
     ``total_transactions`` is the size of that population rather than a count
     of all transactions, ``uncategorized`` equals what reviews(kind=
     'categorization') will hand back, and the three reconcile

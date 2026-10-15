@@ -1,0 +1,1 @@
+`core.fct_transactions.is_categorizable` marks the transactions categorization works on: not a confirmed transfer leg, on an account that resolved and is not archived. `sql_query` callers find what still needs a category with `WHERE is_categorizable AND category IS NULL`; the pending list, `categorize stats`, and the doctor's coverage check all read this column.

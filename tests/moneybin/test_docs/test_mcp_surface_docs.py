@@ -3073,7 +3073,7 @@ def test_current_report_docs_match_live_catalog_and_interface_views() -> None:
     )
     assert current_surface_summary.lower() in normalized_reports.lower()
     assert "reports.uncategorized_queue" not in reports
-    assert "core.uncategorized_queue" in reports
+    assert "WHERE is_categorizable AND category IS NULL" in normalized_reports
     assert "internal categorization-review queue" in reports
     assert "no registered report route" in normalized_reports
 

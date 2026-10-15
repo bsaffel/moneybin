@@ -116,7 +116,7 @@ Owned by SQLMesh. Mix of views and tables. **One canonical table per real-world 
 
 | Model | Grain | Role |
 |---|---|---|
-| `core.fct_transactions` | One row per transaction (after cross-source dedup) | The fact table everything else hangs off. Joins `prep.int_transactions__merged` with `app.transaction_categories`, `core.dim_categories`, `core.dim_merchants`, `core.bridge_transfers`, and the curation tables (`app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits`) to produce a single read shape. Notes, tags, and splits arrive as `LIST(STRUCT)` columns. |
+| `core.fct_transactions` | One row per transaction (after cross-source dedup) | The fact table everything else hangs off. Joins `prep.int_transactions__merged` with `app.transaction_categories`, `core.dim_categories`, `core.dim_merchants`, `core.bridge_transfers`, and the curation tables (`app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits`) to produce a single read shape. Notes, tags, and splits arrive as `LIST(STRUCT)` columns; `is_categorizable` marks the rows categorization works on. |
 | `core.dim_accounts` | One row per account | Deduplicated accounts from every source. Joins `app.account_settings` so the dim is the single source of truth for display name, archived state, and `include_in_net_worth` (no consumer joins `app.account_settings` directly). |
 | `core.dim_merchants` | One row per merchant | Normalized merchant identity for joining and aggregation |
 | `core.dim_categories` | One row per category | Combines the Plaid-PFC seed taxonomy with `app.user_categories` user-added entries |
@@ -124,7 +124,6 @@ Owned by SQLMesh. Mix of views and tables. **One canonical table per real-world 
 | `core.fct_transaction_lines` | One row per transaction line | Splits expanded for line-level analysis |
 | `core.fct_balances` | One row per balance snapshot | Snapshot balances from `raw.*_balances` reconciled across sources |
 | `core.fct_balances_daily` | One row per (account, date) | End-of-day balance, gap-filled (Python model, not SQL) |
-| `core.uncategorized_queue` | One row per uncategorized transaction | Curator-impact queue (`ABS(amount) × age_days`); service-internal — reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a `reports.*` view |
 
 **Identity:** `transaction_id` is a deterministic SHA-256 hash. For unmatched rows, it's a hash of `(source_type, source_transaction_id, account_id)`. For matched groups, it's a hash of the sorted set of those tuples — so reimporting the same two sources produces the same `transaction_id` every time. See `.claude/rules/identifiers.md` for the full strategy.
 
