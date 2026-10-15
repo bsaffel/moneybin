@@ -1,4 +1,7 @@
 {
+  "env": {
+    "PYTEST_ADDOPTS": "--maxprocesses=4"
+  },
   "enabledPlugins": {
     "mcp-apps@mcp-apps": false,
     "frontend-design@claude-plugins-official": false,

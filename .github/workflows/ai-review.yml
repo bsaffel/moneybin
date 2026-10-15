@@ -20,7 +20,12 @@ concurrency:
 jobs:
   review:
     name: Claude Review
-    if: github.actor != 'dependabot[bot]'
+    # Draft PRs get CI but no automated review: agents push drafts so CI runs
+    # the broad test tiers, and a review per draft push would only churn.
+    # `ready_for_review` above reviews the PR once it leaves draft.
+    if: >-
+      github.actor != 'dependabot[bot]'
+      && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
     permissions:
       contents: read

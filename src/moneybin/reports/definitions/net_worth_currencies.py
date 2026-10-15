@@ -54,6 +54,7 @@ def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> Non
         "rate_published_date": DataClass.TXN_DATE,
         "account_count": DataClass.AGGREGATE,
         "carried_forward_count": DataClass.AGGREGATE,
+        "unanchored_account_count": DataClass.AGGREGATE,
         "total_assets": DataClass.BALANCE,
         "total_liabilities": DataClass.BALANCE,
         "net_worth": DataClass.BALANCE,
@@ -91,7 +92,7 @@ def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> Non
         ),
         OutputColumn(
             "account_count",
-            "Accounts contributing on this date in this currency.",
+            "Accounts with a known balance contributing on this date in this currency.",
             DataClass.AGGREGATE,
             numeric=True,
             grouped=True,
@@ -104,40 +105,55 @@ def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> Non
             grouped=True,
         ),
         OutputColumn(
+            "unanchored_account_count",
+            "Accounts in net worth holding value in this currency with no "
+            "balance observation; 0 means none. Every measure on the row is "
+            "null while it is above 0.",
+            DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
+        ),
+        OutputColumn(
             "total_assets",
-            "Sum of positive balances in currency_code.",
+            "Sum of positive balances in currency_code."
+            " Null when unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
         ),
         OutputColumn(
             "total_liabilities",
-            "Sum of negative balances in currency_code, kept negative.",
+            "Sum of negative balances in currency_code, kept negative."
+            " Null when unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
         ),
         OutputColumn(
             "net_worth",
-            "This currency's segment in its own unit.",
+            "This currency's segment in its own unit."
+            " Null when unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
         ),
         OutputColumn(
             "total_assets_home",
-            "total_assets in the home currency; null when unpriced.",
+            "total_assets in the home currency; null when unpriced or "
+            "unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
         ),
         OutputColumn(
             "total_liabilities_home",
-            "total_liabilities in the home currency; null when unpriced.",
+            "total_liabilities in the home currency; null when unpriced or "
+            "unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
         ),
         OutputColumn(
             "net_worth_home",
-            "This segment in the home currency; null when unpriced.",
+            "This segment in the home currency; null when unpriced or "
+            "unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -165,6 +181,7 @@ def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> Non
         exclusions=(
             "accounts excluded from net worth",
             "archived accounts after their archive date",
+            "dates where an account in this currency holds value but has no balance observation (measures are null)",
         ),
         provenance=(
             "reports.net_worth_currencies",
@@ -218,6 +235,7 @@ def net_worth_currencies(
         WITH ranked AS (
             SELECT currency_code, home_currency_code, rate_source, balance_date,
                    rate_published_date, account_count, carried_forward_count,
+                   unanchored_account_count,
                    total_assets, total_liabilities, net_worth, total_assets_home,
                    total_liabilities_home, net_worth_home,
                    ROW_NUMBER() OVER (
@@ -228,6 +246,7 @@ def net_worth_currencies(
         )
         SELECT currency_code, home_currency_code, rate_source, balance_date,
                rate_published_date, account_count, carried_forward_count,
+               unanchored_account_count,
                total_assets, total_liabilities, net_worth, total_assets_home,
                total_liabilities_home, net_worth_home
         FROM ranked

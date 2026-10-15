@@ -131,6 +131,15 @@ def _seed_bundle_rows(db: Database) -> None:
             False,
         ],
     )
+    db.execute(
+        """
+        INSERT INTO core.fct_balances_daily
+            (account_id, balance_date, balance, is_observed, in_net_worth,
+             observation_source, reconciliation_delta, currency_code)
+        VALUES ('account-0', '2026-07-20', 50.00, TRUE, TRUE, 'ofx', NULL, 'USD'),
+               ('account-1', '2026-07-20', NULL, FALSE, TRUE, NULL, NULL, 'USD')
+        """
+    )
 
 
 def test_bundle_catalog_is_the_exact_ordered_portability_contract() -> None:
@@ -247,6 +256,24 @@ def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
     )
     json.dumps(first.manifest)
     json.dumps(first.manifest["data_dictionary"])
+
+
+def test_bundle_balances_daily_carries_null_balances_and_in_net_worth(
+    db: Database,
+) -> None:
+    _seed_bundle_rows(db)
+    bundle = ExportService(db).prepare_bundle(
+        profile="test", redaction_mode="unredacted"
+    )
+    table = next(t for t in bundle.tables if t.name == "balances_daily")
+    names = [c.name for c in table.columns]
+    assert "in_net_worth" in names
+    rows = [dict(zip(names, r, strict=True)) for r in table.rows]
+    assert len(rows) == 2
+    by_account = {r["account_id"]: r for r in rows}
+    assert by_account["account-1"]["balance"] is None
+    assert by_account["account-1"]["in_net_worth"] is True
+    assert by_account["account-0"]["balance"] == Decimal("50.00")
 
 
 def test_prepare_bundle_populates_manifest_provenance_with_the_running_build(

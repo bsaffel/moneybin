@@ -3,6 +3,8 @@
 ## Status
 implemented
 
+Requirement 14's guard mechanism is superseded by [net-worth-guard-on-daily-balances.md](net-worth-guard-on-daily-balances.md); see its §"What this supersedes".
+
 ## Goal
 
 Make net worth answerable by a query the caller can read and rerun — at the
