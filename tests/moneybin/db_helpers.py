@@ -561,27 +561,6 @@ CREATE TABLE IF NOT EXISTS core.fct_security_prices (
 );
 """
 
-# core.uncategorized_queue — SQLMesh-managed view in production (curator-impact
-# queue, moved from reports.* per reports-foundation.md R5). Column shape
-# mirrors uncategorized_queue.sql's final SELECT.
-CORE_UNCATEGORIZED_QUEUE_STUB_DDL = """\
-CREATE OR REPLACE VIEW core.uncategorized_queue AS
-SELECT CAST(NULL AS VARCHAR) AS transaction_id,
-       CAST(NULL AS VARCHAR) AS account_id,
-       CAST(NULL AS VARCHAR) AS account_name,
-       CAST(NULL AS DATE) AS txn_date,
-       CAST(NULL AS DECIMAL(18, 2)) AS amount,
-       CAST(NULL AS VARCHAR) AS currency_code,
-       CAST(NULL AS VARCHAR) AS description,
-       CAST(NULL AS VARCHAR) AS merchant_id,
-       CAST(NULL AS VARCHAR) AS merchant_normalized,
-       CAST(NULL AS INTEGER) AS age_days,
-       CAST(NULL AS DECIMAL(18, 2)) AS priority_score,
-       CAST(NULL AS VARCHAR) AS source_type,
-       CAST(NULL AS VARCHAR) AS source_id
-WHERE FALSE;
-"""
-
 
 # The rate spine — three SQLMesh models (one VIEW, one FULL table, one VIEW) in
 # production. Column shapes mirror each model's final SELECT, in its projected
@@ -649,7 +628,6 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_DIM_HOLDINGS_BROKER_REPORTED_STUB_DDL)
     db.execute(CORE_DIM_UNANCHORED_ACCOUNTS_STUB_DDL)
     db.execute(CORE_FCT_SECURITY_PRICES_DDL)
-    db.execute(CORE_UNCATEGORIZED_QUEUE_STUB_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_DAILY_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_STUB_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_EFFECTIVE_STUB_DDL)

@@ -1,8 +1,7 @@
 scenario: reports-recipe-library
 description: >
   Exercise the eight SQLMesh views added in Wave 2C end-to-end against the
-  basic synthetic persona (seven in reports.*, plus core.uncategorized_queue
-  since reports-foundation.md R5 moved it out), and assert four migrations
+  basic synthetic persona (seven in reports.*; core.uncategorized_queue, since retired, is asserted absent), and assert four migrations
   landed cleanly:
     - core.agg_net_worth dropped, replaced by reports.net_worth
     - app.categories retired, replaced by core.dim_categories
@@ -37,7 +36,7 @@ setup:
 #                    apply_deterministic has rules to evaluate.
 #   categorize — apply_deterministic() assigns categories from rules+merchants.
 #   transform  — re-materialize so reports.* views see post-categorization
-#                category values (uncategorized_queue depends on category IS NULL).
+#                category values (the pending filter depends on category IS NULL).
 pipeline:
   - generate
   - transform

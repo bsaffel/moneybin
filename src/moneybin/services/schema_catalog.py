@@ -113,6 +113,17 @@ EXAMPLES: dict[str, list[Example]] = {
                 LIMIT 50
             """,
         ),
+        Example(
+            question="Transactions that still need a category, most recent first",
+            sql="""
+                SELECT transaction_id, transaction_date, account_id, amount,
+                       currency_code, description
+                FROM core.fct_transactions
+                WHERE is_categorizable AND category IS NULL
+                ORDER BY transaction_date DESC, transaction_id
+                LIMIT 25
+            """,
+        ),
     ],
     "core.fct_transaction_lines": [
         Example(
@@ -394,18 +405,6 @@ EXAMPLES: dict[str, list[Example]] = {
                 FROM core.fct_balances_daily
                 WHERE account_id = 'YOUR_ACCOUNT_ID'
                 ORDER BY balance_date DESC
-            """,
-        ),
-    ],
-    "core.uncategorized_queue": [
-        Example(
-            question="Highest-impact uncategorized transactions",
-            sql="""
-                SELECT account_name, txn_date, amount, currency_code, description,
-                       age_days, priority_score
-                FROM core.uncategorized_queue
-                ORDER BY priority_score DESC
-                LIMIT 25
             """,
         ),
     ],

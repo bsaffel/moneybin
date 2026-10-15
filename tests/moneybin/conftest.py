@@ -164,9 +164,6 @@ def schema_catalog_db(
     create_core_dim_stub_views(database)
     # Reports.* views — production builds these via SQLMesh; tests stub the
     # shape so schema-catalog interface tests can resolve the names.
-    # core.uncategorized_queue (moved out of reports.* per
-    # reports-foundation.md R5) is stubbed by create_core_dim_stub_views()
-    # above, alongside the other core.* SQLMesh-managed views.
     database.execute(
         "CREATE OR REPLACE VIEW reports.cash_flow AS "
         "SELECT CAST(NULL AS VARCHAR) AS year_month, "
