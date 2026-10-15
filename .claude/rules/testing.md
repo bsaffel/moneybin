@@ -24,13 +24,19 @@ Every test belongs to exactly one **category**: `unit`, `integration`, `e2e`, or
 
 ## Commands
 
-`make test` (unit, not slow) is the default gate; `make test-integration`,
+`make test` (unit, not slow) runs the unit tier; `make test-integration`,
 `make test-e2e`, and `make test-scenarios` run the other categories, and
-`-m <category>` selects one directly.
+`-m <category>` selects one directly. CI runs every tier on each PR push, so
+the local gate is the targeted run in AGENTS.md → "Pre-commit gate", not a
+tier.
 
 Tests run in parallel via `pytest-xdist` (`-n auto` in `pyproject.toml`).
-Pass `-n0` to disable parallelism when you need `pdb`, ordered output,
-or are debugging a flaky test that may have inter-test state leaks.
+Claude Code sessions cap `-n auto` at 4 workers through
+`PYTEST_XDIST_AUTO_NUM_WORKERS` in `.claude/settings.json`: each worker
+re-imports and re-collects the suite (about 0.5 GB apiece), so several
+sessions each claiming every core saturate a laptop. Pass `-n0` to disable
+parallelism when you need `pdb`, ordered output, or are debugging a flaky
+test that may have inter-test state leaks.
 
 ## Mocking Strategy
 
