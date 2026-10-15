@@ -709,6 +709,26 @@ class SyncService:
         self._save_recovery(repo, state)
         public_result = result.model_copy(deep=True)
         public_result.sources = sources
+        acknowledgement = state.details.acknowledgement
+        if result.ack_state == "confirmed" and acknowledgement is not None:
+            for source in public_result.source_results:
+                if not isinstance(source, SimpleFINSourceResult):
+                    continue
+                for acknowledged in acknowledgement.results:
+                    if (
+                        isinstance(acknowledged, SimpleFINSourceResult)
+                        and acknowledged.connection_id == source.connection_id
+                        and acknowledged.credential_generation
+                        == source.credential_generation
+                        and acknowledged.protocol_version == source.protocol_version
+                    ):
+                        # Completion needs post-ack native scopes, not merged account IDs.
+                        source.history = (
+                            acknowledged.history.model_copy(deep=True)
+                            if acknowledged.history is not None
+                            else None
+                        )
+                        break
         return public_result
 
     def _account_reference(

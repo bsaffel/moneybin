@@ -9,6 +9,7 @@ import pytest
 from moneybin.adapters.sync_adapters import sync_pull_payload, sync_status_envelope
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
+    ScopeOutcome,
     SimpleFINHistorySnapshot,
     SimpleFINSource,
     SimpleFINV2ConnectionScope,
@@ -117,6 +118,17 @@ def test_completed_pull_requires_acknowledged_account_history(
     data = _envelope()
     native = data.sources[0]
     assert isinstance(native, SimpleFINSource)
+    native.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=SimpleFINV2ConnectionScope(
+                kind="simplefin_v2_connection", conn_id="native-connection"
+            ),
+            window=native.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
     history = _history(accounts=has_accounts)
     history.replay_required = False
     history.discovery_history_target = None

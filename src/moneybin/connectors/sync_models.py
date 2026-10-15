@@ -751,6 +751,24 @@ class PullResult(BaseModel):
             and not self.transforms_error
             and not self.security_resolution_error
             and not (self.refresh_steps and self.refresh_steps.has_failure)
+            and {
+                (
+                    source.connection_id,
+                    source.credential_generation,
+                    source.protocol_version,
+                )
+                for source in self.sources
+                if source.provider == "simplefin"
+            }
+            == {
+                (
+                    str(source.connection_id),
+                    source.credential_generation,
+                    source.protocol_version,
+                )
+                for source in self.source_results
+                if isinstance(source, SimpleFINSourceResult)
+            }
             and all(
                 source.provider != "simplefin"
                 or (
@@ -763,6 +781,14 @@ class PullResult(BaseModel):
                         and account.history_target is None
                         and len(account.acknowledged_intervals) == 1
                         for account in source.history.accounts
+                    )
+                    and any(
+                        isinstance(native, SimpleFINSourceResult)
+                        and str(native.connection_id) == source.connection_id
+                        and native.credential_generation == source.credential_generation
+                        and native.protocol_version == source.protocol_version
+                        and native.outcomes_cover_history
+                        for native in self.source_results
                     )
                 )
                 for source in self.sources
@@ -824,6 +850,30 @@ class SimpleFINSourceResult(_ContractModel):
     def _validate_source(self) -> Self:
         SimpleFINSource.model_validate({**self.model_dump(), "batches": []})
         return self
+
+    @property
+    def outcomes_cover_history(self) -> bool:
+        """Every known native account needs retrieval evidence, even after merging."""
+        if self.history is None or not self.history.accounts:
+            return False
+        expected = {
+            SyncAccountScope(
+                account_id=account.account_id,
+                native_scope=account.native_scope,
+                name="",
+            ).identity
+            for account in self.history.accounts
+        }
+        observed = {
+            SyncAccountScope(
+                account_id=outcome.account_id,
+                native_scope=outcome.native_scope,
+                name="",
+            ).identity
+            for outcome in self.outcomes
+            if outcome.account_id is not None and outcome.native_scope is not None
+        }
+        return expected <= observed
 
 
 ProviderSourceResult = Annotated[
