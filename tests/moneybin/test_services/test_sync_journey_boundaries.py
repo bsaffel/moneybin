@@ -214,6 +214,7 @@ def test_interactive_simplefin_disconnect_verifies_the_exact_confirmed_grant(
         institution=None,
         provider_item_id=None,
         connection_id=CONNECTION,
+        purge=False,
         yes=False,
         output=OutputFormat.TEXT,
     )
