@@ -141,8 +141,12 @@ class SecurityLinksService:
         """Pending, non-reversed decisions ordered ``ref_value, decision_id``."""
         return self._decisions.list_pending()
 
-    def pending(self) -> list[PendingSecurityLinkGroup]:
+    def pending(
+        self, *, limit: int | None = None, decision_id: str | None = None
+    ) -> list[PendingSecurityLinkGroup]:
         """Pending decisions grouped by provider ref, candidates enriched with ticker/name.
+
+        ``limit`` selects complete groups; ``decision_id`` selects its full group.
 
         ``list_pending()`` rows carry only ``candidate_security_id`` — a bare
         id tells the reviewer nothing about whether the merge is right, so
@@ -153,7 +157,16 @@ class SecurityLinksService:
         row — is the review unit, mirroring
         ``MerchantLinksService.pending()``. Read-only — no audit emitted.
         """
-        rows = self._decisions.list_pending()
+        rows = (
+            self._decisions.list_pending()
+            if limit is None and decision_id is None
+            else self._decisions.list_pending_groups(
+                group_columns=("ref_kind", "ref_value"),
+                item_id_columns=("source_type", "ref_kind", "ref_value"),
+                limit=limit,
+                decision_id=decision_id,
+            )
+        )
         if not rows:
             return []
 

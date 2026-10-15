@@ -45,7 +45,12 @@ class ReviewItem:
 
 
 def load_items(
-    type_: str, limit: int | None = None, *, transaction_id: str | None = None
+    type_: str,
+    limit: int | None = None,
+    *,
+    transaction_id: str | None = None,
+    match_id: str | None = None,
+    decision_id: str | None = None,
 ) -> list[ReviewItem]:
     """Read pending decisions without creating categorization attempts."""
     from moneybin.services.account_links_service import AccountLinksService
@@ -64,7 +69,9 @@ def load_items(
             pending: list[ReviewItem] = []
             if queue == "matches":
                 match_service = MatchingService(db)
-                for row in match_service.get_pending(limit=remaining):
+                for row in match_service.get_pending(
+                    limit=remaining, match_id=match_id
+                ):
                     evidence = [
                         (key.replace("_", " "), str(value))
                         for key, value in sorted(row.items())
@@ -128,7 +135,9 @@ def load_items(
             elif queue == "account-links":
                 from moneybin.cli.commands.accounts.links import overlap_cell
 
-                for group in AccountLinksService(db).pending():
+                for group in AccountLinksService(db).pending(
+                    limit=remaining, decision_id=decision_id
+                ):
                     candidates = sorted(group.candidates, key=lambda c: c.decision_id)
                     pending.append(
                         ReviewItem(
@@ -159,7 +168,9 @@ def load_items(
                         )
                     )
             elif queue == "merchant-links":
-                for merchant_group in MerchantLinksService(db).pending():
+                for merchant_group in MerchantLinksService(db).pending(
+                    limit=remaining, decision_id=decision_id
+                ):
                     merchants = sorted(
                         merchant_group.candidates, key=lambda c: c.decision_id
                     )
@@ -195,7 +206,9 @@ def load_items(
             else:
                 from moneybin.price_sources import FEED_KEY_REF_KINDS
 
-                for security_group in SecurityLinksService(db).pending():
+                for security_group in SecurityLinksService(db).pending(
+                    limit=remaining, decision_id=decision_id
+                ):
                     securities = sorted(
                         security_group.candidates, key=lambda c: c.decision_id
                     )
@@ -245,12 +258,15 @@ def load_items(
 
 
 def _current_item(item: ReviewItem) -> ReviewItem | None:
-    """Revalidate categorization by its exact transaction, independent of queue rank."""
-    rows = (
-        load_items(item.queue, 1, transaction_id=item.transaction_id)
-        if item.queue == "categorize" and item.transaction_id is not None
-        else load_items(item.queue)
-    )
+    """Revalidate the displayed decision or complete group, independent of rank."""
+    if item.queue == "categorize" and item.transaction_id is not None:
+        rows = load_items(item.queue, 1, transaction_id=item.transaction_id)
+    elif item.queue == "matches":
+        rows = load_items(item.queue, 1, match_id=item.item_id)
+    elif item.candidates:
+        rows = load_items(item.queue, 1, decision_id=item.candidates[0].decision_id)
+    else:
+        rows = load_items(item.queue)
     return next((row for row in rows if row.item_id == item.item_id), None)
 
 

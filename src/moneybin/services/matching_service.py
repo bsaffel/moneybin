@@ -536,7 +536,11 @@ class MatchingService:
         return component_key
 
     def get_pending(
-        self, *, match_type: str | None = None, limit: int | None = None
+        self,
+        *,
+        match_type: str | None = None,
+        limit: int | None = None,
+        match_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return pending match decisions awaiting review, enriched with component_key.
 
@@ -548,9 +552,11 @@ class MatchingService:
         Transfer rows are not grouped; their ``component_key`` is their own
         ``match_id``.
 
-        ``limit`` is pushed to SQL; None returns all pending.
+        ``limit`` and optional exact ``match_id`` are pushed to SQL.
         """
-        rows = get_pending_matches(self._db, match_type=match_type, limit=limit)
+        rows = get_pending_matches(
+            self._db, match_type=match_type, limit=limit, match_id=match_id
+        )
         if not rows:
             return rows
 
