@@ -118,6 +118,19 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.matching.reconciliation",
         "RETIRED_SIDES_COLLAPSED",
     ),
+    # why: same pure text cause as the noninteractive review adapter; no writes.
+    (
+        "cli/commands/interactive_review.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    # why: SELECT-only readback after a committed decision's FX rebuild fails;
+    # no writes or orchestration, and the receipt must report authoritative state.
+    (
+        "cli/commands/interactive_review.py",
+        "moneybin.matching.persistence",
+        "get_match_decision",
+    ),
     # The four embedded refresh callers. Each reaches the same reconciliation
     # the dedicated refresh surfaces do — three by running the full cascade,
     # `gsheet pull` by naming `match` explicitly — and each owes the user the
