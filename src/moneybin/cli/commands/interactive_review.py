@@ -41,9 +41,12 @@ class ReviewItem:
     item_id: str
     evidence: tuple[tuple[str, str], ...]
     candidates: tuple[ReviewCandidate, ...] = ()
+    transaction_id: str | None = None
 
 
-def load_items(type_: str, limit: int | None = None) -> list[ReviewItem]:
+def load_items(
+    type_: str, limit: int | None = None, *, transaction_id: str | None = None
+) -> list[ReviewItem]:
     """Read pending decisions without creating categorization attempts."""
     from moneybin.services.account_links_service import AccountLinksService
     from moneybin.services.categorization import CategorizationService
@@ -97,18 +100,17 @@ def load_items(type_: str, limit: int | None = None) -> list[ReviewItem]:
                     )
             elif queue == "categorize":
                 svc = CategorizationService(db)
-                rows = svc.list_uncategorized_transactions(limit=None) or []
-                attempts = svc.project_pending_review_attempts([
-                    str(row["transaction_id"]) for row in rows
-                ])
+                rows = (
+                    svc.list_pending_review_transactions(
+                        limit=remaining, transaction_id=transaction_id
+                    )
+                    or []
+                )
                 for row in rows:
-                    attempt = attempts.get(str(row["transaction_id"]))
-                    if attempt is None:
-                        continue
                     pending.append(
                         ReviewItem(
                             queue,
-                            str(attempt["decision_id"]),
+                            str(row["decision_id"]),
                             tuple(
                                 (
                                     key.replace("_", " "),
@@ -117,8 +119,10 @@ def load_items(type_: str, limit: int | None = None) -> list[ReviewItem]:
                                     else str(value),
                                 )
                                 for key, value in sorted(row.items())
-                                if key not in {"age_days", "priority_score"}
+                                if key
+                                not in {"age_days", "priority_score", "decision_id"}
                             ),
+                            transaction_id=str(row["transaction_id"]),
                         )
                     )
             elif queue == "account-links":
@@ -240,6 +244,16 @@ def load_items(type_: str, limit: int | None = None) -> list[ReviewItem]:
     return items
 
 
+def _current_item(item: ReviewItem) -> ReviewItem | None:
+    """Revalidate categorization by its exact transaction, independent of queue rank."""
+    rows = (
+        load_items(item.queue, 1, transaction_id=item.transaction_id)
+        if item.queue == "categorize" and item.transaction_id is not None
+        else load_items(item.queue)
+    )
+    return next((row for row in rows if row.item_id == item.item_id), None)
+
+
 def _show(pairs: list[tuple[str, str]], title: str, policy: TerminalPolicy) -> None:
     emit_human_result(
         compose_human_result([build_summary(pairs, title=title)]),
@@ -280,8 +294,7 @@ def run_review(type_: str, limit: int, policy: TerminalPolicy) -> None:
                 if action == "skip":
                     skipped += 1
                     continue
-                live = {row.item_id: row for row in load_items(item.queue)}
-                if live.get(item.item_id) != item:
+                if _current_item(item) != item:
                     stale += 1
                     typer.echo(
                         "Decision changed since display; skipped. Refresh the review queue.",
@@ -394,7 +407,7 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
             row for row in categories if str(row["category_id"]) == category_id
         )
     # The last prompt can span a concurrent decision/import, so re-read again.
-    if item not in load_items(item.queue):
+    if _current_item(item) != item:
         typer.echo(
             "Decision changed while choosing its target; no decision saved.", err=True
         )

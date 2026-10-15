@@ -457,19 +457,18 @@ def test_categorization_loader_projects_attempt_without_persisting() -> None:
         patch("moneybin.cli.commands.interactive_review.get_database") as database,
         patch("moneybin.services.categorization.CategorizationService") as service,
     ):
-        service.return_value.list_uncategorized_transactions.return_value = [
+        service.return_value.list_pending_review_transactions.return_value = [
             {
                 "transaction_id": "transaction",
+                "decision_id": "cat_attempt",
                 "description": "Synthetic purchase",
                 "amount": "-1.00",
                 "currency_code": "USD",
             }
         ]
-        service.return_value.project_pending_review_attempts.return_value = {
-            "transaction": {"decision_id": "cat_attempt"}
-        }
         items = load_items("categorize", 1)
     assert items[0].item_id == "cat_attempt"
+    assert items[0].transaction_id == "transaction"
     database.assert_called_once_with(read_only=True)
     service.return_value.apply_review_categorization_in_active_txn.assert_not_called()
 

@@ -792,7 +792,7 @@ reject interactive mode before opening a writable database. Use the existing
 scripted decisions. Categorization rejection uses the existing review command:
 
 ```bash
-moneybin transactions categorize pending --output json
+moneybin transactions categorize pending --pending-only --output json
 moneybin review --type categorize --reject <decision-id> --output json
 ```
 
@@ -801,6 +801,15 @@ Decision ID in its text output. IDs are projected without creating decisions;
 `null` means the transaction has no pending review attempt, including after a
 rejection. The transaction remains uncategorized until an assignment is committed.
 JSON review decisions require an explicit `--type` and never prompt for it.
+
+`--pending-only` filters eligible review attempts before applying the limit, so
+closed rejections cannot hide older pending items. Without that flag, the command
+keeps its uncategorized-inventory view, including rejected rows with a null
+Decision ID. Review counts use current pending attempts, so those rejected rows
+are absent from `moneybin review` counts until their review lifecycle changes.
+Interactive revalidation checks the selected transaction, independently of newer
+queue arrivals.
+
 
 
 ## See also

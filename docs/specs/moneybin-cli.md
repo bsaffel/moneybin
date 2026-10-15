@@ -225,6 +225,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   Shipped noninteractive review accepts --reject for matches or categorize;
 |   categorization assignments use transactions categorize commit. Pending
 |   categorization output includes nullable versioned decision_id for rejection.
+|   Review counts include current pending attempts, excluding closed rejections.
+|   categorize pending retains uncategorized inventory by default; --pending-only
+|   filters canonical attempt eligibility before ordering and limiting.
 |   Counts are what a bare invocation prints; drill into
 |   `accounts links pending`, `merchants links pending`, `investments securities links pending`,
 |   `investments matches pending`, `transactions matches pending`, or
@@ -399,6 +402,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- undo <match_id> [--yes]
 |   |   +-- backfill [--skip-transform] [--auto-accept-transfers]
 |   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at the top-level `review`)
+|   |   +-- pending [--pending-only] [--limit N] [--sort date|impact]
+|   |   |                           -- Inventory by default; pending-only filters before the limit
 |   |   +-- commit                  -- Commit externally-decided categorizations (--input <path> or stdin '-')
 |   |   +-- commit-from-file <path> -- Commit from a JSON file (convenience wrapper)
 |   |   +-- run                     -- Run engine cascade (--methods rules,merchants)

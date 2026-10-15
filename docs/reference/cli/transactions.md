@@ -210,8 +210,9 @@ Usage: `moneybin transactions categorize commit-from-file [OPTIONS] [input_path]
 
 List uncategorized transactions.
 
-Excludes transfer pairs and archived accounts. Decision IDs name current
-pending review attempts; reject one with review --type categorize --reject.
+Excludes transfer pairs and archived accounts. The default is uncategorized
+inventory; --pending-only filters current review attempts before --limit.
+Decision IDs name those attempts; reject one with review --type categorize --reject.
 
 ```console
 moneybin transactions categorize pending
@@ -229,6 +230,7 @@ Usage: `moneybin transactions categorize pending [OPTIONS]`
 | `--sort` | text | `date` | Sort order: 'date' (most recent first) or 'impact' (ABS(amount)*age_days). |
 | `--min-amount` | text | `0` | Filter to ABS(amount) >= this value. |
 | `--account` | text |  | Filter to an account: accepts account_id or display_name (ambiguous matches error). |
+| `--pending-only` | flag |  | Only current pending review attempts; filter before --limit |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

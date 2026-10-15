@@ -73,14 +73,20 @@ def categorize_pending(
         "--account",
         help="Filter to an account: accepts account_id or display_name (ambiguous matches error).",
     ),
+    pending_only: bool = typer.Option(
+        False,
+        "--pending-only",
+        help="Only current pending review attempts; filter before --limit",
+    ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     no_pager: bool = no_pager_option,
 ) -> None:
     """List uncategorized transactions.
 
-    Excludes transfer pairs and archived accounts. Decision IDs name current
-    pending review attempts; reject one with review --type categorize --reject.
+    Excludes transfer pairs and archived accounts. The default is uncategorized
+    inventory; --pending-only filters current review attempts before --limit.
+    Decision IDs name those attempts; reject one with review --type categorize --reject.
 
       moneybin transactions categorize pending
       moneybin transactions categorize pending --sort impact
@@ -118,26 +124,42 @@ def categorize_pending(
             if account is not None:
                 account_id = AccountService(db).resolve_strict(account)
             service = CategorizationService(db)
-            records = service.list_uncategorized_transactions(
-                limit=min(limit, 1000),
-                sort=cast(Literal["date", "impact"], sort),
-                min_amount=min_amount_dec,
-                account_id=account_id,
-            )
-            attempts = service.project_pending_review_attempts([
-                str(row["transaction_id"]) for row in records or []
-            ])
-            decision_ids = {
-                transaction_id: str(attempt["decision_id"])
-                for transaction_id, attempt in attempts.items()
-            }
+            if pending_only:
+                records = service.list_pending_review_transactions(
+                    limit=min(limit, 1000),
+                    sort=cast(Literal["date", "impact"], sort),
+                    min_amount=min_amount_dec,
+                    account_id=account_id,
+                )
+                decision_ids = {
+                    str(row["transaction_id"]): str(row["decision_id"])
+                    for row in records or []
+                }
+            else:
+                records = service.list_uncategorized_transactions(
+                    limit=min(limit, 1000),
+                    sort=cast(Literal["date", "impact"], sort),
+                    min_amount=min_amount_dec,
+                    account_id=account_id,
+                )
+                attempts = service.project_pending_review_attempts([
+                    str(row["transaction_id"]) for row in records or []
+                ])
+                decision_ids = {
+                    transaction_id: str(attempt["decision_id"])
+                    for transaction_id, attempt in attempts.items()
+                }
 
     if records is None:
         typer.echo("No data — import transactions first.", err=True)
         raise typer.Exit(0)
 
     effective_limit = min(limit, 1000)
-    scope_terms = ["active, non-transfer transactions"]
+    scope_terms = [
+        "pending review attempts"
+        if pending_only
+        else "active, non-transfer transactions"
+    ]
     if account_id is not None:
         scope_terms.append(f"account {account_id}")
     if min_amount_dec:
@@ -183,7 +205,16 @@ def categorize_pending(
         if not records:
             emit_human_result(
                 compose_human_result(
-                    [build_summary([("Result", "No uncategorized transactions.")])],
+                    [
+                        build_summary([
+                            (
+                                "Result",
+                                "No pending categorization decisions."
+                                if pending_only
+                                else "No uncategorized transactions.",
+                            )
+                        ])
+                    ],
                     disclosures=(
                         scope,
                         next_action,
@@ -284,7 +315,9 @@ def categorize_pending(
                 [
                     build_summary(
                         [("Transactions", f"{len(records):,}")],
-                        title="Uncategorized queue",
+                        title="Categorization review queue"
+                        if pending_only
+                        else "Uncategorized queue",
                     ),
                     *([queue_part] if queue_part is not None else stacked_records),
                 ],

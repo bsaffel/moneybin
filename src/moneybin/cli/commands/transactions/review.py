@@ -565,7 +565,7 @@ def _print_status(type_: str, output: OutputFormat, *, no_pager: bool) -> None:
 
     labels = {
         "matches": ("Matches pending", s.matches_pending),
-        "categorize": ("Uncategorized transactions", s.categorize_pending),
+        "categorize": ("Categorization decisions pending", s.categorize_pending),
         "account-links": ("Account-link decisions pending", s.account_links_pending),
         "merchant-links": ("Merchant-link decisions pending", s.merchant_links_pending),
         "security-links": ("Security-link decisions pending", s.security_links_pending),
