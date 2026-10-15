@@ -10,8 +10,16 @@ applicable, envelope handling, and the privacy audit write.
 **Budgets:**
 
 - p50 latency increase: ≤ 50 ms per flow
-- p99 latency increase: ≤ 200 ms per flow
+- p95 latency increase: ≤ 200 ms per flow
 - Aggregate regression across the sums of five per-flow p50 values: ≤ 20 %
+
+The tail budget is asserted at p95, not p99. With ``ITERATIONS = 30``,
+``percentile(0.99)`` indexes ``round(0.99 × 29) = 29`` — the single slowest
+sample — so one scheduler stall or GC pause in either path decided the
+assertion, and the measured delta changed sign between runs of the same flow
+(−84 to +84 ms, PR #666). p95 indexes the second-slowest sample. The 200 ms cap
+is unchanged; p99 is still measured and logged. Changed with explicit user
+override on 2026-10-14.
 
 The tests carry ``scenarios`` and ``perf`` markers. A dedicated CI job runs
 them serially against the family persona built by this module's fixture;
@@ -79,7 +87,7 @@ logger = logging.getLogger(__name__)
 
 ITERATIONS = 30
 P50_BUDGET_MS = 50.0
-P99_BUDGET_MS = 200.0
+P95_BUDGET_MS = 200.0  # tail budget; p95, not p99 — see the module docstring
 TOTAL_REGRESSION_PCT = 20.0
 
 # 12-month window for the net-worth currencies flow's `from_date`/`to_date`.
@@ -122,7 +130,9 @@ async def _accounts_perf_call() -> ResponseEnvelope[AccountsCoarsePayload]:
 
 
 def _log_timing_summary(
-    timing_summary: list[tuple[str, float, float, float, float, float, float]],
+    timing_summary: list[
+        tuple[str, float, float, float, float, float, float, float, float]
+    ],
     *,
     total_raw_p50: float,
     total_protected_p50: float,
@@ -426,8 +436,8 @@ def test_privacy_middleware_within_budget() -> None:
                 name, raw, protected
             )
             d_p50 = protected_result.p50_ms - raw_result.p50_ms
-            d_p99 = protected_result.p99_ms - raw_result.p99_ms
-            measurements.append((name, raw_result, protected_result, d_p50, d_p99))
+            d_p95 = protected_result.p95_ms - raw_result.p95_ms
+            measurements.append((name, raw_result, protected_result, d_p50, d_p95))
             total_raw_p50 += raw_result.p50_ms
             total_protected_p50 += protected_result.p50_ms
 
@@ -440,13 +450,15 @@ def test_privacy_middleware_within_budget() -> None:
         (
             name,
             raw.p50_ms,
+            raw.p95_ms,
             raw.p99_ms,
             protected.p50_ms,
+            protected.p95_ms,
             protected.p99_ms,
             p50_delta,
-            p99_delta,
+            p95_delta,
         )
-        for name, raw, protected, p50_delta, p99_delta in measurements
+        for name, raw, protected, p50_delta, p95_delta in measurements
     ]
     _log_timing_summary(
         timing_summary,
@@ -454,20 +466,20 @@ def test_privacy_middleware_within_budget() -> None:
         total_protected_p50=total_protected_p50,
         total_pct=total_pct,
     )
-    for name, raw_result, protected_result, d_p50, d_p99 in measurements:
+    for name, raw_result, protected_result, d_p50, d_p95 in measurements:
         assert d_p50 <= P50_BUDGET_MS, (
             f"{name}: protected egress p50 overhead {d_p50:+.2f}ms exceeds "
             f"cap {P50_BUDGET_MS}ms (raw {raw_result.p50_ms:.2f}ms, "
             f"protected {protected_result.p50_ms:.2f}ms)"
         )
-        assert d_p99 <= P99_BUDGET_MS, (
-            f"{name}: protected egress p99 overhead {d_p99:+.2f}ms exceeds "
-            f"cap {P99_BUDGET_MS}ms (raw {raw_result.p99_ms:.2f}ms, "
-            f"protected {protected_result.p99_ms:.2f}ms)"
+        assert d_p95 <= P95_BUDGET_MS, (
+            f"{name}: protected egress p95 overhead {d_p95:+.2f}ms exceeds "
+            f"cap {P95_BUDGET_MS}ms (raw {raw_result.p95_ms:.2f}ms, "
+            f"protected {protected_result.p95_ms:.2f}ms)"
         )
     delta_summary = [
-        (name, p50_delta, p99_delta)
-        for name, _, _, p50_delta, p99_delta in measurements
+        (name, p50_delta, p95_delta)
+        for name, _, _, p50_delta, p95_delta in measurements
     ]
     assert total_pct <= TOTAL_REGRESSION_PCT, (
         f"Sum of per-flow p50 protected-egress overhead {total_pct:+.1f}% "
@@ -529,13 +541,13 @@ def test_sql_query_lineage_overhead_within_budget() -> None:
     raw = measure_flow("sql_query_raw", _raw, iterations=ITERATIONS)
     lineage = measure_flow("sql_query_lineage", _with_lineage, iterations=ITERATIONS)
     overhead_p50 = lineage.p50_ms - raw.p50_ms
-    overhead_p99 = lineage.p99_ms - raw.p99_ms
+    overhead_p95 = lineage.p95_ms - raw.p95_ms
 
     assert overhead_p50 <= P50_BUDGET_MS, (
         f"sql_query lineage overhead p50 {overhead_p50:+.2f}ms exceeds cap "
         f"{P50_BUDGET_MS}ms (raw {raw.p50_ms:.2f}ms, lineage {lineage.p50_ms:.2f}ms)"
     )
-    assert overhead_p99 <= P99_BUDGET_MS, (
-        f"sql_query lineage overhead p99 {overhead_p99:+.2f}ms exceeds cap "
-        f"{P99_BUDGET_MS}ms (raw {raw.p99_ms:.2f}ms, lineage {lineage.p99_ms:.2f}ms)"
+    assert overhead_p95 <= P95_BUDGET_MS, (
+        f"sql_query lineage overhead p95 {overhead_p95:+.2f}ms exceeds cap "
+        f"{P95_BUDGET_MS}ms (raw {raw.p95_ms:.2f}ms, lineage {lineage.p95_ms:.2f}ms)"
     )

@@ -112,7 +112,10 @@ WITH provider_series AS (
      that priced it, not from whichever provider happens to hold the next row.
      rate is the final tiebreak, matching core.fct_security_prices and
      core.fct_exchange_rates: prep.stg_exchange_rates upper-cases from_currency/
-     to_currency, so two raw rows differing only by case collide on this grain. */
+     to_currency, so two raw rows differing only by case collide on this grain.
+     A provider's last row has no next publication; a NULL there would let
+     IGNORE NULLS below borrow the previous row's, so it gets a date no gap
+     check can pass. */
   SELECT
     from_currency,
     to_currency,
@@ -120,7 +123,10 @@ WITH provider_series AS (
     rate,
     source_type AS provider_name,
     loaded_at,
-    LEAD(rate_date) OVER (PARTITION BY from_currency, to_currency, source_type ORDER BY rate_date) AS provider_next_date
+    COALESCE(
+      LEAD(rate_date) OVER (PARTITION BY from_currency, to_currency, source_type ORDER BY rate_date),
+      '9999-12-31'::DATE
+    ) AS provider_next_date
   FROM prep.stg_exchange_rates
   QUALIFY
     ROW_NUMBER() OVER (

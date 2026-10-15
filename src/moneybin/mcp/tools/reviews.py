@@ -1149,6 +1149,20 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
     )
 
 
+# The two guards `AutoRuleService.approve` refuses on; under `decide` they are
+# the only way an accept stays pending, since every other skip raises. Authored
+# here because the service leaves wording to each surface (the CLI names
+# --allow-broad), and never quotes the proposal's pattern.
+_REFUSED_BROAD_REASON = (
+    "broad: matches far more transactions than the evidence behind it; "
+    "set allow_broad=true on this decision to accept it anyway, or reject it"
+)
+_REFUSED_UNSELECTIVE_REASON = (
+    "short pattern: its 'contains' pattern is too short to match one merchant; "
+    "set allow_broad=true on this decision to accept it anyway, or reject it"
+)
+
+
 @mcp_tool(read_only=False, idempotent=True)
 def reviews_decide_coarse(
     decisions: list[ReviewDecisionRequest],
@@ -1239,6 +1253,12 @@ def reviews_decide_coarse(
                 },
             )
             after = result.statuses
+            refusals = {
+                **dict.fromkeys(result.impact.refused_broad, _REFUSED_BROAD_REASON),
+                **dict.fromkeys(
+                    result.impact.refused_unselective, _REFUSED_UNSELECTIVE_REASON
+                ),
+            }
             auto_rule_impact = AutoAcceptPayload(
                 approved=result.impact.approved,
                 rejected=result.impact.rejected,
@@ -1254,6 +1274,7 @@ def reviews_decide_coarse(
                     status=after.get(decision.decision_id, "pending"),
                     changed=after.get(decision.decision_id) in {"approved", "rejected"},
                     operation_id=operation_id,
+                    reason=refusals.get(decision.decision_id),
                 )
                 for decision in auto_rule_decisions
             ]

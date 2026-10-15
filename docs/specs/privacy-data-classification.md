@@ -540,9 +540,12 @@ dynamic classification, payload construction, and envelope assembly remain
 enabled on both paths. Matching scoped patches keep their setup cost controlled
 and restore the production callables even if the call fails; the preflight
 checks the protected response and its audit event. The gate caps
-protected-egress overhead at ≤50 ms p50 and ≤200 ms p99 per flow, and ≤20%
+protected-egress overhead at ≤50 ms p50 and ≤200 ms p95 per flow, and ≤20%
 across the sums of the five per-flow p50 values. The aggregate is not an
-end-to-end wall-clock measure.
+end-to-end wall-clock measure. The tail cap moved from p99 to p95 on
+2026-10-14: with 30 iterations, p99 is the single slowest sample, and five
+measured runs showed its delta changing sign for the same flow (−84 to +84 ms);
+p99 is still measured and logged.
 
 The serial fixture disables SQLMesh's anonymized analytics dispatcher before it
 builds the persona. That dispatcher retries external telemetry delivery, which

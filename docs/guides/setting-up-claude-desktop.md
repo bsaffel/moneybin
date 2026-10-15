@@ -7,7 +7,7 @@ This guide covers the Claude Desktop happy path only. For every other client (Cl
 
 ## What you need first
 
-- **MoneyBin installed**, with at least one profile holding some data. If you have not installed it yet, follow the [source-install instructions](../../README.md#sixty-seconds-on-synthetic-data). To try it with no real data, run `uv run moneybin demo` — it builds a populated, categorized `demo` profile you can point Claude at immediately.
+- **MoneyBin installed**, with at least one profile holding some data. If you have not installed it yet, follow the [source-install instructions](../../README.md#try-it). To try it with no real data, run `uv run moneybin demo` — it builds a populated, categorized `demo` profile you can point Claude at immediately.
 - **Claude Desktop** — Anthropic's macOS or Windows app.
 
 ## The flow
