@@ -15,6 +15,7 @@ import pytest
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+from moneybin.services.categorization.queries import CategorizationQueries
 
 pytestmark = pytest.mark.integration
 
@@ -134,3 +135,48 @@ def test_is_categorizable_is_true_only_for_the_row_failing_no_condition(
         Decimal("-30.00"): False,
         Decimal("-8.00"): False,
     }
+
+
+# TEMPORARY — deleted with core.uncategorized_queue in the next commit. Its
+# result is recorded in the PR description (categorizable-transactions.md R11).
+@pytest.mark.slow
+def test_pending_list_matches_the_view_it_replaces(db: Database) -> None:
+    seed_one_row_per_exclusion(db)
+    _insert_transaction(
+        db, source_id="t_pending_2", account_id="acct_other", amount=Decimal("-45.00")
+    )
+    _insert_transaction(
+        db, source_id="t_categorized", account_id="acct_open", amount=Decimal("-20.00")
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    categorized = db.execute(
+        "SELECT transaction_id FROM core.fct_transactions WHERE amount = -20.00"
+    ).fetchone()
+    assert categorized is not None
+    # fct_transactions is a VIEW: the category shows through without a rebuild.
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_by) VALUES (?, 'Food & Drink', 'user')",
+        [categorized[0]],
+    )
+
+    view = db.execute("SELECT * FROM core.uncategorized_queue")
+    view_columns = [d[0] for d in view.description]
+    from_view = sorted(
+        (dict(zip(view_columns, row, strict=True)) for row in view.fetchall()),
+        key=lambda r: r["transaction_id"],
+    )
+    listed = CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+    assert listed is not None
+    from_column = sorted(
+        ({k: v for k, v in r.items() if k != "pending_transfer_match"} for r in listed),
+        key=lambda r: r["transaction_id"],
+    )
+
+    # Hand-derived: only -12.00 and -45.00 pass every condition and lack a category.
+    assert sorted(r["amount"] for r in from_view) == [
+        Decimal("-45.00"),
+        Decimal("-12.00"),
+    ]
+    assert from_column == from_view

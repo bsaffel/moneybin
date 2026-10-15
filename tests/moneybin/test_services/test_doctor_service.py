@@ -44,6 +44,7 @@ from tests.moneybin.db_helpers import (
     CORE_FCT_EXCHANGE_RATES_DAILY_DDL,
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
     create_core_tables,
+    derive_is_categorizable,
 )
 
 _COVERAGE_PREFIX: Final = "app_audit_coverage_"
@@ -774,7 +775,7 @@ def test_categorization_coverage_ignores_archived_accounts(
 ) -> None:
     """A closed account's backlog must not drag the ratio down.
 
-    core.uncategorized_queue excludes archived accounts, so ``moneybin review``
+    is_categorizable excludes archived accounts, so ``moneybin review``
     never offers these rows. Counting them reported a coverage problem with no
     action behind it: every route the recovery action suggests skips them.
 
@@ -810,6 +811,7 @@ def test_categorization_coverage_ignores_archived_accounts(
             """,  # test input, not user data
             [f"T_CLOSED_{i}"],
         )
+    derive_is_categorizable(doctor_db)
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager

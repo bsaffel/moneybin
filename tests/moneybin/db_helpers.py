@@ -9,6 +9,8 @@ minimal CREATE TABLE statements here.
 from datetime import datetime
 
 import duckdb
+import sqlglot
+from sqlglot import exp
 
 from moneybin.database import SQLMESH_ROOT, Database
 
@@ -775,29 +777,80 @@ def apply_core_table_comments(database: Database) -> None:
 
 # Resolve via the package's own SQLMESH_ROOT rather than walking up to the repo
 # root: the SQLMesh project lives inside the installed package, so a path built
-# from a test file's parents breaks whenever the project moves (it did — the
-# project relocated to src/moneybin/sqlmesh). SQLMESH_ROOT is what production
-# uses, so this binding cannot drift from it.
-_UNCATEGORIZED_QUEUE_MODEL_FILE = (
-    SQLMESH_ROOT / "models" / "core" / "uncategorized_queue.sql"
-)
+# from a test file's parents breaks whenever the project moves.
+_FCT_TRANSACTIONS_MODEL_FILE = SQLMESH_ROOT / "models" / "core" / "fct_transactions.sql"
 
 
-def install_uncategorized_queue_view(db: Database) -> None:
-    """Materialize core.uncategorized_queue from the real model SQL.
+def _is_categorizable_expression() -> str:
+    """The model's is_categorizable, inlined over aliases f (fact) and a (dim_accounts)."""
+    raw = _FCT_TRANSACTIONS_MODEL_FILE.read_text()
+    end = raw.index(");", raw.index("MODEL (")) + 2
+    select = sqlglot.parse_one(raw[end:], read="duckdb")
+    enriched = next(cte for cte in select.find_all(exp.CTE) if cte.alias == "enriched")
+    account_half = next(
+        e.this
+        for e in enriched.this.expressions
+        if e.alias == "account_resolved_unarchived"
+    )
+    column = next(e.this for e in select.expressions if e.alias == "is_categorizable")
 
-    Requires ``core.fct_transactions`` and ``core.dim_accounts`` to exist
-    (``create_core_tables``). Rebuilds the actual queue view on top of them
-    from the shipped model file so tests bind to the real canonical
-    definition instead of a hand-typed stub that could drift from it.
+    def inline(node: exp.Expr) -> exp.Expr:
+        if isinstance(node, exp.Column) and node.name == "account_resolved_unarchived":
+            return exp.paren(account_half.copy())
+        if isinstance(node, exp.Column) and not node.table:
+            return exp.column(node.name, table="f")
+        return node
+
+    return column.transform(inline).sql("duckdb")
+
+
+def derive_is_categorizable(db: Database) -> None:
+    """Recompute the fixture's is_categorizable with the shipped model's expression.
+
+    Production builds core.fct_transactions as a SQLMesh view; the unit-test
+    stand-in is a table whose column defaults TRUE. A test exercising an
+    exclusion calls this after seeding, so it binds to the model's definition
+    rather than a hand-typed copy of it.
     """
-    raw = _UNCATEGORIZED_QUEUE_MODEL_FILE.read_text()
-    start = raw.index("MODEL")
-    end = raw.index(");", start) + 2
-    body = raw[end:].strip()
     db.execute(
-        f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}"
-    )  # model body read from the repo file, not user input
+        f"""
+        UPDATE core.fct_transactions AS t
+        SET is_categorizable = d.is_categorizable
+        FROM (
+            SELECT f.rowid AS rid, {_is_categorizable_expression()} AS is_categorizable
+            FROM core.fct_transactions AS f
+            LEFT JOIN core.dim_accounts AS a ON f.account_id = a.account_id
+        ) AS d
+        WHERE t.rowid = d.rid
+        """  # noqa: S608  # model expression read from the repo file, not user input
+    )
+
+
+def simulate_pre_refresh_fct_transactions(db: Database) -> None:
+    """Drop is_categorizable: the fact a database holds after upgrade, before refresh."""
+    db.execute("ALTER TABLE core.fct_transactions DROP COLUMN is_categorizable")
+
+
+def insert_three_pending_transactions(db: Database) -> None:
+    """T1–T3, uncategorized, on the MCP template's ACC001 and ACC002.
+
+    Impact order is T2, T1, T3 at any CURRENT_DATE: ABS(amount) * age is
+    500*(d+21) > 25*(d+30) > 5*(d+16), d being days since 2026-04-15.
+    """
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount, currency_code,
+             description, merchant_name, source_type, is_transfer)
+        VALUES
+            ('T1', 'ACC001', DATE '2026-04-01', -25.00, 'USD', 'COFFEE SHOP',
+             'Coffee Shop', 'ofx', false),
+            ('T2', 'ACC001', DATE '2026-04-10', -500.00, 'USD', 'BIG EXPENSE',
+             'Big Expense', 'ofx', false),
+            ('T3', 'ACC002', DATE '2026-04-15', -5.00, 'USD', 'TINY',
+             'Tiny', 'ofx', false)
+        """  # test input, not user data
+    )
 
 
 def seed_pending_dedup_pair(db: Database) -> None:

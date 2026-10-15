@@ -11,7 +11,7 @@ from moneybin.database import Database
 from moneybin.services.system_service import SystemService, SystemStatus
 from tests.moneybin.db_helpers import (
     create_core_tables_raw,
-    install_uncategorized_queue_view,
+    derive_is_categorizable,
     record_sqlmesh_apply,
 )
 
@@ -52,9 +52,8 @@ def system_db(db: Database) -> Database:
     """)  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
-    # categorize_pending counts core.uncategorized_queue, the one definition of
-    # an uncategorized transaction; SQLMesh materializes it in production.
-    install_uncategorized_queue_view(db)
+    # categorize_pending counts is_categorizable rows with no category.
+    derive_is_categorizable(db)
 
     return db
 

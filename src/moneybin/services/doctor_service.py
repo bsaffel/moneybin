@@ -4553,8 +4553,8 @@ class DoctorService:
 
         Delegates the counting so this check and ``categorize stats`` cannot
         report different coverage for the same database: one query, scoped to
-        the population ``core.uncategorized_queue`` is drawn from, so the
-        percentage describes work ``moneybin review`` will actually offer.
+        ``core.fct_transactions.is_categorizable``, so the percentage describes
+        work ``moneybin review`` will actually offer.
         """
         try:
             coverage = CategorizationService(self._db).coverage()
@@ -4562,11 +4562,9 @@ class DoctorService:
             return InvariantResult(
                 name="categorization_coverage",
                 status="skipped",
-                # Names both models the delegated count reads: it joins
-                # dim_accounts to match the queue's population, so either being
-                # absent lands here and a reader sent to the wrong one looks
-                # for a table that is already there.
-                detail="fct_transactions or dim_accounts not available",
+                # Coverage reads only fct_transactions now; this also lands here
+                # when the fact predates is_categorizable (not yet refreshed).
+                detail="fct_transactions not available",
                 affected_ids=[],
             )
         if coverage.categorizable == 0:
