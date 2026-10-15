@@ -1,0 +1,1 @@
+`logging.level` accepts `info` for `INFO` from every source — the environment, the dotenv file, a profile's `config.yaml`, and `profile set`, which now stores the uppercase form. A lowercase level written to `config.yaml` by an earlier `profile set` previously failed every command's settings load with no way to recover except editing the file.
