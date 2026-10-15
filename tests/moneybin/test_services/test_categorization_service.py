@@ -5025,6 +5025,22 @@ def test_pending_list_reports_a_pre_refresh_fact_as_schema_drift(
     }
 
 
+def test_pending_list_reports_an_unbindable_fact_view_as_schema_drift(
+    db: Database,
+) -> None:
+    """A stale fact view whose own inputs no longer bind is drift, not a raw error."""
+    db.execute("DROP TABLE core.fct_transactions")
+    db.execute("CREATE TABLE core.fct_input (gone INTEGER, kept INTEGER)")
+    db.execute("CREATE VIEW core.fct_transactions AS SELECT gone FROM core.fct_input")
+    db.execute("ALTER TABLE core.fct_input DROP COLUMN gone")
+
+    with pytest.raises(UserError) as exc_info:
+        CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+
+    assert exc_info.value.code == error_codes.INFRA_SCHEMA_DRIFT
+    assert exc_info.value.hint == "refresh_run"
+
+
 def test_stats_report_zeros_on_a_pre_refresh_fact(db: Database) -> None:
     simulate_pre_refresh_fct_transactions(db)
 

@@ -250,6 +250,8 @@ class CategorizationQueries:
             )
         except duckdb.CatalogException:
             return False
+        except duckdb.BinderException:
+            return True  # present but stale: its own inputs no longer bind
         return True
 
     def get_active_categories(self) -> list[dict[str, str | bool | None]]:
