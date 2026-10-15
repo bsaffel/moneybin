@@ -222,6 +222,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   The shipped interactive loop covers matches, categorize, account-links,
 |   merchant-links, and security-links only. Investment-match decisions and
 |   --field-choice in this target-state tree remain planned.
+|   Shipped noninteractive review accepts --reject for matches or categorize;
+|   categorization assignments use transactions categorize commit. Pending
+|   categorization output includes nullable versioned decision_id for rejection.
 |   Counts are what a bare invocation prints; drill into
 |   `accounts links pending`, `merchants links pending`, `investments securities links pending`,
 |   `investments matches pending`, `transactions matches pending`, or
@@ -382,11 +385,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
 |   |     [--confirm-all]                   Non-interactive: confirm all items in an eligible --type scope
 |   |     [--limit N]                       Cap items per session
-|   |   Note: --confirm/--reject are defined for --type matches and investment-matches;
-|   |         --confirm-all with investment-matches or all exits 2, as does --field-choice
-|   |         without both --type investment-matches and exactly one --confirm.
-|   |         --type categorize review is not yet wired (stub); categorize items use
-|   |         transactions categorize commit instead.
+|   |   Shipped --confirm/--confirm-all require --type matches; --reject supports
+|   |   matches or categorize. Categorization assignments also use transactions
+|   |   categorize commit. Investment-match decisions and --field-choice above
+|   |   remain target-state plans.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see the top-level `review`)
 |   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
 |   |   |         Pending proposals grouped by component_key (N-way dedup clusters appear

@@ -633,3 +633,104 @@ def test_match_load_and_render_show_both_actual_source_observations(
     ):
         assert expected in output
     assert "Wrong account decoy" not in output
+
+
+@pytest.mark.parametrize("missing_at", ["initial", "after_display", "before_write"])
+def test_unavailable_match_observations_never_authorize_writes(missing_at: str) -> None:
+    import typer
+
+    from moneybin.cli.commands.interactive_review import run_review
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    row = {
+        "match_id": "pending",
+        "account_id": "account",
+        "source_type_a": "manual",
+        "source_type_b": "csv",
+        "source_transaction_id_a": "a",
+        "source_transaction_id_b": "b",
+    }
+    observation = {
+        "amount": "-1.00",
+        "currency_code": "USD",
+        "description": "Synthetic observation",
+    }
+    observation_options: dict[str, list[dict[str, str] | None]] = {
+        "initial": [None, None],
+        "after_display": [observation, observation, None, None],
+        "before_write": [
+            observation,
+            observation,
+            observation,
+            observation,
+            None,
+            None,
+        ],
+    }
+    observations = observation_options[missing_at]
+    with (
+        patch("moneybin.cli.commands.interactive_review.get_database") as database,
+        patch("moneybin.services.matching_service.MatchingService") as service,
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="accept",
+        ),
+    ):
+        service.return_value.get_pending.return_value = [row]
+
+        def source_observation(
+            *, source_type: str, source_transaction_id: str, account_id: str
+        ) -> dict[str, str] | None:
+            return observations.pop(0) if observations else None
+
+        service.return_value.get_source_observation.side_effect = source_observation
+        service.return_value.set_status.return_value = MatchDecisionOutcome(
+            "accepted", 0
+        )
+        with pytest.raises(typer.Exit) as refused:
+            run_review("matches", 1, replace(get_terminal_policy(), interactive=True))
+    assert refused.value.exit_code == 1
+    service.return_value.set_status.assert_not_called()
+    assert all(call.kwargs.get("read_only") is True for call in database.call_args_list)
+
+
+def test_stale_decision_diagnostic_goes_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from moneybin.cli.commands.interactive_review import ReviewItem, run_review
+
+    item = ReviewItem("matches", "match", (("Description", "Original"),))
+    changed = replace(item, evidence=(("Description", "Changed"),))
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items",
+            side_effect=[[item], [changed]],
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="accept",
+        ),
+    ):
+        run_review("matches", 1, replace(get_terminal_policy(), interactive=True))
+    captured = capsys.readouterr()
+    assert "Decision changed since display" in captured.err
+    assert "Decision changed since display" not in captured.out
+
+
+def test_target_change_diagnostic_goes_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from moneybin.cli.commands.interactive_review import ReviewItem, apply_decision
+
+    item = ReviewItem("matches", "match", ())
+    with (
+        patch("moneybin.cli.commands.interactive_review.load_items", return_value=[]),
+        patch("moneybin.cli.commands.interactive_review.get_database") as database,
+    ):
+        assert not apply_decision(
+            item, "accept", replace(get_terminal_policy(), interactive=True)
+        )
+    captured = capsys.readouterr()
+    assert "Decision changed while choosing" in captured.err
+    assert "Decision changed while choosing" not in captured.out
+    database.assert_not_called()

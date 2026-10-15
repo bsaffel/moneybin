@@ -37,7 +37,7 @@ Usage: `moneybin transactions review [OPTIONS]`
 | `--status` | flag |  | Show queue counts (the default) |
 | `--interactive` | flag |  | Review pending items with explicit decisions, skip, or quit |
 | `--confirm` | text |  | Non-interactive: confirm one item by ID |
-| `--reject` | text |  | Non-interactive: reject one item by ID |
+| `--reject` | text |  | Non-interactive: reject one match or categorization decision by ID |
 | `--confirm-all` | flag |  | Non-interactive: confirm all items in scope |
 | `--limit` | int | `50` | Cap items per session |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
@@ -210,7 +210,8 @@ Usage: `moneybin transactions categorize commit-from-file [OPTIONS] [input_path]
 
 List uncategorized transactions.
 
-Excludes transfer pairs and archived accounts.
+Excludes transfer pairs and archived accounts. Decision IDs name current
+pending review attempts; reject one with review --type categorize --reject.
 
 ```console
 moneybin transactions categorize pending

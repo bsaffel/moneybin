@@ -46,7 +46,9 @@ def review_command(
         None, "--confirm", help="Non-interactive: confirm one match by ID"
     ),
     reject_id: str | None = typer.Option(
-        None, "--reject", help="Non-interactive: reject one match by ID"
+        None,
+        "--reject",
+        help="Non-interactive: reject one match or categorization decision by ID",
     ),
     confirm_all: bool = typer.Option(
         False, "--confirm-all", help="Non-interactive: confirm all items in scope"
@@ -60,7 +62,8 @@ def review_command(
 
     One sweep answers "what needs my attention?" across all review domains.
     Use --type to filter to a specific queue, then --confirm/--reject/
-    --confirm-all to decide matches without leaving the shell.
+    --confirm-all to decide matches, or --type categorize --reject <decision-id>
+    to reject a categorization attempt without prompting.
     """
     review_impl(
         type_=type_,

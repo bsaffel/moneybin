@@ -76,11 +76,13 @@ def load_items(type_: str, limit: int | None = None) -> list[ReviewItem]:
                             account_id=str(account_id or row["account_id"]),
                         )
                         if observation is None:
-                            evidence.append((
-                                f"Transaction {side.upper()}",
-                                "Source observation unavailable; refresh before deciding",
-                            ))
-                            continue
+                            from moneybin import error_codes
+
+                            raise UserError(
+                                "This match cannot be decided because its source evidence is unavailable.",
+                                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                                hint="Run 'moneybin refresh' before reviewing matches.",
+                            )
                         evidence.extend(
                             (
                                 f"Transaction {side.upper()} {key.replace('_', ' ')}",
@@ -282,7 +284,8 @@ def run_review(type_: str, limit: int, policy: TerminalPolicy) -> None:
                 if live.get(item.item_id) != item:
                     stale += 1
                     typer.echo(
-                        "Decision changed since display; skipped. Refresh the review queue."
+                        "Decision changed since display; skipped. Refresh the review queue.",
+                        err=True,
                     )
                     continue
                 try:
@@ -392,7 +395,9 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
         )
     # The last prompt can span a concurrent decision/import, so re-read again.
     if item not in load_items(item.queue):
-        typer.echo("Decision changed while choosing its target; no decision saved.")
+        typer.echo(
+            "Decision changed while choosing its target; no decision saved.", err=True
+        )
         return False
     if item.queue == "account-links":
         from moneybin.cli.commands.accounts.links import (
@@ -411,10 +416,10 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
                 verify_accept=merge_drift_check(db, decision_id, approved),
             )
         for note in report_rematch(rematch):
-            typer.echo(note)
+            typer.echo(note, err=True)
         # The merge is durable even when its follow-up refresh fails.
         if rematch is not None and rematch.error is not None:
-            typer.echo("Account decision saved; follow-up rebuild failed.")
+            typer.echo("Account decision saved; follow-up rebuild failed.", err=True)
             raise SavedDecisionError()
         return True
     with get_database(read_only=False) as db:
@@ -436,7 +441,10 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
             if result.match_status != (
                 "accepted" if action == "accept" else "rejected"
             ):
-                typer.echo(f"Requested decision did not stand: {result.match_status}.")
+                typer.echo(
+                    f"Requested decision did not stand: {result.match_status}.",
+                    err=True,
+                )
                 raise typer.Exit(1)
         elif item.queue == "categorize":
             from moneybin.protocol.write_contracts import CategorizationDecisionRequest

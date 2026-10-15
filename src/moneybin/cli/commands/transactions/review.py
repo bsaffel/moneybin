@@ -63,14 +63,21 @@ def review_impl(
     without duplicating logic.
     """
     # Counts have a meaningful all-queues view; a mutation does not.  Ask the
-    # human to name its only supported queue instead of treating the first
+    # human to name the decision's queue instead of treating the first
     # available queue as an implicit target.
     decides = bool(confirm_id or reject_id or confirm_all)
     if type_ is None:
         if decides:
+            if output == OutputFormat.JSON:
+                raise typer.BadParameter(
+                    "--type is required for JSON review decisions", param_hint="--type"
+                )
+            choices = (Choice("matches", "Matches"),)
+            if reject_id and not confirm_id and not confirm_all:
+                choices += (Choice("categorize", "Categorization"),)
             type_ = choose_required(
                 None,
-                choices=(Choice("matches", "Matches"),),
+                choices=choices,
                 flag="--type",
                 policy=get_terminal_policy(),
             )
@@ -92,15 +99,16 @@ def review_impl(
         raise typer.Exit(2)
 
     if decides:
-        # `--type matches` stays explicit rather than being inferred from the
-        # decide flags. They are match-only today, but the queued work extends
-        # them to categorize and the three link queues — at which point a bare
-        # `--confirm <id>` names an id whose queue we would have to guess, and
-        # guessing wrong accepts the wrong decision silently.
+        if type_ == "categorize":
+            if not reject_id or confirm_id or confirm_all:
+                raise typer.BadParameter(
+                    "--type categorize supports only --reject <decision-id>; use transactions categorize commit for assignments."
+                )
+            _review_categorization_reject(reject_id, output=output)
+            return
         if type_ != "matches":
             logger.error(
-                "--confirm/--reject/--confirm-all require --type matches "
-                "(categorize non-interactive review is not yet supported)"
+                "--confirm/--confirm-all require --type matches; --reject supports matches or categorize"
             )
             raise typer.Exit(2)
         _review_matches_noninteractive(
@@ -148,7 +156,9 @@ def transactions_review(
         None, "--confirm", help="Non-interactive: confirm one item by ID"
     ),
     reject_id: str | None = typer.Option(
-        None, "--reject", help="Non-interactive: reject one item by ID"
+        None,
+        "--reject",
+        help="Non-interactive: reject one match or categorization decision by ID",
     ),
     confirm_all: bool = typer.Option(
         False, "--confirm-all", help="Non-interactive: confirm all items in scope"
@@ -178,6 +188,60 @@ def transactions_review(
         no_pager=no_pager,
         output=output,
         quiet=quiet,
+    )
+
+
+def _review_categorization_reject(decision_id: str, *, output: OutputFormat) -> None:
+    """Reject the same versioned attempt as the interactive categorization queue."""
+    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.privacy.payloads.reviews import (
+        ReviewDecisionOutcome,
+        ReviewsDecidePayload,
+    )
+    from moneybin.protocol.write_contracts import CategorizationDecisionRequest
+    from moneybin.services.mutation_context import current_operation_id
+    from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+    with handle_cli_errors(cli_actor="review", payload_type=ReviewsDecidePayload):
+        operation_id = current_operation_id()
+        with get_database(read_only=False) as db:
+            applied = ReviewDecisionsService(db, actor="cli").apply_ordinary([
+                CategorizationDecisionRequest(
+                    kind="categorization", decision_id=decision_id, decision="reject"
+                )
+            ])
+    payload = ReviewsDecidePayload(
+        results=[
+            ReviewDecisionOutcome(
+                kind=item.request.kind,
+                decision_id=item.request.decision_id,
+                decision=item.request.decision,
+                status=item.status,
+                changed=item.changed,
+                operation_id=operation_id,
+            )
+            for item in applied.items
+        ],
+        applied_count=sum(item.changed for item in applied.items),
+        operation_id=operation_id,
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(build_envelope(data=payload), output, cli_actor="review")
+        return
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Decision", decision_id),
+                    ("Status", applied.items[0].status),
+                    ("Operation", operation_id),
+                ],
+                title="Categorization decision saved",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
 
 

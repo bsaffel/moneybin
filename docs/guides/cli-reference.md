@@ -789,7 +789,18 @@ earlier decisions and prints their saved count. JSON output and redirected input
 reject interactive mode before opening a writable database. Use the existing
 `transactions matches set`, `transactions categorize`, `accounts links set`,
 `merchants links set`, and `investments securities links set` commands for
-scripted decisions.
+scripted decisions. Categorization rejection uses the existing review command:
+
+```bash
+moneybin transactions categorize pending --output json
+moneybin review --type categorize --reject <decision-id> --output json
+```
+
+Use `data.transactions[].decision_id` from the pending response, or the complete
+Decision ID in its text output. IDs are projected without creating decisions;
+`null` means the transaction has no pending review attempt, including after a
+rejection. The transaction remains uncategorized until an assignment is committed.
+JSON review decisions require an explicit `--type` and never prompt for it.
 
 
 ## See also
