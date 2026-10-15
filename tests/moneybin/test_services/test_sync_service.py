@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1756,3 +1756,320 @@ class TestPullResolvesAccounts:
 
         assert result.accounts_loaded == 2
         assert result.transactions_loaded == 3
+
+
+# ---------------------------------------------------------------------------
+# Purge: `sync disconnect --purge` / `sync_disconnect(state="absent")`
+# ---------------------------------------------------------------------------
+
+_CHASE_ITEM = "item_chase_abc"  # the fixture's item: 2 accounts, 3 txns, 2 balances
+_OTHER_ITEM = "item_other_xyz"
+
+
+def _chase_connection(
+    status: Literal["active", "error", "revoked"] = "active",
+) -> ConnectedInstitution:
+    return ConnectedInstitution(
+        id="conn_chase",
+        provider_item_id=_CHASE_ITEM,
+        provider="plaid",
+        institution_name="Chase",
+        status=status,
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+
+
+def _other_item_payload() -> SyncDataResponse:
+    """A second, unrelated item whose rows a purge of the fixture item must keep."""
+    return SyncDataResponse.model_validate({
+        "accounts": [
+            {
+                "account_id": "acc_other_check",
+                "persistent_account_id": "ppa_other_0001",
+                "account_type": "depository",
+                "account_subtype": "checking",
+                "institution_name": "Other Bank",
+                "name": "Other Checking",
+                "official_name": "Other Total Checking",
+                "mask": "9999",
+            }
+        ],
+        "transactions": [
+            {
+                "transaction_id": "txn_other_1",
+                "account_id": "acc_other_check",
+                "transaction_date": "2026-04-07",
+                "amount": "5.00",
+                "description": "OTHER COFFEE",
+                "pending": False,
+            }
+        ],
+        "balances": [],
+        "removed_transactions": [],
+        "metadata": {
+            "job_id": "job-other",
+            "synced_at": "2026-08-15T12:00:00Z",
+            "institutions": [
+                {
+                    "provider_item_id": _OTHER_ITEM,
+                    "institution_name": "Other Bank",
+                    "status": "completed",
+                    "transaction_count": 1,
+                }
+            ],
+        },
+    })
+
+
+def _pull_both_items(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> SyncService:
+    """Pull the fixture item and a second item so a purge has a bystander."""
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    service.pull(refresh=False)
+    other = MagicMock()
+    other.trigger_sync.return_value = SyncTriggerResponse(
+        job_id="job-other", status="completed", transaction_count=1
+    )
+    other.get_data.return_value = _other_item_payload()
+    SyncService(client=other, db=db, loader=loader).pull(refresh=False)
+    return service
+
+
+def _raw_counts(db: Database, item_id: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for table in ("plaid_accounts", "plaid_transactions", "plaid_balances"):
+        row = db.execute(
+            f"SELECT COUNT(*) FROM raw.{table} WHERE source_origin = ?",  # noqa: S608  # test table name
+            [item_id],
+        ).fetchone()
+        counts[table] = int(row[0]) if row else 0
+    return counts
+
+
+def _accepted_link_rows(db: Database, item_id: str) -> list[tuple[str, str]]:
+    return [
+        (str(r[0]), str(r[1]))
+        for r in db.execute(
+            "SELECT link_id, account_id FROM app.account_links "
+            "WHERE source_type = 'plaid' AND source_origin = ? "
+            "AND status = 'accepted' ORDER BY link_id",
+            [item_id],
+        ).fetchall()
+    ]
+
+
+def _propose_merge(db: Database, provisional: str, candidate: str) -> str:
+    from moneybin.repositories.account_link_decisions_repo import (
+        AccountLinkDecisionsRepo,
+    )
+
+    decision_id = f"dec_{provisional[:4]}_{candidate[:4]}"
+    AccountLinkDecisionsRepo(db).insert(
+        decision_id=decision_id,
+        provisional_account_id=provisional,
+        candidate_account_id=candidate,
+        confidence_score=0.5,
+        match_signals={"signal": "institution_last4", "value": "1234"},
+        decided_by="auto",
+        actor="system",
+        match_reason="institution_last4",
+    )
+    return decision_id
+
+
+def _decision_status(db: Database, decision_id: str) -> tuple[str, str]:
+    row = db.execute(
+        "SELECT status, decided_by FROM app.account_link_decisions "
+        "WHERE decision_id = ?",
+        [decision_id],
+    ).fetchone()
+    assert row is not None
+    return str(row[0]), str(row[1])
+
+
+def test_plan_purge_counts_exactly_the_items_rows_and_links(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The plan quotes the fixture item's rows per table and nothing of the other's."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+
+    plan = service.plan_purge(institution="Chase")
+
+    counts = dict(plan.table_counts)
+    assert plan.provider_item_id == _CHASE_ITEM
+    assert plan.connection == _chase_connection()
+    assert counts["raw.plaid_accounts"] == 2
+    assert counts["raw.plaid_transactions"] == 3
+    assert counts["raw.plaid_balances"] == 2
+    assert counts["raw.security_prices"] == 0
+    assert plan.rows_to_delete == 7
+    assert (
+        len(plan.account_link_ids) == 4
+    )  # source_native + persistent_token per account
+    assert plan.decision_ids == ()
+    assert plan.blast_radius["institutions"] == 1
+    assert plan.blast_radius["total_rows"] == 7
+    assert plan.blast_radius["account_links_reversed"] == 4
+
+
+def test_purge_confirmed_removes_the_item_and_keeps_the_bystander(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """Server disconnect, raw deletes, link reversal, and proposal withdrawal in one go."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    chase_links = _accepted_link_rows(db, _CHASE_ITEM)
+    other_links = _accepted_link_rows(db, _OTHER_ITEM)
+    chase_account = chase_links[0][1]
+    other_account = other_links[0][1]
+    withdrawn = _propose_merge(db, chase_account, other_account)
+    verified: list[object] = []
+
+    live = service.purge_confirmed(
+        provider_item_id=_CHASE_ITEM, verify=verified.append, actor="cli"
+    )
+
+    assert verified == [live]
+    mock_client.disconnect.assert_called_once_with("conn_chase")
+    assert live.rows_to_delete == 7
+    assert live.decision_ids == (withdrawn,)
+    assert _raw_counts(db, _CHASE_ITEM) == {
+        "plaid_accounts": 0,
+        "plaid_transactions": 0,
+        "plaid_balances": 0,
+    }
+    assert _raw_counts(db, _OTHER_ITEM)["plaid_accounts"] == 1
+    assert _raw_counts(db, _OTHER_ITEM)["plaid_transactions"] == 1
+    assert _accepted_link_rows(db, _CHASE_ITEM) == []
+    assert _accepted_link_rows(db, _OTHER_ITEM) == other_links
+    reversed_rows = db.execute(
+        "SELECT reversed_by FROM app.account_links "
+        "WHERE source_origin = ? AND status = 'reversed'",
+        [_CHASE_ITEM],
+    ).fetchall()
+    assert [str(r[0]) for r in reversed_rows] == ["user"] * 4
+    assert _decision_status(db, withdrawn) == ("rejected", "user")
+
+
+def test_purge_keeps_a_proposal_another_source_still_feeds(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """An account an OFX statement also feeds is not orphaned, so its proposal stays."""
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    chase_account = _accepted_link_rows(db, _CHASE_ITEM)[0][1]
+    other_account = _accepted_link_rows(db, _OTHER_ITEM)[0][1]
+    AccountLinksRepo(db).insert(
+        link_id="lnk_ofx_same",
+        account_id=chase_account,
+        ref_kind="source_native",
+        ref_value="statement-acct",
+        source_type="ofx",
+        source_origin="chase_statements",
+        decided_by="user",
+        actor="cli",
+    )
+    kept = _propose_merge(db, chase_account, other_account)
+
+    plan = service.plan_purge(provider_item_id=_CHASE_ITEM)
+
+    assert plan.decision_ids == ()
+    service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+    assert _decision_status(db, kept) == ("pending", "auto")
+
+
+def test_purge_reaches_an_item_the_server_no_longer_lists(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The orphan a plain disconnect leaves behind is purgeable by its item id."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = []
+
+    plan = service.plan_purge(provider_item_id=_CHASE_ITEM)
+    assert plan.connection is None
+    assert plan.blast_radius["institutions"] == 0
+    assert plan.rows_to_delete == 7
+
+    live = service.purge_confirmed(
+        provider_item_id=_CHASE_ITEM, verify=lambda _: None, actor="mcp"
+    )
+
+    assert live.connection is None
+    mock_client.disconnect.assert_not_called()
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 0
+    assert _raw_counts(db, _OTHER_ITEM)["plaid_transactions"] == 1
+
+
+def test_plan_purge_refuses_an_item_with_neither_connection_nor_rows(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = []
+    with pytest.raises(UserError, match="no locally pulled rows") as exc_info:
+        service.plan_purge(provider_item_id="item_never_seen")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+
+
+def test_plan_purge_by_name_needs_the_server_and_hints_at_the_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """A name only resolves through the server; the hint names the orphan route."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = []
+    with pytest.raises(UserError, match="no connected institution") as exc_info:
+        service.plan_purge(institution="Chase")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+    assert "provider_item_id" in (exc_info.value.hint or "")
+
+
+def test_plan_purge_rejects_both_or_neither_selector(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(UserError, match="mutually exclusive"):
+        service.plan_purge(institution="Chase", provider_item_id=_CHASE_ITEM)
+    with pytest.raises(UserError, match="required to disconnect"):
+        service.plan_purge()
+    mock_client.list_institutions.assert_not_called()
+
+
+def test_purge_confirmed_removes_nothing_when_verification_fails(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    before_links = _accepted_link_rows(db, _CHASE_ITEM)
+
+    def refuse(_: object) -> None:
+        raise ValueError("confirmation mismatch")
+
+    with pytest.raises(ValueError, match="confirmation mismatch"):
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=refuse)
+
+    mock_client.disconnect.assert_not_called()
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
+    assert _accepted_link_rows(db, _CHASE_ITEM) == before_links
+
+
+def test_purge_confirmed_rolls_back_when_the_server_disconnect_fails(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The remote half goes first, so a remote failure leaves local state untouched."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    mock_client.disconnect.side_effect = SyncAPIError("server 503")
+    before_links = _accepted_link_rows(db, _CHASE_ITEM)
+
+    with pytest.raises(SyncAPIError):
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
+    assert _accepted_link_rows(db, _CHASE_ITEM) == before_links
+    pending = db.execute(
+        "SELECT COUNT(*) FROM app.account_links WHERE status = 'reversed'"
+    ).fetchone()
+    assert pending is not None and pending[0] == 0

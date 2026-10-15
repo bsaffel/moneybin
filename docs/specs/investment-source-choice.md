@@ -47,11 +47,12 @@ is the one the user wants. There is no remedy that goes the other way:
   on every pull and re-sends investment transactions in overlapping date
   windows, so the next pull puts the rows back. The detector also counts
   holdings rows, so the overlap would come back even if no trade did.
-- **Disconnecting doesn't fit.** `sync_disconnect` is remote only and keeps
-  every pulled row. It also acts on the whole connection, not one account.
-  A disconnect that also purged the connection's rows would throw away
-  cash transactions and balances for every account on the connection, can't
-  be undone, and loses history older than the provider's window.
+- **Disconnecting doesn't fit.** `sync_disconnect` is remote only by default
+  and keeps every pulled row. It also acts on the whole connection, not one
+  account. Its purging form (`state="absent"` / `--purge`, added later for
+  orphaned connections) throws away cash transactions and balances for every
+  account on the connection, can't be undone, and loses history older than
+  the provider's window — so it is no remedy for this check either.
 
 What the user is actually trying to express is a choice about one account:
 which history to trust. This spec makes that choice a setting.

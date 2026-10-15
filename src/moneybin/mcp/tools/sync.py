@@ -582,6 +582,91 @@ def _disconnect_sync_confirmed(
         )
 
 
+def _sync_purge_binding(plan: Any) -> ConfirmationBinding:
+    """Bind a purge to the exact item, its live connection, and every count.
+
+    The counts are part of the binding, so a pull that lands between the
+    preview and the confirm — adding rows the user never saw quoted — changes
+    the digest and the confirm is refused rather than deleting more than it
+    described.
+    """
+    connection = plan.connection
+    return ConfirmationBinding(
+        arguments={
+            "mode": "institution",
+            "state": "absent",
+            "provider_item_id": plan.provider_item_id,
+            "connection": (
+                None
+                if connection is None
+                else {
+                    "id": connection.id,
+                    "institution_name": connection.institution_name,
+                    "provider": connection.provider,
+                    "status": connection.status,
+                }
+            ),
+            "table_counts": [[name, int(count)] for name, count in plan.table_counts],
+            "account_link_ids": list(plan.account_link_ids),
+            "decision_ids": list(plan.decision_ids),
+        },
+        resolved_ids=(plan.provider_item_id,),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="sync_disconnect_absent",
+        blast_radius=plan.blast_radius,
+    )
+
+
+def _sync_purge_message(plan: Any) -> str:
+    """Name the item, the server half, and the exact local rows a purge removes."""
+    connection = plan.connection
+    local = (
+        f"delete its {plan.rows_to_delete} locally pulled rows, reverse "
+        f"{len(plan.account_link_ids)} account links, and withdraw "
+        f"{len(plan.decision_ids)} merge proposals? This is permanent."
+    )
+    if connection is None:
+        return (
+            f"The sync server no longer lists provider_item_id="
+            f"{plan.provider_item_id}. Permanently {local}"
+        )
+    name = connection.institution_name or "this institution"
+    linked = connection.created_at.date().isoformat()
+    return (
+        f"Permanently disconnect {name} (provider_item_id="
+        f"{plan.provider_item_id}, linked {linked}) and {local}"
+    )
+
+
+def _plan_sync_purge(institution: str | None, provider_item_id: str | None) -> Any:
+    """Resolve one purge target outside the MCP event loop."""
+    with _build_sync_service() as service:
+        return service.plan_purge(
+            institution=institution, provider_item_id=provider_item_id
+        )
+
+
+def _purge_sync_confirmed(
+    institution: str | None,
+    provider_item_id: str | None,
+    grant: ConfirmationGrant,
+) -> Any:
+    """Re-plan, verify, disconnect, and purge outside the event loop."""
+
+    def verify(live: Any) -> None:
+        grant.verify(_sync_purge_binding(live))
+
+    with _build_sync_service() as service:
+        return service.purge_confirmed(
+            institution=institution,
+            provider_item_id=provider_item_id,
+            verify=verify,
+            actor="mcp",
+        )
+
+
 @mcp_tool(
     read_only=False,
     destructive=True,
@@ -593,12 +678,17 @@ async def sync_disconnect(
     institution: str | None = None,
     provider_item_id: str | None = None,
     mode: Literal["institution", "logout"] = "institution",
+    state: Literal["disconnected", "absent"] = "disconnected",
     confirmation_token: str | None = None,
 ) -> ResponseEnvelope[SyncDisconnectCoarsePayload]:
     """Disconnect one institution connection or clear scoped sync credentials.
 
-    Institution disconnect is permanent on moneybin-sync; local pulled rows
-    remain. Pass `provider_item_id` (from sync_status) to target one exact
+    Institution disconnect is permanent on moneybin-sync; with the default
+    ``state="disconnected"`` local pulled rows remain. ``state="absent"``
+    also deletes every locally pulled row of the item, reverses its account
+    links, and withdraws merge proposals only its accounts describe — and,
+    by ``provider_item_id``, reaches an item the server no longer lists.
+    Pass `provider_item_id` (from sync_status) to target one exact
     connection — required when an institution has more than one (e.g. after
     a relink), where `institution` alone is ambiguous and gets refused.
     `institution` and `provider_item_id` are mutually exclusive. Logout
@@ -610,6 +700,11 @@ async def sync_disconnect(
             raise UserError(
                 "institution and provider_item_id are valid only when "
                 "mode='institution'.",
+                code=error_codes.SYNC_DISCONNECT_MODE_CONFLICT,
+            )
+        if state != "disconnected":
+            raise UserError(
+                "state='absent' is valid only when mode='institution'.",
                 code=error_codes.SYNC_DISCONNECT_MODE_CONFLICT,
             )
         if confirmation_token is not None:
@@ -637,6 +732,10 @@ async def sync_disconnect(
             "institution and provider_item_id are mutually exclusive — "
             "pass exactly one",
             code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if state == "absent":
+        return await _sync_disconnect_absent(
+            institution, provider_item_id, confirmation_token
         )
     binding: ConfirmationBinding | None = None
     message = (
@@ -667,6 +766,46 @@ async def sync_disconnect(
             provider_item_id=disconnected.provider_item_id,
         ),
         actions=["Use sync_status to inspect remaining institution connections."],
+    )
+
+
+async def _sync_disconnect_absent(
+    institution: str | None,
+    provider_item_id: str | None,
+    confirmation_token: str | None,
+) -> ResponseEnvelope[SyncDisconnectCoarsePayload]:
+    """The state='absent' branch: confirm the exact purge, then apply it."""
+    binding: ConfirmationBinding | None = None
+    message = (
+        "Permanently disconnect this connection and delete every locally "
+        "pulled row it owns?"
+    )
+    if confirmation_token is None:
+        plan = await asyncio.to_thread(_plan_sync_purge, institution, provider_item_id)
+        binding = _sync_purge_binding(plan)
+        message = _sync_purge_message(plan)
+    grant: ConfirmationGrant = await grant_confirmation_or_raise(
+        binding=binding,
+        message=message,
+        confirmation_token=confirmation_token,
+    )
+    live = await asyncio.to_thread(
+        _purge_sync_confirmed, institution, provider_item_id, grant
+    )
+    connection = live.connection
+    return build_envelope(
+        data=SyncInstitutionDisconnectView(
+            status="purged",
+            institution=None if connection is None else connection.institution_name,
+            provider_item_id=live.provider_item_id,
+            purged=True,
+            rows_deleted=live.rows_to_delete,
+            account_links_reversed=len(live.account_link_ids),
+        ),
+        actions=[
+            "Run refresh_run so core tables drop the purged rows.",
+            "Use sync_status to inspect remaining institution connections.",
+        ],
     )
 
 
@@ -710,7 +849,12 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
             "provider_item_id (from sync_status) targets one exact connection "
             "— required when an institution has more than one (e.g. after a "
             "relink), where institution alone is ambiguous. Mutually "
-            "exclusive with institution.",
+            "exclusive with institution. state='absent' also deletes the "
+            "item's locally pulled raw rows (raw.plaid_* and its prices), "
+            "reverses its account links, and withdraws merge proposals only "
+            "its accounts describe; by provider_item_id it also reaches an "
+            "item the server no longer lists. Confirmed destructive write; "
+            "run refresh_run afterwards.",
         ),
     ):
         register(

@@ -339,7 +339,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
 | `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
 | `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
-| `moneybin sync disconnect --institution NAME \| --provider-item-id ID` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink) |
+| `moneybin sync disconnect --institution NAME \| --provider-item-id ID [--purge]` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink). Local rows are kept by default. `--purge` previews, then also deletes every row the item pulled (`raw.plaid_*` and its `raw.security_prices` observations, scoped by `source_origin`), reverses the item's accepted `app.account_links`, and rejects pending merge proposals that only its accounts still describe; with `--provider-item-id` it also reaches an item the server no longer lists, which is the orphan a plain disconnect leaves behind. The server call runs first, so a remote failure changes nothing and a local failure leaves a re-runnable orphan. Core tables drop the rows on the next `refresh run` |
 | `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger a server-completed sync, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
 
@@ -363,6 +363,7 @@ Per `.claude/rules/cli.md`, every interactive behavior has a flag equivalent for
 | Server address prompt at login | `--server URL`. Without a terminal and without the flag, login fails with `sync_server_not_configured` rather than waiting on input |
 | Browser opens for link | `--no-browser` |
 | Confirmation before disconnect | `--yes` / `-y` |
+| Purge preview confirmation (`--purge`) | `--yes` / `-y` — required outside an interactive terminal; the preview still prints to stderr |
 | Institution selection when ambiguous | `--institution NAME` |
 
 All commands support `--output json` for AI agent consumption per `mcp-architecture.md` §7.
@@ -428,7 +429,7 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 | `sync_pull` | Trigger a bank data sync, wait for completion, and load results | `institution: str \| None` |
 | `sync_status` | Show connected institutions and health, inspect one link session, or advance one device-login session | `session_id: str \| None` or `auth_session_id: str \| None` (mutually exclusive) |
 | `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`, `server_url: str \| None` (login only); returns session URL or device credentials |
-| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `provider_item_id: str \| None` (mutually exclusive), `mode: "institution" \| "logout"`, `confirmation_token: str \| None` |
+| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `provider_item_id: str \| None` (mutually exclusive), `mode: "institution" \| "logout"`, `state: "disconnected" \| "absent"` (institution mode only; `absent` purges local rows), `confirmation_token: str \| None` |
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
@@ -458,8 +459,17 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
   returns `confirmation_required`, retry the same call with
   `confirmation_token=<token>`. The confirmation message and binding name
   the exact connection being removed.
+- `sync_disconnect(mode="institution", state="absent", ...)` is the purging
+  form, the mediated twin of the Google Sheets purge (`state="absent"` on
+  `gsheet_disconnect`). The same
+  two-call flow applies, and the binding carries the per-table row counts,
+  the link ids, and the proposal ids the purge will touch, so a pull that
+  lands between preview and confirm changes the digest and the confirm is
+  refused. The response reports `status="purged"`, `rows_deleted`, and
+  `account_links_reversed`; `institution` is `null` when the server no longer
+  listed the item and only its local rows were removed.
 - Clear profile-scoped credentials with `sync_disconnect(mode="logout")`. Logout
-  does not accept `institution` or `confirmation_token`.
+  does not accept `institution`, `confirmation_token`, or `state="absent"`.
 - Provider-specific operations remain abstracted behind the provider-agnostic
   tools above.
 

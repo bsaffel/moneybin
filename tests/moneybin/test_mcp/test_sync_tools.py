@@ -187,6 +187,17 @@ async def test_sync_disconnect_logout_rejects_provider_item_id() -> None:
     assert envelope.error.code == "sync_disconnect_mode_conflict"
 
 
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_auth_service")
+async def test_sync_disconnect_logout_rejects_absent_state(
+    mock_build: MagicMock,
+) -> None:
+    envelope = await sync_module.sync_disconnect(mode="logout", state="absent")
+    assert envelope.error is not None
+    assert envelope.error.code == "sync_disconnect_mode_conflict"
+    mock_build.return_value.logout.assert_not_called()
+
+
 def test_sync_workflow_registrar_uses_public_privacy_actor_names() -> None:
     registered: list[tuple[str, str | None]] = []
 
