@@ -1989,3 +1989,145 @@ def test_sync_pull_json_carries_the_refresh_step_outcome(
     # A step that ran clean still gets a row carrying a null error — it is not
     # dropped, so an agent can tell it apart from one that was never asked for.
     assert stages["match"]["error"] is None
+
+
+# --- sync login: server address -------------------------------------------
+
+_ADDRESS = "moneybin.services.sync_server_address"
+_SERVER = "https://sync.example.test"
+
+
+def _login_start(*, outcome: str = "saved", unencrypted: bool = False):
+    """A planned address and the start_login result that follows it."""
+    from moneybin.services.sync_server_address import AddressPlan, LoginStart
+
+    change = "unchanged" if outcome == "unchanged" else "first"
+    plan = AddressPlan(url=_SERVER, change=change, unencrypted=unencrypted)  # type: ignore[arg-type]  # test literal
+    challenge = MagicMock(name="challenge")
+    start = LoginStart(client=MagicMock(), challenge=challenge, outcome=outcome)  # type: ignore[arg-type]  # test literal
+    return plan, start
+
+
+def _not_configured() -> UserError:
+    return UserError(
+        "No sync server address is configured for this profile.",
+        code=error_codes.SYNC_SERVER_NOT_CONFIGURED,
+        hint="Run 'moneybin sync login --server <url>' with your server's address.",
+    )
+
+
+@pytest.mark.unit
+@patch(f"{_ADDRESS}.start_login")
+@patch(f"{_ADDRESS}.plan_server_address")
+def test_sync_login_server_flag_saves_and_reuses_the_challenge(
+    mock_plan: MagicMock, mock_start: MagicMock
+) -> None:
+    plan, start = _login_start()
+    mock_plan.return_value = plan
+    mock_start.return_value = start
+
+    result = runner.invoke(app, ["sync", "login", "--server", _SERVER, "--no-browser"])
+
+    assert result.exit_code == 0, result.output
+    mock_plan.assert_called_once_with(_SERVER, surface="cli")
+    mock_start.assert_called_once_with(plan, surface="cli")
+    start.client.login.assert_called_once_with(  # type: ignore[attr-defined]  # MagicMock client
+        open_browser=False, challenge=start.challenge
+    )
+    assert _SERVER in result.stdout
+
+
+@pytest.mark.unit
+@patch(f"{_ADDRESS}.start_login")
+@patch(f"{_ADDRESS}.plan_server_address")
+def test_sync_login_server_flag_warns_when_unencrypted(
+    mock_plan: MagicMock, mock_start: MagicMock
+) -> None:
+    plan, start = _login_start(unencrypted=True)
+    mock_plan.return_value = plan
+    mock_start.return_value = start
+
+    result = runner.invoke(app, ["sync", "login", "--server", _SERVER])
+
+    assert result.exit_code == 0, result.output
+    assert "not encrypted" in result.stderr
+
+
+@pytest.mark.unit
+@patch(f"{_ADDRESS}.start_login")
+@patch(f"{_ADDRESS}.plan_server_address")
+def test_sync_login_server_flag_matching_the_current_address_saves_nothing(
+    mock_plan: MagicMock, mock_start: MagicMock
+) -> None:
+    plan, start = _login_start(outcome="unchanged")
+    mock_plan.return_value = plan
+    mock_start.return_value = start
+
+    result = runner.invoke(app, ["sync", "login", "--server", _SERVER])
+
+    assert result.exit_code == 0, result.output
+    start.client.login.assert_called_once_with(  # type: ignore[attr-defined]  # MagicMock client
+        open_browser=True, challenge=start.challenge
+    )
+    assert "Server" not in result.stdout
+
+
+@pytest.mark.unit
+@patch(f"{_ADDRESS}.plan_server_address")
+@patch("moneybin.cli.commands.sync._build_sync_client")
+def test_sync_login_unconfigured_without_a_terminal_names_the_flag(
+    mock_build: MagicMock, mock_plan: MagicMock
+) -> None:
+    """A script must fail with the way forward, never wait on a prompt."""
+    mock_build.side_effect = _not_configured()
+
+    result = runner.invoke(app, ["sync", "login"])
+
+    assert result.exit_code == 1, result.output
+    assert "moneybin sync login --server" in result.stderr
+    mock_plan.assert_not_called()
+
+
+@pytest.mark.unit
+@patch(f"{_ADDRESS}.start_login")
+@patch(f"{_ADDRESS}.plan_server_address")
+@patch("moneybin.cli.commands.sync._build_sync_client")
+def test_sync_login_unconfigured_on_a_terminal_asks_for_the_address(
+    mock_build: MagicMock, mock_plan: MagicMock, mock_start: MagicMock
+) -> None:
+    mock_build.side_effect = _not_configured()
+    plan, start = _login_start()
+    mock_plan.return_value = plan
+    mock_start.return_value = start
+
+    with patch(
+        "moneybin.cli.commands.sync.get_terminal_policy", side_effect=_pager_policy
+    ):
+        result = runner.invoke(app, ["sync", "login"], input=f"{_SERVER}\n")
+
+    assert result.exit_code == 0, result.output
+    mock_plan.assert_called_once_with(_SERVER, surface="cli")
+    start.client.login.assert_called_once_with(  # type: ignore[attr-defined]  # MagicMock client
+        open_browser=True, challenge=start.challenge
+    )
+
+
+@pytest.mark.unit
+@patch(f"{_ADDRESS}.start_login")
+@patch(f"{_ADDRESS}.plan_server_address")
+@patch("moneybin.cli.commands.sync._build_sync_client")
+def test_sync_login_prompt_offers_the_local_server_as_its_default(
+    mock_build: MagicMock, mock_plan: MagicMock, mock_start: MagicMock
+) -> None:
+    """Pressing Enter accepts the address moneybin-sync's compose file publishes."""
+    mock_build.side_effect = _not_configured()
+    mock_plan.return_value, mock_start.return_value = _login_start()
+
+    with patch(
+        "moneybin.cli.commands.sync.get_terminal_policy", side_effect=_pager_policy
+    ):
+        result = runner.invoke(app, ["sync", "login"], input="\n")
+
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:8000" in result.stderr
+    mock_plan.assert_called_once_with("http://127.0.0.1:8000", surface="cli")

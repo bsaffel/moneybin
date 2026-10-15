@@ -226,12 +226,13 @@ def test_perf_timing_summary_is_visible_at_warning_level(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Successful CI output retains all five flow timings for later diagnosis."""
+    # (name, raw p50/p95/p99, protected p50/p95/p99, p50 delta, p95 delta)
     measurements = [
-        ("transactions_get", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
-        ("reports_spending", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
-        ("accounts", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
-        ("budget_status_service", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
-        ("reports_net_worth", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
+        ("transactions_get", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 3.0, 3.0),
+        ("reports_spending", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 3.0, 3.0),
+        ("accounts", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 3.0, 3.0),
+        ("budget_status_service", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 3.0, 3.0),
+        ("reports_net_worth", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 3.0, 3.0),
     ]
 
     with caplog.at_level(logging.WARNING, logger=perf.__name__):

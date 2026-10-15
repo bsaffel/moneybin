@@ -149,6 +149,10 @@ class AccountMergeFacts:
             comparable=0, matched=0, window_start=None, window_end=None
         )
     )
+    #: Settings fields (names only) the merge moves onto the survivor, and the
+    #: conflicting ones the survivor keeps. See ``plan_settings_reconciliation``.
+    settings_moved: tuple[str, ...] = ()
+    settings_kept: tuple[str, ...] = ()
 
 
 #: This sentence is read by a human in the CLI and by an agent over MCP, so a
@@ -320,6 +324,50 @@ def _last_four_line(merge: AccountMergeFacts) -> str:
     return "Neither account states a last four, so it is no evidence either way."
 
 
+_SETTING_PHRASES = {
+    "display_name": "display name",
+    "official_name": "official name",
+    "last_four": "last four",
+    "account_subtype": "subtype",
+    "holder_category": "holder category",
+    "currency_code": "currency",
+    "credit_limit": "credit limit",
+    "default_cost_basis_method": "cost-basis method",
+    "investment_source_type": "investment source",
+}
+
+
+def _phrase_list(fields: Sequence[str]) -> str:
+    phrases = [_SETTING_PHRASES[f] for f in fields]
+    if len(phrases) < 2:
+        return "".join(phrases)
+    return f"{', '.join(phrases[:-1])} and {phrases[-1]}"
+
+
+def _settings_line(merge: AccountMergeFacts) -> str | None:
+    """Say which of the absorbed account's settings follow the merge.
+
+    Names fields, never values: the survivor wins a conflict and the duplicate
+    only fills gaps. Archived and net-worth flags are stated because a user who
+    archived the duplicate first would otherwise expect them to carry over.
+    """
+    if not (merge.settings_moved or merge.settings_kept):
+        return None
+    parts: list[str] = []
+    if merge.settings_moved:
+        parts.append(
+            "The surviving account takes the absorbed account's "
+            f"{_phrase_list(merge.settings_moved)}, which it has not set."
+        )
+    if merge.settings_kept:
+        parts.append(
+            f"It keeps its own {_phrase_list(merge.settings_kept)} where the "
+            "two differ."
+        )
+    parts.append("Archived and net-worth settings are never moved.")
+    return " ".join(parts)
+
+
 def _indistinguishable(
     absorbed: AccountLedgerFacts, survivor: AccountLedgerFacts
 ) -> bool:
@@ -345,6 +393,8 @@ def _account_merge_block(merge: AccountMergeFacts, undo_command: str) -> str:
         f"[{survivor.account_id}]: its transactions move onto that account's "
         f"history and nothing is deleted. Reverse with {undo_command}.",
     ]
+    if (settings := _settings_line(merge)) is not None:
+        lines.extend(["", settings])
     if _indistinguishable(absorbed, survivor):
         # Naming the tie is the difference between a prompt that reads as a
         # rendering failure and one that reads as the finding it is. The merge

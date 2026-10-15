@@ -33,7 +33,7 @@ Before touching real data, build the demo profile — three years of determinist
 uv run moneybin demo
 ```
 
-The [top-level README](../../README.md#sixty-seconds-on-synthetic-data) shows the full transcript and a first report against it. Two things to know before moving on: the demo makes `demo` the active profile and, when another profile was active, prints the command to switch back, and it never touches a real profile. `--persona family`, `--persona freelancer`, and `--persona international` change its shape; the [reports guide](reports.md) runs every report against the family persona.
+The [top-level README](../../README.md#try-it) shows a SQL query and example output against it. Two things to know before moving on: the demo makes `demo` the active profile and, when another profile was active, prints the command to switch back, and it never touches a real profile. `--persona family`, `--persona freelancer`, and `--persona international` change its shape; the [reports guide](reports.md) runs every report against the family persona.
 
 ## 3. Create your profile
 

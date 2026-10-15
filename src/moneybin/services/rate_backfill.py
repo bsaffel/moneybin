@@ -26,7 +26,6 @@ from moneybin.services.currency_service import (
     CurrencyService,
     canonical_currency,
     is_storable_after_rounding,
-    unsupported_currencies,
 )
 from moneybin.tables import (
     BRIDGE_CURRENCY_CONVERSIONS,
@@ -154,6 +153,11 @@ def run_rate_backfill(
         raise RateBackfillNotReadyError from exc
     service = CurrencyService(db, adapter=adapter)
     FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="planned").inc(len(windows))
+    if windows:
+        # Read once per refresh, whatever the pairs answer, so the list a
+        # report read judges "unsupported" by stays as current as the last
+        # refresh. Adapters memoize it, so the per-pair checks below reuse it.
+        service.unsupported()
 
     written = 0
     failed: list[str] = []
@@ -175,7 +179,7 @@ def run_rate_backfill(
                 # before the window instead — the row `resolve_rate`'s hop then
                 # reads — so the opening date converts offline rather than
                 # merely being reported as short.
-                window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+                _request_start(window),
                 window.end,
             )
         except FeedError:
@@ -187,8 +191,8 @@ def run_rate_backfill(
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="failed").inc()
             continue
         if not observations:
-            never_published = unsupported_currencies(
-                adapter, window.from_currency, window.to_currency
+            never_published = service.unsupported(
+                window.from_currency, window.to_currency
             )
             if never_published is None:
                 # The list that separates a permanent absence from a transient
@@ -239,6 +243,18 @@ def run_rate_backfill(
             discarded.append(pair)
             FX_RATE_BACKFILL_PAIRS_TOTAL.labels(outcome="discarded").inc()
         written += service.store_observations(storable)
+        if storable and len(storable) == len(answered):
+            # The answer listed every publication between its first and last
+            # kept rate, so that span is proven complete. A rate dropped as
+            # unstorable would leave a hole that is not a closed market.
+            dates = [o.rate_date for o in storable]
+            service.record_coverage(
+                window.from_currency,
+                window.to_currency,
+                min(dates),
+                max(dates),
+                storable[0].source_type,
+            )
 
     logger.info(
         f"Rate backfill: {len(windows)} pair(s) planned, {written} rate(s) written, "
@@ -460,6 +476,21 @@ def _usable_targets(
     )
 
 
+def _request_start(window: RateWindow) -> date:
+    """The first day a backfill asks the provider for, and the lower bound it keeps.
+
+    ``MAX_BACKWARD_RESOLUTION_DAYS`` before the window, stepped back off a
+    weekend. A provider resolves a closed start day to the publication before
+    it, so a request opening on a Saturday comes back from the Friday; asked
+    from the Saturday, that Friday would fall outside the bound and the pair
+    would be reported short on every refresh. A start on a weekday holiday still
+    resolves past the bound — the weekend is the case the calendar alone can
+    rule out.
+    """
+    start = window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    return start - timedelta(days=max(0, start.isoweekday() - 5))
+
+
 def _within_window(
     observations: Sequence[RateObservation], window: RateWindow
 ) -> tuple[RateObservation, ...]:
@@ -484,7 +515,7 @@ def _within_window(
     rather than waiting to be offered it, so this bound is the span asked for
     rather than a tolerance around a narrower one.
     """
-    earliest = window.start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    earliest = _request_start(window)
     return tuple(
         observation
         for observation in observations

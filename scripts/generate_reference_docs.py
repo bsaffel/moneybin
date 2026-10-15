@@ -1021,8 +1021,11 @@ def render_configuration(settings_cls: type[BaseSettings]) -> str:
         f"environment variable with the `{prefix}` prefix, joining nested "
         f"sections with `{delimiter}` (`{prefix}MCP{delimiter}MAX_ROWS`), or "
         "put the same lines in `.env.<profile>` under the data home, falling "
-        "back to `.env`. Precedence is explicit constructor values, then the "
-        "process environment, then the dotenv file. `MONEYBIN_HOME` itself "
+        "back to `.env`. `moneybin profile set <section>.<field> <value>` "
+        "saves a non-secret value to the profile's `config.yaml` instead. "
+        "Precedence is explicit constructor values, then the process "
+        "environment, then the dotenv file, then the profile's `config.yaml`, "
+        "then the default in this table. `MONEYBIN_HOME` itself "
         "must come from the environment or `--home`: the dotenv file lives "
         "inside the home it would name.",
         "",

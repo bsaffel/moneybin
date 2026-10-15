@@ -32,7 +32,9 @@ One class of PR is exempt without a per-PR reason. `.github/dependabot.yml`
 applies `skip-changelog` to Dependabot's GitHub Actions bumps when it opens
 them. The reason is recorded once, here: that ecosystem edits only the `uses:`
 version pins in workflow files, which change how CI runs and nothing a MoneyBin
-user can observe.
+user can observe. The label lands a moment after the PR opens, so the check
+reads labels from the API when it runs rather than from the event payload,
+which for the `opened` event predates the label.
 
 The exemption waives the fragment and the written reason. It does not waive the
 review: a human still reviews and merges each bump, and removes the label if

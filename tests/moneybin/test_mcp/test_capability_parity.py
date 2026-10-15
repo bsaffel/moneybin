@@ -1128,6 +1128,8 @@ async def test_saved_format_deletion_has_same_audited_outcome(
 class _LogoutClient:
     """Sync client fake with real persisted session orchestration around it."""
 
+    server_url = "https://sync.example"
+
     def __init__(self) -> None:
         self.logged_out = False
 
