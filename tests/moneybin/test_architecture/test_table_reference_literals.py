@@ -60,13 +60,14 @@ signal back:
    that is later passed as an argument (including transitively, through an
    f-string interpolation inside another candidate literal, OR through a
    chain of aliases of any length — but only among names bound in the SAME
-   scope; see point 3). ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` in
-   ``doctor_service.py`` is the interpolation shape this machinery was
-   built for — a query fragment assigned once, then spliced into other
-   queries via ``f"...{_CTE}..."`` — and it is worth being precise about
-   what happens to it now: the constant is module-level and every splice
-   sits inside a method, so under point 3's same-scope rule it is NOT
-   reported. Transitivity is real, and it stops at the scope boundary.
+   scope; see point 3). A module-level query fragment in
+   ``doctor_service.py`` (the newest-holdings-snapshot CTE, since replaced
+   by ``is_newest`` on the staging view) was the interpolation shape this
+   machinery was built for — a query fragment assigned once, then spliced
+   into other queries via ``f"...{_CTE}..."`` — and it is worth being
+   precise about what happened to it: the constant was module-level and
+   every splice sat inside a method, so under point 3's same-scope rule it
+   was NOT reported. Transitivity is real, and it stops at the scope boundary.
    Name-to-name aliasing closes a gap
    found in round 3 of this guard's review: ``query = "SELECT * FROM
    core.x"; sql = query; db.execute(sql)`` is ordinary refactoring, not

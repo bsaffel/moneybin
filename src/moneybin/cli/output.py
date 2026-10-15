@@ -31,6 +31,7 @@ import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
@@ -142,6 +143,16 @@ def currency_label(value: object) -> str:
     parsing the text surface can take for a denomination.
     """
     return str(value) if value else UNKNOWN_CURRENCY
+
+
+def share_count(value: Decimal | None) -> str | None:
+    """Render a share count without its storage scale: `41.5000000000` → `41.5`.
+
+    Trims trailing zeros only — never rounds, never groups. A per-unit price
+    must not come through here: its places are the value, not padding.
+    """
+    # `f`, because `normalize()` alone turns `60` into `6E+1`.
+    return None if value is None else format(value.normalize(), "f")
 
 
 def echo_applied_rates(

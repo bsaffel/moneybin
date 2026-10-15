@@ -251,7 +251,6 @@ def test_derives_every_derivable_core_view() -> None:
     derived, _excluded = derive_core_view_classes()
     assert set(derived) == {
         ("core", "dim_merchants"),
-        ("core", "dim_unanchored_accounts"),
     }
 
 

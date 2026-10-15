@@ -270,6 +270,28 @@ class TestCurrentBalances:
         assert len(result.observations) == 1
         assert result.observations[0].balance == Decimal("100.00")  # the Jan 1 obs
 
+    @pytest.mark.unit
+    def test_current_returns_an_unanchored_account_with_a_null_balance(
+        self, db: Database
+    ) -> None:
+        """An account holding value with no balance is listed, not dropped."""
+        _seed_fct_balances_daily(
+            db,
+            [
+                {
+                    "account_id": "acct_b",
+                    "balance_date": date(2026, 1, 31),
+                    "balance": None,
+                    "is_observed": False,
+                    "currency_code": "USD",
+                },
+            ],
+        )
+        (obs,) = BalanceService(db).current_balances().observations
+        assert obs.account_id == "acct_b"
+        assert obs.balance is None
+        assert obs.is_observed is False
+
 
 class TestHistory:
     """Tests for history — per-account time-series reads."""

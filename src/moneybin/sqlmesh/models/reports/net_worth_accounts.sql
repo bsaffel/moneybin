@@ -9,11 +9,9 @@
    total_assets_home + total_liabilities_home by up to half a cent per account
    in that currency-day, plus that view's own half cent. Expected and bounded —
    reconcile the rungs at the cent, not the sub-cent.
-   Also emits one row per eligible account with holdings or transaction
-   activity and no balance observation (Requirement 14): balance columns
-   NULL, is_observed FALSE, dated at the latest eligible balance day (else
-   the spine's last date, else CURRENT_DATE) so it never moves the eligible
-   rows' MAX(balance_date); reports.net_worth's fallback uses the same date. */
+   An account in net worth that holds value but has no balance observation
+   appears on every date it has spine rows, with every balance column NULL and
+   is_observed FALSE. Eligibility is the spine's in_net_worth. */
 MODEL (
   name reports.net_worth_accounts,
   kind VIEW
@@ -34,6 +32,7 @@ WITH home AS (
     d.balance,
     d.reconciliation_delta,
     d.is_observed,
+    d.in_net_worth,
     d.balance_date,
     MAX(CASE WHEN d.is_observed THEN d.balance_date END) OVER (
       PARTITION BY d.account_id
@@ -66,64 +65,4 @@ LEFT JOIN core.fct_exchange_rates_effective AS r
   AND r.to_currency = h.home_currency_code
   AND r.effective_date = s.balance_date
 WHERE
-  a.include_in_net_worth
-  AND (
-    NOT a.archived
-    OR (
-      NOT a.archived_at IS NULL AND s.balance_date <= a.archived_at
-    )
-  )
-UNION ALL
-SELECT
-  a.account_id,
-  a.display_name AS account_name,
-  a.currency_code,
-  h.home_currency_code,
-  a.account_type,
-  FALSE AS is_observed,
-  NULL::TEXT AS observation_source,
-  NULL::TEXT AS rate_source,
-  spine_max.balance_date,
-  NULL::DATE AS rate_published_date,
-  NULL::INT AS days_since_observed,
-  NULL::DECIMAL(18, 2) AS reconciliation_delta,
-  NULL::DECIMAL(18, 2) AS account_balance,
-  NULL::DECIMAL(18, 2) AS account_balance_home
-FROM core.dim_unanchored_accounts AS u
-INNER JOIN core.dim_accounts AS a
-  ON u.account_id = a.account_id
-CROSS JOIN home AS h
-CROSS JOIN (
-  SELECT
-    COALESCE(
-      (
-        SELECT
-          MAX(e.balance_date)
-        FROM core.fct_balances_daily AS e
-        INNER JOIN core.dim_accounts AS ea
-          ON e.account_id = ea.account_id
-        WHERE
-          ea.include_in_net_worth
-          AND (
-            NOT ea.archived
-            OR (
-              NOT ea.archived_at IS NULL AND e.balance_date <= ea.archived_at
-            )
-          )
-      ),
-      (
-        SELECT
-          MAX(b.balance_date)
-        FROM core.fct_balances_daily AS b
-      ),
-      CURRENT_DATE
-    ) AS balance_date
-) AS spine_max
-WHERE
-  a.include_in_net_worth
-  AND (
-    NOT a.archived
-    OR (
-      NOT a.archived_at IS NULL AND spine_max.balance_date <= a.archived_at
-    )
-  )
+  s.in_net_worth

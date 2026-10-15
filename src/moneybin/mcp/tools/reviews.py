@@ -21,6 +21,7 @@ from moneybin.adapters.rematch_report import rematch_actions, rematch_count
 from moneybin.config import get_settings
 from moneybin.database import Database, get_database
 from moneybin.errors import (
+    ErrorDetail,
     UserError,
     classify_user_error,
     exception_origin,
@@ -1174,6 +1175,7 @@ def reviews_decide_coarse(
     # Stays None on the auto-rule branch, which folds no match edge and so
     # runs no reconciliation — distinct from a pass that reversed nothing.
     transfers_retired: int | None = None
+    refused_details: dict[str, list[str]] | None = None
     with get_database(read_only=False) as db:
         auto_rule_decisions = [
             decision
@@ -1259,6 +1261,12 @@ def reviews_decide_coarse(
                     result.impact.refused_unselective, _REFUSED_UNSELECTIVE_REASON
                 ),
             }
+            if result.impact.approved == 0 and result.impact.rejected == 0:
+                refused = {
+                    "refused_broad": list(result.impact.refused_broad),
+                    "refused_unselective": list(result.impact.refused_unselective),
+                }
+                refused_details = {k: v for k, v in refused.items() if v} or None
             auto_rule_impact = AutoAcceptPayload(
                 approved=result.impact.approved,
                 rejected=result.impact.rejected,
@@ -1314,7 +1322,7 @@ def reviews_decide_coarse(
             "refresh_run(steps=['match']) to re-propose over the legs the "
             "reversal freed",
         )
-    return build_envelope(
+    envelope = build_envelope(
         data=ReviewsDecidePayload(
             results=outcomes,
             applied_count=sum(item.changed for item in outcomes),
@@ -1324,6 +1332,21 @@ def reviews_decide_coarse(
             transfers_retired=transfers_retired,
         ),
         actions=actions,
+    )
+    if refused_details is None:
+        return envelope
+    # Nothing applied and a guard refused: a requested mutation that did not
+    # happen is an error, but data keeps every per-item outcome and reason.
+    return envelope.with_error(
+        ErrorDetail(
+            message=(
+                "Every decision in this batch was refused by a guard and "
+                "nothing was applied; see data.results[].reason, and set "
+                "allow_broad=true on a decision to accept it anyway."
+            ),
+            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            details=cast(dict[str, Any], refused_details),
+        )
     )
 
 

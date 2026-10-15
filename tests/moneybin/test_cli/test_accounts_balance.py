@@ -165,6 +165,60 @@ class TestAccountsBalanceShow:
         assert "True" in known
         assert "False" in unknown
 
+    @staticmethod
+    def _unanchored_payload() -> BalanceObservationListPayload:
+        return BalanceObservationListPayload(
+            observations=[
+                BalanceObservationRow(
+                    account_id="acct_b",
+                    balance_date=date(2026, 1, 31),
+                    balance=None,
+                    is_observed=False,
+                    observation_source=None,
+                    reconciliation_delta=None,
+                    currency_code="USD",
+                ),
+            ]
+        )
+
+    @pytest.mark.unit
+    def test_show_text_says_no_balance_recorded(self, runner: CliRunner) -> None:
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.balance.BalanceService"
+            ) as mock_service_class,
+        ):
+            mock_service_class.return_value.current_balances.return_value = (
+                self._unanchored_payload()
+            )
+            result = runner.invoke(app, ["accounts", "balance", "show"])
+
+        assert result.exit_code == 0, result.stderr
+        line = next(line for line in result.stdout.splitlines() if "acct_b" in line)
+        assert "no balance recorded" in line
+        assert "None" not in line
+
+    @pytest.mark.unit
+    def test_show_json_carries_a_null_balance(self, runner: CliRunner) -> None:
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.balance.BalanceService"
+            ) as mock_service_class,
+        ):
+            mock_service_class.return_value.current_balances.return_value = (
+                self._unanchored_payload()
+            )
+            result = runner.invoke(
+                app, ["accounts", "balance", "show", "--output", "json"]
+            )
+
+        assert result.exit_code == 0, result.stderr
+        (row,) = json.loads(result.stdout)["data"]["observations"]
+        assert row["account_id"] == "acct_b"
+        assert row["balance"] is None
+
 
 class TestAccountsBalanceHistory:
     """Tests for `accounts balance history`."""

@@ -93,16 +93,9 @@ WITH positions AS (
     source_origin,
     source_file,
     extracted_at
-  FROM (
-    SELECT
-      source_origin,
-      source_file,
-      extracted_at,
-      ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at DESC, ingestion_sequence DESC) AS snapshot_rank
-    FROM prep.stg_plaid__investment_holdings_snapshots
-  )
+  FROM prep.stg_plaid__investment_holdings_snapshots
   WHERE
-    snapshot_rank = 1
+    is_newest
 ), provider_reported AS (
   /* Aggregated to the position grain (account, security): a security merge can
      bind two provider security ids in one account onto one canonical id, and a

@@ -550,8 +550,11 @@ query (both bound by the same parameters at `:426`) — all of which move to
 `find_existing_import` already documents as retiring, which this spec retires.
 
 **`doctor_service.py` is six sites, not the one listed.** Beyond `:141`:
-`_NEWEST_HOLDINGS_SNAPSHOT_CTE` both selects and orders by the column
-(`:134`, `:138`), `_run_investment_unreported_holdings` joins two snapshots on
+the newest-snapshot ranking both selects and orders by the column (a
+module-level CTE in `doctor_service.py` when this was written; since replaced
+by `is_newest` on `prep.stg_plaid__investment_holdings_snapshots`, per
+[`net-worth-guard-on-daily-balances.md`](net-worth-guard-on-daily-balances.md)),
+`_run_investment_unreported_holdings` joins two snapshots on
 it (`:1218`), and `_run_unproposed_cross_source_duplicates` projects it twice
 as the matcher's physical-source key (`:2389`, `:2393`); a comment at `:2584`
 describes the NULL semantics and moves with them. Missing these is worse than

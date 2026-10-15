@@ -1,0 +1,1 @@
+`moneybin refresh` no longer warns that exchange-rate coverage is short when the rate backfill request opens on a weekday market holiday, such as New Year's Day, although every rate a report reads was stored.

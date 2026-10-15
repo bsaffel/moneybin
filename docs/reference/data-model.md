@@ -277,21 +277,24 @@ Observation-grain balance view: OFX statement balances, tabular running balances
 
 ### `core.fct_balances_daily`
 
-Per-account daily balance spine. Grain: one row per `(account_id, balance_date)` from each account's first observation to its last. `FULL` Python model.
+Per-account daily balance spine. Grain: one row per `(account_id, balance_date)` from each account's first observation (or, for an account with no observation, its first evidence of holding value) to the newest evidence date in the profile. `FULL` Python model.
 
 Observed days use the most authoritative source (per-day precedence: `user assertion > {ofx, plaid} > tabular`; `ofx` and `plaid` tie and are broken by freshest `updated_at`, then `source_type` ascending). Gaps are filled by carrying the last balance forward, adjusted by intervening transactions from `core.fct_transactions`.
 
 Only transactions denominated in the **currency being carried** adjust the balance. A transaction in any other currency is left out rather than added as though the units matched. This spine converts nothing: exchange rates live in `raw.exchange_rates` and conversion runs at the report layer, after `core` is built, so no rate reaches this model. The excluded movement is not lost: it appears in the next observation's `reconciliation_delta`, and therefore as drift in `reports.balance_drift`. `moneybin system doctor` warns whenever a profile holds more than one currency and names this consequence.
 
+An account that holds value (a transaction, a trade, or a broker-reported position) but has no balance observation gets rows with `balance` NULL. Count those rows before trusting a `SUM(balance)`, which skips them silently. `in_net_worth` says whether a row counts toward net worth on its date.
+
 | Column | Type | Description |
 |---|---|---|
 | `account_id` | VARCHAR | FK → `core.dim_accounts.account_id`. |
 | `balance_date` | DATE | Calendar date (institution-local). |
-| `balance` | DECIMAL(18,2) | End-of-day balance. |
+| `balance` | DECIMAL(18,2) | End-of-day balance; NULL when the account holds value (a transaction, a trade, or a broker-reported position) but has no balance observation. Count those rows before trusting a SUM: `SUM()` skips them silently. |
 | `is_observed` | BOOLEAN | TRUE if an authoritative observation exists for this date. |
-| `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated. |
-| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, and this model converts nothing, so no comparison is defined. |
-| `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day. |
+| `in_net_worth` | BOOLEAN | TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from `core.dim_accounts` on every refresh, which holds only while this model is kind `FULL`. |
+| `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated or the account has no balance observation. |
+| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, when the account has no balance observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, and this model converts nothing, so no comparison is defined. |
+| `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day; `core.dim_accounts.currency_code` when the account has no balance observation. |
 
 Logical grain key: `(account_id, balance_date)`.
 
@@ -367,36 +370,6 @@ reconciliation reference and never evidence of a position. A relinked
 account (several `source_origin`s) reduces in a fixed order: `TRUE`, then
 absent (no row at all), then `FALSE`, then `NULL` — one confirmed position
 always outranks a sibling item's silence, zero, or absence.
-
-### `core.dim_unanchored_accounts`
-
-Accounts carrying evidence of holding value with no balance observation at
-all — Requirement 14's candidate set
-([`reports-net-worth-sql-surface.md`](../specs/reports-net-worth-sql-surface.md)),
-stated once and read by both net-worth rungs, both report runners, and
-`moneybin system doctor`. `VIEW`. Grain: `account_id`.
-
-"No balance observation" means no row in `core.fct_balances_daily`, the
-rebuilt spine the net-worth totals sum — not the live `core.fct_balances`
-view. A balance recorded with `accounts balance assert` anchors the account
-only after `moneybin refresh` rebuilds the spine, so the account stays listed,
-and the total stays NULL, until then.
-
-| Column | Type | Description |
-|---|---|---|
-| `account_id` | VARCHAR | FK → `core.dim_accounts` (grain). |
-| `has_holdings` | BOOLEAN | Has an open lot in `core.dim_holdings`. |
-| `has_broker_position` | BOOLEAN | `core.dim_holdings_broker_reported.has_position` is `TRUE`. |
-| `has_transactions` | BOOLEAN | Has any row in `core.fct_transactions`. |
-| `has_investment_transactions` | BOOLEAN | Has any row in `core.fct_investment_transactions`. |
-
-Evidence is read existentially, never by `SUM` — a zero net cash effect is
-never proof of zero cash held, however it was reached. Carries **no**
-eligibility: `include_in_net_worth` and archival are applied by each reader
-at its own date, because the report rungs, the runner fallbacks, and system
-doctor each need that eligibility evaluated at a different point in time. An
-account with no evidence of any kind stays out of this view entirely —
-nothing distinguishes "never funded" from "not yet observed" for it.
 
 ### `core.fct_investment_transactions`
 
@@ -520,11 +493,11 @@ Cross-account daily net-worth rollup, converted to the profile's home currency. 
 |---|---|---|
 | `home_currency_code` | VARCHAR | `app.profile_settings.home_currency`; NULL until the user chooses one, and then every measure below is NULL. |
 | `balance_date` | DATE | Calendar date. |
-| `account_count` | INTEGER | Accounts contributing on this date, across every currency. |
+| `account_count` | INTEGER | Accounts with a known balance contributing on this date, across every currency. |
 | `carried_forward_count` | INTEGER | How many of them are carried forward rather than observed. |
 | `currency_count` | INTEGER | Distinct currencies held on this date; the unknown-currency segment counts as one. |
 | `unpriced_currency_count` | INTEGER | How many of them had no rate on this date; 0 means every currency is priced. The totals below are complete only when `unanchored_account_count` is 0 too. |
-| `unanchored_account_count` | INTEGER | Eligible accounts holding priced securities or transaction activity with no balance observation at all; 0 means none. |
+| `unanchored_account_count` | INTEGER | Accounts in net worth that hold value (a transaction, a trade, or a broker-reported position) but have no balance observation; 0 means none. |
 | `total_assets` | DECIMAL(18,2) | Sum of positive balances converted to `home_currency_code`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
 | `total_liabilities` | DECIMAL(18,2) | Sum of negative balances converted to `home_currency_code`, kept negative; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
 | `net_worth` | DECIMAL(18,2) | `total_assets + total_liabilities`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
@@ -540,7 +513,7 @@ Net worth per currency per day, in that currency and converted to home. Grain: o
 | `rate_source` | VARCHAR | `override` / `provider` / `identity` behind the rate that converted this `currency_code` to `home_currency_code`; NULL when this pair is unpriced on this date. A `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
 | `balance_date` | DATE | Grain. |
 | `rate_published_date` | DATE | The day the `currency_code`→`home_currency_code` rate was published; a `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
-| `account_count` | INTEGER | Accounts contributing on this date in this currency. |
+| `account_count` | INTEGER | Accounts with a known balance contributing on this date in this currency. |
 | `carried_forward_count` | INTEGER | How many of them are carried forward, not observed. |
 | `total_assets` | DECIMAL(18,2) | Sum of positive balances, in `currency_code`. |
 | `total_liabilities` | DECIMAL(18,2) | Sum of negative balances, kept negative, in `currency_code`. |
@@ -791,7 +764,7 @@ ORDER BY balance_date DESC
 LIMIT 1;
 ```
 
-Use `reports.net_worth` for the snapshot; `reports.net_worth_accounts` for per-account detail. Reach down to `core.fct_balances_daily` only when you want to apply non-default account filters (e.g., include archived accounts) that the two views' own eligibility filter excludes.
+Use `reports.net_worth` for the snapshot; `reports.net_worth_accounts` for per-account detail. Reach down to `core.fct_balances_daily` only when you want a filter other than its `in_net_worth` column, for example to include archived accounts, and count its NULL `balance` rows before trusting a sum.
 
 ### Splits-sum invariant
 

@@ -71,6 +71,13 @@ order; each puts the last column where a scanner stops. Metadata therefore sits
 between the dates and the measures and never at the tail, because ending a row
 on provenance anchors it on the column that answers nothing.
 
+On a terminal too narrow for the whole projection, `--wide` omits the columns
+outside `default_columns`, first in projection order first
+(`cli_register.py::optional_columns`) — the same rule read backwards: the
+projection leads with the id and ends on the headline, so the id is the first
+extra to go and the last measure is the last. The order of what remains still
+comes from the projection; only what fits changes.
+
 The `reports` schema is read by humans and by agents answering a human's
 question, so it orders by *importance*, not by storage type. Nielsen Norman
 Group, on data tables: *"The default order of the columns should reflect the

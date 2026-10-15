@@ -89,7 +89,7 @@ Access: write, destructive, idempotent. Sensitivity: at least `medium`.
 
 ### accounts_balances
 
-Return balances by date, history, assertions, or reconciliation deltas. Resolve one account by reference; amounts are positions in summary.display_currency.
+Return balances by date, history, assertions, or reconciliation deltas. Resolve one account by reference; amounts are positions in summary.display_currency. `balance` is null for an account that holds value but has no recorded balance.
 
 Access: read-only, idempotent. Sensitivity: up to `high`.
 

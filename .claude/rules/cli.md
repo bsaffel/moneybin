@@ -271,6 +271,10 @@ stored. Requirement 11 governs amounts: a transaction total, a balance, a
 gain. If the column answers "how much is this worth", format it; if it
 answers "what does one unit cost", do not.
 
+A share count prints with trailing zeros trimmed (`output.share_count`:
+`41.5000000000` → `41.5`); a per-unit price never does, and prints as stored.
+The two are separate decisions — do not unify them in either direction.
+
 **Curate a wide table; do not let the renderer measure one.** A list command
 with more columns than an 80-column terminal holds declares its columns once as
 `(name, extractor)` pairs, a `_DEFAULT` subset, and takes `--wide` — the same
@@ -288,7 +292,13 @@ important first. The renderer drops them last-first until the table fits, never
 touches the default set, and names what it omitted beneath the table with a
 wider terminal or `--output json` as the remedy — never `--wide`, which is
 already in force. `investments holdings`/`gains`/`list`/`lots list` are the
-examples.
+examples. Every `reports` command gets the same through
+`cli_register.py::optional_columns`, which treats the columns outside
+`default_columns` as optional in reverse projection order: a `reports`
+projection leads with its id and ends on its headline measure
+(`column-ordering.md`), so the first extra is the first to go and the last
+extra the last — on `balance_drift` at 100 columns, `account_id` leaves before
+`asserted_balance` does.
 
 The reason either is needed: Rich folds an over-narrow cell, and a folded
 amount is *misread*, not merely ugly — `1,200.00` becomes `1,200.` above `00`.

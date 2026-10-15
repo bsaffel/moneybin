@@ -118,7 +118,7 @@ $ uv run moneybin investments list
 6 of 7 columns shown — --wide for all
 ```
 
-Every table on this page names a security by its ticker, or by its catalog name when it has none; `--wide` adds the catalog id as `security id`, and `securities list` maps one to the other. A ticker two catalog entries share is written with its exchange (`UMAX.AX`), the same form `securities set` accepts. Quantities carry ten decimal places because a mutual fund or a crypto position is fractional.
+Every table on this page names a security by its ticker, or by its catalog name when it has none; `--wide` adds the catalog id as `security id`, and `securities list` maps one to the other. A ticker two catalog entries share is written with its exchange (`UMAX.AX`), the same form `securities set` accepts. Quantities are stored, and returned by `--output json`, with ten decimal places because a mutual fund or a crypto position is fractional; the text tables trim the trailing zeros, so a whole-share position prints as `100` and a fractional one as `0.0513`.
 
 ## Positions and lots
 

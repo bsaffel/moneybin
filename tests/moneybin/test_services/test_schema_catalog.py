@@ -191,6 +191,21 @@ def test_every_interface_table_has_at_least_one_example() -> None:
     assert not missing, f"Interface tables missing examples: {sorted(missing)}"
 
 
+def test_balance_spine_example_guards_its_sum() -> None:
+    """sql_query users see the counted-NULL pattern, not a bare SUM(balance)."""
+    sqls = [e.sql for e in EXAMPLES["core.fct_balances_daily"]]
+    guarded = [s for s in sqls if "SUM(balance)" in s]
+    assert guarded, "no fct_balances_daily example sums balance"
+    for sql in guarded:
+        assert "balance IS NULL" in sql
+        assert "in_net_worth" in sql
+        # The latest date is the rungs' one: the newest date anything counts.
+        assert (
+            "SELECT MAX(balance_date) FROM core.fct_balances_daily WHERE in_net_worth"
+            in " ".join(sql.split())
+        )
+
+
 def _present_tables(db: Database) -> set[str]:
     """Return fully-qualified names of all tables and views in the test DB."""
     rows = db.execute(
