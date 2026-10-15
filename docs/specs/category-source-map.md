@@ -163,7 +163,7 @@ fall-through, not data loss.
 An imported row (tabular/CSV, manual entry) was passed straight through to
 `core.fct_transactions.category` via `fct_transactions.sql`'s
 `COALESCE(dc.category, c.category, t.category)` — no `categorized_by`
-attribution, invisible to the pending filter, and never overridable
+attribution, invisible to the queue filter, and never overridable
 by a later rule. The owner's ruling: this text is only ever an INPUT to the
 existing bridge above, never a passed-through value. The engine leg
 (`CategorizationOrchestrator.apply_source_category_map`, PR1 of MB-180)
