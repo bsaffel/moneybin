@@ -15,7 +15,7 @@ Usage: `moneybin sync [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin sync logout`](#moneybin-sync-logout) | Clear stored JWTs and any in-progress device authorization sessions. |
 | [`moneybin sync link`](#moneybin-sync-link) | Link a bank account via Plaid (formerly: sync connect). |
 | [`moneybin sync link-status`](#moneybin-sync-link-status) | Poll a sync link session for completion (formerly: sync connect-status). |
-| [`moneybin sync disconnect`](#moneybin-sync-disconnect) | Remove a bank connection. |
+| [`moneybin sync disconnect`](#moneybin-sync-disconnect) | Remove a bank connection, keeping or purging its local rows. |
 | [`moneybin sync pull`](#moneybin-sync-pull) | Pull data from connected institutions. |
 | [`moneybin sync status`](#moneybin-sync-status) | Show connected institutions, last sync times, and health. |
 
@@ -82,7 +82,7 @@ Usage: `moneybin sync link-status [OPTIONS]`
 
 ## moneybin sync disconnect
 
-Remove a bank connection.
+Remove a bank connection, keeping or purging its local rows.
 
 Usage: `moneybin sync disconnect [OPTIONS]`
 
@@ -92,6 +92,7 @@ Usage: `moneybin sync disconnect [OPTIONS]`
 |---|---|---|---|
 | `--institution` | text |  | Institution name to disconnect. Ambiguous when it has more than one connection (e.g. after a relink) — use --provider-item-id instead. |
 | `--provider-item-id` | text |  | Exact connection to disconnect, from `moneybin sync status`. Mutually exclusive with --institution. |
+| `--purge` | flag |  | Also delete every locally pulled row of the connection (raw.plaid_* and its broker-carried prices), reverse its account links, and withdraw merge proposals only its accounts describe. Without --purge, local rows are retained. With --provider-item-id, also works for a connection the server no longer lists, though the server still has to answer. Permanent — no revert. |
 | `--yes, -y` | flag |  | Skip confirmation prompt. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 

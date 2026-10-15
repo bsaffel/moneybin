@@ -94,7 +94,7 @@ Plaid is the upstream banking provider. When you use sync:
 
 - Your bank credentials go directly from your browser to Plaid's hosted Link UI — they never touch MoneyBin or `moneybin-sync`.
 - Plaid sees every transaction and balance it pulls on your behalf, by design.
-- Plaid retains transaction history for as long as the item remains linked, per Plaid's policies. Disconnecting via `moneybin sync disconnect --institution <name>` does not retroactively delete history Plaid already pulled.
+- Plaid retains transaction history for as long as the item remains linked, per Plaid's policies. Disconnecting via `moneybin sync disconnect --institution <name>` does not retroactively delete history Plaid already pulled. It keeps the rows already pulled into your local database too; add `--purge` to delete those.
 
 If "Plaid sees my transactions" is incompatible with your threat model, use file-based imports (OFX/QFX/QBO/CSV/PDF) only. MoneyBin opens no network connection on those paths. One caveat, and it is not a MoneyBin network call: when an **agent** drives a PDF import and the deterministic extractor can't crack the layout, MoneyBin hands the statement's verbatim text to that agent for parsing, and the MCP client forwards it to its model provider. Import from the CLI to avoid it entirely — see [PDF privacy posture](data-import.md#pdf-native-text).
 
@@ -300,7 +300,7 @@ What to do when something has gone wrong. None of these paths are forensic-grade
 
 ### Suspected Plaid token leak (broker compromise or stolen device with broker auth)
 
-1. `moneybin sync disconnect --institution <name>` revokes the connection for that institution at the broker.
+1. `moneybin sync disconnect --institution <name>` revokes the connection for that institution at the broker. Add `--purge` to also delete every row that connection pulled into the local database.
 2. Re-link via `moneybin sync link` only if you have a clean machine and a clean broker.
 3. Plaid itself retains transaction history for as long as the broker holds the item; disconnect cuts off future pulls but does not retroactively delete history Plaid already saw.
 

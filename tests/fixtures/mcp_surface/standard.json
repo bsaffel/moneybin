@@ -1,5 +1,5 @@
 {
-  "sha256": "f8023c818e78994c49ae5bd0d3f10e2e90d33446c795f0796d70f158fef8b68a",
+  "sha256": "492064f0fc4331c46d8cd7e15e0c2ac1901eed2bc4c23db736ac16edcd8b5d06",
   "tool_count": 50,
   "tools": [
     {
@@ -3379,7 +3379,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection \u2014 required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.",
+        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection \u2014 required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution. state='absent' also deletes the item's locally pulled raw rows (raw.plaid_* and its prices), reverses its account links, and withdraws merge proposals only its accounts describe; by provider_item_id it also reaches an item the server no longer lists. Confirmed destructive write; run refresh_run afterwards.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3423,6 +3423,14 @@
                 }
               ],
               "default": null
+            },
+            "state": {
+              "default": "disconnected",
+              "enum": [
+                "disconnected",
+                "absent"
+              ],
+              "type": "string"
             }
           },
           "type": "object"
@@ -3430,12 +3438,12 @@
         "name": "sync_disconnect",
         "title": "Sync Disconnect"
       },
-      "description_bytes": 393,
-      "input_schema_bytes": 379,
+      "description_bytes": 701,
+      "input_schema_bytes": 463,
       "name": "sync_disconnect",
       "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 995
+      "total_bytes": 1387
     },
     {
       "annotation_bytes": 90,
@@ -5338,5 +5346,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 64931
+  "total_bytes": 65323
 }

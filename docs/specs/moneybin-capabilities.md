@@ -76,7 +76,7 @@ is added.
 | Taxonomy | `taxonomy`, `taxonomy_set` | `categories *`, `merchants *` | Same category and merchant target state through `CategorizationService` |
 | Category-source-mapping curation | none — `admission-pending` | `categories mappings pending`, `categories mappings set` | Same distinct unmapped imported-vocabulary terms (grouped by term, not by transaction) with suggestions, and the same map-to-existing-or-new-category-or-ignore write, with its immediate re-categorization, through `CategorizationService.resolve_source_term` |
 | Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels`, `import formats *` | Same import log, raw rows, confirmation state, labels, and audited saved-format lifecycle |
-| Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect` | `sync login/link/status/pull/disconnect/logout` | Same authenticated, linked, pulled, disconnected, or logged-out state |
+| Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect` | `sync login/link/status/pull/disconnect [--purge]/logout` | Same authenticated, linked, pulled, disconnected, purged, or logged-out state |
 | Google Sheets | `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | `gsheet *` | Same connection and pulled source state |
 | Privacy | `privacy`, `privacy_consent_set` | `privacy status/log/grant/revoke/revoke-all` | Same effective grants and privacy log |
 | Refresh | `refresh_run` | `refresh`, match/identity commands, `transform apply` | Same selected step outcomes and proposal state |
@@ -95,8 +95,11 @@ the implementation:
    polls, and `sync_disconnect(mode="logout")` clears credentials and pending
    profile-scoped sessions. Institution disconnects use payload-bound
    confirmation and re-resolve the live connection immediately before the
-   remote delete. The CLI login remains a blocking wrapper over the same
-   begin/poll client primitives.
+   remote delete. `sync_disconnect(state="absent")` and
+   `moneybin sync disconnect --purge` reach the same purged state: the
+   item's locally pulled rows deleted, its account links reversed, and its
+   orphaned merge proposals withdrawn. The CLI login remains a blocking
+   wrapper over the same begin/poll client primitives.
 4. `transactions categorize rules apply` now invokes only the rules engine,
    matching its command intent and
    `transactions_categorize_run(methods=["rules"])`; it no longer applies
