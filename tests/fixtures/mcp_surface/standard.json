@@ -1,5 +1,5 @@
 {
-  "sha256": "408fd3f3eb3db5961bef1e1c6e915f8b9bbf447e17f62726d1b9372c6334e75d",
+  "sha256": "7c133912ed5d67f98765917a9e855a63eebbdebdd67b367f0b9a3cff62e6092d",
   "tool_count": 50,
   "tools": [
     {
@@ -3390,7 +3390,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection \u2014 required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.",
+        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge. Run refresh_run afterwards.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3445,6 +3445,14 @@
                 }
               ],
               "default": null
+            },
+            "state": {
+              "default": "disconnected",
+              "enum": [
+                "disconnected",
+                "absent"
+              ],
+              "type": "string"
             }
           },
           "type": "object"
@@ -3452,12 +3460,12 @@
         "name": "sync_disconnect",
         "title": "Sync Disconnect"
       },
-      "description_bytes": 393,
-      "input_schema_bytes": 456,
+      "description_bytes": 871,
+      "input_schema_bytes": 540,
       "name": "sync_disconnect",
       "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 1072
+      "total_bytes": 1631
     },
     {
       "annotation_bytes": 90,
@@ -5446,5 +5454,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 65686
+  "total_bytes": 66245
 }

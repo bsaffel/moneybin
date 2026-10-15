@@ -25,6 +25,7 @@ from moneybin.connectors.sync_models import (
 )
 from moneybin.errors import UserError
 from moneybin.services.refresh_outcome import RefreshStepOutcome
+from moneybin.services.sync_service import SyncPurgePlan
 
 runner = CliRunner()
 
@@ -1050,6 +1051,257 @@ def test_sync_disconnect_by_provider_item_id(mock_build: MagicMock) -> None:
     assert re.search(r"Provider item ID:\s+item_b(?:\n|$)", result.output)
 
 
+def _purge_plan(
+    *, connected: bool = True, last_sync: datetime | None = None
+) -> SyncPurgePlan:
+    """A SyncPurgePlan for one item: 7 raw rows, 4 links, 1 withdrawn proposal."""
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    return SyncPurgePlan(
+        provider_item_id="item_a",
+        connection=(
+            ConnectedInstitution(
+                id="conn_a",
+                provider_item_id="item_a",
+                provider="plaid",
+                institution_name="Chase",
+                status="active",
+                last_sync=last_sync,
+                created_at=datetime(2026, 3, 15, tzinfo=UTC),
+            )
+            if connected
+            else None
+        ),
+        table_counts=(
+            ("raw.plaid_accounts", 2),
+            ("raw.plaid_transactions", 3),
+            ("raw.plaid_balances", 2),
+            ("raw.security_prices", 0),
+        ),
+        account_link_ids=("l1", "l2", "l3", "l4"),
+        decision_ids=("d1",),
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_purge_with_yes_plans_then_purges(
+    mock_build: MagicMock,
+) -> None:
+    """--purge --yes previews, then purges exactly the planned item, never the plain path."""
+    service = MagicMock()
+    service.plan_purge.return_value = _purge_plan()
+    service.purge_confirmed.return_value = _purge_plan()
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app,
+        ["sync", "disconnect", "--institution", "Chase", "--purge", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.output
+    service.plan_purge.assert_called_once_with(
+        institution="Chase", provider_item_id=None, connection_id=None
+    )
+    service.purge_confirmed.assert_called_once()
+    assert service.purge_confirmed.call_args.kwargs["provider_item_id"] == "item_a"
+    assert service.purge_confirmed.call_args.kwargs["actor"] == "cli"
+    service.disconnect.assert_not_called()
+    assert "7 locally pulled row(s)" in result.stderr
+    assert "Purge complete" in result.stdout
+    assert "Disconnected and purged" in result.stdout
+    assert re.search(r"Rows deleted:\s+7", result.stdout)
+    assert re.search(r"Account links reversed:\s+4", result.stdout)
+    assert re.search(r"Proposals withdrawn:\s+1", result.stdout)
+    assert "refresh run" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_purge_json_carries_the_counts(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    service.plan_purge.return_value = _purge_plan()
+    service.purge_confirmed.return_value = _purge_plan()
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--provider-item-id",
+            "item_a",
+            "--purge",
+            "--yes",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["data"]["status"] == "purged"
+    assert payload["data"]["purged"] is True
+    assert payload["data"]["rows_deleted"] == 7
+    assert payload["data"]["account_links_reversed"] == 4
+    assert payload["data"]["provider_item_id"] == "item_a"
+    assert payload["data"]["institution"] == "Chase"
+    assert any("refresh run" in action for action in payload["actions"])
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_purge_names_an_item_the_server_no_longer_lists(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.plan_purge.return_value = _purge_plan(connected=False)
+    service.purge_confirmed.return_value = _purge_plan(connected=False)
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app,
+        ["sync", "disconnect", "--provider-item-id", "item_a", "--purge", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "no longer on the server" in result.stderr
+    assert "Purged (the server no longer listed this connection)" in result.stdout
+    assert re.search(r"Institution:\s+-", result.stdout)
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_purge_requires_yes_without_an_interactive_terminal(
+    mock_build: MagicMock,
+) -> None:
+    result = runner.invoke(
+        app, ["sync", "disconnect", "--institution", "Chase", "--purge"]
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "--yes" in result.stderr
+    mock_build.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=False)
+def test_sync_disconnect_purge_declined_prompt_removes_nothing(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_disconnect
+
+    service = MagicMock()
+    service.plan_purge.return_value = _purge_plan()
+    mock_build.return_value.__enter__.return_value = service
+
+    with pytest.raises(typer.Exit) as exit_info:
+        sync_disconnect(
+            institution="Chase",
+            provider_item_id=None,
+            connection_id=None,
+            purge=True,
+            yes=False,
+            output=OutputFormat.TEXT,
+        )
+
+    assert exit_info.value.exit_code == 0
+    from rich.text import Text
+
+    receipt = Text.from_ansi(capsys.readouterr().out).plain
+    assert "Purge cancelled" in receipt
+    assert "Nothing was removed" in receipt
+    mock_confirm.assert_called_once()
+    service.purge_confirmed.assert_not_called()
+    service.disconnect.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=True)
+def test_sync_disconnect_purge_rejects_a_stale_preview(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The verify callback refuses when the live plan no longer matches the preview."""
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_disconnect
+
+    service = MagicMock()
+    service.plan_purge.return_value = _purge_plan()
+
+    def purge_confirmed(**kwargs: object) -> object:
+        verify = kwargs["verify"]
+        verify(_purge_plan(connected=False))  # type: ignore[operator]
+        raise AssertionError("verify must have refused the changed plan")
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+
+    with pytest.raises(typer.Exit) as exit_info:
+        sync_disconnect(
+            institution=None,
+            provider_item_id="item_a",
+            connection_id=None,
+            purge=True,
+            yes=False,
+            output=OutputFormat.TEXT,
+        )
+
+    assert exit_info.value.exit_code == 1
+    mock_confirm.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=True)
+def test_sync_disconnect_purge_ignores_connection_metadata_that_moved(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server-side sync finishing while the prompt is open is not a changed target."""
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_disconnect
+
+    service = MagicMock()
+    service.plan_purge.return_value = _purge_plan()
+    synced = _purge_plan(last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC))
+
+    def purge_confirmed(**kwargs: object) -> object:
+        verify = kwargs["verify"]
+        verify(synced)  # type: ignore[operator]
+        return synced
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+
+    sync_disconnect(
+        institution=None,
+        provider_item_id="item_a",
+        connection_id=None,
+        purge=True,
+        yes=False,
+        output=OutputFormat.TEXT,
+    )
+
+    mock_confirm.assert_called_once()
+    service.purge_confirmed.assert_called_once()
+
+
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_disconnect_json_carries_provider_item_id(mock_build: MagicMock) -> None:
@@ -1306,6 +1558,7 @@ def test_sync_disconnect_refusal_performs_no_mutation(
             provider_item_id=None,
             connection_id=None,
             yes=False,
+            purge=False,
             output=OutputFormat.TEXT,
         )
 
@@ -1363,6 +1616,7 @@ def test_sync_disconnect_interactive_confirm_names_connection_id(
         provider_item_id=None,
         connection_id=None,
         yes=False,
+        purge=False,
         output=OutputFormat.TEXT,
     )
 
@@ -1434,6 +1688,7 @@ def test_sync_disconnect_interactive_confirm_targets_planned_connection(
         provider_item_id=None,
         connection_id=None,
         yes=False,
+        purge=False,
         output=OutputFormat.TEXT,
     )
 
@@ -1476,6 +1731,7 @@ def test_sync_disconnect_ambiguous_institution_fails_before_prompt(
             provider_item_id=None,
             connection_id=None,
             yes=False,
+            purge=False,
             output=OutputFormat.TEXT,
         )
 
@@ -2168,3 +2424,69 @@ def test_sync_login_prompt_offers_the_local_server_as_its_default(
     assert result.exit_code == 0, result.output
     assert "http://127.0.0.1:8000" in result.stderr
     mock_plan.assert_called_once_with("http://127.0.0.1:8000", surface="cli")
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_purge_connection_selector_reaches_planning(mock_build: MagicMock) -> None:
+    service = MagicMock()
+    plan = _purge_plan()
+
+    def plan_purge(**selectors: object) -> object:
+        if selectors.get("connection_id") != "conn_a":
+            raise ValueError("Missing connection selector")
+        return plan
+
+    service.plan_purge.side_effect = plan_purge
+    service.purge_confirmed.return_value = plan
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app,
+        ["sync", "disconnect", "--connection-id", "conn_a", "--purge", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Purge complete" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_purge_json_reports_actual_broker_outcome(mock_build: MagicMock) -> None:
+    from dataclasses import replace
+
+    from moneybin.connectors.sync_models import SyncDisconnectResponse
+
+    plan = _purge_plan()
+    outcome = SyncDisconnectResponse.model_validate({
+        "connection_id": "00000000-0000-0000-0000-000000000001",
+        "credential_generation": 1,
+        "accounts": [
+            {
+                "account_id": "acct_a",
+                "name": "Checking",
+                "native_scope": {"kind": "plaid_item", "provider_item_id": "item_a"},
+            }
+        ],
+        "remote_revocation": "user_action_required",
+    })
+    service = MagicMock()
+    service.plan_purge.return_value = plan
+    service.purge_confirmed.return_value = replace(plan, remote_result=outcome)
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--provider-item-id",
+            "item_a",
+            "--purge",
+            "--yes",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)["data"]
+    assert data["remote_revocation"] == "user_action_required"
+    assert data["affected_accounts"] == ["Checking"]
+    assert data["connection_id"] == "00000000-0000-0000-0000-000000000001"

@@ -639,7 +639,7 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### sync_disconnect
 
-Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection — required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.
+Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge. Run refresh_run afterwards.
 
 Access: write, destructive, not idempotent, open world. Sensitivity: at least `medium`.
 
@@ -649,6 +649,7 @@ Access: write, destructive, not idempotent, open world. Sensitivity: at least `m
 | `connection_id` | string |  |  |
 | `provider_item_id` | string |  |  |
 | `mode` | one of `institution`, `logout` | `institution` |  |
+| `state` | one of `disconnected`, `absent` | `disconnected` |  |
 | `confirmation_token` | string |  |  |
 
 ### sync_link

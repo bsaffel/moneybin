@@ -301,16 +301,22 @@ def sync_disconnect_envelope(
     connection_id: str | None = None,
     remote_revocation: str | None = None,
     affected_accounts: list[str] | None = None,
+    purged: bool = False,
+    rows_deleted: int = 0,
+    account_links_reversed: int = 0,
 ) -> ResponseEnvelope[SyncDisconnectPayload]:
-    """Wrap the confirmation that one institution was disconnected."""
+    """Wrap the confirmation that one institution was disconnected or purged."""
     return build_envelope(
         data=SyncDisconnectPayload(
-            status="disconnected",
+            status="purged" if purged else "disconnected",
             connection_id=connection_id,
             remote_revocation=remote_revocation,
             affected_accounts=affected_accounts or [],
             institution=institution,
             provider_item_id=provider_item_id,
+            purged=purged,
+            rows_deleted=rows_deleted,
+            account_links_reversed=account_links_reversed,
         ),
         actions=actions,
     )

@@ -36,6 +36,7 @@ from moneybin.cli.render import (
 from moneybin.cli.terminal import TerminalPolicy
 from moneybin.cli.utils import (
     emit_json_failure,
+    generated_cli_command,
     get_terminal_policy,
     handle_cli_errors,
     terminal_safe_text,
@@ -55,6 +56,7 @@ from .stubs import _not_implemented
 
 if TYPE_CHECKING:
     from moneybin.connectors.sync_models import SyncConnectionView
+    from moneybin.services.sync_service import SyncPurgePlan
 
 app = typer.Typer(
     help="Sync financial data from external services",
@@ -700,7 +702,7 @@ def sync_disconnect(
         help=(
             "Institution name to disconnect. Ambiguous when it has more "
             "than one connection (e.g. after a relink) — use "
-            "--provider-item-id instead."
+            "--connection-id instead."
         ),
     ),
     provider_item_id: str | None = typer.Option(
@@ -708,11 +710,24 @@ def sync_disconnect(
         "--provider-item-id",
         help=(
             "Exact connection to disconnect, from `moneybin sync status`. "
-            "Mutually exclusive with --institution."
+            "Mutually exclusive with --institution and --connection-id."
         ),
     ),
     connection_id: str | None = typer.Option(
         None, "--connection-id", help="Exact grant UUID from sync status"
+    ),
+    purge: bool = typer.Option(
+        False,
+        "--purge",
+        help=(
+            "Plaid only: delete every locally pulled row of the connection "
+            "(raw.plaid_* and its broker-carried prices), reverse its "
+            "account links, and withdraw merge proposals only its accounts "
+            "describe. Without --purge, local rows are retained. With "
+            "--provider-item-id, also works for a connection the server no "
+            "longer lists, though the server still has to answer. "
+            "Permanent — no revert."
+        ),
     ),
     yes: bool = typer.Option(
         False,
@@ -722,7 +737,7 @@ def sync_disconnect(
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Remove a bank connection."""
+    """Remove a bank connection, keeping or purging its local rows."""
     if (
         sum(
             value is not None
@@ -731,13 +746,13 @@ def sync_disconnect(
         > 1
     ):
         message = (
-            "--institution and --provider-item-id are mutually exclusive — "
+            "--institution, --provider-item-id, and --connection-id are mutually exclusive — "
             "pass exactly one."
         )
         if output == OutputFormat.JSON:
             emit_json_failure(
                 UserError(
-                    "institution and provider_item_id are mutually exclusive",
+                    "institution, provider_item_id, and connection_id are mutually exclusive",
                     code=error_codes.MUTATION_INVALID_INPUT,
                     hint=message,
                 ),
@@ -747,13 +762,11 @@ def sync_disconnect(
             typer.echo(message, err=True)
         raise typer.Exit(2)
     if institution is None and provider_item_id is None and connection_id is None:
-        message = (
-            "One of --institution or --provider-item-id is required to disconnect."
-        )
+        message = "One of --institution, --provider-item-id, or --connection-id is required to disconnect."
         if output == OutputFormat.JSON:
             emit_json_failure(
                 UserError(
-                    "institution or provider_item_id is required",
+                    "institution, provider_item_id, or connection_id is required",
                     code=error_codes.SYNC_INSTITUTION_REQUIRED,
                     hint=message,
                 ),
@@ -778,6 +791,15 @@ def sync_disconnect(
         else:
             typer.echo(message, err=True)
         raise typer.Exit(2)
+    if purge:
+        _sync_disconnect_purge(
+            institution=institution,
+            provider_item_id=provider_item_id,
+            connection_id=connection_id,
+            yes=yes,
+            output=output,
+        )
+        return
     with handle_cli_errors():
         with _build_sync_service() as service:
             if yes:
@@ -877,6 +899,141 @@ def sync_disconnect(
                     "Next action",
                     " ".join(revocation_actions),
                 ),
+            ],
+        )
+
+
+def _purge_refresh_hint() -> str:
+    """The step that makes core tables drop the purged rows."""
+    return (
+        f"Run '{generated_cli_command('refresh', 'run')}' so core tables "
+        "drop the purged rows"
+    )
+
+
+def _sync_disconnect_purge(
+    *,
+    institution: str | None,
+    provider_item_id: str | None,
+    connection_id: str | None,
+    yes: bool,
+    output: OutputFormat,
+) -> None:
+    """The --purge branch: preview, confirm, then remove server + local state."""
+    with handle_cli_errors():
+        with _build_sync_service() as service:
+            planned = service.plan_purge(
+                institution=institution,
+                provider_item_id=provider_item_id,
+                connection_id=connection_id,
+            )
+            connection = planned.connection
+            target = (
+                (connection.institution_name or planned.provider_item_id)
+                if connection is not None
+                else planned.provider_item_id
+            )
+            scope = (
+                "the server connection and "
+                if connection is not None
+                else "(no longer on the server) "
+            )
+            typer.echo(
+                f"Purge {target} (provider_item_id={planned.provider_item_id}): "
+                f"{scope}{planned.rows_to_delete} locally pulled row(s), "
+                f"{len(planned.account_link_ids)} account link(s) reversed, "
+                f"{len(planned.decision_ids)} merge proposal(s) withdrawn.",
+                err=True,
+            )
+            if not yes and not typer.confirm(
+                "Apply this purge?", default=False, err=True
+            ):
+                _emit_sync_receipt(
+                    "Purge cancelled",
+                    [
+                        ("Provider item ID", planned.provider_item_id),
+                        ("Outcome", "Nothing was removed"),
+                    ],
+                )
+                raise typer.Exit(0)
+
+            def verify(live: "SyncPurgePlan") -> None:
+                # With --yes there is no prompt to diverge from; the live plan
+                # is still re-read inside the write transaction either way.
+                if not yes and live.binding != planned.binding:
+                    raise UserError(
+                        "Purge target changed after the preview; nothing was removed.",
+                        code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                        hint="Review the new purge preview and confirm again.",
+                    )
+
+            # Purge exactly the item the preview named, not whatever
+            # `institution` now resolves to.
+            live = service.purge_confirmed(
+                provider_item_id=planned.provider_item_id,
+                verify=verify,
+                actor="cli",
+            )
+    institution_name = (
+        live.connection.institution_name if live.connection is not None else None
+    )
+    remote = live.remote_result
+    remote_revocation = None if remote is None else remote.remote_revocation
+    affected_accounts = (
+        []
+        if remote is None
+        else [sync_account_label(account.name) for account in remote.accounts]
+    )
+    connection_id = str(remote.connection_id) if remote is not None else None
+    from moneybin.adapters.sync_adapters import sync_disconnect_actions
+
+    actions = [
+        _purge_refresh_hint(),
+        "Use 'moneybin sync link' to reconnect an institution",
+    ]
+    if remote is not None and live.connection is not None:
+        actions.extend(
+            sync_disconnect_actions(live.connection.provider, remote.remote_revocation)
+        )
+    if output == OutputFormat.JSON:
+        from moneybin.adapters.sync_adapters import (
+            sync_disconnect_envelope,
+        )
+
+        render_or_json(
+            sync_disconnect_envelope(
+                institution=institution_name,
+                provider_item_id=live.provider_item_id,
+                connection_id=connection_id,
+                remote_revocation=remote_revocation,
+                affected_accounts=affected_accounts,
+                purged=True,
+                rows_deleted=live.rows_to_delete,
+                account_links_reversed=len(live.account_link_ids),
+                actions=actions,
+            ),
+            output,
+            cli_actor="sync_disconnect",
+        )
+    else:
+        _emit_sync_receipt(
+            "Purge complete",
+            [
+                ("Institution", institution_name or "-"),
+                ("Provider item ID", live.provider_item_id),
+                (
+                    "Outcome",
+                    "Disconnected and purged"
+                    if live.connection is not None
+                    else "Purged (the server no longer listed this connection)",
+                ),
+                ("Connection", connection_id or "Not observed"),
+                ("Remote revocation", remote_revocation or "Not observed"),
+                ("Affected accounts", ", ".join(affected_accounts) or "None reported"),
+                ("Rows deleted", str(live.rows_to_delete)),
+                ("Account links reversed", str(len(live.account_link_ids))),
+                ("Proposals withdrawn", str(len(live.decision_ids))),
+                ("Next", " ".join(actions)),
             ],
         )
 

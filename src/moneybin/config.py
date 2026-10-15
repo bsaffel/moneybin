@@ -17,7 +17,6 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    TypeAdapter,
     ValidationError,
     field_validator,
     model_validator,
@@ -280,6 +279,17 @@ class LoggingConfig(BaseModel):
     )
     # PII sanitization (SanitizedLogFormatter) is always on and cannot be
     # disabled — it's a security invariant, not a tunable preference.
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _uppercase_level(cls, value: object) -> object:
+        """Accept ``info`` for ``INFO`` from every source.
+
+        A profile config.yaml written before `profile set` validated its values
+        can hold the lowercase form; refusing it here would fail every command
+        with no way back short of editing the file by hand.
+        """
+        return value.upper() if isinstance(value, str) else value
 
 
 class MetricsConfig(BaseModel):
@@ -995,15 +1005,15 @@ def validate_profile_setting(
             f"Unknown setting {section}.{name}. "
             f"Valid fields in {section}: {', '.join(sorted(model.model_fields))}"
         )
-    annotation = field.annotation
     if _is_secret(model, name):
         raise ValueError(_secret_refusal(section, name))
     others = {k: v for k, v in (saved or {}).items() if k in model.model_fields}
     rejected = _section_error(section, model, {**others, name: raw})
     if rejected is not None:
         raise ValueError(rejected)
-    adapter: TypeAdapter[Any] = TypeAdapter(annotation)
-    return adapter.dump_python(adapter.validate_python(raw), mode="json")
+    # Through the model, not the bare annotation, so a field validator's
+    # normalization (``info`` -> ``INFO``) is what the file stores.
+    return model.model_validate({**others, name: raw}).model_dump(mode="json")[name]
 
 
 def _load_profile_config(
