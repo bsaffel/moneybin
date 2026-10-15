@@ -93,37 +93,23 @@ def test_sync_missing_backend_never_creates_plaintext(
     assert not (tmp_path / ".moneybin" / ".sync_token-aaaaaaaaaaaa").exists()
 
 
-def test_exact_profile_file_is_imported_and_removed(
-    vault: Vault, tmp_path: Path
-) -> None:
-    path = legacy_file(tmp_path)
-    client = SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")
-    assert client._read_token() == "old-access"
-    assert client._read_refresh_token() == "old-refresh"
-    assert vault[("moneybin-sync", "aaaaaaaaaaaa:jwt")] == "old-access"
-    assert vault[("moneybin-sync", "aaaaaaaaaaaa:refresh_token")] == "old-refresh"
-    assert not path.exists()
-
-
 @pytest.mark.parametrize(
     "content",
     [
+        '{"jwt":"old-access","refresh_token":"old-refresh"}',
         "{}",
-        '{"jwt":"","refresh_token":"r"}',
-        '{"jwt":"a","refresh_token":2}',
-        "[]",
         "invalid",
     ],
 )
-def test_invalid_file_is_preserved_without_authentication(
+def test_exact_profile_file_is_removed_without_authentication(
     vault: Vault, tmp_path: Path, content: str
 ) -> None:
+    """The file records no issuing server, so it is never presented to any."""
     path = legacy_file(tmp_path, content)
     client = SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")
-    with pytest.raises(SecretStorageUnavailableError):
-        client._read_token()
-    assert path.read_text() == content
+    assert client._read_token() is None
     assert not vault
+    assert not path.exists()
 
 
 def test_partial_keychain_pair_is_not_combined_with_file(
@@ -134,50 +120,20 @@ def test_partial_keychain_pair_is_not_combined_with_file(
     client = SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")
     with pytest.raises(SecretStorageUnavailableError):
         client._read_token()
-    assert path.exists()
+    assert not path.exists()
     assert ("moneybin-sync", "aaaaaaaaaaaa:refresh_token") not in vault
 
 
-def test_failed_import_retains_file_and_rolls_back_partial_pair(
-    vault: Vault, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    path = legacy_file(tmp_path)
-
-    def write(service: str, name: str, value: str) -> None:
-        if name.endswith(":refresh_token"):
-            raise keyring.errors.KeyringError("synthetic-sensitive-detail")
-        vault[(service, name)] = value
-
-    monkeypatch.setattr(keyring, "set_password", write)
-    client = SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")
-    with pytest.raises(SecretStorageUnavailableError):
-        client._read_token()
-    assert path.exists()
-    assert not vault
-
-
-def test_import_verifies_storage_before_removing_file(
-    vault: Vault, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    path = legacy_file(tmp_path)
-
-    def ignore_write(*args: object) -> None:
-        pass
-
-    monkeypatch.setattr(keyring, "set_password", ignore_write)
-    client = SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")
-    with pytest.raises(SecretStorageUnavailableError):
-        client._read_token()
-    assert path.exists()
-
-
 def test_keychain_pair_wins_over_stale_file(vault: Vault, tmp_path: Path) -> None:
-    legacy_file(tmp_path)
+    path = legacy_file(tmp_path)
     vault[("moneybin-sync", "aaaaaaaaaaaa:jwt")] = "new-access"
     vault[("moneybin-sync", "aaaaaaaaaaaa:refresh_token")] = "new-refresh"
+    vault[("moneybin-sync", "aaaaaaaaaaaa:server")] = "https://test.api"
     client = SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")
     assert client._read_token() == "new-access"
     assert client._read_refresh_token() == "new-refresh"
+    # The leftover file is removed even though a keychain pair answered.
+    assert not path.exists()
 
 
 def test_denied_logout_does_not_report_success(
@@ -405,7 +361,7 @@ def test_unpersisted_pending_marker_cannot_start_token_writes(
     assert writes == []
 
 
-def test_import_file_removal_failure_refuses_again_until_cleanup_succeeds(
+def test_legacy_file_that_cannot_be_removed_still_never_authenticates(
     vault: Vault, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     path = legacy_file(tmp_path)
@@ -417,14 +373,8 @@ def test_import_file_removal_failure_refuses_again_until_cleanup_succeeds(
         original(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", denied)
-    with pytest.raises(SecretStorageUnavailableError):
-        SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")._read_token()
-    assert path.exists()
-    with pytest.raises(SecretStorageUnavailableError):
-        SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")._read_token()
-    monkeypatch.setattr(Path, "unlink", original)
     assert (
-        SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")._read_token()
-        == "old-access"
+        SyncClient("https://test.api", profile_id="aaaaaaaaaaaa")._read_token() is None
     )
-    assert not path.exists()
+    assert path.exists()
+    assert not vault

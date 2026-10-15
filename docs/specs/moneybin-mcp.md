@@ -100,7 +100,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch or delete a saved format | Confirmed destructive / at least low — rollback is permanent with no undo; format deletion is audited and `system_audit_undo`-recoverable |
 | `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / at least critical |
 | `import_labels_set` | `import_id`, `labels` | Import-label target state | Audited write / at least medium |
-| `sync_link` | `institution`, `mode` | Start mediated provider linking | Credential flow / at least medium |
+| `sync_link` | `institution`, `mode`, `server_url` | Start mediated provider linking | Credential flow / at least medium |
 | `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / up to medium / session-derived |
 | `sync_pull` | `institution` | Pull linked-provider data | External mutation / at least medium |
 | `sync_disconnect` | `confirmation_token`, `institution`, `mode`, `provider_item_id` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / at least low |

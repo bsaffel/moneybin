@@ -222,6 +222,11 @@ scopes the listing to one batch. Commands:
 
 Pull transactions from external services through the moneybin-sync proxy.
 **`sync login` is required first** — most subcommands fail without a valid JWT.
+The first login needs your server's address: `sync login --server
+https://sync.example.com`, or run `sync login` on a terminal and answer the
+prompt. The address is saved to the active profile once the server answers, so
+later commands need no flag and no environment variable. Logging in with a
+different `--server` switches servers and signs the profile out of the old one.
 `sync link` links a new institution through Plaid Hosted Link or
 re-authenticates a connected one, printing the URL to stderr and opening the
 browser unless told not to; `sync link-status` shows the pending link state.

@@ -170,6 +170,22 @@ class TestNoDBCommands:
         assert result.exit_code != 0
         assert "Traceback" not in result.stderr
 
+    def test_sync_login_without_a_server_address_names_the_way_forward(
+        self, e2e_env: dict[str, str]
+    ) -> None:
+        """A fresh install is told to run login with --server, not to export a variable.
+
+        Runs without a terminal, so it also proves login fails instead of
+        waiting on the address prompt.
+        """
+        env = {k: v for k, v in e2e_env.items() if k != "MONEYBIN_SYNC__SERVER_URL"}
+        result = run_cli("sync", "login", env=env, timeout=15)
+
+        assert result.exit_code == 1
+        assert "moneybin sync login --server" in result.stderr
+        assert "MONEYBIN_" not in result.stderr
+        assert "Traceback" not in result.stderr
+
     def test_db_ps(self) -> None:
         result = run_cli("db", "ps")
         result.assert_success()
