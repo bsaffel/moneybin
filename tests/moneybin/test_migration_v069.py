@@ -13,13 +13,15 @@ from moneybin.sql.migrations.V069__add_investment_source_type import migrate
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
 _NEW_COLUMNS = ("investment_source_type", "investment_source_type_changed_at")
+#: Added by later migrations, so absent from a database V069 upgrades.
+_LATER_COLUMNS = ("archived_changed_at",)
 _SETTINGS_COLUMNS = ("account_id", "display_name", "archived", "include_in_net_worth")
 
 
 @pytest.fixture()
 def pre_v069_db(db: Database) -> Database:
     """app.account_settings without the V069 columns, holding three rows."""
-    for column in _NEW_COLUMNS:
+    for column in (*_NEW_COLUMNS, *_LATER_COLUMNS):
         db.execute(
             f"ALTER TABLE app.account_settings DROP COLUMN {column}"
         )  # test fixture, hardcoded column names
@@ -92,8 +94,9 @@ def test_v069_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
     fresh_schema = [
         (row[1], row[2])
         for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
+        if row[1] not in _LATER_COLUMNS
     ]
-    for column in _NEW_COLUMNS:
+    for column in (*_NEW_COLUMNS, *_LATER_COLUMNS):
         db.execute(
             f"ALTER TABLE app.account_settings DROP COLUMN {column}"
         )  # test fixture, hardcoded column names

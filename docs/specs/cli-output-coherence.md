@@ -788,7 +788,7 @@ Numbered, each independently testable.
 
     **Two further defects fall out of the same one-line change**, and are the
     evidence the boundary belongs here rather than in the renderer:
-    `core.uncategorized_queue` selects `WHERE category IS NULL`, so a
+    the queue filter selects `category IS NULL`, so a
     never-categorized Plaid row carrying a raw code was **excluded from the
     curation queue** — while `transactions list --uncategorized`
     (`categorized_by IS NULL`, `transaction_service.py:1007`) included it. Two
@@ -825,8 +825,8 @@ Numbered, each independently testable.
 
     Absent means NULL, and only NULL. A whitespace-only category is reachable —
     Polars reads an empty CSV cell as NULL but keeps a cell holding spaces —
-    and treating it as a gap is the tempting mistake. `core.uncategorized_queue`
-    selects `WHERE category IS NULL`, so such a row is not in the queue, and
+    and treating it as a gap is the tempting mistake. The queue filter
+    selects `category IS NULL`, so such a row is not in the queue, and
     counting it would advertise a gap `transactions categorize run` cannot act
     on: the same class of lie as the provider code requirement 29 removes from
     this column. Making the two agree means normalizing blanks in staging,
@@ -839,7 +839,7 @@ Numbered, each independently testable.
     rather than the `NULLIF(TRIM(category), '')` sketched above: `TRIM` strips
     ASCII whitespace only, so a non-breaking space or a Unicode separator
     survived it and left exactly the row this paragraph is about. The manual
-    model's header names `core.uncategorized_queue`'s `category IS NULL` as the
+    model's header names the queue filter's `category IS NULL` as the
     reason, and both models carry the same cascade onto `subcategory`, since a
     subcategory orphaned from its category resolves to no `category_id`. The
     renderer's half of the contract is unchanged — absent still means NULL, and
@@ -1310,7 +1310,7 @@ today's code. Two need specific shapes:
 - **F8** — two tiers, because requirement 29's boundary moved below the CLI.
   At the data layer, `test_categorize_plaid_e2e.py` asserts an uncategorized
   Plaid row carries `category IS NULL` — **and reaches
-  `core.uncategorized_queue`**, the behavioural partner that proves the raw code
+  the categorization queue**, the behavioural partner that proves the raw code
   was not merely hidden from a column but was emptying the curation queue. Two
   assertions in that file previously pinned the defect
   (`assert row[0] == "FOOD_AND_DRINK", "raw Plaid category text still passes

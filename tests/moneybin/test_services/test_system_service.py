@@ -11,7 +11,7 @@ from moneybin.database import Database
 from moneybin.services.system_service import SystemService, SystemStatus
 from tests.moneybin.db_helpers import (
     create_core_tables_raw,
-    install_uncategorized_queue_view,
+    derive_is_categorizable,
     record_sqlmesh_apply,
 )
 
@@ -44,17 +44,16 @@ def system_db(db: Database) -> Database:
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, NULL, FALSE, TRUE, NULL,
-         NULL),
+         NULL, NULL),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', 'other_bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          'Other Bank SAVINGS ...0002', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, NULL, FALSE, TRUE, NULL,
-         NULL)
+         NULL, NULL)
     """)  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
-    # categorize_pending counts core.uncategorized_queue, the one definition of
-    # an uncategorized transaction; SQLMesh materializes it in production.
-    install_uncategorized_queue_view(db)
+    # categorize_pending counts is_categorizable rows with no category.
+    derive_is_categorizable(db)
 
     return db
 
@@ -211,7 +210,7 @@ def _insert_dim_account(
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', ?, CURRENT_TIMESTAMP, ?,
          'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD',
-         NULL, NULL, FALSE, TRUE, NULL, NULL)
+         NULL, NULL, FALSE, TRUE, NULL, NULL, NULL)
         """,
         [dim_extracted_at, dim_updated_at],
     )

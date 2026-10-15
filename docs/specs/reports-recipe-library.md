@@ -6,13 +6,13 @@
 - **Status:** implemented
 - **Milestone:** M2A ("brand surface" cluster — recipe library + `moneybin doctor`)
 
-> **Current categorization queue (2026-07-18):**
-> `core.uncategorized_queue` is an internal categorization-review queue. Its
-> only runtime reader is `services/categorization/queries.py`, backing
-> `reviews(kind="categorization", status="pending")`; it has no registered
-> report route. The live model is
-> `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`, and its
-> `TableRef` is `CORE_UNCATEGORIZED_QUEUE`.
+> **Current categorization queue (2026-10-14):**
+> the internal categorization-review queue is no longer a relation. It is
+> `core.fct_transactions` filtered `WHERE is_categorizable AND category IS NULL`,
+> read by `services/categorization/queries.py` behind
+> `reviews(kind="categorization", status="pending")`, with no registered report
+> route ([`categorizable-transactions.md`](categorizable-transactions.md)).
+> References below to `core.uncategorized_queue` record what this spec shipped.
 
 > **Superseded surface (2026-09-18):**
 > every `networth` / `networth-history` recipe below is retired. The net-worth

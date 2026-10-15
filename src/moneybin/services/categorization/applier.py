@@ -627,7 +627,7 @@ class MatchApplier:
         # into app.transaction_categories by the categorize_pending sweep,
         # which skips only on None. Blank text would survive that copy into
         # core.fct_transactions.category and render as an empty cell that
-        # core.uncategorized_queue's `category IS NULL` filter cannot see.
+        # the queue filter's `category IS NULL` cannot see.
         try:
             if category is not None:
                 validate_category_text(category, "category")

@@ -41,7 +41,6 @@ The signed amount lives on `core.fct_transactions.amount`: **negative = expense,
 | `reports.merchant_activity.total_outflow` | **Negative** (preserved). |
 | `reports.large_transactions.amount` | Signed (preserved from source). |
 | `reports.realized_fx.gain_loss` | Signed; positive is a gain. |
-| `core.uncategorized_queue.amount` | Signed (preserved from source). |
 | `reports.net_worth.total_liabilities` | **Negative** (preserved). |
 
 If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in the same query, one is negative and the other is positive. Don't.
@@ -116,6 +115,7 @@ This is a `VIEW` over `prep.int_transactions__merged` joined to category, mercha
 | `updated_at` | TIMESTAMP | `GREATEST(loaded_at, categorized_at, notes_latest, tags_latest, splits_latest)`. Does not advance on idempotent SQLMesh re-applies. |
 | `is_transfer` | BOOLEAN | TRUE if part of a confirmed transfer pair. |
 | `transfer_pair_id` | VARCHAR | FK → `core.bridge_transfers.transfer_id`. NULL if not a transfer. |
+| `is_categorizable` | BOOLEAN | TRUE when categorization works on the row: not a confirmed transfer leg, and its account resolved in `core.dim_accounts` and is not archived. Never NULL. A transaction needs a category when `is_categorizable AND category IS NULL`. |
 | `transaction_year`, `transaction_month`, `transaction_day`, `transaction_day_of_week` | INTEGER | Calendar parts. Day-of-week: 0 = Sunday. |
 | `transaction_year_month`, `transaction_year_quarter` | VARCHAR | `YYYY-MM` / `YYYY-QN` period-grouping keys. |
 | `notes` | LIST(STRUCT) | `(note_id, text, author, created_at)`; chronological. NULL when no notes — filter via `note_count > 0`. |
@@ -297,26 +297,6 @@ An account that holds value (a transaction, a trade, or a broker-reported positi
 | `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day; `core.dim_accounts.currency_code` when the account has no balance observation. |
 
 Logical grain key: `(account_id, balance_date)`.
-
-### `core.uncategorized_queue`
-
-Uncategorized transactions ranked by curator-impact. Grain: one row per uncategorized transaction. Excludes transfers and archived accounts. Service-internal — its only reader is the categorization surface (`moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`), not a standalone `reports.*` view.
-
-| Column | Type | Description |
-|---|---|---|
-| `transaction_id` | VARCHAR | Joinable to `core.fct_transactions.transaction_id`. |
-| `account_id` | VARCHAR | Owning account; RECORD_ID (opaque, unmasked — spec D6), same as everywhere else. |
-| `account_name` | VARCHAR | Resolved display name; NULL only if `dim_accounts.display_name` itself is NULL (uncommon). |
-| `txn_date` | DATE | Transaction date. |
-| `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
-| `currency_code` | VARCHAR | ISO 4217 the amount is denominated in; NULL when unknown. |
-| `description` | VARCHAR | Source description. |
-| `merchant_id` | VARCHAR | FK → `core.dim_merchants.merchant_id`. NULL when no canonical merchant was resolved. |
-| `merchant_normalized` | VARCHAR | Resolved merchant; NULL when no `dim_merchants` match and no source merchant value. |
-| `age_days` | INTEGER | `CURRENT_DATE − txn_date`. |
-| `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. Compares nominal magnitudes, so it only ranks meaningfully within one `currency_code`. |
-| `source_type` | VARCHAR | Provenance source. |
-| `source_id` | VARCHAR | **NULL placeholder today.** Reserved column pending `source_id` surfacing on `fct_transactions`. Don't filter or join on it. |
 
 ### Investments
 
@@ -501,7 +481,7 @@ All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `rep
 | Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; query it directly; `moneybin system doctor` does not read it. |
 | What gain or loss did a currency conversion realize? | `reports.realized_fx` | One row per consumed Currency lot; unmatched inventory remains visible as an incomplete placeholder. |
 
-What's not categorized yet is answered by `core.uncategorized_queue` (above) rather than a `reports.*` view — it's service-internal, reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a standalone report.
+What's not categorized yet is `core.fct_transactions` filtered `WHERE is_categorizable AND category IS NULL` — the same filter `moneybin transactions categorize pending` and MCP `reviews(kind="categorization", status="pending")` use.
 
 When `cash_flow`, `spending_trend`, and `merchant_activity` overlap (e.g., "spend by category last month"), pick the one whose **grain** matches the question: `cash_flow` for `(month, account, category)`, `spending_trend` for `(month, category)` with windowed comparisons, `merchant_activity` for lifetime-per-merchant.
 
@@ -817,7 +797,6 @@ What not to do, and why.
 - **Don't analyze from `prep.*` or `raw.*`.** The agent-safe SQL paths read both, but for inspection only — column shapes change without notice, no catalog comments are emitted, and masking there is a value-shape scan rather than a declared class. Answer questions from `core.*`; reach for `prep.*` / `raw.*` only when `core.*` cannot say what an importer actually produced.
 - **Don't `SUM(amount)` across mixed currencies.** The `reports.*` views already group by `currency_code`, but a query of your own over `core.fct_transactions`, `core.fct_transaction_lines`, or `core.fct_balances` does not — nothing converts, so adding dollars to euros yields a number in no currency. Group by `currency_code`, or filter to one.
 - **Don't drop `currency_code` when you re-aggregate a `reports.*` view.** Every money-summing view is one row per grain **per currency**; a `GROUP BY` that omits it silently re-blends the currencies the view separated.
-- **Don't filter on `core.uncategorized_queue.source_id`.** It's a NULL placeholder today.
 - **Don't mix sign conventions.** If you join `cash_flow.outflow` (negative) and `spending_trend.total_spend` (positive) in the same expression, the math is wrong. Pick one view per question.
 - **Don't query `app.transaction_notes` / `app.transaction_tags` / `app.transaction_splits` directly when you need them per-transaction.** They're already aggregated as nested `LIST(STRUCT(...))` columns on `core.fct_transactions`. Direct queries miss the resolved shape and bypass the audit-emitting service layer for writes.
 
