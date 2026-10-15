@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -16,6 +17,7 @@ from moneybin.errors import UserError
 
 if TYPE_CHECKING:
     from moneybin.cli.terminal import TerminalPolicy
+    from moneybin.database import Database
 
 _QUEUES = ("matches", "categorize", "account-links", "merchant-links", "security-links")
 
@@ -51,6 +53,7 @@ def load_items(
     transaction_id: str | None = None,
     match_id: str | None = None,
     decision_id: str | None = None,
+    db: Database | None = None,
 ) -> list[ReviewItem]:
     """Read pending decisions without creating categorization attempts."""
     from moneybin.services.account_links_service import AccountLinksService
@@ -61,7 +64,8 @@ def load_items(
 
     items: list[ReviewItem] = []
     queues = _QUEUES if type_ == "all" else (type_,)
-    with get_database(read_only=True) as db:
+    connection = nullcontext(db) if db is not None else get_database(read_only=True)
+    with connection as db:
         for queue in queues:
             remaining = None if limit is None else limit - len(items)
             if remaining == 0:
@@ -257,16 +261,18 @@ def load_items(
     return items
 
 
-def _current_item(item: ReviewItem) -> ReviewItem | None:
+def _current_item(item: ReviewItem, *, db: Database | None = None) -> ReviewItem | None:
     """Revalidate the displayed decision or complete group, independent of rank."""
     if item.queue == "categorize" and item.transaction_id is not None:
-        rows = load_items(item.queue, 1, transaction_id=item.transaction_id)
+        rows = load_items(item.queue, 1, transaction_id=item.transaction_id, db=db)
     elif item.queue == "matches":
-        rows = load_items(item.queue, 1, match_id=item.item_id)
+        rows = load_items(item.queue, 1, match_id=item.item_id, db=db)
     elif item.candidates:
-        rows = load_items(item.queue, 1, decision_id=item.candidates[0].decision_id)
+        rows = load_items(
+            item.queue, 1, decision_id=item.candidates[0].decision_id, db=db
+        )
     else:
-        rows = load_items(item.queue)
+        rows = load_items(item.queue, db=db)
     return next((row for row in rows if row.item_id == item.item_id), None)
 
 
@@ -438,6 +444,11 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
 
         approved = confirm_merge(decision_id, target) if target is not None else None
         with get_database(read_only=False) as db:
+            if _current_item(item, db=db) != item:
+                typer.echo(
+                    "Decision changed before writing; no decision saved.", err=True
+                )
+                return False
             rematch = AccountLinksService(db, actor="cli").set(
                 decision_id,
                 target_account_id=target,
@@ -452,6 +463,10 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
             raise SavedDecisionError()
         return True
     with get_database(read_only=False) as db:
+        # The writer lock closes the gap after the last read-only check.
+        if _current_item(item, db=db) != item:
+            typer.echo("Decision changed before writing; no decision saved.", err=True)
+            return False
         if item.queue == "matches":
             from moneybin.cli.utils import warn_transfers_retired
             from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED

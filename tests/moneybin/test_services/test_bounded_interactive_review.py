@@ -15,6 +15,7 @@ from moneybin.cli.commands.interactive_review import (
     load_items,
 )
 from moneybin.database import Database
+from moneybin.matching.persistence import get_match_decision
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecisionsRepo
@@ -271,3 +272,135 @@ def test_bounded_identity_preserves_legacy_order_and_anchor_guards(
             "a:group-decision", status="rejected", decided_by="user", actor="test"
         )
     assert service.pending(limit=1, decision_id="a:group-decision") == []
+
+
+@pytest.mark.parametrize("change", ["description", "remove", "rekey"])
+def test_match_revalidates_source_after_acquiring_writable_connection(
+    db: Database, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    from moneybin.cli.commands.interactive_review import apply_decision
+    from moneybin.cli.utils import get_terminal_policy
+    from moneybin.errors import UserError
+    from moneybin.services.matching_service import MatchDecisionOutcome, MatchingService
+
+    create_core_tables(db)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("""CREATE TABLE prep.int_transactions__unioned (
+        source_type VARCHAR, source_transaction_id VARCHAR, account_id VARCHAR,
+        transaction_date DATE, amount DECIMAL(18,2), currency_code VARCHAR,
+        description VARCHAR)""")
+    _match(db, 0)
+    writable_opened = False
+
+    def open_database(*, read_only: bool) -> Any:
+        nonlocal writable_opened
+        if not read_only:
+            writable_opened = True
+            # Simulate a refresh completing between the final read and writer acquisition.
+            if change == "description":
+                db.execute("""UPDATE prep.int_transactions__unioned SET description = 'Changed source'
+                              WHERE source_transaction_id = 'a-0'""")
+            elif change == "rekey":
+                db.execute("""UPDATE prep.int_transactions__unioned SET source_transaction_id = 'new-key'
+                              WHERE source_transaction_id = 'a-0'""")
+            else:
+                db.execute("""DELETE FROM prep.int_transactions__unioned
+                              WHERE source_transaction_id = 'a-0'""")
+        return nullcontext(db)
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.interactive_review.get_database", open_database
+    )
+    with patch.object(
+        MatchingService, "set_status", return_value=MatchDecisionOutcome("accepted", 0)
+    ) as mutation:
+        item = load_items("matches", 1)[0]
+        if change == "description":
+            assert apply_decision(item, "accept", get_terminal_policy()) is False
+        else:
+            with pytest.raises(UserError, match="source evidence is unavailable"):
+                apply_decision(item, "accept", get_terminal_policy())
+        assert writable_opened
+        mutation.assert_not_called()
+    decision = get_match_decision(db, "match-00")
+    assert decision is not None and decision["match_status"] == "pending"
+
+
+def test_unchanged_match_evidence_commits_once_on_existing_connection(
+    db: Database,
+) -> None:
+    from moneybin.cli.commands.interactive_review import apply_decision
+    from moneybin.cli.utils import get_terminal_policy
+
+    create_core_tables(db)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("""CREATE TABLE prep.int_transactions__unioned (
+        source_type VARCHAR, source_transaction_id VARCHAR, account_id VARCHAR,
+        transaction_date DATE, amount DECIMAL(18,2), currency_code VARCHAR,
+        description VARCHAR)""")
+    _match(db, 0)
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.get_database",
+            return_value=nullcontext(db),
+        ) as opens,
+        patch.object(db, "commit", wraps=db.commit) as commit,
+    ):
+        item = load_items("matches", 1)[0]
+        assert apply_decision(item, "reject", get_terminal_policy())
+        commit.assert_called_once()
+        assert [call.kwargs["read_only"] for call in opens.call_args_list] == [
+            True,
+            True,
+            False,
+        ]
+    decision = get_match_decision(db, "match-00")
+    assert decision is not None and decision["match_status"] == "rejected"
+
+
+@pytest.mark.parametrize("queue", ["account-links", "merchant-links", "security-links"])
+def test_identity_revalidates_complete_group_after_writer_acquisition(
+    db: Database, monkeypatch: pytest.MonkeyPatch, queue: str
+) -> None:
+    from moneybin.cli.commands.interactive_review import apply_decision
+    from moneybin.cli.utils import get_terminal_policy
+    from moneybin.services.account_links_service import AccountLinksService
+    from moneybin.services.merchant_links_service import MerchantLinksService
+    from moneybin.services.security_links_service import SecurityLinksService
+
+    create_core_tables(db)
+    _identity(db, queue, "provider:group", "original")
+
+    def open_database(*, read_only: bool) -> Any:
+        if not read_only:
+            _identity(db, queue, "provider:group", "new-sibling")
+        return nullcontext(db)
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.interactive_review.get_database", open_database
+    )
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="original",
+        ),
+        patch.object(AccountLinksService, "set", return_value=None) as accounts,
+        patch.object(MerchantLinksService, "set") as merchants,
+        patch.object(SecurityLinksService, "reject_merge") as securities,
+    ):
+        item = load_items(queue, 1)[0]
+        assert apply_decision(item, "reject", get_terminal_policy()) is False
+        accounts.assert_not_called()
+        merchants.assert_not_called()
+        securities.assert_not_called()
+    repo = (
+        AccountLinkDecisionsRepo(db)
+        if queue == "account-links"
+        else MerchantLinkDecisionsRepo(db)
+        if queue == "merchant-links"
+        else SecurityLinkDecisionsRepo(db)
+    )
+    original = repo.fetch_by_id("original")
+    sibling = repo.fetch_by_id("new-sibling")
+    assert original is not None and original["status"] == "pending"
+    assert sibling is not None and sibling["status"] == "pending"
