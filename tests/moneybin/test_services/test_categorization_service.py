@@ -12,7 +12,9 @@ from typing import Any
 import pytest
 import yaml
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.seeds import refresh_views
@@ -28,8 +30,9 @@ from moneybin.services.categorization.assist import (
 from moneybin.services.categorization.queries import CategorizationQueries
 from tests.moneybin.db_helpers import (
     create_core_tables,
-    install_uncategorized_queue_view,
+    derive_is_categorizable,
     seed_categories_view,
+    simulate_pre_refresh_fct_transactions,
 )
 
 
@@ -131,10 +134,9 @@ def _reflect_categorizations_into_fact(db: Database) -> None:
 def db_with_transactions(db: Database) -> Database:
     """DB with sample transactions in core.fct_transactions."""
     # The accounts these transactions belong to, and an explicit is_transfer.
-    # Coverage figures are scoped to core.uncategorized_queue's population,
-    # which INNER JOINs core.dim_accounts and filters on `NOT is_transfer` —
-    # transactions with neither model a database that cannot exist, and would
-    # silently count as zero.
+    # Coverage is scoped to is_categorizable (resolved, unarchived account and
+    # `NOT is_transfer`). The fixture defaults the column to TRUE, so rows count
+    # either way; the accounts and explicit is_transfer keep the data realistic.
     db.conn.execute("""
         INSERT INTO core.dim_accounts (account_id, display_name, archived)
         VALUES ('ACC001', 'Checking', false), ('ACC002', 'Savings', false)
@@ -901,12 +903,12 @@ def db_with_coverage_population(db: Database) -> Database:
         "('T_RULE', 'Shopping', 'rule', 'r_1'), "
         "('T_VANISHED', 'Food', 'user', NULL)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     return db
 
 
 class TestCoverageOverWhatNeedsCategorizing:
-    """The coverage figures describe the queue's population, not the whole ledger."""
+    """The coverage figures describe the categorizable population, not the whole ledger."""
 
     @pytest.mark.unit
     def test_the_population_excludes_rows_nobody_is_asked_to_categorize(
@@ -928,27 +930,6 @@ class TestCoverageOverWhatNeedsCategorizing:
         stats = get_categorization_stats(db_with_coverage_population)
 
         assert stats["categorized"] + stats["uncategorized"] == stats["total"]
-
-    @pytest.mark.unit
-    def test_uncategorized_matches_the_canonical_queue(
-        self, db_with_coverage_population: Database
-    ) -> None:
-        """The figure equals what ``moneybin review`` will actually hand the user.
-
-        The view under test is built from the shipped model file, so this fails
-        if core.uncategorized_queue's predicate and this query's ever diverge.
-        That divergence is what MB-155 exists to close and the one thing no
-        type check can see.
-        """
-        db = db_with_coverage_population
-        queue_count = db.execute(
-            "SELECT COUNT(*) FROM core.uncategorized_queue"
-        ).fetchone()
-
-        stats = get_categorization_stats(db)
-
-        assert queue_count is not None
-        assert stats["uncategorized"] == queue_count[0]
 
     @pytest.mark.unit
     def test_a_category_the_source_file_supplied_counts_as_categorized(
@@ -1593,8 +1574,8 @@ def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> No
 
     svc = CategorizationService(real_db)
     # Nothing categorized yet — the snowball's starting state. Read straight
-    # from app.transaction_categories: core.uncategorized_queue is a SQLMesh
-    # view over a live core.fct_transactions, and this module's fixture table
+    # from app.transaction_categories: core.fct_transactions is a SQLMesh
+    # view in production, and this module's fixture table
     # is static, so the queue cannot observe writes made during the test.
     seeded = real_db.execute(
         "SELECT COUNT(*) FROM app.transaction_categories"
@@ -4647,13 +4628,13 @@ def _install_matched_stub(db: Database) -> None:
 
 
 def test_count_uncategorized_counts_exactly_the_pending_queue(db: Database) -> None:
-    """One definition of "uncategorized": whatever core.uncategorized_queue holds.
+    """One definition of "uncategorized": is_categorizable AND category IS NULL.
 
     The count and the listing sit side by side on the review surface — the
     count in `moneybin review` / system_status, the listing in the pending
     queue — so a count computed from a different predicate shows the user two
     different Ns for the same question. Each excluded row here is a row the
-    canonical view drops and a hand-rolled LEFT JOIN against
+    is_categorizable excludes and a hand-rolled LEFT JOIN against
     app.transaction_categories would have counted.
     """
     db.execute(
@@ -4678,7 +4659,7 @@ def test_count_uncategorized_counts_exactly_the_pending_queue(db: Database) -> N
         "('t_source_category', 'acct_open', DATE '2026-04-04', -8.00, 'Bus', "
         "'Travel', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
 
     queries = CategorizationQueries(db)
@@ -4710,7 +4691,7 @@ def test_pending_queue_names_each_row_currency(db: Database) -> None:
         "('t_usd', 'acct_us', DATE '2026-04-01', -50.00, 'Local cafe', "
         "'USD', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
@@ -4726,7 +4707,7 @@ def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
 ) -> None:
     """An unmatched transfer leg is flagged, not silently categorizable (F19).
 
-    core.uncategorized_queue filters `NOT is_transfer`, but is_transfer only
+    is_categorizable requires `NOT is_transfer`, but is_transfer only
     becomes true AFTER matching links the pair. Pre-matching, a "BILL PAY" leg is
     the top-impact "uncategorized" row — and categorizing it double-counts
     against the eventual transfer pair.
@@ -4760,7 +4741,7 @@ def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
         "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
         "'GROCERY STORE', 'ofx', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
     db.execute(
         "INSERT INTO prep.int_transactions__matched "
@@ -4830,7 +4811,7 @@ def test_pending_queue_ignores_dedup_decisions_for_transfer_flag(
         "('t_dedup_b', 'acct_checking', '2026-06-02', -8.00, "
         "'COFFEE SHOP', 'ofx', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
     db.execute(
         "INSERT INTO prep.int_transactions__matched "
@@ -4927,7 +4908,7 @@ def test_pending_queue_degrades_when_matched_view_predates_a_column(
         "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
         "'GROCERY STORE', 'ofx', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub_missing_account_id(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
@@ -4969,7 +4950,7 @@ def test_impact_queue_spans_currencies_under_cap(db: Database) -> None:
         "('t_usd', 'acct_us', DATE '2026-04-01', -50.00, 'Local cafe', "
         "'USD', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(
@@ -4981,3 +4962,97 @@ def test_impact_queue_spans_currencies_under_cap(db: Database) -> None:
     assert set(leading) == {"JPY", "USD"}, (
         f"capped impact queue is {leading}; the dollar row is hidden entirely"
     )
+
+
+_PENDING_KEYS = [
+    "transaction_id",
+    "account_id",
+    "account_name",
+    "txn_date",
+    "amount",
+    "currency_code",
+    "description",
+    "merchant_id",
+    "merchant_normalized",
+    "age_days",
+    "priority_score",
+    "source_type",
+    "source_id",
+    "pending_transfer_match",
+]
+
+
+def test_pending_list_keeps_the_queue_columns_in_order(db: Database) -> None:
+    """The MCP and CLI payloads read these keys; the view's removal changes none."""
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_open', 'Checking', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "currency_code, merchant_name, source_type, is_transfer) VALUES "
+        "('t_one', 'acct_open', CURRENT_DATE - 10, -20.00, 'Cafe', 'USD', "
+        "'Cafe Co', 'ofx', false)"
+    )
+    derive_is_categorizable(db)
+    _install_matched_stub(db)
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+
+    assert rows is not None
+    assert list(rows[0].keys()) == _PENDING_KEYS
+    assert rows[0]["account_name"] == "Checking"
+    assert rows[0]["merchant_normalized"] == "Cafe Co"
+    assert rows[0]["age_days"] == 10
+    assert rows[0]["priority_score"] == Decimal("200.00")
+    assert rows[0]["source_id"] is None
+
+
+def test_pending_list_reports_a_pre_refresh_fact_as_schema_drift(
+    db: Database,
+) -> None:
+    """Upgraded code over a not-yet-refreshed fact is drift, not "no data" (R7)."""
+    simulate_pre_refresh_fct_transactions(db)
+
+    with pytest.raises(UserError) as exc_info:
+        CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+
+    assert exc_info.value.code == error_codes.INFRA_SCHEMA_DRIFT
+    assert exc_info.value.hint == "refresh_run"
+    assert exc_info.value.details == {
+        "missing_object": "core.fct_transactions.is_categorizable"
+    }
+
+
+def test_pending_list_reports_an_unbindable_fact_view_as_schema_drift(
+    db: Database,
+) -> None:
+    """A stale fact view whose own inputs no longer bind is drift, not a raw error."""
+    db.execute("DROP TABLE core.fct_transactions")
+    db.execute("CREATE TABLE core.fct_input (gone INTEGER, kept INTEGER)")
+    db.execute("CREATE VIEW core.fct_transactions AS SELECT gone FROM core.fct_input")
+    db.execute("ALTER TABLE core.fct_input DROP COLUMN gone")
+
+    with pytest.raises(UserError) as exc_info:
+        CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+
+    assert exc_info.value.code == error_codes.INFRA_SCHEMA_DRIFT
+    assert exc_info.value.hint == "refresh_run"
+
+
+def test_stats_report_zeros_on_a_pre_refresh_fact(db: Database) -> None:
+    simulate_pre_refresh_fct_transactions(db)
+
+    assert get_categorization_stats(db) == {
+        "total": 0,
+        "categorized": 0,
+        "uncategorized": 0,
+        "pct_categorized": 0,
+    }
+
+
+def test_pending_count_is_zero_on_a_pre_refresh_fact(db: Database) -> None:
+    simulate_pre_refresh_fct_transactions(db)
+
+    assert CategorizationQueries(db).count_uncategorized() == 0

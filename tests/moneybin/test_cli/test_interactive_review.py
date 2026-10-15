@@ -536,14 +536,12 @@ def test_rejected_newest_does_not_hide_older_pending_next_session(db: object) ->
         VALUES ('a', 'acct', DATE '2026-10-02', -2.00, 'USD', 'Newest purchase', 'manual'),
                ('b', 'acct', DATE '2026-10-01', -1.00, 'USD', 'Older purchase', 'manual')
     """)
-    database.execute("""
-        CREATE OR REPLACE VIEW core.uncategorized_queue AS
-        SELECT transaction_id, account_id, 'Synthetic account' AS account_name,
-               transaction_date AS txn_date, amount, currency_code, description,
-               merchant_id, NULL::VARCHAR AS merchant_normalized, 1 AS age_days,
-               ABS(amount) AS priority_score, source_type, transaction_id AS source_id
-        FROM core.fct_transactions WHERE category IS NULL
-    """)
+    database.execute("""INSERT INTO core.dim_accounts (account_id, display_name, archived)
+                       VALUES ('acct', 'Synthetic account', FALSE)""")
+    from tests.moneybin.db_helpers import derive_is_categorizable
+
+    database.execute("UPDATE core.fct_transactions SET is_transfer = FALSE")
+    derive_is_categorizable(database)
     with patch(
         "moneybin.cli.commands.interactive_review.get_database",
         return_value=nullcontext(database),

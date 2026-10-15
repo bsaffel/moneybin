@@ -928,6 +928,21 @@ SYNC_CONNECT_OUTCOMES = Counter(
     ["status"],
 )
 
+SYNC_DISCONNECT_OUTCOMES = Counter(
+    "moneybin_sync_disconnect_outcomes_total",
+    "Disconnect outcomes by scope: remote (server connection removed, local "
+    "rows kept), purged (server connection removed and its local rows "
+    "deleted), purged_orphan (local rows deleted for an item the server no "
+    "longer listed).",
+    ["scope"],
+)
+
+SYNC_PURGE_ROWS_DELETED = Counter(
+    "moneybin_sync_purge_rows_deleted_total",
+    "Raw rows deleted by a purging sync disconnect, per table.",
+    ["table"],
+)
+
 SYNC_SERVER_ADDRESS_OUTCOMES = Counter(
     "moneybin_sync_server_address_outcomes_total",
     "Attempts to save a profile's sync server address at login, by surface "
@@ -1347,6 +1362,8 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_sync_institution_errors": "Sync",
     "moneybin_sync_auth_refresh_outcomes": "Sync",
     "moneybin_sync_connect_outcomes": "Sync",
+    "moneybin_sync_disconnect_outcomes": "Sync",
+    "moneybin_sync_purge_rows_deleted": "Sync",
     "moneybin_sync_server_address_outcomes": "Sync",
     # Investments sync
     "moneybin_sync_investments_records_loaded": "Investments sync",

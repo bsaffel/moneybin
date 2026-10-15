@@ -266,6 +266,7 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
             default_cost_basis_method=None,
             investment_source_type=None,
             investment_source_type_changed_at=None,
+            archived_changed_at=None,
             actor="cli",
         )
         loaded = AccountService(pre_v063_rw_db)._load_settings("acct_a")
@@ -491,6 +492,7 @@ def _seed_blank_settings_row(db: Database) -> None:
         default_cost_basis_method=None,
         investment_source_type=None,
         investment_source_type_changed_at=None,
+        archived_changed_at=None,
         actor="test",
     )
 
@@ -564,6 +566,24 @@ class TestAccountServiceMutators:
         # A no-op re-archive should not restamp the date.
         second = svc.archive("acct_a")
         assert second.archived_at == first.archived_at
+
+    @pytest.mark.unit
+    def test_only_an_archive_transition_moves_archived_changed_at(
+        self, test_db: Database
+    ) -> None:
+        """Archive and unarchive stamp it; a re-archive or a rename does not."""
+        svc = AccountService(test_db)
+        archived = svc.archive("acct_a")
+        assert archived.archived_changed_at is not None
+
+        repeated = svc.archive("acct_a")
+        renamed, _ = svc.settings_update("acct_a", actor="cli", display_name="Main")
+        assert repeated.archived_changed_at == archived.archived_changed_at
+        assert renamed.archived_changed_at == archived.archived_changed_at
+
+        restored = svc.unarchive("acct_a")
+        assert restored.archived_changed_at is not None
+        assert restored.archived_changed_at > archived.archived_changed_at
 
     @pytest.mark.unit
     def test_settings_update_partial(self, test_db: Database) -> None:
@@ -1106,6 +1126,7 @@ class TestSettingsUpdateExtended:
             default_cost_basis_method=None,
             investment_source_type=None,
             investment_source_type_changed_at=None,
+            archived_changed_at=None,
             actor="test",
         )
         loaded = AccountService(test_db)._load_settings("acct_a")

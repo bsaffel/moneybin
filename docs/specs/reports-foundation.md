@@ -207,6 +207,11 @@ Per D3, membership in `reports.*` *is* the definition of "is a report."
 `services/categorization/queries.py`, backing `reviews(kind="categorization", status="pending")`
 — so it moved out of `reports.*` into `core.uncategorized_queue`.
 
+> **Amended 2026-10-14:** `core.uncategorized_queue` was later removed in favor
+> of an `is_categorizable` column on `core.fct_transactions`; see
+> [`categorizable-transactions.md`](categorizable-transactions.md). The
+> narrative here records the 2026 move as it happened.
+
 `core` rather than `prep`, because at the time `prep` was not in
 `ALLOWED_QUERY_SCHEMAS` and moving there would have silently removed a view
 users can query today. M2O.2 has since admitted `prep`, but the decision stands

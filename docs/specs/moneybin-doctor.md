@@ -101,7 +101,7 @@ The `account_id` scoping is load-bearing in both. A source-native id is unique o
 
 Remedy: `moneybin refresh --step match --step transform` proposes the pairs and reflects any auto-merges into the ledger; `moneybin review --type matches` decides the rest. An accepted account-link merge now re-runs matching automatically (`AccountLinksService.rematch_after_merge()`), so this check should only fire on ledgers whose merges predate that behavior, or where a match pass failed.
 
-**`categorization_coverage`** — What percentage of the transactions that need a category have one. The population is the one `core.uncategorized_queue` is drawn from — confirmed transfer legs, archived accounts, and transactions whose account never resolved are excluded — so the ratio measures work `moneybin review` will actually offer, and it agrees with `moneybin transactions categorize stats`. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
+**`categorization_coverage`** — What percentage of the transactions that need a category have one. The population is `core.fct_transactions.is_categorizable` — confirmed transfer legs, archived accounts, and transactions whose account never resolved are excluded — so the ratio measures work `moneybin review` will actually offer, and it agrees with `moneybin transactions categorize stats`. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
 
 **`account_archive_intent_ambiguous`** — An account whose `include_in_net_worth = FALSE` may have been written by the retired archive cascade rather than chosen. `warn` when the account's audit history holds a pre-V063 `account_settings.set` row recording `archived = TRUE` that also flipped `include_in_net_worth` from TRUE (or absent) to FALSE (at any point, so an unarchived account still counts; pre-V063 means its `after_value` carries no `archived_at` key, since a later archive cannot be the cascade) and no forward `account_settings.set` row written after the latest such row, and not since undone, proves a decision (a later cascade overwrote any earlier choice): the `confirms_include_in_net_worth` context marker `AccountService.settings_update` writes whenever the caller names the flag, or a pre-marker write that excluded the account without archiving it (`before_value.include_in_net_worth` TRUE or absent, `after_value.include_in_net_worth` FALSE, `after_value.archived` FALSE). `pass` otherwise. `accounts set --include` or `--exclude` clears it; a rename or currency edit does not, and undoing the deciding write brings the warning back (a redo carries no marker, so it warns until `accounts set` restates the choice). Reads `app.account_settings` and `app.audit_log` directly, so it reflects a settings write without a transform. See [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md) §Prerequisites.
 
@@ -167,13 +167,16 @@ which history the user trusts, so no agent picks one unprompted. Full design:
 deliberate delete of recorded history (`REVERT_TABLES['manual']` covers
 `raw.manual_investment_transactions`), but as the suggested remedy it answered
 a question of trust with a permanent loss. `sync_disconnect` is deliberately
-**not** offered either. It is a remote operation — `SyncService.disconnect_confirmed`
+**not** offered either. By default it is a remote operation — `SyncService.disconnect_confirmed`
 calls `client.disconnect` and deletes nothing locally, as its own confirmation
 says ("Previously pulled local rows remain") — and this check joins exactly
 those retained rows, as does `core.dim_holdings`'s `source_overlap_accounts`.
 Following it would cost the user their connection permanently and leave the
 check failing and the holdings withheld, which is worse than no suggestion: a
-`RecoveryAction` is a claim that running it fixes the failure. Someone whose
+`RecoveryAction` is a claim that running it fixes the failure. Its purging
+form (`state="absent"`, `--purge`) would clear the check, but it takes the
+whole connection and every account on it, so it is the same permanent loss
+`import_revert` was withdrawn for. Someone whose
 file import is the ledger they want may still reach for a disconnect on their
 own; choosing `manual` gets the same ledger and keeps the connection.
 

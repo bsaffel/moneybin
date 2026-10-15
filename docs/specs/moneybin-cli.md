@@ -161,7 +161,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- logout                     -- Clear stored JWT from keychain
 |   +-- link                       -- Link a bank via mediated provider (Plaid: opens Link UI)
 |   +-- link-status                -- Poll the in-flight link session
-|   +-- disconnect --institution NAME -- Remove an institution
+|   +-- disconnect --institution NAME [--purge] -- Remove an institution; --purge also deletes its local rows
 |   +-- pull [--force] [--institution NAME] -- Pull data + full pipeline
 |   +-- status                     -- Connected institutions, health, errors
 |   +-- schedule

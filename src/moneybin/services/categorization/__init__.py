@@ -941,7 +941,7 @@ class CategorizationService:
         return self._queries.list_categorization_history()
 
     def count_uncategorized(self) -> int:
-        """Return the size of the canonical ``core.uncategorized_queue``."""
+        """Return how many transactions need a category."""
         return self._queries.count_uncategorized()
 
     def coverage(self) -> CategorizationCoverage:

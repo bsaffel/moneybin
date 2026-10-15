@@ -73,6 +73,7 @@ WITH notes_agg AS (
     t.location_longitude,
     COALESCE(t.currency_code, a.currency_code) AS currency_code,
     CASE WHEN t.currency_code IS NULL THEN a.updated_at END AS inherited_currency_latest,
+    a.archived_changed_at, /* Moves is_categorizable for every row of the account, so every row folds it into updated_at. */
     t.canonical_source_type AS source_type,
     t.source_count,
     t.match_confidence,
@@ -81,6 +82,9 @@ WITH notes_agg AS (
     (
       NOT bt_debit.transfer_id IS NULL OR NOT bt_credit.transfer_id IS NULL
     ) AS is_transfer, /* `NOT x IS NULL` is sqlmesh-format's canonical form; do not rewrite to `IS NOT NULL`. */
+    (
+      NOT a.account_id IS NULL AND NOT a.archived
+    ) AS account_resolved_unarchived, /* Internal to is_categorizable; not projected. Tests a.account_id because a.archived is NULL for an unresolved account. */
     t.loaded_at,
     c.categorized_at,
     n.notes,
@@ -126,7 +130,7 @@ SELECT
   merchant_name, /* Normalized merchant name from core.dim_merchants; falls back to source value */
   merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant has been resolved for this transaction. Reports should GROUP/PARTITION on this FK; merchant_name is for display. */
   memo, /* Additional notes from highest-priority source */
-  category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows, then to the source's OWN category text where the source supplies one a person wrote (tabular CSV column, manual entry). Never a provider taxonomy code: Plaid contributes no category here, so an uncategorized Plaid row is NULL, which is what core.uncategorized_queue selects on. The raw PFC code lives in prep.int_transactions__merged.plaid_category */
+  category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows, then to the source's OWN category text where the source supplies one a person wrote (tabular CSV column, manual entry). Never a provider taxonomy code: Plaid contributes no category here, so an uncategorized Plaid row is NULL, which is what the queue filter (is_categorizable AND category IS NULL) selects on. The raw PFC code lives in prep.int_transactions__merged.plaid_category */
   subcategory, /* Spending subcategory resolved via FK; same fallback chain as category */
   categorized_by, /* How the category was assigned: rule, ai, user, or NULL if uncategorized */
   payment_channel, /* Payment channel (online, in store, other) */
@@ -153,10 +157,12 @@ SELECT
     COALESCE(notes_latest, loaded_at),
     COALESCE(tags_latest, loaded_at),
     COALESCE(splits_latest, loaded_at),
-    COALESCE(inherited_currency_latest, loaded_at)
-  ) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, categorization, or an Account Currency inherited by a transaction without its own Currency. Does not advance on idempotent SQLMesh re-applies. NULL-safe: DuckDB's GREATEST returns NULL if any arg is NULL, so optional inputs from LEFT JOINs are COALESCEd to loaded_at — without this, every uncategorized transaction had updated_at=NULL and incremental sync `WHERE updated_at > :last_sync` silently missed them. See docs/specs/core-updated-at-convention.md. */
+    COALESCE(inherited_currency_latest, loaded_at),
+    COALESCE(archived_changed_at, loaded_at)
+  ) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, categorization, an Account Currency inherited by a transaction without its own Currency, or archiving or restoring the account, which moves is_categorizable. Does not advance on idempotent SQLMesh re-applies. NULL-safe: DuckDB's GREATEST returns NULL if any arg is NULL, so optional inputs from LEFT JOINs are COALESCEd to loaded_at — without this, every uncategorized transaction had updated_at=NULL and incremental sync `WHERE updated_at > :last_sync` silently missed them. See docs/specs/core-updated-at-convention.md. */
   is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
   transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
+  NOT is_transfer AND account_resolved_unarchived AS is_categorizable, /* TRUE when categorization works on this row: not a confirmed transfer leg, and its account resolved in core.dim_accounts and is not archived. Never NULL. A row needs a category when is_categorizable AND category IS NULL; the categorization service reads this column for its categorization queue, pending count and coverage */
   DATE_PART('year', transaction_date) AS transaction_year, /* Calendar year */
   DATE_PART('month', transaction_date) AS transaction_month, /* Calendar month (1-12) */
   DATE_PART('day', transaction_date) AS transaction_day, /* Calendar day (1-31) */

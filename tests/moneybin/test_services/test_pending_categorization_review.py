@@ -27,19 +27,17 @@ from moneybin.services.matching_service import MatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.review_service import ReviewService
 from moneybin.services.security_links_service import SecurityLinksService
-from tests.moneybin.db_helpers import create_core_tables
+from tests.moneybin.db_helpers import (
+    create_core_tables,
+    derive_is_categorizable,
+    simulate_pre_refresh_fct_transactions,
+)
 
 
 def _queue(db: Database) -> None:
     create_core_tables(db)
-    db.execute("""
-        CREATE OR REPLACE VIEW core.uncategorized_queue AS
-        SELECT transaction_id, account_id, 'Synthetic account' AS account_name,
-               transaction_date AS txn_date, amount, currency_code, description,
-               merchant_id, NULL::VARCHAR AS merchant_normalized, 1 AS age_days,
-               ABS(amount) AS priority_score, source_type, transaction_id AS source_id
-        FROM core.fct_transactions WHERE category IS NULL
-    """)
+    db.execute("""INSERT INTO core.dim_accounts (account_id, display_name, archived)
+                  VALUES ('synthetic', 'Synthetic account', FALSE)""")
 
 
 def _transaction(
@@ -52,8 +50,8 @@ def _transaction(
     db.execute(
         """
         INSERT INTO core.fct_transactions
-        (transaction_id, account_id, transaction_date, amount, currency_code, description, source_type)
-        VALUES (?, 'synthetic', ?::DATE, ?::DECIMAL(18,2), ?, 'Synthetic purchase', 'manual')
+        (transaction_id, account_id, transaction_date, amount, currency_code, description, source_type, is_transfer)
+        VALUES (?, 'synthetic', ?::DATE, ?::DECIMAL(18,2), ?, 'Synthetic purchase', 'manual', FALSE)
     """,
         [transaction_id, date, amount, currency],
     )
@@ -331,6 +329,7 @@ def test_pending_read_preserves_no_import_and_missing_schema_distinction(
     assert service.count_pending_review() == 0
     create_core_tables(db)
     _transaction(db, "schema-drift")
+    simulate_pre_refresh_fct_transactions(db)
     with pytest.raises(UserError) as missing_list:
         service.list_pending_review_transactions(limit=1)
     with pytest.raises(UserError) as missing_count:
@@ -372,14 +371,42 @@ async def test_mcp_pending_summary_counts_without_materializing_rows(
     assert CategorizationService(db).count_uncategorized() == 2
 
 
-def test_pending_count_is_zero_for_empty_fact_before_queue_is_built(
+def test_pending_count_is_zero_for_empty_fact_before_column_is_built(
     db: Database,
 ) -> None:
     from moneybin.errors import UserError
 
     create_core_tables(db)
+    simulate_pre_refresh_fct_transactions(db)
     service = CategorizationService(db)
     assert service.count_pending_review() == 0
-    # Listing still requires the canonical projection, even on empty inventory.
+    # Listing still requires the canonical column, even on empty inventory.
     with pytest.raises(UserError):
         service.list_pending_review_transactions(limit=1)
+
+
+def test_pending_attempts_use_canonical_categorizable_population(db: Database) -> None:
+    _queue(db)
+    _transaction(db, "open")
+    _transaction(db, "rejected")
+    _reject(db, "rejected")
+    _transaction(db, "transfer")
+    _transaction(db, "archived")
+    _transaction(db, "unresolved")
+    db.execute("""INSERT INTO core.dim_accounts (account_id, archived)
+                  VALUES ('archived-account', TRUE)""")
+    db.execute(
+        "UPDATE core.fct_transactions SET is_transfer = TRUE WHERE transaction_id = 'transfer'"
+    )
+    db.execute(
+        "UPDATE core.fct_transactions SET account_id = 'archived-account' WHERE transaction_id = 'archived'"
+    )
+    db.execute(
+        "UPDATE core.fct_transactions SET account_id = 'missing-account' WHERE transaction_id = 'unresolved'"
+    )
+    derive_is_categorizable(db)
+    service = CategorizationService(db)
+    assert service.count_uncategorized() == 2
+    assert service.count_pending_review() == 1
+    rows = service.list_pending_review_transactions(limit=1)
+    assert rows is not None and [row["transaction_id"] for row in rows] == ["open"]

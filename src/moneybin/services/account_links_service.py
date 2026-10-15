@@ -108,6 +108,7 @@ _UNMOVED_SETTING_DEFAULTS: dict[str, Any] = {
     "archived_at": None,
     "include_in_net_worth": True,
     "investment_source_type_changed_at": None,
+    "archived_changed_at": None,
 }
 
 
@@ -1124,8 +1125,9 @@ class AccountLinksService:
             return frozenset()
         row: dict[str, Any] = dict(plan.row)
         changed_at: datetime | None = row["investment_source_type_changed_at"]
-        # archived, archived_at and include_in_net_worth never move (see
-        # _UNMOVED_SETTING_DEFAULTS): the survivor's own values ride through.
+        # archived, archived_at, archived_changed_at and include_in_net_worth
+        # never move (see _UNMOVED_SETTING_DEFAULTS): the survivor's own values
+        # ride through.
         if "investment_source_type" in plan.moved:
             # Same stamp AccountService.settings_update applies to a source change.
             now_row = self._db.execute("SELECT NOW()::TIMESTAMP").fetchone()
@@ -1145,6 +1147,7 @@ class AccountLinksService:
             default_cost_basis_method=row.get("default_cost_basis_method"),
             investment_source_type=row.get("investment_source_type"),
             investment_source_type_changed_at=changed_at,
+            archived_changed_at=row["archived_changed_at"],
             actor=self._actor,
             in_outer_txn=True,
         )

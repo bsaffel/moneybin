@@ -159,7 +159,7 @@ class CategorizeStatsPayload:
 
     The coverage counts — ``total_transactions``, ``categorized``,
     ``uncategorized``, ``percent_categorized``, ``by_source`` — cover the
-    population core.uncategorized_queue is drawn from, so
+    population ``core.fct_transactions.is_categorizable`` marks, so
     ``total_transactions`` is how many transactions need a category, not how
     many exist. The three counts reconcile and ``by_source`` sums to
     ``categorized``.
@@ -218,7 +218,6 @@ class PendingTxnRow:
     account_id: Annotated[str | None, DataClass.RECORD_ID]
     # CURRENT_DATE is public, so age_days is bijective with transaction_date
     # (transaction_date = CURRENT_DATE - age_days) — a date, not an aggregate.
-    # Matches CLASSIFICATION[("core", "uncategorized_queue")]["age_days"].
     age_days: Annotated[int | None, DataClass.TXN_DATE]
     # True when an unresolved (pending, unreversed) app.match_decisions row
     # references this transaction (F19) — categorizing it would double-count

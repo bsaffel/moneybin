@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import duckdb
 
@@ -34,21 +35,127 @@ from moneybin.investments.source_overlap import investment_source_overlap
 from moneybin.metrics.registry import (
     ACCOUNT_LINK_OUTCOMES_TOTAL,
     SYNC_CONNECT_OUTCOMES,
+    SYNC_DISCONNECT_OUTCOMES,
     SYNC_INSTITUTION_ERRORS_TOTAL,
     SYNC_PULL_DURATION_SECONDS,
     SYNC_PULL_OUTCOMES_TOTAL,
     SYNC_PULL_TRANSACTIONS_LOADED,
+    SYNC_PURGE_ROWS_DELETED,
 )
 from moneybin.orchestration.refresh import refresh as _refresh
 from moneybin.orchestration.refresh import step_outcome as _step_outcome
 from moneybin.progress import ProgressEvent
-from moneybin.services.account_resolver import AccountResolver
+from moneybin.repositories.account_link_decisions_repo import (
+    AccountLinkDecisionsRepo,
+)
+from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.services.account_resolver import (
+    AccountResolver,
+    fetch_core_display_names,
+)
 from moneybin.services.security_resolver import SecurityResolver
-from moneybin.tables import FCT_INVESTMENT_TRANSACTIONS
+from moneybin.tables import (
+    ACCOUNT_LINK_DECISIONS,
+    ACCOUNT_LINKS,
+    FCT_INVESTMENT_TRANSACTIONS,
+    PLAID_ACCOUNTS,
+    PLAID_BALANCES,
+    PLAID_INVESTMENT_HOLDING_LOTS,
+    PLAID_INVESTMENT_HOLDINGS,
+    PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
+    PLAID_INVESTMENT_TRANSACTION_RECEIPTS,
+    PLAID_INVESTMENT_TRANSACTIONS,
+    PLAID_SECURITIES,
+    PLAID_TRANSACTIONS,
+    SECURITY_PRICES,
+    TableRef,
+)
 
 logger = logging.getLogger(__name__)
 
 _PROVIDER = "plaid"  # Phase 1: single provider; widen when SimpleFIN/MX land
+
+# Every raw table a Plaid item writes, keyed by its provider_item_id in
+# source_origin. A purge deletes from each; a table added to the loader has to
+# be added here or a purge that says "everything this item pulled" lies.
+_PURGE_TABLES = (
+    PLAID_ACCOUNTS,
+    PLAID_TRANSACTIONS,
+    PLAID_BALANCES,
+    PLAID_SECURITIES,
+    PLAID_INVESTMENT_TRANSACTIONS,
+    PLAID_INVESTMENT_TRANSACTION_RECEIPTS,
+    PLAID_INVESTMENT_HOLDINGS,
+    PLAID_INVESTMENT_HOLDING_LOTS,
+    PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
+)
+
+
+def _require_one_selector(
+    institution: str | None, provider_item_id: str | None
+) -> None:
+    """Refuse a disconnect selector that names both targets or neither."""
+    if institution is not None and provider_item_id is not None:
+        raise UserError(
+            "institution and provider_item_id are mutually exclusive — "
+            "pass exactly one",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if institution is None and provider_item_id is None:
+        raise UserError(
+            "institution or provider_item_id is required to disconnect — "
+            "run `moneybin sync status` to list connected banks",
+            code=error_codes.SYNC_INSTITUTION_REQUIRED,
+        )
+
+
+@dataclass(frozen=True)
+class SyncPurgePlan:
+    """Exact live state a purging disconnect would remove.
+
+    ``connection`` is ``None`` when the sync server no longer lists the item —
+    a connection removed server-side before this command existed, or a purge
+    whose local half failed after its remote half succeeded. Either way the
+    local rows are still owned by ``provider_item_id`` and are what the purge
+    is for.
+    """
+
+    provider_item_id: str
+    connection: ConnectedInstitution | None
+    table_counts: tuple[tuple[str, int], ...]
+    account_link_ids: tuple[str, ...]
+    decision_ids: tuple[str, ...]
+
+    @property
+    def rows_to_delete(self) -> int:
+        """Every raw row the purge removes, summed across the tables it touches."""
+        return sum(count for _, count in self.table_counts)
+
+    @property
+    def binding(self) -> tuple[object, ...]:
+        """What a confirmation binds: the item, its connection id, and every count.
+
+        Volatile connection metadata (``last_sync``, ``status``, ``error_code``)
+        stays out, so a server-side sync completing while a prompt is open does
+        not read as a changed target.
+        """
+        return (
+            self.provider_item_id,
+            None if self.connection is None else self.connection.id,
+            self.table_counts,
+            self.account_link_ids,
+            self.decision_ids,
+        )
+
+    @property
+    def blast_radius(self) -> dict[str, int]:
+        """Per-table counts plus the app-state the purge flips, for confirmation."""
+        radius = dict(self.table_counts)
+        radius["total_rows"] = self.rows_to_delete
+        radius["institutions"] = int(self.connection is not None)
+        radius["account_links_reversed"] = len(self.account_link_ids)
+        radius["proposals_withdrawn"] = len(self.decision_ids)
+        return radius
 
 
 _ERROR_GUIDANCE: dict[str, str] = {
@@ -476,6 +583,7 @@ class SyncService:
             institution=institution, provider_item_id=provider_item_id
         )
         self.client.disconnect(inst.id)
+        SYNC_DISCONNECT_OUTCOMES.labels(scope="remote").inc()
         return inst
 
     def plan_disconnect(
@@ -488,12 +596,7 @@ class SyncService:
         `institution` alone is ambiguous and `_find_institution` refuses it.
         Mutually exclusive with `institution`, mirroring `pull()`'s guard.
         """
-        if institution is not None and provider_item_id is not None:
-            raise UserError(
-                "institution and provider_item_id are mutually exclusive — "
-                "pass exactly one",
-                code=error_codes.MUTATION_INVALID_INPUT,
-            )
+        _require_one_selector(institution, provider_item_id)
         if provider_item_id is not None:
             inst = self._find_institution_by_item(provider_item_id)
             if inst is None:
@@ -504,13 +607,7 @@ class SyncService:
                     code=error_codes.MUTATION_NOT_FOUND,
                 )
             return inst
-        if institution is None:
-            raise UserError(
-                "institution or provider_item_id is required to disconnect — "
-                "run `moneybin sync status` to list connected banks",
-                code=error_codes.SYNC_INSTITUTION_REQUIRED,
-            )
-        inst = self._find_institution(institution)
+        inst = self._find_institution(institution or "")
         if inst is None:
             raise UserError(
                 f"no connected institution matching '{institution}' — "
@@ -532,7 +629,265 @@ class SyncService:
         )
         verify(inst)
         self.client.disconnect(inst.id)
+        SYNC_DISCONNECT_OUTCOMES.labels(scope="remote").inc()
         return inst
+
+    # ------------------------------ Purge ------------------------------
+
+    def plan_purge(
+        self, *, institution: str | None = None, provider_item_id: str | None = None
+    ) -> SyncPurgePlan:
+        """Resolve one item and count everything a purging disconnect removes.
+
+        Read-only. ``institution`` resolves through the server exactly as
+        ``plan_disconnect`` does. ``provider_item_id`` first tries the server
+        and then falls back to the local rows alone, so an item the server
+        already dropped — the orphan a plain disconnect leaves behind — is
+        still reachable by its id. Both paths ask the server first, so the
+        server has to answer even for an item it no longer lists.
+        """
+        _require_one_selector(institution, provider_item_id)
+        if provider_item_id is None:
+            connection = self._find_institution(institution or "")
+            if connection is None:
+                raise UserError(
+                    f"no connected institution matching '{institution}' — "
+                    f"run `moneybin sync status` to list connected banks",
+                    code=error_codes.MUTATION_NOT_FOUND,
+                    hint=(
+                        "A connection the server no longer lists can still be "
+                        "purged by its provider_item_id."
+                    ),
+                )
+            provider_item_id = connection.provider_item_id
+        else:
+            connection = self._find_institution_by_item(provider_item_id)
+
+        table_counts = tuple(
+            (table.full_name, self._count_item_rows(table, provider_item_id))
+            for table in _PURGE_TABLES
+        ) + ((SECURITY_PRICES.full_name, self._count_item_prices(provider_item_id)),)
+        link_ids = tuple(
+            str(row[0])
+            for row in self.db.execute(
+                f"""
+                SELECT link_id
+                FROM {ACCOUNT_LINKS.full_name}
+                WHERE status = 'accepted'
+                  AND source_type = ?
+                  AND source_origin = ?
+                ORDER BY link_id
+                """,  # TableRef + parameterized values
+                [_PROVIDER, provider_item_id],
+            ).fetchall()
+        )
+        decision_ids = self._orphaned_proposals(provider_item_id)
+        plan = SyncPurgePlan(
+            provider_item_id=provider_item_id,
+            connection=connection,
+            table_counts=table_counts,
+            account_link_ids=link_ids,
+            decision_ids=decision_ids,
+        )
+        if connection is None and plan.rows_to_delete == 0 and not link_ids:
+            raise UserError(
+                f"no connected institution with provider_item_id "
+                f"'{provider_item_id}', and no locally pulled rows carry it — "
+                f"run `moneybin sync status` to list connected banks",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        return plan
+
+    def purge_confirmed(
+        self,
+        *,
+        institution: str | None = None,
+        provider_item_id: str | None = None,
+        verify: Callable[[SyncPurgePlan], None],
+        actor: str = "cli",
+    ) -> SyncPurgePlan:
+        """Re-plan, verify, disconnect on the server, then delete the local rows.
+
+        The server call comes first because it is the half that cannot be rolled
+        back: a remote failure leaves everything untouched, while a local failure
+        after a remote success leaves exactly the orphan this method accepts by
+        ``provider_item_id``, so the purge is re-runnable. The local half runs in
+        one transaction: accepted ``app.account_links`` for the item are
+        reversed, pending merge proposals that only this item's accounts still
+        describe are rejected, and every ``raw.plaid_*`` row the item wrote is
+        deleted.
+        """
+        self.db.begin()
+        try:
+            live = self.plan_purge(
+                institution=institution, provider_item_id=provider_item_id
+            )
+            verify(live)
+            if live.connection is not None:
+                self.client.disconnect(live.connection.id)
+            try:
+                self._purge_local(live, actor)
+                self.db.commit()
+            except BaseException as exc:
+                if live.connection is None:
+                    raise
+                # The server half already landed and `sync status` no longer
+                # lists the item, so the one id that still reaches the orphan
+                # has to be named — in the log for an interrupt, which cannot be
+                # wrapped, and in the error for everything else.
+                SYNC_DISCONNECT_OUTCOMES.labels(scope="remote").inc()
+                logger.warning(
+                    f"Server connection for sync item {live.provider_item_id} "
+                    f"was removed but its local purge did not complete; re-run "
+                    f"sync disconnect --purge with that provider_item_id"
+                )
+                if not isinstance(exc, Exception):
+                    raise
+                raise UserError(
+                    f"The server connection was removed, but the local purge of "
+                    f"provider_item_id '{live.provider_item_id}' failed and was "
+                    f"rolled back; its locally pulled rows are still here.",
+                    code=error_codes.SYNC_ERROR,
+                    hint=(
+                        f"Run 'moneybin sync disconnect --provider-item-id "
+                        f"{live.provider_item_id} --purge' to finish removing them."
+                    ),
+                ) from exc
+        except BaseException:
+            # BaseException: a KeyboardInterrupt between the deletes must still
+            # roll back the open transaction (BaseRepo._transaction does the same).
+            self.db.rollback()
+            raise
+        for table_name, count in live.table_counts:
+            if count:
+                SYNC_PURGE_ROWS_DELETED.labels(table=table_name).inc(count)
+        SYNC_DISCONNECT_OUTCOMES.labels(
+            scope="purged" if live.connection is not None else "purged_orphan"
+        ).inc()
+        logger.info(
+            f"Purged sync item {live.provider_item_id}: {live.rows_to_delete} raw "
+            f"rows deleted, {len(live.account_link_ids)} account links reversed, "
+            f"{len(live.decision_ids)} proposals withdrawn"
+        )
+        return live
+
+    def _purge_local(self, live: SyncPurgePlan, actor: str) -> None:
+        """The local half of a purge, inside the caller's open transaction."""
+        links = AccountLinksRepo(self.db)
+        for link_id in live.account_link_ids:
+            # A purge is only reachable through a confirmed user action, so
+            # the domain actor is "user" whichever surface carried it.
+            links.reverse(
+                link_id=link_id,
+                reversed_by="user",
+                actor=actor,
+                in_outer_txn=True,
+            )
+        self._reject_proposals(live.decision_ids, actor)
+        for table in _PURGE_TABLES:
+            self.db.execute(
+                f"""
+                DELETE FROM {table.full_name}
+                WHERE source_origin = ?
+                """,  # TableRef + parameterized value
+                [live.provider_item_id],
+            )
+        self.db.execute(
+            f"""
+            DELETE FROM {SECURITY_PRICES.full_name}
+            WHERE source_type = ? AND source_origin = ?
+            """,  # TableRef + parameterized values
+            [_PROVIDER, live.provider_item_id],
+        )
+
+    def _count_item_rows(self, table: TableRef, provider_item_id: str) -> int:
+        row = self.db.execute(
+            f"""
+            SELECT COUNT(*) FROM {table.full_name}
+            WHERE source_origin = ?
+            """,  # TableRef + parameterized value
+            [provider_item_id],
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def _count_item_prices(self, provider_item_id: str) -> int:
+        # Shared across providers, so the provider scopes it as well as the item.
+        row = self.db.execute(
+            f"""
+            SELECT COUNT(*) FROM {SECURITY_PRICES.full_name}
+            WHERE source_type = ? AND source_origin = ?
+            """,  # TableRef + parameterized values
+            [_PROVIDER, provider_item_id],
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def _orphaned_proposals(self, provider_item_id: str) -> tuple[str, ...]:
+        """Pending merge proposals that only this item's accounts still describe.
+
+        An account this item linked is orphaned by the purge when no other
+        accepted link — another item, an OFX statement, a CSV — feeds it. A
+        proposal naming an orphaned account on either side would be reviewing a
+        ledger that no longer exists, so it is withdrawn with the rows.
+        """
+        rows = self.db.execute(
+            f"""
+            WITH mine AS (
+                SELECT account_id
+                FROM {ACCOUNT_LINKS.full_name}
+                WHERE status = 'accepted' AND source_type = ? AND source_origin = ?
+            ),
+            orphaned AS (
+                SELECT m.account_id
+                FROM mine AS m
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM {ACCOUNT_LINKS.full_name} AS o
+                    WHERE o.account_id = m.account_id
+                      AND o.status = 'accepted'
+                      AND NOT (o.source_type = ? AND o.source_origin = ?)
+                )
+            )
+            SELECT d.decision_id
+            FROM {ACCOUNT_LINK_DECISIONS.full_name} AS d
+            WHERE d.status = 'pending'
+              AND d.reversed_at IS NULL
+              AND (
+                  d.provisional_account_id IN (SELECT account_id FROM orphaned)
+                  OR d.candidate_account_id IN (SELECT account_id FROM orphaned)
+              )
+            ORDER BY d.decision_id
+            """,  # TableRef + parameterized values
+            [_PROVIDER, provider_item_id, _PROVIDER, provider_item_id],
+        ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def _reject_proposals(self, decision_ids: tuple[str, ...], actor: str) -> None:
+        """Reject withdrawn proposals, freezing both names while they can be read."""
+        if not decision_ids:
+            return
+        placeholders = ", ".join("?" for _ in decision_ids)
+        pairs = self.db.execute(
+            f"""
+            SELECT decision_id, provisional_account_id, candidate_account_id
+            FROM {ACCOUNT_LINK_DECISIONS.full_name}
+            WHERE decision_id IN ({placeholders})
+            """,  # TableRef + parameterized values
+            list(decision_ids),
+        ).fetchall()
+        names = fetch_core_display_names(
+            self.db, {str(row[1]) for row in pairs} | {str(row[2]) for row in pairs}
+        )
+        decisions = AccountLinkDecisionsRepo(self.db)
+        for decision_id, provisional_id, candidate_id in pairs:
+            decisions.update_status(
+                str(decision_id),
+                status="rejected",
+                decided_by="user",
+                actor=actor,
+                provisional_display_name=names.get(str(provisional_id), ""),
+                candidate_display_name=names.get(str(candidate_id), ""),
+                in_outer_txn=True,
+            )
 
     def _guidance_for(
         self, *, status: str, error_code: str | None, institution: str

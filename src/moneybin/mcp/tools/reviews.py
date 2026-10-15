@@ -257,13 +257,13 @@ def _unavailable_queue(kind: ReviewQueueKind, exc: Exception) -> QueueUnavailabl
 def _pending_categorization_rows(
     service: CategorizationService,
 ) -> list[CategorizationReviewRow]:
-    """Project the existing uncategorized queue into normalized rows.
+    """Project the pending categorization list into normalized rows.
 
-    A missing ``core.uncategorized_queue`` propagates as ``INFRA_SCHEMA_DRIFT``
-    rather than degrading to an empty queue. It is the single definition of an
-    uncategorized transaction, so without it the queue's contents are unknown,
-    not zero — and the summary already reports one broken queue as
-    ``unavailable`` instead of failing the aggregate.
+    A fact without ``is_categorizable`` (upgraded, not yet refreshed)
+    propagates as ``INFRA_SCHEMA_DRIFT`` rather than degrading to an empty
+    queue: the queue's contents are unknown, not zero — and the summary already
+    reports one broken queue as ``unavailable`` instead of failing the
+    aggregate.
     """
     raw_rows = service.list_pending_review_transactions(limit=None) or []
     ordered = sorted(
@@ -1064,8 +1064,8 @@ def reviews_coarse(
         unavailable: list[QueueUnavailable] = []
         with get_database(read_only=True) as db:
             for queue_kind in _QUEUE_KINDS:
-                # Count each queue independently: one missing view (e.g.
-                # core.uncategorized_queue) must not fail the whole summary.
+                # Count each queue independently: one unreadable queue must not
+                # fail the whole summary.
                 try:
                     queue_counts = [
                         ReviewCount(

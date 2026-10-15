@@ -967,14 +967,12 @@ def test_scripted_categorization_discovery_and_rejection_persists_versioned_stat
         VALUES ('scripted-transaction', 'synthetic-account', DATE '2026-10-15',
                 -1.00, 'USD', 'Synthetic purchase', 'manual')
     """)
-    database.execute("""
-        CREATE OR REPLACE VIEW core.uncategorized_queue AS
-        SELECT transaction_id, account_id, 'Synthetic account' AS account_name,
-               transaction_date AS txn_date, amount, currency_code, description,
-               merchant_id, NULL::VARCHAR AS merchant_normalized, 1 AS age_days,
-               ABS(amount) AS priority_score, source_type, transaction_id AS source_id
-        FROM core.fct_transactions WHERE category IS NULL
-    """)
+    database.execute("""INSERT INTO core.dim_accounts (account_id, display_name, archived)
+                       VALUES ('synthetic-account', 'Synthetic account', FALSE)""")
+    from tests.moneybin.db_helpers import derive_is_categorizable
+
+    database.execute("UPDATE core.fct_transactions SET is_transfer = FALSE")
+    derive_is_categorizable(database)
     with (
         patch(
             "moneybin.cli.commands.transactions.review.get_database",
