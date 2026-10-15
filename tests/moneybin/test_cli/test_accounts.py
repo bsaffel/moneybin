@@ -540,14 +540,14 @@ class TestAccountsSetBehavioralFlags:
     """Tests for the behavioral flags folded into `accounts set`.
 
     Replaces the formerly-separate rename/include/archive/unarchive commands.
-    Each test asserts routing through `AccountService.settings_update` with
+    Each test asserts routing through `update_account_settings` with
     the expected kwargs — service-layer behavior is verified separately in
     `tests/moneybin/test_services/test_account_service.py`.
     """
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
-    @patch("moneybin.cli.commands.accounts.AccountService")
+    @patch("moneybin.cli.commands.accounts.update_account_settings")
     def test_set_display_name_writes(
         self,
         mock_svc_cls: MagicMock,
@@ -555,8 +555,8 @@ class TestAccountsSetBehavioralFlags:
         runner: CliRunner,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_service = mock_svc_cls.return_value
-        mock_service.settings_update.return_value = (
+        mock_service = mock_svc_cls
+        mock_service.return_value = (
             MagicMock(display_name="Checking"),
             [],
         )
@@ -564,12 +564,12 @@ class TestAccountsSetBehavioralFlags:
             app, ["accounts", "set", "acct_a", "--display-name", "Checking"]
         )
         assert result.exit_code == 0, result.stderr
-        kwargs = mock_service.settings_update.call_args.kwargs
+        kwargs = mock_service.call_args.kwargs
         assert kwargs["display_name"] == "Checking"
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
-    @patch("moneybin.cli.commands.accounts.AccountService")
+    @patch("moneybin.cli.commands.accounts.update_account_settings")
     def test_set_clear_display_name(
         self,
         mock_svc_cls: MagicMock,
@@ -577,8 +577,8 @@ class TestAccountsSetBehavioralFlags:
         runner: CliRunner,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_service = mock_svc_cls.return_value
-        mock_service.settings_update.return_value = (
+        mock_service = mock_svc_cls
+        mock_service.return_value = (
             MagicMock(display_name=None),
             [],
         )
@@ -586,12 +586,12 @@ class TestAccountsSetBehavioralFlags:
             app, ["accounts", "set", "acct_a", "--clear-display-name"]
         )
         assert result.exit_code == 0
-        kwargs = mock_service.settings_update.call_args.kwargs
+        kwargs = mock_service.call_args.kwargs
         assert kwargs["display_name"] is CLEAR
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
-    @patch("moneybin.cli.commands.accounts.AccountService")
+    @patch("moneybin.cli.commands.accounts.update_account_settings")
     def test_set_include_writes_true(
         self,
         mock_svc_cls: MagicMock,
@@ -599,19 +599,19 @@ class TestAccountsSetBehavioralFlags:
         runner: CliRunner,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_service = mock_svc_cls.return_value
-        mock_service.settings_update.return_value = (
+        mock_service = mock_svc_cls
+        mock_service.return_value = (
             MagicMock(include_in_net_worth=True),
             [],
         )
         result = runner.invoke(app, ["accounts", "set", "acct_a", "--include"])
         assert result.exit_code == 0
-        kwargs = mock_service.settings_update.call_args.kwargs
+        kwargs = mock_service.call_args.kwargs
         assert kwargs["include_in_net_worth"] is True
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
-    @patch("moneybin.cli.commands.accounts.AccountService")
+    @patch("moneybin.cli.commands.accounts.update_account_settings")
     def test_set_exclude_writes_false(
         self,
         mock_svc_cls: MagicMock,
@@ -619,19 +619,19 @@ class TestAccountsSetBehavioralFlags:
         runner: CliRunner,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_service = mock_svc_cls.return_value
-        mock_service.settings_update.return_value = (
+        mock_service = mock_svc_cls
+        mock_service.return_value = (
             MagicMock(include_in_net_worth=False),
             [],
         )
         result = runner.invoke(app, ["accounts", "set", "acct_a", "--exclude"])
         assert result.exit_code == 0
-        kwargs = mock_service.settings_update.call_args.kwargs
+        kwargs = mock_service.call_args.kwargs
         assert kwargs["include_in_net_worth"] is False
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
-    @patch("moneybin.cli.commands.accounts.AccountService")
+    @patch("moneybin.cli.commands.accounts.update_account_settings")
     def test_set_archive_no_longer_announces_cascade(
         self,
         mock_svc_cls: MagicMock,
@@ -639,21 +639,21 @@ class TestAccountsSetBehavioralFlags:
         runner: CliRunner,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_service = mock_svc_cls.return_value
-        mock_service.settings_update.return_value = (
+        mock_service = mock_svc_cls
+        mock_service.return_value = (
             MagicMock(archived=True, include_in_net_worth=True),
             [],
         )
         result = runner.invoke(app, ["accounts", "set", "acct_a", "--archive"])
         assert result.exit_code == 0
-        kwargs = mock_service.settings_update.call_args.kwargs
+        kwargs = mock_service.call_args.kwargs
         assert kwargs["archived"] is True
         # No cascade note anymore — archived and include_in_net_worth are independent.
         assert "net worth" not in result.stderr.lower()
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
-    @patch("moneybin.cli.commands.accounts.AccountService")
+    @patch("moneybin.cli.commands.accounts.update_account_settings")
     def test_set_unarchive_no_cascade_note(
         self,
         mock_svc_cls: MagicMock,
@@ -661,20 +661,20 @@ class TestAccountsSetBehavioralFlags:
         runner: CliRunner,
     ) -> None:
         mock_get_db.return_value = MagicMock()
-        mock_service = mock_svc_cls.return_value
-        mock_service.settings_update.return_value = (
+        mock_service = mock_svc_cls
+        mock_service.return_value = (
             MagicMock(archived=False, include_in_net_worth=True),
             [],
         )
         result = runner.invoke(app, ["accounts", "set", "acct_a", "--unarchive"])
         assert result.exit_code == 0
-        kwargs = mock_service.settings_update.call_args.kwargs
+        kwargs = mock_service.call_args.kwargs
         assert kwargs["archived"] is False
         assert "also excluded from net worth" not in result.stderr.lower()
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
-    @patch("moneybin.cli.commands.accounts.AccountService")
+    @patch("moneybin.cli.commands.accounts.update_account_settings")
     def test_set_archive_and_unarchive_mutex(
         self,
         mock_svc_cls: MagicMock,
@@ -688,8 +688,8 @@ class TestAccountsSetBehavioralFlags:
         an explicit mutex error if desired.
         """
         mock_get_db.return_value = MagicMock()
-        mock_service = mock_svc_cls.return_value
-        mock_service.settings_update.return_value = (
+        mock_service = mock_svc_cls
+        mock_service.return_value = (
             MagicMock(archived=False, include_in_net_worth=False),
             [],
         )
@@ -697,7 +697,7 @@ class TestAccountsSetBehavioralFlags:
             app, ["accounts", "set", "acct_a", "--archive", "--unarchive"]
         )
         assert result.exit_code == 0
-        kwargs = mock_service.settings_update.call_args.kwargs
+        kwargs = mock_service.call_args.kwargs
         # --unarchive came last → archived=False wins
         assert kwargs["archived"] is False
 
@@ -719,11 +719,11 @@ class TestAccountsSet:
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class,
         ):
-            mock_service = mock_service_class.return_value
-            mock_service.settings_update.return_value = (
+            mock_service = mock_service_class
+            mock_service.return_value = (
                 MagicMock(account_subtype="checking"),
                 [],  # no warnings — canonical value
             )
@@ -731,8 +731,8 @@ class TestAccountsSet:
                 app, ["accounts", "set", "acct_a", "--subtype", "checking", "--yes"]
             )
         assert result.exit_code == 0, result.stderr
-        # Verify settings_update was called with the canonical subtype
-        call_kwargs = mock_service.settings_update.call_args.kwargs
+        # Verify the mutation workflow was called with the canonical subtype
+        call_kwargs = mock_service.call_args.kwargs
         assert call_kwargs.get("account_subtype") == "checking"
 
     @pytest.mark.unit
@@ -744,11 +744,11 @@ class TestAccountsSet:
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class,
         ):
-            mock_service = mock_service_class.return_value
-            mock_service.settings_update.return_value = (
+            mock_service = mock_service_class
+            mock_service.return_value = (
                 MagicMock(credit_limit=None),
                 [],
             )
@@ -756,7 +756,7 @@ class TestAccountsSet:
                 app, ["accounts", "set", "acct_a", "--clear-credit-limit", "--yes"]
             )
         assert result.exit_code == 0, result.stderr
-        call_kwargs = mock_service.settings_update.call_args.kwargs
+        call_kwargs = mock_service.call_args.kwargs
         assert call_kwargs.get("credit_limit") is CLEAR
 
     @pytest.mark.unit
@@ -768,7 +768,7 @@ class TestAccountsSet:
         # CliRunner is non-TTY by default. Without --yes, non-canonical subtype
         # should exit 2 with a warning and NOT call the service.
         with patch(
-            "moneybin.cli.commands.accounts.AccountService"
+            "moneybin.cli.commands.accounts.update_account_settings"
         ) as mock_service_class:
             result = runner.invoke(
                 app, ["accounts", "set", "acct_a", "--subtype", "chequing"]
@@ -776,7 +776,7 @@ class TestAccountsSet:
         assert result.exit_code == 2
         assert "chequing" in result.stderr.lower()
         # Service must NOT have been called
-        mock_service_class.return_value.settings_update.assert_not_called()
+        mock_service_class.assert_not_called()
 
     @pytest.mark.unit
     def test_set_padded_canonical_subtype_writes_without_refusing(
@@ -793,11 +793,11 @@ class TestAccountsSet:
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class,
         ):
-            mock_service = mock_service_class.return_value
-            mock_service.settings_update.return_value = (
+            mock_service = mock_service_class
+            mock_service.return_value = (
                 MagicMock(account_subtype="checking"),
                 [],
             )
@@ -805,7 +805,7 @@ class TestAccountsSet:
                 app, ["accounts", "set", "acct_a", "--subtype", "  checking  "]
             )
         assert result.exit_code == 0, result.stderr
-        kwargs = mock_service.settings_update.call_args.kwargs
+        kwargs = mock_service.call_args.kwargs
         assert kwargs["account_subtype"] == "checking"
 
     @pytest.mark.unit
@@ -815,11 +815,11 @@ class TestAccountsSet:
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class,
         ):
-            mock_service = mock_service_class.return_value
-            mock_service.settings_update.return_value = (
+            mock_service = mock_service_class
+            mock_service.return_value = (
                 MagicMock(account_subtype="chequing"),
                 [
                     {
@@ -833,7 +833,7 @@ class TestAccountsSet:
                 app, ["accounts", "set", "acct_a", "--subtype", "chequing", "--yes"]
             )
         assert result.exit_code == 0
-        mock_service.settings_update.assert_called_once()
+        mock_service.assert_called_once()
 
     @pytest.mark.unit
     def test_set_default_cost_basis_method_persists(self, runner: CliRunner) -> None:
@@ -842,11 +842,11 @@ class TestAccountsSet:
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class,
         ):
-            mock_service = mock_service_class.return_value
-            mock_service.settings_update.return_value = (
+            mock_service = mock_service_class
+            mock_service.return_value = (
                 MagicMock(default_cost_basis_method="fifo"),
                 [],
             )
@@ -855,7 +855,7 @@ class TestAccountsSet:
                 ["accounts", "set", "acct_a", "--default-cost-basis-method", "fifo"],
             )
         assert result.exit_code == 0, result.stderr
-        call_kwargs = mock_service.settings_update.call_args.kwargs
+        call_kwargs = mock_service.call_args.kwargs
         assert call_kwargs.get("default_cost_basis_method") == "fifo"
 
     @pytest.mark.unit
@@ -867,11 +867,11 @@ class TestAccountsSet:
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class,
         ):
-            mock_service = mock_service_class.return_value
-            mock_service.settings_update.return_value = (
+            mock_service = mock_service_class
+            mock_service.return_value = (
                 MagicMock(default_cost_basis_method=None),
                 [],
             )
@@ -880,7 +880,7 @@ class TestAccountsSet:
                 ["accounts", "set", "acct_a", "--clear-default-cost-basis-method"],
             )
         assert result.exit_code == 0, result.stderr
-        call_kwargs = mock_service.settings_update.call_args.kwargs
+        call_kwargs = mock_service.call_args.kwargs
         assert call_kwargs.get("default_cost_basis_method") is CLEAR
 
     @pytest.mark.unit
@@ -890,14 +890,14 @@ class TestAccountsSet:
         from unittest.mock import patch
 
         with patch(
-            "moneybin.cli.commands.accounts.AccountService"
+            "moneybin.cli.commands.accounts.update_account_settings"
         ) as mock_service_class:
             result = runner.invoke(
                 app, ["accounts", "set", "acct_a", "--holder-category", "corporate"]
             )
         assert result.exit_code == 2
         assert "corporate" in result.stderr.lower()
-        mock_service_class.return_value.settings_update.assert_not_called()
+        mock_service_class.assert_not_called()
 
     @pytest.mark.unit
     def test_set_credit_limit_parses_decimal(self, runner: CliRunner) -> None:
@@ -907,11 +907,11 @@ class TestAccountsSet:
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class,
         ):
-            mock_service = mock_service_class.return_value
-            mock_service.settings_update.return_value = (
+            mock_service = mock_service_class
+            mock_service.return_value = (
                 MagicMock(credit_limit=Decimal("5000.00")),
                 [],
             )
@@ -919,7 +919,7 @@ class TestAccountsSet:
                 app, ["accounts", "set", "acct_a", "--credit-limit", "5000.00", "--yes"]
             )
         assert result.exit_code == 0, result.stderr
-        call_kwargs = mock_service.settings_update.call_args.kwargs
+        call_kwargs = mock_service.call_args.kwargs
         assert call_kwargs.get("credit_limit") == Decimal("5000.00")
 
     @pytest.mark.unit
@@ -929,11 +929,11 @@ class TestAccountsSet:
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class,
         ):
-            mock_service = mock_service_class.return_value
-            mock_service.settings_update.return_value = (
+            mock_service = mock_service_class
+            mock_service.return_value = (
                 MagicMock(holder_category="business"),
                 [],
             )
@@ -943,7 +943,7 @@ class TestAccountsSet:
                 ["accounts", "set", "acct_a", "--holder-category", "business"],
             )
         assert result.exit_code == 0, result.stderr
-        mock_service.settings_update.assert_called_once()
+        mock_service.assert_called_once()
 
     @pytest.mark.unit
     def test_set_unknown_subtype_tty_confirm_yes(self, runner: CliRunner) -> None:
@@ -956,11 +956,11 @@ class TestAccountsSet:
             with (
                 patch("moneybin.cli.commands.accounts.get_database"),
                 patch(
-                    "moneybin.cli.commands.accounts.AccountService"
+                    "moneybin.cli.commands.accounts.update_account_settings"
                 ) as mock_service_class,
             ):
-                mock_service = mock_service_class.return_value
-                mock_service.settings_update.return_value = (
+                mock_service = mock_service_class
+                mock_service.return_value = (
                     MagicMock(account_subtype="chequing"),
                     [
                         {
@@ -976,7 +976,7 @@ class TestAccountsSet:
                     input="y\n",
                 )
         assert result.exit_code == 0, result.stderr
-        mock_service.settings_update.assert_called_once()
+        mock_service.assert_called_once()
         assert "chequing" in result.stderr.lower()
 
     @pytest.mark.unit
@@ -988,7 +988,7 @@ class TestAccountsSet:
             return_value=_terminal(80, interactive=True),
         ):
             with patch(
-                "moneybin.cli.commands.accounts.AccountService"
+                "moneybin.cli.commands.accounts.update_account_settings"
             ) as mock_service_class:
                 result = runner.invoke(
                     app,
@@ -996,7 +996,7 @@ class TestAccountsSet:
                     input="n\n",
                 )
         assert result.exit_code == 2
-        mock_service_class.return_value.settings_update.assert_not_called()
+        mock_service_class.assert_not_called()
 
     @pytest.mark.unit
     def test_set_unknown_subtype_refuses_when_stdout_is_redirected(self) -> None:
@@ -1141,7 +1141,9 @@ def test_type_override_normalizes_and_clears_through_cli(
     from contextlib import nullcontext
 
     from moneybin.database import Database
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.account_service import AccountService
+    from moneybin.services.refresh_outcome import StageOutcome
     from tests.moneybin.db_helpers import create_core_tables
 
     assert isinstance(db, Database)
@@ -1159,14 +1161,32 @@ def test_type_override_normalizes_and_clears_through_cli(
     monkeypatch.setattr(
         "moneybin.services.fx_accounting_refresh.restate_fx_accounting", MagicMock()
     )
+    refresh = MagicMock(
+        return_value=RefreshResult(
+            applied=True,
+            duration_seconds=0.1,
+            stages=tuple(
+                StageOutcome(step=step, ran=True)
+                for step in ("match", "investment_match", "transform", "categorize")
+            ),
+        )
+    )
+    monkeypatch.setattr("moneybin.orchestration.account_mutations.refresh", refresh)
     result = runner.invoke(app, ["accounts", "set", "task8_cli", "--type", " CREDIT "])
     assert result.exit_code == 0, result.output
+    refresh.assert_called_once_with(
+        db, steps=["match", "transform", "categorize"], actor="cli"
+    )
+    refresh.reset_mock()
     settings = AccountService(db)._load_settings("task8_cli")  # pyright: ignore[reportPrivateUsage]
     assert settings is not None and settings.to_dict()["account_type"] == "credit"
     cleared = runner.invoke(
         app, ["accounts", "set", "task8_cli", "--type", "loan", "--clear-type"]
     )
     assert cleared.exit_code == 0, cleared.output
+    refresh.assert_called_once_with(
+        db, steps=["match", "transform", "categorize"], actor="cli"
+    )
     settings = AccountService(db)._load_settings("task8_cli")  # pyright: ignore[reportPrivateUsage]
     assert settings is not None and settings.to_dict()["account_type"] is None
     invalid = runner.invoke(app, ["accounts", "set", "task8_cli", "--type", "checking"])

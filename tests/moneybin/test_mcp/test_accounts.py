@@ -2001,15 +2001,40 @@ async def test_links_run_does_not_promise_a_safe_retry() -> None:
 async def test_type_override_normalizes_and_clears_through_mcp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
+
     monkeypatch.setattr(
         "moneybin.services.fx_accounting_refresh.restate_fx_accounting", MagicMock()
     )
+    refresh = MagicMock(
+        return_value=RefreshResult(
+            applied=True,
+            duration_seconds=0.1,
+            stages=tuple(
+                StageOutcome(step=step, ran=True)
+                for step in ("match", "investment_match", "transform", "categorize")
+            ),
+        )
+    )
+    monkeypatch.setattr("moneybin.orchestration.account_mutations.refresh", refresh)
     result = await accounts_set(account_id="ACC001", account_type="  CREDIT  ")
     assert result.to_dict()["data"]["account_type"] == "credit"
+    refresh.assert_called_once()
+    assert refresh.call_args.kwargs == {
+        "steps": ["match", "transform", "categorize"],
+        "actor": "mcp",
+    }
+    refresh.reset_mock()
     cleared = await accounts_set(
         account_id="ACC001", account_type="loan", clear_fields=["account_type"]
     )
     assert cleared.to_dict()["data"]["account_type"] is None
+    refresh.assert_called_once()
+    assert refresh.call_args.kwargs == {
+        "steps": ["match", "transform", "categorize"],
+        "actor": "mcp",
+    }
 
 
 @pytest.mark.unit

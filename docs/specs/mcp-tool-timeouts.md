@@ -28,7 +28,8 @@ Related code: `src/moneybin/mcp/` (tool registration and dispatch), `src/moneybi
 6. The configured cap defaults to 30 seconds. The decorator supports explicit,
    code-reviewed per-tool overrides; the shipped 180-second overrides are
    `gsheet_connect`, `gsheet_disconnect`, `sync_disconnect`, `sync_pull`,
-   `identity_links_decide`, `import_confirm`, and `import_revert`.
+   `identity_links_decide`, `import_confirm`, `import_revert`, `accounts_set`,
+   and `system_audit_undo`.
 7. Tools that already complete in well under the cap are unchanged in behavior; the timeout is invisible on the happy path.
 8. **The cap bounds machine work, not human deliberation.** Time a call spends
    waiting on a confirmation prompt is excluded from it: the deadline pauses for
@@ -75,9 +76,11 @@ No schema changes. Two configuration fields:
 
 - **One configurable default with bounded overrides.** The 30-second setting
   covers ordinary calls. Long-running connector, identity-decision, confirm,
-  and revert workflows opt into 180 seconds in their decorators; overrides are
-  code constants, not user-configurable registry sprawl. The explicit sync pull
-  allows the broker's bounded synchronous retrieval before local ingestion and
+  revert, account-settings, and audit-undo workflows opt into 180 seconds in
+  their decorators; overrides are code constants, not user-configurable registry
+  sprawl. Account classification changes and their reversals rebuild the account
+  projection before local matching, transforms, and categorization. The explicit
+  sync pull allows the broker's bounded synchronous retrieval before local ingestion and
   refresh; it does not guarantee arbitrary local processing finishes within 180
   seconds. Committed job/phase recovery remains available after a timeout.
 - **Cancellation must reach DuckDB.** Naive `asyncio.wait_for` cancels the future but leaves the worker thread running and the connection held. The dispatch layer must (a) hold a reference to the active `DuckDBPyConnection`, (b) call `interrupt()` on timeout, and (c) force-close the connection in a `finally` block so the lock is released even if `interrupt()` is a no-op for the current statement (e.g., mid-`COPY`).
@@ -153,7 +156,7 @@ None. The timeout mechanism is data-agnostic; existing test fixtures are suffici
 
 ## Out of Scope
 
-- User-configurable timeout policies or dynamic per-request overrides. The six
+- User-configurable timeout policies or dynamic per-request overrides. The
   shipped decorator-level 180-second overrides are part of the current bounded
   contract.
 - Background continuation or deferred-job semantics. No such MCP capability is

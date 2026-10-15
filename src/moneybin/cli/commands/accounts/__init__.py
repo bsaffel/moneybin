@@ -33,6 +33,7 @@ from moneybin.cli.utils import (
     handle_cli_errors,
 )
 from moneybin.database import get_database
+from moneybin.orchestration.account_mutations import update_account_settings
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
@@ -424,7 +425,8 @@ def accounts_set(
                 Decimal(credit_limit) if credit_limit is not None else None,
                 clear_credit_limit,
             )
-            _, warnings = AccountService(db).settings_update(
+            _, warnings = update_account_settings(
+                db,
                 account_id,
                 actor="cli",
                 **diff,  # type: ignore[arg-type]  # dynamic settings_update kwargs

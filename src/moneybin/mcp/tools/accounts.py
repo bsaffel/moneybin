@@ -50,6 +50,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.orchestration.account_mutations import update_account_settings
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.accounts import (
@@ -225,7 +226,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
 })
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, timeout_seconds=180.0)
 def accounts_set(
     account_id: str,
     official_name: str | None = None,
@@ -308,7 +309,8 @@ def accounts_set(
         for field in clear_fields:
             kwargs[field] = CLEAR
     with get_database(read_only=False) as db:
-        settings, warnings = AccountService(db).settings_update(
+        settings, warnings = update_account_settings(
+            db,
             account_id,
             actor="mcp",
             **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
