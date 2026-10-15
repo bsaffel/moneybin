@@ -210,7 +210,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 +-- review                         -- What needs my attention? Pending counts across all review queues.
 |     [--type all|matches|investment-matches|categorize|account-links|merchant-links|security-links]   Default all
 |     [--status]                        Counts — the default; the flag states it explicitly
-|     [--interactive]                   Walk the queue item by item (not yet built)
+|     [--interactive]                   Review pending items with explicit decisions, skip, or quit
 |     [--confirm <id>]                  Non-interactive: confirm one review item by ID
 |     [--reject <id>]                   Non-interactive: reject one review item by ID
 |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
@@ -219,6 +219,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |     [--output text|json] [-q]
 |   Aggregates matches_pending + investment_matches_pending + categorize_pending +
 |   account_links_pending + merchant_links_pending + security_links_pending in one sweep.
+|   The shipped interactive loop covers matches, categorize, account-links,
+|   merchant-links, and security-links only. Investment-match decisions and
+|   --field-choice in this target-state tree remain planned.
 |   Counts are what a bare invocation prints; drill into
 |   `accounts links pending`, `merchants links pending`, `investments securities links pending`,
 |   `investments matches pending`, `transactions matches pending`, or
@@ -373,7 +376,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |                                  Unified review queue (matches + investment-matches + categorize + account-links + merchant-links + security-links)
 |   |     [--type all|matches|investment-matches|categorize|account-links|merchant-links|security-links]   Default all
 |   |     [--status]                        Counts — the default; the flag states it explicitly
-|   |     [--interactive]                   Walk the queue item by item (not yet built)
+|   |     [--interactive]                   Review pending items with explicit decisions, skip, or quit
 |   |     [--confirm <id>]                  Non-interactive: confirm one review item by ID
 |   |     [--reject <id>]                   Non-interactive: reject one review item by ID
 |   |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only

@@ -7,8 +7,8 @@ Aggregates pending counts from all five review queues:
   - Merchant-link decisions
   - Security-link decisions
 
-Counts are what a bare `moneybin review` prints; the item-by-item walk is
-stubbed pending the v2 review-loop UX and reachable only via `--interactive`.
+Counts are what a bare `moneybin review` prints; `--interactive` walks a bounded
+selection with explicit decisions, skip, and quit.
 
 See also: `moneybin transactions review` (deprecated alias — removed after
 one minor release; points here).
@@ -38,7 +38,9 @@ def review_command(
         False, "--status", help="Show queue counts (the default)"
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", help="Walk the queue item by item (not yet built)"
+        False,
+        "--interactive",
+        help="Review pending items with explicit decisions, skip, or quit",
     ),
     confirm_id: str | None = typer.Option(
         None, "--confirm", help="Non-interactive: confirm one match by ID"
@@ -49,9 +51,7 @@ def review_command(
     confirm_all: bool = typer.Option(
         False, "--confirm-all", help="Non-interactive: confirm all items in scope"
     ),
-    limit: int = typer.Option(
-        50, "--limit", help="Cap items per session"
-    ),  # placeholder; interactive loop pending
+    limit: int = typer.Option(50, "--limit", help="Cap items per session"),
     no_pager: bool = no_pager_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,

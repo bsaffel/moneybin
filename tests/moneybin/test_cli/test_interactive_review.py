@@ -1,0 +1,520 @@
+"""Bounded review sessions never apply an implicit decision."""
+
+import re
+from dataclasses import replace
+from unittest.mock import MagicMock, patch
+
+import pytest
+from typer.testing import CliRunner
+
+from moneybin.cli.main import app
+from moneybin.cli.utils import get_terminal_policy
+
+runner = CliRunner()
+
+
+@pytest.mark.parametrize("args", [["--output", "json"], [], ["--limit", "0"]])
+def test_interactive_rejects_invalid_mode_before_database(args: list[str]) -> None:
+    with patch("moneybin.cli.commands.transactions.review.get_database") as database:
+        result = runner.invoke(app, ["review", "--interactive", *args])
+    assert result.exit_code == 2
+    database.assert_not_called()
+
+
+def test_interactive_skip_counts_toward_limit() -> None:
+    from moneybin.cli.commands.interactive_review import ReviewItem, run_review
+
+    items = [
+        ReviewItem("matches", "one", (("Match", "one"),)),
+        ReviewItem("matches", "two", (("Match", "two"),)),
+    ]
+    policy = replace(get_terminal_policy(), interactive=True)
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=items
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="skip",
+        ),
+        patch("moneybin.cli.commands.interactive_review.apply_decision") as apply,
+    ):
+        run_review("all", 1, policy)
+    apply.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "queue",
+    ["matches", "categorize", "account-links", "merchant-links", "security-links"],
+)
+def test_review_revalidates_before_deciding(queue: str) -> None:
+    from moneybin.cli.commands.interactive_review import ReviewItem, run_review
+
+    item = ReviewItem(queue, "one", (("Evidence", "original"),))
+    changed = replace(item, evidence=(("Evidence", "changed"),))
+    policy = replace(get_terminal_policy(), interactive=True)
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items",
+            side_effect=[[item], [changed]],
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="accept",
+        ),
+        patch("moneybin.cli.commands.interactive_review.apply_decision") as apply,
+    ):
+        run_review(queue, 1, policy)
+    apply.assert_not_called()
+
+
+def test_cancel_reports_earlier_persisted_decision(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import typer
+
+    from moneybin.cli.commands.interactive_review import ReviewItem, run_review
+
+    one = ReviewItem("matches", "one", (("Match", "one"),))
+    two = replace(one, item_id="two")
+    policy = replace(get_terminal_policy(), interactive=True)
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items",
+            return_value=[one, two],
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            side_effect=["accept", typer.Abort()],
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.apply_decision", return_value=True
+        ),
+    ):
+        with pytest.raises(typer.Abort):
+            run_review("matches", 2, policy)
+    out = capsys.readouterr().out
+    assert "Decisions saved" in out
+    assert re.search(r"Decisions saved:?\s+1\b", out)
+    assert "cancelled" in out.lower()
+
+
+def test_empty_review_does_not_prompt() -> None:
+    from moneybin.cli.commands.interactive_review import run_review
+
+    policy = replace(get_terminal_policy(), interactive=True)
+    with (
+        patch("moneybin.cli.commands.interactive_review.load_items", return_value=[]),
+        patch("moneybin.cli.commands.interactive_review.choose_required") as choose,
+    ):
+        run_review("all", 50, policy)
+    choose.assert_not_called()
+
+
+def test_failed_account_refresh_reports_saved_then_exits(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import typer
+
+    from moneybin.cli.commands.interactive_review import (
+        ReviewCandidate,
+        ReviewItem,
+        run_review,
+    )
+
+    item = ReviewItem(
+        "account-links",
+        "group",
+        (),
+        candidates=(ReviewCandidate("decision", "target", "Candidate"),),
+    )
+    policy = replace(get_terminal_policy(), interactive=True)
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            side_effect=["accept", "decision"],
+        ),
+        patch("moneybin.cli.commands.interactive_review.get_database"),
+        patch("moneybin.cli.commands.accounts.links.confirm_merge"),
+        patch("moneybin.cli.commands.accounts.links.merge_drift_check"),
+        patch("moneybin.cli.commands.accounts.links.report_rematch", return_value=[]),
+        patch("moneybin.services.account_links_service.AccountLinksService") as service,
+    ):
+        service.return_value.set.return_value = MagicMock(error="rebuild failed")
+        with pytest.raises(typer.Exit) as stopped:
+            run_review("account-links", 1, policy)
+    assert stopped.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "Decisions saved" in out
+    assert re.search(r"Decisions saved:?\s+1\b", out)
+
+
+@pytest.mark.parametrize(
+    "queue,target,method",
+    [
+        ("merchant-links", "merchant", "set"),
+        ("security-links", "security", "accept"),
+    ],
+)
+def test_explicit_identity_targets_reach_domain_service(
+    queue: str, target: str, method: str
+) -> None:
+    from moneybin.cli.commands.interactive_review import (
+        ReviewCandidate,
+        ReviewItem,
+        apply_decision,
+    )
+
+    item = ReviewItem(
+        queue,
+        "group",
+        (),
+        candidates=(ReviewCandidate("decision", target, "Candidate"),),
+    )
+    module = (
+        "merchant_links_service.MerchantLinksService"
+        if queue == "merchant-links"
+        else "security_links_service.SecurityLinksService"
+    )
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="decision",
+        ) as choose,
+        patch("moneybin.cli.commands.interactive_review.get_database"),
+        patch(f"moneybin.services.{module}") as service,
+    ):
+        assert apply_decision(
+            item, "accept", replace(get_terminal_policy(), interactive=True)
+        )
+    assert choose.call_args.kwargs["choices"][0].value == "decision"
+    called = getattr(service.return_value, method).call_args
+    assert called.args == ("decision",)
+    assert target in called.kwargs.values()
+
+
+def test_categorization_uses_versioned_id_and_explicit_category() -> None:
+    from moneybin.cli.commands.interactive_review import (
+        ReviewItem,
+        apply_decision,
+    )
+
+    item = ReviewItem("categorize", "cat_versioned_attempt", ())
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="cat-id",
+        ),
+        patch("moneybin.cli.commands.interactive_review.get_database"),
+        patch("moneybin.services.categorization.CategorizationService") as categories,
+        patch(
+            "moneybin.services.review_decisions_service.ReviewDecisionsService"
+        ) as decisions,
+    ):
+        categories.return_value.get_active_categories.return_value = [
+            {"category_id": "cat-id", "category": "Food", "subcategory": "Dining"}
+        ]
+        assert apply_decision(
+            item, "accept", replace(get_terminal_policy(), interactive=True)
+        )
+    request = decisions.return_value.apply_ordinary.call_args.args[0][0]
+    assert request.decision_id == "cat_versioned_attempt"
+    assert request.category == "Food"
+    assert request.subcategory == "Dining"
+
+
+@pytest.mark.parametrize("committed,saved", [("accepted", True), ("reversed", False)])
+def test_match_counts_committed_outcome(committed: str, saved: bool) -> None:
+    from moneybin.cli.commands.interactive_review import (
+        ReviewItem,
+        apply_decision,
+    )
+
+    item = ReviewItem("matches", "match", ())
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch("moneybin.cli.commands.interactive_review.get_database"),
+        patch("moneybin.cli.utils.warn_transfers_retired"),
+        patch("moneybin.services.matching_service.MatchingService") as service,
+    ):
+        service.return_value.set_status.return_value = MagicMock(
+            match_status=committed, transfers_retired=0
+        )
+        if saved:
+            assert apply_decision(
+                item, "accept", replace(get_terminal_policy(), interactive=True)
+            )
+        else:
+            import typer
+
+            with pytest.raises(typer.Exit) as stopped:
+                apply_decision(
+                    item, "accept", replace(get_terminal_policy(), interactive=True)
+                )
+            assert stopped.value.exit_code == 1
+
+
+def test_account_decline_never_opens_writable_database() -> None:
+    import typer
+
+    from moneybin.cli.commands.interactive_review import (
+        ReviewCandidate,
+        ReviewItem,
+        apply_decision,
+    )
+
+    item = ReviewItem(
+        "account-links",
+        "group",
+        (),
+        candidates=(ReviewCandidate("decision", "target", "Candidate"),),
+    )
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="decision",
+        ),
+        patch(
+            "moneybin.cli.commands.accounts.links.confirm_merge",
+            side_effect=typer.Abort(),
+        ),
+        patch("moneybin.cli.commands.interactive_review.get_database") as database,
+    ):
+        with pytest.raises(typer.Abort):
+            apply_decision(
+                item, "accept", replace(get_terminal_policy(), interactive=True)
+            )
+    database.assert_not_called()
+
+
+def test_identity_group_chooses_one_of_all_candidates() -> None:
+    from moneybin.cli.commands.interactive_review import (
+        ReviewCandidate,
+        ReviewItem,
+        apply_decision,
+    )
+
+    item = ReviewItem(
+        "merchant-links",
+        "group",
+        (),
+        candidates=(
+            ReviewCandidate("decision-a", "merchant-a", "A"),
+            ReviewCandidate("decision-b", "merchant-b", "B"),
+        ),
+    )
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="decision-b",
+        ) as choose,
+        patch("moneybin.cli.commands.interactive_review.get_database"),
+        patch(
+            "moneybin.services.merchant_links_service.MerchantLinksService"
+        ) as service,
+    ):
+        assert apply_decision(
+            item, "accept", replace(get_terminal_policy(), interactive=True)
+        )
+    assert [choice.value for choice in choose.call_args.kwargs["choices"]] == [
+        "decision-a",
+        "decision-b",
+    ]
+    service.return_value.set.assert_called_once_with(
+        "decision-b", target_merchant_id="merchant-b", decided_by="user"
+    )
+
+
+def test_fx_refresh_failure_keeps_committed_match_receipt(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import typer
+
+    from moneybin import error_codes
+    from moneybin.cli.commands.interactive_review import ReviewItem, run_review
+    from moneybin.errors import UserError
+
+    item = ReviewItem("matches", "match", ())
+    policy = replace(get_terminal_policy(), interactive=True)
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="accept",
+        ),
+        patch("moneybin.cli.commands.interactive_review.get_database"),
+        patch(
+            "moneybin.matching.persistence.get_match_decision",
+            return_value={"match_status": "accepted"},
+        ),
+        patch("moneybin.services.matching_service.MatchingService") as service,
+    ):
+        service.return_value.set_status.side_effect = UserError(
+            "Match committed; FX rebuild failed",
+            code=error_codes.REFRESH_MODEL_FAILED,
+            hint="Run moneybin refresh",
+        )
+        with pytest.raises(typer.Exit) as stopped:
+            run_review("matches", 1, policy)
+    assert stopped.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "Decisions saved" in out
+    assert re.search(r"Decisions saved:?\s+1\b", out)
+
+
+def test_categorization_reject_omits_result_fields() -> None:
+    from moneybin.cli.commands.interactive_review import (
+        ReviewItem,
+        apply_decision,
+    )
+
+    item = ReviewItem("categorize", "cat_attempt", ())
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch("moneybin.cli.commands.interactive_review.get_database"),
+        patch(
+            "moneybin.services.review_decisions_service.ReviewDecisionsService"
+        ) as decisions,
+    ):
+        assert apply_decision(
+            item, "reject", replace(get_terminal_policy(), interactive=True)
+        )
+    request = decisions.return_value.apply_ordinary.call_args.args[0][0]
+    assert request.model_fields_set == {"kind", "decision_id", "decision"}
+
+
+@pytest.mark.parametrize(
+    "queue,module",
+    [
+        ("account-links", "account_links_service.AccountLinksService"),
+        ("merchant-links", "merchant_links_service.MerchantLinksService"),
+        ("security-links", "security_links_service.SecurityLinksService"),
+    ],
+)
+def test_identity_loader_keeps_siblings_in_one_bounded_item(
+    queue: str, module: str
+) -> None:
+    from moneybin.cli.commands.interactive_review import load_items
+
+    candidates: list[MagicMock] = []
+    for suffix in ("a", "b"):
+        candidate = MagicMock()
+        candidate.decision_id = f"decision-{suffix}"
+        candidate.overlap = MagicMock(measurable=False)
+        candidate.candidate_account_id = f"account-{suffix}"
+        candidate.candidate_display_name = f"Account {suffix}"
+        candidate.candidate_merchant_id = f"merchant-{suffix}"
+        candidate.candidate_canonical_name = f"Merchant {suffix}"
+        candidate.candidate_security_id = f"security-{suffix}"
+        candidate.candidate_name = f"Security {suffix}"
+        candidates.append(candidate)
+    group = MagicMock(
+        candidates=tuple(candidates),
+        provisional_account_id="provisional",
+        provisional_display_name="Provisional",
+        transactions=2,
+        ref_value="provider-ref",
+        ref_kind="plaid_security_id",
+        source_type="synthetic",
+    )
+    with (
+        patch("moneybin.cli.commands.interactive_review.get_database") as database,
+        patch(f"moneybin.services.{module}") as service,
+    ):
+        service.return_value.pending.return_value = [group]
+        items = load_items(queue, 1)
+    assert len(items) == 1
+    assert [c.decision_id for c in items[0].candidates] == ["decision-a", "decision-b"]
+    assert all(c.decision_id in str(items[0].evidence) for c in items[0].candidates)
+    database.assert_called_once_with(read_only=True)
+
+
+def test_categorization_loader_projects_attempt_without_persisting() -> None:
+    from moneybin.cli.commands.interactive_review import load_items
+
+    with (
+        patch("moneybin.cli.commands.interactive_review.get_database") as database,
+        patch("moneybin.services.categorization.CategorizationService") as service,
+    ):
+        service.return_value.list_uncategorized_transactions.return_value = [
+            {
+                "transaction_id": "transaction",
+                "description": "Synthetic purchase",
+                "amount": "-1.00",
+                "currency_code": "USD",
+            }
+        ]
+        service.return_value.project_pending_review_attempts.return_value = {
+            "transaction": {"decision_id": "cat_attempt"}
+        }
+        items = load_items("categorize", 1)
+    assert items[0].item_id == "cat_attempt"
+    database.assert_called_once_with(read_only=True)
+    service.return_value.apply_review_categorization_in_active_txn.assert_not_called()
+
+
+def test_quit_leaves_all_decisions_untouched(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from moneybin.cli.commands.interactive_review import ReviewItem, run_review
+
+    item = ReviewItem("matches", "match", ())
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="quit",
+        ),
+        patch("moneybin.cli.commands.interactive_review.apply_decision") as apply,
+    ):
+        run_review("all", 5, replace(get_terminal_policy(), interactive=True))
+    apply.assert_not_called()
+    assert re.search(r"Decisions saved:?\s+0\b", capsys.readouterr().out)
+
+
+def test_target_time_staleness_counts_in_session_receipt(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from moneybin.cli.commands.interactive_review import ReviewItem, run_review
+
+    item = ReviewItem("matches", "match", ())
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="accept",
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.apply_decision",
+            return_value=False,
+        ),
+    ):
+        run_review("all", 1, replace(get_terminal_policy(), interactive=True))
+    out = capsys.readouterr().out
+    assert re.search(r"Stale items:?\s+1\b", out)
+    assert re.search(r"Decisions saved:?\s+0\b", out)

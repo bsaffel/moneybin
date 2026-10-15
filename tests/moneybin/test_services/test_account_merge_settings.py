@@ -721,7 +721,7 @@ def test_the_cli_drift_check_refuses_a_moved_value_edited_after_approval(
             _DECISION,
             target_account_id=_SURVIVOR,
             decided_by="user",
-            verify_accept=cli_links._drift_check(db, _DECISION, approved),  # pyright: ignore[reportPrivateUsage]  # test exercises the drift seam
+            verify_accept=cli_links.merge_drift_check(db, _DECISION, approved),  # pyright: ignore[reportPrivateUsage]  # test exercises the drift seam
         )
 
     assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH

@@ -1,0 +1,1 @@
+`moneybin review --interactive` now walks the five shipped review queues with explicit decisions, category or identity target selection, skip, and quit. Bounded sessions revalidate displayed evidence and report decisions retained after cancellation or partial failure.

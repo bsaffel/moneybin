@@ -69,11 +69,11 @@ def test_review_type_filter_without_status_prints_the_count(
     assert "matches pending" in out
 
 
-def test_interactive_is_the_only_stubbed_path() -> None:
-    """The unbuilt walk is reachable only by asking for it by name."""
+def test_interactive_requires_a_terminal() -> None:
+    """A scripted call fails before the terminal workflow can ask for input."""
     result = runner.invoke(app, ["review", "--interactive"])
-    assert result.exit_code == 0
-    assert "not yet implemented" in result.output.lower()
+    assert result.exit_code == 2
+    assert "requires a terminal" in result.output.lower()
 
 
 @patch("moneybin.services.matching_service.MatchingService")

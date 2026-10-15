@@ -35,7 +35,7 @@ Usage: `moneybin transactions review [OPTIONS]`
 |---|---|---|---|
 | `--type` | text |  | all \| matches \| categorize \| account-links \| merchant-links \| security-links |
 | `--status` | flag |  | Show queue counts (the default) |
-| `--interactive` | flag |  | Walk the queue item by item (not yet built) |
+| `--interactive` | flag |  | Review pending items with explicit decisions, skip, or quit |
 | `--confirm` | text |  | Non-interactive: confirm one item by ID |
 | `--reject` | text |  | Non-interactive: reject one item by ID |
 | `--confirm-all` | flag |  | Non-interactive: confirm all items in scope |

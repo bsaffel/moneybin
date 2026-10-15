@@ -770,6 +770,28 @@ moneybin system status --output json \
   || moneybin transactions categorize run
 ```
 
+### Interactive review
+
+Run `moneybin review --interactive --type all --limit 20` in a terminal to
+review matches, uncategorized transactions, and account, merchant, and security
+links. Bare `moneybin review` continues to show queue counts.
+
+Each item shows its evidence before offering accept, reject, skip, or quit.
+Identity groups show all candidates together; accepting requires an explicit
+candidate choice. Categorization requires an explicit active category. Account
+merges keep their impact confirmation. Security identity accepts merge and delete
+the provisional security; price-feed accepts only bind a key.
+
+The session limit counts every displayed item, including skipped items; one
+identity group counts as one item. Changed decisions are skipped for fresh review.
+Each authorized decision commits separately, so quitting or cancelling keeps
+earlier decisions and prints their saved count. JSON output and redirected input
+reject interactive mode before opening a writable database. Use the existing
+`transactions matches set`, `transactions categorize`, `accounts links set`,
+`merchants links set`, and `investments securities links set` commands for
+scripted decisions.
+
+
 ## See also
 
 - [`data-import.md`](data-import.md) — import formats and the import lifecycle

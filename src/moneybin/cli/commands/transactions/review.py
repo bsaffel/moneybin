@@ -5,9 +5,8 @@ CLI-only collapse (per moneybin-cli.md v2). MCP keeps separate
 tools because their result shapes differ; the orientation tool
 ``review`` returns the counts.
 
-Counts are the default. The item-by-item walk is stubbed for v2 and reachable
-only via ``--interactive``, so no invocation a user is likely to type lands on
-the stub.
+Counts are the default. ``--interactive`` walks the selected queues in a terminal
+with explicit per-item decisions, skip, and quit.
 
 ``transactions_review`` is a **deprecated alias** for the top-level
 ``review_command`` (``moneybin review``). It emits a deprecation warning
@@ -33,8 +32,6 @@ from moneybin.cli.render import build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
-
-from ..stubs import _not_implemented
 
 logger = logging.getLogger(__name__)
 
@@ -116,9 +113,16 @@ def review_impl(
         return
 
     if interactive:
-        # Not a whole-command stub: `review` works, and only this mode is
-        # unfinished. `stubs.py` explains what that excludes it from.
-        _not_implemented("the interactive review loop", whole_command=False)
+        if limit < 1:
+            raise typer.BadParameter("--limit must be at least 1", param_hint="--limit")
+        policy = get_terminal_policy(no_pager=True)
+        if output != OutputFormat.TEXT or not policy.interactive:
+            raise typer.BadParameter(
+                "--interactive requires a terminal and text output; use the existing domain commands for scripted decisions."
+            )
+        from moneybin.cli.commands.interactive_review import run_review
+
+        run_review(type_, limit, policy)
         return
 
     # Counts are the default: they are what `--help` describes, and the only
@@ -136,7 +140,9 @@ def transactions_review(
         False, "--status", help="Show queue counts (the default)"
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", help="Walk the queue item by item (not yet built)"
+        False,
+        "--interactive",
+        help="Review pending items with explicit decisions, skip, or quit",
     ),
     confirm_id: str | None = typer.Option(
         None, "--confirm", help="Non-interactive: confirm one item by ID"
