@@ -128,7 +128,11 @@ Numbered, each independently testable.
    `format_money` rounds to two decimal places, which renders a sub-cent
    crypto close as `0.00`, so those columns declare no money kind and print as
    stored. Requirement 11 governs *amounts* — what something is worth — not
-   the per-unit prices an amount is computed from.
+   the per-unit prices an amount is computed from. A share count prints with
+   its trailing zeros trimmed in a text table — `41.5000000000` as `41.5`,
+   never rounded — while a per-unit price keeps every stored place. Without
+   the trim, a ten-place quantity beside a `carried_forward` status pushed
+   `investments holdings`' default view past 80 columns.
 
    **That exclusion covers formatting only.** A column left out of `money=`
    still holds a number, and the fold below reads a fragment of one as a whole
@@ -271,6 +275,12 @@ Numbered, each independently testable.
    `networth-history` — do not: they already choose their columns in code, and
    networth's full projection mixes per-currency totals rows with per-account
    rows that a single table cannot widen into coherently.
+   On a terminal narrower than the whole projection, `--wide` drops the
+   columns outside `DEFAULT_COLUMNS`, first in projection order first (the
+   projection leads with the id and ends on the headline measure, so the id
+   goes before a balance does), until the table fits, never drops a default
+   column, and names what it omitted:
+   `10 of 11 columns fit — account_id omitted; widen the terminal or use --output json`.
 8. `--output json` is unaffected by `DEFAULT_COLUMNS` and by `--wide`; it returns
    the full projection, filtered only by `--json-fields`.
 9. `DEFAULT_COLUMNS` for every report fits in **80 columns** with no elision of any

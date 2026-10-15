@@ -1460,6 +1460,32 @@ def test_public_docs_stated_figures_match_code() -> None:
     )
 
 
+def test_cli_spec_profile_config_example_matches_generator(tmp_path: Path) -> None:
+    """The spec's profile config.yaml example has the keys `profile create` writes.
+
+    The example once showed a `sync:` block and `max_file_size_mb` that the
+    generator never wrote; comparing section and key sets keeps it honest.
+    """
+    import yaml
+
+    from moneybin.utils.user_config import generate_profile_config
+
+    spec = (_REPO_ROOT / "docs/specs/moneybin-cli.md").read_text()
+    section = spec.split("### Profile config (", 1)[1]
+    found = re.search(r"```yaml\n(.*?)```", section, re.DOTALL)
+    assert found, "moneybin-cli.md's Profile config section has no yaml example"
+    documented = yaml.safe_load(found.group(1))
+
+    written = yaml.safe_load(
+        generate_profile_config(tmp_path / "example", "example").read_text()
+    )
+
+    def shape(config: dict[str, dict[str, object]]) -> dict[str, set[str]]:
+        return {name: set(keys) for name, keys in config.items()}
+
+    assert shape(documented) == shape(written)
+
+
 def test_blank_fenced_blocks_hides_top_level_and_indented_fences() -> None:
     """Fence content is blanked, markers and every offset survive, prose stays."""
     text = (

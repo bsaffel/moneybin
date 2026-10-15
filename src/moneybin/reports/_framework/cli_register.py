@@ -189,6 +189,7 @@ class ColumnView(NamedTuple):
 
     columns: tuple[str, ...]
     fit: bool
+    optional: tuple[str, ...] = ()
 
 
 def column_view(
@@ -227,6 +228,11 @@ def column_view(
         # Only a report that named no columns of its own. `--wide` is a request
         # for the whole projection, not for a fitted one.
         fit=spec.default_columns is None and not wide,
+        optional=(
+            optional_columns(spec, result_columns, parameters=parameters)
+            if wide
+            else ()
+        ),
     )
 
 
@@ -289,6 +295,29 @@ def visible_columns(
         )
         visible = (*visible[:at], ORIGINAL_CURRENCY_COLUMN, *visible[at:])
     return visible
+
+
+def optional_columns(
+    spec: ReportSpec,
+    result_columns: Sequence[str],
+    *,
+    parameters: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """The columns a ``--wide`` table may omit to fit, most important first.
+
+    Everything the narrow view does not show, so the default set — the
+    report's curated answer — is never what gives way. The renderer drops the
+    tail of this tuple first, and a ``reports`` projection puts its id first
+    and its headline measure last (column-ordering.md), so the tuple is the
+    projection's extras reversed: the id goes before a balance does. Empty for
+    a report that declares no default set: that one is fitted, not curated.
+    """
+    if spec.default_columns is None:
+        return ()
+    shown = set(
+        visible_columns(spec, result_columns, parameters=parameters, wide=False)
+    )
+    return tuple(name for name in reversed(result_columns) if name not in shown)
 
 
 def resolve_default_columns(
@@ -370,6 +399,7 @@ def render_report_result(
     quiet: bool = False,
     columns: Sequence[str] | None = None,
     fit: bool = False,
+    optional: Sequence[str] | None = None,
     no_pager: bool = False,
 ) -> None:
     """Render one report result as a table or the JSON envelope.
@@ -397,6 +427,13 @@ def render_report_result(
     set: a declared set is a curated answer to "what does this report say",
     contract-tested at 80 characters, and re-deciding it from column widths
     would discard the author's judgement.
+
+    ``optional`` is the ``--wide`` counterpart, from :func:`optional_columns`:
+    the columns the default set leaves out, dropped least-important-first (the
+    projection's first extra, usually an id, before its last) only while the
+    whole projection is wider than the terminal. A declared set is never among
+    them, so the curated answer survives a narrow terminal under ``--wide``
+    too. Exclusive with ``fit``.
     """
     visible = list(result.columns if columns is None else columns)
 
@@ -425,6 +462,7 @@ def render_report_result(
             grouped=grouped,
             total_columns=len(result.columns),
             fit=fit,
+            optional=optional,
             terminal=policy,
         )
         if disclosures:
@@ -501,6 +539,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 quiet=quiet,
                 columns=view.columns,
                 fit=view.fit,
+                optional=view.optional,
                 no_pager=no_pager,
             )
 

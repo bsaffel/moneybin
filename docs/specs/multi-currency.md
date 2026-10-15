@@ -725,9 +725,12 @@ Numbered, testable. Tagged by phase.
     earlier data is imported. The publication slack lives in the *request*
     instead, which opens `MAX_BACKWARD_RESOLUTION_DAYS` before the window does
     — stepped back to the Friday when that day is a weekend, because the
-    provider resolves a closed request start to the publication before it —
-    so a profile whose earliest row falls on a closed market is covered by the
-    last publication day before it rather than reported short forever. The
+    provider resolves a closed request start to the publication before it. A
+    weekday holiday start the calendar cannot rule out resolves the same way, so
+    the lower bound accepts a publication up to `MAX_MARKET_CLOSURE_DAYS` before
+    the request start. Either way a profile whose earliest row falls on a closed
+    market is covered by the last publication day before it rather than
+    reported short forever. The
     closing bound allows that same span, because a missing recent date is
     routine and self-healing — no rate is published on a weekend, often none for
     today until the afternoon, and the window's end moves forward on its own —
