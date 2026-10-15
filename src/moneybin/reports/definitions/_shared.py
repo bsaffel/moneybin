@@ -67,6 +67,7 @@ DRIFT_STATUSES: tuple[str, ...] = (
     "clean",
     "no-data",
     "currency-mismatch",
+    "investment-ledger",
     "all",
 )
 REALIZED_FX_COVERAGE: tuple[str, ...] = ("complete", "incomplete", "all")

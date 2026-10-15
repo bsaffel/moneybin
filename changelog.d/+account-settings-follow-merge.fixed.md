@@ -1,0 +1,1 @@
+Accepting an account merge now carries the absorbed account's settings (display name, currency, credit limit, investment source choice and the rest) onto the surviving account, which keeps its own value where the two differ, and the merge confirmation lists what moves.

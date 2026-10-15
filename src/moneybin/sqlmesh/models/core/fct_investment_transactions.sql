@@ -9,7 +9,11 @@
    (negative = cash out). Plaid's inversion lives exclusively in
    prep.stg_plaid__investment_transactions; flipping again here would turn every
    buy into income. The fct_investment_transactions_sign_convention audit stands
-   guard over that (system doctor runs it). */
+   guard over that (system doctor runs it).
+
+   An account with app.account_settings.investment_source_type set keeps only that
+   source type's rows (docs/specs/investment-source-choice.md); the filter is the
+   final WHERE, and lots, gains and holdings inherit it. */
 MODEL (
   name core.fct_investment_transactions,
   kind FULL,
@@ -117,8 +121,14 @@ SELECT
   u.description, /* Free-text description */
   GREATEST(
     u.created_at,
-    COALESCE(CASE WHEN u.currency_code IS NULL THEN a.updated_at END, u.created_at)
-  ) AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. Advances on an Account Currency edit only when this event inherits that Currency; an event's own Currency keeps its own freshness. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
+    COALESCE(CASE WHEN u.currency_code IS NULL THEN a.updated_at END, u.created_at),
+    COALESCE(a.investment_source_type_changed_at, u.created_at)
+  ) AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. Advances on an Account Currency edit only when this event inherits that Currency; an event's own Currency keeps its own freshness. Also advances when the account's investment_source_type changes, so a row that re-enters the ledger after a clear reports a time newer than the clear rather than its original created_at. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM unioned AS u
 LEFT JOIN core.dim_accounts AS a
   ON u.account_id = a.account_id
+/* investment-source-choice.md: an account with a source chosen keeps only that
+   source's rows. The only place the choice changes data; every model derived from
+   this ledger inherits it. NULL (no choice, or no dim_accounts row) keeps every row. */
+WHERE
+  a.investment_source_type IS NULL OR u.source_type = a.investment_source_type

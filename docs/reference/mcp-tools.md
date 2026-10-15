@@ -117,7 +117,7 @@ Access: write, not idempotent. Sensitivity: at least `low`.
 
 ### accounts_set
 
-Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving today excludes the account from net worth entirely (history included); archived_at is recorded for a future date-scoped release, not yet applied. include_in_net_worth=False excludes an account regardless of archived status. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.
+Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average), investment_source_type (manual/plaid picks which investment history feeds the account's ledger; nothing is deleted, clearing it uses both), include_in_net_worth, is_archived. Invalid values raise mutation_invalid_input. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Omitted fields are unchanged; name a text field in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving excludes the account from net worth entirely, history included; include_in_net_worth=False excludes it regardless of archived status. Writes app.account_settings; revert by calling again with prior values. Amounts are in the currency named by `summary.display_currency`.
 
 Access: write, idempotent. Sensitivity: at least `critical`.
 
@@ -132,6 +132,7 @@ Access: write, idempotent. Sensitivity: at least `critical`.
 | `credit_limit` | number |  |  |
 | `display_name` | string |  |  |
 | `default_cost_basis_method` | string |  |  |
+| `investment_source_type` | one of `manual`, `plaid` |  |  |
 | `include_in_net_worth` | boolean |  |  |
 | `is_archived` | boolean |  |  |
 | `clear_fields` | array of string |  |  |
@@ -650,7 +651,7 @@ Access: write, destructive, not idempotent, open world. Sensitivity: at least `l
 
 ### sync_link
 
-Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries.
+Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries. In login mode, server_url names this profile's sync server: pass only an address the user gave you; omit it and, if none is saved, the user is offered http://127.0.0.1:8000. A new or changed address is saved to the profile's config.yaml only after the user confirms a prompt, and signs the profile out of the previous server; log in with another address to change it back.
 
 Access: write, not idempotent, open world. Sensitivity: at least `medium`.
 
@@ -658,6 +659,7 @@ Access: write, not idempotent, open world. Sensitivity: at least `medium`.
 |---|---|---|---|
 | `institution` | string |  |  |
 | `mode` | one of `institution`, `login` | `institution` |  |
+| `server_url` | string |  |  |
 
 ### sync_pull
 

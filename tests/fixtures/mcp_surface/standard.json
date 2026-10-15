@@ -1,5 +1,5 @@
 {
-  "sha256": "92a239ab86fcfd379b31b77d84feca61e835870fa83015213c8591f81c9e7945",
+  "sha256": "f8023c818e78994c49ae5bd0d3f10e2e90d33446c795f0796d70f158fef8b68a",
   "tool_count": 50,
   "tools": [
     {
@@ -406,7 +406,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving today excludes the account from net worth entirely (history included); archived_at is recorded for a future date-scoped release, not yet applied. include_in_net_worth=False excludes an account regardless of archived status. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.",
+        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average), investment_source_type (manual/plaid picks which investment history feeds the account's ledger; nothing is deleted, clearing it uses both), include_in_net_worth, is_archived. Invalid values raise mutation_invalid_input. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Omitted fields are unchanged; name a text field in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving excludes the account from net worth entirely, history included; include_in_net_worth=False excludes it regardless of archived status. Writes app.account_settings; revert by calling again with prior values. Amounts are in the currency named by `summary.display_currency`.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -504,6 +504,21 @@
               ],
               "default": null
             },
+            "investment_source_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "manual",
+                    "plaid"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "is_archived": {
               "anyOf": [
                 {
@@ -546,12 +561,12 @@
         "name": "accounts_set",
         "title": "Accounts Set"
       },
-      "description_bytes": 889,
-      "input_schema_bytes": 1006,
+      "description_bytes": 898,
+      "input_schema_bytes": 1118,
       "name": "accounts_set",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 2110
+      "total_bytes": 2231
     },
     {
       "annotation_bytes": 90,
@@ -3436,7 +3451,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries.",
+        "description": "Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries. In login mode, server_url names this profile's sync server: pass only an address the user gave you; omit it and, if none is saved, the user is offered http://127.0.0.1:8000. A new or changed address is saved to the profile's config.yaml only after the user confirms a prompt, and signs the profile out of the previous server; log in with another address to change it back.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3458,6 +3473,17 @@
                 "login"
               ],
               "type": "string"
+            },
+            "server_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "type": "object"
@@ -3465,12 +3491,12 @@
         "name": "sync_link",
         "title": "Sync Link"
       },
-      "description_bytes": 214,
-      "input_schema_bytes": 216,
+      "description_bytes": 587,
+      "input_schema_bytes": 290,
       "name": "sync_link",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 639
+      "total_bytes": 1086
     },
     {
       "annotation_bytes": 90,
@@ -5312,5 +5338,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 64363
+  "total_bytes": 64931
 }

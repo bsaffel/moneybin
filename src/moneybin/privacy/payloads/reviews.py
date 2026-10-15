@@ -755,6 +755,8 @@ class ReviewDecisionOutcome(BaseModel):
     status: Annotated[str, DataClass.TXN_TYPE]
     changed: Annotated[bool, DataClass.AGGREGATE]
     operation_id: Annotated[str, DataClass.RECORD_ID]
+    # Why a guard left this decision unapplied; authored text, never user data.
+    reason: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 # Two id lists that qualify what one resolution batch did; neither is a

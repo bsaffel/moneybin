@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-10-08 -->
 # Data Model
 
 The user-facing data model. Tables in `core.*`, `reports.*`, and `app.*` are the surfaces consumers (CLI, MCP, your own SQL) read from for analysis; `raw.*` and `prep.*` are readable for inspection through the agent-safe SQL paths. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
@@ -209,11 +209,11 @@ Resolved provider-code → canonical-category bridge. Grain: one row per `(sourc
 | `source_category_code` | VARCHAR | The provider's category code (e.g. `FOOD_AND_DRINK_COFFEE`) or an imported row's own category text. |
 | `source_subcategory_code` | VARCHAR | Second half of the source key. `''` is the sentinel for "no subcategory" (DuckDB primary keys reject NULL). |
 | `code_level` | VARCHAR | `detailed` \| `primary`. Detailed wins over primary on reverse lookup. |
-| `category_id` | VARCHAR | FK → `core.dim_categories.category_id`. Exactly one per code (canonical-by-PK). |
+| `category_id` | VARCHAR | FK → `core.dim_categories.category_id`. Exactly one per code (canonical-by-PK). NULL on a user row marks the term as ignored: it is known and categorizes nothing. |
 | `source_taxonomy_version` | VARCHAR | Provider taxonomy version the mapping was derived against (drift marker; not part of the key). |
 | `is_default` | BOOLEAN | TRUE for seed rows, FALSE for user overrides from `app.category_source_map`. |
 
-Two-tier reverse lookup — match a transaction's detailed and primary codes and let detailed win: `WHERE source_category_code IN (detailed, primary) ORDER BY code_level = 'detailed' DESC LIMIT 1`.
+Two-tier reverse lookup — match a transaction's detailed and primary codes and let detailed win: `WHERE source_category_code IN (detailed, primary) ORDER BY source_category_code = detailed DESC LIMIT 1`. Rank on the code itself, not on `code_level`, which is a label the writer supplies. A winning row with a NULL `category_id` means the code is ignored; do not fall back to the other row.
 
 ### `core.bridge_merchant_entities`
 
@@ -659,11 +659,11 @@ Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed bala
 |---|---|---|
 | `account_id` | VARCHAR | Joinable to `core.dim_accounts.account_id`. |
 | `account_name` | VARCHAR | Resolved display name. |
-| `status` | VARCHAR | `clean` (< $1) \| `warning` (< $10) \| `drift` (≥ $10) \| `no-data` (computed NULL). |
+| `status` | VARCHAR | `clean` (< $1) \| `warning` (< $10) \| `drift` (≥ $10) \| `no-data` (computed NULL) \| `currency-mismatch` (the account's currency and the observation's disagree) \| `investment-ledger` (the account has investment ledger events, so no transaction-derived balance compares to the assertion; wins over `currency-mismatch` when both hold). |
 | `assertion_date` | DATE | User-asserted balance date. |
 | `days_since_assertion` | INTEGER | `CURRENT_DATE − assertion_date`. |
 | `asserted_balance` | DECIMAL(18,2) | User-entered value. |
-| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation. |
+| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation, on a currency mismatch, and for an account with investment ledger events: their buys, sells, and dividends never reach `core.fct_transactions`, and the assertion counts positions at a market value nothing reconstructs for a past date. |
 | `drift_abs` | DECIMAL(18,2) | For default sort. |
 | `drift_pct` | DECIMAL | `drift / asserted_balance`; NULL when asserted is zero. |
 | `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |

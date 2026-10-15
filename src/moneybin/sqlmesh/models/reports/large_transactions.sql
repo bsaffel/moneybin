@@ -23,7 +23,7 @@ WITH base AS (
   INNER JOIN core.dim_accounts AS a
     ON t.account_id = a.account_id
   WHERE
-    NOT t.is_transfer AND NOT a.archived
+    @report_eligible_transaction(t, a)
 ), per_account_median AS (
   /* Every baseline below keys on currency_code as well as its own grain: a
      median or MAD pooled across currencies compares unlike units, and would

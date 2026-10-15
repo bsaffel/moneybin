@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Generator
 from datetime import date, datetime
 from decimal import Decimal
@@ -13,26 +12,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import SQLMESH_ROOT, Database
+from tests.moneybin.sqlmesh_model_helpers import load_model, rendered_model_sql
 
 _REPORT_MODELS = SQLMESH_ROOT / "models" / "reports"
 
 
-def _model_body(name: str) -> str:
-    """Return a report model's executable SQL without its MODEL header."""
-    raw = (_REPORT_MODELS / f"{name}.sql").read_text()
-    return re.sub(
-        r"^.*?MODEL\s*\(.*?\);\s*",
-        "",
-        raw,
-        count=1,
-        flags=re.DOTALL,
-    ).strip()
-
-
 def _install_report(db: Database, name: str) -> None:
+    """Install a report model as SQLMesh renders it, macros expanded."""
+    body = rendered_model_sql(_REPORT_MODELS / f"{name}.sql")
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(  # test-selected shipped model name
-        f"CREATE OR REPLACE VIEW reports.{name} AS {_model_body(name)}"
+        f"CREATE OR REPLACE VIEW reports.{name} AS {body}"
     )
 
 
@@ -327,6 +317,9 @@ def _install_balance_drift_sources(
             reconciliation_delta DECIMAL(18, 2),
             currency_code VARCHAR
         )
+    """)
+    model_db.execute("""
+        CREATE TABLE core.fct_investment_transactions (account_id VARCHAR)
     """)
     model_db.execute(
         """
@@ -885,6 +878,79 @@ def test_recurring_subscriptions_does_not_interleave_two_currency_streams(
     assert rows == [("EUR", "monthly", 4), ("USD", "monthly", 4)]
 
 
+_ELIGIBILITY_MACRO_CALLERS = (
+    "cash_flow",
+    "large_transactions",
+    "merchant_activity",
+    "recurring_subscriptions",
+    "spending_trend",
+)
+# These read balances, not transactions, so they write their own archive rule.
+_BALANCE_REPORT_MODELS = frozenset({
+    "balance_drift",
+    "net_worth",
+    "net_worth_accounts",
+    "net_worth_currencies",
+})
+
+
+def test_report_models_take_eligibility_from_the_shared_macro() -> None:
+    """No report model hand-writes the transfer/archive filter the macro owns."""
+    from sqlglot import exp
+    from sqlmesh.core.model import SqlModel
+
+    for path in sorted(_REPORT_MODELS.glob("*.sql")):
+        owned = {"is_transfer", "archived"}
+        if path.stem in _BALANCE_REPORT_MODELS:
+            owned = {"is_transfer"}
+        model = load_model(path)
+        assert isinstance(model, SqlModel)
+        assert isinstance(model.query, exp.Query)
+        calls_macro = "report_eligible_transaction" in model.python_env
+        assert calls_macro == (path.stem in _ELIGIBILITY_MACRO_CALLERS), (
+            f"{path.name}: calls @report_eligible_transaction = {calls_macro}; "
+            "update _ELIGIBILITY_MACRO_CALLERS if that is intended"
+        )
+        handwritten = {c.name for c in model.query.find_all(exp.Column)} & owned
+        assert not handwritten, (
+            f"{path.name} reads {sorted(handwritten)} directly; call "
+            "@report_eligible_transaction instead"
+        )
+
+
+@pytest.mark.parametrize("report", _ELIGIBILITY_MACRO_CALLERS)
+def test_transaction_reports_drop_transfers_and_archived_accounts(
+    model_db: Database, report: str
+) -> None:
+    """The shared eligibility predicate excludes both, in every model calling it."""
+    _install_transaction_sources(model_db)
+    for index in range(1, 5):
+        _add_transaction(
+            model_db,
+            transaction_id=f"t{index}",
+            date=_months_ago(index).isoformat(),
+            amount="-20",
+            currency="USD",
+        )
+    _install_report(model_db, report)
+
+    def row_count() -> int:
+        row = model_db.execute(
+            f"SELECT COUNT(*) FROM reports.{report}"  # noqa: S608  # parametrized shipped model name
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    assert row_count() > 0
+
+    model_db.execute("UPDATE core.fct_transactions SET is_transfer = TRUE")
+    assert row_count() == 0
+
+    model_db.execute("UPDATE core.fct_transactions SET is_transfer = FALSE")
+    model_db.execute("UPDATE core.dim_accounts SET archived = TRUE")
+    assert row_count() == 0
+
+
 def test_balance_drift_withholds_a_drift_across_two_currencies(
     model_db: Database,
 ) -> None:
@@ -994,3 +1060,73 @@ def test_balance_drift_reports_the_currency_the_position_is_denominated_in(
         "SELECT currency_code, drift FROM reports.balance_drift"
     ).fetchone()
     assert row == ("EUR", Decimal("5.00"))
+
+
+def test_balance_drift_says_it_cannot_reconcile_an_investment_ledger(
+    model_db: Database,
+) -> None:
+    """A hand-kept brokerage's assertion is cash plus positions; no drift exists.
+
+    The ledger's buys, sells and dividends never reach `core.fct_transactions`,
+    so the transaction-derived balance is the deposits alone, and the assertion
+    also counts positions at market value. Subtracting the two would publish
+    every share held as drift; the row names why it has no figure instead.
+    """
+    _install_balance_drift_sources(model_db, currency="USD")
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES ('checking', '2025-12-31', 17125.00)
+        """
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES
+            ('checking', '2025-12-31', 17125.00, TRUE, 2125.00, 'USD')
+        """
+    )
+    model_db.execute("INSERT INTO core.fct_investment_transactions VALUES ('checking')")
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        """
+        SELECT asserted_balance, computed_balance, drift, drift_pct, status
+        FROM reports.balance_drift
+        """
+    ).fetchone()
+    # 15,000.00 computed and 2,125.00 drift would be the deposits-only answer.
+    assert row == (Decimal("17125.00"), None, None, None, "investment-ledger")
+
+
+def test_balance_drift_names_the_ledger_before_a_currency_mismatch(
+    model_db: Database,
+) -> None:
+    """A ledger account with a currency mismatch still reports investment-ledger.
+
+    The spec promises `--status investment-ledger` lists every account with a
+    ledger row. A mismatch is repairable (`accounts set --currency`), and after
+    the repair the ledger still leaves nothing to compare, so the row names the
+    condition that outlasts the fix.
+    """
+    _install_balance_drift_sources(model_db, currency="USD")
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES ('checking', '2025-12-31', 17125.00)
+        """
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES
+            ('checking', '2025-12-31', 17125.00, TRUE, 2125.00, 'EUR')
+        """
+    )
+    model_db.execute("INSERT INTO core.fct_investment_transactions VALUES ('checking')")
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        "SELECT computed_balance, drift, status FROM reports.balance_drift"
+    ).fetchone()
+    assert row == (None, None, "investment-ledger")

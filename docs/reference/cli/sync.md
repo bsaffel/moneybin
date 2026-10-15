@@ -30,6 +30,7 @@ Usage: `moneybin sync login [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--no-browser` | flag |  | Print URL only; don't try to open a browser. |
+| `--server` | text |  | Address of your moneybin-sync server, e.g. https://sync.example.com. Saved to the active profile once the server answers; needed only the first time or to change servers. |
 
 ## moneybin sync logout
 

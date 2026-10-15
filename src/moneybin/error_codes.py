@@ -193,6 +193,10 @@ SYNC_ERROR = "sync_error"
 SYNC_INSTITUTION_AMBIGUOUS = "sync_institution_ambiguous"
 SYNC_INSTITUTION_REQUIRED = "sync_institution_required"
 SYNC_LINK_MODE_CONFLICT = "sync_link_mode_conflict"
+SYNC_SERVER_NOT_CONFIGURED = "sync_server_not_configured"
+# Login was asked to save an address while the environment or a dotenv supplies
+# a different one: the saved value would be shadowed on the very next command.
+SYNC_SERVER_OVERRIDE_CONFLICT = "sync_server_override_conflict"
 SYNC_STATUS_MODE_CONFLICT = "sync_status_mode_conflict"
 
 
@@ -317,6 +321,7 @@ INVESTMENT_PRICE_MARK_CURRENCY_INVALID = "investment_price_mark_currency_invalid
 INVESTMENT_PRICE_MARK_UNREPRESENTABLE = "investment_price_mark_unrepresentable"
 INVESTMENT_SECURITY_NOT_BOUND = "investment_security_not_bound"
 INVESTMENT_SECURITY_NOT_IN_CATALOG = "investment_security_not_in_catalog"
+INVESTMENT_SOURCE_EXCLUDED = "investment_source_excluded"
 
 
 # ---------------------------------------------------------------------------

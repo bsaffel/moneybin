@@ -450,3 +450,52 @@ def test_doctor_json_includes_recovery_actions_per_invariant(
     }
     assert notes_action["confidence"] == "suggested"
     assert notes_action["idempotent"] is False
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_text_maps_an_accounts_set_fix_to_its_command(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """An accounts_set fix names the flag; one without a source has no command."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = DoctorReport(
+        invariants=[
+            InvariantResult(
+                "investment_source_overlap",
+                "fail",
+                "1 account has investment history from two sources",
+                ["account:acc_choice"],
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="accounts_set",
+                        arguments={
+                            "account_id": "acc_choice",
+                            "investment_source_type": "manual",
+                        },
+                        rationale="keep the recorded history",
+                        confidence="suggested",
+                        idempotent=True,
+                    ),
+                    RecoveryAction(
+                        tool="accounts_set",
+                        arguments={"account_id": "acc_choice"},
+                        rationale="rename it",
+                        confidence="suggested",
+                        idempotent=True,
+                    ),
+                ],
+            ),
+        ],
+        transaction_count=1,
+    )
+
+    result = runner.invoke(app, ["system", "doctor"])
+
+    output = " ".join(result.output.split())  # the receipt wraps at terminal width
+    assert (
+        "Consider keep the recorded history: "
+        "moneybin accounts set acc_choice --investment-source-type manual"
+    ) in output
+    assert "Consider rename it" in output
+    assert "Consider rename it: moneybin" not in output

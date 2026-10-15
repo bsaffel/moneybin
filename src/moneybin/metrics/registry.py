@@ -756,6 +756,14 @@ INVESTMENT_EVENTS_RECORDED_TOTAL = Counter(
     labelnames=("type",),
 )
 
+INVESTMENT_SOURCE_CHOICE_ACCOUNTS = Gauge(
+    "moneybin_investment_source_choice_accounts",
+    "Accounts with each investment source chosen (app.account_settings."
+    "investment_source_type), refreshed when the investment_source_overlap "
+    "doctor check runs.",
+    ["investment_source_type"],
+)
+
 SECURITY_RESOLUTION_OUTCOMES_TOTAL = Counter(
     "moneybin_security_resolution_outcomes_total",
     "Security-reference resolution outcomes by winning rung: cusip | isin | "
@@ -918,6 +926,14 @@ SYNC_CONNECT_OUTCOMES = Counter(
     "moneybin_sync_connect_outcomes_total",
     "Connect-flow outcomes by terminal status (connected, failed, timeout).",
     ["status"],
+)
+
+SYNC_SERVER_ADDRESS_OUTCOMES = Counter(
+    "moneybin_sync_server_address_outcomes_total",
+    "Attempts to save a profile's sync server address at login, by surface "
+    "(cli, mcp) and outcome (saved, replaced, unreachable, rejected, declined, "
+    "timed_out, prompt_unavailable, override_conflict).",
+    ["surface", "outcome"],
 )
 
 # ── Investments sync ─────────────────────────────────────────────────────────
@@ -1305,6 +1321,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_merchant_link_outcomes": "Merchant identity resolution",
     # Investments
     "moneybin_investment_events_recorded": "Investments",
+    "moneybin_investment_source_choice_accounts": "Investments",
     "moneybin_security_resolution_outcomes": "Investments",
     # MCP server
     "moneybin_mcp_tool_calls": "MCP server",
@@ -1330,6 +1347,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_sync_institution_errors": "Sync",
     "moneybin_sync_auth_refresh_outcomes": "Sync",
     "moneybin_sync_connect_outcomes": "Sync",
+    "moneybin_sync_server_address_outcomes": "Sync",
     # Investments sync
     "moneybin_sync_investments_records_loaded": "Investments sync",
     "moneybin_investment_amount_drift_rows": "Investments sync",

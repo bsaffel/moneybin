@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-10-07 -->
 
 # Profiles
 
@@ -31,7 +31,7 @@ What lives inside a profile:
 - **Logs.** `<base>/profiles/<name>/logs/` — daily-rotating files written by the `SanitizedLogFormatter`. One profile's logs never mix with another's.
 - **Metrics.** The `app.metrics` table lives inside each profile's database, so metric counters are profile-internal.
 - **Audit trail.** The `app.audit_log` table is also profile-internal — privacy consent grants, redaction decisions, and tool invocations are scoped to the profile that recorded them.
-- **Config.** A profile-level `<base>/profiles/<name>/config.yaml` holds overridable defaults (logging level, sync enable flag, encryption mode); the user-level `<base>/config.yaml` holds the active-profile pointer.
+- **Config.** A profile-level `<base>/profiles/<name>/config.yaml` holds overridable defaults (logging level, sync server address, encryption mode); the user-level `<base>/config.yaml` holds the active-profile pointer.
 - **Backups.** `db backup` writes into `<base>/profiles/<name>/backups/` by default; `profile delete` removes the entire profile directory, including backups stored there.
 
 ### Base directory resolution
@@ -60,14 +60,15 @@ Creates a new profile end-to-end:
 - Writes a default `config.yaml` into the profile directory.
 - Generates a fresh AES-256 encryption key and stores it under the keychain service `moneybin-<name>`.
 - Initializes the encrypted DuckDB file at `<base>/profiles/<name>/moneybin.duckdb` and runs the baseline schema.
-- Optionally creates the import-inbox layout at `~/Documents/MoneyBin/<name>/{inbox,processed,failed}/` (`--init-inbox` to force, `--no-init-inbox` to skip; prompts interactively when neither is set).
+- Optionally creates the import-inbox layout at `<inbox_root>/<name>/{inbox,processed,failed,pending}/` (`--init-inbox` to force, `--no-init-inbox` to skip; prompts interactively when neither is set). `<inbox_root>` is `~/Documents/MoneyBin` unless `MONEYBIN_IMPORT___INBOX_ROOT` moves it, and the receipt prints the path it used. The inbox is created before the database, so a denied directory — macOS privacy controls on `~/Documents` are the usual cause — fails the command before any schema is built.
+- Makes the new profile the active one, so the next command runs against it. When another profile was active, the receipt ends with a `›` line naming the `profile switch` command back to it.
 
 ```bash
 moneybin profile create personal
 moneybin profile create business --init-inbox
 ```
 
-If any step fails while creating a brand-new profile, the directory `profile create` made is rolled back so you can retry without hitting a "profile already exists" error. A directory it did not make — see "Name collisions" below — is never rolled back, since it may already hold a database.
+If any step fails while creating a brand-new profile, the directory `profile create` made is rolled back so you can retry without hitting a "profile already exists" error, and the active profile is left where it was. A directory it did not make — see "Name collisions" below — is never rolled back, since it may already hold a database.
 
 #### Name collisions
 
@@ -111,14 +112,14 @@ Prints the resolved settings for a profile (defaults to the active one). Fields:
 
 ### `moneybin profile set <section>.<field> <value>`
 
-Writes a value into the profile-level `config.yaml`. Keys are two-level dotted (`logging.level`, `logging.log_to_file`, `database.encryption_key_mode`). Boolean strings (`true`, `false`) and digit-only strings are coerced to native types before writing. Targets the active profile unless `--profile/-p` overrides it.
+Writes a value into the profile-level `config.yaml`, which settings read on every command. Keys are two-level dotted (`logging.level`, `logging.log_to_file`, `database.encryption_key_mode`) and must name a setting in the [configuration reference](../reference/configuration.md): an unknown key is refused with the valid fields in that section, a value the setting rejects is refused before the file changes, and a secret (an API key, a client secret) is refused because the file is plain text. Targets the active profile unless `--profile/-p` overrides it.
 
 ```bash
 moneybin profile set logging.level DEBUG
 moneybin profile set logging.log_to_file false --profile business
 ```
 
-This only updates the per-profile YAML — env-var overrides like `MONEYBIN_DATABASE__PATH` still take precedence at load time. Every variable, with its type and default, is in the [configuration reference](../reference/configuration.md).
+An environment variable or dotenv line for the same setting (`MONEYBIN_LOGGING__LEVEL`) takes precedence over the saved value for as long as it is set. Every variable, with its type and default, is in the [configuration reference](../reference/configuration.md).
 
 ### `moneybin profile delete <name>`
 
@@ -148,7 +149,7 @@ Three ways to pick the profile a command runs against, in precedence order:
 
 1. **`--profile <name>` / `-p <name>` flag** — top-level flag, wins over everything (including an exported `MONEYBIN_PROFILE`). Use for one-off invocations against a non-active profile without changing the saved default or your shell environment.
 2. **`MONEYBIN_PROFILE` env var** — shell-session-scoped override. Wins over the saved default, loses to the flag.
-3. **Saved active profile** — the value persisted by `profile switch` (or set by the first-run wizard) in `<base>/config.yaml`.
+3. **Saved active profile** — the value persisted by `profile switch` or `profile create` (or set by the first-run wizard or `moneybin demo`) in `<base>/config.yaml`.
 
 ```bash
 # One-off: import into 'business' without changing the active profile,
@@ -222,9 +223,9 @@ The practical recipe for headless deployments:
 3. On the target, export `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY=<hex>` before invoking moneybin. Every command — CLI, `mcp serve`, cron jobs — needs the env var set in its environment.
 4. If the headless target *does* have a keyring (unusual but possible), `db init` with the env var set will persist the key into it and you can stop exporting the env var afterwards.
 
-Passphrase mode (`profile create --passphrase` once it lands; today via `db init --passphrase` on a freshly created profile) sidesteps the auto-key trap: the passphrase is the input, the derived key is held in memory for the command's lifetime, and an env-var fallback is still available via `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` after `db unlock`. See [`database-security.md`](database-security.md) "Headless and cron deployments" for Docker, systemd, and cron patterns.
+Passphrase mode (`profile create --passphrase` once it lands; today via `db init --passphrase` on a freshly created profile) sidesteps the auto-key trap: the passphrase is the input, the derived key is held in memory for the command's lifetime, and an env-var fallback is still available via `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` after `db unlock`. `db init` records the mode it used as `database.encryption_key_mode` in the profile's `config.yaml`, which is where `profile show` and `db info` read it. See [`database-security.md`](database-security.md) "Headless and cron deployments" for Docker, systemd, and cron patterns.
 
-Sync login and token refresh require a writable OS keychain, including on headless hosts. Existing profile-specific plaintext sync token files are imported into the keychain and removed only after both values are verified. If keychain storage fails, the file remains and authentication from it is refused; configure or unlock the keychain before retrying.
+Sync login and token refresh require a writable OS keychain, including on headless hosts. Existing profile-specific plaintext sync token files are deleted without being used, and a keychain token pair that records no issuing server is never sent to any server. Run `moneybin sync login` once after upgrading to sign in again.
 
 ## Multi-user on one machine
 
@@ -258,7 +259,7 @@ See [`database-security.md`](database-security.md) for the full key lifecycle, p
 
 ## Profile and sync
 
-Each profile owns its own sync identity: its own `sync.server_url`, its own server credentials, its own list of remote connections (Plaid items, future cloud sources). Switching profiles switches the sync identity entirely — a `moneybin sync pull` after `profile switch` talks to whatever server and credentials the new profile has configured, with no leak from the previous profile.
+Each profile owns its own sync identity: its own `sync.server_url` (saved to that profile's `config.yaml` by `moneybin sync login --server <url>`), its own server credentials, its own list of remote connections (Plaid items, future cloud sources). Switching profiles switches the sync identity entirely — a `moneybin sync pull` after `profile switch` talks to whatever server and credentials the new profile has configured, with no leak from the previous profile.
 
 ## Migration between profiles
 

@@ -51,8 +51,10 @@ def test_unlock_refuses_redirected_passphrase_before_derivation(
 def _make_settings_mock(db_path: Path, mocker: Any) -> MagicMock:
     """Create a mock settings object with a database.path set to db_path."""
     mock_settings = MagicMock()
+    mock_settings.profile = "alice"
     mock_settings.database.path = db_path
     mock_settings.database.encryption_key_mode = "auto"
+    mock_settings.database.model_fields_set = set()
     mock_settings.database.backup_path = None
     # get_settings is imported lazily inside each command function, so we patch
     # the canonical source rather than a module-level reference in db.py.
@@ -884,6 +886,140 @@ class TestDbInitCommand:
 
         assert result.exit_code == 0
         mock_store.set_key.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("args", "stdin", "mode"),
+        [
+            (["--passphrase"], "mypassphrase\nmypassphrase\n", "passphrase"),
+            ([], "", "auto"),
+        ],
+    )
+    def test_init_records_the_key_mode_it_chose(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        args: list[str],
+        stdin: str,
+        mode: str,
+    ) -> None:
+        """`profile show` and `db info` read the mode `db init` actually used."""
+        from moneybin.services.profile_service import ProfileService
+        from moneybin.utils.user_config import generate_profile_config
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        generate_profile_config(profile_dir, "alice")
+        stale = "auto" if mode == "passphrase" else "passphrase"
+        ProfileService().set("alice", "database.encryption_key_mode", stale)
+        self._mock_deps(mocker, profile_dir)
+        mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\x01" * 32)
+
+        result = runner.invoke(app, ["init", *args, "--yes"], input=stdin)
+
+        assert result.exit_code == 0, result.output
+        assert ProfileService().recorded_key_mode("alice") == mode
+        assert f"Key mode: {mode}" in result.output
+
+    def test_init_reports_an_unrecordable_key_mode_with_the_fix(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The database exists; only the record failed, and the hint finishes it."""
+        from moneybin.services.profile_service import ProfileService
+        from moneybin.utils.user_config import generate_profile_config
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        generate_profile_config(profile_dir, "alice")
+        mock_store, _ = self._mock_deps(mocker, profile_dir)
+        mocker.patch.object(
+            ProfileService, "set", side_effect=PermissionError(13, "Permission denied")
+        )
+
+        result = runner.invoke(app, ["init", "--yes"])
+
+        assert result.exit_code == 1
+        mock_store.set_key.assert_called_once()  # the key was stored before
+        assert "Encrypted database created" in result.stdout
+        assert "could not be recorded" in caplog.text
+        assert "moneybin profile set database.encryption_key_mode auto" in result.stderr
+
+    def test_init_elsewhere_or_unregistered_records_nothing(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No config.yaml is written: it is an unregistered profile's commit marker."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        self._mock_deps(mocker, profile_dir)
+
+        result = runner.invoke(app, ["init", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert not (profile_dir / "config.yaml").exists()
+        assert "Key mode" not in result.output
+
+
+class TestReportedKeyMode:
+    """`db info` reports the profile's recorded key mode unless overridden."""
+
+    def _settings(self, db_path: Path, *, explicit: bool) -> MagicMock:
+        settings = MagicMock()
+        settings.profile = "alice"
+        settings.database.path = db_path
+        settings.database.encryption_key_mode = "auto"
+        settings.database.model_fields_set = (
+            {"encryption_key_mode"} if explicit else set()
+        )
+        return settings
+
+    @pytest.fixture
+    def recorded_passphrase(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Path:
+        from moneybin.services.profile_service import ProfileService
+        from moneybin.utils.user_config import generate_profile_config
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        generate_profile_config(profile_dir, "alice")
+        ProfileService().set("alice", "database.encryption_key_mode", "passphrase")
+        return profile_dir / "moneybin.duckdb"
+
+    def test_profile_database_reports_the_recorded_mode(
+        self, recorded_passphrase: Path
+    ) -> None:
+        settings = self._settings(recorded_passphrase, explicit=False)
+        assert (
+            db_commands._reported_key_mode(settings, recorded_passphrase)  # pyright: ignore[reportPrivateUsage]  # unit under test
+            == "passphrase"
+        )
+
+    def test_explicit_setting_wins(self, recorded_passphrase: Path) -> None:
+        settings = self._settings(recorded_passphrase, explicit=True)
+        assert (
+            db_commands._reported_key_mode(settings, recorded_passphrase)  # pyright: ignore[reportPrivateUsage]  # unit under test
+            == "auto"
+        )
+
+    def test_other_database_file_ignores_the_profile_record(
+        self, recorded_passphrase: Path, tmp_path: Path
+    ) -> None:
+        settings = self._settings(recorded_passphrase, explicit=False)
+        assert (
+            db_commands._reported_key_mode(settings, tmp_path / "other.duckdb")  # pyright: ignore[reportPrivateUsage]  # unit under test
+            == "auto"
+        )
 
 
 class TestDbUnlockCommand:

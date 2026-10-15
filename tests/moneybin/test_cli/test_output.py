@@ -68,6 +68,40 @@ def test_multiple_applied_rates_offer_one_known_executable_command() -> None:
     assert "<from>" not in note
     assert "<date>" not in note
     assert applied_rates_note(tuple(reversed(rates)), "USD") == note
+    assert "earlier day" not in note
+
+
+def test_rates_carried_across_a_closure_are_counted_and_shown_first() -> None:
+    """A multi-rate note says how many priced a date from an earlier publication.
+
+    The example command is one of those, so running it shows both days.
+    """
+    rates = (
+        ResolvedRate(
+            "AED",
+            "USD",
+            date(2025, 12, 27),
+            date(2025, 12, 27),
+            Decimal("0.272"),
+            "override",
+        ),
+        ResolvedRate(
+            "EUR",
+            "USD",
+            date(2025, 12, 27),
+            date(2025, 12, 24),
+            Decimal("1.1787"),
+            "frankfurter",
+        ),
+    )
+
+    note = applied_rates_note(rates, "USD")
+
+    assert note is not None
+    assert (
+        "2 stored rates, 1 published on an earlier day than the date they price" in note
+    )
+    assert "moneybin fx rate EUR USD 2025-12-27" in note
 
 
 def test_human_result_pages_only_after_its_rendered_height_exceeds_terminal(

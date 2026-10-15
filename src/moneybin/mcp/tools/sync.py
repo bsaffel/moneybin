@@ -29,6 +29,7 @@ from moneybin.adapters.sync_adapters import (
     sync_status_envelope,
 )
 from moneybin.config import get_settings
+from moneybin.connectors.sync_auth import SyncAuthResult, SyncAuthService
 from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
@@ -38,6 +39,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.metrics.registry import SYNC_SERVER_ADDRESS_OUTCOMES
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.sync import (
     SyncAuthView,
@@ -60,36 +62,34 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
+from moneybin.services import sync_server_address
+from moneybin.services.sync_server_address import AddressPlan
 
 
 def _build_sync_client() -> Any:
-    """Construct a SyncClient from current settings.
+    """Construct a SyncClient from current settings. Extracted for test mocking."""
+    try:
+        return sync_server_address.build_sync_client()
+    except UserError as e:
+        raise _agent_facing(e) from e
 
-    Mirrors the CLI builder (``cli/commands/sync.py``) exactly — including the
-    per-profile identity — so MCP and CLI read and write the same scoped token
-    slot. (The two builders are duplicated; consolidating them is tracked as a
-    follow-up.)
-    """
-    from moneybin.config import get_settings
-    from moneybin.connectors.sync_client import SyncClient
-    from moneybin.utils.user_config import get_or_create_profile_id
 
-    settings = get_settings()
-    if settings.sync.server_url is None:
-        raise ValueError(
-            "sync.server_url is not configured. "
-            "Set MONEYBIN_SYNC__SERVER_URL in your environment."
-        )
-    # Scope the broker identity to the active profile so each profile
-    # authenticates as a distinct user.
-    profile_id = get_or_create_profile_id(settings.profile_dir)
-    return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
+_ASK_FOR_ADDRESS = (
+    "Ask the user for their moneybin-sync server's address, then call "
+    "sync_link(mode='login', server_url=<that address>). Never choose "
+    "or guess the address yourself."
+)
+
+
+def _agent_facing(error: UserError) -> UserError:
+    """Swap the terminal-command hint for one an agent can act on."""
+    if error.code != error_codes.SYNC_SERVER_NOT_CONFIGURED:
+        return error
+    return UserError(error.message, code=error.code, hint=_ASK_FOR_ADDRESS)
 
 
 def _build_sync_auth_service() -> Any:
     """Construct profile-scoped nonblocking authentication orchestration."""
-    from moneybin.connectors.sync_auth import SyncAuthService
-
     return SyncAuthService(client=_build_sync_client())
 
 
@@ -186,8 +186,9 @@ def _pull_actions(result: PullResult) -> list[str]:
         actions.append(
             f"{len(result.investment_source_overlap_accounts)} account(s) have "
             "both manual and Plaid investment history — lots and gains "
-            "double-count until one source is chosen per account "
-            "(see system_status(sections=['doctor']))."
+            "double-count until one source is chosen per account with "
+            "accounts_set(investment_source_type=...); "
+            "system_status(sections=['doctor']) shows each source's trade counts."
         )
     actions.extend(refresh_rate_gap_hints(result.refresh_steps))
     actions.append("Use sync_status to see connection health going forward.")
@@ -339,19 +340,130 @@ def sync_status_coarse(
     return build_classified_envelope(data, actions=actions)
 
 
+def _server_address_binding(plan: AddressPlan) -> ConfirmationBinding:
+    return ConfirmationBinding(
+        arguments={"mode": "login", "server_url": plan.url, "change": plan.change},
+        resolved_ids=(plan.url,),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="sync_server_address_set",
+        blast_radius={"profiles": 1},
+    )
+
+
+def _server_address_message(plan: AddressPlan, *, suggested: bool) -> str:
+    if suggested:
+        lines = [
+            "No sync server is set for this profile. Use the local default, "
+            f"{plan.url}? You will be sent there to sign in, and bank linking "
+            "runs through it. Confirm only if you run moneybin-sync on this "
+            "machine; otherwise decline and give your assistant your server's "
+            "address."
+        ]
+    else:
+        lines = [
+            f"Use {plan.url} as this profile's sync server? You will be sent "
+            "there to sign in, and bank linking runs through it. Confirm only "
+            "if you gave this address yourself."
+        ]
+    if plan.change == "replace":
+        lines.append(
+            "This replaces the profile's current server and signs it out of that one."
+        )
+    if plan.unencrypted:
+        lines.append("The connection to this address is not encrypted.")
+    return " ".join(lines)
+
+
+async def _begin_login_at(
+    server_url: str, *, suggested: bool = False
+) -> SyncAuthResult:
+    """Begin login at an address, saving it only with consent."""
+    plan = await asyncio.to_thread(
+        sync_server_address.plan_server_address, server_url, surface="mcp"
+    )
+    if plan.change != "unchanged":
+        try:
+            # elicitation_only: a fallback token would go back to the calling
+            # agent, which could then approve its own choice of server.
+            grant = await grant_confirmation_or_raise(
+                binding=_server_address_binding(plan),
+                message=_server_address_message(plan, suggested=suggested),
+                confirmation_token=None,
+                elicitation_only=True,
+                cli_equivalent=(
+                    "moneybin sync login"
+                    if suggested
+                    else sync_server_address.LOGIN_COMMAND
+                ),
+            )
+        except UserError as e:
+            # A timeout shares the declined code; nobody answered, so the
+            # local address was not ruled out.
+            timed_out = (e.details or {}).get("reason") == "timeout"
+            declined = (
+                e.code == error_codes.MUTATION_CONFIRMATION_DECLINED and not timed_out
+            )
+            outcome = (
+                "timed_out"
+                if timed_out
+                else "declined"
+                if declined
+                else "prompt_unavailable"
+            )
+            SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface="mcp", outcome=outcome).inc()
+            if declined and suggested:
+                # Declining the default means the server is elsewhere.
+                raise UserError(
+                    e.message, code=e.code, details=e.details, hint=_ASK_FOR_ADDRESS
+                ) from e
+            raise
+        # The prompt can sit open while the CLI saves another address; what
+        # the person approved must still be what saving does now.
+        plan = await asyncio.to_thread(
+            sync_server_address.plan_server_address, server_url, surface="mcp"
+        )
+        grant.verify(_server_address_binding(plan))
+    start = await asyncio.to_thread(
+        sync_server_address.start_login, plan, surface="mcp"
+    )
+    return await asyncio.to_thread(
+        SyncAuthService(client=start.client).begin, challenge=start.challenge
+    )
+
+
 @mcp_tool(read_only=False, idempotent=False, open_world=True)
-def sync_link_coarse(
+async def sync_link_coarse(
     institution: str | None = None,
     mode: Literal["institution", "login"] = "institution",
+    server_url: str | None = None,
 ) -> ResponseEnvelope[SyncLinkCoarsePayload]:
     """Start an institution-link or nonblocking device-login session."""
+    if server_url is not None and mode != "login":
+        raise UserError(
+            "server_url is valid only when mode='login'.",
+            code=error_codes.SYNC_LINK_MODE_CONFLICT,
+        )
     if mode == "login":
         if institution is not None:
             raise UserError(
                 "institution is valid only when mode='institution'.",
                 code=error_codes.SYNC_LINK_MODE_CONFLICT,
             )
-        result = _build_sync_auth_service().begin()
+        if server_url is not None:
+            result = await _begin_login_at(server_url)
+        else:
+            try:
+                result = await asyncio.to_thread(
+                    lambda: _build_sync_auth_service().begin()
+                )
+            except UserError as e:
+                if e.code != error_codes.SYNC_SERVER_NOT_CONFIGURED:
+                    raise
+                result = await _begin_login_at(
+                    sync_server_address.SUGGESTED_SERVER_URL, suggested=True
+                )
         data: SyncLinkCoarsePayload = SyncAuthView(
             auth_session_id=result.auth_session_id,
             status=result.status,
@@ -369,7 +481,7 @@ def sync_link_coarse(
                 "after the user completes authorization.",
             ],
         )
-    response = sync_link(institution=institution)
+    response = await asyncio.to_thread(sync_link, institution=institution)
     if response.error is not None:
         return cast(ResponseEnvelope[SyncLinkCoarsePayload], response)
     return build_envelope(
@@ -567,7 +679,13 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
             "Start a hosted institution-link or nonblocking device-login session. "
             "Returned link_url and user_code values are sensitive one-time "
             "credentials; present them to the user, but never include them in "
-            "logs or summaries.",
+            "logs or summaries. In login mode, server_url names this profile's "
+            "sync server: pass only an address the user gave you; omit it and, "
+            "if none is saved, the user is offered "
+            f"{sync_server_address.SUGGESTED_SERVER_URL}. A new or "
+            "changed address is saved to the profile's config.yaml only after "
+            "the user confirms a prompt, and signs the profile out of the "
+            "previous server; log in with another address to change it back.",
         ),
         (
             sync_status_coarse,

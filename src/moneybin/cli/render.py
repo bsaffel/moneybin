@@ -375,6 +375,27 @@ def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
     return (*range(head), *range(total - tail, total))
 
 
+def _drop_optional(
+    columns: Sequence[str],
+    widths: Sequence[int],
+    optional: Sequence[str],
+    available: int,
+) -> tuple[int, ...]:
+    """Indices left after dropping ``optional`` columns, last first, until it fits.
+
+    Every other column is essential and stays even when the table still does
+    not fit, because the essential set is the command's answer and Rich can
+    still wrap its text. Unlike ``_fit_columns`` this chooses by declared
+    importance rather than by position, so a measure in the middle survives.
+    """
+    kept = list(range(len(columns)))
+    for name in reversed(optional):
+        if _table_width([widths[i] for i in kept]) <= available:
+            break
+        kept.remove(columns.index(name))
+    return tuple(kept)
+
+
 @dataclass(frozen=True)
 class ColumnView:
     """What a command renders now, and how many columns it could have."""
@@ -478,6 +499,7 @@ def build_rows(
     has_more: bool = False,
     placeholder: Placeholder | None = None,
     fit: bool = False,
+    optional: Sequence[str] | None = None,
     terminal: TerminalPolicy | None = None,
 ) -> RenderableType:
     """Build ``rows`` as a table renderable (requirement 2).
@@ -546,6 +568,13 @@ def build_rows(
     30). Both widen requirement 10's trigger: framing is not only about
     omitted columns, so a complete projection under ``--wide`` still discloses
     a taxonomy gap.
+
+    ``optional`` names the columns a ``--wide`` view may omit when the whole
+    projection is wider than the terminal, listed most important first; the
+    last is dropped first, and every column not named stays. A `--wide` table
+    has no wider view to point at, so the frame names what it omitted and
+    points at a wider terminal or JSON instead (requirement 10). Exclusive with
+    ``fit``, which chooses by position rather than by importance.
 
     Every clause shares one line. Four lines beneath a two-row table would cost
     more screen than the result they describe.
@@ -619,8 +648,14 @@ def build_rows(
         )
         for row in rows
     )
+    if fit and optional:
+        raise ValueError("fit and optional are exclusive")
+    unknown_optional = [name for name in optional or () if name not in columns]
+    if unknown_optional:
+        # Refused for the reason `column_view` gives an unknown column.
+        raise ValueError(f"undeclared optional column(s) {unknown_optional}")
     kept = tuple(range(len(columns)))
-    if fit and columns:
+    if (fit or optional) and columns:
         # The one path that buffers the whole result, and it has no choice: a
         # column is as wide as its widest value, so every record has to be
         # rendered before the first column can be sized. Every other path
@@ -636,12 +671,22 @@ def build_rows(
             )
             for i, name in enumerate(columns)
         ]
-        kept = _fit_columns(widths, console.width)
+        kept = (
+            _drop_optional(columns, widths, optional, console.width)
+            if optional
+            else _fit_columns(widths, console.width)
+        )
+    omitted = [name for i, name in enumerate(columns) if i not in kept]
     # The single gap in a prefix-plus-suffix selection, or None when nothing
-    # was dropped.
-    gap = next(
-        (at for at, i in enumerate(kept[:-1]) if kept[at + 1] != i + 1),
-        None,
+    # was dropped. An optional drop can leave several gaps, so it marks none
+    # and names the omitted columns in the frame instead.
+    gap = (
+        None
+        if optional
+        else next(
+            (at for at, i in enumerate(kept[:-1]) if kept[at + 1] != i + 1),
+            None,
+        )
     )
 
     table = Table(box=box.ASCII if terminal.ascii else box.HEAVY_HEAD)
@@ -714,7 +759,13 @@ def build_rows(
         # error. Offered only against a page that exists, because a remedy
         # that fetches nothing is worse than no remedy at all.
         clauses.append("raise --limit for more")
-    if whole > len(kept):
+    if optional and omitted:
+        _count_columns_omitted()
+        clauses.append(
+            f"{len(kept)} of {whole} columns fit — {', '.join(omitted)} "
+            "omitted; widen the terminal or use --output json"
+        )
+    elif whole > len(kept):
         _count_columns_omitted()
         clauses.append(f"{len(kept)} of {whole} columns shown — --wide for all")
     if placeholder is not None and flagged:
@@ -741,6 +792,7 @@ def render_rows(
     has_more: bool = False,
     placeholder: Placeholder | None = None,
     fit: bool = False,
+    optional: Sequence[str] | None = None,
     terminal: TerminalPolicy | None = None,
 ) -> None:
     """Render ``rows`` as a table to stdout using :func:`build_rows`."""
@@ -770,6 +822,7 @@ def render_rows(
         has_more=has_more,
         placeholder=placeholder,
         fit=fit,
+        optional=optional,
         terminal=terminal,
     )
     if isinstance(result, _RowsAnswer):

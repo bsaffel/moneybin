@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 _DIR_MODE = 0o700
 _FILE_MODE = 0o600
+# Every directory `ensure_layout` creates under <inbox_root>/<profile>/.
+INBOX_LAYOUT: tuple[str, ...] = ("inbox", "processed", "failed", "pending")
 _OUTCOME_DIRS: tuple[Literal["processed", "failed", "pending"], ...] = (
     "processed",
     "failed",
@@ -244,13 +246,7 @@ class InboxService:
 
     def ensure_layout(self) -> None:
         """Create <root>/{inbox,processed,failed,pending}/ with 0700 perms (idempotent)."""
-        for d in (
-            self.root,
-            self.inbox_dir,
-            self.processed_dir,
-            self.failed_dir,
-            self.pending_dir,
-        ):
+        for d in (self.root, *(self.root / name for name in INBOX_LAYOUT)):
             d.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
             # mkdir's mode is masked by umask on creation; chmod fixes existing dirs too.
             d.chmod(_DIR_MODE)

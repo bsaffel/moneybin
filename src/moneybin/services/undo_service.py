@@ -151,10 +151,13 @@ def _undo_action(
     )
 
 
-def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
-    """Return whether undo changed FX inputs and whether Account currency changed."""
+def _fx_restatement_requirement(
+    events: list[AuditEvent],
+) -> tuple[bool, bool, bool]:
+    """Return whether undo changed FX inputs, Account currency, or the source choice."""
     needs_restatement = False
     account_currency_changed = False
+    investment_source_changed = False
     for event in events:
         if event.target_schema != "app":
             continue
@@ -203,7 +206,9 @@ def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
             "default_cost_basis_method"
         ):
             needs_restatement = True
-    return needs_restatement, account_currency_changed
+        if before.get("investment_source_type") != after.get("investment_source_type"):
+            investment_source_changed = True
+    return needs_restatement, account_currency_changed, investment_source_changed
 
 
 class UndoService:
@@ -340,10 +345,17 @@ class UndoService:
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
         )
-        needs_fx_restatement, account_currency_changed = _fx_restatement_requirement(
-            undone
+        needs_fx_restatement, account_currency_changed, investment_source_changed = (
+            _fx_restatement_requirement(undone)
         )
-        if needs_fx_restatement:
+        if investment_source_changed:
+            # The account root covers the FX root, so one restate serves both.
+            from moneybin.services.fx_accounting_refresh import (
+                restate_investment_ledger,
+            )
+
+            restate_investment_ledger(self._db, committed_change="undo")
+        elif needs_fx_restatement:
             from moneybin.services.fx_accounting_refresh import (
                 restate_fx_accounting,
             )

@@ -25,7 +25,7 @@ WITH normalized AS (
   INNER JOIN core.dim_accounts AS a
     ON t.account_id = a.account_id
   WHERE
-    NOT t.is_transfer AND NOT a.archived
+    @report_eligible_transaction(t, a)
 )
 SELECT
   merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL for the '(uncategorized)' bucket aggregating transactions without a canonical merchant */

@@ -14,11 +14,12 @@ import re
 import shutil
 from collections.abc import Generator
 from pathlib import Path
+from typing import cast
 
 import yaml
 
 from moneybin import error_codes
-from moneybin.config import get_base_dir
+from moneybin.config import get_base_dir, validate_profile_setting
 from moneybin.errors import UserError
 from moneybin.utils.user_config import (
     generate_profile_config,
@@ -175,7 +176,7 @@ class ProfileService:
             (profile_dir / "logs").mkdir(mode=0o700, exist_ok=True)
             (profile_dir / "temp").mkdir(mode=0o700, exist_ok=True)
         if init_inbox:
-            self._init_inbox(normalized)
+            self.ensure_inbox(normalized)
         if not (profile_dir / "config.yaml").exists():
             generate_profile_config(profile_dir, normalized)
             logger.debug(f"Completed registration for profile: {normalized}")
@@ -198,7 +199,7 @@ class ProfileService:
         Args:
             name: Profile name (will be normalized to lowercase with hyphens).
             init_inbox: When True, also create the import-inbox layout at
-                ``<inbox_root>/<normalized_name>/{inbox,processed,failed}/``.
+                ``<inbox_root>/<normalized_name>/{inbox,processed,failed,pending}/``.
 
         Returns:
             Path to the profile directory.
@@ -235,6 +236,10 @@ class ProfileService:
             # than keeping perms we never chose.
             profile_dir.chmod(0o700)
         try:
+            # Inbox first: a denied inbox root (macOS TCC on ~/Documents) must
+            # fail before the database and its schema are built, not after.
+            if init_inbox:
+                self.ensure_inbox(normalized)
             # Database before registration: `_init_database` is the step that
             # actually fails in the field (a locked or unavailable OS keychain), and
             # `ensure_registered` writes the `config.yaml` commit marker. Registering
@@ -242,7 +247,7 @@ class ProfileService:
             # `create()` — stranding the user exactly as before.
             if not (profile_dir / "moneybin.duckdb").exists():
                 self._init_database(profile_dir, normalized)
-            self.ensure_registered(normalized, init_inbox=init_inbox)
+            self.ensure_registered(normalized)
         except Exception:
             # Roll back only a directory we made ourselves. An adopted directory
             # may hold a `db init`'d database — the thing the caller is trying to
@@ -255,18 +260,39 @@ class ProfileService:
         return profile_dir
 
     @staticmethod
-    def _init_inbox(profile: str) -> Path:
-        """Create the import-inbox layout for ``profile`` and return its root."""
+    def inbox_root(name: str) -> Path:
+        """Where ``name``'s import-inbox layout lives: ``<inbox_root>/<profile>/``."""
         from moneybin.config import MoneyBinSettings
-        from moneybin.services.inbox_service import InboxService
 
         # Don't pass import_= explicitly — let MoneyBinSettings build it via
         # its default_factory so MONEYBIN_IMPORT___INBOX_ROOT env overrides
         # apply (e.g. test isolation in tests/conftest.py).
-        settings = MoneyBinSettings(profile=profile)
+        return MoneyBinSettings(profile=normalize_profile_name(name)).profile_inbox_dir
+
+    @staticmethod
+    def ensure_inbox(name: str) -> Path:
+        """Create the import-inbox layout for ``name`` and return its root."""
+        from moneybin.config import MoneyBinSettings
+        from moneybin.services.inbox_service import InboxService
+
+        settings = MoneyBinSettings(profile=normalize_profile_name(name))
         service = InboxService(db=None, settings=settings)
         service.ensure_layout()
         return service.root
+
+    def recorded_key_mode(self, name: str) -> str | None:
+        """The ``database.encryption_key_mode`` the profile's config.yaml records."""
+        try:
+            config = _read_yaml(self._profile_dir(name) / "config.yaml")
+        except ValueError:
+            return None
+        database = config.get("database")
+        if not isinstance(database, dict):
+            return None
+        mode = cast(dict[str, object], database).get("encryption_key_mode")
+        return (
+            mode if isinstance(mode, str) and mode in ("auto", "passphrase") else None
+        )
 
     def _init_database(self, profile_dir: Path, profile: str) -> None:
         """Initialize an encrypted database for the profile.
@@ -412,9 +438,8 @@ class ProfileService:
     def set(self, name: str, key: str, value: str) -> None:
         """Set a config value in a profile's config.yaml.
 
-        Only supports two-level dot-notation keys (``section.field``).
-        Boolean strings (``"true"``/``"false"``) and digit-only strings
-        are coerced to their native types before writing.
+        Only supports two-level dot-notation keys (``section.field``) that
+        ``MoneyBinSettings`` declares; the value is coerced to the field's type.
 
         Args:
             name: Profile name (normalized before lookup).
@@ -423,8 +448,9 @@ class ProfileService:
 
         Raises:
             ProfileNotFoundError: If the named profile directory does not exist.
-            ValueError: If ``key`` is not in ``section.field`` format, or if
-                the name contains no valid characters.
+            ValueError: If ``key`` is not a declared, non-secret
+                ``section.field``, the value is rejected by the field's type,
+                or the name contains no valid characters.
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
@@ -440,17 +466,18 @@ class ProfileService:
         section, field = parts
         if not _SAFE_KEY.match(section) or not _SAFE_KEY.match(field):
             raise ValueError(f"Key parts must be lowercase identifiers, got: {key!r}")
+        # Validated before the file is touched: settings load this file, so an
+        # undeclared key would be inert and a bad value would break every command.
+        saved = data.get(section)
+        coerced_value = validate_profile_setting(
+            section,
+            field,
+            value,
+            cast(dict[str, object], saved) if isinstance(saved, dict) else None,
+        )
         if section not in data or not isinstance(data[section], dict):
             data[section] = {}
         section_dict: dict[str, object] = data[section]  # type: ignore[assignment]  # narrowed above
-        # Coerce booleans and integers from string representation
-        coerced_value: str | bool | int
-        if value.lower() in ("true", "false"):
-            coerced_value = value.lower() == "true"
-        elif value.isdigit():
-            coerced_value = int(value)
-        else:
-            coerced_value = value
         section_dict[field] = coerced_value
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)

@@ -127,6 +127,8 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "raw_security_prices.sql",
     "app_security_price_overrides.sql",
     "raw_exchange_rates.sql",
+    "raw_exchange_rate_currencies.sql",
+    "raw_exchange_rate_coverage.sql",
     "app_exchange_rate_overrides.sql",
 ]
 

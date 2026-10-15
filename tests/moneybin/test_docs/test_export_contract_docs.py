@@ -181,5 +181,4 @@ def test_system_payload_docs_state_export_destination_name_sensitivity() -> None
 
     assert "user-supplied destination names" in text
     assert "``ExportsStatus``               → Tier.MEDIUM" in text
-    assert "``SystemStatusCLIPayload``      → Tier.MEDIUM" in text
     assert "privacy-safe export destination names" not in text

@@ -200,6 +200,8 @@ async def test_sync_pull_flags_manual_plaid_overlap(mock_build: MagicMock) -> No
     assert envelope.data.investment_source_overlap_accounts == ["acc_a", "acc_b"]
     actions_text = " ".join(envelope.actions)
     assert "both manual and Plaid" in actions_text
+    assert "accounts_set(investment_source_type=...)" in actions_text
+    assert "system_status(sections=['doctor'])" in actions_text
 
 
 @pytest.mark.unit
