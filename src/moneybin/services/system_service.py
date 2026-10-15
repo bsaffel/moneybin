@@ -111,9 +111,11 @@ class SystemService:
         from moneybin.services.merchant_links_service import MerchantLinksService
         from moneybin.services.security_links_service import SecurityLinksService
 
+        categorization = CategorizationService(self._db)
+        uncategorized = categorization.count_uncategorized()
         review = ReviewService(
             MatchingService(self._db),
-            CategorizationService(self._db),
+            categorization,
             AccountLinksService(self._db),
             MerchantLinksService(self._db),
             SecurityLinksService(self._db),
@@ -123,7 +125,7 @@ class SystemService:
 
         logger.info(
             f"System status: {accounts_count} accounts, {transactions_count} transactions, "
-            f"{review.matches_pending} matches pending, {review.categorize_pending} uncategorized, "
+            f"{review.matches_pending} matches pending, {uncategorized} uncategorized, "
             f"transforms_pending={freshness.pending}"
         )
         return SystemStatus(
@@ -135,7 +137,7 @@ class SystemService:
             account_links_pending=review.account_links_pending,
             merchant_links_pending=review.merchant_links_pending,
             security_links_pending=review.security_links_pending,
-            categorize_pending=review.categorize_pending,
+            categorize_pending=uncategorized,
             transforms_pending=freshness.pending,
             transforms_last_apply_at=freshness.last_apply_at,
             transforms_missing_models=freshness.missing_models,

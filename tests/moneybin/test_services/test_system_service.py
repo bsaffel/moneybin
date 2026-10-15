@@ -265,3 +265,29 @@ def test_status_transforms_pending_false_with_no_imports(
     status = SystemService(db=db).status()
     assert status.transforms_pending is False
     assert status.transforms_last_apply_at is None
+
+
+@pytest.mark.unit
+def test_system_inventory_includes_rejected_categorization_attempts(
+    system_db: Database,
+) -> None:
+    from moneybin.repositories.categorization_decisions_repo import (
+        CategorizationDecisionsRepo,
+    )
+    from moneybin.services.categorization import CategorizationService
+
+    repo = CategorizationDecisionsRepo(system_db)
+    for transaction_id in ("T1", "T2"):
+        attempt = repo.ensure_pending(transaction_id, actor="test")
+        repo.update_status(
+            attempt["decision_id"],
+            status="rejected",
+            category_id=None,
+            merchant_id=None,
+            decided_by="user",
+            actor="test",
+        )
+    categorization = CategorizationService(system_db)
+    assert categorization.count_pending_review() == 0
+    assert categorization.count_uncategorized() == 2
+    assert SystemService(system_db).status().categorize_pending == 2
