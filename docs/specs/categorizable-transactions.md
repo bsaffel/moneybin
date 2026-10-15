@@ -216,6 +216,20 @@ After this change an agent writes
 which is the example R4 adds. This removes a readable relation, so a `removed`
 changelog fragment records it next to an `added` fragment for the column.
 
+**R12 — The watermark moves with the column.** Archiving or restoring an
+account flips `is_categorizable` on every row of that account, so those rows'
+`updated_at` must advance (`core-updated-at-convention.md`: `updated_at`
+advances when a real input to the row changes). The account's own `updated_at`
+cannot carry this. An undo writes the settings row's old `updated_at` back,
+and folding it into every row would also advance them on a rename.
+`app.account_settings.archived_changed_at` (V074) records when `archived` last
+changed and never moves backwards, following the
+`investment_source_type_changed_at` precedent. `core.dim_accounts` projects it,
+and `fct_transactions` folds it into `updated_at` for every row of the account.
+The transfer half of the predicate is unchanged: confirming or reversing a
+transfer already moves `is_transfer` without advancing `updated_at`, and this
+spec leaves that as it was.
+
 ## Observability
 
 No metric reads the queue or the copied predicate. The four counts above feed
@@ -266,6 +280,14 @@ failure a metric would show.
   fixture column, so the unit tests that exercise the exclusions still bind
   to the model's definition rather than a hand-typed copy. That file is a
   shared primitive, so the gate includes integration and scenarios.
+- **The watermark (R12).** A model test gives one account an archive change
+  time newer than its transaction's other inputs and asserts the row's
+  `updated_at` equals it. A second account has a newer settings write but no
+  archive change, and its row must not advance. Both rows carry their own
+  currency, so the inherited-currency fold cannot supply the answer. Service
+  and undo tests assert that only an `archived` transition moves the change
+  time, an undo of an archive advances it, and undoing an account's first
+  settings write resets the row rather than deleting it.
 - **The scenario schema snapshot.** `FCT_TRANSACTIONS_SCHEMA` in
   `tests/scenarios/_tier1_backfill.py` lists every `fct_transactions` column
   and its type, and gains `is_categorizable BOOLEAN`.

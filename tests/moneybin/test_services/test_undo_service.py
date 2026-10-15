@@ -211,6 +211,7 @@ class TestUndo:
                 default_cost_basis_method="average",
                 investment_source_type=None,
                 investment_source_type_changed_at=None,
+                archived_changed_at=None,
                 actor="test",
             )
             ExchangeRateOverridesRepo(db).set(
@@ -679,6 +680,7 @@ def _settings_set(db: Database, **overrides: Any) -> None:
         "default_cost_basis_method": None,
         "investment_source_type": None,
         "investment_source_type_changed_at": None,
+        "archived_changed_at": None,
         "actor": "test",
     }
     kwargs.update(overrides)
@@ -936,6 +938,81 @@ class TestUndoOfInvestmentSourceChoice:
         UndoService(db).undo(op, actor="test")
 
         assert _source_row(db) is None
+
+
+def _archive_row(db: Database) -> tuple[bool, datetime | None] | None:
+    row = db.execute(
+        "SELECT archived, archived_changed_at "
+        "FROM app.account_settings WHERE account_id = 'acc_choice'"
+    ).fetchone()
+    return None if row is None else (row[0], row[1])
+
+
+class TestUndoOfArchive:
+    """An undo that moves ``archived`` stamps a new archive change time.
+
+    The change time feeds ``core.fct_transactions.updated_at``, because
+    archiving moves ``is_categorizable`` on every row of the account.
+    """
+
+    def test_undo_of_an_archive_advances_the_change_time(self, db: Database) -> None:
+        _settings_set(db, display_name="Checking")
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Checking",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        archived, changed_at = _archive_row(db) or (None, None)
+        assert archived is False
+        assert changed_at is not None and changed_at > _SOURCE_SET_AT
+
+    def test_undo_of_an_unrelated_setting_keeps_the_change_time(
+        self, db: Database
+    ) -> None:
+        _settings_set(
+            db,
+            display_name="Checking",
+            archived=True,
+            archived_at=date(2026, 1, 1),
+            archived_changed_at=_SOURCE_SET_AT,
+        )
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Renamed",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        assert _archive_row(db) == (True, _SOURCE_SET_AT)
+
+    def test_undo_that_would_delete_an_archive_resets_the_row_instead(
+        self, db: Database
+    ) -> None:
+        """Deleting the first write would unarchive without a change time."""
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Checking",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        archived, changed_at = _archive_row(db) or (None, None)
+        assert archived is False
+        assert changed_at is not None and changed_at > _SOURCE_SET_AT
 
 
 class TestHistory:

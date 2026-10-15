@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE,
     archived_at DATE,
-    investment_source_type_changed_at TIMESTAMP
+    investment_source_type_changed_at TIMESTAMP,
+    archived_changed_at TIMESTAMP
 );
 """
 

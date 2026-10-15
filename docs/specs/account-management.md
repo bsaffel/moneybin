@@ -106,6 +106,15 @@ choosable without a migration. `investment_source_type_changed_at` records when
 it last changed (a clear and an undo included), so the ledger's `updated_at`
 keeps advancing.
 
+**`archived_changed_at`** — added by V074 and appended last. It records when
+`archived` last changed, an undo included, and never moves backwards.
+`AccountService` stamps it on each archive or unarchive transition, and the
+settings repository advances it when an undo moves `archived`. Archiving moves
+`core.fct_transactions.is_categorizable` on every row of the account, so
+`core.dim_accounts` and `core.fct_transactions` fold it into `updated_at`. An
+undo writes back the row's old `updated_at`, so that column alone cannot carry
+the change.
+
 **Open question — Plaid precedence (deferred to `sync-plaid.md`):** When Plaid sync ships and starts populating `official_name` / `last_four` / `account_subtype` / `holder_category` / `currency_code` automatically, what happens if the user has already written a value? Options: (i) Plaid wins on resync, (ii) user wins, (iii) per-field "user_modified" tracking. For v1 (no Plaid yet) this doesn't matter. The table shape is forward-compatible with all three; pick one when `sync-plaid.md` is designed.
 
 ### Modified SQLMesh model: `core.dim_accounts`

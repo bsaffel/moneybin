@@ -214,6 +214,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "investment_source_type": DataClass.TXN_TYPE,
         # When the choice last moved; ledger-freshness bookkeeping, like updated_at.
         "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        # When archived last moved; freshness bookkeeping, like updated_at.
+        "archived_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -895,6 +897,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # Same classification as the app.account_settings entries above.
         "investment_source_type": DataClass.TXN_TYPE,
         "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "archived_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "official_name": DataClass.INSTITUTION,

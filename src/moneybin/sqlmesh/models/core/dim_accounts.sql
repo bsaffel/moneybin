@@ -282,7 +282,7 @@ SELECT
   w.source_file, /* Path to the source file from which the winning record was loaded */
   w.extracted_at, /* Latest time the data was parsed from a contributing source */
   w.loaded_at, /* Latest time a contributing record was written to the raw table */
-  GREATEST(w.loaded_at, s.updated_at, s.investment_source_type_changed_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Folds investment_source_type_changed_at because an undo restores the settings row's own updated_at from the old image and advances only the change time. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
+  GREATEST(w.loaded_at, s.updated_at, s.investment_source_type_changed_at, s.archived_changed_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Folds investment_source_type_changed_at and archived_changed_at because an undo restores the settings row's own updated_at from the old image and advances only the change time. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
     CASE
@@ -363,7 +363,8 @@ SELECT
   COALESCE(s.archived, FALSE) AS archived, /* Hides account from default list and from reports.net_worth */
   COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth, /* Whether this account contributes to reports.net_worth */
   s.archived_at, /* The date the account stopped being part of the position; NULL while active. Lets a stock-measure report exclude the account only for dates after this one, instead of retroactively */
-  s.investment_source_type_changed_at /* When investment_source_type last changed, including a clear and an undo; folded into the investment ledger's and dim_holdings' updated_at so rows that re-enter the ledger do not rewind it */
+  s.investment_source_type_changed_at, /* When investment_source_type last changed, including a clear and an undo; folded into the investment ledger's and dim_holdings' updated_at so rows that re-enter the ledger do not rewind it */
+  s.archived_changed_at /* When archived last changed, including an undo; folded into updated_at here and on the account's core.fct_transactions rows, whose is_categorizable it moves */
 FROM merged AS w
 LEFT JOIN app.account_settings AS s
   ON w.account_id = s.account_id

@@ -9,6 +9,7 @@ condition.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -134,3 +135,48 @@ def test_is_categorizable_is_true_only_for_the_row_failing_no_condition(
         Decimal("-30.00"): False,
         Decimal("-8.00"): False,
     }
+
+
+@pytest.mark.slow
+def test_an_archive_change_advances_updated_at_on_every_row_of_the_account(
+    db: Database,
+) -> None:
+    """Archiving moves is_categorizable, so updated_at must move with it.
+
+    Both transactions carry their own currency, so the inherited-currency fold
+    never applies. Only acct_moved records an archive change; acct_renamed has
+    a newer settings write but no archive change, so its row must not advance.
+    """
+    for account_id in ("acct_moved", "acct_renamed"):
+        _insert_account(db, account_id)
+    db.execute(
+        """
+        INSERT INTO app.account_settings
+            (account_id, archived, updated_at, archived_changed_at)
+        VALUES
+            ('acct_moved', TRUE, '2000-01-01'::TIMESTAMP, '2099-01-01'::TIMESTAMP),
+            ('acct_renamed', FALSE, '2099-01-01'::TIMESTAMP, NULL)
+        """  # test fixture, not executing user SQL
+    )
+    _insert_transaction(
+        db, source_id="t_moved", account_id="acct_moved", amount=Decimal("-30.00")
+    )
+    _insert_transaction(
+        db, source_id="t_renamed", account_id="acct_renamed", amount=Decimal("-9.00")
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    stamp = datetime(2099, 1, 1)
+    rows = {
+        account_id: (currency_code, updated_at)
+        for account_id, currency_code, updated_at in db.execute(
+            "SELECT account_id, currency_code, updated_at FROM core.fct_transactions"
+        ).fetchall()
+    }
+    assert rows["acct_moved"] == ("USD", stamp)
+    assert rows["acct_renamed"][0] == "USD"
+    assert rows["acct_renamed"][1] < stamp
+    assert db.execute(
+        "SELECT updated_at FROM core.dim_accounts WHERE account_id = 'acct_moved'"
+    ).fetchone() == (stamp,)
