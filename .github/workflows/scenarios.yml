@@ -58,6 +58,7 @@ jobs:
           key: ci-test-durations-v1-${{ github.run_id }}
           restore-keys: ci-test-durations-v1-
 
+      # Cases own isolated databases; distribute expensive module cases separately.
       - name: Run scenario suite
         env:
           # GitHub Actions runners have no keyring backend; SecretStore
@@ -66,7 +67,7 @@ jobs:
           MONEYBIN_PROFILE__SCENARIO__DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: |
           set -o pipefail
-          uv run pytest tests/ -m "scenarios and not perf" -v \
+          uv run pytest tests/ -m "scenarios and not perf" -vv --dist=load \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
             --json-report --json-report-file=scenarios-${{ matrix.group }}.json \
             --durations=25

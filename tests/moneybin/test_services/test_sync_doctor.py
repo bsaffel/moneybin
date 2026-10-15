@@ -152,8 +152,9 @@ def test_stale_provider_balance_despite_fresh_fetch(
     )
     db.execute(
         """INSERT INTO core.fct_balances_daily
-        (account_id, balance_date, balance, is_observed, observation_source, currency_code)
-        VALUES ('canonical', ?, 100.25, TRUE, 'simplefin', 'USD')""",
+        (account_id, balance_date, balance, is_observed, in_net_worth,
+         observation_source, currency_code)
+        VALUES ('canonical', ?, 100.25, TRUE, TRUE, 'simplefin', 'USD')""",
         [observed.date()],
     )
 
@@ -168,23 +169,38 @@ def test_stale_provider_balance_despite_fresh_fetch(
     )
 
 
-@pytest.mark.parametrize(("include", "archived"), [(False, False), (True, True)])
-def test_balance_age_uses_current_inclusion_policy(
-    db: Database, monkeypatch: pytest.MonkeyPatch, include: bool, archived: bool
+@pytest.mark.parametrize(
+    ("include", "archived", "status"), [(False, False, "pass"), (True, True, "warn")]
+)
+def test_balance_age_uses_historical_contribution(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    include: bool,
+    archived: bool,
+    status: str,
 ) -> None:
     create_core_tables(db)
     db.execute(
         """INSERT INTO core.dim_accounts
-        (account_id, account_type, currency_code, include_in_net_worth, archived)
-        VALUES ('excluded', 'depository', 'USD', ?, ?)""",
-        [include, archived],
+        (account_id, account_type, currency_code, include_in_net_worth,
+         archived, archived_at)
+        VALUES ('historical', 'depository', 'USD', ?, ?,
+            CASE WHEN ? THEN CURRENT_DATE END)""",
+        [include, archived, archived],
     )
-    db.execute("""INSERT INTO core.fct_balances_daily
-        (account_id, balance_date, balance, is_observed, observation_source)
-        VALUES ('excluded', CURRENT_DATE - INTERVAL 40 DAY, 100, TRUE, 'ofx')""")
+    # Archiving today preserves the account's earlier contribution.
+    db.execute(
+        """INSERT INTO core.fct_balances_daily
+        (account_id, balance_date, balance, is_observed, in_net_worth,
+         observation_source)
+        VALUES ('historical', CURRENT_DATE - INTERVAL 40 DAY, 100, TRUE, ?, 'ofx')""",
+        [include],
+    )
     result = _check(db, monkeypatch, "net_worth_stale_balance")
-    assert result.status == "pass"
+    assert result.status == status
     assert result.affected_ids == []
+    if archived:
+        assert "1 included accounts" in result.detail
 
 
 @pytest.mark.parametrize("surface", ["invariant", "cli_json", "mcp_payload"])
@@ -230,8 +246,9 @@ def test_unresolved_stale_source_id_is_never_published_as_canonical(
         )
     db.execute(
         """INSERT INTO core.fct_balances_daily
-        (account_id, balance_date, balance, is_observed, observation_source)
-        VALUES (?, CURRENT_DATE - INTERVAL 31 DAY, 100.25, TRUE, 'ofx')""",
+        (account_id, balance_date, balance, is_observed, in_net_worth,
+         observation_source)
+        VALUES (?, CURRENT_DATE - INTERVAL 31 DAY, 100.25, TRUE, TRUE, 'ofx')""",
         [native_id],
     )
     result = _check(db, monkeypatch, "net_worth_stale_balance")
@@ -280,8 +297,9 @@ def test_stale_diagnostic_withholds_bound_target_ids(
         (account_id, account_type, currency_code, source_type)
         VALUES ('canonical', 'depository', 'USD', 'ofx')""")
     db.execute("""INSERT INTO core.fct_balances_daily
-        (account_id, balance_date, balance, is_observed, observation_source)
-        VALUES ('canonical', CURRENT_DATE - INTERVAL 31 DAY, 100, TRUE, 'ofx')""")
+        (account_id, balance_date, balance, is_observed, in_net_worth,
+         observation_source)
+        VALUES ('canonical', CURRENT_DATE - INTERVAL 31 DAY, 100, TRUE, TRUE, 'ofx')""")
     AccountLinksRepo(db).insert(
         link_id="canonical-proof",
         account_id="canonical",
@@ -302,7 +320,7 @@ def test_stale_diagnostic_withholds_bound_target_ids(
 
 
 @pytest.mark.parametrize(("include", "archived"), [(False, False), (True, True)])
-def test_stale_gauge_uses_current_settings_before_transform(
+def test_stale_gauge_uses_materialized_contribution_until_transform(
     db: Database, monkeypatch: pytest.MonkeyPatch, include: bool, archived: bool
 ) -> None:
     create_core_tables(db)
@@ -310,8 +328,10 @@ def test_stale_gauge_uses_current_settings_before_transform(
         (account_id, account_type, currency_code, include_in_net_worth, archived)
         VALUES ('settings-changed', 'depository', 'USD', TRUE, FALSE)""")
     db.execute("""INSERT INTO core.fct_balances_daily
-        (account_id, balance_date, balance, is_observed, observation_source)
-        VALUES ('settings-changed', CURRENT_DATE - INTERVAL 40 DAY, 100, TRUE, 'ofx')""")
+        (account_id, balance_date, balance, is_observed, in_net_worth,
+         observation_source)
+        VALUES ('settings-changed', CURRENT_DATE - INTERVAL 40 DAY,
+            100, TRUE, TRUE, 'ofx')""")
 
     stale = _check(db, monkeypatch, "net_worth_stale_balance")
     assert stale.status == "warn"
@@ -324,14 +344,26 @@ def test_stale_gauge_uses_current_settings_before_transform(
 
     db.execute(
         """INSERT INTO app.account_settings
-        (account_id, include_in_net_worth, archived) VALUES ('settings-changed', ?, ?)""",
-        [include, archived],
+        (account_id, include_in_net_worth, archived, archived_at)
+        VALUES ('settings-changed', ?, ?, CASE WHEN ? THEN CURRENT_DATE END)""",
+        [include, archived, archived],
     )
 
-    fresh = _check(db, monkeypatch, "net_worth_stale_balance")
-    assert fresh.status == "pass"
-    assert fresh.affected_ids == []
-    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    unchanged = _check(db, monkeypatch, "net_worth_stale_balance")
+    assert unchanged.status == "warn"
+    assert unchanged.affected_ids == []
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+    # Model the refreshed evidence: exclusion clears history; archive today does not.
+    db.execute(
+        """UPDATE core.fct_balances_daily SET in_net_worth = ?
+        WHERE account_id = 'settings-changed'""",
+        [include],
+    )
+    refreshed = _check(db, monkeypatch, "net_worth_stale_balance")
+    assert refreshed.status == ("warn" if include else "pass")
+    assert refreshed.affected_ids == []
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == int(include)  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
 
 
 def test_unreadable_balance_evidence_warns_without_resetting_gauge(
