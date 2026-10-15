@@ -148,6 +148,28 @@ def _add_security(
     return security_id
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("stored", "shown"),
+    [
+        (Decimal("41.5000000000"), "41.5"),
+        (Decimal("60.0000000000"), "60"),
+        (Decimal("0E-10"), "0"),
+        (Decimal("0.0000000001"), "0.0000000001"),
+        (Decimal("1234567.5000000000"), "1234567.5"),
+        (Decimal("-10.0000000000"), "-10"),
+        (None, None),
+    ],
+)
+def test_share_count_trims_storage_scale_without_rounding(
+    stored: Decimal | None, shown: str | None
+) -> None:
+    """Trailing zeros go; every significant digit stays, ungrouped, never as E-notation."""
+    from moneybin.cli.output import share_count
+
+    assert share_count(stored) == shown
+
+
 # ---------------------------------------------------------------------------
 # Help smoke tests
 # ---------------------------------------------------------------------------
@@ -756,6 +778,39 @@ class TestHoldingsAndGains:
         assert "6 of 10 columns shown" in result.output
         assert "--wide" in result.output
         assert "valuation_status" not in result.output
+
+    @pytest.mark.unit
+    def test_holdings_default_view_fits_a_carried_forward_row_at_eighty(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """The widest status word fits beside a fractional share count.
+
+        A ten-place `41.5000000000` cost the six default columns 85 characters,
+        so Rich folded `carried_forward` across two lines at 80.
+        """
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   41.5::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   24.0963855422::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-03-02' AS price_date, 'plaid' AS price_source,
+                   135::INT AS days_since_observed,
+                   'carried_forward' AS valuation_status
+            """  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+
+        assert result.exit_code == 0, result.output
+        assert "carried_forward" in result.output
+        assert "41.5 " in result.output
+        assert "41.5000000000" not in result.output
+        assert max(len(li) for li in result.output.splitlines()) <= 80
+        assert "6 of 10 columns shown — --wide for all" in result.output
 
     @pytest.mark.unit
     def test_holdings_default_view_says_why_a_position_has_no_value(

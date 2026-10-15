@@ -390,6 +390,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "balance_date",
         "balance",
         "is_observed",
+        "in_net_worth",
         "observation_source",
         "reconciliation_delta",
         "currency_code",

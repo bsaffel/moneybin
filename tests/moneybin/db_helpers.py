@@ -211,6 +211,7 @@ CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
     balance_date DATE,
     balance DECIMAL(18, 2),
     is_observed BOOLEAN,
+    in_net_worth BOOLEAN,
     observation_source VARCHAR,
     reconciliation_delta DECIMAL(18, 2),
     currency_code VARCHAR
@@ -247,6 +248,7 @@ SELECT
     CAST(NULL AS DATE) AS rate_published_date,
     0 AS account_count,
     0 AS carried_forward_count,
+    0 AS unanchored_account_count,
     0.00::DECIMAL(18, 2) AS total_assets,
     0.00::DECIMAL(18, 2) AS total_liabilities,
     0.00::DECIMAL(18, 2) AS net_worth,
@@ -532,19 +534,6 @@ SELECT CAST(NULL AS VARCHAR) AS account_id,
 WHERE FALSE;
 """
 
-# core.dim_unanchored_accounts — SQLMesh-managed view in production (the
-# guard's one candidate set). Column shape mirrors
-# dim_unanchored_accounts.sql's final SELECT.
-CORE_DIM_UNANCHORED_ACCOUNTS_STUB_DDL = """\
-CREATE OR REPLACE VIEW core.dim_unanchored_accounts AS
-SELECT CAST(NULL AS VARCHAR) AS account_id,
-       CAST(NULL AS BOOLEAN) AS has_holdings,
-       CAST(NULL AS BOOLEAN) AS has_broker_position,
-       CAST(NULL AS BOOLEAN) AS has_transactions,
-       CAST(NULL AS BOOLEAN) AS has_investment_transactions
-WHERE FALSE;
-"""
-
 # core.fct_security_prices — SQLMesh SQL FULL-kind table in production.
 # Column shape mirrors fct_security_prices.sql's final SELECT.
 CORE_FCT_SECURITY_PRICES_DDL = """\
@@ -645,7 +634,6 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_FCT_REALIZED_FX_GAINS_DDL)
     db.execute(CORE_DIM_HOLDINGS_STUB_DDL)
     db.execute(CORE_DIM_HOLDINGS_BROKER_REPORTED_STUB_DDL)
-    db.execute(CORE_DIM_UNANCHORED_ACCOUNTS_STUB_DDL)
     db.execute(CORE_FCT_SECURITY_PRICES_DDL)
     db.execute(CORE_UNCATEGORIZED_QUEUE_STUB_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_DAILY_DDL)
@@ -834,4 +822,20 @@ def seed_pending_dedup_pair(db: Database) -> None:
         match_tier="3",
         decided_by="auto",
         actor="test",
+    )
+
+
+def install_prep_view(db: Database, name: str) -> None:
+    """Install one shipped ``prep`` model as a view, its SELECT parsed off disk."""
+    # Deferred: sqlmesh is heavy, and most importers of this module never call this.
+    from sqlglot import exp
+    from sqlmesh.core.dialect import parse
+
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    path = SQLMESH_ROOT / "models" / "prep" / f"{name}.sql"
+    query = next(
+        node for node in parse(path.read_text()) if isinstance(node, exp.Select)
+    )
+    db.execute(
+        f"CREATE OR REPLACE VIEW prep.{name} AS {query.sql(dialect='duckdb')}"  # shipped model name from a test, not user input
     )

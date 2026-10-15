@@ -131,7 +131,7 @@ domain and match it.
 ### 4. Test
 
 ```bash
-make test                                       # fast unit loop
+make test                                       # unit tier
 uv run pytest tests/path/to/test_file.py -v    # single file
 make test-all                                   # unit + integration + e2e
 make test-scenarios                             # whole-pipeline scenarios
@@ -146,20 +146,22 @@ The full rule is in [`.claude/rules/testing.md`](.claude/rules/testing.md).
 Size the gate to what the change can reach. A `.py` diff runs:
 
 ```bash
-make check test
+make check
+uv run pytest <tests for the changed code and what imports it>
 ```
 
-Ruff format, Ruff lint, Pyright, and the unit tests. Add `make test-integration`
-and `make test-scenarios` when the diff touches shared primitives, data shapes,
-matching or categorization heuristics, or migrations, and `make test-e2e` when
-CLI startup or packaging can change. A `.sql` diff runs `make format-sql` and
-the unit tests, which parse the SQLMesh models off disk. Any other diff runs its
-layer's gate instead — docs and agent instructions take
+Ruff format, Ruff lint, Pyright, and the tests closest to the change. CI runs
+every tier — unit, integration, e2e, and scenarios — on each push to a pull
+request, so open a draft PR and let it run them rather than running the broad
+`make test-*` targets locally; a draft skips the AI review until you mark it
+ready. A `.sql` diff runs `make format-sql` and the tests that read the changed
+model. Any other diff runs its layer's gate instead — docs and agent
+instructions take
 `uv run pytest tests/test_documentation_policy.py`. A diff that changes a CLI
 command, an MCP tool description, or a setting also runs `make generate-docs`
 and commits the rewritten pages under `docs/reference/`; that same policy test
 fails while they are stale. The full rule is under
-"Pre-commit gate" in [`AGENTS.md`](AGENTS.md). CI runs every category regardless.
+"Pre-commit gate" in [`AGENTS.md`](AGENTS.md).
 
 ### 6. Commit and PR
 
@@ -171,7 +173,7 @@ see [`.claude/rules/branching.md`](.claude/rules/branching.md).
 git add <specific files>     # prefer over `git add -A`
 git commit
 git push -u origin <branch>
-gh pr create
+gh pr create --draft         # CI runs every tier; mark ready for review after
 ```
 
 CI must pass before merge. Commits land as authored (no mandatory squash);

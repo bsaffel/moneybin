@@ -236,6 +236,7 @@ def reports_run(
         quiet=quiet,
         columns=view.columns,
         fit=view.fit,
+        optional=view.optional,
         no_pager=no_pager,
     )
 

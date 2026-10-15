@@ -564,11 +564,11 @@ def _seed_nonzero_net_worth(path: Path) -> None:
         db.execute(
             """
             INSERT INTO core.fct_balances_daily (
-                account_id, balance_date, balance, is_observed,
+                account_id, balance_date, balance, is_observed, in_net_worth,
                 observation_source, reconciliation_delta
             ) VALUES
-                ('ACC001', '2026-07-01', 5000.00, TRUE, 'ofx', NULL),
-                ('ACC002', '2026-07-01', 15000.00, TRUE, 'ofx', NULL)
+                ('ACC001', '2026-07-01', 5000.00, TRUE, TRUE, 'ofx', NULL),
+                ('ACC002', '2026-07-01', 15000.00, TRUE, TRUE, 'ofx', NULL)
             """
         )
         db.execute(
@@ -583,6 +583,8 @@ def _seed_nonzero_net_worth(path: Path) -> None:
                 COUNT(DISTINCT d.account_id) AS account_count,
                 COUNT(DISTINCT CASE WHEN NOT d.is_observed THEN d.account_id END)
                     AS carried_forward_count,
+                COUNT(DISTINCT CASE WHEN d.balance IS NULL THEN d.account_id END)
+                    AS unanchored_account_count,
                 SUM(CASE WHEN d.balance > 0 THEN d.balance ELSE 0 END) AS total_assets,
                 SUM(CASE WHEN d.balance < 0 THEN d.balance ELSE 0 END)
                     AS total_liabilities,

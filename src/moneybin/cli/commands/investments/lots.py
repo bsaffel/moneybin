@@ -15,6 +15,7 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    share_count,
     wide_option,
 )
 from moneybin.cli.render import (
@@ -56,7 +57,7 @@ _LOTS_COLUMNS: tuple[tuple[str, Callable[[LotRow], object]], ...] = (
     ),
     ("security id", lambda r: r.security_id),
     ("acquired", lambda r: r.acquisition_date),
-    ("remaining", lambda r: r.remaining_quantity),
+    ("remaining", lambda r: share_count(r.remaining_quantity)),
     ("basis", lambda r: r.cost_basis_remaining),
     ("currency", lambda r: currency_label(r.currency_code)),
     ("method", lambda r: r.cost_basis_method),
@@ -196,7 +197,7 @@ def investments_lots_list(
                         view.rows,
                         # A lot's remaining basis is a position rather than a movement, so it
                         # renders unsigned and uncoloured. The remaining quantity is a share
-                        # count, not an amount, and is left as stored.
+                        # count, not an amount, so it is never rounded.
                         money={"basis": Money("balance")},
                         numeric=("remaining",),
                         total_columns=view.total,

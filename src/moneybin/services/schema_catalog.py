@@ -396,6 +396,25 @@ EXAMPLES: dict[str, list[Example]] = {
                 ORDER BY balance_date DESC
             """,
         ),
+        Example(
+            question="Net worth per currency on the latest date, withheld while "
+            "any account in it has no recorded balance",
+            sql="""
+                SELECT currency_code, balance_date,
+                       COUNT(*) FILTER (WHERE balance IS NULL)
+                           AS accounts_without_balance,
+                       CASE WHEN COUNT(*) FILTER (WHERE balance IS NULL) = 0
+                            THEN SUM(balance) END AS net_worth
+                FROM core.fct_balances_daily
+                WHERE in_net_worth
+                  AND balance_date = (
+                      SELECT MAX(balance_date) FROM core.fct_balances_daily
+                      WHERE in_net_worth
+                  )
+                GROUP BY currency_code, balance_date
+                ORDER BY balance_date, currency_code
+            """,
+        ),
     ],
     "core.uncategorized_queue": [
         Example(
@@ -718,20 +737,6 @@ EXAMPLES: dict[str, list[Example]] = {
                 SELECT account_id, has_position, as_of
                 FROM core.dim_holdings_broker_reported
                 ORDER BY account_id
-            """,
-        ),
-    ],
-    "core.dim_unanchored_accounts": [
-        Example(
-            question="Which accounts hold value but have no balance observation, "
-            "and what shows they hold value?",
-            sql="""
-                SELECT u.account_id, a.display_name, u.has_holdings,
-                       u.has_broker_position, u.has_transactions,
-                       u.has_investment_transactions
-                FROM core.dim_unanchored_accounts AS u
-                JOIN core.dim_accounts AS a USING (account_id)
-                ORDER BY a.display_name
             """,
         ),
     ],

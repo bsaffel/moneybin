@@ -1,5 +1,5 @@
 {
-  "sha256": "b0451dd09e77844479b1aaab7eb3b9ec1b6f16315098b99c9e36f5b81b62e763",
+  "sha256": "408fd3f3eb3db5961bef1e1c6e915f8b9bbf447e17f62726d1b9372c6334e75d",
   "tool_count": 50,
   "tools": [
     {
@@ -228,7 +228,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return balances by date, history, assertions, or reconciliation deltas. Resolve one account by reference; amounts are positions in summary.display_currency.",
+        "description": "Return balances by date, history, assertions, or reconciliation deltas. Resolve one account by reference; amounts are positions in summary.display_currency. `balance` is null for an account that holds value but has no recorded balance.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -330,12 +330,12 @@
         "name": "accounts_balances",
         "title": "Accounts Balances"
       },
-      "description_bytes": 156,
+      "description_bytes": 235,
       "input_schema_bytes": 718,
       "name": "accounts_balances",
       "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 1098
+      "total_bytes": 1177
     },
     {
       "annotation_bytes": 91,
@@ -5446,5 +5446,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 65607
+  "total_bytes": 65686
 }

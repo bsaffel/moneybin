@@ -59,7 +59,6 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     DIM_HOLDINGS,
     DIM_SECURITIES,
-    DIM_UNANCHORED_ACCOUNTS,
     EXCHANGE_RATE_OVERRIDES,
     FCT_BALANCES,
     FCT_BALANCES_DAILY,
@@ -149,40 +148,6 @@ _ALLOWED_PK_EXPRS = frozenset({
 })
 
 _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
-
-# Used by `_run_investment_unreported_holdings`, which needs "the one whole
-# snapshot per item with the latest extracted_at" (never "latest row per
-# position": that would let a stale survivor from an earlier pull mask an
-# omission in the newest one). Mirrors the identical CTE in `dim_holdings.sql`.
-# No leading `WITH` — callers splice this into their own `WITH <this>, ...`
-# clause. (`_run_investment_phantom_holdings` no longer needs it: it scopes on
-# the position-level `ever_reported_positions` gate instead.)
-#
-# Derived from the snapshot RECEIPTS (one row per item per pull, written even
-# when the item reports zero positions), NOT from the presence of holdings rows.
-# Plaid returns no holding entries for an item holding nothing, so the pull
-# where a broker's every account is liquidated writes no holdings rows at all —
-# a row-derived newest snapshot cannot see it, and silently keeps the last
-# NON-EMPTY snapshot from an earlier pull. Keyed on the receipt, an item that
-# reported nothing has an EMPTY newest snapshot (its positions are phantoms) and
-# an item that never reported has NO newest snapshot (its positions are out of
-# scope) — the distinction the raw holdings rows cannot express.
-_NEWEST_HOLDINGS_SNAPSHOT_CTE = f"""
-newest_snapshot AS (
-    SELECT source_origin, source_file
-    FROM (
-        SELECT
-            source_origin,
-            source_file,
-            ROW_NUMBER() OVER (
-                PARTITION BY source_origin
-                ORDER BY extracted_at DESC, ingestion_sequence DESC
-            ) AS snapshot_rank
-        FROM {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name}
-    )
-    WHERE snapshot_rank = 1
-)
-"""
 
 
 def _is_live_fingerprint(raw: str | None) -> bool:
@@ -759,28 +724,44 @@ class DoctorService:
         )
 
     def _run_net_worth_stale_balance(self) -> InvariantResult:
-        """Check each included account's latest observation against today's date."""
+        """Age observations for known balances counted on the latest net-worth date."""
         name = "net_worth_stale_balance"
-        if not has_column(self._db, FCT_BALANCES_DAILY, "is_observed"):
+        if not all(
+            has_column(self._db, FCT_BALANCES_DAILY, column)
+            for column in ("is_observed", "balance", "in_net_worth")
+        ):
             return InvariantResult(
                 name=name,
                 status="skipped",
-                detail="Balance observations have not been transformed.",
+                detail=(
+                    "The balance spine is unavailable or outdated; run "
+                    "`moneybin refresh --step transform` before checking observation age."
+                ),
                 affected_ids=[],
             )
         threshold = get_settings().doctor.balance_staleness_threshold_days
         try:
             rows = self._db.execute(
-                f"""SELECT b.account_id
-                    FROM {FCT_BALANCES_DAILY.full_name} AS b
-                    JOIN {DIM_ACCOUNTS.full_name} AS a USING (account_id)
-                    LEFT JOIN {ACCOUNT_SETTINGS.full_name} AS s USING (account_id)
-                    WHERE b.is_observed
-                        AND COALESCE(s.include_in_net_worth, a.include_in_net_worth, TRUE)
-                        AND NOT COALESCE(s.archived, a.archived, FALSE)
-                    GROUP BY b.account_id
-                    HAVING CURRENT_DATE - MAX(b.balance_date) > ?
-                    ORDER BY b.account_id""",  # trusted TableRefs; threshold bound
+                f"""
+                WITH counted AS (
+                    SELECT c.account_id
+                    FROM {FCT_BALANCES_DAILY.full_name} AS c
+                    WHERE c.balance_date = (
+                        SELECT MAX(balance_date)
+                        FROM {FCT_BALANCES_DAILY.full_name}
+                        WHERE in_net_worth
+                    )
+                      AND c.in_net_worth
+                      AND c.balance IS NOT NULL
+                )
+                SELECT d.account_id
+                FROM {FCT_BALANCES_DAILY.full_name} AS d
+                JOIN counted AS k ON k.account_id = d.account_id
+                WHERE d.is_observed
+                GROUP BY d.account_id
+                HAVING CURRENT_DATE - MAX(d.balance_date) > ?
+                ORDER BY d.account_id
+                """,  # trusted TableRefs; threshold bound
                 [threshold],
             ).fetchall()
         except Exception:
@@ -1925,13 +1906,13 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
-                WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE}
                 SELECT DISTINCT h.account_id,
                        COALESCE(h.security_id, h.source_security_key) AS security_key
                 FROM {STG_PLAID_INVESTMENT_HOLDINGS.full_name} AS h
-                JOIN newest_snapshot AS ns
+                JOIN {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name} AS ns
                   ON ns.source_file = h.source_file
                   AND ns.source_origin = h.source_origin
+                  AND ns.is_newest
                 LEFT JOIN {DIM_HOLDINGS.full_name} AS d
                   ON d.account_id = h.account_id AND d.security_id = h.security_id
                 WHERE d.account_id IS NULL
@@ -2330,44 +2311,35 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_net_worth_unanchored_accounts(self) -> InvariantResult:
-        """Eligible accounts holding value with no balance observation (Requirement 14).
+        """Accounts in net worth holding value with no balance observation.
 
-        `fail`, because each one makes reports.net_worth's total NULL: the account
-        contributes nothing, and the release bar says a total is right or visibly
-        incomplete. Eligibility is taken at the date the latest reports.net_worth
-        row carries, read from that view (CURRENT_DATE when it has no rows), so
-        the check fails exactly while that row's total is NULL: an
-        account archived on or after that date still counts, and a closed
-        account's preserved pre-archive history does not. Unlike
-        net_worth_stale_balance, which reads current state.
+        `fail`, because each one makes the net-worth total NULL: the account
+        contributes nothing, and the release bar says a total is right or
+        visibly incomplete. Read on the newest date any account counts, the date
+        reports.net_worth's unranged read lands on, so a closed account's
+        pre-archive history does not keep it red once a later date counts.
         """
         name = "net_worth_unanchored_accounts"
         try:
             rows = self._db.execute(
                 f"""
-                WITH latest AS (
-                    SELECT COALESCE(
-                        (SELECT MAX(n.balance_date)
-                         FROM {REPORTS_NET_WORTH.full_name} AS n),
-                        CURRENT_DATE
-                    ) AS balance_date
+                SELECT d.account_id
+                FROM {FCT_BALANCES_DAILY.full_name} AS d
+                WHERE d.balance_date = (
+                    SELECT MAX(balance_date)
+                    FROM {FCT_BALANCES_DAILY.full_name}
+                    WHERE in_net_worth
                 )
-                SELECT u.account_id
-                FROM {DIM_UNANCHORED_ACCOUNTS.full_name} AS u
-                JOIN {DIM_ACCOUNTS.full_name} AS a ON a.account_id = u.account_id
-                CROSS JOIN latest AS l
-                WHERE a.include_in_net_worth
-                  AND (NOT a.archived
-                       OR (a.archived_at IS NOT NULL
-                           AND a.archived_at >= l.balance_date))
-                ORDER BY u.account_id
+                  AND d.in_net_worth
+                  AND d.balance IS NULL
+                ORDER BY d.account_id
                 """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # core views absent before first transform
+        except Exception as e:  # spine absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
-                detail=f"unanchored-account view unavailable: {e}",
+                detail=f"balance spine unavailable: {e}",
                 affected_ids=[],
             )
         unanchored = [str(r[0]) for r in rows]

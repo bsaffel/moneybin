@@ -8,7 +8,7 @@ redefining a second copy of the same ``core.*`` stub schema.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -22,7 +22,6 @@ from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import ReportQuery, ReportSpec, bound_value
 from moneybin.reports.definitions._shared import (
     resolve_date_range,
-    unanchored_candidates_ctes,
 )
 from moneybin.reports.definitions.net_worth import net_worth
 from moneybin.reports.definitions.net_worth_accounts import net_worth_accounts
@@ -45,7 +44,6 @@ from tests.moneybin.test_reports.test_net_worth_models import (
     _install_net_worth_sources,  # pyright: ignore[reportPrivateUsage]
     _install_report,  # pyright: ignore[reportPrivateUsage]
     _rate,  # pyright: ignore[reportPrivateUsage]
-    _unanchored,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.moneybin.test_reports.test_net_worth_models import model_db as _model_db
 
@@ -238,8 +236,6 @@ def test_currencies_runner_to_date_alone_stays_open_below(model_db: Database) ->
 def test_accounts_runner_rejects_an_inverted_range_before_querying(
     model_db: Database,
 ) -> None:
-    from moneybin.reports.definitions.net_worth_accounts import net_worth_accounts
-
     with pytest.raises(UserError) as excinfo:
         net_worth_accounts(model_db, from_date="2026-03-01", to_date="2026-01-01")
     assert excinfo.value.code == "report_parameter_invalid_range"
@@ -407,8 +403,6 @@ def test_net_worth_runner_latest_day_by_default(model_db: Database) -> None:
         _rate(model_db, "USD", "USD", day, "1.0", source="identity")
     _install_report(model_db, "net_worth")
 
-    from moneybin.reports.definitions.net_worth import net_worth
-
     rows = _run(model_db, net_worth(model_db))
     assert [row["balance_date"] for row in rows] == [date(2026, 1, 7)]
 
@@ -433,8 +427,6 @@ def test_net_worth_runner_monthly_takes_each_months_last_day_and_computes_change
         _balance(model_db, "acct-a", day, balance, "USD")
         _rate(model_db, "USD", "USD", day, "1.0", source="identity")
     _install_report(model_db, "net_worth")
-
-    from moneybin.reports.definitions.net_worth import net_worth
 
     rows = _run(model_db, net_worth(model_db, interval="monthly"))
 
@@ -482,8 +474,6 @@ def test_net_worth_runner_change_pct_is_null_when_prior_is_zero(
     _rate(model_db, "USD", "USD", "2026-02-05", "1.0", source="identity")
     _install_report(model_db, "net_worth")
 
-    from moneybin.reports.definitions.net_worth import net_worth
-
     rows = _run(model_db, net_worth(model_db, interval="monthly"))
 
     assert rows[0]["net_worth"] == Decimal("0.00")
@@ -507,8 +497,6 @@ def test_net_worth_runner_weekly_buckets_start_on_monday(model_db: Database) -> 
         _balance(model_db, "acct-a", day, "100.00", "USD")
         _rate(model_db, "USD", "USD", day, "1.0", source="identity")
     _install_report(model_db, "net_worth")
-
-    from moneybin.reports.definitions.net_worth import net_worth
 
     rows = _run(model_db, net_worth(model_db, interval="weekly"))
 
@@ -550,8 +538,6 @@ def test_net_worth_runner_rejects_an_unknown_interval() -> None:
     Matching every other report parameter validation failure — not a bare
     `ValueError`.
     """
-    from moneybin.reports.definitions.net_worth import net_worth
-
     with pytest.raises(UserError) as excinfo:
         net_worth(None, interval="yearly")  # type: ignore[arg-type,call-overload]  # validation precedes db use
     assert excinfo.value.code == "report_parameter_invalid_value"
@@ -568,8 +554,6 @@ def test_net_worth_runner_rejects_an_inverted_range(model_db: Database) -> None:
     _account(model_db, "acct-a", "Checking", "USD")
     _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
     _home(model_db, "USD")
-
-    from moneybin.reports.definitions.net_worth import net_worth
 
     with pytest.raises(UserError) as excinfo:
         net_worth(model_db, from_date="2026-03-01", to_date="2026-01-01")
@@ -861,279 +845,88 @@ def test_balance_drift_resolved_filter_excludes_unrelated_held_scope(
     assert coverage["reasons"] == []
 
 
-# ---------------------------------------------------------------------------
-# core:net_worth's ranged fallback for an unanchored candidate (M2B.3)
-# ---------------------------------------------------------------------------
-
-
-def _today(db: Database) -> date:
-    row = db.execute("SELECT CURRENT_DATE").fetchone()
-    assert row is not None
-    return row[0]
-
-
 def _nw_rows(db: Database, **params: str) -> list[dict[str, object]]:
     return _run(db, net_worth(db, **params))  # type: ignore[arg-type]
-
-
-def _wholly_unanchored(db: Database, *, archived_at: str | None = None) -> None:
-    _install_net_worth_sources(db)
-    _home(db, "USD")
-    _account(
-        db,
-        "brk",
-        "Brokerage",
-        "USD",
-        archived=archived_at is not None,
-        archived_at=archived_at,
-    )
-    _unanchored(db, "brk")
-    _install_report(db, "net_worth")
-
-
-def test_resolve_date_range_exposes_its_bounds() -> None:
-    rng = resolve_date_range(
-        "2026-01-01", None, report_id="core:net_worth", view=REPORTS_NET_WORTH
-    )
-    assert (rng.from_bound, rng.to_bound, rng.is_ranged) == ("2026-01-01", None, True)
-    unranged = resolve_date_range(
-        None, None, report_id="core:net_worth", view=REPORTS_NET_WORTH
-    )
-    assert unranged.is_ranged is False
-
-
-def test_unanchored_candidates_ctes_refuses_an_unranged_read() -> None:
-    unranged = resolve_date_range(
-        None, None, report_id="core:net_worth", view=REPORTS_NET_WORTH
-    )
-    with pytest.raises(ValueError, match="explicit range"):
-        unanchored_candidates_ctes(unranged)
-
-
-def test_net_worth_runner_historical_range_synthesizes_at_to_date(
-    model_db: Database,
-) -> None:
-    _wholly_unanchored(model_db)
-    (row,) = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31")
-    assert str(row["balance_date"]) == "2025-03-31"
-    assert row["unanchored_account_count"] == 1
-    assert row["account_count"] == 0
-    assert row["net_worth"] is None
-    assert row["home_currency_code"] == "USD"
-
-
-def test_net_worth_runner_to_date_alone_synthesizes_at_to_date(
-    model_db: Database,
-) -> None:
-    _wholly_unanchored(model_db)
-    (row,) = _nw_rows(model_db, to_date="2025-03-31")
-    assert str(row["balance_date"]) == "2025-03-31"
-
-
-def test_net_worth_runner_future_only_lower_bound_synthesizes_nothing(
-    model_db: Database,
-) -> None:
-    _wholly_unanchored(model_db)
-    future = (_today(model_db) + timedelta(days=30)).isoformat()
-    assert _nw_rows(model_db, from_date=future) == []
-
-
-def test_net_worth_runner_future_single_day_synthesizes_nothing(
-    model_db: Database,
-) -> None:
-    _wholly_unanchored(model_db)
-    future = (_today(model_db) + timedelta(days=30)).isoformat()
-    assert _nw_rows(model_db, from_date=future, to_date=future) == []
-
-
-def test_net_worth_runner_dates_at_the_archive_floor(model_db: Database) -> None:
-    """A range straddling archived_at dates the row there, never at to_date."""
-    _wholly_unanchored(model_db, archived_at="2025-02-10")
-    (row,) = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31")
-    assert str(row["balance_date"]) == "2025-02-10"
-    assert row["unanchored_account_count"] == 1
-
-
-def test_net_worth_runner_range_after_archival_synthesizes_nothing(
-    model_db: Database,
-) -> None:
-    _wholly_unanchored(model_db, archived_at="2025-02-10")
-    assert _nw_rows(model_db, from_date="2025-03-01", to_date="2025-03-31") == []
-
-
-def test_net_worth_runner_unranged_archived_candidate_is_empty(
-    model_db: Database,
-) -> None:
-    """Unranged never reaches the fallback: the view's arm answers, correctly empty."""
-    _wholly_unanchored(model_db, archived_at="2025-02-10")
-    assert _nw_rows(model_db) == []
-
-
-def test_net_worth_runner_unranged_wholly_unanchored_is_the_views_row(
-    model_db: Database,
-) -> None:
-    _wholly_unanchored(model_db)
-    (row,) = _nw_rows(model_db)
-    assert row["balance_date"] == _today(model_db)
-    assert row["unanchored_account_count"] == 1
-
-
-def test_net_worth_runner_inverted_range_with_a_candidate_raises(
-    model_db: Database,
-) -> None:
-    _wholly_unanchored(model_db)
-    with pytest.raises(UserError) as excinfo:
-        net_worth(model_db, from_date="2025-03-31", to_date="2025-01-01")
-    assert excinfo.value.code == "report_parameter_invalid_range"
-
-
-def test_net_worth_runner_range_with_rows_never_synthesizes(
-    model_db: Database,
-) -> None:
-    """A non-empty filtered result is the answer; the fallback adds nothing."""
-    _install_net_worth_sources(model_db)
-    _home(model_db, "USD")
-    _account(model_db, "chk", "Checking", "USD")
-    _account(model_db, "brk", "Brokerage", "USD")
-    _balance(model_db, "chk", "2025-02-01", "100.00", "USD")
-    _unanchored(model_db, "brk")
-    _install_report(model_db, "net_worth")
-    rows = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31")
-    assert [str(r["balance_date"]) for r in rows] == ["2025-02-01"]
-    assert rows[0]["unanchored_account_count"] == 1
-
-
-def test_net_worth_runner_range_before_every_balance_still_synthesizes(
-    model_db: Database,
-) -> None:
-    """The trigger is the RANGE's emptiness, not the profile's."""
-    _install_net_worth_sources(model_db)
-    _home(model_db, "USD")
-    _account(model_db, "chk", "Checking", "USD")
-    _account(model_db, "brk", "Brokerage", "USD")
-    _balance(model_db, "chk", "2025-06-01", "100.00", "USD")
-    _unanchored(model_db, "brk")
-    _install_report(model_db, "net_worth")
-    (row,) = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31")
-    assert str(row["balance_date"]) == "2025-03-31"
-    assert row["unanchored_account_count"] == 1
-
-
-def test_net_worth_runner_bucketed_range_with_no_spine_rows_synthesizes_one_bucket(
-    model_db: Database,
-) -> None:
-    _wholly_unanchored(model_db)
-    (row,) = _nw_rows(
-        model_db, from_date="2025-01-01", to_date="2025-03-31", interval="monthly"
-    )
-    assert str(row["balance_date"]) == "2025-03-31"
-    assert row["change_abs"] is None
-    assert row["unanchored_account_count"] == 1
-
-
-def test_net_worth_runner_range_without_candidates_is_empty(
-    model_db: Database,
-) -> None:
-    _install_net_worth_sources(model_db)
-    _install_report(model_db, "net_worth")
-    assert _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31") == []
-
-
-# ---------------------------------------------------------------------------
-# core:net_worth_accounts's per-candidate ranged fallback (M2B.3)
-# ---------------------------------------------------------------------------
 
 
 def _acct_rows(db: Database, **params: str) -> list[dict[str, object]]:
     return _run(db, net_worth_accounts(db, **params))  # type: ignore[arg-type]
 
 
-def _mixed(db: Database, *, brk_archived_at: str | None = None) -> None:
-    """Checking anchored 2025-01-01..2025-01-31 (spine max), brk unanchored."""
+def _mixed(db: Database) -> None:
+    """Chk anchored 2025-01-01..2025-01-31; brk unanchored from 2025-01-20."""
     _install_net_worth_sources(db)
     _home(db, "USD")
     _account(db, "chk", "Checking", "USD")
-    _account(
-        db,
-        "brk",
-        "Brokerage",
-        "USD",
-        account_type="investment",
-        archived=brk_archived_at is not None,
-        archived_at=brk_archived_at,
-    )
+    _account(db, "brk", "Brokerage", "USD", account_type="investment")
+    for day in range(1, 32):
+        _rate(db, "USD", "USD", f"2025-01-{day:02d}", "1", source="identity")
     _balance(db, "chk", "2025-01-01", "100.00", "USD")
-    _balance(db, "chk", "2025-01-31", "100.00", "USD", observed=False)
-    _unanchored(db, "brk")
+    for day in range(2, 32):
+        _balance(db, "chk", f"2025-01-{day:02d}", "100.00", "USD", observed=False)
+    for day in range(20, 32):
+        _balance(db, "brk", f"2025-01-{day:02d}", None, "USD")
+    _install_report(db, "net_worth")
     _install_report(db, "net_worth_accounts")
 
 
-def test_accounts_runner_range_containing_the_spine_max_lists_the_candidate_once(
+def test_net_worth_ranged_and_unranged_reads_agree_on_the_latest_date(
     model_db: Database,
 ) -> None:
     _mixed(model_db)
-    rows = _acct_rows(model_db, from_date="2025-01-01", to_date="2025-01-31")
-    brk = [r for r in rows if r["account_id"] == "brk"]
-    assert len(brk) == 1
-    assert str(brk[0]["balance_date"]) == "2025-01-31"
+    (unranged,) = _nw_rows(model_db)
+    ranged = _nw_rows(model_db, from_date="2025-01-25", to_date="2025-01-31")
+    assert ranged[-1] == unranged
+    assert unranged["unanchored_account_count"] == 1
+    assert unranged["net_worth"] is None
 
 
-def test_accounts_runner_range_excluding_the_spine_max_synthesizes_per_candidate(
+def test_net_worth_range_before_first_evidence_has_no_unanchored_row(
     model_db: Database,
 ) -> None:
-    """Other accounts' rows are present, so a whole-result-empty trigger would drop brk."""
+    """Brk had no evidence before 2025-01-20, so the range is complete without it."""
     _mixed(model_db)
-    rows = _acct_rows(model_db, from_date="2025-01-01", to_date="2025-01-15")
-    assert {r["account_id"] for r in rows} == {"chk", "brk"}
-    brk = next(r for r in rows if r["account_id"] == "brk")
-    assert str(brk["balance_date"]) == "2025-01-15"
-    assert brk["account_balance"] is None
-    assert brk["is_observed"] is False
+    rows = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-01-10")
+    assert len(rows) == 10
+    assert all(r["unanchored_account_count"] == 0 for r in rows)
+    assert all(r["net_worth"] == Decimal("100.00") for r in rows)
 
 
-def test_accounts_runner_unranged_omits_a_candidate_archived_before_the_spine_max(
-    model_db: Database,
-) -> None:
-    _mixed(model_db, brk_archived_at="2025-01-10")
-    rows = _acct_rows(model_db)
-    assert [r["account_id"] for r in rows] == ["chk"]
+def test_net_worth_range_after_the_spine_end_is_empty(model_db: Database) -> None:
+    _mixed(model_db)
+    assert _nw_rows(model_db, from_date="2025-02-01", to_date="2025-02-28") == []
 
 
-def test_accounts_runner_range_spanning_archival_dates_at_archived_at(
-    model_db: Database,
-) -> None:
-    _mixed(model_db, brk_archived_at="2025-01-10")
-    rows = _acct_rows(model_db, from_date="2025-01-01", to_date="2025-01-31")
-    brk = [r for r in rows if r["account_id"] == "brk"]
-    assert len(brk) == 1
-    assert str(brk[0]["balance_date"]) == "2025-01-10"
-
-
-def test_accounts_runner_range_after_archival_omits_the_candidate(
-    model_db: Database,
-) -> None:
-    _mixed(model_db, brk_archived_at="2025-01-10")
-    rows = _acct_rows(model_db, from_date="2025-01-20", to_date="2025-01-31")
-    assert "brk" not in {r["account_id"] for r in rows}
-
-
-def test_accounts_runner_future_lower_bound_synthesizes_nothing(
+def test_net_worth_bucketed_read_withholds_the_bucket_with_a_null_balance(
     model_db: Database,
 ) -> None:
     _mixed(model_db)
-    future = (_today(model_db) + timedelta(days=30)).isoformat()
-    assert _acct_rows(model_db, from_date=future) == []
+    (row,) = _nw_rows(
+        model_db, from_date="2025-01-01", to_date="2025-01-31", interval="monthly"
+    )
+    assert str(row["balance_date"]) == "2025-01-31"
+    assert row["unanchored_account_count"] == 1
+    assert row["net_worth"] is None
+    assert row["change_abs"] is None
 
 
-@pytest.mark.parametrize("interval", [None, "monthly"])
+def _null_balance_spine(db: Database, *, currency: str | None = "USD") -> None:
+    _install_net_worth_sources(db)
+    _home(db, "USD")
+    _account(db, "brk", "Brokerage", currency, account_type="investment")
+    _balance(db, "brk", "2025-03-31", None, currency)
+
+
+@pytest.mark.parametrize("interval", [None, "daily", "monthly"])
 def test_unanchored_null_total_retains_incomplete_sync_metadata(
     model_db: Database, interval: str | None
 ) -> None:
     from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
 
-    _wholly_unanchored(model_db)
+    _null_balance_spine(model_db)
+    _install_report(model_db, "net_worth")
     load(model_db, source())
-    parameters = {"from_date": "2025-01-01", "to_date": "2025-03-31"}
+    parameters = {"from_date": "2025-03-31", "to_date": "2025-03-31"}
     if interval is not None:
         parameters["interval"] = interval
 
@@ -1158,14 +951,14 @@ def test_ranged_unanchored_account_retains_incomplete_sync_metadata(
 ) -> None:
     from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
 
-    _wholly_unanchored(model_db)
+    _null_balance_spine(model_db)
     _install_report(model_db, "net_worth_accounts")
     load(model_db, source())
 
     result = get_report_catalog().execute(
         model_db,
         report_id="core:net_worth_accounts",
-        parameters={"from_date": "2025-01-01", "to_date": "2025-03-31"},
+        parameters={"from_date": "2025-03-31", "to_date": "2025-03-31"},
         limit=10,
     )
 
@@ -1174,6 +967,106 @@ def test_ranged_unanchored_account_retains_incomplete_sync_metadata(
     assert str(row["balance_date"]) == "2025-03-31"
     assert row["account_balance"] is None
     assert row["account_balance_home"] is None
+    coverage = result.to_envelope().to_dict()["summary"]["sync_completeness"]
+    assert coverage["complete"] is False
+    assert "unresolved_identity" in {reason["kind"] for reason in coverage["reasons"]}
+    assert result.degraded is True
+
+
+def test_accounts_ranged_and_unranged_reads_agree_on_the_latest_date(
+    model_db: Database,
+) -> None:
+    _mixed(model_db)
+    unranged = _acct_rows(model_db)
+    ranged = _acct_rows(model_db, from_date="2025-01-31", to_date="2025-01-31")
+    assert ranged == unranged
+    assert {r["account_id"] for r in unranged} == {"chk", "brk"}
+
+
+def test_accounts_range_before_first_evidence_omits_the_unanchored_account(
+    model_db: Database,
+) -> None:
+    _mixed(model_db)
+    rows = _acct_rows(model_db, from_date="2025-01-01", to_date="2025-01-10")
+    assert {r["account_id"] for r in rows} == {"chk"}
+
+
+def test_runner_sql_reads_no_candidate_relation() -> None:
+    """Both runners filter the view by date and nothing else (Requirement 6)."""
+    for rq in (
+        net_worth(None, from_date="2025-01-01", to_date="2025-01-31"),  # type: ignore[arg-type]
+        net_worth_accounts(None, from_date="2025-01-01", to_date="2025-01-31"),  # type: ignore[arg-type]
+    ):
+        assert "unanchored_candidates" not in rq.sql
+        assert "dim_unanchored_accounts" not in rq.sql
+        assert "UNION ALL" not in rq.sql
+
+
+def test_accounts_range_after_the_spine_end_is_empty(model_db: Database) -> None:
+    _mixed(model_db)
+    assert _acct_rows(model_db, from_date="2025-02-01") == []
+
+
+def test_unknown_currency_null_segment_retains_incomplete_sync_metadata(
+    model_db: Database,
+) -> None:
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+
+    _null_balance_spine(model_db, currency=None)
+    _account(model_db, "chk", "Checking", "USD")
+    _balance(model_db, "chk", "2025-03-31", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2025-03-31", "1", source="identity")
+    _install_report(model_db, "net_worth_currencies")
+    load(model_db, source())
+
+    result = get_report_catalog().execute(
+        model_db,
+        report_id="core:net_worth_currencies",
+        parameters={"from_date": "2025-03-31", "to_date": "2025-03-31"},
+        limit=10,
+    )
+
+    assert len(result.records) == 2
+    segments = {row["currency_code"]: row for row in result.records}
+    assert segments["USD"]["net_worth"] == Decimal("100.00")
+    assert segments["USD"]["unanchored_account_count"] == 0
+    unknown = segments[None]
+    assert unknown["unanchored_account_count"] == 1
+    for measure in (
+        "total_assets",
+        "total_liabilities",
+        "net_worth",
+        "total_assets_home",
+        "total_liabilities_home",
+        "net_worth_home",
+    ):
+        assert unknown[measure] is None
+    coverage = result.to_envelope().to_dict()["summary"]["sync_completeness"]
+    assert coverage["complete"] is False
+    assert "unresolved_identity" in {reason["kind"] for reason in coverage["reasons"]}
+    assert result.degraded is True
+
+
+@pytest.mark.parametrize(
+    "name", ["net_worth", "net_worth_accounts", "net_worth_currencies"]
+)
+def test_range_before_balance_evidence_is_empty_with_incomplete_sync_metadata(
+    model_db: Database, name: str
+) -> None:
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+
+    _null_balance_spine(model_db)
+    _install_report(model_db, name)
+    load(model_db, source())
+
+    result = get_report_catalog().execute(
+        model_db,
+        report_id=f"core:{name}",
+        parameters={"from_date": "2025-03-01", "to_date": "2025-03-30"},
+        limit=10,
+    )
+
+    assert result.records == []
     coverage = result.to_envelope().to_dict()["summary"]["sync_completeness"]
     assert coverage["complete"] is False
     assert "unresolved_identity" in {reason["kind"] for reason in coverage["reasons"]}
