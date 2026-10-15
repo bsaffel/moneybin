@@ -225,7 +225,7 @@ The practical recipe for headless deployments:
 
 Passphrase mode (`profile create --passphrase` once it lands; today via `db init --passphrase` on a freshly created profile) sidesteps the auto-key trap: the passphrase is the input, the derived key is held in memory for the command's lifetime, and an env-var fallback is still available via `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` after `db unlock`. `db init` records the mode it used as `database.encryption_key_mode` in the profile's `config.yaml`, which is where `profile show` and `db info` read it. See [`database-security.md`](database-security.md) "Headless and cron deployments" for Docker, systemd, and cron patterns.
 
-Sync login and token refresh require a writable OS keychain, including on headless hosts. Existing profile-specific plaintext sync token files are imported into the keychain and removed only after both values are verified. If keychain storage fails, the file remains and authentication from it is refused; configure or unlock the keychain before retrying.
+Sync login and token refresh require a writable OS keychain, including on headless hosts. Existing profile-specific plaintext sync token files are deleted without being used, and a keychain token pair that records no issuing server is never sent to any server. Run `moneybin sync login` once after upgrading to sign in again.
 
 ## Multi-user on one machine
 

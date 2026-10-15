@@ -247,7 +247,7 @@ class TestStartLogin:
             address.start_login(address.plan_server_address(_A), surface="cli")
 
         assert excinfo.value.code == error_codes.MUTATION_INVALID_INPUT
-        assert _A in excinfo.value.message
+        assert _A not in excinfo.value.message
         assert _saved(tmp_path) is None
         assert events == []
 

@@ -192,7 +192,8 @@ def _refuse_as_not_moneybin_sync(
     # that reached some other web server.
     SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface=surface, outcome="rejected").inc()
     raise UserError(
-        f"{plan.url} answered, but not as a moneybin-sync server.",
+        # Static: the user-typed address must not reach the durable error log.
+        "The server at that address answered, but not as a moneybin-sync server.",
         code=error_codes.MUTATION_INVALID_INPUT,
         hint="Check the address, then run login again.",
     ) from cause
@@ -219,7 +220,7 @@ def start_login(plan: AddressPlan, *, surface: Surface) -> LoginStart:
             surface=surface, outcome="unreachable"
         ).inc()
         raise SyncAPIError(
-            f"sync server at {plan.url} returned {e.response.status_code}"
+            f"sync server returned {e.response.status_code} at login"
         ) from e
     except ValueError as e:
         _refuse_as_not_moneybin_sync(plan, surface, e)
