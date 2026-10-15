@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import emit_human_result
 from moneybin.cli.prompts import Choice, choose_required
 from moneybin.cli.render import build_summary, compose_human_result, format_money
@@ -90,8 +91,6 @@ def load_items(
                             account_id=str(account_id or row["account_id"]),
                         )
                         if observation is None:
-                            from moneybin import error_codes
-
                             raise UserError(
                                 "This match cannot be decided because its source evidence is unavailable.",
                                 code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
@@ -337,8 +336,6 @@ def run_review(type_: str, limit: int, policy: TerminalPolicy) -> None:
                     saved += 1
                     raise typer.Exit(1) from None
                 except UserError as exc:
-                    from moneybin import error_codes
-
                     if (
                         item.queue == "matches"
                         and exc.code == error_codes.REFRESH_MODEL_FAILED
@@ -491,6 +488,25 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
                 )
                 raise typer.Exit(1)
         elif item.queue == "categorize":
+            if category is not None:
+                from moneybin.services.categorization import CategorizationService
+
+                # The review service resolves labels; they must still name the chosen ID.
+                targets = [
+                    row
+                    for row in CategorizationService(db).get_active_categories()
+                    if row["category"] == category["category"]
+                    and row["subcategory"] == category["subcategory"]
+                ]
+                if len(targets) != 1 or any(
+                    targets[0].get(field) != category.get(field)
+                    for field in ("category_id", "category", "subcategory", "class")
+                ):
+                    typer.echo(
+                        "Category target changed or is ambiguous; no decision saved.",
+                        err=True,
+                    )
+                    return False
             from moneybin.protocol.write_contracts import CategorizationDecisionRequest
             from moneybin.services.review_decisions_service import (
                 ReviewDecisionsService,

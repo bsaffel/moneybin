@@ -410,3 +410,68 @@ def test_pending_attempts_use_canonical_categorizable_population(db: Database) -
     assert service.count_pending_review() == 1
     rows = service.list_pending_review_transactions(limit=1)
     assert rows is not None and [row["transaction_id"] for row in rows] == ["open"]
+
+
+@pytest.mark.parametrize("change", ["recreated", "inactive", "duplicate", "unchanged"])
+def test_interactive_category_selection_preserves_exact_taxonomy_target(
+    db: Database, change: str
+) -> None:
+    from moneybin.cli.commands.interactive_review import apply_decision
+    from moneybin.repositories.user_categories_repo import UserCategoriesRepo
+    from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+    _queue(db)
+    _transaction(db, "category-target")
+    service = CategorizationService(db)
+    selected_id = service.create_category(
+        "Synthetic target", subcategory=None, actor="test"
+    )
+
+    def choose(*_args: Any, **_kwargs: Any) -> str:
+        if change == "recreated":
+            service.delete_category(selected_id, actor="test")
+            replacement = service.create_category(
+                "Synthetic target", subcategory=None, actor="test"
+            )
+            assert replacement != selected_id
+        elif change == "inactive":
+            UserCategoriesRepo(db).update_active(
+                selected_id, is_active=False, actor="test"
+            )
+        elif change == "duplicate":
+            # Legacy/repo taxonomy can contain equal labels; the ID PK alone permits it.
+            duplicate = UserCategoriesRepo(db).insert(
+                category="Synthetic target", actor="test"
+            )
+            assert duplicate.target_id != selected_id
+        return selected_id
+
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.get_database",
+            return_value=nullcontext(db),
+        ),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            side_effect=choose,
+        ),
+        patch.object(
+            ReviewDecisionsService,
+            "apply_ordinary",
+            wraps=ReviewDecisionsService(db, actor="cli").apply_ordinary,
+        ) as apply,
+    ):
+        item = load_items("categorize", 1)[0]
+        result = apply_decision(item, "accept", get_terminal_policy())
+    history = service.list_categorization_history()
+    if change == "unchanged":
+        assert result is True
+        apply.assert_called_once()
+        assert len(history) == 1 and history[0]["category_id"] == selected_id
+        attempt = CategorizationDecisionsRepo(db).fetch_by_id(item.item_id)
+        assert attempt is not None and attempt["status"] == "accepted"
+    else:
+        assert result is False
+        apply.assert_not_called()
+        assert history == []
+        assert CategorizationDecisionsRepo(db).fetch_by_id(item.item_id) is None

@@ -731,3 +731,39 @@ def test_target_change_diagnostic_goes_to_stderr(
     assert "Decision changed while choosing" in captured.err
     assert "Decision changed while choosing" not in captured.out
     database.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field,updated", [("category", "Renamed"), ("class", "income")]
+)
+def test_selected_category_metadata_drift_is_refused(field: str, updated: str) -> None:
+    from moneybin.cli.commands.interactive_review import ReviewItem, apply_decision
+
+    selected = {
+        "category_id": "chosen",
+        "category": "Synthetic",
+        "subcategory": None,
+        "class": "expense",
+    }
+    current = {**selected, field: updated}
+    item = ReviewItem("categorize", "pending", ())
+    with (
+        patch(
+            "moneybin.cli.commands.interactive_review.load_items", return_value=[item]
+        ),
+        patch("moneybin.cli.commands.interactive_review.get_database"),
+        patch(
+            "moneybin.cli.commands.interactive_review.choose_required",
+            return_value="chosen",
+        ),
+        patch("moneybin.services.categorization.CategorizationService") as categories,
+        patch(
+            "moneybin.services.review_decisions_service.ReviewDecisionsService"
+        ) as decisions,
+    ):
+        categories.return_value.get_active_categories.side_effect = [
+            [selected],
+            [current],
+        ]
+        assert apply_decision(item, "accept", get_terminal_policy()) is False
+        decisions.return_value.apply_ordinary.assert_not_called()
