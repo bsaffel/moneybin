@@ -1027,7 +1027,7 @@ def test_sync_disconnect_by_provider_item_id(mock_build: MagicMock) -> None:
     assert "Provider item ID: item_b" in result.output
 
 
-def _purge_plan(*, connected: bool = True) -> object:
+def _purge_plan(*, connected: bool = True, last_sync: datetime | None = None) -> object:
     """A SyncPurgePlan for one item: 7 raw rows, 4 links, 1 withdrawn proposal."""
     from moneybin.connectors.sync_models import ConnectedInstitution
     from moneybin.services.sync_service import SyncPurgePlan
@@ -1041,6 +1041,7 @@ def _purge_plan(*, connected: bool = True) -> object:
                 provider="plaid",
                 institution_name="Chase",
                 status="active",
+                last_sync=last_sync,
                 created_at=datetime(2026, 3, 15, tzinfo=UTC),
             )
             if connected
@@ -1233,6 +1234,44 @@ def test_sync_disconnect_purge_rejects_a_stale_preview(
 
     assert exit_info.value.exit_code == 1
     mock_confirm.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=True)
+def test_sync_disconnect_purge_ignores_connection_metadata_that_moved(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server-side sync finishing while the prompt is open is not a changed target."""
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_disconnect
+
+    service = MagicMock()
+    service.plan_purge.return_value = _purge_plan()
+    synced = _purge_plan(last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC))
+
+    def purge_confirmed(**kwargs: object) -> object:
+        verify = kwargs["verify"]
+        verify(synced)  # type: ignore[operator]
+        return synced
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+
+    sync_disconnect(
+        institution=None,
+        provider_item_id="item_a",
+        purge=True,
+        yes=False,
+        output=OutputFormat.TEXT,
+    )
+
+    mock_confirm.assert_called_once()
+    service.purge_confirmed.assert_called_once()
 
 
 @pytest.mark.unit

@@ -19,6 +19,7 @@ from moneybin.connectors.sync_models import (
 from moneybin.errors import UserError
 from moneybin.mcp.tools.sync import register_sync_tools
 from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
+from moneybin.services.sync_service import SyncPurgePlan
 
 
 @pytest.mark.unit
@@ -811,9 +812,7 @@ async def test_sync_pull_withholds_retries_when_the_apply_failed(
     assert not sync_pull().recovery_actions
 
 
-def _purge_plan(*, connected: bool = True, rows: int = 3) -> object:
-    from moneybin.services.sync_service import SyncPurgePlan
-
+def _purge_plan(*, connected: bool = True, rows: int = 3) -> SyncPurgePlan:
     return SyncPurgePlan(
         provider_item_id="item_a",
         connection=(

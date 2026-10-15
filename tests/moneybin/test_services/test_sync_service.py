@@ -2073,3 +2073,46 @@ def test_purge_confirmed_rolls_back_when_the_server_disconnect_fails(
         "SELECT COUNT(*) FROM app.account_links WHERE status = 'reversed'"
     ).fetchone()
     assert pending is not None and pending[0] == 0
+
+
+def test_purge_confirmed_names_the_orphan_when_the_local_half_fails(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """After the server half lands, the error carries the id that still reaches the rows."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    before_links = _accepted_link_rows(db, _CHASE_ITEM)
+
+    with (
+        patch.object(sync_service, "AccountLinksRepo") as links_repo,
+        pytest.raises(UserError) as exc_info,
+    ):
+        links_repo.return_value.reverse.side_effect = RuntimeError("disk full")
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+
+    assert exc_info.value.code == error_codes.SYNC_ERROR
+    assert _CHASE_ITEM in str(exc_info.value)
+    assert exc_info.value.hint is not None
+    assert f"--provider-item-id {_CHASE_ITEM} --purge" in exc_info.value.hint
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    mock_client.disconnect.assert_called_once_with("conn_chase")
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
+    assert _accepted_link_rows(db, _CHASE_ITEM) == before_links
+
+
+def test_purge_confirmed_propagates_a_local_failure_for_an_orphan_as_is(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """With no server half to report, the local error is the whole story."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = []
+
+    with (
+        patch.object(sync_service, "AccountLinksRepo") as links_repo,
+        pytest.raises(RuntimeError, match="disk full"),
+    ):
+        links_repo.return_value.reverse.side_effect = RuntimeError("disk full")
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+
+    mock_client.disconnect.assert_not_called()
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3

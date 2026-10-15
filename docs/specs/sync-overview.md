@@ -339,7 +339,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
 | `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
 | `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
-| `moneybin sync disconnect --institution NAME \| --provider-item-id ID [--purge]` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink). Local rows are kept by default. `--purge` previews, then also deletes every row the item pulled (`raw.plaid_*` and its `raw.security_prices` observations, scoped by `source_origin`), reverses the item's accepted `app.account_links`, and rejects pending merge proposals that only its accounts still describe; with `--provider-item-id` it also reaches an item the server no longer lists, which is the orphan a plain disconnect leaves behind. The server call runs first, so a remote failure changes nothing and a local failure leaves a re-runnable orphan. Core tables drop the rows on the next `refresh run` |
+| `moneybin sync disconnect --institution NAME \| --provider-item-id ID [--purge]` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink). Local rows are kept by default. `--purge` previews, then also deletes every row the item pulled (`raw.plaid_*` and its `raw.security_prices` observations, scoped by `source_origin`), reverses the item's accepted `app.account_links`, and rejects pending merge proposals that only its accounts still describe; with `--provider-item-id` it also reaches an item the server no longer lists, which is the orphan a plain disconnect leaves behind (the server still has to answer: the by-item lookup asks it first, and an unreachable server fails the plan before any local row is read). The server call runs first, so a remote failure changes nothing and a local failure leaves a re-runnable orphan, with the error naming the `provider_item_id` to re-run with. Core tables drop the rows on the next `refresh run` |
 | `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger a server-completed sync, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
 
@@ -467,7 +467,9 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
   lands between preview and confirm changes the digest and the confirm is
   refused. The response reports `status="purged"`, `rows_deleted`, and
   `account_links_reversed`; `institution` is `null` when the server no longer
-  listed the item and only its local rows were removed.
+  listed the item and only its local rows were removed. The server still has
+  to answer for that orphan, because the by-item lookup asks it before any
+  local row is read.
 - Clear profile-scoped credentials with `sync_disconnect(mode="logout")`. Logout
   does not accept `institution`, `confirmation_token`, or `state="absent"`.
 - Provider-specific operations remain abstracted behind the provider-agnostic

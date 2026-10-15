@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
 
@@ -64,6 +64,9 @@ from moneybin.protocol.envelope import (
 )
 from moneybin.services import sync_server_address
 from moneybin.services.sync_server_address import AddressPlan
+
+if TYPE_CHECKING:
+    from moneybin.services.sync_service import SyncPurgePlan
 
 
 def _build_sync_client() -> Any:
@@ -582,7 +585,7 @@ def _disconnect_sync_confirmed(
         )
 
 
-def _sync_purge_binding(plan: Any) -> ConfirmationBinding:
+def _sync_purge_binding(plan: SyncPurgePlan) -> ConfirmationBinding:
     """Bind a purge to the exact item, its live connection, and every count.
 
     The counts are part of the binding, so a pull that lands between the
@@ -619,7 +622,7 @@ def _sync_purge_binding(plan: Any) -> ConfirmationBinding:
     )
 
 
-def _sync_purge_message(plan: Any) -> str:
+def _sync_purge_message(plan: SyncPurgePlan) -> str:
     """Name the item, the server half, and the exact local rows a purge removes."""
     connection = plan.connection
     local = (
@@ -640,7 +643,9 @@ def _sync_purge_message(plan: Any) -> str:
     )
 
 
-def _plan_sync_purge(institution: str | None, provider_item_id: str | None) -> Any:
+def _plan_sync_purge(
+    institution: str | None, provider_item_id: str | None
+) -> SyncPurgePlan:
     """Resolve one purge target outside the MCP event loop."""
     with _build_sync_service() as service:
         return service.plan_purge(
@@ -652,10 +657,10 @@ def _purge_sync_confirmed(
     institution: str | None,
     provider_item_id: str | None,
     grant: ConfirmationGrant,
-) -> Any:
+) -> SyncPurgePlan:
     """Re-plan, verify, disconnect, and purge outside the event loop."""
 
-    def verify(live: Any) -> None:
+    def verify(live: SyncPurgePlan) -> None:
         grant.verify(_sync_purge_binding(live))
 
     with _build_sync_service() as service:

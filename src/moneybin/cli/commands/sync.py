@@ -46,6 +46,7 @@ from .stubs import _not_implemented
 
 if TYPE_CHECKING:
     from moneybin.connectors.sync_models import SyncConnectionView
+    from moneybin.services.sync_service import SyncPurgePlan
 
 app = typer.Typer(
     help="Sync financial data from external services",
@@ -674,7 +675,8 @@ def sync_disconnect(
             "account links, and withdraw merge proposals only its accounts "
             "describe. Without --purge, local rows are retained. With "
             "--provider-item-id, also works for a connection the server no "
-            "longer lists. Permanent — no revert."
+            "longer lists, though the server still has to answer. "
+            "Permanent — no revert."
         ),
     ),
     yes: bool = typer.Option(
@@ -838,31 +840,27 @@ def _sync_disconnect_purge(
                 f"{len(planned.decision_ids)} merge proposal(s) withdrawn.",
                 err=True,
             )
-            if yes:
-                # No prompt to diverge from — the live plan is re-read inside
-                # the write transaction either way.
-                def verify(live: object) -> None:
-                    return None
+            if not yes and not typer.confirm(
+                "Apply this purge?", default=False, err=True
+            ):
+                _emit_sync_receipt(
+                    "Purge cancelled",
+                    [
+                        ("Provider item ID", planned.provider_item_id),
+                        ("Outcome", "Nothing was removed"),
+                    ],
+                )
+                raise typer.Exit(0)
 
-            else:
-                if not typer.confirm("Apply this purge?", default=False, err=True):
-                    _emit_sync_receipt(
-                        "Purge cancelled",
-                        [
-                            ("Provider item ID", planned.provider_item_id),
-                            ("Outcome", "Nothing was removed"),
-                        ],
+            def verify(live: "SyncPurgePlan") -> None:
+                # With --yes there is no prompt to diverge from; the live plan
+                # is still re-read inside the write transaction either way.
+                if not yes and live.binding != planned.binding:
+                    raise UserError(
+                        "Purge target changed after the preview; nothing was removed.",
+                        code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                        hint="Review the new purge preview and confirm again.",
                     )
-                    raise typer.Exit(0)
-
-                def verify(live: object) -> None:
-                    if live != planned:
-                        raise UserError(
-                            "Purge target changed after the preview; nothing "
-                            "was removed.",
-                            code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
-                            hint="Review the new purge preview and confirm again.",
-                        )
 
             # Purge exactly the item the preview named, not whatever
             # `institution` now resolves to.

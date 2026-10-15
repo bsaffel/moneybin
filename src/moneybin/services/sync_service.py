@@ -91,6 +91,24 @@ _PURGE_TABLES = (
 )
 
 
+def _require_one_selector(
+    institution: str | None, provider_item_id: str | None
+) -> None:
+    """Refuse a disconnect selector that names both targets or neither."""
+    if institution is not None and provider_item_id is not None:
+        raise UserError(
+            "institution and provider_item_id are mutually exclusive — "
+            "pass exactly one",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if institution is None and provider_item_id is None:
+        raise UserError(
+            "institution or provider_item_id is required to disconnect — "
+            "run `moneybin sync status` to list connected banks",
+            code=error_codes.SYNC_INSTITUTION_REQUIRED,
+        )
+
+
 @dataclass(frozen=True)
 class SyncPurgePlan:
     """Exact live state a purging disconnect would remove.
@@ -112,6 +130,22 @@ class SyncPurgePlan:
     def rows_to_delete(self) -> int:
         """Every raw row the purge removes, summed across the tables it touches."""
         return sum(count for _, count in self.table_counts)
+
+    @property
+    def binding(self) -> tuple[object, ...]:
+        """What a confirmation binds: the item, its connection id, and every count.
+
+        Volatile connection metadata (``last_sync``, ``status``, ``error_code``)
+        stays out, so a server-side sync completing while a prompt is open does
+        not read as a changed target.
+        """
+        return (
+            self.provider_item_id,
+            None if self.connection is None else self.connection.id,
+            self.table_counts,
+            self.account_link_ids,
+            self.decision_ids,
+        )
 
     @property
     def blast_radius(self) -> dict[str, int]:
@@ -562,12 +596,7 @@ class SyncService:
         `institution` alone is ambiguous and `_find_institution` refuses it.
         Mutually exclusive with `institution`, mirroring `pull()`'s guard.
         """
-        if institution is not None and provider_item_id is not None:
-            raise UserError(
-                "institution and provider_item_id are mutually exclusive — "
-                "pass exactly one",
-                code=error_codes.MUTATION_INVALID_INPUT,
-            )
+        _require_one_selector(institution, provider_item_id)
         if provider_item_id is not None:
             inst = self._find_institution_by_item(provider_item_id)
             if inst is None:
@@ -578,13 +607,7 @@ class SyncService:
                     code=error_codes.MUTATION_NOT_FOUND,
                 )
             return inst
-        if institution is None:
-            raise UserError(
-                "institution or provider_item_id is required to disconnect — "
-                "run `moneybin sync status` to list connected banks",
-                code=error_codes.SYNC_INSTITUTION_REQUIRED,
-            )
-        inst = self._find_institution(institution)
+        inst = self._find_institution(institution or "")
         if inst is None:
             raise UserError(
                 f"no connected institution matching '{institution}' — "
@@ -620,20 +643,10 @@ class SyncService:
         ``plan_disconnect`` does. ``provider_item_id`` first tries the server
         and then falls back to the local rows alone, so an item the server
         already dropped — the orphan a plain disconnect leaves behind — is
-        still reachable by its id.
+        still reachable by its id. Both paths ask the server first, so the
+        server has to answer even for an item it no longer lists.
         """
-        if institution is not None and provider_item_id is not None:
-            raise UserError(
-                "institution and provider_item_id are mutually exclusive — "
-                "pass exactly one",
-                code=error_codes.MUTATION_INVALID_INPUT,
-            )
-        if institution is None and provider_item_id is None:
-            raise UserError(
-                "institution or provider_item_id is required to disconnect — "
-                "run `moneybin sync status` to list connected banks",
-                code=error_codes.SYNC_INSTITUTION_REQUIRED,
-            )
+        _require_one_selector(institution, provider_item_id)
         if provider_item_id is None:
             connection = self._find_institution(institution or "")
             if connection is None:
@@ -712,28 +725,25 @@ class SyncService:
             verify(live)
             if live.connection is not None:
                 self.client.disconnect(live.connection.id)
-            links = AccountLinksRepo(self.db)
-            for link_id in live.account_link_ids:
-                # A purge is only reachable through a confirmed user action, so
-                # the domain actor is "user" whichever surface carried it.
-                links.reverse(
-                    link_id=link_id,
-                    reversed_by="user",
-                    actor=actor,
-                    in_outer_txn=True,
-                )
-            self._reject_proposals(live.decision_ids, actor)
-            for table in _PURGE_TABLES:
-                self.db.execute(
-                    f"DELETE FROM {table.full_name} WHERE source_origin = ?",  # TableRef + parameterized value
-                    [live.provider_item_id],
-                )
-            self.db.execute(
-                f"DELETE FROM {SECURITY_PRICES.full_name} "
-                f"WHERE source_type = ? AND source_origin = ?",  # TableRef + parameterized values
-                [_PROVIDER, live.provider_item_id],
-            )
-            self.db.commit()
+            try:
+                self._purge_local(live, actor)
+                self.db.commit()
+            except Exception as exc:
+                if live.connection is None:
+                    raise
+                # The server half already landed and `sync status` no longer
+                # lists the item, so the error has to carry the one id that
+                # still reaches the orphan.
+                raise UserError(
+                    f"The server connection was removed, but the local purge of "
+                    f"provider_item_id '{live.provider_item_id}' failed and was "
+                    f"rolled back; its locally pulled rows are still here.",
+                    code=error_codes.SYNC_ERROR,
+                    hint=(
+                        f"Run 'moneybin sync disconnect --provider-item-id "
+                        f"{live.provider_item_id} --purge' to finish removing them."
+                    ),
+                ) from exc
         except BaseException:
             # BaseException: a KeyboardInterrupt between the deletes must still
             # roll back the open transaction (BaseRepo._transaction does the same).
@@ -752,9 +762,41 @@ class SyncService:
         )
         return live
 
+    def _purge_local(self, live: SyncPurgePlan, actor: str) -> None:
+        """The local half of a purge, inside the caller's open transaction."""
+        links = AccountLinksRepo(self.db)
+        for link_id in live.account_link_ids:
+            # A purge is only reachable through a confirmed user action, so
+            # the domain actor is "user" whichever surface carried it.
+            links.reverse(
+                link_id=link_id,
+                reversed_by="user",
+                actor=actor,
+                in_outer_txn=True,
+            )
+        self._reject_proposals(live.decision_ids, actor)
+        for table in _PURGE_TABLES:
+            self.db.execute(
+                f"""
+                DELETE FROM {table.full_name}
+                WHERE source_origin = ?
+                """,  # TableRef + parameterized value
+                [live.provider_item_id],
+            )
+        self.db.execute(
+            f"""
+            DELETE FROM {SECURITY_PRICES.full_name}
+            WHERE source_type = ? AND source_origin = ?
+            """,  # TableRef + parameterized values
+            [_PROVIDER, live.provider_item_id],
+        )
+
     def _count_item_rows(self, table: TableRef, provider_item_id: str) -> int:
         row = self.db.execute(
-            f"SELECT COUNT(*) FROM {table.full_name} WHERE source_origin = ?",  # TableRef + parameterized value
+            f"""
+            SELECT COUNT(*) FROM {table.full_name}
+            WHERE source_origin = ?
+            """,  # TableRef + parameterized value
             [provider_item_id],
         ).fetchone()
         return int(row[0]) if row else 0
@@ -762,8 +804,10 @@ class SyncService:
     def _count_item_prices(self, provider_item_id: str) -> int:
         # Shared across providers, so the provider scopes it as well as the item.
         row = self.db.execute(
-            f"SELECT COUNT(*) FROM {SECURITY_PRICES.full_name} "
-            f"WHERE source_type = ? AND source_origin = ?",  # TableRef + parameterized values
+            f"""
+            SELECT COUNT(*) FROM {SECURITY_PRICES.full_name}
+            WHERE source_type = ? AND source_origin = ?
+            """,  # TableRef + parameterized values
             [_PROVIDER, provider_item_id],
         ).fetchone()
         return int(row[0]) if row else 0
