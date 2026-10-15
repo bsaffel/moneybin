@@ -1,6 +1,6 @@
 {
   "env": {
-    "PYTEST_XDIST_AUTO_NUM_WORKERS": "4"
+    "PYTEST_ADDOPTS": "--maxprocesses=4"
   },
   "enabledPlugins": {
     "mcp-apps@mcp-apps": false,

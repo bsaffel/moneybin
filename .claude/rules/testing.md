@@ -31,8 +31,9 @@ the local gate is the targeted run in AGENTS.md → "Pre-commit gate", not a
 tier.
 
 Tests run in parallel via `pytest-xdist` (`-n auto` in `pyproject.toml`).
-Claude Code sessions cap `-n auto` at 4 workers through
-`PYTEST_XDIST_AUTO_NUM_WORKERS` in `.claude/settings.json`: each worker
+Claude Code sessions cap xdist at 4 workers through
+`PYTEST_ADDOPTS=--maxprocesses=4` in `.claude/settings.json` — a ceiling over
+the detected core count, so a smaller machine keeps its own. Each worker
 re-imports and re-collects the suite (about 0.5 GB apiece), so several
 sessions each claiming every core saturate a laptop. Pass `-n0` to disable
 parallelism when you need `pdb`, ordered output, or are debugging a flaky
