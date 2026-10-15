@@ -441,7 +441,7 @@ SELECT
     WHEN wh.is_source_overlap OR wh.is_withheld
     THEN NULL
     ELSE CAST(CURRENT_DATE - lp.price_date AS INT)
-  END AS days_since_observed, /* Calendar days between the price used and today (the categorization pending list's age_days uses the same CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault. NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
+  END AS days_since_observed, /* Calendar days between the price used and today (`PendingTxnRow.age_days` uses the same CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault. NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
   CASE
     WHEN wh.is_source_overlap
     THEN 'source_overlap'

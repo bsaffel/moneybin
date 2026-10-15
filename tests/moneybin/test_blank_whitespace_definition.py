@@ -8,7 +8,7 @@ outlive all three snapshots. They exist because ``validate_category_text``
 refuses a blank on the write path using ``str.strip()`` — if the SQL class and
 ``str.strip()`` disagree on any character, a value the validator calls blank
 survives import as a non-NULL category and stays hidden from
-the pending list, which is the whole defect this rule closes.
+the categorization queue, which is the whole defect this rule closes.
 
 This test asserts the *rule*, not a sample of characters. Three rounds of
 review each found one more character missing from a hand-written list — a tab,

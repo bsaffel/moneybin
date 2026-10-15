@@ -1,1 +1,1 @@
-`core.uncategorized_queue` is removed; query `core.fct_transactions WHERE is_categorizable AND category IS NULL` instead. The first `moneybin refresh` after upgrading drops the view. The CLI and MCP pending list return the same fields as before.
+`core.uncategorized_queue` is removed; query `core.fct_transactions WHERE is_categorizable AND category IS NULL` instead. The first `moneybin refresh` after upgrading drops the view. The CLI and MCP categorization queue returns the same fields as before.

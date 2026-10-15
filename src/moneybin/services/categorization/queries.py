@@ -242,7 +242,7 @@ class CategorizationQueries:
         """Return True if core.fct_transactions is queryable.
 
         Used to distinguish pre-first-import state (no fact table yet) from
-        schema drift (fact table present, derived views missing).
+        schema drift (fact table present, `is_categorizable` column missing).
         """
         try:
             self._db.execute(
@@ -558,12 +558,12 @@ class CategorizationQueries:
         """Return gold transaction_ids that have an unresolved match decision.
 
         ``app.match_decisions`` keys on ``(source_type, source_transaction_id)``,
-        not the gold ``transaction_id`` the pending list reports, so this maps through
+        not the gold ``transaction_id`` the categorization queue reports, so this maps through
         ``prep.int_transactions__matched`` — the layer that assigns the gold id
         to each source member.
 
         Materialized as a set in ONE query, then applied in memory. Do NOT turn
-        this into a correlated EXISTS against the pending list: correlating
+        this into a correlated EXISTS against the categorization queue: correlating
         against the fct_transactions merge pipeline per row is what made
         system_doctor hang for >73s in production (F14).
 

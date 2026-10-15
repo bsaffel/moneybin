@@ -1008,7 +1008,7 @@ def _cells(
             if value is None and at == absent_at:
                 # NULL only, deliberately. A whitespace-only category is
                 # reachable and is *not* treated as absent here, because
-                # the pending filter selects `category IS NULL`
+                # the queue filter selects `category IS NULL`
                 # and would not surface it: labelling it would advertise a row
                 # `transactions categorize run` cannot act on. Making the two
                 # agree means normalizing blanks in staging, which is a change

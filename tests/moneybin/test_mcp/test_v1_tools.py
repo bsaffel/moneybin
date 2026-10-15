@@ -52,7 +52,7 @@ class TestCategorizePendingGet:
     ) -> None:
         self._install_view()
         parsed = (transactions_categorize_pending(sort="impact")).to_dict()
-        # Impact sort: T2(500*30=15000) > T1(25*39=975) > T3(5*25=125).
+        # Impact sort: ABS(amount) * age_days, so T2 (largest) > T1 > T3 (smallest).
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T2", "T1", "T3"]
 

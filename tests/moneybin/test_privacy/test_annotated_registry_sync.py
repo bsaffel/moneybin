@@ -116,7 +116,7 @@ def test_payload_fields_match_registry(payload_cls: type) -> None:
 def test_pending_txn_age_days_is_a_date() -> None:
     """``age_days`` is TXN_DATE in the payload — absolutely.
 
-    The pending list computes it in its own query; no registry relation carries
+    The categorization queue computes it in its own query; no registry relation carries
     it any more, so this pins the payload's class directly.
 
     Nothing else would notice the regression: ``age_days`` shares

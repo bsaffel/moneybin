@@ -4564,7 +4564,7 @@ class DoctorService:
                 status="skipped",
                 # Coverage reads only fct_transactions now; this also lands here
                 # when the fact predates is_categorizable (not yet refreshed).
-                detail="fct_transactions not available",
+                detail="fct_transactions not available or not yet refreshed",
                 affected_ids=[],
             )
         if coverage.categorizable == 0:

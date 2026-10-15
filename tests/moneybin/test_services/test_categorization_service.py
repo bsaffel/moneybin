@@ -134,9 +134,9 @@ def _reflect_categorizations_into_fact(db: Database) -> None:
 def db_with_transactions(db: Database) -> Database:
     """DB with sample transactions in core.fct_transactions."""
     # The accounts these transactions belong to, and an explicit is_transfer.
-    # Coverage figures are scoped to is_categorizable, which requires a resolved, unarchived account and `NOT is_transfer` —
-    # transactions with neither model a database that cannot exist, and would
-    # silently count as zero.
+    # Coverage is scoped to is_categorizable (resolved, unarchived account and
+    # `NOT is_transfer`). The fixture defaults the column to TRUE, so rows count
+    # either way; the accounts and explicit is_transfer keep the data realistic.
     db.conn.execute("""
         INSERT INTO core.dim_accounts (account_id, display_name, archived)
         VALUES ('ACC001', 'Checking', false), ('ACC002', 'Savings', false)

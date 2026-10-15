@@ -813,7 +813,7 @@ def insert_three_pending_transactions(db: Database) -> None:
     """T1–T3, uncategorized, on the MCP template's ACC001 and ACC002.
 
     Impact order is T2, T1, T3 at any CURRENT_DATE: ABS(amount) * age is
-    500*(d+21) > 25*(d+30) > 5*(d+16), d being days since 2026-04-15.
+    500*(d+5) > 25*(d+14) > 5*d, d being days since 2026-04-15.
     """
     db.execute(
         """

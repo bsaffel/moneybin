@@ -937,8 +937,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # fct_security_prices.source_type.
         "price_source": DataClass.TXN_TYPE,
         # CURRENT_DATE - price_date: CURRENT_DATE is public, so this is bijective
-        # with price_date (the pending list's age_days precedent) and inherits its
-        # class rather than TXN_DATE.
+        # with price_date (the PendingTxnRow.age_days precedent) and inherits its class
+        # rather than TXN_DATE.
         "days_since_observed": DataClass.TIMESTAMP_OBSERVABILITY,
         "valuation_status": DataClass.TXN_TYPE,
         # The broker's non-authoritative claim about the same position. Being a

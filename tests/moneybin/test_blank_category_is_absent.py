@@ -5,7 +5,7 @@ columns: ``''`` passes a NULL check while rendering as a malformed label.
 ``stg_tabular__transactions`` applies it to ``currency`` and not to
 ``category``, and ``stg_manual__transactions`` applies it to nothing, so a cell
 holding only spaces arrives at ``core.fct_transactions.category`` non-NULL.
-the pending filter selects ``category IS NULL``, so that
+The queue filter selects ``category IS NULL``, so that
 transaction is missing from the queue nobody can curate it out of.
 
 Seeds ``raw.*`` directly (mirrors ``test_int_unioned_currency.py``) to isolate
@@ -82,7 +82,7 @@ def test_a_whitespace_category_from_a_csv_is_absent_in_the_fact(
     """A CSV cell holding only spaces is not a category a person wrote.
 
     Left raw, it reaches the fact as ``'   '`` — non-NULL, so
-    the pending list skips the row and every table that renders the
+    the categorization queue skips the row and every table that renders the
     column shows a blank cell instead of the placeholder.
     """
     _insert_tabular_transaction(db, txn_id="csv_blank", category="   ")

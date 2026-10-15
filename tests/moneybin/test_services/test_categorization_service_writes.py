@@ -1334,7 +1334,7 @@ class TestCreateMerchantDualWrite:
         ``app.transaction_categories`` by the ``categorize_pending`` sweep,
         which skips only on ``None`` — so whitespace text survives into
         ``core.fct_transactions.category``, where it renders as an empty cell
-        that the pending filter's ``category IS NULL`` cannot
+        that the queue filter's ``category IS NULL`` cannot
         see. That is the defect this PR closes elsewhere, and
         ``merchants create --default-category '   '`` reaches it unstripped.
         """

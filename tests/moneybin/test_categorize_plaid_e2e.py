@@ -257,7 +257,7 @@ def test_plaid_pfc_categorization_end_to_end(db: Database) -> None:
     # provider vocabulary, not a MoneyBin one: letting it stand in for a
     # category put `FOOD_AND_DRINK` in the same rendered column as
     # `Food & Drink` (cli-output-coherence F8) and, because
-    # the pending list selects `category IS NULL`, hid this row
+    # the categorization queue selects `category IS NULL`, hid this row
     # from the curation queue that exists to surface it.
     row = db.execute(
         """
@@ -293,16 +293,16 @@ def test_plaid_pfc_categorization_end_to_end(db: Database) -> None:
         "and must not leave the raw PFC code standing in as the category"
     )
 
-    # Both uncategorized rows must reach the pending list. This is the
+    # Both uncategorized rows must reach the categorization queue. This is the
     # behavioural half of the assertions above: `category IS NULL` is only
-    # worth asserting because the pending list keys off it, and a raw PFC code
+    # worth asserting because the categorization queue keys off it, and a raw PFC code
     # standing in as the category silently emptied it of exactly the rows a
     # curator most needs to see.
     listed = CategorizationQueries(db).list_uncategorized_transactions(limit=None)
     assert listed is not None
     queued = {str(r["transaction_id"]) for r in listed}
     assert {low_confidence_id, unmapped_id} <= queued, (
-        "uncategorized Plaid rows are missing from the pending list"
+        "uncategorized Plaid rows are missing from the categorization queue"
     )
     assert detailed_id not in queued, "a categorized row must not be queued"
     assert (

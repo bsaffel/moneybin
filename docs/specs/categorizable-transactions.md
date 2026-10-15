@@ -45,15 +45,18 @@ sits under `[Unreleased]`. Pre-launch posture permits the change.
 1. Add `is_categorizable BOOLEAN` to `core.fct_transactions`.
 2. Delete `core.uncategorized_queue`.
 3. Read the categorization population from `is_categorizable` everywhere it is
-   read today: the pending list, the pending count, coverage, and the
+   read today: the categorization queue, the pending count, coverage, and the
    categorized-by breakdown.
 
 The name is deliberately narrow. Five report models
 (`reports/cash_flow.sql`, `large_transactions.sql`, `merchant_activity.sql`,
-`recurring_subscriptions.sql`, `spending_trend.sql`) repeat
-`NOT t.is_transfer AND NOT a.archived`, but "excluded from spending analysis"
-and "needs a category" are separate questions that happen to share a predicate
-today. Folding the reports onto this column would bind them together; that is
+`recurring_subscriptions.sql`, `spending_trend.sql`) call
+`@report_eligible_transaction(t, a)`
+(`src/moneybin/sqlmesh/macros/report_eligibility.py`), which expands to
+`NOT t.is_transfer AND NOT a.archived`. Under the reports' INNER JOIN to
+`dim_accounts` that equals `is_categorizable`, but "excluded from spending
+analysis" and "needs a category" are separate questions that happen to share a
+predicate today. Folding the reports onto this column would bind them together; that is
 a separate decision (see Out of scope).
 
 ## Requirements
@@ -124,12 +127,12 @@ test that compared it with the view. Each query below filters
 
 The `plaid_unmapped` count stays unscoped, as it deliberately is today.
 
-The pending list's join to `dim_accounts` is a LEFT JOIN. It only fetches
+The categorization queue's join to `dim_accounts` is a LEFT JOIN. It only fetches
 `account_name`, and `is_categorizable` already requires a resolved account, so
 the two joins return the same rows in production. An INNER JOIN would quietly
 make the join a second membership condition beside the column.
 
-**R6 — The pending list keeps its response shape.** The pending list computes
+**R6 — The categorization queue keeps its response shape.** The categorization queue computes
 `age_days` and `priority_score` in its own query, with the expressions the view
 uses today:
 
@@ -196,14 +199,15 @@ and did not check SQLMesh's demotion. This spec relies on demotion and states
 the evidence. The integration test in R11 confirms it end to end.
 
 **R9 — Privacy.** `is_categorizable` is classified `DataClass.TXN_TYPE`, the
-class of `is_transfer`, from which it is derived. The pending list's columns
+class of `is_transfer`, from which it is derived. The categorization queue's columns
 keep their current classes in the typed payload
 (`privacy/payloads/categorize.py`). The comment there that cites
 `CLASSIFICATION[("core", "uncategorized_queue")]["age_days"]` moves to cite the
 reasoning directly: `age_days` is bijective with `txn_date` because
-`CURRENT_DATE` is public, so it is `TXN_DATE`. The `dim_holdings.sql:444` and
-`taxonomy.py:940` comments cite the same precedent and are updated to cite the
-payload instead.
+`CURRENT_DATE` is public, so it is `TXN_DATE`. The comments in
+`src/moneybin/sqlmesh/models/core/dim_holdings.sql` and
+`src/moneybin/privacy/taxonomy.py` cite the same precedent and cite
+`PendingTxnRow.age_days` in `src/moneybin/privacy/payloads/categorize.py`.
 
 **R10 — The `sql_query` surface.** `core.uncategorized_queue` has `interface`
 audience, so `sql_query` reads it and `sql_schema` lists it with an example.
@@ -235,12 +239,12 @@ failure a metric would show.
 - **Equivalence, measured.** The existing queue, count and coverage tests keep
   their assertions and run against the new queries. Before the model file is
   deleted, one test builds both the old view and the new column on the same
-  fixture and asserts the pending list returns identical rows. It is deleted
+  fixture and asserts the categorization queue returns identical rows. It is deleted
   with the view, and its result is recorded in the PR. It passed at commit
   `be7a1f40a` (`PASSED tests/moneybin/test_fct_transactions_categorizable.py::test_pending_list_matches_the_view_it_replaces`)
   and was deleted with the view in `dd3ededa1`.
 - **The upgrade window (R7).** A `fct_transactions` fixture without the column
-  makes the pending list raise `INFRA_SCHEMA_DRIFT`, and makes `categorize
+  makes the categorization queue raise `INFRA_SCHEMA_DRIFT`, and makes `categorize
   stats` return zeros without raising.
 - **Removal reaches an existing database (R8).** An integration test writes
   a two-model project (a base model and a VIEW over it) to a temporary
@@ -301,14 +305,15 @@ data, alters a categorization query, and edits `tables.py`, `privacy/` and
   `categorization/applier.py:630`, `mcp/tools/reviews.py:261,1071`,
   `mcp/tools/transactions_categorize.py:340`,
   `categorization/__init__.py:908`, `doctor_service.py:4556`) now name the
-  pending filter instead.
+  queue filter instead.
 - Migrations V054 and V055 mention the queue in comments. They stay as written:
   editing an applied migration changes its checksum, and `check_drift()` then
   flags it on every database that ran it.
 
 ## Out of scope
 
-- **The five report models** that repeat `NOT is_transfer AND NOT archived`.
+- **The five report models** that call `@report_eligible_transaction`, which
+  expands to `NOT is_transfer AND NOT archived`.
   Whether "excluded from spending analysis" should become its own column, or
   reuse this one, is a separate decision about what those reports mean.
 - **Removing `source_id`** from the pending-list payload: it has been NULL
@@ -324,7 +329,7 @@ data, alters a categorization query, and edits `tables.py`, `privacy/` and
   population.** That adds a third `core` relation to remove one copy of a
   predicate, which is the opposite of the rule this spec applies.
 - **Store `age_days` and `priority_score` on `fct_transactions` too.** Both
-  depend on `CURRENT_DATE` and are meaningful only for the pending list, and
+  depend on `CURRENT_DATE` and are meaningful only for the categorization queue, and
   `priority_score` only within one currency. Putting them on the canonical fact
   would publish two columns whose values change daily for one consumer's sort.
 - **A general `is_spending` name shared with the reports.** Rejected for now;

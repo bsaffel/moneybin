@@ -7,7 +7,7 @@ MODEL (
    stg_plaid__accounts states for its own free-text columns, and the reason
    currency below already is: '' passes a NULL check while rendering as a
    malformed label. Here the NULL check that matters is
-   the pending filter's `category IS NULL` — a category of spaces hides a
+   the queue filter's `category IS NULL` — a category of spaces hides a
    transaction nobody ever categorized from the list built to surface it.
 
    These two use a regex rather than the bare TRIM their siblings use, because
