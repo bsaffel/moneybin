@@ -660,6 +660,14 @@ class CategorizationQueries:
         except duckdb.CatalogException as exc:
             if not self._fct_transactions_exists():
                 return 0
+            # An empty fact table proves zero work before derived views are built.
+            if (
+                self._db.execute(
+                    f"SELECT 1 FROM {FCT_TRANSACTIONS.full_name} LIMIT 1"  # TableRef constant
+                ).fetchone()
+                is None
+            ):
+                return 0
             raise UserError(
                 "Categorization review state is missing or out of date; run moneybin refresh.",
                 code=error_codes.INFRA_SCHEMA_DRIFT,

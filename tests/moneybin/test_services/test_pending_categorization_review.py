@@ -330,6 +330,7 @@ def test_pending_read_preserves_no_import_and_missing_schema_distinction(
     assert service.list_pending_review_transactions(limit=1) is None
     assert service.count_pending_review() == 0
     create_core_tables(db)
+    _transaction(db, "schema-drift")
     with pytest.raises(UserError) as missing_list:
         service.list_pending_review_transactions(limit=1)
     with pytest.raises(UserError) as missing_count:
@@ -369,3 +370,16 @@ async def test_mcp_pending_summary_counts_without_materializing_rows(
     assert counts["categorization"].count == 1
     assert sizes == []
     assert CategorizationService(db).count_uncategorized() == 2
+
+
+def test_pending_count_is_zero_for_empty_fact_before_queue_is_built(
+    db: Database,
+) -> None:
+    from moneybin.errors import UserError
+
+    create_core_tables(db)
+    service = CategorizationService(db)
+    assert service.count_pending_review() == 0
+    # Listing still requires the canonical projection, even on empty inventory.
+    with pytest.raises(UserError):
+        service.list_pending_review_transactions(limit=1)
