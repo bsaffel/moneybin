@@ -4,8 +4,8 @@ Pure transport — no business logic, no database access. Methods correspond
 1:1 to server endpoints. Service-layer orchestration lives in SyncService.
 
 Token storage uses SecretStore and requires a writable secure OS keychain.
-Exact-profile legacy plaintext files are imported once after verified storage;
-new credentials are never written to plaintext files.
+A legacy plaintext token file records no issuing server, so it is removed, never
+imported; new credentials are never written to plaintext files.
 
 Timeouts:
 - _DEFAULT_TIMEOUT (15s) for most endpoints
@@ -17,7 +17,6 @@ Per design — no per-endpoint configuration knobs unless evidence demands them.
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import time
@@ -65,6 +64,10 @@ logger = logging.getLogger(__name__)
 _KEYRING_JWT_KEY = "jwt"
 _KEYRING_REFRESH_KEY = "refresh_token"
 _PENDING_KEY = "pending"
+# The server that issued the stored pair. The address can change by five routes
+# (login, `profile set`, a hand edit, a dotenv, the environment) and only one of
+# them clears credentials, so the pair itself records where it may be presented.
+_KEYRING_SERVER_KEY = "server"
 
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 _LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
@@ -93,6 +96,11 @@ class SyncClient:
         self._store = secret_store or SecretStore.for_sync(profile_id)
         self._client = httpx.Client(base_url=self._server_url, timeout=_DEFAULT_TIMEOUT)
 
+    @property
+    def server_url(self) -> str:
+        """The server this client talks to, without a trailing slash."""
+        return self._server_url
+
     def _optional_key(self, name: str) -> str | None:
         try:
             return self._store.get_key(name)
@@ -115,9 +123,11 @@ class SyncClient:
         try:
             self._store.set_key(_KEYRING_JWT_KEY, access_token)
             self._store.set_key(_KEYRING_REFRESH_KEY, refresh_token)
+            self._store.set_key(_KEYRING_SERVER_KEY, self._server_url)
             if (
                 self._optional_key(_KEYRING_JWT_KEY) != access_token
                 or self._optional_key(_KEYRING_REFRESH_KEY) != refresh_token
+                or self._optional_key(_KEYRING_SERVER_KEY) != self._server_url
             ):
                 raise SecretStorageUnavailableError(
                     "Sync credential verification failed."
@@ -141,7 +151,12 @@ class SyncClient:
 
     @staticmethod
     def _delete_pair(store: SecretStore) -> None:
-        for name in (_KEYRING_JWT_KEY, _KEYRING_REFRESH_KEY, _PENDING_KEY):
+        for name in (
+            _KEYRING_JWT_KEY,
+            _KEYRING_REFRESH_KEY,
+            _KEYRING_SERVER_KEY,
+            _PENDING_KEY,
+        ):
             try:
                 store.delete_key(name)
             except SecretUnavailableError:
@@ -165,62 +180,28 @@ class SyncClient:
             )
         access = self._optional_key(_KEYRING_JWT_KEY)
         refresh = self._optional_key(_KEYRING_REFRESH_KEY)
+        if self._profile_id is not None:
+            # A plaintext file from before keychain storage records no issuer. It
+            # can never be presented, so remove it rather than leave a token on
+            # disk, whether or not a keychain pair exists beside it.
+            path = self._legacy_token_path(self._profile_id)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(f"Could not remove the legacy sync token file {path}")
         if access is not None or refresh is not None:
             if not access or not refresh or not access.strip() or not refresh.strip():
                 raise SecretStorageUnavailableError(
                     "Sync credential pair is incomplete. Run `moneybin sync login` again."
                 )
-            # A previous import may have stored both values but failed to remove
-            # its plaintext source. Retry cleanup only when that exact pair matches.
-            if self._profile_id is not None:
-                path = self._legacy_token_path(self._profile_id)
-                try:
-                    payload = json.loads(path.read_text())
-                except (OSError, UnicodeError, ValueError):
-                    payload = None
-                if isinstance(payload, dict) and (
-                    cast(dict[str, object], payload).get("jwt") == access
-                    and cast(dict[str, object], payload).get("refresh_token") == refresh
-                ):
-                    self._remove_legacy_file(path)
+            # A pair stored before pairs recorded their issuer counts as absent:
+            # the address may have changed since, so no server is known to own it.
+            # Kept, not deleted: an override that points elsewhere for one run
+            # must not log the profile out of its own server.
+            if self._optional_key(_KEYRING_SERVER_KEY) != self._server_url:
+                return None
             return access, refresh
-        if self._profile_id is None:
-            return None
-        path = self._legacy_token_path(self._profile_id)
-        if not path.exists():
-            return None
-        try:
-            payload = json.loads(path.read_text())
-            if not isinstance(payload, dict):
-                raise ValueError
-            values = cast(dict[str, object], payload)
-            access = values.get("jwt")
-            refresh = values.get("refresh_token")
-            if (
-                not isinstance(access, str)
-                or not access.strip()
-                or not isinstance(refresh, str)
-                or not refresh.strip()
-            ):
-                raise ValueError
-        except (OSError, UnicodeError, ValueError):
-            raise SecretStorageUnavailableError(
-                "Legacy sync credential file is unreadable or invalid; it was preserved. "
-                "Run `moneybin sync login` again."
-            ) from None
-        self._store_tokens(access_token=access, refresh_token=refresh)
-        self._remove_legacy_file(path)
-        return access, refresh
-
-    @staticmethod
-    def _remove_legacy_file(path: Path) -> None:
-        try:
-            path.unlink()
-        except OSError:
-            raise SecretStorageUnavailableError(
-                "Sync credentials were stored, but the legacy plaintext file "
-                "could not be removed. Restore file permissions and retry."
-            ) from None
+        return None
 
     def _read_token(self) -> str | None:
         pair = self._read_pair()
@@ -293,9 +274,15 @@ class SyncClient:
             f"unexpected status {poll.status_code} from /auth/device/token"
         )
 
-    def login(self, *, open_browser: bool = True) -> None:
+    def login(
+        self,
+        *,
+        open_browser: bool = True,
+        challenge: DeviceAuthorizationChallenge | None = None,
+    ) -> None:
         """Run the blocking CLI wrapper over the nonblocking device flow."""
-        challenge = self.begin_login()
+        if challenge is None:
+            challenge = self.begin_login()
         uri = challenge.verification_uri_complete or challenge.verification_uri
         if uri is None:  # pragma: no cover — validated by the response model
             raise SyncAPIError("device authorization response omitted verification URI")

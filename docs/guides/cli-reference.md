@@ -223,6 +223,11 @@ scopes the listing to one batch. Commands:
 Pull transactions through the configured moneybin-sync broker. **`sync login`
 is required for broker operations**; `sync pull --job-id <id> --local-only`
 repairs an already committed job's local setup/reports without broker access.
+The first login needs your server's address: use `sync login --server
+https://sync.example.com`, or answer the terminal prompt. The address is saved
+to the active profile only after the server answers. Switching servers signs
+the profile out of the old one; stored credentials are bound to their issuer.
+
 `sync link` uses Plaid Hosted Link by default, while `--provider simplefin`
 opens the broker's SimpleFIN claim flow. Enter setup tokens only on that page.
 `--connection-id` selects one exact grant for linking, pulling or disconnecting;

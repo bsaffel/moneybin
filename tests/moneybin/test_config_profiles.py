@@ -463,6 +463,165 @@ class TestProfileDirectoryLayout:
         assert settings.logging.level == "ERROR"
 
 
+def _write_profile_config(home: Path, profile: str, body: str) -> Path:
+    path = home / "profiles" / profile / "config.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    return path
+
+
+class TestProfileConfigFileSource:
+    """The profile's config.yaml supplies settings below env and dotenv."""
+
+    def test_profile_config_supplies_a_setting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_SYNC__SERVER_URL", raising=False)
+        _write_profile_config(
+            tmp_path, "alice", "sync:\n  server_url: https://sync.example.test\n"
+        )
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.sync.server_url == "https://sync.example.test"
+
+    def test_environment_overrides_profile_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.setenv("MONEYBIN_SYNC__SERVER_URL", "https://env.example.test")
+        _write_profile_config(
+            tmp_path, "alice", "sync:\n  server_url: https://file.example.test\n"
+        )
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.sync.server_url == "https://env.example.test"
+
+    def test_dotenv_overrides_profile_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_SYNC__SERVER_URL", raising=False)
+        (tmp_path / ".env.alice").write_text(
+            "MONEYBIN_SYNC__SERVER_URL=https://dotenv.example.test\n"
+        )
+        _write_profile_config(
+            tmp_path, "alice", "sync:\n  server_url: https://file.example.test\n"
+        )
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.sync.server_url == "https://dotenv.example.test"
+
+    def test_profile_config_overrides_profile_path_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One section mixes a file value with untouched derived defaults."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_LOGGING__LEVEL", raising=False)
+        _write_profile_config(tmp_path, "alice", "logging:\n  level: DEBUG\n")
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.logging.level == "DEBUG"
+        assert settings.logging.log_file_path == (
+            tmp_path / "profiles" / "alice" / "logs" / "moneybin.log"
+        )
+
+    def test_another_profiles_config_is_not_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_SYNC__SERVER_URL", raising=False)
+        _write_profile_config(
+            tmp_path, "bob", "sync:\n  server_url: https://bob.example.test\n"
+        )
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.sync.server_url is None
+
+    def test_undeclared_keys_are_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file written by an older version still loads."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        _write_profile_config(
+            tmp_path,
+            "alice",
+            "sync:\n  enabled: false\nretired_section:\n  anything: 1\n",
+        )
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.profile == "alice"
+
+    def test_rejected_value_names_the_file_and_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_LOGGING__LEVEL", raising=False)
+        path = _write_profile_config(tmp_path, "alice", "logging:\n  level: LOUD\n")
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(ValueError) as excinfo:
+            get_settings()
+
+        assert str(path) in str(excinfo.value)
+        assert "logging.level" in str(excinfo.value)
+
+    def test_out_of_bounds_value_names_the_file_and_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Field bound (ge=1), not just the type, is checked against the file."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_MCP__MAX_ROWS", raising=False)
+        path = _write_profile_config(tmp_path, "alice", "mcp:\n  max_rows: 0\n")
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(ValueError) as excinfo:
+            get_settings()
+
+        assert str(path) in str(excinfo.value)
+        assert "mcp.max_rows" in str(excinfo.value)
+
+    def test_secret_in_the_file_is_refused_without_echoing_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """config.yaml is plain text, so it is never a secret source."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_SYNC__API_KEY", raising=False)
+        path = _write_profile_config(
+            tmp_path, "alice", "sync:\n  api_key: plaintext-secret-value\n"
+        )
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(ValueError) as excinfo:
+            get_settings()
+
+        assert str(path) in str(excinfo.value)
+        assert "sync.api_key" in str(excinfo.value)
+        assert "plaintext-secret-value" not in str(excinfo.value)
+
+    def test_non_mapping_file_names_the_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        path = _write_profile_config(tmp_path, "alice", "- just\n- a list\n")
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        with pytest.raises(ValueError) as excinfo:
+            get_settings()
+
+        assert str(path) in str(excinfo.value)
+
+
 def test_tabular_config_balance_validation_defaults() -> None:
     """TabularProviderConfig exposes balance validation tunables with safe defaults."""
     from moneybin.extractors.tabular.config import TabularProviderConfig

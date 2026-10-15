@@ -29,6 +29,7 @@ from moneybin.cli.render import (
     build_summary,
     column_view,
     compose_human_result,
+    render_note,
     render_rows,
     render_summary,
 )
@@ -216,20 +217,9 @@ def _render_sync_pull_receipt(
 
 def _build_sync_client():
     """Construct a SyncClient from current settings. Extracted for test mocking."""
-    from moneybin.config import get_settings
-    from moneybin.connectors.sync_client import SyncClient
-    from moneybin.utils.user_config import get_or_create_profile_id
+    from moneybin.services.sync_server_address import build_sync_client
 
-    settings = get_settings()
-    if settings.sync.server_url is None:
-        raise ValueError(
-            "sync.server_url is not configured. "
-            "Set MONEYBIN_SYNC__SERVER_URL in your environment."
-        )
-    # Scope the broker identity to the active profile so each profile
-    # authenticates as a distinct user.
-    profile_id = get_or_create_profile_id(settings.profile_dir)
-    return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
+    return build_sync_client()
 
 
 def _emit_sync_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
@@ -265,12 +255,51 @@ def sync_login(
     no_browser: bool = typer.Option(
         False, "--no-browser", help="Print URL only; don't try to open a browser."
     ),
+    server: str | None = typer.Option(
+        None,
+        "--server",
+        help=(
+            "Address of your moneybin-sync server, e.g. https://sync.example.com. "
+            "Saved to the active profile once the server answers; needed only "
+            "the first time or to change servers."
+        ),
+    ),
 ) -> None:
     """Authenticate with moneybin-sync via Device Authorization Flow."""
+    pairs = [("Outcome", "Logged in")]
     with handle_cli_errors():
-        client = _build_sync_client()
-        client.login(open_browser=not no_browser)
-    _emit_sync_receipt("Login complete", [("Outcome", "Logged in")])
+        from moneybin.services import sync_server_address
+
+        client = None
+        if server is None:
+            try:
+                client = _build_sync_client()
+            except UserError as e:
+                if (
+                    e.code != error_codes.SYNC_SERVER_NOT_CONFIGURED
+                    or not get_terminal_policy().interactive
+                ):
+                    raise
+                server = typer.prompt(
+                    "Sync server address",
+                    default=sync_server_address.SUGGESTED_SERVER_URL,
+                    err=True,
+                )
+        if client is not None:
+            client.login(open_browser=not no_browser)
+        elif server is not None:
+            plan = sync_server_address.plan_server_address(server, surface="cli")
+            if plan.unencrypted and plan.change != "unchanged":
+                render_note(
+                    f"The connection to {plan.url} is not encrypted. "
+                    "Use https unless the server is on a network you trust.",
+                    warn=True,
+                )
+            start = sync_server_address.start_login(plan, surface="cli")
+            start.client.login(open_browser=not no_browser, challenge=start.challenge)
+            if start.outcome != "unchanged":
+                pairs.append(("Server", f"{plan.url} ({start.outcome})"))
+    _emit_sync_receipt("Login complete", pairs)
 
 
 @app.command("logout")
