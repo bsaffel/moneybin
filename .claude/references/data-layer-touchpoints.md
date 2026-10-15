@@ -36,11 +36,16 @@ until tests run:
 - `tests/scenarios/_tier1_backfill.py` → `FCT_TRANSACTIONS_SCHEMA`, asserted by
   the scenario `schema_snapshot`.
 
-**Gates:** `make check` plus `make test`, `make test-integration`, and
-`make test-scenarios` — a data-layer diff touches shared primitives, so it takes
-the covering run. That catches the binder errors, the `db_helpers` / matching
-stubs, and the `FCT_TRANSACTIONS_SCHEMA` snapshot (`make test` is unit-only, so
-scenarios need their own invocation).
+**Gates:** `make check`, then the tests behind the lists above —
+`tests/privacy/test_classification_completeness.py`,
+`tests/moneybin/test_services/test_schema_catalog.py` (the `db_helpers` stub),
+`tests/moneybin/matching/test_int_matched_model.py`, and
+`tests/moneybin/test_services/test_doctor_service.py`. A data-layer diff
+touches shared primitives, so the covering run — `make test`,
+`make test-integration`, and `make test-scenarios` — is the draft PR's CI, not a
+local run (AGENTS.md → "Pre-commit gate"). Read every shard before calling the
+work done, scenarios included: the `FCT_TRANSACTIONS_SCHEMA` snapshot is
+asserted only in the scenario tier.
 `tests/moneybin/test_sync_e2e.py` is the right place to assert a new field
 actually reaches core. (Learned shipping Plaid `original_description`, #283.)
 
