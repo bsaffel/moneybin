@@ -60,6 +60,13 @@ MODULE_IMPORT = "<module>"
 # `adapter_relpath` is relative to src/moneybin/ for stability across moves.
 ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     # --- Pure validation constants --------------------------------------
+    # why: the CLI editor lists and validates destination names against this
+    # pure alias table; no extraction, DB access, or orchestration crosses layers.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.tabular.field_aliases",
+        "FIELD_ALIASES",
+    ),
     # VALID_MATCH_TYPES is a frozenset of valid match_type values used for
     # CLI argument validation. Pure data, no DB access.
     (

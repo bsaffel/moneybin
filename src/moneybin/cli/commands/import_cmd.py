@@ -842,36 +842,38 @@ def import_files_command(
             ):
                 reviewed_mapping = _review_import_mapping(outcome, overrides)
                 if reviewed_mapping is not None:
-                    _complete_import_confirmation(
-                        file_path=file_paths[0],
-                        accept=True,
-                        mapping=[f"{k}={v}" for k, v in reviewed_mapping.items()],
-                        format_name=format_name,
-                        bridge_response=None,
-                        confirm=False,
-                        confirm_sign=confirm_sign,
-                        sign=sign,
-                        date_format=date_format,
-                        number_format=number_format,
-                        sheet=sheet,
-                        delimiter=delimiter,
-                        encoding=encoding,
-                        no_row_limit=no_row_limit,
-                        no_size_limit=no_size_limit,
-                        institution=institution,
-                        account_id=account_id,
-                        account_name=account_name,
-                        account_binding=[
-                            f"{k}={v}" for k, v in (account_bindings or {}).items()
-                        ],
-                        account_meta=[],
-                        save_format=save_format,
-                        output=output,
-                        quiet=quiet,
-                        refresh=refresh,
-                        force=force,
-                        auto_accept=yes,
-                    )
+                    with handle_cli_errors(cli_actor="import_files_command"):
+                        _complete_import_confirmation(
+                            cli_actor="import_files_command",
+                            file_path=file_paths[0],
+                            accept=True,
+                            mapping=[f"{k}={v}" for k, v in reviewed_mapping.items()],
+                            format_name=format_name,
+                            bridge_response=None,
+                            confirm=False,
+                            confirm_sign=confirm_sign,
+                            sign=sign,
+                            date_format=date_format,
+                            number_format=number_format,
+                            sheet=sheet,
+                            delimiter=delimiter,
+                            encoding=encoding,
+                            no_row_limit=no_row_limit,
+                            no_size_limit=no_size_limit,
+                            institution=institution,
+                            account_id=account_id,
+                            account_name=account_name,
+                            account_binding=[
+                                f"{k}={v}" for k, v in (account_bindings or {}).items()
+                            ],
+                            account_meta=[],
+                            save_format=save_format,
+                            output=output,
+                            quiet=quiet,
+                            refresh=refresh,
+                            force=force,
+                            auto_accept=yes,
+                        )
                     return
             raise typer.Exit(1) from _exc
 
@@ -2495,35 +2497,38 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/card.csv --accept --sign negative_is_expense
         moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
-    _complete_import_confirmation(
-        file_path=file_path,
-        accept=accept,
-        mapping=mapping,
-        format_name=format_name,
-        bridge_response=bridge_response,
-        confirm=confirm,
-        confirm_sign=confirm_sign,
-        sign=sign,
-        date_format=date_format,
-        number_format=number_format,
-        sheet=sheet,
-        delimiter=delimiter,
-        encoding=encoding,
-        no_row_limit=no_row_limit,
-        no_size_limit=no_size_limit,
-        institution=institution,
-        account_id=account_id,
-        account_name=account_name,
-        account_binding=account_binding,
-        account_meta=account_meta,
-        save_format=save_format,
-        output=output,
-        quiet=quiet,
-    )
+    with handle_cli_errors(cli_actor="import_confirm_command"):
+        _complete_import_confirmation(
+            cli_actor="import_confirm_command",
+            file_path=file_path,
+            accept=accept,
+            mapping=mapping,
+            format_name=format_name,
+            bridge_response=bridge_response,
+            confirm=confirm,
+            confirm_sign=confirm_sign,
+            sign=sign,
+            date_format=date_format,
+            number_format=number_format,
+            sheet=sheet,
+            delimiter=delimiter,
+            encoding=encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
+            institution=institution,
+            account_id=account_id,
+            account_name=account_name,
+            account_binding=account_binding,
+            account_meta=account_meta,
+            save_format=save_format,
+            output=output,
+            quiet=quiet,
+        )
 
 
 def _complete_import_confirmation(
     *,
+    cli_actor: str,
     file_path: Path,
     accept: bool,
     mapping: list[str],
@@ -2553,7 +2558,6 @@ def _complete_import_confirmation(
 ) -> None:
     """Complete one reviewed import through the existing account and inbox lifecycle."""
     from moneybin.cli.output import render_or_json
-    from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.import_service import ImportService
@@ -2628,10 +2632,9 @@ def _complete_import_confirmation(
     # files` and `import preview` preflights: `Path.exists()` raises under a
     # macOS TCC denial instead of returning False, so an unwrapped check
     # tracebacks rather than classifying.
-    with handle_cli_errors(cli_actor="import_confirm_command"):
-        if not file_path.exists():
-            logger.error(format_cli_failure(f"File not found: {file_path}"))
-            raise typer.Exit(1)
+    if not file_path.exists():
+        logger.error(format_cli_failure(f"File not found: {file_path}"))
+        raise typer.Exit(1)
 
     bridge_response_data: dict[str, Any] | None = None
     if bridge_response is not None:
@@ -2724,56 +2727,55 @@ def _complete_import_confirmation(
         nonlocal refresh_failed
         from moneybin.services.import_service import ImportRefreshError
 
-        with handle_cli_errors(cli_actor="import_confirm_command"):
-            with get_database(read_only=False) as db:
-                service = ImportService(db)
-                if bridge_response_data is not None:
-                    bridge_result = service.apply_pdf_bridge_response(
-                        file_path,
-                        bridge_response_data,
-                        save_format=save_format,
-                        account_id=account_id,
-                        account_bindings=bindings,
-                        confirm=True,
+        with get_database(read_only=False) as db:
+            service = ImportService(db)
+            if bridge_response_data is not None:
+                bridge_result = service.apply_pdf_bridge_response(
+                    file_path,
+                    bridge_response_data,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_bindings=bindings,
+                    confirm=True,
+                )
+                return None, bridge_result
+            else:
+                confirm_kwargs: dict[str, Any] = {
+                    "file_path": file_path,
+                    "confirm": accept,
+                    "overrides": parsed_mapping,
+                    "institution": institution,
+                    "account_id": account_id,
+                    "account_name": account_name,
+                    "account_bindings": bindings,
+                    "account_metadata": parsed_metadata,
+                    "save_format": save_format,
+                    "sign": sign,
+                    "actor_kind": "human",
+                    "refresh": refresh,
+                    "force": force,
+                    "auto_accept": auto_accept,
+                    "format_name": format_name,
+                    "date_format": date_format,
+                    "number_format": number_format,
+                    "sheet": sheet,
+                    "delimiter": delimiter,
+                    "encoding": encoding,
+                    "no_row_limit": no_row_limit,
+                    "no_size_limit": no_size_limit,
+                }
+                if confirm_sign:
+                    confirm_kwargs["human_sign_confirmation"] = True
+                try:
+                    return service.import_file(**confirm_kwargs), None
+                except ImportRefreshError as exc:
+                    if exc.result is None:
+                        raise
+                    refresh_failed = True
+                    warn_transfers_retired(
+                        exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
                     )
-                    return None, bridge_result
-                else:
-                    confirm_kwargs: dict[str, Any] = {
-                        "file_path": file_path,
-                        "confirm": accept,
-                        "overrides": parsed_mapping,
-                        "institution": institution,
-                        "account_id": account_id,
-                        "account_name": account_name,
-                        "account_bindings": bindings,
-                        "account_metadata": parsed_metadata,
-                        "save_format": save_format,
-                        "sign": sign,
-                        "actor_kind": "human",
-                        "refresh": refresh,
-                        "force": force,
-                        "auto_accept": auto_accept,
-                        "format_name": format_name,
-                        "date_format": date_format,
-                        "number_format": number_format,
-                        "sheet": sheet,
-                        "delimiter": delimiter,
-                        "encoding": encoding,
-                        "no_row_limit": no_row_limit,
-                        "no_size_limit": no_size_limit,
-                    }
-                    if confirm_sign:
-                        confirm_kwargs["human_sign_confirmation"] = True
-                    try:
-                        return service.import_file(**confirm_kwargs), None
-                    except ImportRefreshError as exc:
-                        if exc.result is None:
-                            raise
-                        refresh_failed = True
-                        warn_transfers_retired(
-                            exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
-                        )
-                        return exc.result, None
+                    return exc.result, None
 
     try:
         try:
@@ -2881,9 +2883,7 @@ def _complete_import_confirmation(
                 sensitivity="medium",
                 actions=confirm_actions,
             )
-            render_or_json(
-                envelope, OutputFormat.JSON, cli_actor="import_confirm_command"
-            )
+            render_or_json(envelope, OutputFormat.JSON, cli_actor=cli_actor)
             # JSON confirm is a proposal/confirmation loop: exit 0 delivers the
             # next action. Unlike import files, it has not promised ingestion.
             # Keep this asymmetry; explicit text uses the refusal receipt below.
@@ -3019,7 +3019,7 @@ def _complete_import_confirmation(
             }
             envelope = build_envelope(data=data, sensitivity="medium", actions=[])
             if output == OutputFormat.JSON:
-                render_or_json(envelope, output, cli_actor="import_confirm_command")
+                render_or_json(envelope, output, cli_actor=cli_actor)
             else:
                 _confirm_receipt(
                     "Import failed",
@@ -3060,7 +3060,7 @@ def _complete_import_confirmation(
         ]
         envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
         if output == OutputFormat.JSON:
-            render_or_json(envelope, output, cli_actor="import_confirm_command")
+            render_or_json(envelope, output, cli_actor=cli_actor)
         else:
             _confirm_receipt(
                 f"{get_terminal_policy().symbols.success} Import complete",
@@ -3143,7 +3143,7 @@ def _complete_import_confirmation(
                 0, _sign_assumed_notice(result.sign_assumed, result.import_id)
             )
         envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
-        render_or_json(envelope, output, cli_actor="import_confirm_command")
+        render_or_json(envelope, output, cli_actor=cli_actor)
         return
 
     _confirm_receipt(

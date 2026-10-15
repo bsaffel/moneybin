@@ -424,6 +424,99 @@ def test_handle_cli_errors_outside_a_click_context_still_audits(
     assert _read_events(privacy_log_dir)[0]["actor"] == "cli.unknown"
 
 
+@pytest.mark.parametrize(
+    "command,fail", [("confirm", False), ("confirm", True), ("files", True)]
+)
+def test_import_completion_keeps_the_calling_commands_audit_actor(
+    privacy_log_dir: Path,
+    tmp_path: Path,
+    mocker: Any,
+    command: str,
+    fail: bool,
+) -> None:
+    from moneybin.extractors.confidence import Confidence
+    from moneybin.services.import_confirmation import (
+        ConfirmationRequired,
+        ImportConfirmationRequiredError,
+        ProposedMapping,
+    )
+    from moneybin.services.import_service import ImportResult
+
+    file_path = tmp_path / "statement.csv"
+    file_path.write_text("Date,Amount,Description\n2026-01-01,-1,Example\n")
+    mocker.patch("moneybin.database.get_database", return_value=MagicMock())
+    completion = (
+        DatabaseLockError("busy")
+        if fail
+        else ImportResult(
+            file_path=str(file_path),
+            file_type="tabular",
+            transactions=1,
+            import_id="example",
+        )
+    )
+    outcomes: list[Exception | ImportResult] = [completion]
+    if command == "files":
+        outcomes.insert(
+            0,
+            ImportConfirmationRequiredError(
+                ConfirmationRequired(
+                    channel="tabular",
+                    confidence=Confidence(
+                        score=0.8, tier="medium", flagged=(), missing_required=()
+                    ),
+                    proposed=ProposedMapping(
+                        {
+                            "transaction_date": "Date",
+                            "amount": "Amount",
+                            "description": "Description",
+                        },
+                        {},
+                        (),
+                    ),
+                    reason="unknown_layout",
+                )
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                output="text",
+                width=80,
+                height=24,
+                page=False,
+                color=False,
+                style=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", return_value="accept"
+        )
+    mocker.patch(
+        "moneybin.services.import_service.ImportService.import_file",
+        side_effect=outcomes,
+    )
+    mocker.patch(
+        "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+        return_value=MagicMock(),
+    )
+    flags = (
+        ["--accept", "--output", "json"] if command == "confirm" else ["--no-refresh"]
+    )
+    result = runner.invoke(
+        app, ["import", command, str(file_path), *flags], prog_name="moneybin"
+    )
+    assert result.exit_code == int(fail), result.output
+    if command == "files":
+        # Text-mode failures deliberately emit no privacy audit event.
+        assert not (privacy_log_dir / "privacy.log.jsonl").exists()
+        return
+    assert {event["actor"] for event in _read_events(privacy_log_dir)} == {
+        f"cli.import_{command}_command"
+    }
+
+
 # ------------------------------------------------- behaviour: real command ---
 
 
