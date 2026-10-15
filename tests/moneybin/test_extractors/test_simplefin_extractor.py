@@ -195,6 +195,24 @@ def test_balance_corrections_at_same_timestamp_are_auditable(db: Database) -> No
     assert rows[0][3] != rows[1][3]
 
 
+@pytest.mark.parametrize("balance_date", [0, -1])
+@pytest.mark.parametrize("balance", ["100.25", "100.001"])
+def test_nonpositive_balance_timestamp_is_structural_and_retains_original(
+    db: Database, balance_date: int, balance: str
+) -> None:
+    result = load(
+        db, source(account_changes={"balance-date": balance_date, "balance": balance})
+    )
+    row = db.execute(
+        "SELECT balance_at, validation_error, original_record FROM raw.simplefin_balances"
+    ).fetchone()
+    assert row is not None
+    assert row[:2] == (None, "invalid_timestamp")
+    assert json.loads(row[2])["balance-date"] == balance_date
+    assert json.loads(row[2])["balance"] == balance
+    assert any(outcome.error_code == "invalid_timestamp" for outcome in result.outcomes)
+
+
 @pytest.mark.parametrize(
     ("changes", "reason"),
     [
@@ -303,6 +321,29 @@ def test_v1_scope_precedence_and_framing(db: Database) -> None:
     ).fetchone()
     assert row is not None and row[0] == origin and row[2] == "strong"
     assert json.loads(row[1]) == account["org"]
+
+
+@pytest.mark.parametrize("name", [None, "Synthetic Bank"])
+def test_v1_institution_uses_domain_when_name_is_absent(
+    db: Database, name: str | None
+) -> None:
+    org = {"domain": "synthetic.invalid", "sfin-url": "https://synthetic.invalid"}
+    if name is not None:
+        org["name"] = name
+    data = source(account_changes={"org": org})
+    data.protocol_version = "1.0.7"
+    load(db, data)
+    expected = name or "synthetic.invalid"
+    row = db.execute(
+        "SELECT institution_label, original_record FROM raw.simplefin_accounts"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == expected
+    assert json.loads(row[1])["org"] == org
+    accounts = loader(db).SimpleFINExtractor(db).source_accounts(data)
+    assert len(accounts) == 1
+    assert accounts[0].institution == expected
+    assert accounts[0].name_facts.institution_name == expected
 
 
 def test_duplicate_native_accounts_fail_scope_without_overwrite(db: Database) -> None:
@@ -491,7 +532,7 @@ def test_structural_error_is_not_hidden_by_financial_hold(
     assert row == (expected,)
 
 
-@pytest.mark.parametrize("transacted", [None, "invalid", 9999999999])
+@pytest.mark.parametrize("transacted", [None, "invalid", 0, -1, 9999999999])
 def test_malformed_optional_transacted_instant_is_structural(
     db: Database, transacted: object
 ) -> None:

@@ -145,6 +145,15 @@ def _safe_error_code(value: str | None) -> str | None:
     )
 
 
+def _validate_history_start(history_start: date | None) -> date | None:
+    if history_start is not None and history_start > datetime.now(UTC).date():
+        raise UserError(
+            "history_start cannot be in the future",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    return history_start
+
+
 def validate_pull_selectors(
     *,
     institution: str | None = None,
@@ -180,7 +189,9 @@ def validate_pull_selectors(
             UUID(job_id)
         if connection_id is not None:
             UUID(connection_id)
-        return date.fromisoformat(history_start) if history_start else None
+        return _validate_history_start(
+            date.fromisoformat(history_start) if history_start else None
+        )
     except ValueError:
         raise UserError(
             "Use a valid job/connection UUID and ISO history date",
@@ -316,6 +327,7 @@ class SyncService:
                 "force and history_start are mutually exclusive",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
+        _validate_history_start(history_start)
         if institution is not None:
             matched = self._find_institution(institution)
             if matched is None:

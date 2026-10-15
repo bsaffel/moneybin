@@ -757,6 +757,7 @@ class PullResult(BaseModel):
                     source.history is not None
                     and not source.history.replay_required
                     and source.history.discovery_history_target is None
+                    and bool(source.history.accounts)
                     and all(
                         account.account_id is not None
                         and account.history_target is None

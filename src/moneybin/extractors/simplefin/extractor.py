@@ -108,8 +108,8 @@ def _instant(
 ) -> tuple[datetime | None, str | None]:
     if not isinstance(value, int) or isinstance(value, bool):
         return None, "invalid_timestamp"
-    if posted and value <= 0:
-        return None, "nonpositive_posted"
+    if value <= 0:
+        return None, "nonpositive_posted" if posted else "invalid_timestamp"
     try:
         timestamp = datetime.fromtimestamp(value, UTC)
     except (ValueError, OverflowError, OSError):
@@ -137,7 +137,7 @@ def _text(value: object) -> str | None:
 
 
 def _institution_label(native: dict[str, Any], payload: dict[str, Any]) -> str | None:
-    institution = _text(native.get("name"))
+    institution = _text(native.get("name")) or _text(native.get("domain"))
     if native.get("conn_id"):
         value = payload.get("connections")
         connections = cast(list[object], value) if isinstance(value, list) else []

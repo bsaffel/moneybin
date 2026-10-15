@@ -12,6 +12,7 @@ from moneybin.connectors.sync_models import (
     SimpleFINHistorySnapshot,
     SimpleFINSource,
     SimpleFINV2ConnectionScope,
+    UTCWindow,
 )
 from moneybin.database import Database
 from moneybin.extractors.simplefin.identity import source_origin
@@ -106,6 +107,36 @@ def test_unknown_snapshot_is_not_empty_completed_history(db: Database) -> None:
     )["sources"][0]
     assert row["history"] is None
     assert row["history_phase"] == "unknown"
+
+
+@pytest.mark.parametrize("has_accounts", [False, True])
+def test_completed_pull_requires_acknowledged_account_history(
+    db: Database, has_accounts: bool
+) -> None:
+    """An acknowledged job without account coverage cannot certify completeness."""
+    data = _envelope()
+    native = data.sources[0]
+    assert isinstance(native, SimpleFINSource)
+    history = _history(accounts=has_accounts)
+    history.replay_required = False
+    history.discovery_history_target = None
+    for account in history.accounts:
+        account.history_target = None
+        account.acknowledged_intervals = [
+            UTCWindow(
+                start=datetime(2026, 9, 1, tzinfo=UTC),
+                end=datetime(2026, 10, 1, tzinfo=UTC),
+            )
+        ]
+    native.history = history
+    result = _service(db, _client(data)).pull(refresh=False)
+
+    assert result.job_status == "completed"
+    assert result.ack_state == "confirmed"
+    assert result.setup_state == "complete"
+    assert result.refresh_state == "deferred"
+    assert result.complete is has_accounts
+    assert sync_pull_payload(result).complete is has_accounts
 
 
 def test_status_scope_mapping_never_leaks_unresolved_native_identity(
