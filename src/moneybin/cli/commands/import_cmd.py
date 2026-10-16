@@ -2038,7 +2038,7 @@ def _review_import_mapping(
     policy = get_terminal_policy()
     cancel = Choice("cancel", "Cancel")
     actions = [Choice("edit", "Edit fields"), cancel]
-    if outcome.confidence.tier != "low":
+    if outcome.confidence.tier != "low" and not initial_mapping:
         actions.insert(0, Choice("accept", "Accept proposed mapping"))
     typer.echo("Choices: " + " / ".join(choice.label for choice in actions))
     action = choose_required(

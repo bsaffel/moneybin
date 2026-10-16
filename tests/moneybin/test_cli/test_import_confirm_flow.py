@@ -451,6 +451,104 @@ def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 
+    def test_interactive_invalid_nonlow_overrides_offer_edit_instead_of_accept(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A complete detected layout still needs editing when an override is invalid."""
+        import polars as pl
+
+        from moneybin.extractors.tabular.column_mapper import (
+            collect_field_samples,
+            map_columns,
+        )
+        from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+        from moneybin.services.import_confirmation import (
+            Override,
+            Resolved,
+            resolve_or_confirm,
+            tabular_required_fields,
+        )
+
+        frame = pl.DataFrame({
+            "Date": ["2026-01-01"],
+            "Amount": ["-1"],
+            "Description": ["Example"],
+            "Notes": ["Other"],
+            "Total": ["-2"],
+        })
+        overrides = {"amount": "Total", "descrption": "Notes"}
+
+        def resolve(mapping: dict[str, str]) -> Resolved | ConfirmationRequired:
+            detected = map_columns(frame, overrides=mapping)
+            return resolve_or_confirm(
+                channel="tabular",
+                confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
+                proposed=ProposedMapping(
+                    detected.field_mapping,
+                    collect_field_samples(frame, detected.field_mapping),
+                    tuple(detected.unmapped_columns),
+                ),
+                available_columns=frame.columns,
+                required_fields=tabular_required_fields(
+                    proposed_keys=set(detected.field_mapping),
+                    override_keys=set(mapping),
+                ),
+                signal=Override(mapping),
+                self_accept_enabled=False,
+                actor_kind="human",
+                valid_destinations=tuple(FIELD_ALIASES),
+            )
+
+        assert isinstance(resolve({"amount": "Total"}), Resolved)
+        refused = resolve(overrides)
+        assert isinstance(refused, ConfirmationRequired)
+        assert refused.reason == "validation_failure"
+        assert refused.confidence.tier != "low"
+        mock_import_file.side_effect = ImportConfirmationRequiredError(refused)
+        file_path = tmp_path / "statement.csv"
+        file_path.write_text(frame.write_csv())
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            assert kwargs["flag"] == "mapping review"
+            assert [choice.value for choice in kwargs["choices"]] == ["edit", "cancel"]
+            return "cancel"
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(file_path),
+                "--mapping",
+                "amount=Total",
+                "--mapping",
+                "descrption=Notes",
+                "--no-refresh",
+            ],
+        )
+        assert result.exit_code == 1, result.output
+        assert mock_import_file.call_count == 1
+        assert mock_import_file.call_args.kwargs["overrides"] == overrides
+        assert "Accept proposed mapping" not in result.output
+
     @pytest.mark.parametrize(
         "scenario", ["cancel_move", "required_owner", "amount_alias"]
     )
