@@ -97,12 +97,12 @@ WITH ofx_balances AS (
 )
 SELECT
   u.account_id, /* Source-system account identifier */
-  u.balance_date, /* Date the balance was observed */
-  u.balance, /* Observed balance amount */
   u.source_type, /* Observation source: ofx, tabular, assertion, or plaid */
   u.source_ref, /* Source file path (ofx/tabular), 'user' for assertions, or the Plaid item id */
-  u.updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. From the contributing observation's loaded_at (OFX/tabular) or created_at (user assertion). See docs/specs/core-updated-at-convention.md. */
-  COALESCE(u.currency_code, a.currency_code) AS currency_code /* the observation's own captured currency, else inherited from core.dim_accounts.currency_code (multi-currency.md Requirement 3) */
+  COALESCE(u.currency_code, a.currency_code) AS currency_code, /* the observation's own captured currency, else inherited from core.dim_accounts.currency_code (multi-currency.md Requirement 3) */
+  u.balance, /* Observed balance amount */
+  u.balance_date, /* Date the balance was observed */
+  u.updated_at /* Latest of all per-row input timestamps contributing to this row's current values. From the contributing observation's loaded_at (OFX/tabular) or created_at (user assertion). See docs/specs/core-updated-at-convention.md. */
 FROM unioned AS u
 LEFT JOIN core.dim_accounts AS a
   ON u.account_id = a.account_id

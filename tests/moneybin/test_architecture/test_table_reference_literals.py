@@ -478,7 +478,7 @@ TABLE_LITERAL_ALLOWLIST: frozenset[tuple[str, str, str, str]] = frozenset({
     # categorization reads keep working before V006 runs. It has no
     # TableRef because tables.py registers only the *current* schema shape;
     # this statement exists specifically to read the pre-migration one.
-    ("src/moneybin/seeds.py", "FROM", "app.merchants", "58795652d4e3"),
+    ("src/moneybin/seeds.py", "FROM", "app.merchants", "78773fb96d03"),
 })
 
 

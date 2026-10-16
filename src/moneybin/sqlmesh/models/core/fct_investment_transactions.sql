@@ -103,22 +103,22 @@ SELECT
   u.investment_transaction_id, /* Canonical ID (source-provided or content hash) */
   u.account_id, /* FK to core.dim_accounts */
   u.security_id, /* FK to core.dim_securities; NULL for cash-only events (deposit, withdrawal, account fee, cash interest) and for a synced security with no accepted binding */
-  u.trade_date, /* Trade date; drives holding-period classification */
-  u.settlement_date, /* Settlement date; informational */
-  u.original_acquisition_date, /* transfer_in only: original acquisition date; lot uses COALESCE(this, trade_date) */
+  u.event_group_id, /* Links legs of one decomposed economic event; nullable */
   u.type, /* Closed taxonomy (see investments-data-model.md Requirement 5) */
   u.subtype, /* Per-type refinement (tax character, reinvest source); nullable. 'opening_bootstrap' marks a reconstructed pre-window lot, never a real transfer */
-  u.event_group_id, /* Links legs of one decomposed economic event; nullable */
-  u.quantity, /* Signed units: + acquire, − dispose, NULL cash-only */
-  u.price, /* Per-unit price; NULL for non-priced events */
-  u.amount, /* Signed cash effect: − out (buy), + in (sell/dividend). Already in ledger convention on every branch — never re-flip a provider's sign here */
-  u.fees, /* Fee/commission component folded into basis */
-  COALESCE(u.currency_code, a.currency_code) AS currency_code, /* Denominating currency; no FX in v1. The event's own currency, else inherited from core.dim_accounts.currency_code — never a literal, which would relabel a foreign account's ledger and make the unknown-currency segment unreachable (multi-currency.md Requirement 3). NULL when neither is known. system doctor's currency_integrity check does not read this table; it surfaces the cause instead — the account's own NULL currency, or an account_id no dim_accounts row resolves (fct_investment_transactions_fk_integrity). */
   u.provider_type, /* Provider's original type string (Plaid investment_transaction_type), preserved verbatim for audit; NULL for manual and bootstrap rows. Never a ledger input — `type` is the closed taxonomy */
   u.provider_subtype, /* Provider's original subtype string, preserved verbatim for audit; NULL for manual and bootstrap rows */
   u.source_type, /* Origin tag (manual | ofx | plaid) */
   u.source_origin, /* Institution/connection scope */
   u.description, /* Free-text description */
+  COALESCE(u.currency_code, a.currency_code) AS currency_code, /* Denominating currency; no FX in v1. The event's own currency, else inherited from core.dim_accounts.currency_code — never a literal, which would relabel a foreign account's ledger and make the unknown-currency segment unreachable (multi-currency.md Requirement 3). NULL when neither is known. system doctor's currency_integrity check does not read this table; it surfaces the cause instead — the account's own NULL currency, or an account_id no dim_accounts row resolves (fct_investment_transactions_fk_integrity). */
+  u.quantity, /* Signed units: + acquire, − dispose, NULL cash-only */
+  u.price, /* Per-unit price; NULL for non-priced events */
+  u.amount, /* Signed cash effect: − out (buy), + in (sell/dividend). Already in ledger convention on every branch — never re-flip a provider's sign here */
+  u.fees, /* Fee/commission component folded into basis */
+  u.trade_date, /* Trade date; drives holding-period classification */
+  u.settlement_date, /* Settlement date; informational */
+  u.original_acquisition_date, /* transfer_in only: original acquisition date; lot uses COALESCE(this, trade_date) */
   GREATEST(
     u.created_at,
     COALESCE(CASE WHEN u.currency_code IS NULL THEN a.updated_at END, u.created_at),
