@@ -1565,7 +1565,8 @@ async def test_import_preview_rejects_file_growth_during_bounded_capture(
 
     from moneybin.extractors.tabular.format_detector import FormatInfo
 
-    def stale_format(_path: Path) -> FormatInfo:
+    def stale_format(_path: Path, *, no_size_limit: bool = False) -> FormatInfo:
+        assert no_size_limit is False
         return FormatInfo(file_type="csv", file_size=4)
 
     monkeypatch.setattr(

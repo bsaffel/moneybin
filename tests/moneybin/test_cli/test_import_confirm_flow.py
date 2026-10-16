@@ -757,6 +757,9 @@ class TestImportFilesConfirmFlow:
                 "SELECT count(*) FROM raw.tabular_transactions"
             ).fetchone()
             assert count is not None and count[0] == 0
+            if kwargs["flag"] == "import confirmation":
+                assert "confirm" in [choice.value for choice in kwargs["choices"]]
+                return "confirm"
             answer = next(answers)
             assert answer in [choice.value for choice in kwargs["choices"]]
             if kwargs["flag"] == "destination field":
@@ -1062,33 +1065,44 @@ class TestImportFilesConfirmFlow:
         }
 
         def import_file(**kwargs: Any) -> ImportResult:
+            plan = kwargs.get("reviewed_plan")
+            if plan is not None:
+                assert kwargs["overrides"] is None
+                assert kwargs["source_bytes"] == csv_file.read_bytes()
+                resolved = Resolved(plan.field_mapping, None, False)
+            else:
+                resolved = None
             overrides = kwargs["overrides"]
-            detected = map_columns(frame, overrides=overrides)
-            proposed = ProposedMapping(
-                detected.field_mapping,
-                collect_field_samples(frame, detected.field_mapping),
-                tuple(detected.unmapped_columns),
-            )
-            resolved = resolve_or_confirm(
-                channel="tabular",
-                confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
-                proposed=proposed,
-                available_columns=frame.columns,
-                required_fields=tabular_required_fields(
-                    proposed_keys=set(proposed.field_mapping),
-                    override_keys=set(overrides),
-                ),
-                signal=Override(overrides),
-                self_accept_enabled=False,
-                actor_kind="human",
-                valid_destinations=tuple(FIELD_ALIASES),
-            )
+            if resolved is None:
+                assert isinstance(overrides, dict)
+                overrides = cast(dict[str, str], overrides)
+                detected = map_columns(frame, overrides=overrides)
+                proposed = ProposedMapping(
+                    detected.field_mapping,
+                    collect_field_samples(frame, detected.field_mapping),
+                    tuple(detected.unmapped_columns),
+                )
+                resolved = resolve_or_confirm(
+                    channel="tabular",
+                    confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
+                    proposed=proposed,
+                    available_columns=frame.columns,
+                    required_fields=tabular_required_fields(
+                        proposed_keys=set(proposed.field_mapping),
+                        override_keys=set(overrides),
+                    ),
+                    signal=Override(overrides),
+                    self_accept_enabled=False,
+                    actor_kind="human",
+                    valid_destinations=tuple(FIELD_ALIASES),
+                )
             if isinstance(resolved, ConfirmationRequired):
                 assert mock_import_file.call_count == 1
                 assert resolved.reason == "validation_failure"
                 raise ImportConfirmationRequiredError(resolved)
             assert isinstance(resolved, Resolved)
-            assert kwargs["overrides"]["description"] == selected_source
+            assert plan is not None
+            assert plan.field_mapping["description"] == selected_source
             assert kwargs["save_format"] is True
             assert resolved.field_mapping == expected_mapping
             assert len(set(resolved.field_mapping.values())) == len(
@@ -1118,6 +1132,9 @@ class TestImportFilesConfirmFlow:
         ])
 
         def choose(*args: Any, **kwargs: Any) -> str:
+            if kwargs["flag"] == "import confirmation":
+                assert "confirm" in [choice.value for choice in kwargs["choices"]]
+                return "confirm"
             answer = next(answers)
             assert answer in [choice.value for choice in kwargs["choices"]]
             assert mock_import_file.call_count == 1
@@ -1173,27 +1190,37 @@ class TestImportFilesConfirmFlow:
         refusals: list[ConfirmationRequired] = []
 
         def import_file(**kwargs: Any) -> ImportResult:
+            plan = kwargs.get("reviewed_plan")
+            if plan is not None:
+                assert kwargs["overrides"] is None
+                assert kwargs["source_bytes"] == csv_file.read_bytes()
+                resolved = Resolved(plan.field_mapping, None, False)
+            else:
+                resolved = None
             overrides = kwargs["overrides"]
-            detected = map_columns(frame, overrides=overrides)
-            proposed = ProposedMapping(
-                detected.field_mapping,
-                collect_field_samples(frame, detected.field_mapping),
-                tuple(detected.unmapped_columns),
-            )
-            resolved = resolve_or_confirm(
-                channel="tabular",
-                confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
-                proposed=proposed,
-                available_columns=frame.columns,
-                required_fields=tabular_required_fields(
-                    proposed_keys=set(proposed.field_mapping),
-                    override_keys=set(overrides),
-                ),
-                signal=Override(overrides),
-                self_accept_enabled=False,
-                actor_kind="human",
-                valid_destinations=tuple(FIELD_ALIASES),
-            )
+            if resolved is None:
+                assert isinstance(overrides, dict)
+                overrides = cast(dict[str, str], overrides)
+                detected = map_columns(frame, overrides=overrides)
+                proposed = ProposedMapping(
+                    detected.field_mapping,
+                    collect_field_samples(frame, detected.field_mapping),
+                    tuple(detected.unmapped_columns),
+                )
+                resolved = resolve_or_confirm(
+                    channel="tabular",
+                    confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
+                    proposed=proposed,
+                    available_columns=frame.columns,
+                    required_fields=tabular_required_fields(
+                        proposed_keys=set(proposed.field_mapping),
+                        override_keys=set(overrides),
+                    ),
+                    signal=Override(overrides),
+                    self_accept_enabled=False,
+                    actor_kind="human",
+                    valid_destinations=tuple(FIELD_ALIASES),
+                )
             if isinstance(resolved, ConfirmationRequired):
                 assert resolved.reason == "validation_failure"
                 assert isinstance(resolved.proposed, ProposedMapping)
@@ -1235,6 +1262,9 @@ class TestImportFilesConfirmFlow:
         )
 
         def choose(*args: Any, **kwargs: Any) -> str:
+            if kwargs["flag"] == "import confirmation":
+                assert "confirm" in [choice.value for choice in kwargs["choices"]]
+                return "confirm"
             answer = next(answers)
             assert answer in [choice.value for choice in kwargs["choices"]]
             assert mock_import_file.call_count == 1
@@ -1296,17 +1326,24 @@ class TestImportFilesConfirmFlow:
         )
         mocker.patch(
             "moneybin.cli.commands.import_cmd.choose_required",
-            side_effect=["edit", "transaction_date", "column:Date", "confirm"],
+            side_effect=[
+                "edit",
+                "transaction_date",
+                "column:Date",
+                "confirm",
+                "confirm",
+            ],
         )
         result = runner.invoke(
             app,
             ["files", str(csv_file), "--mapping", "description=Notes", "--no-refresh"],
         )
         assert result.exit_code == 0, result.output
-        assert mock_import_file.call_args.kwargs["overrides"] == {
+        assert mock_import_file.call_args.kwargs["reviewed_plan"].field_mapping == {
             "transaction_date": "Date",
             "amount": "Amount",
             "description": "Notes",
+            "memo": "Memo",
         }
 
     def test_interactive_mapping_selects_column_named_cancel(self, mocker: Any) -> None:
@@ -1420,7 +1457,16 @@ class TestImportFilesConfirmFlow:
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50,Coffee\n")
         gate = _make_confirmation_error(reason=reason)
-        mock_import_file.side_effect = [_make_confirmation_error(), gate]
+        mock_import_file.side_effect = [
+            _make_confirmation_error(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                }
+            ),
+            gate,
+        ]
         mocker.patch(
             "moneybin.cli.commands.import_cmd.get_terminal_policy",
             return_value=MagicMock(
@@ -1434,7 +1480,8 @@ class TestImportFilesConfirmFlow:
             ),
         )
         choose = mocker.patch(
-            "moneybin.cli.commands.import_cmd.choose_required", return_value="accept"
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=["accept", "confirm"],
         )
         inbox = mocker.patch(
             "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
@@ -1442,7 +1489,7 @@ class TestImportFilesConfirmFlow:
         result = runner.invoke(app, ["files", str(csv_file), "--no-refresh"])
         assert result.exit_code == 1, result.output
         assert mock_import_file.call_count == 2
-        assert choose.call_count == 1
+        assert choose.call_count == 2
         inbox.archive_confirmed_file.assert_not_called()
 
     def test_interactive_mapping_replaces_split_shape_at_service_gate(
@@ -1542,6 +1589,7 @@ class TestImportFilesConfirmFlow:
                 "transaction_date",
                 "Date",
                 "confirm",
+                "confirm",
             ],
         )
         result = runner.invoke(app, ["files", str(csv_file), "--no-refresh"])
@@ -1551,7 +1599,7 @@ class TestImportFilesConfirmFlow:
             c.value for c in choose.call_args_list[0].kwargs["choices"]
         ]
         assert mock_import_file.call_count == 2
-        assert mock_import_file.call_args.kwargs["overrides"] == {
+        assert mock_import_file.call_args.kwargs["reviewed_plan"].field_mapping == {
             "amount": "Amount",
             "description": "Memo",
             "transaction_date": "Date",
@@ -1573,7 +1621,16 @@ class TestImportFilesConfirmFlow:
             transfers_retired=0,
             result=_make_import_result(transactions=3),
         )
-        mock_import_file.side_effect = [_make_confirmation_error(), failure]
+        mock_import_file.side_effect = [
+            _make_confirmation_error(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                }
+            ),
+            failure,
+        ]
         mocker.patch(
             "moneybin.cli.commands.import_cmd.get_terminal_policy",
             return_value=MagicMock(
@@ -1587,7 +1644,8 @@ class TestImportFilesConfirmFlow:
             ),
         )
         mocker.patch(
-            "moneybin.cli.commands.import_cmd.choose_required", return_value="accept"
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=["accept", "confirm"],
         )
         inbox = mocker.patch(
             "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
@@ -1620,7 +1678,13 @@ class TestImportFilesConfirmFlow:
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50,Coffee\n")
         mock_import_file.side_effect = [
-            _make_confirmation_error(),
+            _make_confirmation_error(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                }
+            ),
             _make_import_result(),
         ]
         mocker.patch(
@@ -1636,7 +1700,8 @@ class TestImportFilesConfirmFlow:
             ),
         )
         mocker.patch(
-            "moneybin.cli.commands.import_cmd.choose_required", return_value="accept"
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=["accept", "confirm"],
         )
         result = runner.invoke(app, ["files", str(csv_file), *flags])
         assert result.exit_code == 0, result.output
@@ -1682,20 +1747,31 @@ class TestImportFilesConfirmFlow:
             ),
         )
         mocker.patch(
-            "moneybin.cli.commands.import_cmd.choose_required", side_effect=answers
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=[*answers, "confirm"],
         )
         result = runner.invoke(app, ["files", str(csv_file)])
         assert result.exit_code == 0, result.output
         assert mock_import_file.call_count == 2
         kwargs = mock_import_file.call_args.kwargs
         assert kwargs["confirm"] is True
+        assert kwargs["overrides"] is None
+        assert kwargs["source_bytes"] == csv_file.read_bytes()
         if answers[0] == "edit":
-            assert kwargs["overrides"] == {
+            assert kwargs["reviewed_plan"].field_mapping == {
                 "transaction_date": "Date",
                 "amount": "Amount",
                 "description": "Notes",
+                "memo": "Memo",
             }
             assert "Coffee" not in result.output.split("Corrected column mapping:")[-1]
+        else:
+            assert kwargs["reviewed_plan"].field_mapping == {
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Memo",
+                "memo": "Notes",
+            }
 
     @pytest.mark.parametrize(
         "answers",

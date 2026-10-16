@@ -76,6 +76,7 @@ class TestImportFileAccountName:
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
             file_path=csv_file,
+            source_bytes=csv_file.read_bytes(),
             refresh=True,
             institution=None,
             force=False,

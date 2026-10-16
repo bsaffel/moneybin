@@ -2118,7 +2118,7 @@ def _review_import_mapping(
     if action == "cancel":
         return None
     if action == "accept" and outcome.confidence.tier != "low" and not initial_mapping:
-        return {}
+        return dict(proposed)
     corrections = dict(initial_mapping or {})
     omitted: set[str] = set(omitted_fields or ())
     while True:
