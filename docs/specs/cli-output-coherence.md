@@ -362,6 +362,15 @@ Numbered, each independently testable.
     milestone's own transcript surfaced it, and a percent contract (places,
     and whether the column carries `%` or a ratio) is the natural companion to
     the money contract rather than a second idiom invented later.
+
+    **Resolved by the percent declaration.** A report column storing a ratio
+    declares `OutputColumn(percent=True)` (a refinement of `numeric`, exclusive
+    with `grouped`), and `format_percent` renders it in the text branch to one
+    place with the terminal's minus: `0.0943` → `+9.4%`, a value rounding to
+    zero → `0.0%`. JSON and MCP keep the stored fraction. `mom_pct`, `yoy_pct`,
+    `drift_pct`, and `change_pct` declare it, and
+    `test_every_ratio_is_a_percent_and_nothing_else_is` holds every `_pct`
+    column to it.
 12. Every money column declares a **money kind**, and the renderer never infers
     meaning from the raw number. Four kinds:
     - `flow` — signed under the AGENTS.md accounting convention (negative =
@@ -865,6 +874,14 @@ Numbered, each independently testable.
     One placeholder, tree-wide. `transactions splits list` rendered `-` for the
     same absence; it now renders the same word, because two placeholders for one
     condition is the second pattern the coherence rule prohibits.
+
+    A report declares its column as `OutputColumn(uncategorized=True)`; the
+    column's `DataClass.CATEGORY` alone does not qualify it, because that class
+    also covers `subcategory`, where a NULL is not a taxonomy gap. The framing
+    count on a report counts rows of the report's grain — a category-month on
+    `spending-trend` — not transactions, so one NULL-category series over a
+    twelve-month window reads `12 uncategorized`. Dropping the count from
+    report tables is planned.
 
 **Stubs (F4)**
 

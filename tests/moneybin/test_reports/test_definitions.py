@@ -1019,3 +1019,41 @@ def test_every_count_is_grouped_and_nothing_else_is() -> None:
 
     assert grouped == counts
     assert ("realized_fx", "executed_rate") not in grouped
+
+
+def test_every_ratio_is_a_percent_and_nothing_else_is() -> None:
+    """A `_pct` column stores a fraction and renders as `+9.4%`, never as a float.
+
+    Set equality rather than a subset: a ratio left undeclared prints eighteen
+    binary-float digits, and a non-ratio declared `percent` is multiplied by 100.
+    """
+    columns = [
+        (spec.name, column)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+    ]
+    percent = sorted((name, c.name) for name, c in columns if c.percent)
+    ratios = sorted((name, c.name) for name, c in columns if c.name.endswith("_pct"))
+
+    assert percent == ratios
+    assert ("spending_trend", "yoy_pct") in percent
+
+
+def test_every_assigned_category_column_declares_uncategorized() -> None:
+    """A NULL `category` or `top_category` is a taxonomy gap, printed `Uncategorized`.
+
+    Set equality: an undeclared one prints a blank cell, and a declaration on
+    any other column would relabel a NULL that means something else.
+    """
+    columns = [
+        (spec.name, column)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+    ]
+    declared = sorted((name, c.name) for name, c in columns if c.uncategorized)
+    categories = sorted(
+        (name, c.name) for name, c in columns if c.name in {"category", "top_category"}
+    )
+
+    assert declared == categories
+    assert ("spending_trend", "category") in declared

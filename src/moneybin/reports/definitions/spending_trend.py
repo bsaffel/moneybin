@@ -84,7 +84,9 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
         "compare": DataClass.TXN_TYPE,
     },
     columns=(
-        OutputColumn("category", "Spending category.", DataClass.CATEGORY),
+        OutputColumn(
+            "category", "Spending category.", DataClass.CATEGORY, uncategorized=True
+        ),
         OutputColumn(
             "currency_code",
             "ISO 4217 currency this row is denominated in; null means unknown.",
@@ -128,6 +130,7 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "Month-over-month delta divided by previous-month spend.",
             DataClass.AGGREGATE,
             numeric=True,
+            percent=True,
         ),
         OutputColumn(
             "prev_year_spend",
@@ -147,6 +150,7 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "Year-over-year delta divided by prior-year spend.",
             DataClass.AGGREGATE,
             numeric=True,
+            percent=True,
         ),
         OutputColumn(
             "trailing_3mo_avg",

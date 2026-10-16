@@ -110,7 +110,9 @@ def _blank_original_currency_analytics(
         OutputColumn(
             "description", "Original transaction description.", DataClass.DESCRIPTION
         ),
-        OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
+        OutputColumn(
+            "category", "Transaction category.", DataClass.CATEGORY, uncategorized=True
+        ),
         OutputColumn(
             "currency_code",
             "ISO 4217 currency this row is denominated in; null means unknown.",

@@ -323,13 +323,17 @@ column it leaves Rich nothing wrappable to give up, and it then crops
 ellipsis is the floor under that: a cell too narrow even after the squeeze
 reads `1,234,5…`, which cannot pass for a whole number.
 
-Two further keywords refine `numeric=`. `grouped=` names the subset of
+Three further keywords refine `numeric=`. `grouped=` names the subset of
 `numeric=` columns whose `int` or `Decimal` values are grouped by thousands —
 row counts, table sizes, a dynamic `sql query` column — so a count reads
 `1,381` beside an amount that reads `1,381.00`; a per-unit price or FX rate
-stays out of it. `nowrap=` gives a text column the same no-fold guarantee
-without right-aligning it: a timestamp, an actor, an action name that would
-be misread split across two lines.
+stays out of it. `percent=` names the subset storing a ratio, printed by
+`format_percent` as `+9.4%` — a report declares it as `OutputColumn(percent=True)`,
+and a `_pct` column that omits it prints eighteen float digits. `nowrap=` gives
+a text column the same no-fold guarantee without right-aligning it: a
+timestamp, an actor, an action name that would be misread split across two
+lines. A report column whose NULL means no category was assigned declares
+`OutputColumn(uncategorized=True)` and prints that NULL as `Uncategorized`.
 
 Curation is still the answer for a table that is simply too wide. The renderer
 guarantees no amount is *wrong*; only the author can decide which columns are
