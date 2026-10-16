@@ -2217,6 +2217,8 @@ def _review_import_mapping(
                 for owner in owners:
                     proposed.pop(owner, None)
                     corrections.pop(owner, None)
+                    if owner in FIELD_ALIASES and owner not in protected:
+                        omitted.add(owner)
             if dest == "amount":
                 corrections.pop("debit_amount", None)
                 corrections.pop("credit_amount", None)

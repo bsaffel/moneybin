@@ -1044,7 +1044,10 @@ class TestImportFilesConfirmFlow:
         assert len(formats) == 1
         assert "status" not in next(iter(formats.values())).field_mapping
 
-    @pytest.mark.parametrize("decision", ["confirm", "cancel", "restore"])
+    @pytest.mark.parametrize(
+        "decision",
+        ["confirm", "cancel", "restore", "move", "move_restore", "move_cancel"],
+    )
     def test_interactive_optional_omission_persists_and_replays(
         self,
         db: Database,
@@ -1059,7 +1062,12 @@ class TestImportFilesConfirmFlow:
         from moneybin.services.import_service import ImportService
 
         path = tmp_path / "geography.csv"
-        path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+        moving = decision.startswith("move")
+        path.write_text(
+            "Date,Amount,Description,State,Memo\n2026-01-01,-2,Example,WA,Reviewed\n"
+            if moving
+            else "Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n"
+        )
 
         @contextmanager
         def connect(**kwargs: Any) -> Generator[Database, None, None]:
@@ -1084,9 +1092,25 @@ class TestImportFilesConfirmFlow:
         )
         answers = iter([
             "edit",
-            "remove:status",
-            *(["edit", "status", "column:State"] if decision == "restore" else []),
-            "cancel" if decision == "cancel" else "confirm",
+            *(
+                [
+                    "description",
+                    "column:State",
+                    "reassign",
+                    "edit",
+                    "description",
+                    "column:Memo",
+                    "reassign",
+                ]
+                if moving
+                else ["remove:status"]
+            ),
+            *(
+                ["edit", "status", "column:State"]
+                if decision in {"restore", "move_restore"}
+                else []
+            ),
+            "cancel" if decision in {"cancel", "move_cancel"} else "confirm",
         ])
 
         def choose(*args: Any, **kwargs: Any) -> str:
@@ -1124,9 +1148,11 @@ class TestImportFilesConfirmFlow:
                 "test=new",
             ],
         )
-        assert result.exit_code == (1 if decision == "cancel" else 0), result.output
+        cancelled = decision in {"cancel", "move_cancel"}
+        restored = decision in {"restore", "move_restore"}
+        assert result.exit_code == (1 if cancelled else 0), result.output
         saved = load_formats_from_db(db)
-        if decision == "cancel":
+        if cancelled:
             assert saved == {}
             count = db.conn.execute(
                 "SELECT count(*) FROM raw.tabular_transactions"
@@ -1135,20 +1161,23 @@ class TestImportFilesConfirmFlow:
             return
         assert len(saved) == 1
         fmt = next(iter(saved.values()))
-        assert ("status" in fmt.field_mapping) is (decision == "restore")
+        assert ("status" in fmt.field_mapping) is restored
+        if moving:
+            assert fmt.field_mapping["description"] == "Memo"
+            assert "memo" not in fmt.field_mapping
         assert "State" in fmt.header_signature
         rows = db.conn.execute(
             "SELECT account_id, status FROM raw.tabular_transactions"
         ).fetchall()
         assert len(rows) == 1
-        assert rows[0][1] == ("WA" if decision == "restore" else None)
+        assert rows[0][1] == ("WA" if restored else None)
         replay = ImportService(db).import_file(
             path, format_name=fmt.name, account_id=rows[0][0], refresh=False, force=True
         )
         assert replay.field_mapping is not None
-        assert ("status" in replay.field_mapping) is (decision == "restore")
+        assert ("status" in replay.field_mapping) is restored
         assert ("status" in load_formats_from_db(db)[fmt.name].field_mapping) is (
-            decision == "restore"
+            restored
         )
 
     def test_source_reassignment_preview_retains_original_source_samples(
@@ -1394,12 +1423,16 @@ class TestImportFilesConfirmFlow:
         csv_file = tmp_path / "statement.csv"
         csv_file.write_text(frame.write_csv())
         selected_source = "Memo" if scenario == "claimed_source" else " Notes "
+        from moneybin.services.import_service import ImportService
+
+        preparation = mocker.spy(ImportService, "prepare_tabular_import")
         expected_mapping = {
             "transaction_date": "Date",
             "amount": "Total",
             "description": selected_source,
-            "memo": "Notes" if scenario == "claimed_source" else "Memo",
         }
+        if scenario == "exact_whitespace":
+            expected_mapping["memo"] = "Memo"
 
         def import_file(**kwargs: Any) -> ImportResult:
             plan = kwargs.get("reviewed_plan")
@@ -1484,6 +1517,8 @@ class TestImportFilesConfirmFlow:
             app, ["files", str(csv_file), "--mapping", "amount=Total", "--no-refresh"]
         )
         assert result.exit_code == 0, result.output
+        if scenario == "claimed_source":
+            assert preparation.call_args.kwargs["omitted_fields"] == frozenset({"memo"})
         assert mock_import_file.call_count == 2
 
     @pytest.mark.parametrize(
