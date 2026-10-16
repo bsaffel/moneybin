@@ -78,10 +78,27 @@ def materialize_seeds(db: Database) -> None:
 
     if _SEED_MODELS:
         logger.info("Materializing seed models")
+        _drop_seed_placeholders(db)
         with sqlmesh_context(db) as ctx:
             ctx.plan(auto_apply=True, no_prompts=True, select_models=_SEED_MODELS)
 
     refresh_views(db)
+
+
+def _drop_seed_placeholders(db: Database) -> None:
+    """Drop empty placeholder seed tables so SQLMesh can promote its views there.
+
+    SQLMesh exposes each seed as a VIEW. A BASE TABLE under a seed name is only
+    ever MoneyBin's empty placeholder (``_ensure_seed_tables_exist``, frozen
+    V014); left in place, SQLMesh drops it itself and logs a warning.
+    """
+    for table in (SEED_CATEGORIES, SEED_CATEGORY_SOURCE_MAP):
+        is_base_table = db.execute(
+            "SELECT 1 FROM duckdb_tables() WHERE schema_name = ? AND table_name = ?",
+            [table.schema, table.name],
+        ).fetchone()
+        if is_base_table:
+            db.execute(f"DROP TABLE {table.full_name}")  # TableRef constant
 
 
 def _ensure_seed_tables_exist(db: Database) -> None:
