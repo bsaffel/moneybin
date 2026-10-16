@@ -29,6 +29,60 @@ _CITI_CSV = (
 _TILLER_CSV = _FIXTURES / "tiller.csv"  # headers match the built-in `tiller` format
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_reviewed_worksheet_roundtrip_applies_exact_data(
+    db: Database, tmp_path: Path, legacy: bool
+) -> None:
+    import json
+
+    import openpyxl
+
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    path = tmp_path / "workbook.xlsx"
+    book = openpyxl.Workbook()
+    first = book.active
+    assert first is not None
+    first.title = "Default"
+    second = book.create_sheet("Selected worksheet")
+    for sheet, description in [(first, "Default row"), (second, "Selected row")]:
+        sheet.append(["Date", "Amount", "Description"])
+        sheet.append(["2026-01-01", "-2", description])
+    book.save(path)
+    source = path.read_bytes()
+    service = ImportService(db)
+    prepared = service.prepare_tabular_import(
+        path,
+        source_bytes=source,
+        sheet=None if legacy else "Selected worksheet",
+        confirm=True,
+        account_name="test",
+        account_bindings={"test": "new"},
+    )
+    assert prepared.confirmation is None
+    encoded = json.loads(json.dumps(prepared.plan.to_dict()))
+    if legacy:
+        # Old staged MCP previews had no explicit worksheet input: replaying
+        # their identical bytes retains the deterministic default selection.
+        encoded.pop("sheet", None)
+    else:
+        assert encoded.get("sheet") == "Selected worksheet"
+    plan = ReviewedTabularPlan.from_dict(encoded)
+    result = service.import_file(
+        path,
+        source_bytes=source,
+        reviewed_plan=plan,
+        account_name="test",
+        account_bindings={"test": "new"},
+        refresh=False,
+        save_format=False,
+    )
+    assert result.rows_loaded == 1
+    assert db.conn.execute(
+        "SELECT description FROM raw.tabular_transactions"
+    ).fetchall() == [("Default row" if legacy else "Selected row",)]
+
+
 @pytest.mark.parametrize("sign", [None, "negative_is_income"])
 def test_prepare_tabular_import_is_read_only_and_retains_exact_decision(
     db: Database, tmp_path: Path, mocker: MockerFixture, sign: str | None

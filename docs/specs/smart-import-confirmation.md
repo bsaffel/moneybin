@@ -314,7 +314,9 @@ edit). Editing prioritizes missing and flagged destinations and offers all mappe
 and unmapped source columns. Corrections merge in memory through the shared mapping
 validator. Read-only preparation retains the existing `ReviewedTabularPlan` and
 source bytes in memory while sign and account questions are answered in dependent
-order. A final review shows the settled mapping, omissions, sign convention and
+order. Workbook plans retain the actual worksheet name, including explicit
+`--sheet` selections, through review and serialized replay. A final review shows
+the settled mapping, omissions, sign convention and
 account bindings before explicit approval. Apply revalidates the source and account
 state through the existing service and completion/inbox lifecycle. Preparation and
 questions write no import or account state, and prompts occur outside the writer

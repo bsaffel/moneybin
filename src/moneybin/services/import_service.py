@@ -701,6 +701,9 @@ class ReviewedTabularPlan:
     `import_confirm`) is itself the ratification, because nothing was lost:
     the preview already showed the ambiguity and the caller chose to
     proceed."""
+    sheet: str | None = None
+    """The worksheet actually read. Old MCP previews had no sheet input and
+    retain deterministic auto-selection against their unchanged source bytes."""
 
     @classmethod
     def from_read(
@@ -736,6 +739,7 @@ class ReviewedTabularPlan:
             header_signature=sorted(read_result.df.columns),
             flagged_fields=list(flagged_fields),
             header_position_ambiguous=read_result.header_position_ambiguous,
+            sheet=read_result.sheet_used,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -2786,6 +2790,7 @@ class ImportService:
             read_result = read_file(
                 file_path,
                 format_info,
+                sheet=reviewed_plan.sheet,
                 skip_rows=reviewed_plan.skip_rows,
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,

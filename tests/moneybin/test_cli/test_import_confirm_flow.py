@@ -452,6 +452,79 @@ def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 
+    def test_prepared_import_keeps_explicit_nondefault_worksheet(
+        self, db: Database, mocker: Any, tmp_path: Path
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        import openpyxl
+
+        path = tmp_path / "workbook.xlsx"
+        book = openpyxl.Workbook()
+        first = book.active
+        assert first is not None
+        first.title = "Default"
+        second = book.create_sheet("Selected worksheet")
+        for sheet, description in [(first, "Default row"), (second, "Selected row")]:
+            sheet.append(["Date", "Amount", "Description"])
+            sheet.append(["2026-01-01", "-2", description])
+        book.save(path)
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        observed: list[str] = []
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            observed.append(kwargs["flag"])
+            row = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert row is not None and row[0] == 0
+            return "accept" if kwargs["flag"] == "mapping review" else "confirm"
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(path),
+                "--sheet",
+                "Selected worksheet",
+                "--no-refresh",
+                "--account-name",
+                "test",
+                "--account-binding",
+                "test=new",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert observed == ["mapping review", "import confirmation"]
+        assert db.conn.execute(
+            "SELECT description FROM raw.tabular_transactions"
+        ).fetchall() == [("Selected row",)]
+
     @pytest.mark.parametrize("suffix", [".txt", ".dat"])
     def test_generic_ofx_source_does_not_use_tabular_snapshot(
         self,
