@@ -1182,6 +1182,50 @@ async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     ]
 
 
+async def test_import_preview_coarse_persists_explicit_optional_omission(
+    mcp_db: object, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    path = tmp_path / "geography.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    response = await import_preview_coarse(file_path=str(path), omit_fields=["status"])
+    assert response.error is None, response.error
+    assert "status" not in response.data.mapping
+
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        stored = ImportPreviewsRepo(db).get(response.data.preview_id)
+        assert stored is not None
+        snapshot = stored["snapshot_json"]
+        assert "status" not in snapshot["plan"]["field_mapping"]
+        rows = db.conn.execute(
+            "SELECT count(*) FROM raw.tabular_transactions"
+        ).fetchone()
+        assert rows is not None and rows[0] == 0
+
+
+@pytest.mark.parametrize(
+    "omitted,mapping",
+    [(["amount"], None), (["unknown"], None), (["status"], {"status": "State"})],
+)
+async def test_import_preview_coarse_rejects_invalid_omission(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    omitted: list[str],
+    mapping: dict[str, str] | None,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    path = tmp_path / "geography.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    response = await import_preview_coarse(
+        file_path=str(path), omit_fields=omitted, mapping=mapping
+    )
+    assert response.error is not None
+
+
 async def test_import_preview_coarse_post_date_matches_what_import_stores(
     mcp_db: object,
     tmp_path: Path,

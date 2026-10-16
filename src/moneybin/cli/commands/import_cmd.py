@@ -386,6 +386,11 @@ def import_files_command(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    omit_field: list[str] = typer.Option(
+        None,
+        "--omit-field",
+        help="Omit an optional destination field, repeatable. Tabular files only.",
+    ),
 ) -> None:
     """Import one or more financial data files into MoneyBin.
 
@@ -412,6 +417,7 @@ def import_files_command(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.protocol.envelope import build_envelope
     from moneybin.protocol.import_envelope import mark_total_failure
+    from moneybin.services.import_confirmation import tabular_omission_fragment
     from moneybin.services.import_service import ImportService
 
     # --mapping is an alias for --override; merge both into one dict.
@@ -451,6 +457,8 @@ def import_files_command(
         or not save_format
     )
 
+    if len(file_paths) > 1 and omit_field:
+        raise typer.BadParameter("--omit-field requires one tabular file.")
     if len(file_paths) > 1 and has_single_file_knobs:
         logger.warning(
             format_cli_attention(
@@ -484,6 +492,8 @@ def import_files_command(
         )
 
     from moneybin.database import get_database
+
+    review_source: bytes | None = None
 
     files_list: list[dict[str, Any]] = []
     data: dict[str, Any] = {}
@@ -565,9 +575,28 @@ def import_files_command(
                             "actor_kind": "human",
                             "account_bindings": account_bindings,
                         }
+                        if omit_field:
+                            import_kwargs["_omitted_fields"] = frozenset(omit_field)
                         if confirm_sign:
                             import_kwargs["human_sign_confirmation"] = True
                         try:
+                            if file_paths[0].suffix.lower() in {
+                                ".csv",
+                                ".tsv",
+                                ".txt",
+                                ".xlsx",
+                                ".xls",
+                                ".parquet",
+                                ".feather",
+                            }:
+                                from moneybin.services.tabular_preparation import (
+                                    read_tabular_source,
+                                )
+
+                                review_source = read_tabular_source(
+                                    file_paths[0], no_size_limit=no_size_limit
+                                )
+                                import_kwargs["source_bytes"] = review_source
                             result = svc.import_file(**import_kwargs)
                         except (ValueError, PermissionError) as file_exc:
                             # A failure attributable to THIS FILE is part of the
@@ -717,6 +746,7 @@ def import_files_command(
                         channel=outcome.channel,
                         accept=confirm or overrides is None,
                         mapping=overrides,
+                        omitted_fields=frozenset(omit_field or []),
                         save_format=save_format,
                         institution=institution,
                         account_id=account_id,
@@ -742,7 +772,7 @@ def import_files_command(
                     # every binding re-sent together or the printed command
                     # drops the answer already given and never converges.
                     confirm_actions.append(
-                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign, read_options=read_options)}` "
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, omitted_fields=frozenset(omit_field or []), save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign, read_options=read_options)}` "
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
@@ -755,18 +785,23 @@ def import_files_command(
                             # to the caller's own flags when the confirmation
                             # carries none.
                             read_options=outcome.retry_read_options or read_options,
+                            omitted_fields=frozenset(omit_field or []),
                         )
                     )
                 elif outcome.reason == "header_position_ambiguous":
                     confirm_actions.append(
                         header_position_ambiguous_recovery(
-                            file_path_str, read_options=read_options
+                            file_path_str,
+                            read_options=read_options,
+                            omitted_fields=frozenset(omit_field or []),
                         )
                     )
                 elif outcome.reason == "unreadable_date":
                     confirm_actions.append(
                         unreadable_date_recovery(
-                            file_path_str, read_options=read_options
+                            file_path_str,
+                            read_options=read_options,
+                            omitted_fields=frozenset(omit_field or []),
                         )
                     )
                 else:
@@ -784,7 +819,10 @@ def import_files_command(
                         "fields."
                     )
                     if outcome.confidence.tier != "low":
-                        read_args_str = read_options.cli_fragment()
+                        read_args_str = (
+                            read_options.cli_fragment()
+                            + tabular_omission_fragment(frozenset(omit_field or []))
+                        )
                         confirm_actions.append(
                             f"Run `moneybin import confirm {quoted_path} --accept"
                             f"{read_args_str}` as a subcommand."
@@ -794,7 +832,9 @@ def import_files_command(
                 if _can_preview(outcome):
                     preview_args_str = _preview_read_options(
                         outcome, read_options
-                    ).cli_fragment()
+                    ).cli_fragment() + tabular_omission_fragment(
+                        frozenset(omit_field or [])
+                    )
                     confirm_actions.append(
                         f"Run `moneybin import preview {quoted_path}"
                         f"{preview_args_str}` to inspect the proposal."
@@ -821,6 +861,7 @@ def import_files_command(
                 file_path_str,
                 accept=confirm or overrides is None,
                 mapping=overrides,
+                omitted_fields=frozenset(omit_field or []),
                 save_format=save_format,
                 institution=institution,
                 account_id=account_id,
@@ -839,7 +880,7 @@ def import_files_command(
                 and outcome.channel == "tabular"
                 and outcome.reason in ("unknown_layout", "validation_failure")
             ):
-                omitted_fields: set[str] = set()
+                omitted_fields: set[str] = set(omit_field or [])
                 reviewed_mapping = _review_import_mapping(
                     outcome, overrides, omitted_fields
                 )
@@ -851,6 +892,7 @@ def import_files_command(
                             accept=True,
                             mapping=[],
                             reviewed_mapping=reviewed_mapping,
+                            reviewed_source=review_source,
                             omitted_fields=frozenset(omitted_fields),
                             format_name=format_name,
                             bridge_response=None,
@@ -1507,6 +1549,7 @@ def _choose_account_bindings(
     bindings: dict[str, str] | None,
     *,
     policy: Any,
+    allow_new: bool = False,
 ) -> dict[str, str] | None:
     """Ask only for existing candidates returned by an account confirmation.
 
@@ -1518,7 +1561,7 @@ def _choose_account_bindings(
     added = False
     for proposal in outcome.account_proposals:
         candidates = proposal["candidates"]
-        if not candidates:
+        if not candidates and not allow_new:
             continue
         choices = tuple(
             Choice(
@@ -1527,12 +1570,20 @@ def _choose_account_bindings(
             )
             for candidate in candidates
         )
-        selected[proposal["proposal_ref"]] = choose_required(
+        if allow_new:
+            choices += (
+                Choice("new", "Create a separate account"),
+                Choice("cancel", "Cancel"),
+            )
+        answer = choose_required(
             None,
             choices=choices,
             flag="--account-binding",
             policy=policy,
         )
+        if answer == "cancel":
+            return None
+        selected[proposal["proposal_ref"]] = answer
         added = True
     return selected if added else None
 
@@ -1542,9 +1593,12 @@ def _tabular_recovery_args(
     mapping: dict[str, str] | None,
     account_bindings: dict[str, str] | None,
     account_metadata: dict[str, dict[str, str]] | None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Serialize repeatable tabular mapping and account options."""
     args: list[str] = []
+    for field in sorted(omitted_fields):
+        args.extend(("--omit-field", field))
     for field, source in (mapping or {}).items():
         args.extend(("--mapping", f"{field}={source}"))
     for source_key, account_id in (account_bindings or {}).items():
@@ -1655,6 +1709,7 @@ def _import_confirm_command(
     account_metadata: dict[str, dict[str, str]] | None,
     bridge_response: Path | None = None,
     read_options: TabularReadOptions | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> str:
     """Serialize one public `import confirm` request losslessly.
 
@@ -1699,6 +1754,7 @@ def _import_confirm_command(
     parts.extend(
         _tabular_recovery_args(
             mapping=mapping,
+            omitted_fields=omitted_fields,
             account_bindings=account_bindings,
             account_metadata=account_metadata,
         )
@@ -1723,6 +1779,7 @@ def _account_recovery_command(
     sign: SignConventionType | None = None,
     bridge_response: Path | None = None,
     read_options: TabularReadOptions | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> str:
     """Name the command that answers this account confirmation — one, for every channel.
 
@@ -1771,6 +1828,7 @@ def _account_recovery_command(
         confirm_sign=confirm_sign,
         sign=sign,
         mapping=mapping,
+        omitted_fields=omitted_fields,
         save_format=save_format,
         institution=institution,
         account_id=account_id,
@@ -1797,6 +1855,7 @@ def _sign_recovery_commands(
     proposed_sign: str | None = None,
     prior_sign: str | None = None,
     read_options: TabularReadOptions | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> list[str]:
     """The two honest recoveries for a sign-convention confirmation.
 
@@ -1822,6 +1881,7 @@ def _sign_recovery_commands(
             confirm_sign=True,
             sign=None,
             mapping=mapping,
+            omitted_fields=omitted_fields,
             save_format=save_format,
             institution=institution,
             account_id=account_id,
@@ -1836,6 +1896,7 @@ def _sign_recovery_commands(
             confirm_sign=False,
             sign="negative_is_expense",
             mapping=mapping,
+            omitted_fields=omitted_fields,
             save_format=save_format,
             institution=institution,
             account_id=account_id,
@@ -1964,6 +2025,7 @@ def _render_sign_convention_prompt(
     account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
     read_options: TabularReadOptions | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> None:
     """Print the interactive prompt for a sign-convention confirmation.
 
@@ -2006,6 +2068,7 @@ def _render_sign_convention_prompt(
         channel=channel,
         accept=accept,
         mapping=mapping,
+        omitted_fields=omitted_fields,
         save_format=save_format,
         institution=institution,
         account_id=account_id,
@@ -2057,7 +2120,7 @@ def _review_import_mapping(
     if action == "accept" and outcome.confidence.tier != "low" and not initial_mapping:
         return {}
     corrections = dict(initial_mapping or {})
-    omitted: set[str] = set()
+    omitted: set[str] = set(omitted_fields or ())
     while True:
         protected = set(
             tabular_required_fields(
@@ -2197,6 +2260,7 @@ def _review_import_mapping(
         )
         if action == "confirm":
             if omitted_fields is not None:
+                omitted_fields.clear()
                 omitted_fields.update(omitted)
             return merged
         if action == "cancel":
@@ -2218,6 +2282,7 @@ def _render_confirmation_prompt(
     confirm_sign: bool = False,
     sign: SignConventionType | None = None,
     read_options: TabularReadOptions | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> None:
     """Print the proposal and explicit-flag recovery for a confirmation gate."""
     import shlex
@@ -2227,6 +2292,7 @@ def _render_confirmation_prompt(
         SignConventionProposal,
         TabularReadOptions,
         header_row_consumed_recovery,
+        tabular_omission_fragment,
         unreadable_date_recovery,
     )
 
@@ -2243,6 +2309,7 @@ def _render_confirmation_prompt(
             channel=outcome.channel,
             accept=accept,
             mapping=mapping,
+            omitted_fields=omitted_fields,
             save_format=save_format,
             institution=institution,
             account_id=account_id,
@@ -2257,7 +2324,7 @@ def _render_confirmation_prompt(
     opts = read_options or TabularReadOptions()
     # Leading-space fragment, like `_import_files_account_args`: splices into
     # a sentence with no double space when nothing is set.
-    read_args_str = opts.cli_fragment()
+    read_args_str = opts.cli_fragment() + tabular_omission_fragment(omitted_fields)
     tier = outcome.confidence.tier
     symbols = get_terminal_policy().symbols
     tier_icon = {
@@ -2324,6 +2391,7 @@ def _render_confirmation_prompt(
                 outcome,
                 accept=accept,
                 mapping=mapping,
+                omitted_fields=omitted_fields,
                 save_format=save_format,
                 institution=institution,
                 account_id=account_id,
@@ -2346,6 +2414,7 @@ def _render_confirmation_prompt(
                 file_path_str,
                 format_name=opts.format_name,
                 read_options=outcome.retry_read_options or read_options,
+                omitted_fields=omitted_fields,
             )
         )
     elif outcome.reason == "unreadable_date":
@@ -2358,7 +2427,10 @@ def _render_confirmation_prompt(
         # --date-format — the same text the JSON envelope path already prints
         # for this reason, so the two surfaces agree.
         typer.echo(
-            "     " + unreadable_date_recovery(file_path_str, read_options=read_options)
+            "     "
+            + unreadable_date_recovery(
+                file_path_str, read_options=read_options, omitted_fields=omitted_fields
+            )
         )
     else:
         # Accept hint is gated on tier — resolve_or_confirm refuses Accept at
@@ -2377,7 +2449,9 @@ def _render_confirmation_prompt(
                 f"{read_args_str}   (dedicated confirm subcommand)"
             )
     if _can_preview(outcome):
-        preview_args_str = _preview_read_options(outcome, opts).cli_fragment()
+        preview_args_str = _preview_read_options(
+            outcome, opts
+        ).cli_fragment() + tabular_omission_fragment(omitted_fields)
         typer.echo(
             f"     moneybin import preview {quoted_path}{preview_args_str}   "
             "(inspect proposal in detail)"
@@ -2525,6 +2599,11 @@ def import_confirm_command(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    omit_field: list[str] = typer.Option(
+        None,
+        "--omit-field",
+        help="Omit an optional destination field, repeatable. Tabular files only.",
+    ),
 ) -> None:
     """Accept or override the proposed mapping for a file awaiting confirmation.
 
@@ -2548,6 +2627,7 @@ def import_confirm_command(
             file_path=file_path,
             accept=accept,
             mapping=mapping,
+            omitted_fields=frozenset(omit_field or []),
             format_name=format_name,
             bridge_response=bridge_response,
             confirm=confirm,
@@ -2601,18 +2681,21 @@ def _complete_import_confirmation(
     force: bool = False,
     auto_accept: bool = False,
     reviewed_mapping: dict[str, str] | None = None,
+    reviewed_source: bytes | None = None,
     omitted_fields: frozenset[str] = frozenset(),
 ) -> None:
     """Complete one reviewed import through the existing account and inbox lifecycle."""
     from moneybin.cli.output import render_or_json
     from moneybin.database import get_database
     from moneybin.protocol.envelope import build_envelope
+    from moneybin.services.import_confirmation import tabular_omission_fragment
     from moneybin.services.import_service import ImportService
 
     if bridge_response is not None:
         if (
             accept
             or mapping
+            or omitted_fields
             or confirm_sign
             or sign
             or format_name
@@ -2631,7 +2714,7 @@ def _complete_import_confirmation(
             or no_size_limit
         ):
             raise typer.BadParameter(
-                "--bridge-response cannot be combined with --accept, --mapping, "
+                "--bridge-response cannot be combined with --accept, --mapping, --omit-field, "
                 "--confirm-sign, --sign, --format, --date-format, "
                 "--number-format, --sheet, --delimiter, --encoding, "
                 "--no-row-limit, or --no-size-limit.",
@@ -2774,6 +2857,133 @@ def _complete_import_confirmation(
     quoted_path = shlex.quote(str(file_path))
     refresh_failed = False
 
+    prepared_plan = None
+    prepared_source = None
+    if reviewed_mapping is not None and get_terminal_policy().interactive:
+        from moneybin.services.import_service import PreparedTabularImport
+
+        prepared_source = (
+            reviewed_source if reviewed_source is not None else file_path.read_bytes()
+        )
+        if file_path.read_bytes() != prepared_source:
+            raise UserError(
+                "The file changed after review. Preview and confirm it again.",
+                code=error_codes.IMPORT_PREVIEW_CHANGED,
+            )
+        preparation_options: dict[str, Any] = {
+            "overrides": parsed_mapping,
+            "format_name": format_name,
+            "account_id": account_id,
+            "account_name": account_name,
+            "account_bindings": parsed_bindings,
+            "account_metadata": parsed_metadata,
+            "sign": sign,
+            "human_sign_confirmation": confirm_sign,
+            "confirm": accept,
+            "date_format_override": date_format,
+            "number_format_override": number_format,
+            "sheet": sheet,
+            "delimiter": delimiter,
+            "encoding": encoding,
+            "no_row_limit": no_row_limit,
+            "no_size_limit": no_size_limit,
+            "auto_accept": auto_accept,
+        }
+        remaining_omissions: frozenset[str] = omitted_fields
+        while True:
+            # Close the read connection before every human question.
+            with get_database(read_only=True) as preview_db:
+                prepared: PreparedTabularImport = ImportService(
+                    preview_db
+                ).prepare_tabular_import(
+                    file_path,
+                    source_bytes=prepared_source,
+                    omitted_fields=remaining_omissions,
+                    **preparation_options,
+                )
+            prepared_plan = prepared.plan
+            remaining_omissions = frozenset()
+            preparation_options["reviewed_plan"] = prepared_plan
+            preparation_options["overrides"] = None
+            pending = prepared.confirmation
+            if pending is None:
+                break
+            if pending.reason == "sign_convention":
+                _render_confirmation_prompt(
+                    pending,
+                    str(file_path),
+                    mapping=parsed_mapping,
+                    omitted_fields=omitted_fields,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=parsed_bindings,
+                    read_options=read_options,
+                )
+                selected_sign = choose_required(
+                    None,
+                    choices=(
+                        Choice(
+                            "negative_is_income",
+                            "Invert the printed signs (credit-card convention)",
+                        ),
+                        Choice("negative_is_expense", "Keep the printed signs"),
+                        Choice("cancel", "Cancel"),
+                    ),
+                    flag="sign convention",
+                    policy=get_terminal_policy(),
+                )
+                if selected_sign == "cancel":
+                    raise typer.Exit(1)
+                sign = cast(SignConventionType, selected_sign)
+                preparation_options["sign"] = sign
+            elif pending.reason == "account_confirmation":
+                _render_confirmation_prompt(
+                    pending,
+                    str(file_path),
+                    mapping=parsed_mapping,
+                    omitted_fields=omitted_fields,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=parsed_bindings,
+                    read_options=read_options,
+                )
+                selected_bindings = _choose_account_bindings(
+                    pending,
+                    parsed_bindings,
+                    policy=get_terminal_policy(),
+                    allow_new=True,
+                )
+                if selected_bindings is None:
+                    raise typer.Exit(1)
+                parsed_bindings = selected_bindings
+                preparation_options["account_bindings"] = parsed_bindings
+            else:
+                raise ImportConfirmationRequiredError(pending)
+
+        review_facts = [
+            (f"Mapping: {destination}", source)
+            for destination, source in prepared_plan.field_mapping.items()
+        ]
+        if omitted_fields:
+            review_facts.append(("Omitted fields", ", ".join(sorted(omitted_fields))))
+        review_facts.append(("Sign convention", prepared_plan.sign_convention))
+        for ref, binding in (parsed_bindings or {}).items():
+            review_facts.append((f"Account {ref}", binding))
+        _confirm_receipt("Prepared import", review_facts)
+        answer = choose_required(
+            None,
+            choices=(
+                Choice("confirm", "Import this prepared file"),
+                Choice("cancel", "Cancel"),
+            ),
+            flag="import confirmation",
+            policy=get_terminal_policy(),
+        )
+        if answer != "confirm":
+            raise typer.Exit(1)
+
     def run_confirmation(
         bindings: dict[str, str] | None,
     ) -> tuple[ImportResult | None, BridgeApplyResult | None]:
@@ -2781,6 +2991,14 @@ def _complete_import_confirmation(
         from moneybin.services.import_service import ImportRefreshError
 
         with get_database(read_only=False) as db:
+            if (
+                prepared_source is not None
+                and file_path.read_bytes() != prepared_source
+            ):
+                raise UserError(
+                    "The file changed after review. Preview and confirm it again.",
+                    code=error_codes.IMPORT_PREVIEW_CHANGED,
+                )
             service = ImportService(db)
             if bridge_response_data is not None:
                 bridge_result = service.apply_pdf_bridge_response(
@@ -2819,7 +3037,11 @@ def _complete_import_confirmation(
                 }
                 if confirm_sign:
                     confirm_kwargs["human_sign_confirmation"] = True
-                if omitted_fields:
+                if prepared_plan is not None:
+                    confirm_kwargs["source_bytes"] = prepared_source
+                    confirm_kwargs["reviewed_plan"] = prepared_plan
+                    confirm_kwargs["overrides"] = None
+                elif omitted_fields:
                     confirm_kwargs["_omitted_fields"] = omitted_fields
                 try:
                     return service.import_file(**confirm_kwargs), None
@@ -2873,6 +3095,7 @@ def _complete_import_confirmation(
                     channel=outcome.channel,
                     accept=accept,
                     mapping=parsed_mapping,
+                    omitted_fields=omitted_fields,
                     save_format=save_format,
                     institution=institution,
                     account_id=account_id,
@@ -2890,7 +3113,7 @@ def _complete_import_confirmation(
             # partial state, and add the missing binding. Generic alternate
             # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign, bridge_response=bridge_response, read_options=read_options)}` "
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, omitted_fields=omitted_fields, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign, bridge_response=bridge_response, read_options=read_options)}` "
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
@@ -2902,24 +3125,33 @@ def _complete_import_confirmation(
                     # Prefer what the read actually resolved; fall back to the
                     # caller's own flags when the confirmation carries none.
                     read_options=outcome.retry_read_options or read_options,
+                    omitted_fields=omitted_fields,
                 )
             )
         elif outcome.reason == "header_position_ambiguous":
             confirm_actions.append(
                 header_position_ambiguous_recovery(
-                    str(file_path), read_options=read_options
+                    str(file_path),
+                    read_options=read_options,
+                    omitted_fields=omitted_fields,
                 )
             )
         elif outcome.reason == "unreadable_date":
             confirm_actions.append(
-                unreadable_date_recovery(str(file_path), read_options=read_options)
+                unreadable_date_recovery(
+                    str(file_path),
+                    read_options=read_options,
+                    omitted_fields=omitted_fields,
+                )
             )
         else:
             confirm_actions.append(
                 "Re-run with --mapping <field>=<column> to override specific fields."
             )
             if outcome.confidence.tier != "low":
-                read_args_str = read_options.cli_fragment()
+                read_args_str = read_options.cli_fragment() + tabular_omission_fragment(
+                    omitted_fields
+                )
                 confirm_actions.append(
                     f"Re-run `moneybin import confirm {quoted_path} --accept"
                     f"{read_args_str}` to accept the proposed mapping as-is."
@@ -2927,7 +3159,7 @@ def _complete_import_confirmation(
         if _can_preview(outcome):
             preview_args_str = _preview_read_options(
                 outcome, read_options
-            ).cli_fragment()
+            ).cli_fragment() + tabular_omission_fragment(omitted_fields)
             confirm_actions.append(
                 f"Run `moneybin import preview {quoted_path}{preview_args_str}` "
                 "to inspect the proposal."
@@ -2955,6 +3187,7 @@ def _complete_import_confirmation(
                 str(file_path),
                 accept=accept,
                 mapping=parsed_mapping,
+                omitted_fields=omitted_fields,
                 save_format=save_format,
                 institution=institution,
                 account_id=account_id,
@@ -2985,6 +3218,7 @@ def _complete_import_confirmation(
                     outcome,
                     accept=accept,
                     mapping=parsed_mapping,
+                    omitted_fields=omitted_fields,
                     save_format=save_format,
                     institution=institution,
                     account_id=account_id,
@@ -3018,6 +3252,7 @@ def _complete_import_confirmation(
                     str(file_path),
                     format_name=format_name,
                     read_options=outcome.retry_read_options or read_options,
+                    omitted_fields=omitted_fields,
                 ),
                 err=True,
             )
@@ -3033,7 +3268,9 @@ def _complete_import_confirmation(
             typer.echo(
                 f"{get_terminal_policy().symbols.action} "
                 + header_position_ambiguous_recovery(
-                    str(file_path), read_options=read_options
+                    str(file_path),
+                    read_options=read_options,
+                    omitted_fields=omitted_fields,
                 ),
                 err=True,
             )
@@ -3044,7 +3281,11 @@ def _complete_import_confirmation(
             # stderr, not the logger — see the account branch above.
             typer.echo(
                 f"{get_terminal_policy().symbols.action} "
-                + unreadable_date_recovery(str(file_path), read_options=read_options),
+                + unreadable_date_recovery(
+                    str(file_path),
+                    read_options=read_options,
+                    omitted_fields=omitted_fields,
+                ),
                 err=True,
             )
         else:
@@ -3053,7 +3294,10 @@ def _complete_import_confirmation(
             )
             logger.error(msg)
             if _can_preview(outcome):
-                preview_args_str = read_options.cli_fragment()
+                preview_args_str = (
+                    read_options.cli_fragment()
+                    + tabular_omission_fragment(omitted_fields)
+                )
                 # stderr, not the logger — see the account branch above.
                 typer.echo(
                     f"{get_terminal_policy().symbols.action} Inspect the proposal with `moneybin import preview "
@@ -3576,6 +3820,11 @@ def import_preview(
         "--override",
         help="Field→column override, repeatable (e.g. --override date=Date)",
     ),
+    omit_field: list[str] = typer.Option(
+        None,
+        "--omit-field",
+        help="Omit an optional destination field, repeatable. Tabular files only.",
+    ),
 ) -> None:
     """Preview file structure without importing.
 
@@ -3600,8 +3849,25 @@ def import_preview(
         normalize_excel_date_columns_for_detection,
         read_file,
     )
+    from moneybin.services.import_confirmation import validate_omitted_fields
 
     source = Path(file_path)
+    try:
+        omissions = validate_omitted_fields(
+            frozenset(omit_field or []), _parse_overrides(override)
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="'--omit-field'") from exc
+    if omissions and source.suffix.lower() not in {
+        ".csv",
+        ".tsv",
+        ".txt",
+        ".xlsx",
+        ".xls",
+        ".parquet",
+        ".feather",
+    }:
+        raise typer.BadParameter("--omit-field requires a tabular file.")
 
     # Wrapped for the same reason as the `import files` preflight: `Path.exists()`
     # raises rather than returning False under a macOS TCC denial, so an
@@ -3902,6 +4168,10 @@ def import_preview(
                 ("Date format", str(matched_format.date_format)),
                 ("Number format", str(matched_format.number_format)),
             ]
+            if omissions:
+                raise typer.BadParameter(
+                    "--omit-field requires a fresh mapping, not a saved format."
+                )
             final_field_mapping = matched_format.field_mapping
             # An explicit flag outranks the saved format's own value, because
             # that is the value the import will use.
@@ -3911,6 +4181,7 @@ def import_preview(
             mapping_result = map_columns(
                 detection_df,
                 overrides=overrides,
+                omitted_fields=omissions,
                 t_high=bands.t_high,
                 t_med=bands.t_med,
                 structural_red_flag=read_result.header_row_looks_like_data,

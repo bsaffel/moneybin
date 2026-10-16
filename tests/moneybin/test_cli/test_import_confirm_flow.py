@@ -14,7 +14,7 @@ import re
 import shlex
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -451,6 +451,261 @@ def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
 
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
+
+    def test_bridge_confirmation_refuses_optional_omissions(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "statement.pdf"
+        path.write_text("synthetic")
+        bridge = tmp_path / "bridge.json"
+        bridge.write_text("{}")
+        apply_bridge = mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response"
+        )
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(path),
+                "--bridge-response",
+                str(bridge),
+                "--confirm",
+                "--omit-field",
+                "status",
+            ],
+        )
+        apply_bridge.assert_not_called()
+        assert result.exit_code == 2, result.output
+        assert "cannot be combined" in result.output
+
+    @pytest.mark.parametrize(
+        "decision",
+        [
+            "confirm",
+            "cancel_sign",
+            "cancel_account",
+            "cancel_final",
+            "source_changed",
+            "mapping_changed",
+            "account_changed",
+        ],
+    )
+    def test_complete_interactive_review_keeps_one_exact_prepared_decision(
+        self, db: Database, mocker: Any, tmp_path: Path, decision: str, caplog: Any
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        from moneybin.extractors.tabular.formats import load_formats_from_db
+
+        if decision == "account_changed":
+            from tests.moneybin.db_helpers import create_core_tables
+
+            create_core_tables(db)
+            db.conn.execute(
+                "INSERT INTO core.dim_accounts (account_id, display_name) VALUES ('existing1234', 'Existing account')"
+            )
+
+        path = tmp_path / "geography.csv"
+        path.write_text(
+            "Date,Transaction Credit,Description,State\n2026-01-01,-2,Example,WA\n"
+        )
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        mapping_answers = iter(["edit", "remove:status", "confirm"])
+        observed: list[str] = []
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            row = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert row is not None and row[0] == 0
+            flag = kwargs["flag"]
+            for query in (
+                "SELECT count(*) FROM app.account_links",
+                "SELECT count(*) FROM app.import_log",
+            ):
+                row = db.conn.execute(query).fetchone()
+                assert row is not None and row[0] == 0
+            observed.append(flag)
+            if flag in {"mapping review", "destination field", "mapping confirmation"}:
+                answer = next(mapping_answers)
+                if flag == "mapping confirmation" and decision == "mapping_changed":
+                    path.write_text(path.read_text().replace("Example", "Changed"))
+            elif flag == "sign convention":
+                answer = "cancel" if decision == "cancel_sign" else "negative_is_income"
+            elif flag == "--account-binding":
+                answer = (
+                    "cancel"
+                    if decision == "cancel_account"
+                    else "existing1234"
+                    if decision == "account_changed"
+                    else "new"
+                )
+            else:
+                assert flag == "import confirmation"
+                if decision == "source_changed":
+                    path.write_text(path.read_text().replace("Example", "Changed"))
+                if decision == "account_changed":
+                    db.conn.execute(
+                        "DELETE FROM core.dim_accounts WHERE account_id = 'existing1234'"
+                    )
+                answer = "cancel" if decision == "cancel_final" else "confirm"
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(app, ["files", str(path), "--no-refresh"])
+        required_stage = {
+            "cancel_sign": "sign convention",
+            "cancel_account": "--account-binding",
+            "cancel_final": "import confirmation",
+            "source_changed": "import confirmation",
+            "confirm": "import confirmation",
+            "mapping_changed": "mapping confirmation",
+            "account_changed": "import confirmation",
+        }[decision]
+        assert required_stage in observed, result.output
+        assert result.exit_code == (0 if decision == "confirm" else 1), result.output
+        if decision in {"source_changed", "mapping_changed"}:
+            assert "file changed after review" in caplog.text
+        if decision == "account_changed":
+            assert "not an account in this database" in caplog.text
+        rows = db.conn.execute("SELECT status FROM raw.tabular_transactions").fetchall()
+        formats = load_formats_from_db(db)
+        if decision == "confirm":
+            assert rows == [(None,)]
+            assert "status" not in next(iter(formats.values())).field_mapping
+            assert next(iter(formats.values())).sign_convention == "negative_is_income"
+            assert observed[-3:] == [
+                "sign convention",
+                "--account-binding",
+                "import confirmation",
+            ]
+            from moneybin.services.import_service import ImportService
+
+            fmt = next(iter(formats.values()))
+            replay = ImportService(db).import_file(
+                path,
+                format_name=fmt.name,
+                refresh=False,
+                force=True,
+            )
+            assert (
+                replay.field_mapping is not None
+                and "status" not in replay.field_mapping
+            )
+            assert all(
+                row[0] is None
+                for row in db.conn.execute(
+                    "SELECT status FROM raw.tabular_transactions"
+                ).fetchall()
+            )
+        else:
+            assert rows == []
+            assert formats == {}
+
+    @pytest.mark.parametrize("gate", ["sign", "account"])
+    def test_optional_omission_survives_fresh_recovery_command(
+        self, db: Database, mocker: Any, tmp_path: Path, gate: str
+    ) -> None:
+        import shlex
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        from moneybin.cli.commands import import_cmd
+        from moneybin.extractors.tabular.formats import load_formats_from_db
+
+        path = tmp_path / "geography.csv"
+        amount_header = "Transaction Credit" if gate == "sign" else "Amount"
+        path.write_text(
+            f"Date,{amount_header},Description,State\n2026-01-01,-2,Example,WA\n"
+        )
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=4000,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        answers = iter(["edit", "remove:status", "confirm"])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            row = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert row is not None and row[0] == 0
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            if answer == "confirm":
+                # Exercise the serializable recovery contract when the caller
+                # cannot continue prompting in this process.
+                cast(Any, import_cmd.get_terminal_policy()).interactive = False
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        helper = (
+            "_sign_recovery_commands" if gate == "sign" else "_account_recovery_command"
+        )
+        recovery = mocker.spy(import_cmd, helper)
+        args = ["files", str(path), "--no-refresh"]
+        if gate == "sign":
+            args.extend(["--account-name", "test", "--account-binding", "test=new"])
+        first = runner.invoke(app, args)
+        assert first.exit_code == 1, first.output
+        assert recovery.call_count >= 1, first.output
+        command = recovery.spy_return
+        if gate == "sign":
+            command = command[0].split(": ", 1)[1]
+        command = command.replace("<account_id|new>", "new")
+        retry = shlex.split(command)
+        assert retry[:2] == ["moneybin", "import"]
+        second = runner.invoke(app, retry[2:])
+        assert second.exit_code == 0, second.output
+        rows = db.conn.execute("SELECT status FROM raw.tabular_transactions").fetchall()
+        assert rows == [(None,)]
+        formats = load_formats_from_db(db)
+        assert len(formats) == 1
+        assert "status" not in next(iter(formats.values())).field_mapping
 
     @pytest.mark.parametrize("decision", ["confirm", "cancel", "restore"])
     def test_interactive_optional_omission_persists_and_replays(

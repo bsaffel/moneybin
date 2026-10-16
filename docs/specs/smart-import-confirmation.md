@@ -131,11 +131,14 @@ first, implementing this shared shape rather than a PDF-only one.
 8. **Staged previews are immutable.** A confirmation call cannot replace the
    detected mapping or extraction. Correct a detection by creating a fresh
    preview from the source file, then confirm that new `preview_id`. For
-   tabular, `import_preview(file_path=..., mapping={...})` takes the
+   tabular, `import_preview(file_path=..., mapping={...}, omit_fields=[...])` takes the
    partial-merge override at preview time (the same validation
    `resolve_or_confirm`'s Override signal used to apply at first contact,
    Requirement 11) — the mapping-override capability lives on the preview
-   step, never on `import_confirm`.
+   step, never on `import_confirm`. Optional omissions suppress detection before
+   sign and account metadata are derived; required destinations and conflicting
+   overrides are refused. The resolved mapping persists through the existing
+   reviewed plan and saved format, without adding a mapping sentinel or schema.
 9. **A known format can still fail validation and re-surface.** Reuse, not just first
    contact, is guarded: tabular's running-balance / sign checks and PDF's balance
    reconciliation can fail on a recognized layout. On failure the import does not load
@@ -309,13 +312,22 @@ shapes or verbs.** The confirm flow uses the existing import tools plus
 flagged fields and offers explicit accept, edit, or cancel choices (`low` → must
 edit). Editing prioritizes missing and flagged destinations and offers all mapped
 and unmapped source columns. Corrections merge in memory through the shared mapping
-validator; the corrected mapping must be reviewed and explicitly confirmed before
-the existing import/account retry/inbox completion path runs. Sign and account
-gates remain independent, and structural refusals retain their specific recovery.
+validator. Read-only preparation retains the existing `ReviewedTabularPlan` and
+source bytes in memory while sign and account questions are answered in dependent
+order. A final review shows the settled mapping, omissions, sign convention and
+account bindings before explicit approval. Apply revalidates the source and account
+state through the existing service and completion/inbox lifecycle. Preparation and
+questions write no import or account state, and prompts occur outside the writer
+lock. Sign and account authority remain independent; structural refusals retain
+their specific recovery. No new CLI saved-state system is introduced.
 This field correction does not implement the broader presenter consolidation.
 Non-TTY text retains its recovery receipt; `--output json` returns the
 `confirmation_required` envelope. The caller re-runs with
-`--confirm` / `--mapping field=col,…`. A tabular sign proposal then offers two lossless
+`--confirm` / `--mapping field=col,…` and repeatable `--omit-field destination`
+for explicit optional omissions on files, confirm, and preview. Omission inputs
+are refused for non-tabular files, ambiguous batches, required destinations,
+conflicting overrides, or saved-format precedence that would ignore them.
+A tabular sign proposal then offers two lossless
 `import confirm` commands: `--confirm-sign` to approve the inferred inversion, or
 `--sign negative_is_expense` to keep amounts as printed (non-interactive parity per
 `cli.md`).

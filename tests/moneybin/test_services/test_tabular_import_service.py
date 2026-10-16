@@ -29,6 +29,72 @@ _CITI_CSV = (
 _TILLER_CSV = _FIXTURES / "tiller.csv"  # headers match the built-in `tiller` format
 
 
+@pytest.mark.parametrize("sign", [None, "negative_is_income"])
+def test_prepare_tabular_import_is_read_only_and_retains_exact_decision(
+    db: Database, tmp_path: Path, mocker: MockerFixture, sign: str | None
+) -> None:
+    from moneybin.repositories.import_log_repo import ImportLogRepo
+    from moneybin.services.account_resolver import AccountResolver
+    from moneybin.services.import_service import ImportService
+
+    path = tmp_path / "geography.csv"
+    path.write_text(
+        "Date,Transaction Credit,Description,State\n2026-01-01,-2,Example,WA\n"
+    )
+    service = ImportService(db)
+    mocker.patch(
+        "moneybin.repositories.base.BaseRepo._transaction",
+        side_effect=AssertionError("repository write during preparation"),
+    )
+    mocker.patch.object(
+        AccountResolver,
+        "resolve",
+        side_effect=AssertionError("write during preparation"),
+    )
+    mocker.patch.object(
+        ImportLogRepo,
+        "begin_import",
+        side_effect=AssertionError("write during preparation"),
+    )
+    prepared = service.prepare_tabular_import(
+        path,
+        source_bytes=path.read_bytes(),
+        overrides={
+            "transaction_date": "Date",
+            "amount": "Transaction Credit",
+            "description": "Description",
+        },
+        omitted_fields=frozenset({"status"}),
+        sign=sign,
+    )
+    assert "status" not in prepared.plan.field_mapping
+    assert prepared.confirmation is not None
+    assert prepared.confirmation.reason == (
+        "sign_convention" if sign is None else "account_confirmation"
+    )
+    if sign is None:
+        from moneybin.extractors.tabular import readers
+
+        read = mocker.spy(readers, "read_file")
+        try:
+            following = service.prepare_tabular_import(
+                path,
+                source_bytes=path.read_bytes(),
+                reviewed_plan=prepared.plan,
+                sign="negative_is_income",
+            )
+        except Exception as exc:
+            pytest.fail(
+                f"Replay failed: {exc}; expected={prepared.plan.header_signature!r}; actual={read.spy_return.df.columns!r}"
+            )
+        assert following.confirmation is not None
+        assert following.confirmation.reason == "account_confirmation"
+    row = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert row is not None and row[0] == 0
+    row = db.conn.execute("SELECT count(*) FROM app.import_log").fetchone()
+    assert row is not None and row[0] == 0
+
+
 @pytest.mark.parametrize(
     "omitted",
     [
