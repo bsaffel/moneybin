@@ -22,6 +22,7 @@ import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
+from moneybin.database import Database
 from moneybin.extractors.confidence import Confidence
 from moneybin.services.account_resolution_types import (
     AccountCandidate,
@@ -450,6 +451,148 @@ def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
 
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
+
+    @pytest.mark.parametrize("decision", ["confirm", "cancel", "restore"])
+    def test_interactive_optional_omission_persists_and_replays(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        decision: str,
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        from moneybin.extractors.tabular.formats import load_formats_from_db
+        from moneybin.services.import_service import ImportService
+
+        path = tmp_path / "geography.csv"
+        path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        answers = iter([
+            "edit",
+            "remove:status",
+            *(["edit", "status", "column:State"] if decision == "restore" else []),
+            "cancel" if decision == "cancel" else "confirm",
+        ])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            count = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert count is not None and count[0] == 0
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            if kwargs["flag"] == "destination field":
+                assert not {
+                    "remove:transaction_date",
+                    "remove:description",
+                    "remove:amount",
+                    "remove:debit_amount",
+                    "remove:credit_amount",
+                }.intersection(choice.value for choice in kwargs["choices"])
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(path),
+                "--no-refresh",
+                "--account-name",
+                "test",
+                "--account-binding",
+                "test=new",
+            ],
+        )
+        assert result.exit_code == (1 if decision == "cancel" else 0), result.output
+        saved = load_formats_from_db(db)
+        if decision == "cancel":
+            assert saved == {}
+            count = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert count is not None and count[0] == 0
+            return
+        assert len(saved) == 1
+        fmt = next(iter(saved.values()))
+        assert ("status" in fmt.field_mapping) is (decision == "restore")
+        assert "State" in fmt.header_signature
+        rows = db.conn.execute(
+            "SELECT account_id, status FROM raw.tabular_transactions"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][1] == ("WA" if decision == "restore" else None)
+        replay = ImportService(db).import_file(
+            path, format_name=fmt.name, account_id=rows[0][0], refresh=False, force=True
+        )
+        assert replay.field_mapping is not None
+        assert ("status" in replay.field_mapping) is (decision == "restore")
+        assert ("status" in load_formats_from_db(db)[fmt.name].field_mapping) is (
+            decision == "restore"
+        )
+
+    def test_source_reassignment_preview_retains_original_source_samples(
+        self, mocker: Any, capsys: Any
+    ) -> None:
+        from moneybin.cli.commands.import_cmd import (
+            _review_import_mapping,  # pyright: ignore[reportPrivateUsage]  # reviewed sample provenance
+        )
+
+        outcome = _make_confirmation_error(
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Memo",
+            }
+        ).outcome
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(interactive=True),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=[
+                "edit",
+                "memo",
+                "column:Memo",
+                "reassign",
+                "description",
+                "column:Notes",
+                "confirm",
+            ],
+        )
+        reviewed = _review_import_mapping(outcome)
+        assert reviewed is not None
+        assert reviewed["memo"] == "Memo"
+        corrected_preview = capsys.readouterr().out.split("Corrected column mapping:")[
+            -1
+        ]
+        assert "memo ← Memo  (e.g. Coffee, Paycheck)" in corrected_preview
 
     def test_interactive_invalid_nonlow_overrides_offer_edit_instead_of_accept(
         self,

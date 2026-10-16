@@ -2520,6 +2520,7 @@ class ImportService:
         account_id: str | None = None,
         format_name: str | None = None,
         overrides: dict[str, str] | None = None,
+        _omitted_fields: frozenset[str] = frozenset(),
         sign: str | None = None,
         date_format_override: str | None = None,
         number_format_override: str | None = None,
@@ -2611,6 +2612,24 @@ class ImportService:
         # Fail fast on bad account_metadata before any DB writes — a later raise
         # mid-resolve would orphan account_links rows with no import batch.
         _validate_account_metadata(account_metadata)
+
+        if _omitted_fields:
+            from moneybin.extractors.tabular.field_aliases import (
+                FIELD_ALIASES,
+                REQUIRED_FIELDS,
+            )
+
+            protected = REQUIRED_FIELDS | {"debit_amount", "credit_amount"}
+            if _omitted_fields.difference(
+                FIELD_ALIASES
+            ) or _omitted_fields.intersection(protected):
+                raise ValueError("Only optional destination fields may be omitted.")
+            if _omitted_fields.intersection(overrides or {}):
+                raise ValueError("An omitted destination cannot also have an override.")
+            if reviewed_plan is not None:
+                raise ValueError(
+                    "Optional omissions require a fresh tabular mapping, not a saved format or reviewed plan."
+                )
 
         # Load formats for ordinary imports and optional post-load format saving.
         builtin_formats = load_builtin_formats()
@@ -2729,6 +2748,11 @@ class ImportService:
                 if fmt.matches_headers(headers):
                     matched_format = fmt
                     break
+
+        if _omitted_fields and matched_format is not None:
+            raise ValueError(
+                "Optional omissions require a fresh tabular mapping, not a saved format or reviewed plan."
+            )
 
         # Excel's native-date columns still read as "<date> 00:00:00" text
         # here — df is untouched until normalize_excel_date_columns_after_
@@ -3004,6 +3028,7 @@ class ImportService:
                 t_med=bands.t_med,
                 structural_red_flag=read_result.header_row_looks_like_data,
                 declared_date_format=date_format_override,
+                omitted_fields=_omitted_fields,
             )
             sign_evidence_header = mapping_result.sign_evidence_header
             confidence = mapping_result.to_confidence(
@@ -6033,6 +6058,7 @@ class ImportService:
         account_name: str | None = None,
         format_name: str | None = None,
         overrides: dict[str, str] | None = None,
+        _omitted_fields: frozenset[str] = frozenset(),
         sign: str | None = None,
         date_format: str | None = None,
         number_format: str | None = None,
@@ -6129,6 +6155,7 @@ class ImportService:
             account_name=account_name,
             format_name=format_name,
             overrides=overrides,
+            _omitted_fields=_omitted_fields,
             sign=sign,
             date_format=date_format,
             number_format=number_format,
@@ -6203,6 +6230,7 @@ class ImportService:
         account_name: str | None = None,
         format_name: str | None = None,
         overrides: dict[str, str] | None = None,
+        _omitted_fields: frozenset[str] = frozenset(),
         sign: str | None = None,
         date_format: str | None = None,
         number_format: str | None = None,
@@ -6235,6 +6263,8 @@ class ImportService:
             raise FileNotFoundError(f"File not found: {path}")
 
         file_type = _detect_file_type(path)
+        if _omitted_fields and file_type != "tabular":
+            raise ValueError("Optional omissions require a tabular import.")
         reject_unhonored_account_signals(
             file_type,
             account_id=account_id,
@@ -6260,6 +6290,7 @@ class ImportService:
                 account_id=account_id,
                 format_name=format_name,
                 overrides=overrides,
+                _omitted_fields=_omitted_fields,
                 sign=sign,
                 date_format_override=date_format,
                 number_format_override=number_format,

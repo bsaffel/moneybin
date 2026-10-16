@@ -839,7 +839,10 @@ def import_files_command(
                 and outcome.channel == "tabular"
                 and outcome.reason in ("unknown_layout", "validation_failure")
             ):
-                reviewed_mapping = _review_import_mapping(outcome, overrides)
+                omitted_fields: set[str] = set()
+                reviewed_mapping = _review_import_mapping(
+                    outcome, overrides, omitted_fields
+                )
                 if reviewed_mapping is not None:
                     with handle_cli_errors(cli_actor="import_files_command"):
                         _complete_import_confirmation(
@@ -848,6 +851,7 @@ def import_files_command(
                             accept=True,
                             mapping=[],
                             reviewed_mapping=reviewed_mapping,
+                            omitted_fields=frozenset(omitted_fields),
                             format_name=format_name,
                             bridge_response=None,
                             confirm=False,
@@ -2019,6 +2023,7 @@ def _render_sign_convention_prompt(
 def _review_import_mapping(
     outcome: ConfirmationRequired,
     initial_mapping: dict[str, str] | None = None,
+    omitted_fields: set[str] | None = None,
 ) -> dict[str, str] | None:
     """Review tabular corrections in memory before the authoritative import call."""
     from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
@@ -2032,6 +2037,9 @@ def _review_import_mapping(
     if not isinstance(outcome.proposed, ProposedMapping):
         return None
     proposed = dict(outcome.proposed.field_mapping)
+    samples_by_source = {
+        column: outcome.samples.get(field, []) for field, column in proposed.items()
+    }
     columns = tuple(
         dict.fromkeys([*proposed.values(), *outcome.proposed.unmapped_columns])
     )
@@ -2049,15 +2057,24 @@ def _review_import_mapping(
     if action == "accept" and outcome.confidence.tier != "low" and not initial_mapping:
         return {}
     corrections = dict(initial_mapping or {})
+    omitted: set[str] = set()
     while True:
-        invalid_destinations = [
+        protected = set(
+            tabular_required_fields(
+                proposed_keys=set(proposed), override_keys=set(corrections)
+            )
+        ) | {"amount", "debit_amount", "credit_amount"}
+        removable_destinations = [
             field
             for field in dict.fromkeys([*proposed, *corrections])
-            if field not in FIELD_ALIASES
+            if field not in protected
         ]
         removal_choices = [
-            Choice(f"remove:{field}", f"Remove invalid mapping: {field}")
-            for field in invalid_destinations
+            Choice(
+                f"remove:{field}",
+                f"Remove {'invalid ' if field not in FIELD_ALIASES else ''}mapping: {field}",
+            )
+            for field in removable_destinations
         ]
         destinations = list(
             dict.fromkeys([
@@ -2089,9 +2106,11 @@ def _review_import_mapping(
         if dest == "cancel":
             return None
         if dest.startswith("remove:"):
-            invalid_field = dest.removeprefix("remove:")
-            proposed.pop(invalid_field, None)
-            corrections.pop(invalid_field, None)
+            removed_field = dest.removeprefix("remove:")
+            proposed.pop(removed_field, None)
+            corrections.pop(removed_field, None)
+            if removed_field in FIELD_ALIASES:
+                omitted.add(removed_field)
         else:
             typer.echo(
                 "Columns: "
@@ -2145,6 +2164,7 @@ def _review_import_mapping(
             elif dest in ("debit_amount", "credit_amount"):
                 corrections.pop("amount", None)
             corrections[dest] = source
+            omitted.discard(dest)
         try:
             merged = validate_partial_mapping(
                 proposed=proposed,
@@ -2160,9 +2180,6 @@ def _review_import_mapping(
             typer.echo(f"Mapping needs correction: {exc}")
             continue
         typer.echo("\nCorrected column mapping:")
-        samples_by_source = {
-            column: outcome.samples.get(field, []) for field, column in proposed.items()
-        }
         for field, column in merged.items():
             samples = samples_by_source.get(column, [])[:3]
             suffix = f"  (e.g. {', '.join(samples)})" if samples else ""
@@ -2179,6 +2196,8 @@ def _review_import_mapping(
             policy=policy,
         )
         if action == "confirm":
+            if omitted_fields is not None:
+                omitted_fields.update(omitted)
             return merged
         if action == "cancel":
             return None
@@ -2582,6 +2601,7 @@ def _complete_import_confirmation(
     force: bool = False,
     auto_accept: bool = False,
     reviewed_mapping: dict[str, str] | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> None:
     """Complete one reviewed import through the existing account and inbox lifecycle."""
     from moneybin.cli.output import render_or_json
@@ -2799,6 +2819,8 @@ def _complete_import_confirmation(
                 }
                 if confirm_sign:
                     confirm_kwargs["human_sign_confirmation"] = True
+                if omitted_fields:
+                    confirm_kwargs["_omitted_fields"] = omitted_fields
                 try:
                     return service.import_file(**confirm_kwargs), None
                 except ImportRefreshError as exc:

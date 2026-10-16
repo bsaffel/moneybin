@@ -2,6 +2,7 @@
 
 import datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -26,6 +27,99 @@ _CITI_CSV = (
     _FIXTURES / "citi_credit.csv"
 )  # split debit/credit (Status,Date,Description,Debit,Credit,Member Name)
 _TILLER_CSV = _FIXTURES / "tiller.csv"  # headers match the built-in `tiller` format
+
+
+@pytest.mark.parametrize(
+    "omitted",
+    [
+        "transaction_date",
+        "description",
+        "amount",
+        "debit_amount",
+        "credit_amount",
+        "unknown",
+    ],
+)
+def test_private_omissions_refuse_required_or_unknown_fields_before_writing(
+    db: Database,
+    tmp_path: Path,
+    omitted: str,
+) -> None:
+    from moneybin.services.import_service import ImportService
+
+    path = tmp_path / "optional.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    with pytest.raises(ValueError, match="optional destination"):
+        ImportService(db).import_file(
+            path, refresh=False, _omitted_fields=frozenset({omitted})
+        )
+    count = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert count is not None and count[0] == 0
+
+
+@pytest.mark.parametrize("mode", ["implicit", "explicit", "reviewed"])
+def test_private_omissions_refuse_saved_or_reviewed_precedence_before_writing(
+    db: Database,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    path = tmp_path / "optional.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    mapping = {
+        "transaction_date": "Date",
+        "amount": "Amount",
+        "description": "Description",
+        "status": "State",
+    }
+    save_format_to_db(
+        db,
+        TabularFormat(
+            name="optional",
+            institution_name="Fixture",
+            file_type="csv",
+            header_signature=["Date", "Amount", "Description", "State"],
+            field_mapping=mapping,
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            number_format="us",
+        ),
+        actor="test",
+    )
+    kwargs: dict[str, Any] = {}
+    if mode == "explicit":
+        kwargs["format_name"] = "optional"
+    elif mode == "reviewed":
+        kwargs["reviewed_plan"] = ReviewedTabularPlan(
+            file_type="csv",
+            delimiter=",",
+            encoding="utf-8",
+            file_size=path.stat().st_size,
+            field_mapping=mapping,
+            date_format="%Y-%m-%d",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            is_multi_account=False,
+            confidence="high",
+            skip_rows=0,
+            has_header=True,
+            rows_in_file=1,
+            rows_skipped_trailing=0,
+            header_row_looks_like_data=False,
+            header_signature=sorted(["Date", "Amount", "Description", "State"]),
+            flagged_fields=[],
+        )
+    before = db.conn.execute("SELECT count(*) FROM app.audit_log").fetchone()
+    assert before is not None
+    with pytest.raises(ValueError, match="fresh tabular mapping"):
+        ImportService(db).import_file(
+            path, refresh=False, _omitted_fields=frozenset({"status"}), **kwargs
+        )
+    assert db.conn.execute("SELECT count(*) FROM app.audit_log").fetchone() == before
+    count = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert count is not None and count[0] == 0
 
 
 def _make_mapping_result(
