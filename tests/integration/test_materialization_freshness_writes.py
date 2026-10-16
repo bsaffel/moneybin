@@ -162,6 +162,20 @@ def _categorize(db: Database) -> None:
     CategorizationService(db).set_category(_txn(db), category=category, actor=_ACTOR)
 
 
+def _manual_transaction(db: Database) -> None:
+    TransactionService(db).create_manual_batch(
+        [
+            {
+                "account_id": _account(db),
+                "transaction_date": "2025-06-15",
+                "amount": Decimal("-12.34"),
+                "description": "Freshness manual entry",
+            }
+        ],
+        actor=_ACTOR,
+    )
+
+
 def _merchant(db: Database) -> None:
     description = _one(
         db,
@@ -243,6 +257,7 @@ _WRITES: dict[str, Callable[[Database], None]] = {
     "split": _split,
     "categorize": _categorize,
     "merchant": _merchant,
+    "manual_transaction": _manual_transaction,
     "rename": _settings(display_name="Freshness Renamed"),
     "currency": _settings(currency_code="CAD"),
     "archive": _settings(archived=True),

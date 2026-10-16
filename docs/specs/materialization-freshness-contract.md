@@ -193,6 +193,10 @@ def restate_after_write(
   accepts an external model as a restate root and restates every downstream
   model, so no writer names a model and a new `FULL` model is covered the day
   it lands.
+- Every restatement plan passes a fixed `start` of 2000-01-01. Without one,
+  SQLMesh takes the first plan's day as the start and refuses a plan whose end,
+  the current time, precedes it. A write made under an earlier clock hits that
+  refusal. No model reads the plan's dates, so the start changes no data.
 - On failure raises the coded `REFRESH_MODEL_FAILED` error: the write
   committed, the reports that read it did not rebuild, run `moneybin refresh`.
 
@@ -217,6 +221,7 @@ currency settings only, is removed; its callers use this module.
 | `app.exchange_rate_overrides`, `raw.exchange_rates` | `CurrencyService.set_override`, `delete_override`, `_store`; the refresh rates step |
 | `app.profile_settings` | `ProfileSettingsService.set_setting` |
 | `app.account_links` and the purged `raw.plaid_*` rows | `SyncService.purge_confirmed` |
+| `raw.manual_transactions` | `TransactionService.create_manual_batch`, after its category step commits |
 
 An account merge moves links, decisions, lot selections and settings in one
 transaction and then runs `refresh(match, transform)`, which rebuilds every

@@ -36,6 +36,7 @@ CommittedChange = Literal[
     "security",
     "price",
     "lot selection",
+    "manual transaction",
 ]
 
 

@@ -87,18 +87,10 @@ _DAY_AFTER_ARCHIVED_AT = _ARCHIVED_AT + timedelta(days=1)
 # After archival: AED is excluded; EUR/GBP/CAD/USD are all priced.
 _PRICED_DATE = date(2025, 12, 1)
 
-# app.account_settings and raw.exchange_rates are both external to SQLMesh;
-# core.dim_accounts, core.fct_balances_daily, and core.fct_exchange_rates_daily
-# are kind FULL and already covered today's interval on the first transform,
-# so each write below needs this same explicit restatement to actually reach
-# the reports.* views (mirrors test_networth_correctness.py and
-# test_account_settings_archive.py, which restate the same models for the
-# same reason -- currency and archival respectively).
-_RESTATE_MODELS = [
-    "core.dim_accounts",
-    "core.fct_balances_daily",
-    "core.fct_exchange_rates_daily",
-]
+# The inputs this test writes, restated after the frozen-clock archive so every
+# model downstream of them rebuilds against the real clock; restating an input
+# cascades the way restate_after_write does.
+_RESTATE_MODELS = ["app.account_settings", "raw.exchange_rates"]
 
 
 def _account_balance(

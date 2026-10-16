@@ -180,10 +180,7 @@ def transactions_create(
                 for r in result.results
             ],
         ),
-        actions=[
-            "Use transactions to confirm the rows landed",
-            "Use refresh_run to materialize them into core.fct_transactions",
-        ],
+        actions=["Use transactions to confirm the rows landed"],
     )
 
 
