@@ -273,16 +273,6 @@ WITH ofx_balance_currency AS (
 )
 SELECT
   w.account_id, /* Canonical account identifier; opaque and stable across imports; foreign key in fct_transactions */
-  w.routing_number, /* ABA bank routing number; merged first-non-null by source strength then recency; NULL when no source provided it */
-  w.account_type, /* Canonical account classification, normalized across all sources via seeds.account_type_map: depository, credit, loan, investment, other. NULL when the source spelling is unrecognized — the finer source distinction is preserved in account_subtype */
-  w.institution_name, /* Human-readable name of the financial institution */
-  w.institution_slug, /* Canonical institution slug used to match accounts across sources; institution_name is for display only and does not slugify back to this */
-  w.institution_fid, /* OFX financial institution identifier; NULL for tabular/plaid sources */
-  w.source_type, /* Origin of the winning record after the cross-source merge: ofx, csv, tsv, excel, plaid, etc. */
-  w.source_file, /* Path to the source file from which the winning record was loaded */
-  w.extracted_at, /* Latest time the data was parsed from a contributing source */
-  w.loaded_at, /* Latest time a contributing record was written to the raw table */
-  GREATEST(w.loaded_at, s.updated_at, s.investment_source_type_changed_at, s.archived_changed_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Folds investment_source_type_changed_at and archived_changed_at because an undo restores the settings row's own updated_at from the old image and advances only the change time. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
     CASE
@@ -346,6 +336,20 @@ SELECT
        case apart (see grain_key above). Naming no account at all beats naming
        one with a number, and this column feeds reports.* as account_name. */
   ) AS display_name, /* Resolved display label: user override → the source's own account label when it holds a letter and is not the 'Unnamed account' sentinel → institution+subtype-or-type+last4 → institution+last4 → institution+subtype-or-type → institution → subtype-or-type+last4 → subtype-or-type → last4 alone → the literal 'Unnamed account' terminal, so it is never NULL and never an id. The subtype is preferred over the type because 'checking' reads to a human where the canonical 'depository' does not. A last four outranks the category it sits beside at every level: 'checking' is shared by every checking account, while the last four is what tells two of them apart, and it is already published in its own column and printed as confirm evidence. */
+  COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
+  w.account_type, /* Canonical account classification, normalized across all sources via seeds.account_type_map: depository, credit, loan, investment, other. NULL when the source spelling is unrecognized — the finer source distinction is preserved in account_subtype */
+  COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */
+  s.holder_category, /* 'personal' / 'business' / 'joint' */
+  w.institution_slug, /* Canonical institution slug used to match accounts across sources; institution_name is for display only and does not slugify back to this */
+  w.institution_fid, /* OFX financial institution identifier; NULL for tabular/plaid sources */
+  w.routing_number, /* ABA bank routing number; merged first-non-null by source strength then recency; NULL when no source provided it */
+  w.institution_name, /* Human-readable name of the financial institution */
+  COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
+  w.source_type, /* Origin of the winning record after the cross-source merge: ofx, csv, tsv, excel, plaid, etc. */
+  w.source_file, /* Path to the source file from which the winning record was loaded */
+  s.investment_source_type, /* The source type whose investment rows feed this account's ledger (manual or plaid); NULL means every source. Read by core.fct_investment_transactions; see docs/specs/investment-source-choice.md */
+  COALESCE(s.currency_code, w.source_currency) AS currency_code, /* ISO 4217 currency this account is denominated in: user override (app.account_settings) else the currency its own source reported (OFX CURDEF, Plaid iso_currency_code, tabular currency column). NULL means genuinely unknown and stays that way — every monetary grain COALESCEs onto this column, so a literal default here would relabel the whole ledger and make the unknown-currency segment unreachable (multi-currency.md Requirements 3 and 8). system doctor's currency_integrity check surfaces NULLs for the user to resolve with `accounts set --currency`. */
+  s.credit_limit, /* User-asserted credit limit on credit cards / lines */
   COALESCE(
     NOT s.display_name IS NULL
     OR (
@@ -353,18 +357,14 @@ SELECT
     ),
     FALSE
   ) AS display_name_is_user_set, /* Whether display_name came from a human-authored rung -- the user-set app.account_settings override, or the source's own account_label (a sheet's Account column, --account-name, Plaid's per-account name) -- rather than one of the generated-descriptor fallback arms below them. The account_label condition mirrors the union of the two account_label arms above: the digit-run distinction between them only decides which one supplies the text, not whether it is human-authored. The outer COALESCE matters: REGEXP_MATCHES and <> both propagate NULL for a NULL account_label (every OFX-sourced row, per the NULL::TEXT AS account_label cast above), which would otherwise leave this column NULL rather than FALSE for that whole population, unlike the model's other two booleans (archived, include_in_net_worth), which both default through COALESCE. Provenance signal only -- never for display. AccountResolver's weak "name" merge signal reads this to require a human-chosen name, because two unrelated accounts whose *generated* descriptors coincide (e.g. two typeless checking accounts at the same bank both resolving to "checking") is a coincidence of shared attributes already compared separately, not name evidence. */
-  COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
-  COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
-  COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */
-  s.holder_category, /* 'personal' / 'business' / 'joint' */
-  COALESCE(s.currency_code, w.source_currency) AS currency_code, /* ISO 4217 currency this account is denominated in: user override (app.account_settings) else the currency its own source reported (OFX CURDEF, Plaid iso_currency_code, tabular currency column). NULL means genuinely unknown and stays that way — every monetary grain COALESCEs onto this column, so a literal default here would relabel the whole ledger and make the unknown-currency segment unreachable (multi-currency.md Requirements 3 and 8). system doctor's currency_integrity check surfaces NULLs for the user to resolve with `accounts set --currency`. */
-  s.investment_source_type, /* The source type whose investment rows feed this account's ledger (manual or plaid); NULL means every source. Read by core.fct_investment_transactions; see docs/specs/investment-source-choice.md */
-  s.credit_limit, /* User-asserted credit limit on credit cards / lines */
   COALESCE(s.archived, FALSE) AS archived, /* Hides account from default list and from reports.net_worth */
   COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth, /* Whether this account contributes to reports.net_worth */
   s.archived_at, /* The date the account stopped being part of the position; NULL while active. Lets a stock-measure report exclude the account only for dates after this one, instead of retroactively */
+  w.extracted_at, /* Latest time the data was parsed from a contributing source */
+  w.loaded_at, /* Latest time a contributing record was written to the raw table */
   s.investment_source_type_changed_at, /* When investment_source_type last changed, including a clear and an undo; folded into the investment ledger's and dim_holdings' updated_at so rows that re-enter the ledger do not rewind it */
-  s.archived_changed_at /* When archived last changed, including an undo; folded into updated_at here and on the account's core.fct_transactions rows, whose is_categorizable it moves */
+  s.archived_changed_at, /* When archived last changed, including an undo; folded into updated_at here and on the account's core.fct_transactions rows, whose is_categorizable it moves */
+  GREATEST(w.loaded_at, s.updated_at, s.investment_source_type_changed_at, s.archived_changed_at) AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. Folds investment_source_type_changed_at and archived_changed_at because an undo restores the settings row's own updated_at from the old image and advances only the change time. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM merged AS w
 LEFT JOIN app.account_settings AS s
   ON w.account_id = s.account_id

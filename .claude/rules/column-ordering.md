@@ -46,7 +46,21 @@ is no source-fidelity argument for carving them out.
 
 Within a category, keep related columns adjacent. A column and the column that
 qualifies it belong together: `amount` beside `currency_code`, `last_four`
-beside `institution_name`.
+beside `institution_name`. When the pair spans two categories, put the
+qualifier at the boundary: `currency_code` ends the strings so `amount` can
+open the numerics.
+
+Three classifications the dbt sentence leaves open:
+
+- **An id is a key.** A `*_id` column that references a row ranks as an id. A
+  `*_id` that is a lookup value with no row behind it — `dim_securities.
+  coingecko_id`, a price-lookup slug — is a string, beside the other external
+  identifiers (`cusip`, `isin`, `figi`).
+- **Derived calendar parts rank by type.** `transaction_year` (BIGINT) is a
+  numeric and `transaction_year_month` (VARCHAR) a string, each kept together
+  inside its own block, not grouped with the date they derive from.
+- **Nested types are unranked.** A `LIST` or `STRUCT` column sits beside the
+  scalar it belongs with — `notes` immediately before `note_count`.
 
 ## Rule B — `reports`: grain-first
 
@@ -238,7 +252,13 @@ expecting an effect and gets none.
 
 ## Enforcement
 
-Two things are machine-checked, both at unit tier off `OutputColumn`:
+Rule A in `core` is machine-checked at integration tier:
+`tests/integration/test_core_column_order.py` builds every model and reads
+each `core` relation's real types from `duckdb_columns()`. A new lookup-value
+`*_id` goes in its `_NON_KEY_IDS`, and a type it does not rank fails the run
+until it is classified there.
+
+Two things are machine-checked at unit tier off `OutputColumn`:
 `ReportSpec.columns` and `default_columns` are each non-decreasing under Rule B.
 Each report's own execution test additionally asserts that the result's
 columns mirror its declared order — a stronger check than a static read,
@@ -249,10 +269,10 @@ nothing about whether the declarations are right: the guard cannot notice a
 dates and is satisfied.
 
 Everything else is **review-enforced, deliberately**: `AGGREGATE` placement,
-all of Rule C, the `reports/*.sql` model projections, and Rule A in `prep` and
-`core`. Three different reasons, not one: a guard cannot see the semantic
-relationships Rule C names; Rule A needs real types, which only a built database
-resolves; and the `reports/*.sql` projections *do* resolve their column names
+all of Rule C, the `reports/*.sql` model projections, Rule A in `prep`, and
+adjacency inside each Rule A block. Different reasons, not one: a guard cannot
+see the semantic relationships Rule C names or which columns are related; the
+`core` guard covers only `core`; and the `reports/*.sql` projections *do* resolve their column names
 offline, but not their Rule B category, because that same derivation
 deliberately over-classifies computed columns. What is guarded, what
 cannot be, and why each gap is a stopping point rather than an oversight:

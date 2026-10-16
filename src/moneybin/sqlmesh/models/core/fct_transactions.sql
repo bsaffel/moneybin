@@ -120,15 +120,12 @@ WITH notes_agg AS (
 SELECT
   transaction_id, /* Gold key: deterministic SHA-256 hash, unique per real-world transaction */
   account_id, /* Foreign key to core.dim_accounts */
-  transaction_date, /* Date the transaction posted or settled; earliest across sources for merged records */
-  authorized_date, /* Date the transaction was authorized; from highest-priority source */
-  amount, /* Transaction amount; negative = expense, positive = income */
-  amount_absolute, /* Absolute value of amount; avoids sign handling in aggregations */
-  transaction_direction, /* Derived from amount sign: expense, income, or zero */
+  merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant has been resolved for this transaction. Reports should GROUP/PARTITION on this FK; merchant_name is for display. */
+  pending_transaction_id, /* ID of the pending transaction this record resolved */
+  transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
   description, /* Payee or merchant description from highest-priority source */
   original_description, /* Raw, unmodified bank-statement description from the source (Plaid original_description); NULL when the source has no separate raw form. Distinct from description (cleaned) and memo (supplementary). */
   merchant_name, /* Normalized merchant name from core.dim_merchants; falls back to source value */
-  merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant has been resolved for this transaction. Reports should GROUP/PARTITION on this FK; merchant_name is for display. */
   memo, /* Additional notes from highest-priority source */
   category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows, then to the source's OWN category text where the source supplies one a person wrote (tabular CSV column, manual entry). Never a provider taxonomy code: Plaid contributes no category here, so an uncategorized Plaid row is NULL, which is what the queue filter (is_categorizable AND category IS NULL) selects on. The raw PFC code lives in prep.int_transactions__merged.plaid_category */
   subcategory, /* Spending subcategory resolved via FK; same fallback chain as category */
@@ -136,19 +133,38 @@ SELECT
   payment_channel, /* Payment channel (online, in store, other) */
   transaction_type, /* Source-specific transaction type code */
   check_number, /* Check number for check transactions; NULL otherwise */
-  is_pending, /* True if any contributing source row is pending */
-  pending_transaction_id, /* ID of the pending transaction this record resolved */
   location_address, /* Merchant street address */
   location_city, /* Merchant city */
   location_region, /* Merchant state or region */
   location_postal_code, /* Merchant postal code */
   location_country, /* Merchant country code */
+  source_type, /* Canonical source type: highest-priority source in the merge group */
+  STRFTIME(transaction_date, '%Y-%m') AS transaction_year_month, /* YYYY-MM for period grouping */
+  STRFTIME(transaction_date, '%Y') || '-Q' || QUARTER(transaction_date) AS transaction_year_quarter, /* YYYY-QN for period grouping */
+  transaction_direction, /* Derived from amount sign: expense, income, or zero */
+  currency_code, /* ISO 4217 currency code; the transaction's own captured currency, else inherited from core.dim_accounts.currency_code */
+  amount, /* Transaction amount; negative = expense, positive = income */
+  amount_absolute, /* Absolute value of amount; avoids sign handling in aggregations */
   location_latitude, /* Merchant latitude coordinate */
   location_longitude, /* Merchant longitude coordinate */
-  currency_code, /* ISO 4217 currency code; the transaction's own captured currency, else inherited from core.dim_accounts.currency_code */
-  source_type, /* Canonical source type: highest-priority source in the merge group */
   source_count, /* Number of contributing source rows (1 for unmatched, 2+ for merged) */
   match_confidence, /* Match confidence score; NULL for unmatched records */
+  DATE_PART('year', transaction_date) AS transaction_year, /* Calendar year */
+  DATE_PART('month', transaction_date) AS transaction_month, /* Calendar month (1-12) */
+  DATE_PART('day', transaction_date) AS transaction_day, /* Calendar day (1-31) */
+  DATE_PART('dayofweek', transaction_date) AS transaction_day_of_week, /* Day of week: 0 = Sunday */
+  notes, /* LIST(STRUCT(note_id, text, author, created_at)); chronological. NULL when no notes — use note_count > 0, not len(notes) > 0 */
+  note_count, /* INTEGER count of notes; NULL when no notes exist for the transaction */
+  tags, /* LIST(VARCHAR); sorted; 'namespace:value' or bare 'value'. NULL when no tags — filter via 'x' = ANY(tags) or tag_count > 0 */
+  tag_count, /* INTEGER count of tags; NULL when no tags exist */
+  splits, /* LIST(STRUCT(split_id, amount, category, subcategory, note)); ordered by ord. NULL when no splits */
+  split_count, /* INTEGER count of splits; NULL when no splits exist */
+  is_pending, /* True if any contributing source row is pending */
+  is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
+  NOT is_transfer AND account_resolved_unarchived AS is_categorizable, /* TRUE when categorization works on this row: not a confirmed transfer leg, and its account resolved in core.dim_accounts and is not archived. Never NULL. A row needs a category when is_categorizable AND category IS NULL; the categorization service reads this column for its categorization queue, pending count and coverage */
+  has_splits, /* BOOLEAN; TRUE when the transaction has one or more splits in app.transaction_splits */
+  transaction_date, /* Date the transaction posted or settled; earliest across sources for merged records */
+  authorized_date, /* Date the transaction was authorized; from highest-priority source */
   source_extracted_at, /* When the data was parsed from the source file */
   loaded_at, /* When this record was last written */
   GREATEST(
@@ -159,21 +175,5 @@ SELECT
     COALESCE(splits_latest, loaded_at),
     COALESCE(inherited_currency_latest, loaded_at),
     COALESCE(archived_changed_at, loaded_at)
-  ) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, categorization, an Account Currency inherited by a transaction without its own Currency, or archiving or restoring the account, which moves is_categorizable. Does not advance on idempotent SQLMesh re-applies. NULL-safe: DuckDB's GREATEST returns NULL if any arg is NULL, so optional inputs from LEFT JOINs are COALESCEd to loaded_at — without this, every uncategorized transaction had updated_at=NULL and incremental sync `WHERE updated_at > :last_sync` silently missed them. See docs/specs/core-updated-at-convention.md. */
-  is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
-  transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
-  NOT is_transfer AND account_resolved_unarchived AS is_categorizable, /* TRUE when categorization works on this row: not a confirmed transfer leg, and its account resolved in core.dim_accounts and is not archived. Never NULL. A row needs a category when is_categorizable AND category IS NULL; the categorization service reads this column for its categorization queue, pending count and coverage */
-  DATE_PART('year', transaction_date) AS transaction_year, /* Calendar year */
-  DATE_PART('month', transaction_date) AS transaction_month, /* Calendar month (1-12) */
-  DATE_PART('day', transaction_date) AS transaction_day, /* Calendar day (1-31) */
-  DATE_PART('dayofweek', transaction_date) AS transaction_day_of_week, /* Day of week: 0 = Sunday */
-  STRFTIME(transaction_date, '%Y-%m') AS transaction_year_month, /* YYYY-MM for period grouping */
-  STRFTIME(transaction_date, '%Y') || '-Q' || QUARTER(transaction_date) AS transaction_year_quarter, /* YYYY-QN for period grouping */
-  notes, /* LIST(STRUCT(note_id, text, author, created_at)); chronological. NULL when no notes — use note_count > 0, not len(notes) > 0 */
-  note_count, /* INTEGER count of notes; NULL when no notes exist for the transaction */
-  tags, /* LIST(VARCHAR); sorted; 'namespace:value' or bare 'value'. NULL when no tags — filter via 'x' = ANY(tags) or tag_count > 0 */
-  tag_count, /* INTEGER count of tags; NULL when no tags exist */
-  splits, /* LIST(STRUCT(split_id, amount, category, subcategory, note)); ordered by ord. NULL when no splits */
-  split_count, /* INTEGER count of splits; NULL when no splits exist */
-  has_splits /* BOOLEAN; TRUE when the transaction has one or more splits in app.transaction_splits */
+  ) AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, categorization, an Account Currency inherited by a transaction without its own Currency, or archiving or restoring the account, which moves is_categorizable. Does not advance on idempotent SQLMesh re-applies. NULL-safe: DuckDB's GREATEST returns NULL if any arg is NULL, so optional inputs from LEFT JOINs are COALESCEd to loaded_at — without this, every uncategorized transaction had updated_at=NULL and incremental sync `WHERE updated_at > :last_sync` silently missed them. See docs/specs/core-updated-at-convention.md. */
 FROM enriched

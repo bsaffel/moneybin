@@ -258,12 +258,12 @@ def refresh_views(db: Database) -> None:
         f"""
         CREATE OR REPLACE VIEW {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS
         SELECT
+            s.category_id,
             s.source_type,
             '' AS source_origin,
             s.source_category_code,
             {seed_subcategory_expr} AS source_subcategory_code,
             s.code_level,
-            s.category_id,
             s.source_taxonomy_version,
             true AS is_default
         FROM {SEED_CATEGORY_SOURCE_MAP.full_name} s
@@ -276,12 +276,12 @@ def refresh_views(db: Database) -> None:
         )
         UNION ALL
         SELECT
+            category_id,
             source_type,
             source_origin,
             source_category_code,
             source_subcategory_code,
             code_level,
-            category_id,
             source_taxonomy_version,
             false AS is_default
         FROM {CATEGORY_SOURCE_MAP.full_name}
@@ -298,10 +298,12 @@ def refresh_views(db: Database) -> None:
             f"""
             CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
             SELECT
-                merchant_id, raw_pattern, match_type, canonical_name,
+                merchant_id,
                 CAST(NULL AS VARCHAR) AS category_id,
-                category, subcategory, created_by, created_at,
+                raw_pattern, match_type, canonical_name,
+                category, subcategory, created_by,
                 CAST([] AS VARCHAR[]) AS exemplars,
+                created_at,
                 CAST(NULL AS TIMESTAMP) AS updated_at
             FROM app.merchants
             """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
@@ -312,8 +314,9 @@ def refresh_views(db: Database) -> None:
         f"""
         CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
         SELECT
-            merchant_id, raw_pattern, match_type, canonical_name,
-            category_id, category, subcategory, created_by,
+            merchant_id, category_id,
+            raw_pattern, match_type, canonical_name,
+            category, subcategory, created_by,
             exemplars,
             created_at,
             updated_at
