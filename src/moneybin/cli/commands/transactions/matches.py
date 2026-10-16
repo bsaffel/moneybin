@@ -205,7 +205,9 @@ def matches_pending(
 @app.command("run")
 def matches_run(
     skip_transform: bool = typer.Option(
-        False, "--skip-transform", help="Skip transforms after matching"
+        False,
+        "--skip-transform",
+        help="Skip rebuilding the reports the accepted matches feed",
     ),
     auto_accept_transfers: bool = typer.Option(
         False,
@@ -219,7 +221,9 @@ def matches_run(
             with get_database(read_only=False) as db:
                 try:
                     result = MatchingService(db).run(
-                        auto_accept_transfers=auto_accept_transfers, actor="cli"
+                        auto_accept_transfers=auto_accept_transfers,
+                        actor="cli",
+                        restate=not skip_transform,
                     )
                 except MatchRunError as exc:
                     # The decisions and the reversals both committed before
@@ -250,10 +254,6 @@ def matches_run(
                     result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
                 )
 
-                if not skip_transform and result.auto_merged:
-                    from moneybin.services.import_service import ImportService
-
-                    ImportService(db).run_transforms()
     except duckdb_mod.CatalogException:
         logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None
@@ -425,7 +425,9 @@ def matches_set(
 @app.command("backfill")
 def matches_backfill(
     skip_transform: bool = typer.Option(
-        False, "--skip-transform", help="Skip transforms after matching"
+        False,
+        "--skip-transform",
+        help="Skip rebuilding the reports the accepted matches feed",
     ),
     auto_accept_transfers: bool = typer.Option(
         False,
@@ -450,7 +452,9 @@ def matches_backfill(
                             ProgressEvent(f"Scanning {total:,} existing transactions")
                         )
                         result = MatchingService(db).run(
-                            auto_accept_transfers=auto_accept_transfers, actor="cli"
+                            auto_accept_transfers=auto_accept_transfers,
+                            actor="cli",
+                            restate=not skip_transform,
                         )
                 except MatchRunError as exc:
                     # Same guard as `run` above, repeated rather than shared:
@@ -475,10 +479,6 @@ def matches_backfill(
                     result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
                 )
 
-                if not skip_transform and result.auto_merged:
-                    from moneybin.services.import_service import ImportService
-
-                    ImportService(db).run_transforms()
     except duckdb_mod.CatalogException:
         logger.error(_NO_TRANSFORMS_MSG)
         raise typer.Exit(1) from None

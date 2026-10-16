@@ -26,7 +26,7 @@ from decimal import Decimal
 import pandas as pd
 
 from moneybin.investments.cost_basis import LedgerEvent, resolve_cost_basis_method
-from moneybin.tables import ACCOUNT_SETTINGS, LOT_SELECTIONS, SECURITIES
+from moneybin.tables import INT_ACCOUNTS_MERGED, LOT_SELECTIONS, SECURITIES
 
 if t.TYPE_CHECKING:
     from sqlmesh import ExecutionContext  # type: ignore[import-untyped]
@@ -176,12 +176,13 @@ def _load_method_for(context: ExecutionContext) -> MethodFor:
         method = record["cost_basis_method"]
         if method is not None:
             security_method[sid] = str(method)
+    accounts_table = context.resolve_table(INT_ACCOUNTS_MERGED.full_name)
     accounts: pd.DataFrame = context.fetchdf(
         f"""
         SELECT account_id, default_cost_basis_method
-        FROM {ACCOUNT_SETTINGS.full_name}
+        FROM {accounts_table}
         WHERE NOT default_cost_basis_method IS NULL
-        """  # noqa: S608  # ACCOUNT_SETTINGS is a TableRef constant
+        """  # noqa: S608  # table name from context.resolve_table(), not user input
     )
     account_default = {
         str(record["account_id"]): str(record["default_cost_basis_method"])

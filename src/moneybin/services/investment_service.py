@@ -77,6 +77,7 @@ from moneybin.tables import (
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_REALIZED_GAINS,
+    LOT_SELECTIONS,
     MANUAL_INVESTMENT_TRANSACTIONS,
     SECURITIES,
 )
@@ -803,6 +804,9 @@ class InvestmentService:
             f"securities.upsert security_id={event.target_id} "
             f"type={security_type} actor={actor}"
         )
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(self._db, [SECURITIES], committed_change="security")
         return event.target_id
 
     def set_security(
@@ -1578,6 +1582,11 @@ class InvestmentService:
         logger.info(
             f"lot_selections.set disposal={disposal_txn_id} "
             f"count={len(selections)} actor={actor}"
+        )
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(
+            self._db, [LOT_SELECTIONS], committed_change="lot selection"
         )
 
     def _require_specific_identification(

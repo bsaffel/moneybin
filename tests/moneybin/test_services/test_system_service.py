@@ -40,15 +40,18 @@ def system_db(db: Database) -> Database:
     create_core_tables_raw(conn)
 
     conn.execute("""
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO core.dim_accounts (
+            account_id, routing_number, account_type, institution_name,
+            institution_slug, institution_fid, source_type, source_file,
+            extracted_at, loaded_at, updated_at, display_name,
+            display_name_is_user_set, currency_code, archived, include_in_net_worth
+        ) VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-         'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, NULL, FALSE, TRUE, NULL,
-         NULL, NULL),
+         'Test Bank CHECKING ...0001', TRUE, 'USD', FALSE, TRUE),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', 'other_bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-         'Other Bank SAVINGS ...0002', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, NULL, FALSE, TRUE, NULL,
-         NULL, NULL)
+         'Other Bank SAVINGS ...0002', TRUE, 'USD', FALSE, TRUE)
     """)  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
@@ -206,11 +209,15 @@ def _insert_dim_account(
     """Insert one dim_accounts row with the given extracted_at and updated_at."""
     db.conn.execute(
         """
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO core.dim_accounts (
+            account_id, routing_number, account_type, institution_name,
+            institution_slug, institution_fid, source_type, source_file,
+            extracted_at, loaded_at, updated_at, display_name,
+            display_name_is_user_set, currency_code, archived, include_in_net_worth
+        ) VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', ?, CURRENT_TIMESTAMP, ?,
-         'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD',
-         NULL, NULL, FALSE, TRUE, NULL, NULL, NULL)
+         'Test Bank CHECKING ...0001', TRUE, 'USD', FALSE, TRUE)
         """,
         [dim_extracted_at, dim_updated_at],
     )

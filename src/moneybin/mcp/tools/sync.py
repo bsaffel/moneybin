@@ -801,7 +801,6 @@ async def _sync_disconnect_absent(
             account_links_reversed=len(live.account_link_ids),
         ),
         actions=[
-            "Run refresh_run so core tables drop the purged rows.",
             "Use sync_status to inspect remaining institution connections.",
         ],
     )

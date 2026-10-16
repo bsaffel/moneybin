@@ -1209,9 +1209,9 @@ class TransactionService:
         every row under that ``import_id`` inside a single DuckDB transaction
         alongside one ``manual.create`` audit event.
 
-        This is Task 7a: the raw-write path only. The pipeline is **not**
-        triggered here — the next normal ``import_file`` / ``transform apply``
-        pass picks these rows up.
+        After the writes commit, restates the models downstream of
+        ``raw.manual_transactions`` so the rows read back from
+        ``core.fct_transactions`` immediately.
 
         Categorization (when an entry carries a non-empty ``category``) runs
         in its own dedicated transaction *after* the raw-write commits. The
@@ -1375,6 +1375,13 @@ class TransactionService:
             except Exception:
                 self._db.rollback()
                 raise
+
+        # Function-local: the restate stack imports SQLMesh.
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(
+            self._db, [MANUAL_TRANSACTIONS], committed_change="manual transaction"
+        )
 
         logger.info(
             f"manual.create import_id={import_id} row_count={len(results)} "

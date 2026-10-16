@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -10,6 +11,7 @@ from moneybin.services.profile_settings_service import (
     MANAGED_SETTING_KEYS,
     ProfileSettingsService,
 )
+from moneybin.tables import PROFILE_SETTINGS
 
 
 @pytest.fixture()
@@ -23,35 +25,35 @@ def test_home_currency_starts_unset(service: ProfileSettingsService) -> None:
 
 
 def test_set_setting_persists_the_home_currency(
-    service: ProfileSettingsService, monkeypatch: pytest.MonkeyPatch
+    service: ProfileSettingsService, db: Database, mocker: MockerFixture
 ) -> None:
-    """The managed key round-trips through the database."""
-    restated: list[Database] = []
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        restated.append,
-    )
+    """The managed key round-trips and restates what reads the settings row."""
+    restate = mocker.patch("moneybin.services.restate.restate_after_write")
 
     service.set_setting("home_currency", "EUR", actor="cli")
 
     assert service.get_settings().home_currency == "EUR"
-    assert len(restated) == 1
-
-
-def test_display_currency_targets_are_normalized_without_restatement(
-    service: ProfileSettingsService, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Changing read targets plans future rates but never restates accounting."""
-    restated: list[Database] = []
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        restated.append,
+    restate.assert_called_once_with(
+        db,
+        [PROFILE_SETTINGS],
+        committed_change="setting",
     )
+
+
+def test_display_currency_targets_are_normalized_and_restate(
+    service: ProfileSettingsService, db: Database, mocker: MockerFixture
+) -> None:
+    """Changing read targets also restates: the lots fold this row's audit history."""
+    restate = mocker.patch("moneybin.services.restate.restate_after_write")
 
     service.set_setting("display_currency_targets", " eur, GBP,EUR ", actor="cli")
 
     assert service.get_settings().display_currency_targets == ("EUR", "GBP")
-    assert restated == []
+    restate.assert_called_once_with(
+        db,
+        [PROFILE_SETTINGS],
+        committed_change="setting",
+    )
 
 
 def test_set_setting_rejects_an_oversized_display_target_list(

@@ -208,6 +208,25 @@ def _seed_transaction(
     )
 
 
+def _seed_live_transaction(db: Database, txn_id: str, description: str) -> None:
+    """``_seed_transaction`` plus the id's row in the curation liveness oracle.
+
+    Alias resolution reads liveness off ``prep.int_transactions__matched``
+    (production: the fact's own id set) and passes ids through unresolved when
+    that relation is absent.
+    """
+    _seed_transaction(db, txn_id, description=description)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(transaction_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched (transaction_id) VALUES (?)",
+        [txn_id],
+    )
+
+
 def _seed_uncategorized_transaction(
     db: Database,
     txn_id: str,
@@ -339,19 +358,23 @@ def test_record_categorization_does_not_double_count_a_rekeyed_transaction(
     """A dedup merge re-keying a transaction must not double-count it (issue #552).
 
     Categorizes the same real-world transaction under its pre-merge id, then
-    simulates a dedup merge (the pre-merge id leaves ``core.fct_transactions``,
-    the post-merge id takes its place, and the alias map records the
+    simulates a dedup merge (the pre-merge id leaves ``core.fct_transactions``
+    and ``prep.int_transactions__matched``, the post-merge id takes its place,
+    and the alias map records the
     forwarding — the same shape ``forward_rekeyed_transaction_ids`` leaves
     behind), then categorizes again under the post-merge id. ``trigger_count``
     must increment once, not twice, for one physical transaction.
     """
-    _seed_transaction(real_db, "old_id", description="STARBUCKS")
+    _seed_live_transaction(real_db, "old_id", description="STARBUCKS")
     svc = AutoRuleService(real_db)
     proposed_rule_id = svc.record_categorization("old_id", "Food & Drink")
     assert proposed_rule_id is not None
 
     real_db.execute("DELETE FROM core.fct_transactions WHERE transaction_id = 'old_id'")
-    _seed_transaction(real_db, "new_id", description="STARBUCKS")
+    real_db.execute(
+        "DELETE FROM prep.int_transactions__matched WHERE transaction_id = 'old_id'"
+    )
+    _seed_live_transaction(real_db, "new_id", description="STARBUCKS")
     real_db.execute(
         "INSERT INTO app.transaction_id_aliases "
         "(old_transaction_id, new_transaction_id, created_at) "

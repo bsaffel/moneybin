@@ -54,6 +54,25 @@ def _insert_txn(db: Database, transaction_id: str) -> None:
     )
 
 
+def _mark_live(db: Database, *transaction_ids: str) -> None:
+    """Seed the curation resolver's liveness oracle with ``transaction_ids``.
+
+    Resolution reads ``prep.int_transactions__matched`` (production: the
+    fact's own id set) and passes ids through unchanged when it is absent, so
+    a test of resolution needs it present.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(transaction_id VARCHAR)"
+    )
+    for transaction_id in transaction_ids:
+        db.execute(
+            "INSERT INTO prep.int_transactions__matched (transaction_id) VALUES (?)",
+            [transaction_id],
+        )
+
+
 # --- CategorizationRuleInput model contract --------------------------------
 
 
@@ -1075,6 +1094,7 @@ class TestSetCategoryResolvesSupersededId:
             "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
             "VALUES ('txn-live', -25, '2026-05-01')"
         )
+        _mark_live(db, "txn-live")
         db.execute(
             "INSERT INTO app.transaction_id_aliases "
             "(old_transaction_id, new_transaction_id, created_at) "
@@ -1108,6 +1128,7 @@ class TestSetCategoryResolvesSupersededId:
     ) -> None:
         svc = CategorizationService(db)
         svc.create_category("Orphanable")
+        _mark_live(db)  # oracle present, but without the referenced id
         with pytest.raises(UserError, match="transaction reference") as exc_info:
             svc.set_category(
                 "never-existed",
@@ -1136,6 +1157,7 @@ class TestWriteCategorizationResolvesSupersededId:
             "(transaction_id, amount, transaction_date) "
             "VALUES ('txn-live', -20, '2026-05-01')"
         )
+        _mark_live(db, "txn-live")
         db.execute(
             "INSERT INTO app.transaction_id_aliases "
             "(old_transaction_id, new_transaction_id, created_at) "
@@ -1165,6 +1187,7 @@ class TestWriteCategorizationResolvesSupersededId:
         self, db: Database
     ) -> None:
         svc = CategorizationService(db)
+        _mark_live(db)  # oracle present, but without the referenced id
         with pytest.raises(UserError, match="transaction reference") as exc_info:
             svc.write_categorization(
                 transaction_id="never-existed",
@@ -1201,6 +1224,7 @@ class TestWriteCategorizationResolvesSupersededId:
     def test_write_categorizations_batch_against_unresolvable_id_raises_user_error(
         self, db: Database, applier: MatchApplier
     ) -> None:
+        _mark_live(db)  # oracle present, but without the referenced id
         with pytest.raises(UserError, match="transaction reference") as exc_info:
             applier.write_categorizations([
                 {
@@ -1969,6 +1993,7 @@ class TestBatchCategorizationWrites:
     ) -> None:
         for transaction_id in ("batch-skip-1", "batch-skip-2"):
             _insert_txn(db, transaction_id)
+            _mark_live(db, transaction_id)
             applier.write_categorization(
                 transaction_id=transaction_id,
                 category="Protected",
@@ -2011,7 +2036,7 @@ class TestBatchCategorizationWrites:
         assert written == set()
         # 6, not 4: the shared curation-id liveness resolver (issue #538) now
         # runs two extra bulk queries ahead of the precedence-guarded writes —
-        # a catalog probe confirming the fact view exists (issue #593) plus
+        # a catalog probe confirming the liveness oracle exists (issue #593) plus
         # the liveness query itself — still O(1) for the whole batch, not one
         # per row.
         assert database_calls == 6

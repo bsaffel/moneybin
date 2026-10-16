@@ -42,11 +42,8 @@ from tests.validation.result import AssertionResult
 # `str`-only alias would make that assertion unwritable.
 _Positions = dict[str | None, tuple[Decimal, int]]
 
-_FX_RESTATE_MODELS = [
-    "core.bridge_currency_conversions",
-    "core.fct_currency_lots",
-    "core.fct_realized_fx_gains",
-]
+# The inputs the seeding writes directly; restating them cascades downstream.
+_FX_RESTATE_MODELS = ["app.match_decisions", "app.profile_settings"]
 
 
 def _expected_positions(result: GenerationResult, as_of: date) -> _Positions:
@@ -129,6 +126,13 @@ def test_international_realized_fx_ground_truth() -> None:
 
         ProfileSettingsRepo(db).set_home_currency("USD", actor="system")
         _seed_ground_truth_transfer_decisions(db, expected_pairs=expected_pairs)
+        # Seeded through the repos, so no service restated what reads them.
+        with sqlmesh_context(db) as ctx:
+            ctx.plan(
+                restate_models=_FX_RESTATE_MODELS,
+                auto_apply=True,
+                no_prompts=True,
+            )
         accepted = db.execute(
             """
             SELECT COUNT(*) FROM app.match_decisions
@@ -139,15 +143,6 @@ def test_international_realized_fx_ground_truth() -> None:
         bridge = db.execute("SELECT COUNT(*) FROM core.bridge_transfers").fetchone()
         assert accepted == (expected_pairs,)
         assert bridge == (expected_pairs,)
-
-        # app.match_decisions and app.profile_settings are external to SQLMesh,
-        # so the already-covered FULL intervals need explicit restatement.
-        with sqlmesh_context(db) as ctx:
-            ctx.plan(
-                restate_models=_FX_RESTATE_MODELS,
-                auto_apply=True,
-                no_prompts=True,
-            )
 
         conversions = db.execute(
             """

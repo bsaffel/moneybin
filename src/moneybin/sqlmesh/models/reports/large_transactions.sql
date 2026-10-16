@@ -81,13 +81,15 @@ WITH base AS (
   /* Ranked within each currency rather than a single global LIMIT 100: a
      cross-currency ORDER BY ABS(amount) sorts unlike units, so a profile
      holding one high-denomination currency would crowd every other
-     currency's largest charges out of the flag entirely. */
+     currency's largest charges out of the flag entirely. transaction_id
+     breaks ties, so equal amounts at the cutoff flag the same rows on every
+     build rather than whichever the scan reached first. */
   SELECT
     transaction_id
   FROM (
     SELECT
       transaction_id,
-      ROW_NUMBER() OVER (PARTITION BY currency_code ORDER BY ABS(amount) DESC) AS rank_in_currency
+      ROW_NUMBER() OVER (PARTITION BY currency_code ORDER BY ABS(amount) DESC, transaction_id) AS rank_in_currency
     FROM base
   )
   WHERE

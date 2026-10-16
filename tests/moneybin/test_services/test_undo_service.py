@@ -9,6 +9,7 @@ real repos (no mocks). Operations are built by wrapping repo calls in
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -34,7 +35,33 @@ from moneybin.services.account_resolver import refresh_account_link_pending_gaug
 from moneybin.services.audit_service import AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_service import UndoService
+from moneybin.tables import (
+    ACCOUNT_SETTINGS,
+    EXCHANGE_RATE_OVERRIDES,
+    MATCH_DECISIONS,
+    PROFILE_SETTINGS,
+    TableRef,
+)
 from tests.moneybin.db_helpers import create_core_tables
+
+_Restatement = tuple[Database, set[str], str]
+
+
+def _record_restatements(monkeypatch: pytest.MonkeyPatch) -> list[_Restatement]:
+    """Replace ``restate_after_write`` with a recorder of what each undo restated.
+
+    Inputs are recorded by qualified name: the undo builds its refs from the
+    audit rows, so they carry no ``audience``, and the restate keys on the name.
+    """
+    restated: list[_Restatement] = []
+
+    def record(
+        target_db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        restated.append((target_db, {t.full_name for t in inputs}, committed_change))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", record)
+    return restated
 
 
 def _pending_gauge() -> int:
@@ -176,25 +203,12 @@ class TestUndo:
         tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
         assert notes == (1,) and tags == (1,)
 
-    def test_fx_input_undo_triggers_one_post_commit_restatement(
+    def test_an_undo_restates_every_restating_table_it_touched_once(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         create_core_tables(db)
         _insert_dim_account(db, "acct-fx", "FX Account")
-        restated: list[tuple[Database, bool, str]] = []
-
-        def record_restatement(
-            target_db: Database,
-            *,
-            account_currency_changed: bool = False,
-            committed_change: str = "setting",
-        ) -> None:
-            restated.append((target_db, account_currency_changed, committed_change))
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        restated = _record_restatements(monkeypatch)
         with operation() as op:
             AccountSettingsRepo(db).set(
                 account_id="acct-fx",
@@ -212,6 +226,8 @@ class TestUndo:
                 investment_source_type=None,
                 investment_source_type_changed_at=None,
                 archived_changed_at=None,
+                currency_code_changed_at=None,
+                default_cost_basis_method_changed_at=None,
                 actor="test",
             )
             ExchangeRateOverridesRepo(db).set(
@@ -225,50 +241,63 @@ class TestUndo:
 
         UndoService(db).undo(op, actor="test")
 
-        assert restated == [(db, True, "undo")]
+        assert restated == [
+            (
+                db,
+                {ACCOUNT_SETTINGS.full_name, EXCHANGE_RATE_OVERRIDES.full_name},
+                "undo",
+            ),
+        ]
 
-    def test_display_target_undo_does_not_restate_fx_accounting(
+    def test_undo_of_a_display_only_account_setting_restates_nothing(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Undoing a report preference must not alter ledger accounting."""
-        restated: list[Database] = []
-
-        def record_restatement(target_db: Database, **_kwargs: object) -> None:
-            restated.append(target_db)
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        """Only restating columns count; a rename's images differ in none."""
+        _settings_set(db, display_name="Brokerage")
+        restated = _record_restatements(monkeypatch)
         with operation() as op:
-            ProfileSettingsRepo(db).set_display_currency_targets(["EUR"], actor="test")
+            _settings_set(db, display_name="Renamed", last_four="1234")
 
         UndoService(db).undo(op, actor="test")
 
         assert restated == []
 
-    def test_home_currency_undo_still_restates_fx_accounting(
+    def test_undo_of_an_archive_restates_account_settings(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Undoing the accounting-currency setting retains its existing refresh."""
-        ProfileSettingsRepo(db).set_home_currency("USD", actor="test")
-        restated: list[Database] = []
-
-        def record_restatement(target_db: Database, **_kwargs: object) -> None:
-            restated.append(target_db)
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        _settings_set(db, display_name="Brokerage")
+        restated = _record_restatements(monkeypatch)
         with operation() as op:
-            ProfileSettingsRepo(db).set_home_currency("EUR", actor="test")
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                archived=True,
+                archived_at=date(2026, 1, 2),
+            )
 
         UndoService(db).undo(op, actor="test")
 
-        assert restated == [db]
+        assert restated == [(db, {ACCOUNT_SETTINGS.full_name}, "undo")]
 
-    def test_transfer_decision_undo_triggers_post_commit_fx_restatement(
+    @pytest.mark.parametrize("setting", ["display_currency_targets", "home_currency"])
+    def test_profile_setting_undo_restates_profile_settings(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch, setting: str
+    ) -> None:
+        """Display targets restate too: the currency lots fold the row's history."""
+        repo = ProfileSettingsRepo(db)
+        repo.set_home_currency("USD", actor="test")
+        restated = _record_restatements(monkeypatch)
+        with operation() as op:
+            if setting == "home_currency":
+                repo.set_home_currency("EUR", actor="test")
+            else:
+                repo.set_display_currency_targets(["EUR"], actor="test")
+
+        UndoService(db).undo(op, actor="test")
+
+        assert restated == [(db, {PROFILE_SETTINGS.full_name}, "undo")]
+
+    def test_transfer_decision_undo_restates_match_decisions(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         event = MatchDecisionsRepo(db).insert(
@@ -289,27 +318,13 @@ class TestUndo:
             decided_by="user",
             actor="test",
         )
-        restated: list[tuple[Database, str]] = []
-
-        def record_restatement(
-            target_db: Database,
-            *,
-            account_currency_changed: bool = False,
-            committed_change: str = "setting",
-        ) -> None:
-            assert account_currency_changed is False
-            restated.append((target_db, committed_change))
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        restated = _record_restatements(monkeypatch)
 
         UndoService(db).undo(event.operation_id, actor="test")
 
-        assert restated == [(db, "undo")]
+        assert restated == [(db, {MATCH_DECISIONS.full_name}, "undo")]
 
-    def test_transfer_endpoint_undo_restates_from_account_root(
+    def test_transfer_endpoint_undo_restates_match_decisions(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         MatchDecisionsRepo(db).insert(
@@ -336,28 +351,11 @@ class TestUndo:
                 to_account_id="acct-c",
                 actor="test",
             )
-        restated: list[tuple[Database, bool, str]] = []
-
-        def record_restatement(
-            target_db: Database,
-            *,
-            account_currency_changed: bool = False,
-            committed_change: str = "setting",
-        ) -> None:
-            restated.append((
-                target_db,
-                account_currency_changed,
-                committed_change,
-            ))
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        restated = _record_restatements(monkeypatch)
 
         UndoService(db).undo(repoint_operation_id, actor="test")
 
-        assert restated == [(db, True, "undo")]
+        assert restated == [(db, {MATCH_DECISIONS.full_name}, "undo")]
 
     def test_not_found_raises(self, db: Database) -> None:
         with pytest.raises(UserError) as exc:
@@ -663,6 +661,14 @@ class TestUndo:
 _SOURCE_SET_AT = datetime(2026, 1, 1, 9, 0, 0)
 
 
+def _assert_restated_account_settings_once(restate: MagicMock, db: Database) -> None:
+    restate.assert_called_once()
+    (called_db, inputs), kwargs = restate.call_args
+    assert called_db is db
+    assert [t.full_name for t in inputs] == [ACCOUNT_SETTINGS.full_name]
+    assert kwargs == {"committed_change": "undo"}
+
+
 def _settings_set(db: Database, **overrides: Any) -> None:
     """One audited settings write for ``acc_choice`` with neutral defaults."""
     kwargs: dict[str, Any] = {
@@ -681,6 +687,8 @@ def _settings_set(db: Database, **overrides: Any) -> None:
         "investment_source_type": None,
         "investment_source_type_changed_at": None,
         "archived_changed_at": None,
+        "currency_code_changed_at": None,
+        "default_cost_basis_method_changed_at": None,
         "actor": "test",
     }
     kwargs.update(overrides)
@@ -702,8 +710,7 @@ class TestUndoOfInvestmentSourceChoice:
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
+            "moneybin.services.restate.restate_after_write", MagicMock()
         )
         _settings_set(db, display_name="Brokerage")
         with operation() as op:
@@ -727,14 +734,11 @@ class TestUndoOfInvestmentSourceChoice:
         stamped = json.loads(audit[0])["investment_source_type_changed_at"]
         assert datetime.fromisoformat(stamped) == changed_at
 
-    def test_undo_of_a_source_change_restates_the_ledger(
+    def test_undo_of_a_source_change_restates_account_settings(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         restate = MagicMock()
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            restate,
-        )
+        monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
         _settings_set(db, display_name="Brokerage")
         with operation() as op:
             _settings_set(
@@ -746,16 +750,13 @@ class TestUndoOfInvestmentSourceChoice:
 
         UndoService(db).undo(op, actor="test")
 
-        restate.assert_called_once_with(db, committed_change="undo")
+        _assert_restated_account_settings_once(restate, db)
 
     def test_undo_of_an_unrelated_setting_leaves_the_change_time(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         restate = MagicMock()
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            restate,
-        )
+        monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
         _settings_set(
             db,
             display_name="Brokerage",
@@ -779,10 +780,7 @@ class TestUndoOfInvestmentSourceChoice:
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         restate = MagicMock()
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            restate,
-        )
+        monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
         with operation() as op:
             _settings_set(
                 db,
@@ -805,14 +803,13 @@ class TestUndoOfInvestmentSourceChoice:
         ).fetchone()
         assert row == (None, False, None, True)
         assert result.reversed_row_count == 1
-        restate.assert_called_once_with(db, committed_change="undo")
+        _assert_restated_account_settings_once(restate, db)
 
     def test_the_reset_is_audited_as_the_row_that_remains_and_redo_restores_it(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
+            "moneybin.services.restate.restate_after_write", MagicMock()
         )
         with operation() as op:
             _settings_set(
@@ -850,8 +847,7 @@ class TestUndoOfInvestmentSourceChoice:
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
+            "moneybin.services.restate.restate_after_write", MagicMock()
         )
         with operation() as op_a:
             _settings_set(db, display_name="Brokerage")
@@ -876,8 +872,7 @@ class TestUndoOfInvestmentSourceChoice:
     ) -> None:
         """First write has a NULL stamp; a later set and clear leaves stamp T."""
         monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
+            "moneybin.services.restate.restate_after_write", MagicMock()
         )
         with operation() as op_a:
             _settings_set(db, display_name="Brokerage")
@@ -902,8 +897,7 @@ class TestUndoOfInvestmentSourceChoice:
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
+            "moneybin.services.restate.restate_after_write", MagicMock()
         )
         _settings_set(
             db,

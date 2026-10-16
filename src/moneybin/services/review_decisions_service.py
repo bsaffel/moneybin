@@ -41,7 +41,10 @@ from moneybin.services.account_links_service import (
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
 from moneybin.services.merchant_links_service import MerchantLinksService
-from moneybin.services.security_links_service import SecurityLinksService
+from moneybin.services.security_links_service import (
+    SecurityLinksService,
+    restate_after_accept,
+)
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -535,11 +538,9 @@ class ReviewDecisionsService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
-        from moneybin.services.fx_accounting_refresh import (
-            restate_fx_accounting_after_match_effects,
-        )
+        from moneybin.services.restate import restate_after_match_effects
 
-        restate_fx_accounting_after_match_effects(self._db, effects)
+        restate_after_match_effects(self._db, effects)
         if touched_merchant_ids:
             category_service.record_committed_review_merchants(
                 created_merchant_ids=tuple(created_merchant_ids),
@@ -1256,6 +1257,15 @@ class ReviewDecisionsService:
             merchant_service.record_committed_outer_outcomes(merchant_outcomes)
         if security_outcomes:
             security_service.record_committed_outer_outcomes(security_outcomes)
+        security_accepted = any(
+            item.changed
+            and isinstance(item.request, SecurityLinkDecisionRequest)
+            and item.request.decision == "accept"
+            for item in plan.items
+        )
+        if security_accepted and rematch is None:
+            # The rematch above transforms, which already covers these.
+            restate_after_accept(self._db)
         # The plan is the only value this path returns, so it carries the pass's
         # outcome out; without it the surface cannot report an auto-merge it did
         # not ask for. None here means no pass ran, not a pass that found zero.

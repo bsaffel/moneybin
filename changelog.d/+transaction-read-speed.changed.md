@@ -1,0 +1,1 @@
+Reading transactions is about fifteen times faster (roughly 7 ms instead of 100–135 ms on a 3,000-transaction profile), and `moneybin accounts links pending` finishes in about 2 seconds instead of 10–14 and shows progress while it measures ledger overlap.

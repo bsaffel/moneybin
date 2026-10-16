@@ -624,7 +624,7 @@ Usage: `moneybin transactions matches run [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--skip-transform` | flag |  | Skip transforms after matching |
+| `--skip-transform` | flag |  | Skip rebuilding the reports the accepted matches feed |
 | `--auto-accept-transfers` | flag |  | Auto-accept transfer matches (skip interactive review) |
 
 ## moneybin transactions matches history
@@ -689,7 +689,7 @@ Usage: `moneybin transactions matches backfill [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--skip-transform` | flag |  | Skip transforms after matching |
+| `--skip-transform` | flag |  | Skip rebuilding the reports the accepted matches feed |
 | `--auto-accept-transfers` | flag |  | Auto-accept transfer matches (skip interactive review) |
 
 ## moneybin transactions notes

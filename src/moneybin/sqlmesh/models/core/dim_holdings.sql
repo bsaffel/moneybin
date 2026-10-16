@@ -408,10 +408,22 @@ WITH positions AS (
 SELECT
   p.account_id, /* FK to core.dim_accounts (grain) */
   p.security_id, /* FK to core.dim_securities (grain) */
+  CASE WHEN wh.is_source_overlap OR wh.is_withheld THEN NULL ELSE lp.source_type END AS price_source, /* Which source_type supplied the close (see core.fct_security_prices); NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
+  CASE
+    WHEN wh.is_source_overlap
+    THEN 'source_overlap'
+    WHEN wh.is_withheld
+    THEN 'withheld'
+    WHEN lp.close IS NULL
+    THEN 'unpriced'
+    WHEN lp.price_date = CURRENT_DATE
+    THEN 'valued'
+    ELSE 'carried_forward'
+  END AS valuation_status, /* valued | carried_forward | unpriced | withheld | source_overlap. Every status either carries a number the reader can rely on or carries none at all — no status publishes a qualified figure. The non-valued statuses stay distinct because each has a different remedy: unpriced wants a price feed; withheld wants the share count reconciled — an unreconciled split recorded, a broker divergence resolved, or a position the broker no longer reports closed out; source_overlap wants one source chosen for the account (accounts set --investment-source-type), and is checked first because a share count measured against a double-counted ledger is a symptom rather than the fault */
+  p.currency_code, /* Denominating currency (one per position) */
   p.quantity, /* Total open units (Σ remaining_quantity); cast back to (28,10) — SUM widens to (38,10) */
   p.cost_basis, /* Total open basis (Σ cost_basis_remaining); cast back to (18,2) — SUM widens to (38,2) */
   p.average_cost, /* cost_basis / quantity; cast wraps the WHOLE division so the result is DECIMAL(28,10), not DOUBLE (DuckDB decimal / promotes to DOUBLE); (28,10) for crypto fractional-unit precision; NULL when quantity is 0 */
-  p.currency_code, /* Denominating currency (one per position) */
   CASE
     WHEN wh.is_source_overlap OR wh.is_withheld
     THEN NULL
@@ -428,27 +440,15 @@ SELECT
       )::DECIMAL(18, 2) - p.cost_basis
     )::DECIMAL(18, 2)
   END AS unrealized_gain, /* market_value less cost basis. NULL whenever market_value is NULL, AND — even on a valued row — whenever any contributing open lot has basis_incomplete: an ACATS-style transfer_in with unknown basis stores a 0.00 cost that is not a real zero, so the subtraction would overstate the gain by the missing basis. market_value stays published (quantity × close is unaffected); only the gain is unknowable. Realized gain is ledger-derived and lives in core.fct_realized_gains */
-  CASE WHEN wh.is_source_overlap OR wh.is_withheld THEN NULL ELSE lp.price_date END AS price_date, /* The date of the close used, which may be earlier than today. NULL whenever market_value is NULL — when no close resolved ('unpriced') and when one did but the figure cannot be trusted ('withheld', 'source_overlap'): a held-back row publishing today's date beside blanked figures reads as "pricing is current, something else is missing", which is the opposite of the truth. The close itself is not lost — it stays queryable in core.fct_security_prices, which is where a support path should look */
-  CASE WHEN wh.is_source_overlap OR wh.is_withheld THEN NULL ELSE lp.source_type END AS price_source, /* Which source_type supplied the close (see core.fct_security_prices); NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
   CASE
     WHEN wh.is_source_overlap OR wh.is_withheld
     THEN NULL
     ELSE CAST(CURRENT_DATE - lp.price_date AS INT)
   END AS days_since_observed, /* Calendar days between the price used and today (`PendingTxnRow.age_days` uses the same CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault. NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
-  CASE
-    WHEN wh.is_source_overlap
-    THEN 'source_overlap'
-    WHEN wh.is_withheld
-    THEN 'withheld'
-    WHEN lp.close IS NULL
-    THEN 'unpriced'
-    WHEN lp.price_date = CURRENT_DATE
-    THEN 'valued'
-    ELSE 'carried_forward'
-  END AS valuation_status, /* valued | carried_forward | unpriced | withheld | source_overlap. Every status either carries a number the reader can rely on or carries none at all — no status publishes a qualified figure. The non-valued statuses stay distinct because each has a different remedy: unpriced wants a price feed; withheld wants the share count reconciled — an unreconciled split recorded, a broker divergence resolved, or a position the broker no longer reports closed out; source_overlap wants one source chosen for the account (accounts set --investment-source-type), and is checked first because a share count measured against a double-counted ledger is a symptom rather than the fault */
   pr.provider_reported_quantity, /* NON-AUTHORITATIVE: the broker's claimed open units in its newest snapshot. Reconciliation reference only — `quantity` above is MoneyBin's figure. NULL = the broker's newest snapshot does not report this position */
   pr.provider_reported_cost_basis, /* NON-AUTHORITATIVE: the broker's claimed cost basis. Never overwrites or feeds `cost_basis` above; system doctor warns when the two diverge */
   pr.provider_reported_value, /* NON-AUTHORITATIVE: the broker's claimed market value. MoneyBin computes `market_value` above independently, as quantity × its own resolved close, and never blends this claim into it — no doctor check reconciles the two yet */
+  CASE WHEN wh.is_source_overlap OR wh.is_withheld THEN NULL ELSE lp.price_date END AS price_date, /* The date of the close used, which may be earlier than today. NULL whenever market_value is NULL — when no close resolved ('unpriced') and when one did but the figure cannot be trusted ('withheld', 'source_overlap'): a held-back row publishing today's date beside blanked figures reads as "pricing is current, something else is missing", which is the opposite of the truth. The close itself is not lost — it stays queryable in core.fct_security_prices, which is where a support path should look */
   pr.provider_reported_as_of, /* Oldest extracted_at among the snapshots summed into the three columns above (MIN, not MAX) — a canonical position spanning multiple broker connections is only as fresh as its stalest contributor; NULL when the broker no longer reports this position */
   GREATEST(
     p.updated_at,

@@ -75,6 +75,27 @@ _SelectionSet = dict[str, list[tuple[str, Decimal]]]
 # deletes the provisional). Surfaces report the two differently.
 AcceptOutcome = Literal["bound", "merged"]
 
+#: Every input an accept can write: a bind adds a link; a merge also deletes
+#: the provisional security and re-points lots, manual events and price marks.
+_ACCEPT_INPUTS = (
+    SECURITIES,
+    SECURITY_LINKS,
+    LOT_SELECTIONS,
+    SECURITY_PRICE_OVERRIDES,
+    MANUAL_INVESTMENT_TRANSACTIONS,
+)
+
+
+def restate_after_accept(db: Database) -> None:
+    """Rebuild the investment models after committed security-link accepts.
+
+    Public so a caller that accepts inside its own transaction restates once,
+    after its commit.
+    """
+    from moneybin.services.restate import restate_after_write
+
+    restate_after_write(db, _ACCEPT_INPUTS, committed_change="security")
+
 
 @dataclass(frozen=True)
 class PendingSecurityLinkCandidate:
@@ -521,6 +542,7 @@ class SecurityLinksService:
             f"feed key bound: decision={decision_id} security={into} "
             f"ref_kind={decision['ref_kind']}"
         )
+        restate_after_accept(self._db)
 
         from moneybin.services.security_resolver import (
             refresh_security_link_pending_gauge,
@@ -768,6 +790,7 @@ class SecurityLinksService:
             f"manual_events_repointed={manual_repointed} "
             f"price_marks_repointed={marks_repointed}"
         )
+        restate_after_accept(self._db)
 
         # Accepting changed the pending count (the named decision plus its
         # auto-rejected siblings) — refresh the gauge.

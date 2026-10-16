@@ -1,6 +1,7 @@
 MODEL (
   name prep.int_transactions__merged,
-  kind VIEW
+  kind FULL,
+  grain transaction_id
 );
 
 /* Collapses matched groups to one row per transaction_id using

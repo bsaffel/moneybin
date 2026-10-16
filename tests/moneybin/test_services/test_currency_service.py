@@ -15,7 +15,7 @@ and ``test_a_weekday_gap_is_not_answered_from_an_earlier_cached_day``.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import date
 from decimal import Decimal
 
@@ -32,12 +32,49 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services import currency_service
 from moneybin.services.currency_service import CurrencyService, RateUnavailableError
+from moneybin.tables import (
+    EXCHANGE_RATE_COVERAGE,
+    EXCHANGE_RATE_OVERRIDES,
+    EXCHANGE_RATES,
+    TableRef,
+)
 
 _FRI = date(2026, 3, 13)
 _SAT = date(2026, 3, 14)
 _SUN = date(2026, 3, 15)
 _MON = date(2026, 3, 16)
 _TUE = date(2026, 3, 17)
+
+
+_Restatement = tuple[Database, list[TableRef], str]
+
+
+def _record_restatements(monkeypatch: pytest.MonkeyPatch) -> list[_Restatement]:
+    """Replace ``restate_after_write`` with a recorder of what each write restated."""
+    restated: list[_Restatement] = []
+
+    def record(
+        called_db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        restated.append((called_db, list(inputs), committed_change))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", record)
+    return restated
+
+
+def _fail_restatements(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every post-write restate fail as ``restate_after_write`` does."""
+
+    def fail(
+        _db: Database, _inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        raise UserError(
+            f"The {committed_change} was saved, but the reports that read it "
+            "could not be rebuilt.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+        )
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", fail)
 
 
 @pytest.mark.parametrize("day", [_FRI, _MON, _TUE])
@@ -213,20 +250,10 @@ def test_a_fetched_rate_is_stored_so_the_next_call_reads_the_cache(
     assert row == (Decimal("0.92000000"), "frankfurter")
 
 
-def test_a_newly_fetched_rate_restates_fx_accounting(
+def test_a_newly_fetched_rate_restates_the_rate_spine(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    restated: list[tuple[Database, str]] = []
-
-    def record_restatement(
-        called_db: Database, *, committed_change: str = "setting"
-    ) -> None:
-        restated.append((called_db, committed_change))
-
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
+    restated = _record_restatements(monkeypatch)
     adapter = _StubAdapter(
         RateObservation("USD", "EUR", _MON, Decimal("0.92"), "frankfurter")
     )
@@ -235,24 +262,15 @@ def test_a_newly_fetched_rate_restates_fx_accounting(
     service.resolve_rate("USD", "EUR", _MON)
     service.resolve_rate("USD", "EUR", _MON)
 
-    assert restated == [(db, "exchange rate")]
+    assert restated == [
+        (db, [EXCHANGE_RATES, EXCHANGE_RATE_COVERAGE], "exchange rate")
+    ], "only the fetch that wrote a row restates"
 
 
 def test_a_fetched_rate_remains_cached_when_fx_restatement_fails(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    failure = UserError(
-        "The exchange rate was saved, but derived FX accounting could not be rebuilt.",
-        code=error_codes.REFRESH_MODEL_FAILED,
-    )
-
-    def fail_restatement(_db: Database, *, committed_change: str = "setting") -> None:
-        raise failure
-
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        fail_restatement,
-    )
+    _fail_restatements(monkeypatch)
     service = CurrencyService(
         db,
         adapter=_StubAdapter(
@@ -1009,25 +1027,26 @@ def test_a_lowercase_override_is_found_by_an_uppercase_lookup(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One canonical spelling, or a correction is unreachable from the read path."""
-    restated: list[Database] = []
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        restated.append,
-    )
+    restated = _record_restatements(monkeypatch)
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
     service.set_override(" usd ", "eur", _MON, Decimal("0.95"), note=None)
 
     assert service.resolve_rate("USD", "EUR", _MON).rate == Decimal("0.95")
-    assert len(restated) == 1
+    assert restated == [(db, [EXCHANGE_RATE_OVERRIDES], "exchange rate")]
 
 
-def test_delete_override_returns_the_date_to_the_provider_rate(db: Database) -> None:
+def test_delete_override_returns_the_date_to_the_provider_rate(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
     _cache(db, rate="0.92000000")
     service.set_override("USD", "EUR", _MON, Decimal("0.95"), note="typo")
 
+    restated = _record_restatements(monkeypatch)
+
     assert service.delete_override("USD", "EUR", _MON) is True
 
+    assert restated == [(db, [EXCHANGE_RATE_OVERRIDES], "exchange rate")]
     resolved = service.resolve_rate("USD", "EUR", _MON)
     assert resolved.rate == Decimal("0.92000000")
     assert resolved.source == "frankfurter"
@@ -1037,11 +1056,7 @@ def test_delete_override_reports_that_there_was_nothing_to_delete(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A silent success reads as 'the override is gone' when there never was one."""
-    restated: list[Database] = []
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        restated.append,
-    )
+    restated = _record_restatements(monkeypatch)
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
 
     assert service.delete_override("USD", "EUR", _MON) is False
@@ -1051,18 +1066,7 @@ def test_delete_override_reports_that_there_was_nothing_to_delete(
 def test_override_remains_saved_when_fx_restatement_fails(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    failure = UserError(
-        "The setting was saved, but derived FX accounting could not be rebuilt.",
-        code=error_codes.REFRESH_MODEL_FAILED,
-    )
-
-    def fail_restatement(_db: Database) -> None:
-        raise failure
-
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        fail_restatement,
-    )
+    _fail_restatements(monkeypatch)
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
 
     with pytest.raises(UserError) as caught:
