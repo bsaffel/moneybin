@@ -520,15 +520,16 @@ class TestImportFilesConfirmFlow:
             row = db.conn.execute(query).fetchone()
             assert row is not None and row[0] == 0
 
+    @pytest.mark.parametrize("saved_excel_format", [False, True])
     def test_prepared_import_keeps_explicit_nondefault_worksheet(
-        self, db: Database, mocker: Any, tmp_path: Path
+        self, db: Database, mocker: Any, tmp_path: Path, saved_excel_format: bool
     ) -> None:
         from collections.abc import Generator
         from contextlib import contextmanager
 
         import openpyxl
 
-        path = tmp_path / "workbook.xlsx"
+        path = tmp_path / ("workbook.csv" if saved_excel_format else "workbook.xlsx")
         book = openpyxl.Workbook()
         first = book.active
         assert first is not None
@@ -538,6 +539,46 @@ class TestImportFilesConfirmFlow:
             sheet.append(["Date", "Amount", "Description"])
             sheet.append(["2026-01-01", "-2", description])
         book.save(path)
+        if saved_excel_format:
+            from moneybin.config import get_settings
+            from moneybin.extractors.tabular.formats import (
+                TabularFormat,
+                save_format_to_db,
+            )
+
+            save_format_to_db(
+                db,
+                TabularFormat(
+                    name="selected_excel",
+                    institution_name="Test",
+                    file_type="excel",
+                    sheet="Selected worksheet",
+                    header_signature=["Date", "Amount", "Description"],
+                    field_mapping={
+                        "transaction_date": "Date",
+                        "amount": "Amount",
+                        "description": "Description",
+                    },
+                    sign_convention="negative_is_expense",
+                    date_format="%Y-%m-%d",
+                ),
+                actor="test",
+            )
+            settings = get_settings()
+            tabular = settings.providers.tabular.model_copy(
+                update={"text_size_limit_mb": 0, "binary_size_limit_mb": 1}
+            )
+            mocker.patch(
+                "moneybin.config.get_settings",
+                return_value=settings.model_copy(
+                    update={
+                        "providers": settings.providers.model_copy(
+                            update={"tabular": tabular}
+                        )
+                    }
+                ),
+            )
+            assert 0 < path.stat().st_size < 1024 * 1024
 
         @contextmanager
         def connect(**kwargs: Any) -> Generator[Database, None, None]:
@@ -578,6 +619,7 @@ class TestImportFilesConfirmFlow:
             [
                 "files",
                 str(path),
+                *(["--format", "selected_excel"] if saved_excel_format else []),
                 "--sheet",
                 "Selected worksheet",
                 "--no-refresh",
@@ -588,7 +630,9 @@ class TestImportFilesConfirmFlow:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert observed == ["mapping review", "import confirmation"]
+        assert observed == (
+            [] if saved_excel_format else ["mapping review", "import confirmation"]
+        )
         assert db.conn.execute(
             "SELECT description FROM raw.tabular_transactions"
         ).fetchall() == [("Selected row",)]
@@ -3680,6 +3724,11 @@ class TestImportFilesConfirmFlow:
         """
         csv_file = tmp_path / "headerless.csv"
         csv_file.write_text("2026-01-05,-4.50,Coffee\n")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=csv_file.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(reason="header_row_consumed"),
@@ -3716,6 +3765,11 @@ class TestImportFilesConfirmFlow:
         """
         book = tmp_path / "book.xlsx"
         book.write_bytes(b"")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=book.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(
@@ -3762,6 +3816,11 @@ class TestImportFilesConfirmFlow:
         """
         book = tmp_path / "book.xlsx"
         book.write_bytes(b"")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=book.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(
@@ -3816,6 +3875,11 @@ class TestImportFilesConfirmFlow:
         """
         book = tmp_path / "book.xlsx"
         book.write_bytes(b"")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=book.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(
@@ -3910,6 +3974,11 @@ class TestImportFilesConfirmFlow:
         """
         csv_file = tmp_path / "headerless.csv"
         csv_file.write_text("2026-01-05,-4.50,Coffee\n")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=csv_file.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(reason="header_row_consumed"),
@@ -3956,6 +4025,11 @@ class TestImportFilesConfirmFlow:
         """
         book = tmp_path / "book.xlsx"
         book.write_bytes(b"")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=book.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(

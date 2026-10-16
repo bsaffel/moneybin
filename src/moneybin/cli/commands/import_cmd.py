@@ -582,15 +582,17 @@ def import_files_command(
                         try:
                             from moneybin.services.import_service import (
                                 detect_import_file_type,
+                                read_tabular_import_source,
                             )
 
                             if detect_import_file_type(file_paths[0]) == "tabular":
-                                from moneybin.services.tabular_preparation import (
-                                    read_tabular_source,
-                                )
-
-                                review_source = read_tabular_source(
-                                    file_paths[0], no_size_limit=no_size_limit
+                                review_source = read_tabular_import_source(
+                                    file_paths[0],
+                                    db=db,
+                                    format_name=format_name,
+                                    delimiter=delimiter,
+                                    encoding=encoding,
+                                    no_size_limit=no_size_limit,
                                 )
                                 import_kwargs["source_bytes"] = review_source
                             result = svc.import_file(**import_kwargs)

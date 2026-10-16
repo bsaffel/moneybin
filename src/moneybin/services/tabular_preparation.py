@@ -17,11 +17,24 @@ TabularPreviewPreparation = tuple[
 ]
 
 
-def read_tabular_source(path: Path, *, no_size_limit: bool = False) -> bytes:
+def read_tabular_source(
+    path: Path,
+    *,
+    no_size_limit: bool = False,
+    format_override: str | None = None,
+    delimiter_override: str | None = None,
+    encoding_override: str | None = None,
+) -> bytes:
     """Enforce the size gate before materializing one exact source snapshot."""
     from moneybin.extractors.tabular.format_detector import detect_format
 
-    format_info = detect_format(path, no_size_limit=no_size_limit)
+    format_info = detect_format(
+        path,
+        no_size_limit=no_size_limit,
+        format_override=format_override,
+        delimiter_override=delimiter_override,
+        encoding_override=encoding_override,
+    )
     with path.open("rb") as handle:
         source_bytes = handle.read(format_info.file_size + 1)
     if len(source_bytes) != format_info.file_size:

@@ -61,6 +61,7 @@ from moneybin.extractors.tabular.account_label import (
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
+    TabularFormat,
     resolve_read_settings,
 )
 from moneybin.metrics.observations import (
@@ -1220,6 +1221,50 @@ def _detect_file_type(file_path: Path) -> str:
 def detect_import_file_type(file_path: Path) -> str:
     """Expose canonical channel routing to read-only import callers."""
     return _detect_file_type(file_path)
+
+
+def _selected_tabular_format(
+    all_formats: dict[str, TabularFormat], format_name: str | None
+) -> TabularFormat | None:
+    if not format_name:
+        return None
+    if format_name not in all_formats:
+        raise ValueError(
+            f"Unknown format {format_name!r}. Available: {sorted(all_formats)}"
+        )
+    return all_formats[format_name]
+
+
+def read_tabular_import_source(
+    file_path: Path,
+    *,
+    db: Database,
+    format_name: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+    no_size_limit: bool = False,
+) -> bytes:
+    """Bound the snapshot with the same selected read settings as import."""
+    from moneybin.extractors.tabular.formats import (
+        load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
+    )
+    from moneybin.services.tabular_preparation import read_tabular_source
+
+    selected = None
+    if format_name:
+        selected = _selected_tabular_format(
+            merge_formats(load_builtin_formats(), load_formats_from_db(db)), format_name
+        )
+    settings = resolve_read_settings(selected, delimiter=delimiter, encoding=encoding)
+    return read_tabular_source(
+        file_path,
+        no_size_limit=no_size_limit,
+        format_override=settings.format_override,
+        delimiter_override=settings.delimiter,
+        encoding_override=settings.encoding,
+    )
 
 
 # Fields a caller may capture for a freshly-minted ("new"-bound) account at
@@ -2705,11 +2750,7 @@ class ImportService:
 
         matched_format: TabularFormat | None = None
         if reviewed_plan is None and format_name:
-            if format_name not in all_formats:
-                raise ValueError(
-                    f"Unknown format {format_name!r}. Available: {sorted(all_formats)}"
-                )
-            matched_format = all_formats[format_name]
+            matched_format = _selected_tabular_format(all_formats, format_name)
 
         # Stage 1: Format detection — apply matched format's properties as
         # defaults. `import preview` resolves the same eight values from the
