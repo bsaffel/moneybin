@@ -286,15 +286,28 @@ def test_invoking_a_stub_counts_it_against_that_command() -> None:
     assert _count("moneybin_cli_stub_invoked_total", "sync_schedule_show") == before + 1
 
 
-def test_an_unfinished_mode_of_a_working_command_is_not_counted_as_a_stub() -> None:
-    """`review --interactive` prints the stub message but is not stub demand.
+@pytest.mark.parametrize("interactive", [False, True])
+def test_implemented_interactive_review_is_not_counted_as_a_stub(
+    monkeypatch: pytest.MonkeyPatch, interactive: bool
+) -> None:
+    """Both terminal refusal and a completed review leave stub demand unchanged."""
+    from dataclasses import replace
 
-    The counter ranks whole commands a user reached without `--help`
-    advertising them. `review` is documented and runs; only its interactive
-    mode is unfinished, so a `review` label here would report demand for
-    something that already exists — and the deprecated `transactions review`
-    alias would split that one mode across two labels on top of it.
-    """
+    from moneybin.cli.commands.interactive_review import ReviewItem
+
+    def terminal_policy(*, no_pager: bool = False) -> TerminalPolicy:
+        return replace(_interactive_policy(), interactive=interactive)
+
+    def empty_queue(type_: str, limit: int | None = None) -> list[ReviewItem]:
+        return []
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.transactions.review.get_terminal_policy",
+        terminal_policy,
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.interactive_review.load_items", empty_queue
+    )
     from moneybin.cli.main import app
 
     def total() -> float:
@@ -310,7 +323,8 @@ def test_an_unfinished_mode_of_a_working_command_is_not_counted_as_a_stub() -> N
 
     result = runner.invoke(app, ["review", "--interactive"])
 
-    assert result.exit_code == 0, result.output
-    assert "not yet implemented" in result.output
-    # Every label, not just `review`: the alias would land on a second one.
+    assert result.exit_code == (0 if interactive else 2), result.output
+    assert "not yet implemented" not in result.output
+    assert ("Review session" if interactive else "requires a terminal") in result.output
+    # Every label, including any deprecated alias label, remains unchanged.
     assert total() == before

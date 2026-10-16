@@ -5,9 +5,8 @@ CLI-only collapse (per moneybin-cli.md v2). MCP keeps separate
 tools because their result shapes differ; the orientation tool
 ``review`` returns the counts.
 
-Counts are the default. The item-by-item walk is stubbed for v2 and reachable
-only via ``--interactive``, so no invocation a user is likely to type lands on
-the stub.
+Counts are the default. ``--interactive`` walks the selected queues in a terminal
+with explicit per-item decisions, skip, and quit.
 
 ``transactions_review`` is a **deprecated alias** for the top-level
 ``review_command`` (``moneybin review``). It emits a deprecation warning
@@ -33,8 +32,6 @@ from moneybin.cli.render import build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
-
-from ..stubs import _not_implemented
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +63,21 @@ def review_impl(
     without duplicating logic.
     """
     # Counts have a meaningful all-queues view; a mutation does not.  Ask the
-    # human to name its only supported queue instead of treating the first
+    # human to name the decision's queue instead of treating the first
     # available queue as an implicit target.
     decides = bool(confirm_id or reject_id or confirm_all)
     if type_ is None:
         if decides:
+            if output == OutputFormat.JSON:
+                raise typer.BadParameter(
+                    "--type is required for JSON review decisions", param_hint="--type"
+                )
+            choices = (Choice("matches", "Matches"),)
+            if reject_id and not confirm_id and not confirm_all:
+                choices += (Choice("categorize", "Categorization"),)
             type_ = choose_required(
                 None,
-                choices=(Choice("matches", "Matches"),),
+                choices=choices,
                 flag="--type",
                 policy=get_terminal_policy(),
             )
@@ -95,15 +99,16 @@ def review_impl(
         raise typer.Exit(2)
 
     if decides:
-        # `--type matches` stays explicit rather than being inferred from the
-        # decide flags. They are match-only today, but the queued work extends
-        # them to categorize and the three link queues — at which point a bare
-        # `--confirm <id>` names an id whose queue we would have to guess, and
-        # guessing wrong accepts the wrong decision silently.
+        if type_ == "categorize":
+            if not reject_id or confirm_id or confirm_all:
+                raise typer.BadParameter(
+                    "--type categorize supports only --reject <decision-id>; use transactions categorize commit for assignments."
+                )
+            _review_categorization_reject(reject_id, output=output)
+            return
         if type_ != "matches":
             logger.error(
-                "--confirm/--reject/--confirm-all require --type matches "
-                "(categorize non-interactive review is not yet supported)"
+                "--confirm/--confirm-all require --type matches; --reject supports matches or categorize"
             )
             raise typer.Exit(2)
         _review_matches_noninteractive(
@@ -116,9 +121,16 @@ def review_impl(
         return
 
     if interactive:
-        # Not a whole-command stub: `review` works, and only this mode is
-        # unfinished. `stubs.py` explains what that excludes it from.
-        _not_implemented("the interactive review loop", whole_command=False)
+        if limit < 1:
+            raise typer.BadParameter("--limit must be at least 1", param_hint="--limit")
+        policy = get_terminal_policy(no_pager=True)
+        if output != OutputFormat.TEXT or not policy.interactive:
+            raise typer.BadParameter(
+                "--interactive requires a terminal and text output; use the existing domain commands for scripted decisions."
+            )
+        from moneybin.cli.commands.interactive_review import run_review
+
+        run_review(type_, limit, policy)
         return
 
     # Counts are the default: they are what `--help` describes, and the only
@@ -136,13 +148,17 @@ def transactions_review(
         False, "--status", help="Show queue counts (the default)"
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", help="Walk the queue item by item (not yet built)"
+        False,
+        "--interactive",
+        help="Review pending items with explicit decisions, skip, or quit",
     ),
     confirm_id: str | None = typer.Option(
         None, "--confirm", help="Non-interactive: confirm one item by ID"
     ),
     reject_id: str | None = typer.Option(
-        None, "--reject", help="Non-interactive: reject one item by ID"
+        None,
+        "--reject",
+        help="Non-interactive: reject one match or categorization decision by ID",
     ),
     confirm_all: bool = typer.Option(
         False, "--confirm-all", help="Non-interactive: confirm all items in scope"
@@ -172,6 +188,60 @@ def transactions_review(
         no_pager=no_pager,
         output=output,
         quiet=quiet,
+    )
+
+
+def _review_categorization_reject(decision_id: str, *, output: OutputFormat) -> None:
+    """Reject the same versioned attempt as the interactive categorization queue."""
+    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.privacy.payloads.reviews import (
+        ReviewDecisionOutcome,
+        ReviewsDecidePayload,
+    )
+    from moneybin.protocol.write_contracts import CategorizationDecisionRequest
+    from moneybin.services.mutation_context import current_operation_id
+    from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+    with handle_cli_errors(cli_actor="review", payload_type=ReviewsDecidePayload):
+        operation_id = current_operation_id()
+        with get_database(read_only=False) as db:
+            applied = ReviewDecisionsService(db, actor="cli").apply_ordinary([
+                CategorizationDecisionRequest(
+                    kind="categorization", decision_id=decision_id, decision="reject"
+                )
+            ])
+    payload = ReviewsDecidePayload(
+        results=[
+            ReviewDecisionOutcome(
+                kind=item.request.kind,
+                decision_id=item.request.decision_id,
+                decision=item.request.decision,
+                status=item.status,
+                changed=item.changed,
+                operation_id=operation_id,
+            )
+            for item in applied.items
+        ],
+        applied_count=sum(item.changed for item in applied.items),
+        operation_id=operation_id,
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(build_envelope(data=payload), output, cli_actor="review")
+        return
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Decision", decision_id),
+                    ("Status", applied.items[0].status),
+                    ("Operation", operation_id),
+                ],
+                title="Categorization decision saved",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
 
 
@@ -495,7 +565,7 @@ def _print_status(type_: str, output: OutputFormat, *, no_pager: bool) -> None:
 
     labels = {
         "matches": ("Matches pending", s.matches_pending),
-        "categorize": ("Uncategorized transactions", s.categorize_pending),
+        "categorize": ("Categorization decisions pending", s.categorize_pending),
         "account-links": ("Account-link decisions pending", s.account_links_pending),
         "merchant-links": ("Merchant-link decisions pending", s.merchant_links_pending),
         "security-links": ("Security-link decisions pending", s.security_links_pending),

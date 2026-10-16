@@ -223,6 +223,8 @@ class PendingTxnRow:
     # references this transaction (F19) — categorizing it would double-count
     # against the eventual transfer pair once matching resolves it.
     pending_transfer_match: Annotated[bool, DataClass.AGGREGATE]
+    # Rejected attempts leave the transaction uncategorized but no longer pending.
+    decision_id: Annotated[str | None, DataClass.RECORD_ID] = None
 
 
 @row_set("transactions")

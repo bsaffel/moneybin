@@ -748,6 +748,65 @@ class LinkDecisionsRepoBase(BaseRepo):
         """Read active review items in this queue's declared grouping order."""
         return self._list_with_status(status="pending", order_by=self.pending_order_by)
 
+    def list_pending_groups(
+        self,
+        *,
+        group_columns: tuple[str, ...],
+        item_id_columns: tuple[str, ...],
+        limit: int | None = None,
+        decision_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read complete selected groups before decoding or display enrichment."""
+        if limit is not None and limit <= 0:
+            return []
+        if not group_columns or not set(group_columns + item_id_columns) <= set(
+            self.columns
+        ):
+            raise ValueError("Review grouping must use declared repository columns")
+        group_sql = ", ".join(quote_ident(column) for column in group_columns)
+        order_sql = ", ".join(quote_ident(column) for column in self.pending_order_by)
+        # A legacy group's displayed source is its first decision's source.
+        item_parts = ", ".join(
+            quote_ident(column)
+            if column in group_columns
+            else f"FIRST({quote_ident(column)} ORDER BY {order_sql})"
+            for column in item_id_columns
+        )
+        params: list[Any] = []
+        if decision_id is not None:
+            selection = (
+                "WHERE decision_id = ? AND status = 'pending' AND reversed_at IS NULL"
+            )
+            params.append(decision_id)
+        else:
+            selection = (
+                "WHERE status = 'pending' AND reversed_at IS NULL "
+                f"GROUP BY {group_sql} ORDER BY CONCAT_WS(':', {item_parts}), {group_sql}"
+            )
+            if limit is not None:
+                selection += " LIMIT ?"
+                params.append(limit)
+        same_group = " AND ".join(
+            f"selected.{quote_ident(column)} = queue.{quote_ident(column)}"
+            for column in group_columns
+        )
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH selected AS (
+                    SELECT {group_sql} FROM {self.table_ref.full_name} {selection}
+                )
+                SELECT {self._columns_sql()} FROM {self.table_ref.full_name} AS queue
+                WHERE status = 'pending' AND reversed_at IS NULL
+                  AND EXISTS (SELECT 1 FROM selected WHERE {same_group})
+                ORDER BY {order_sql}
+                """,  # noqa: S608  # TableRef and validated quoted columns only; values bound
+                params,
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        return [self._decode_row(row) for row in rows]
+
     def _count_pending(self) -> int:
         """Return pending queue depth, treating an uninitialized queue as empty."""
         try:

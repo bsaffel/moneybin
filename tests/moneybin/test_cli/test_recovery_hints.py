@@ -16,7 +16,7 @@ import logging
 import pytest
 
 from moneybin.cli.commands.accounts.links import (
-    _report_rematch,  # pyright: ignore[reportPrivateUsage]  # the unit that emits the hints
+    report_rematch,  # pyright: ignore[reportPrivateUsage]  # the unit that emits the hints
 )
 from moneybin.cli.utils import warn_transfers_retired
 from moneybin.matching.reconciliation import (
@@ -149,7 +149,7 @@ def test_retirement_warning_is_silent_on_zero(
 
 def test_partial_rematch_report_publishes_runnable_recovery() -> None:
     """The crash branch: counts are incomplete and some merges already landed."""
-    notices = _report_rematch(_rematch(error="boom"))
+    notices = report_rematch(_rematch(error="boom"))
 
     assert notices, "the partial-failure branch did not report"
     assert_published_commands_resolve("\n".join(notices))
@@ -165,7 +165,7 @@ def test_partial_rematch_report_names_the_decisions_that_landed() -> None:
     of a transaction in the ledger.
     """
     joined = "\n".join(
-        _report_rematch(_rematch(error="boom", auto_merged=4, pending_review=2))
+        report_rematch(_rematch(error="boom", auto_merged=4, pending_review=2))
     )
     assert "4" in joined, f"the crash branch hid the merges that landed: {joined}"
     assert "2" in joined, f"the crash branch hid the proposals that landed: {joined}"
@@ -183,7 +183,7 @@ def test_partial_rematch_report_claims_nothing_landed_when_nothing_did(
     audit log for decisions that were never made.
     """
     with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
-        _report_rematch(_rematch(error="boom"))
+        report_rematch(_rematch(error="boom"))
 
     joined = "\n".join(caplog.messages)
     assert "may already have been merged" not in joined
@@ -226,7 +226,7 @@ def test_mcp_partial_rematch_states_its_counts_once() -> None:
 
 def test_pending_transfer_hint_publishes_runnable_recovery() -> None:
     """The clean branch that raised transfers still owes a way to review them."""
-    notices = _report_rematch(_rematch(pending_transfers=3))
+    notices = report_rematch(_rematch(pending_transfers=3))
 
     assert notices, "the pending-transfer branch did not report"
     assert_published_commands_resolve("\n".join(notices))
@@ -267,5 +267,5 @@ def test_an_absent_match_stage_reads_the_same_on_both_surfaces() -> None:
     actions = rematch_actions(no_stages)
     assert any("could not run" in action for action in actions), actions
 
-    notices = _report_rematch(no_stages)
+    notices = report_rematch(no_stages)
     assert any("could not run" in notice for notice in notices), notices

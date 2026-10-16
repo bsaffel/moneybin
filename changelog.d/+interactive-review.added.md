@@ -1,0 +1,1 @@
+`moneybin review --interactive` now walks the five shipped review queues with explicit decisions, category or identity target selection, skip, quit, and partial-progress receipts. Review counts and `categorize pending --pending-only` use current versioned attempts; scripted callers can discover their IDs and reject them with `review --type categorize --reject`.
