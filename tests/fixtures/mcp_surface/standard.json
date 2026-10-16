@@ -1,5 +1,5 @@
 {
-  "sha256": "492064f0fc4331c46d8cd7e15e0c2ac1901eed2bc4c23db736ac16edcd8b5d06",
+  "sha256": "fb3ffda8f8fd7cd002c3867ce2c6b7fcf4000c99c433bf06c5812c3105f628ea",
   "tool_count": 50,
   "tools": [
     {
@@ -1833,6 +1833,20 @@
                 }
               ],
               "default": null
+            },
+            "omit_fields": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -1844,11 +1858,11 @@
         "title": "Import Preview"
       },
       "description_bytes": 494,
-      "input_schema_bytes": 228,
+      "input_schema_bytes": 328,
       "name": "import_preview",
       "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 945
+      "total_bytes": 1045
     },
     {
       "annotation_bytes": 90,
@@ -5346,5 +5360,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 65323
+  "total_bytes": 65423
 }

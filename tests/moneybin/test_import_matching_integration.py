@@ -86,8 +86,14 @@ class TestImportRefreshIntegration:
 
         db = MagicMock()
         db.path = tmp_path / "test.duckdb"
-        with pytest.raises(RuntimeError, match="SQLMesh transforms failed"):
+        with pytest.raises(RuntimeError, match="SQLMesh transforms failed") as caught:
             ImportService(db).import_file(qfx, refresh=True)
+        from moneybin.services.import_service import ImportRefreshError
+
+        assert isinstance(caught.value, ImportRefreshError)
+        assert caught.value.result is mock_import_ofx.return_value
+        assert caught.value.result is not None
+        assert caught.value.result.rows_loaded == 3
 
     @patch("moneybin.services.import_service._refresh")
     @patch("moneybin.services.import_service.ImportService._import_ofx")

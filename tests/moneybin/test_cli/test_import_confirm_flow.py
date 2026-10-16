@@ -14,7 +14,7 @@ import re
 import shlex
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,6 +22,7 @@ import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
+from moneybin.database import Database
 from moneybin.extractors.confidence import Confidence
 from moneybin.services.account_resolution_types import (
     AccountCandidate,
@@ -450,6 +451,1788 @@ def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
 
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
+
+    def test_preparation_unreadable_date_uses_existing_recovery_without_writes(
+        self, db: Database, mocker: Any, tmp_path: Path
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        from moneybin.services.import_service import ImportService
+
+        path = tmp_path / "statement.csv"
+        path.write_text(
+            "Date,Amount,Description,Unrecognized\n2026-01-01,-2,Example,pending\n"
+        )
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        prepared = mocker.spy(ImportService, "prepare_tabular_import")
+        imported = mocker.spy(ImportService, "import_file")
+        answers = iter(["edit", "transaction_date", "column:Unrecognized", "confirm"])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            row = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert row is not None and row[0] == 0
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(app, ["files", str(path), "--no-refresh"])
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit), repr(result.exception)
+        assert isinstance(prepared.spy_exception, ImportConfirmationRequiredError)
+        assert prepared.spy_exception.outcome.reason == "unreadable_date"
+        assert "--date-format" in result.output
+        assert "moneybin import preview" in result.output
+        assert "Traceback" not in result.output
+        assert imported.call_count == 1
+        for query in (
+            "SELECT count(*) FROM raw.tabular_transactions",
+            "SELECT count(*) FROM app.import_log",
+            "SELECT count(*) FROM app.account_links",
+            "SELECT count(*) FROM app.tabular_formats",
+        ):
+            row = db.conn.execute(query).fetchone()
+            assert row is not None and row[0] == 0
+
+    @pytest.mark.parametrize("saved_excel_format", [False, True])
+    def test_prepared_import_keeps_explicit_nondefault_worksheet(
+        self, db: Database, mocker: Any, tmp_path: Path, saved_excel_format: bool
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        import openpyxl
+
+        path = tmp_path / ("workbook.csv" if saved_excel_format else "workbook.xlsx")
+        book = openpyxl.Workbook()
+        first = book.active
+        assert first is not None
+        first.title = "Default"
+        second = book.create_sheet("Selected worksheet")
+        for sheet, description in [(first, "Default row"), (second, "Selected row")]:
+            sheet.append(["Date", "Amount", "Description"])
+            sheet.append(["2026-01-01", "-2", description])
+        book.save(path)
+        if saved_excel_format:
+            from moneybin.config import get_settings
+            from moneybin.extractors.tabular.formats import (
+                TabularFormat,
+                save_format_to_db,
+            )
+
+            save_format_to_db(
+                db,
+                TabularFormat(
+                    name="selected_excel",
+                    institution_name="Test",
+                    file_type="excel",
+                    sheet="Selected worksheet",
+                    header_signature=["Date", "Amount", "Description"],
+                    field_mapping={
+                        "transaction_date": "Date",
+                        "amount": "Amount",
+                        "description": "Description",
+                    },
+                    sign_convention="negative_is_expense",
+                    date_format="%Y-%m-%d",
+                ),
+                actor="test",
+            )
+            settings = get_settings()
+            tabular = settings.providers.tabular.model_copy(
+                update={"text_size_limit_mb": 0, "binary_size_limit_mb": 1}
+            )
+            mocker.patch(
+                "moneybin.config.get_settings",
+                return_value=settings.model_copy(
+                    update={
+                        "providers": settings.providers.model_copy(
+                            update={"tabular": tabular}
+                        )
+                    }
+                ),
+            )
+            assert 0 < path.stat().st_size < 1024 * 1024
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        observed: list[str] = []
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            observed.append(kwargs["flag"])
+            row = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert row is not None and row[0] == 0
+            return "accept" if kwargs["flag"] == "mapping review" else "confirm"
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(path),
+                *(["--format", "selected_excel"] if saved_excel_format else []),
+                "--sheet",
+                "Selected worksheet",
+                "--no-refresh",
+                "--account-name",
+                "test",
+                "--account-binding",
+                "test=new",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert observed == (
+            [] if saved_excel_format else ["mapping review", "import confirmation"]
+        )
+        assert db.conn.execute(
+            "SELECT description FROM raw.tabular_transactions"
+        ).fetchall() == [("Selected row",)]
+
+    @pytest.mark.parametrize("suffix", [".txt", ".dat"])
+    def test_generic_ofx_source_does_not_use_tabular_snapshot(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        suffix: str,
+    ) -> None:
+        path = tmp_path / f"statement{suffix}"
+        path.write_text("OFXHEADER:100\nDATA:OFXSGML\n<OFX></OFX>")
+        snapshot = mocker.patch(
+            "moneybin.services.tabular_preparation.read_tabular_source"
+        )
+        result = runner.invoke(app, ["files", str(path), "--no-refresh"])
+        assert result.exit_code == 0, result.output
+        snapshot.assert_not_called()
+        assert "source_bytes" not in mock_import_file.call_args.kwargs
+
+    @pytest.mark.parametrize(
+        "scenario", ["ofx_dat", "unsupported", "missing", "permission"]
+    )
+    def test_preview_optional_omission_preserves_channel_and_read_refusals(
+        self,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: Any,
+        scenario: str,
+    ) -> None:
+        suffix = (
+            ".dat"
+            if scenario in {"ofx_dat", "permission"}
+            else ".bin"
+            if scenario == "unsupported"
+            else ".csv"
+        )
+        path = tmp_path / f"statement{suffix}"
+        if scenario != "missing":
+            path.write_text(
+                "OFXHEADER:100\nDATA:OFXSGML\n<OFX></OFX>"
+                if scenario == "ofx_dat"
+                else "Date,Amount,Description\n2026-01-01,-2,Example\n"
+            )
+        if scenario == "permission":
+            mocker.patch(
+                "moneybin.services.import_service.detect_import_file_type",
+                side_effect=PermissionError("denied"),
+            )
+        read = mocker.patch("moneybin.extractors.tabular.readers.read_file")
+        result = runner.invoke(app, ["preview", str(path), "--omit-field", "status"])
+        assert result.exit_code != 0
+        read.assert_not_called()
+        if scenario == "ofx_dat":
+            assert "requires a tabular file" in result.output
+        elif scenario == "unsupported":
+            assert "Unsupported file type" in caplog.text
+        elif scenario == "missing":
+            assert "File not found" in caplog.text
+        else:
+            assert "denied" in caplog.text or "Permission" in caplog.text
+
+    @pytest.mark.parametrize("suffix", [".tab", ".pq", ".arrow", ".ipc", ".dat"])
+    def test_tabular_alias_snapshot_binds_mapping_review(
+        self, db: Database, mocker: Any, tmp_path: Path, caplog: Any, suffix: str
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        import polars as pl
+
+        path = tmp_path / f"statement{suffix}"
+
+        def write(description: str) -> None:
+            frame = pl.DataFrame({
+                "Date": ["2026-01-01"],
+                "Amount": ["-2"],
+                "Description": [description],
+                "State": ["WA"],
+            })
+            if suffix == ".pq":
+                frame.write_parquet(path)
+            elif suffix in {".arrow", ".ipc"}:
+                frame.write_ipc(path)
+            else:
+                frame.write_csv(path, separator="\t" if suffix == ".tab" else ",")
+
+        write("Example")
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        mapping_answers = iter(["edit", "remove:status", "confirm"])
+        observed: list[str] = []
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            observed.append(kwargs["flag"])
+            if kwargs["flag"] == "import confirmation":
+                return "confirm"
+            answer = next(mapping_answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            if kwargs["flag"] == "mapping confirmation":
+                write("Changed")
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(path),
+                "--no-refresh",
+                "--account-name",
+                "test",
+                "--account-binding",
+                "test=new",
+            ],
+        )
+        assert "mapping confirmation" in observed, result.output
+        assert result.exit_code == 1, result.output
+        assert "file changed after review" in caplog.text
+        for query in (
+            "SELECT count(*) FROM raw.tabular_transactions",
+            "SELECT count(*) FROM app.import_log",
+            "SELECT count(*) FROM app.account_links",
+        ):
+            row = db.conn.execute(query).fetchone()
+            assert row is not None and row[0] == 0
+
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            ".csv",
+            ".tsv",
+            ".tab",
+            ".txt",
+            ".dat",
+            ".xlsx",
+            ".parquet",
+            ".pq",
+            ".feather",
+            ".arrow",
+            ".ipc",
+        ],
+    )
+    def test_preview_optional_omission_supports_tabular_aliases(
+        self, mock_db: MagicMock, tmp_path: Path, suffix: str
+    ) -> None:
+        import polars as pl
+
+        path = tmp_path / f"statement{suffix}"
+        frame = pl.DataFrame({
+            "Date": ["2026-01-01"],
+            "Amount": ["-2"],
+            "Description": ["Example"],
+            "State": ["WA"],
+        })
+        if suffix in {".parquet", ".pq"}:
+            frame.write_parquet(path)
+        elif suffix in {".feather", ".arrow", ".ipc"}:
+            frame.write_ipc(path)
+        elif suffix == ".xlsx":
+            import openpyxl
+
+            book = openpyxl.Workbook()
+            sheet = book.active
+            assert sheet is not None
+            sheet.append(frame.columns)
+            sheet.append(frame.row(0))
+            book.save(path)
+        else:
+            frame.write_csv(path, separator="\t" if suffix in {".tab", ".tsv"} else ",")
+        result = runner.invoke(app, ["preview", str(path), "--omit-field", "status"])
+        assert result.exit_code == 0, result.output
+        assert "transaction_date" in result.output
+        assert "status" not in result.output
+
+    def test_bridge_confirmation_refuses_optional_omissions(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "statement.pdf"
+        path.write_text("synthetic")
+        bridge = tmp_path / "bridge.json"
+        bridge.write_text("{}")
+        apply_bridge = mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response"
+        )
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(path),
+                "--bridge-response",
+                str(bridge),
+                "--confirm",
+                "--omit-field",
+                "status",
+            ],
+        )
+        apply_bridge.assert_not_called()
+        assert result.exit_code == 2, result.output
+        assert "cannot be combined" in result.output
+
+    @pytest.mark.parametrize(
+        "decision",
+        [
+            "confirm",
+            "cancel_sign",
+            "cancel_account",
+            "cancel_final",
+            "source_changed",
+            "mapping_changed",
+            "account_changed",
+        ],
+    )
+    def test_complete_interactive_review_keeps_one_exact_prepared_decision(
+        self, db: Database, mocker: Any, tmp_path: Path, decision: str, caplog: Any
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        from moneybin.extractors.tabular.formats import load_formats_from_db
+
+        if decision == "account_changed":
+            from tests.moneybin.db_helpers import create_core_tables
+
+            create_core_tables(db)
+            db.conn.execute(
+                "INSERT INTO core.dim_accounts (account_id, display_name) VALUES ('existing1234', 'Existing account')"
+            )
+
+        path = tmp_path / "geography.csv"
+        path.write_text(
+            "Date,Transaction Credit,Description,State\n2026-01-01,-2,Example,WA\n"
+        )
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        mapping_answers = iter(["edit", "remove:status", "confirm"])
+        observed: list[str] = []
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            row = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert row is not None and row[0] == 0
+            flag = kwargs["flag"]
+            for query in (
+                "SELECT count(*) FROM app.account_links",
+                "SELECT count(*) FROM app.import_log",
+            ):
+                row = db.conn.execute(query).fetchone()
+                assert row is not None and row[0] == 0
+            observed.append(flag)
+            if flag in {"mapping review", "destination field", "mapping confirmation"}:
+                answer = next(mapping_answers)
+                if flag == "mapping confirmation" and decision == "mapping_changed":
+                    path.write_text(path.read_text().replace("Example", "Changed"))
+            elif flag == "sign convention":
+                answer = "cancel" if decision == "cancel_sign" else "negative_is_income"
+            elif flag == "--account-binding":
+                answer = (
+                    "cancel"
+                    if decision == "cancel_account"
+                    else "existing1234"
+                    if decision == "account_changed"
+                    else "new"
+                )
+            else:
+                assert flag == "import confirmation"
+                if decision == "source_changed":
+                    path.write_text(path.read_text().replace("Example", "Changed"))
+                if decision == "account_changed":
+                    db.conn.execute(
+                        "DELETE FROM core.dim_accounts WHERE account_id = 'existing1234'"
+                    )
+                answer = "cancel" if decision == "cancel_final" else "confirm"
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(app, ["files", str(path), "--no-refresh"])
+        required_stage = {
+            "cancel_sign": "sign convention",
+            "cancel_account": "--account-binding",
+            "cancel_final": "import confirmation",
+            "source_changed": "import confirmation",
+            "confirm": "import confirmation",
+            "mapping_changed": "mapping confirmation",
+            "account_changed": "import confirmation",
+        }[decision]
+        assert required_stage in observed, result.output
+        assert result.exit_code == (0 if decision == "confirm" else 1), result.output
+        if decision in {"source_changed", "mapping_changed"}:
+            assert "file changed after review" in caplog.text
+        if decision == "account_changed":
+            assert "not an account in this database" in caplog.text
+        rows = db.conn.execute("SELECT status FROM raw.tabular_transactions").fetchall()
+        formats = load_formats_from_db(db)
+        if decision == "confirm":
+            assert rows == [(None,)]
+            assert "status" not in next(iter(formats.values())).field_mapping
+            assert next(iter(formats.values())).sign_convention == "negative_is_income"
+            assert observed[-3:] == [
+                "sign convention",
+                "--account-binding",
+                "import confirmation",
+            ]
+            from moneybin.services.import_service import ImportService
+
+            fmt = next(iter(formats.values()))
+            replay = ImportService(db).import_file(
+                path,
+                format_name=fmt.name,
+                refresh=False,
+                force=True,
+            )
+            assert (
+                replay.field_mapping is not None
+                and "status" not in replay.field_mapping
+            )
+            assert all(
+                row[0] is None
+                for row in db.conn.execute(
+                    "SELECT status FROM raw.tabular_transactions"
+                ).fetchall()
+            )
+        else:
+            assert rows == []
+            assert formats == {}
+
+    @pytest.mark.parametrize("gate", ["sign", "account"])
+    def test_optional_omission_survives_fresh_recovery_command(
+        self, db: Database, mocker: Any, tmp_path: Path, gate: str
+    ) -> None:
+        import shlex
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        from moneybin.cli.commands import import_cmd
+        from moneybin.extractors.tabular.formats import load_formats_from_db
+
+        path = tmp_path / "geography.csv"
+        amount_header = "Transaction Credit" if gate == "sign" else "Amount"
+        path.write_text(
+            f"Date,{amount_header},Description,State\n2026-01-01,-2,Example,WA\n"
+        )
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=4000,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        answers = iter(["edit", "remove:status", "confirm"])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            row = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert row is not None and row[0] == 0
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            if answer == "confirm":
+                # Exercise the serializable recovery contract when the caller
+                # cannot continue prompting in this process.
+                cast(Any, import_cmd.get_terminal_policy()).interactive = False
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        helper = (
+            "_sign_recovery_commands" if gate == "sign" else "_account_recovery_command"
+        )
+        recovery = mocker.spy(import_cmd, helper)
+        args = ["files", str(path), "--no-refresh"]
+        if gate == "sign":
+            args.extend(["--account-name", "test", "--account-binding", "test=new"])
+        first = runner.invoke(app, args)
+        assert first.exit_code == 1, first.output
+        assert recovery.call_count >= 1, first.output
+        command = recovery.spy_return
+        if gate == "sign":
+            command = command[0].split(": ", 1)[1]
+        command = command.replace("<account_id|new>", "new")
+        retry = shlex.split(command)
+        assert retry[:2] == ["moneybin", "import"]
+        second = runner.invoke(app, retry[2:])
+        assert second.exit_code == 0, second.output
+        rows = db.conn.execute("SELECT status FROM raw.tabular_transactions").fetchall()
+        assert rows == [(None,)]
+        formats = load_formats_from_db(db)
+        assert len(formats) == 1
+        assert "status" not in next(iter(formats.values())).field_mapping
+
+    @pytest.mark.parametrize(
+        "decision",
+        ["confirm", "cancel", "restore", "move", "move_restore", "move_cancel"],
+    )
+    def test_interactive_optional_omission_persists_and_replays(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        decision: str,
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        from moneybin.extractors.tabular.formats import load_formats_from_db
+        from moneybin.services.import_service import ImportService
+
+        path = tmp_path / "geography.csv"
+        moving = decision.startswith("move")
+        path.write_text(
+            "Date,Amount,Description,State,Memo\n2026-01-01,-2,Example,WA,Reviewed\n"
+            if moving
+            else "Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n"
+        )
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        answers = iter([
+            "edit",
+            *(
+                [
+                    "description",
+                    "column:State",
+                    "reassign",
+                    "edit",
+                    "description",
+                    "column:Memo",
+                    "reassign",
+                ]
+                if moving
+                else ["remove:status"]
+            ),
+            *(
+                ["edit", "status", "column:State"]
+                if decision in {"restore", "move_restore"}
+                else []
+            ),
+            "cancel" if decision in {"cancel", "move_cancel"} else "confirm",
+        ])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            count = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert count is not None and count[0] == 0
+            if kwargs["flag"] == "import confirmation":
+                assert "confirm" in [choice.value for choice in kwargs["choices"]]
+                return "confirm"
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            if kwargs["flag"] == "destination field":
+                assert not {
+                    "remove:transaction_date",
+                    "remove:description",
+                    "remove:amount",
+                    "remove:debit_amount",
+                    "remove:credit_amount",
+                }.intersection(choice.value for choice in kwargs["choices"])
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(path),
+                "--no-refresh",
+                "--account-name",
+                "test",
+                "--account-binding",
+                "test=new",
+            ],
+        )
+        cancelled = decision in {"cancel", "move_cancel"}
+        restored = decision in {"restore", "move_restore"}
+        assert result.exit_code == (1 if cancelled else 0), result.output
+        saved = load_formats_from_db(db)
+        if cancelled:
+            assert saved == {}
+            count = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert count is not None and count[0] == 0
+            return
+        assert len(saved) == 1
+        fmt = next(iter(saved.values()))
+        assert ("status" in fmt.field_mapping) is restored
+        if moving:
+            assert fmt.field_mapping["description"] == "Memo"
+            assert "memo" not in fmt.field_mapping
+        assert "State" in fmt.header_signature
+        rows = db.conn.execute(
+            "SELECT account_id, status FROM raw.tabular_transactions"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][1] == ("WA" if restored else None)
+        replay = ImportService(db).import_file(
+            path, format_name=fmt.name, account_id=rows[0][0], refresh=False, force=True
+        )
+        assert replay.field_mapping is not None
+        assert ("status" in replay.field_mapping) is restored
+        assert ("status" in load_formats_from_db(db)[fmt.name].field_mapping) is (
+            restored
+        )
+
+    def test_source_reassignment_preview_retains_original_source_samples(
+        self, mocker: Any, capsys: Any
+    ) -> None:
+        from moneybin.cli.commands.import_cmd import (
+            _review_import_mapping,  # pyright: ignore[reportPrivateUsage]  # reviewed sample provenance
+        )
+
+        outcome = _make_confirmation_error(
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Memo",
+            }
+        ).outcome
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(interactive=True),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=[
+                "edit",
+                "memo",
+                "column:Memo",
+                "reassign",
+                "description",
+                "column:Notes",
+                "confirm",
+            ],
+        )
+        reviewed = _review_import_mapping(outcome)
+        assert reviewed is not None
+        assert reviewed["memo"] == "Memo"
+        corrected_preview = capsys.readouterr().out.split("Corrected column mapping:")[
+            -1
+        ]
+        assert "memo ← Memo  (e.g. Coffee, Paycheck)" in corrected_preview
+
+    def test_interactive_invalid_nonlow_overrides_offer_edit_instead_of_accept(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A complete detected layout still needs editing when an override is invalid."""
+        import polars as pl
+
+        from moneybin.extractors.tabular.column_mapper import (
+            collect_field_samples,
+            map_columns,
+        )
+        from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+        from moneybin.services.import_confirmation import (
+            Override,
+            Resolved,
+            resolve_or_confirm,
+            tabular_required_fields,
+        )
+
+        frame = pl.DataFrame({
+            "Date": ["2026-01-01"],
+            "Amount": ["-1"],
+            "Description": ["Example"],
+            "Notes": ["Other"],
+            "Total": ["-2"],
+        })
+        overrides = {"amount": "Total", "descrption": "Notes"}
+
+        def resolve(mapping: dict[str, str]) -> Resolved | ConfirmationRequired:
+            detected = map_columns(frame, overrides=mapping)
+            return resolve_or_confirm(
+                channel="tabular",
+                confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
+                proposed=ProposedMapping(
+                    detected.field_mapping,
+                    collect_field_samples(frame, detected.field_mapping),
+                    tuple(detected.unmapped_columns),
+                ),
+                available_columns=frame.columns,
+                required_fields=tabular_required_fields(
+                    proposed_keys=set(detected.field_mapping),
+                    override_keys=set(mapping),
+                ),
+                signal=Override(mapping),
+                self_accept_enabled=False,
+                actor_kind="human",
+                valid_destinations=tuple(FIELD_ALIASES),
+            )
+
+        assert isinstance(resolve({"amount": "Total"}), Resolved)
+        refused = resolve(overrides)
+        assert isinstance(refused, ConfirmationRequired)
+        assert refused.reason == "validation_failure"
+        assert refused.confidence.tier != "low"
+        mock_import_file.side_effect = ImportConfirmationRequiredError(refused)
+        file_path = tmp_path / "statement.csv"
+        file_path.write_text(frame.write_csv())
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            assert kwargs["flag"] == "mapping review"
+            assert [choice.value for choice in kwargs["choices"]] == ["edit", "cancel"]
+            return "cancel"
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(file_path),
+                "--mapping",
+                "amount=Total",
+                "--mapping",
+                "descrption=Notes",
+                "--no-refresh",
+            ],
+        )
+        assert result.exit_code == 1, result.output
+        assert mock_import_file.call_count == 1
+        assert mock_import_file.call_args.kwargs["overrides"] == overrides
+        assert "Accept proposed mapping" not in result.output
+
+    @pytest.mark.parametrize(
+        "scenario", ["cancel_move", "required_owner", "amount_alias"]
+    )
+    def test_interactive_source_move_retains_mapping_gates(
+        self,
+        mocker: Any,
+        scenario: str,
+    ) -> None:
+        from moneybin.cli.commands.import_cmd import (
+            _review_import_mapping,  # pyright: ignore[reportPrivateUsage]  # interactive mapping contract
+        )
+
+        mapping = {
+            "transaction_date": "Date",
+            "amount": "Amount",
+            "description": "Memo",
+        }
+        if scenario == "cancel_move":
+            mapping["memo"] = "Notes"
+        outcome = _make_confirmation_error(
+            field_mapping=mapping, unmapped=("Credit",)
+        ).outcome
+        answers = {
+            "cancel_move": ["edit", "description", "column:Notes", "cancel"],
+            "required_owner": [
+                "edit",
+                "description",
+                "column:Amount",
+                "reassign",
+                "cancel",
+            ],
+            "amount_alias": [
+                "edit",
+                "debit_amount",
+                "column:Amount",
+                "credit_amount",
+                "column:Credit",
+                "confirm",
+            ],
+        }
+        selected = iter(answers[scenario])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            answer = next(selected)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            if scenario == "cancel_move" and answer == "cancel":
+                assert kwargs["flag"] == "source reassignment"
+            if scenario == "required_owner" and answer == "cancel":
+                assert kwargs["flag"] == "destination field"
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(interactive=True),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        reviewed = _review_import_mapping(outcome)
+        if scenario == "amount_alias":
+            assert reviewed == {
+                "transaction_date": "Date",
+                "description": "Memo",
+                "debit_amount": "Amount",
+                "credit_amount": "Credit",
+            }
+        else:
+            assert reviewed is None
+        assert isinstance(outcome.proposed, ProposedMapping)
+        assert outcome.proposed.field_mapping == mapping
+
+    @pytest.mark.parametrize("scenario", ["claimed_source", "exact_whitespace"])
+    def test_interactive_mapping_retries_the_exact_exclusive_source_selection(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        scenario: str,
+    ) -> None:
+        import polars as pl
+
+        from moneybin.extractors.tabular.column_mapper import (
+            collect_field_samples,
+            map_columns,
+        )
+        from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+        from moneybin.services.import_confirmation import (
+            Override,
+            Resolved,
+            resolve_or_confirm,
+            tabular_required_fields,
+        )
+
+        columns = {
+            "Date": ["2026-01-01"],
+            "Amount": ["-1"],
+            "Memo": ["Example"],
+            "Notes": ["Other"],
+            "Total": ["-2"],
+        }
+        if scenario == "exact_whitespace":
+            columns[" Notes "] = ["Pick"]
+        frame = pl.DataFrame(columns)
+        csv_file = tmp_path / "statement.csv"
+        csv_file.write_text(frame.write_csv())
+        selected_source = "Memo" if scenario == "claimed_source" else " Notes "
+        from moneybin.services.import_service import ImportService
+
+        preparation = mocker.spy(ImportService, "prepare_tabular_import")
+        expected_mapping = {
+            "transaction_date": "Date",
+            "amount": "Total",
+            "description": selected_source,
+        }
+        if scenario == "exact_whitespace":
+            expected_mapping["memo"] = "Memo"
+
+        def import_file(**kwargs: Any) -> ImportResult:
+            plan = kwargs.get("reviewed_plan")
+            if plan is not None:
+                assert kwargs["overrides"] is None
+                assert kwargs["source_bytes"] == csv_file.read_bytes()
+                resolved = Resolved(plan.field_mapping, None, False)
+            else:
+                resolved = None
+            overrides = kwargs["overrides"]
+            if resolved is None:
+                assert isinstance(overrides, dict)
+                overrides = cast(dict[str, str], overrides)
+                detected = map_columns(frame, overrides=overrides)
+                proposed = ProposedMapping(
+                    detected.field_mapping,
+                    collect_field_samples(frame, detected.field_mapping),
+                    tuple(detected.unmapped_columns),
+                )
+                resolved = resolve_or_confirm(
+                    channel="tabular",
+                    confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
+                    proposed=proposed,
+                    available_columns=frame.columns,
+                    required_fields=tabular_required_fields(
+                        proposed_keys=set(proposed.field_mapping),
+                        override_keys=set(overrides),
+                    ),
+                    signal=Override(overrides),
+                    self_accept_enabled=False,
+                    actor_kind="human",
+                    valid_destinations=tuple(FIELD_ALIASES),
+                )
+            if isinstance(resolved, ConfirmationRequired):
+                assert mock_import_file.call_count == 1
+                assert resolved.reason == "validation_failure"
+                raise ImportConfirmationRequiredError(resolved)
+            assert isinstance(resolved, Resolved)
+            assert plan is not None
+            assert plan.field_mapping["description"] == selected_source
+            assert kwargs["save_format"] is True
+            assert resolved.field_mapping == expected_mapping
+            assert len(set(resolved.field_mapping.values())) == len(
+                resolved.field_mapping
+            )
+            return _make_import_result(field_mapping=resolved.field_mapping)
+
+        mock_import_file.side_effect = import_file
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        answers = iter([
+            "edit",
+            "description",
+            f"column:{selected_source}",
+            *(["reassign"] if scenario == "claimed_source" else []),
+            "confirm",
+        ])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            if kwargs["flag"] == "import confirmation":
+                assert "confirm" in [choice.value for choice in kwargs["choices"]]
+                return "confirm"
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            assert mock_import_file.call_count == 1
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--mapping", "amount=Total", "--no-refresh"]
+        )
+        assert result.exit_code == 0, result.output
+        if scenario == "claimed_source":
+            assert preparation.call_args.kwargs["omitted_fields"] == frozenset({"memo"})
+        assert mock_import_file.call_count == 2
+
+    @pytest.mark.parametrize(
+        "cancel_invalid,replace_invalid", [(False, True), (False, False), (True, False)]
+    )
+    def test_interactive_mapping_explicitly_removes_invalid_destination(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        cancel_invalid: bool,
+        replace_invalid: bool,
+    ) -> None:
+        """The real detector/validator refusal is repairable without losing valid edits."""
+        import polars as pl
+
+        from moneybin.extractors.tabular.column_mapper import (
+            collect_field_samples,
+            map_columns,
+        )
+        from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+        from moneybin.services.import_confirmation import (
+            Override,
+            Resolved,
+            resolve_or_confirm,
+            tabular_required_fields,
+        )
+
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text(
+            "Date,Amount,Memo,Notes,Total\n2025-01-01,-50,Coffee,Shop,-60\n"
+        )
+        frame = pl.DataFrame({
+            "Date": ["2025-01-01"],
+            "Amount": ["-50"],
+            "Memo": ["Coffee"],
+            "Notes": ["Shop"],
+            "Total": ["-60"],
+        })
+        refusals: list[ConfirmationRequired] = []
+
+        def import_file(**kwargs: Any) -> ImportResult:
+            plan = kwargs.get("reviewed_plan")
+            if plan is not None:
+                assert kwargs["overrides"] is None
+                assert kwargs["source_bytes"] == csv_file.read_bytes()
+                resolved = Resolved(plan.field_mapping, None, False)
+            else:
+                resolved = None
+            overrides = kwargs["overrides"]
+            if resolved is None:
+                assert isinstance(overrides, dict)
+                overrides = cast(dict[str, str], overrides)
+                detected = map_columns(frame, overrides=overrides)
+                proposed = ProposedMapping(
+                    detected.field_mapping,
+                    collect_field_samples(frame, detected.field_mapping),
+                    tuple(detected.unmapped_columns),
+                )
+                resolved = resolve_or_confirm(
+                    channel="tabular",
+                    confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
+                    proposed=proposed,
+                    available_columns=frame.columns,
+                    required_fields=tabular_required_fields(
+                        proposed_keys=set(proposed.field_mapping),
+                        override_keys=set(overrides),
+                    ),
+                    signal=Override(overrides),
+                    self_accept_enabled=False,
+                    actor_kind="human",
+                    valid_destinations=tuple(FIELD_ALIASES),
+                )
+            if isinstance(resolved, ConfirmationRequired):
+                assert resolved.reason == "validation_failure"
+                assert isinstance(resolved.proposed, ProposedMapping)
+                assert resolved.proposed.field_mapping["descrption"] == "Notes"
+                refusals.append(resolved)
+                raise ImportConfirmationRequiredError(resolved)
+            assert isinstance(resolved, Resolved)
+            assert resolved.field_mapping == {
+                "transaction_date": "Date",
+                "amount": "Total",
+                "description": "Notes" if replace_invalid else "Memo",
+                # Notes is a memo alias once removing the typo frees that column.
+                "memo": "Memo" if replace_invalid else "Notes",
+            }
+            return _make_import_result(field_mapping=resolved.field_mapping)
+
+        mock_import_file.side_effect = import_file
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        answers = iter(
+            ["edit", "cancel"]
+            if cancel_invalid
+            else [
+                "edit",
+                "remove:descrption",
+                *(["description", "column:Notes"] if replace_invalid else []),
+                "confirm",
+            ]
+        )
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            if kwargs["flag"] == "import confirmation":
+                assert "confirm" in [choice.value for choice in kwargs["choices"]]
+                return "confirm"
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            assert mock_import_file.call_count == 1
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--mapping",
+                "descrption=Notes",
+                "--mapping",
+                "amount=Total",
+                *([] if replace_invalid else ["--mapping", "description=Memo"]),
+                "--no-refresh",
+            ],
+        )
+        assert result.exit_code == (1 if cancel_invalid else 0), result.output
+        assert mock_import_file.call_count == (1 if cancel_invalid else 2)
+        assert len(refusals) == 1
+        assert isinstance(refusals[0].proposed, ProposedMapping)
+        assert "descrption" in refusals[0].proposed.field_mapping
+
+    def test_interactive_mapping_preserves_explicit_partial_corrections(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo,Notes\n2025-01-01,-50,Coffee,Shop\n")
+        mock_import_file.side_effect = [
+            _make_confirmation_error(
+                field_mapping={
+                    "amount": "Amount",
+                    "description": "Memo",
+                },
+                missing_required=("transaction_date",),
+                unmapped=("Date", "Notes"),
+            ),
+            _make_import_result(),
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=[
+                "edit",
+                "transaction_date",
+                "column:Date",
+                "confirm",
+                "confirm",
+            ],
+        )
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--mapping", "description=Notes", "--no-refresh"],
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_import_file.call_args.kwargs["reviewed_plan"].field_mapping == {
+            "transaction_date": "Date",
+            "amount": "Amount",
+            "description": "Notes",
+            "memo": "Memo",
+        }
+
+    def test_interactive_mapping_selects_column_named_cancel(self, mocker: Any) -> None:
+        from moneybin.cli.commands.import_cmd import (
+            _review_import_mapping,  # pyright: ignore[reportPrivateUsage]  # review behavior
+        )
+
+        outcome = _make_confirmation_error(
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Memo",
+            },
+            unmapped=("cancel",),
+        ).outcome
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(interactive=True),
+        )
+        answers = iter(["edit", "description", "column:cancel", "confirm"])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        assert _review_import_mapping(outcome) == {
+            "transaction_date": "Date",
+            "amount": "Amount",
+            "description": "cancel",
+        }
+
+    def test_interactive_mapping_can_change_amount_shape_after_an_edit(
+        self,
+        mocker: Any,
+    ) -> None:
+        from moneybin.cli.commands.import_cmd import (
+            _review_import_mapping,  # pyright: ignore[reportPrivateUsage]  # in-memory review contract
+        )
+
+        outcome = _make_confirmation_error(
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Memo",
+            },
+            unmapped=("Debit", "Credit"),
+        ).outcome
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(interactive=True),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=[
+                "edit",
+                "amount",
+                "Amount",
+                "edit",
+                "debit_amount",
+                "Debit",
+                "credit_amount",
+                "Credit",
+                "confirm",
+            ],
+        )
+        corrected = _review_import_mapping(outcome)
+        assert corrected is not None
+        assert corrected == {
+            "transaction_date": "Date",
+            "description": "Memo",
+            "debit_amount": "Debit",
+            "credit_amount": "Credit",
+        }
+        from moneybin.services.import_confirmation import (
+            Override,
+            Resolved,
+            resolve_or_confirm,
+            tabular_required_fields,
+        )
+
+        assert isinstance(outcome.proposed, ProposedMapping)
+        resolved = resolve_or_confirm(
+            channel="tabular",
+            confidence=outcome.confidence,
+            proposed=outcome.proposed,
+            available_columns=("Date", "Amount", "Memo", "Debit", "Credit"),
+            required_fields=tabular_required_fields(
+                proposed_keys=set(outcome.proposed.field_mapping),
+                override_keys=set(corrected),
+            ),
+            signal=Override(corrected),
+            self_accept_enabled=False,
+            actor_kind="human",
+        )
+        assert isinstance(resolved, Resolved)
+        assert resolved.field_mapping == corrected
+
+    @pytest.mark.parametrize("reason", ["sign_convention", "account_confirmation"])
+    def test_interactive_mapping_does_not_ratify_later_gates(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        reason: str,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50,Coffee\n")
+        gate = _make_confirmation_error(reason=reason)
+        mock_import_file.side_effect = [
+            _make_confirmation_error(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                }
+            ),
+            gate,
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        choose = mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=["accept", "confirm"],
+        )
+        inbox = mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        ).return_value
+        result = runner.invoke(app, ["files", str(csv_file), "--no-refresh"])
+        assert result.exit_code == 1, result.output
+        assert mock_import_file.call_count == 2
+        assert choose.call_count == 2
+        inbox.archive_confirmed_file.assert_not_called()
+
+    def test_interactive_mapping_replaces_split_shape_at_service_gate(
+        self, mocker: Any
+    ) -> None:
+        from moneybin.cli.commands.import_cmd import (
+            _review_import_mapping,  # pyright: ignore[reportPrivateUsage]  # review contract
+        )
+        from moneybin.services.import_confirmation import (
+            Override,
+            Resolved,
+            resolve_or_confirm,
+            tabular_required_fields,
+        )
+
+        outcome = _make_confirmation_error(
+            field_mapping={
+                "transaction_date": "Date",
+                "description": "Memo",
+                "debit_amount": "Debit",
+                "credit_amount": "Credit",
+            },
+            unmapped=("Amount",),
+        ).outcome
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(interactive=True),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=["edit", "amount", "column:Amount", "confirm"],
+        )
+        corrected = _review_import_mapping(outcome)
+        assert corrected is not None
+        assert corrected == {
+            "transaction_date": "Date",
+            "description": "Memo",
+            "amount": "Amount",
+        }
+        assert isinstance(outcome.proposed, ProposedMapping)
+        resolved = resolve_or_confirm(
+            channel="tabular",
+            confidence=outcome.confidence,
+            proposed=outcome.proposed,
+            available_columns=("Date", "Amount", "Memo", "Debit", "Credit"),
+            required_fields=tabular_required_fields(
+                proposed_keys=set(outcome.proposed.field_mapping),
+                override_keys=set(corrected),
+            ),
+            signal=Override(corrected),
+            self_accept_enabled=False,
+            actor_kind="human",
+        )
+        assert isinstance(resolved, Resolved)
+        assert resolved.field_mapping == {
+            "transaction_date": "Date",
+            "description": "Memo",
+            "amount": "Amount",
+        }
+
+    def test_interactive_low_mapping_requires_edit_and_complete_validation(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50,Coffee\n")
+        mock_import_file.side_effect = [
+            _make_confirmation_error(
+                tier="low",
+                missing_required=("transaction_date",),
+                field_mapping={"amount": "Amount", "description": "Memo"},
+                unmapped=("Date",),
+            ),
+            _make_import_result(),
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        choose = mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=[
+                "edit",
+                "description",
+                "Memo",
+                "transaction_date",
+                "Date",
+                "confirm",
+                "confirm",
+            ],
+        )
+        result = runner.invoke(app, ["files", str(csv_file), "--no-refresh"])
+        assert result.exit_code == 0, result.output
+        assert "Mapping needs correction" in result.output
+        assert "accept" not in [
+            c.value for c in choose.call_args_list[0].kwargs["choices"]
+        ]
+        assert mock_import_file.call_count == 2
+        assert mock_import_file.call_args.kwargs["reviewed_plan"].field_mapping == {
+            "amount": "Amount",
+            "description": "Memo",
+            "transaction_date": "Date",
+        }
+
+    def test_interactive_committed_refresh_failure_archives_without_retry(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        from moneybin.services.import_service import ImportRefreshError
+
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50,Coffee\n")
+        failure = ImportRefreshError(
+            "SQLMesh transforms failed",
+            transfers_retired=0,
+            result=_make_import_result(transactions=3),
+        )
+        mock_import_file.side_effect = [
+            _make_confirmation_error(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                }
+            ),
+            failure,
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=["accept", "confirm"],
+        )
+        inbox = mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        ).return_value
+        result = runner.invoke(app, ["files", str(csv_file)])
+        assert result.exit_code == 1, result.output
+        assert "3 rows" in result.output
+        assert "refresh failed" in result.output.lower()
+        assert mock_import_file.call_count == 2
+        inbox.archive_confirmed_file.assert_called_once_with(csv_file)
+
+    @pytest.mark.parametrize(
+        "flags,refresh,force",
+        [
+            ([], True, False),
+            (["--no-refresh", "--force"], False, True),
+            (["--yes"], True, False),
+        ],
+    )
+    def test_interactive_mapping_preserves_execution_options(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        flags: list[str],
+        refresh: bool,
+        force: bool,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50,Coffee\n")
+        mock_import_file.side_effect = [
+            _make_confirmation_error(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                }
+            ),
+            _make_import_result(),
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=["accept", "confirm"],
+        )
+        result = runner.invoke(app, ["files", str(csv_file), *flags])
+        assert result.exit_code == 0, result.output
+        assert mock_import_file.call_args.kwargs["refresh"] is refresh
+        assert mock_import_file.call_args.kwargs["force"] is force
+        if "--yes" in flags:
+            assert mock_import_file.call_args.kwargs["auto_accept"] is True
+
+    @pytest.mark.parametrize(
+        "answers", [["edit", "description", "Notes", "confirm"], ["accept"]]
+    )
+    def test_interactive_mapping_review_completes_import(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        answers: list[str],
+    ) -> None:
+        """Review supplies a validated mapping through the normal completion path."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo,Notes\n2025-01-01,-50,Coffee,Shop\n")
+        mock_import_file.side_effect = [
+            _make_confirmation_error(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                }
+            ),
+            _make_import_result(),
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=[*answers, "confirm"],
+        )
+        result = runner.invoke(app, ["files", str(csv_file)])
+        assert result.exit_code == 0, result.output
+        assert mock_import_file.call_count == 2
+        kwargs = mock_import_file.call_args.kwargs
+        assert kwargs["confirm"] is True
+        assert kwargs["overrides"] is None
+        assert kwargs["source_bytes"] == csv_file.read_bytes()
+        if answers[0] == "edit":
+            assert kwargs["reviewed_plan"].field_mapping == {
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Notes",
+                "memo": "Memo",
+            }
+            assert "Coffee" not in result.output.split("Corrected column mapping:")[-1]
+        else:
+            assert kwargs["reviewed_plan"].field_mapping == {
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Memo",
+                "memo": "Notes",
+            }
+
+    @pytest.mark.parametrize(
+        "answers",
+        [
+            ["cancel"],
+            ["edit", "cancel"],
+            ["edit", "description", "cancel"],
+            ["edit", "description", "Notes", "cancel"],
+        ],
+    )
+    def test_interactive_mapping_cancel_never_imports(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        answers: list[str],
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo,Notes\n2025-01-01,-50,Coffee,Shop\n")
+        mock_import_file.side_effect = _make_confirmation_error(
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Memo",
+            }
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=answers
+        )
+        result = runner.invoke(app, ["files", str(csv_file)])
+        assert result.exit_code == 1, result.output
+        assert mock_import_file.call_count == 1
 
     @pytest.fixture
     def mock_db(self, mocker: Any) -> MagicMock:
@@ -1941,6 +3724,11 @@ class TestImportFilesConfirmFlow:
         """
         csv_file = tmp_path / "headerless.csv"
         csv_file.write_text("2026-01-05,-4.50,Coffee\n")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=csv_file.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(reason="header_row_consumed"),
@@ -1977,6 +3765,11 @@ class TestImportFilesConfirmFlow:
         """
         book = tmp_path / "book.xlsx"
         book.write_bytes(b"")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=book.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(
@@ -2023,6 +3816,11 @@ class TestImportFilesConfirmFlow:
         """
         book = tmp_path / "book.xlsx"
         book.write_bytes(b"")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=book.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(
@@ -2077,6 +3875,11 @@ class TestImportFilesConfirmFlow:
         """
         book = tmp_path / "book.xlsx"
         book.write_bytes(b"")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=book.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(
@@ -2171,6 +3974,11 @@ class TestImportFilesConfirmFlow:
         """
         csv_file = tmp_path / "headerless.csv"
         csv_file.write_text("2026-01-05,-4.50,Coffee\n")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=csv_file.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(reason="header_row_consumed"),
@@ -2217,6 +4025,11 @@ class TestImportFilesConfirmFlow:
         """
         book = tmp_path / "book.xlsx"
         book.write_bytes(b"")
+        # This test isolates recovery rendering from source preparation.
+        mocker.patch(
+            "moneybin.services.import_service.read_tabular_import_source",
+            return_value=book.read_bytes(),
+        )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
             side_effect=_make_confirmation_error(

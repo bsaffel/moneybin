@@ -94,7 +94,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / up to medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / at least low |
 | `import_files` | `account_bindings`, `force`, `paths`, `refresh` | Import files | Audited workflow / at least critical / file-derived |
-| `import_preview` | `file_path`, `mapping` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / up to critical / file-derived |
+| `import_preview` | `file_path`, `mapping`, `omit_fields` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / up to critical / file-derived |
 | `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / up to critical / preview-derived |
 | `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / up to medium / import-derived |
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch or delete a saved format | Confirmed destructive / at least low — rollback is permanent with no undo; format deletion is audited and `system_audit_undo`-recoverable |

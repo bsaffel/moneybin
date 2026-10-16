@@ -7,7 +7,51 @@ import pytest
 
 from moneybin.services.import_service import (
     _detect_file_type,  # pyright: ignore[reportPrivateUsage]
+    detect_import_file_type,
 )
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        ".csv",
+        ".tsv",
+        ".tab",
+        ".txt",
+        ".dat",
+        ".xlsx",
+        ".xls",
+        ".parquet",
+        ".pq",
+        ".feather",
+        ".arrow",
+        ".ipc",
+    ],
+)
+def test_read_only_channel_routing_accepts_tabular_aliases(
+    tmp_path: Path, suffix: str
+) -> None:
+    path = tmp_path / f"statement{suffix}"
+    path.write_text("Date,Amount,Description\n2026-01-01,-2,Example\n")
+    assert detect_import_file_type(path) == "tabular"
+
+
+@pytest.mark.parametrize("suffix", [".txt", ".dat"])
+def test_read_only_channel_routing_sniffs_ofx_before_generic_suffix(
+    tmp_path: Path, suffix: str
+) -> None:
+    path = tmp_path / f"statement{suffix}"
+    path.write_text("OFXHEADER:100\nDATA:OFXSGML\n<OFX></OFX>")
+    assert detect_import_file_type(path) == "ofx"
+
+
+def test_read_only_channel_routing_preserves_unsupported_refusal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "statement.bin"
+    path.write_text("Date,Amount,Description\n2026-01-01,-2,Example\n")
+    with pytest.raises(ValueError, match="Unsupported file type"):
+        detect_import_file_type(path)
 
 
 class TestDetectFileType:

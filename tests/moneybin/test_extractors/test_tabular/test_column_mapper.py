@@ -12,6 +12,30 @@ def _make_df(columns: dict[str, list[str]]) -> pl.DataFrame:
     return pl.DataFrame(columns)
 
 
+def test_optional_omissions_precede_alias_and_multi_account_detection() -> None:
+    frame = _make_df({
+        "Date": ["2026-01-01"],
+        "Amount": ["-2"],
+        "Description": ["Example"],
+        "State": ["WA"],
+        "Account Name": ["Fixture"],
+        "Currency": ["USD"],
+    })
+    ordinary = map_columns(frame)
+    assert ordinary.is_multi_account is True
+    assert ordinary.field_mapping["status"] == "State"
+    corrected = map_columns(
+        frame, omitted_fields=frozenset({"status", "account_name", "currency"})
+    )
+    assert corrected.field_mapping == {
+        "transaction_date": "Date",
+        "amount": "Amount",
+        "description": "Description",
+    }
+    assert corrected.is_multi_account is False
+    assert set(corrected.unmapped_columns) == {"State", "Account Name", "Currency"}
+
+
 class TestMapColumnsHighConfidence:
     """Tests for high confidence header matching."""
 

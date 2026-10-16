@@ -146,6 +146,7 @@ def map_columns(
     t_med: float = 0.70,
     structural_red_flag: bool = False,
     declared_date_format: str | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> MappingResult:
     """Map source columns to destination fields.
 
@@ -170,6 +171,7 @@ def map_columns(
             through a separate, later render. See ``detect_date_format``'s
             own docstring for the scoring rule and why a wrong declaration
             still falls through rather than winning silently.
+        omitted_fields: Optional destinations explicitly removed by interactive review.
 
     Returns:
         MappingResult with mapping, confidence, and metadata.
@@ -182,7 +184,7 @@ def map_columns(
     # Apply overrides first
     if overrides:
         for dest_field, src_col in overrides.items():
-            if src_col in df.columns:
+            if dest_field not in omitted_fields and src_col in df.columns:
                 mapping[dest_field] = src_col
                 claimed.add(src_col)
 
@@ -191,7 +193,7 @@ def map_columns(
         if col in claimed:
             continue
         dest = match_header_to_field(col)
-        if dest and dest not in mapping:
+        if dest and dest not in omitted_fields and dest not in mapping:
             mapping[dest] = col
             claimed.add(col)
 
