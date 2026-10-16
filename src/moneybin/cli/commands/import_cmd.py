@@ -696,7 +696,6 @@ def import_files_command(
             # Surface the confirmation_required envelope.  Non-TTY / --output
             # json callers get JSON directly; interactive callers see a
             # human-readable summary with re-run instructions.
-            #
             outcome = _exc.outcome
             file_path_str = str(file_paths[0]) if len(file_paths) == 1 else ""
             quoted_path = shlex.quote(file_path_str)
@@ -847,7 +846,8 @@ def import_files_command(
                             cli_actor="import_files_command",
                             file_path=file_paths[0],
                             accept=True,
-                            mapping=[f"{k}={v}" for k, v in reviewed_mapping.items()],
+                            mapping=[],
+                            reviewed_mapping=reviewed_mapping,
                             format_name=format_name,
                             bridge_response=None,
                             confirm=False,
@@ -2113,6 +2113,32 @@ def _review_import_mapping(
             if source == "cancel":
                 return None
             source = source.removeprefix("column:")
+            replaced_fields = {dest}
+            if dest == "amount":
+                replaced_fields.update(("debit_amount", "credit_amount"))
+            elif dest in ("debit_amount", "credit_amount"):
+                replaced_fields.add("amount")
+            owners = [
+                field
+                for field, column in {**proposed, **corrections}.items()
+                if field not in replaced_fields and column == source
+            ]
+            if owners:
+                move = Choice(
+                    "reassign", f"Move {source!r} from {', '.join(owners)} to {dest}"
+                )
+                typer.echo(f"Choices: {move.label} / Cancel")
+                action = choose_required(
+                    None,
+                    choices=[move, cancel],
+                    flag="source reassignment",
+                    policy=policy,
+                )
+                if action == "cancel":
+                    return None
+                for owner in owners:
+                    proposed.pop(owner, None)
+                    corrections.pop(owner, None)
             if dest == "amount":
                 corrections.pop("debit_amount", None)
                 corrections.pop("credit_amount", None)
@@ -2555,6 +2581,7 @@ def _complete_import_confirmation(
     refresh: bool = False,
     force: bool = False,
     auto_accept: bool = False,
+    reviewed_mapping: dict[str, str] | None = None,
 ) -> None:
     """Complete one reviewed import through the existing account and inbox lifecycle."""
     from moneybin.cli.output import render_or_json
@@ -2657,7 +2684,13 @@ def _complete_import_confirmation(
             )
         bridge_response_data = parsed_response
 
-    parsed_mapping = _parse_overrides(list(mapping)) if mapping else None
+    parsed_mapping = (
+        dict(reviewed_mapping)
+        if reviewed_mapping is not None
+        else _parse_overrides(list(mapping))
+        if mapping
+        else None
+    )
     parsed_bindings = (
         _parse_account_bindings(list(account_binding)) if account_binding else None
     )

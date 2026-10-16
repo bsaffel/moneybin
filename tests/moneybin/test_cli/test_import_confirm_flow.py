@@ -452,6 +452,191 @@ class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 
     @pytest.mark.parametrize(
+        "scenario", ["cancel_move", "required_owner", "amount_alias"]
+    )
+    def test_interactive_source_move_retains_mapping_gates(
+        self,
+        mocker: Any,
+        scenario: str,
+    ) -> None:
+        from moneybin.cli.commands.import_cmd import (
+            _review_import_mapping,  # pyright: ignore[reportPrivateUsage]  # interactive mapping contract
+        )
+
+        mapping = {
+            "transaction_date": "Date",
+            "amount": "Amount",
+            "description": "Memo",
+        }
+        if scenario == "cancel_move":
+            mapping["memo"] = "Notes"
+        outcome = _make_confirmation_error(
+            field_mapping=mapping, unmapped=("Credit",)
+        ).outcome
+        answers = {
+            "cancel_move": ["edit", "description", "column:Notes", "cancel"],
+            "required_owner": [
+                "edit",
+                "description",
+                "column:Amount",
+                "reassign",
+                "cancel",
+            ],
+            "amount_alias": [
+                "edit",
+                "debit_amount",
+                "column:Amount",
+                "credit_amount",
+                "column:Credit",
+                "confirm",
+            ],
+        }
+        selected = iter(answers[scenario])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            answer = next(selected)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            if scenario == "cancel_move" and answer == "cancel":
+                assert kwargs["flag"] == "source reassignment"
+            if scenario == "required_owner" and answer == "cancel":
+                assert kwargs["flag"] == "destination field"
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(interactive=True),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        reviewed = _review_import_mapping(outcome)
+        if scenario == "amount_alias":
+            assert reviewed == {
+                "transaction_date": "Date",
+                "description": "Memo",
+                "debit_amount": "Amount",
+                "credit_amount": "Credit",
+            }
+        else:
+            assert reviewed is None
+        assert isinstance(outcome.proposed, ProposedMapping)
+        assert outcome.proposed.field_mapping == mapping
+
+    @pytest.mark.parametrize("scenario", ["claimed_source", "exact_whitespace"])
+    def test_interactive_mapping_retries_the_exact_exclusive_source_selection(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        scenario: str,
+    ) -> None:
+        import polars as pl
+
+        from moneybin.extractors.tabular.column_mapper import (
+            collect_field_samples,
+            map_columns,
+        )
+        from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+        from moneybin.services.import_confirmation import (
+            Override,
+            Resolved,
+            resolve_or_confirm,
+            tabular_required_fields,
+        )
+
+        columns = {
+            "Date": ["2026-01-01"],
+            "Amount": ["-1"],
+            "Memo": ["Example"],
+            "Notes": ["Other"],
+            "Total": ["-2"],
+        }
+        if scenario == "exact_whitespace":
+            columns[" Notes "] = ["Pick"]
+        frame = pl.DataFrame(columns)
+        csv_file = tmp_path / "statement.csv"
+        csv_file.write_text(frame.write_csv())
+        selected_source = "Memo" if scenario == "claimed_source" else " Notes "
+        expected_mapping = {
+            "transaction_date": "Date",
+            "amount": "Total",
+            "description": selected_source,
+            "memo": "Notes" if scenario == "claimed_source" else "Memo",
+        }
+
+        def import_file(**kwargs: Any) -> ImportResult:
+            overrides = kwargs["overrides"]
+            detected = map_columns(frame, overrides=overrides)
+            proposed = ProposedMapping(
+                detected.field_mapping,
+                collect_field_samples(frame, detected.field_mapping),
+                tuple(detected.unmapped_columns),
+            )
+            resolved = resolve_or_confirm(
+                channel="tabular",
+                confidence=detected.to_confidence(t_high=0.9, t_med=0.7),
+                proposed=proposed,
+                available_columns=frame.columns,
+                required_fields=tabular_required_fields(
+                    proposed_keys=set(proposed.field_mapping),
+                    override_keys=set(overrides),
+                ),
+                signal=Override(overrides),
+                self_accept_enabled=False,
+                actor_kind="human",
+                valid_destinations=tuple(FIELD_ALIASES),
+            )
+            if isinstance(resolved, ConfirmationRequired):
+                assert mock_import_file.call_count == 1
+                assert resolved.reason == "validation_failure"
+                raise ImportConfirmationRequiredError(resolved)
+            assert isinstance(resolved, Resolved)
+            assert kwargs["overrides"]["description"] == selected_source
+            assert kwargs["save_format"] is True
+            assert resolved.field_mapping == expected_mapping
+            assert len(set(resolved.field_mapping.values())) == len(
+                resolved.field_mapping
+            )
+            return _make_import_result(field_mapping=resolved.field_mapping)
+
+        mock_import_file.side_effect = import_file
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        answers = iter([
+            "edit",
+            "description",
+            f"column:{selected_source}",
+            *(["reassign"] if scenario == "claimed_source" else []),
+            "confirm",
+        ])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            assert mock_import_file.call_count == 1
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--mapping", "amount=Total", "--no-refresh"]
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_import_file.call_count == 2
+
+    @pytest.mark.parametrize(
         "cancel_invalid,replace_invalid", [(False, True), (False, False), (True, False)]
     )
     def test_interactive_mapping_explicitly_removes_invalid_destination(
