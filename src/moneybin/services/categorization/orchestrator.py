@@ -1162,19 +1162,11 @@ class CategorizationOrchestrator:
             Number of transactions categorized.
         """
         rows = self._source_category_bridge_candidates()
-        # Resolve through the curation seam here rather than relying on
-        # write_categorizations' own internal resolution: that method returns
-        # *resolved* ids, so a superseded id (an account-merge or dedup event
-        # remapped it) would never match this leg's pre-resolution ids and the
-        # per-source_type metric below would silently skip that row. The write
-        # itself is unaffected either way, and the applier's repeat resolution
-        # of already-live ids is one bulk query, not a per-row walk.
-        resolved_ids = resolve_curation_transaction_ids(
-            self._db, (transaction_id for transaction_id, *_rest in rows)
-        )
+        # Candidates come from prep.int_transactions__matched, the liveness
+        # oracle itself, so every id is already the live one.
         categorizations: list[dict[str, object]] = [
             {
-                "transaction_id": resolved_ids.get(transaction_id, transaction_id),
+                "transaction_id": transaction_id,
                 "category": category,
                 "subcategory": subcategory,
                 "categorized_by": "provider_native",
@@ -1187,9 +1179,9 @@ class CategorizationOrchestrator:
         ]
         # Label per row's own source_type (tabular/manual/...), not a single
         # fixed value like Plaid's 'plaid' — this leg's candidates can mix
-        # sources. Keyed by resolved id so it shares written_ids' id space.
+        # sources.
         source_type_by_id = {
-            resolved_ids.get(transaction_id, transaction_id): source_type
+            transaction_id: source_type
             for transaction_id, _category, _subcategory, source_type in rows
         }
         written_ids = self._applier.write_categorizations(categorizations)

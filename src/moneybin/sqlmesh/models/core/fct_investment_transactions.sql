@@ -111,7 +111,7 @@ SELECT
   u.source_type, /* Origin tag (manual | ofx | plaid) */
   u.source_origin, /* Institution/connection scope */
   u.description, /* Free-text description */
-  COALESCE(u.currency_code, a.currency_code) AS currency_code, /* Denominating currency; no FX in v1. The event's own currency, else inherited from core.dim_accounts.currency_code — never a literal, which would relabel a foreign account's ledger and make the unknown-currency segment unreachable (multi-currency.md Requirement 3). NULL when neither is known. system doctor's currency_integrity check does not read this table; it surfaces the cause instead — the account's own NULL currency, or an account_id no dim_accounts row resolves (fct_investment_transactions_fk_integrity). */
+  COALESCE(u.currency_code, a.currency_code) AS currency_code, /* Denominating currency; no FX in v1. The event's own currency, else inherited from the account's currency_code (prep.int_accounts__merged, the materialized base under core.dim_accounts) — never a literal, which would relabel a foreign account's ledger and make the unknown-currency segment unreachable (multi-currency.md Requirement 3). NULL when neither is known. system doctor's currency_integrity check does not read this table; it surfaces the cause instead — the account's own NULL currency, or an account_id no dim_accounts row resolves (fct_investment_transactions_fk_integrity). */
   u.quantity, /* Signed units: + acquire, − dispose, NULL cash-only */
   u.price, /* Per-unit price; NULL for non-priced events */
   u.amount, /* Signed cash effect: − out (buy), + in (sell/dividend). Already in ledger convention on every branch — never re-flip a provider's sign here */
@@ -125,10 +125,10 @@ SELECT
     COALESCE(a.investment_source_type_changed_at, u.created_at)
   ) AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. Advances on an Account Currency edit only when this event inherits that Currency; an event's own Currency keeps its own freshness. Also advances when the account's investment_source_type changes, so a row that re-enters the ledger after a clear reports a time newer than the clear rather than its original created_at. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM unioned AS u
-LEFT JOIN core.dim_accounts AS a
+LEFT JOIN prep.int_accounts__merged AS a
   ON u.account_id = a.account_id
 /* investment-source-choice.md: an account with a source chosen keeps only that
    source's rows. The only place the choice changes data; every model derived from
-   this ledger inherits it. NULL (no choice, or no dim_accounts row) keeps every row. */
+   this ledger inherits it. NULL (no choice, or no account row) keeps every row. */
 WHERE
   a.investment_source_type IS NULL OR u.source_type = a.investment_source_type

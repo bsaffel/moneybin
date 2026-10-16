@@ -43,6 +43,8 @@ def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "investment_source_type": None,
         "investment_source_type_changed_at": None,
         "archived_changed_at": None,
+        "currency_code_changed_at": None,
+        "default_cost_basis_method_changed_at": None,
         "actor": "cli",
     }
     kwargs.update(overrides)
@@ -678,8 +680,15 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
     ) -> Generator[Database, None, None]:
         """A real write-mode Database reopened over account_settings missing archived_at."""
         db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_at")
-        # Added by V074, after V063: a pre-V063 table cannot hold it either.
-        db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_changed_at")
+        # Added by V074 and V075, after V063: a pre-V063 table holds none of them.
+        for column in (
+            "archived_changed_at",
+            "currency_code_changed_at",
+            "default_cost_basis_method_changed_at",
+        ):
+            db.execute(
+                f"ALTER TABLE app.account_settings DROP COLUMN {column}"
+            )  # literal test column names
         db_path = db.path
         db.close()
         rw_db = Database(

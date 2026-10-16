@@ -87,6 +87,8 @@ def _set_account_default_method(db: Database, method: str) -> None:
         investment_source_type=None,
         investment_source_type_changed_at=None,
         archived_changed_at=None,
+        currency_code_changed_at=None,
+        default_cost_basis_method_changed_at=None,
         actor="cli",
     )
 

@@ -218,7 +218,7 @@ per hint instead of a raw string, so MCP and CLI stop sharing one grammar:
 executable CLI command" (`docs/specs/cli-human-experience.md`). A service
 raising `UserError(hint=...)` outside the report framework is not a `NextStep`:
 it authors its hint as prose that quotes the CLI form inline (`'moneybin ...'`),
-the pattern `account_service.py` and `fx_accounting_refresh.py` already use.
+the pattern `account_service.py` and `services/restate.py` already use.
 
 **Amounts.** `format_money` is the only place an amount becomes text, and every
 money column declares a **money kind** — `flow`, `magnitude`, `delta`, or

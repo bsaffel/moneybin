@@ -350,12 +350,12 @@ class SchemaDriftError(Exception):
     """
 
 
-# Captured from the final SELECT of each FULL-materialized core SQLMesh
-# model. Views (kind VIEW) cannot drift — they always reflect the current
-# model. NOT parsed at runtime; keep in sync via the parity test in
+# Captured from the final SELECT of the core SQLMesh models consumers read
+# most. A view drifts too when the warehouse predates the code: it still points
+# at the snapshot the last apply built. NOT parsed at runtime; keep in sync via the parity test in
 # tests/moneybin/test_db_helpers_parity.py (Task 6C).
 EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
-    # src/moneybin/sqlmesh/models/core/dim_accounts.sql — kind FULL
+    # src/moneybin/sqlmesh/models/core/dim_accounts.sql — kind VIEW
     "core.dim_accounts": frozenset({
         "account_id",
         "routing_number",

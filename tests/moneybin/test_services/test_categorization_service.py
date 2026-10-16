@@ -1041,6 +1041,41 @@ def real_db(db: Database) -> Database:
     return db
 
 
+def _seed_live_transaction(
+    db: Database, transaction_id: str, *, description: str = "STARBUCKS"
+) -> None:
+    """Seed one ``core.fct_transactions`` row and its liveness-oracle row.
+
+    Curation-id resolution reads liveness off ``prep.int_transactions__matched``
+    (production: the fact's own id set) and passes ids through unresolved when
+    that relation is absent. The stub's columns are the union of this file's
+    other matched stubs (``_insert_matched_txn``, ``_install_matched_stub``),
+    so whichever creates it first, the others' inserts still fit.
+    """
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES (?, 'a1', DATE '2026-03-01', -3.00, ?, 'csv')",
+        [transaction_id, description],
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched ("
+        "  transaction_id VARCHAR, "
+        "  source_transaction_id VARCHAR, "
+        "  source_type VARCHAR, "
+        "  source_origin VARCHAR, "
+        "  account_id VARCHAR, "
+        "  category VARCHAR, "
+        "  subcategory VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched (transaction_id) VALUES (?)",
+        [transaction_id],
+    )
+
+
 def test_service_categorize_items_applies_categorization(
     real_db: Database,
 ) -> None:
@@ -1094,11 +1129,7 @@ def test_categorize_items_against_superseded_id_resolves_to_live_transaction(
     the live transaction, not the dead one ``upsert_guarded`` would otherwise
     insert under with no FK to catch it.
     """
-    real_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
-    )
+    _seed_live_transaction(real_db, "txn-live")
     real_db.execute(
         "INSERT INTO app.transaction_id_aliases "
         "(old_transaction_id, new_transaction_id, created_at) "
@@ -1119,11 +1150,7 @@ def test_categorize_items_against_unresolvable_id_is_a_per_item_error(
     real_db: Database,
 ) -> None:
     """An unresolvable id fails just that item — the batch keeps going."""
-    real_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES ('ts1', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
-    )
+    _seed_live_transaction(real_db, "ts1")
     svc = CategorizationService(real_db)
     result = svc.categorize_items([
         CategorizationItem(transaction_id="never-existed", category="Food & Drink"),
@@ -1147,11 +1174,7 @@ def test_categorize_items_rejects_two_ids_resolving_to_the_same_live_transaction
     side effects double-run — reject the collision instead of letting
     iteration order decide (issue #538).
     """
-    real_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
-    )
+    _seed_live_transaction(real_db, "txn-live")
     real_db.execute(
         "INSERT INTO app.transaction_id_aliases "
         "(old_transaction_id, new_transaction_id, created_at) "
@@ -1217,11 +1240,7 @@ def test_categorize_items_against_superseded_id_still_resolves_merchant_and_exem
     misses the row entirely and both silently no-op for exactly the
     superseded-id case this module resolves ids to support.
     """
-    real_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS COFFEE', 'csv')"
-    )
+    _seed_live_transaction(real_db, "txn-live", description="STARBUCKS COFFEE")
     real_db.execute(
         "INSERT INTO app.transaction_id_aliases "
         "(old_transaction_id, new_transaction_id, created_at) "
@@ -1444,8 +1463,6 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     With N items, the number of read queries (description fetch + merchant
     fetch) must be O(1), not O(N).
     """
-    from moneybin.tables import FCT_TRANSACTIONS
-
     # In production core.fct_transactions is a view over
     # core.bridge_merchant_entities, so the batched description fetch joins the
     # bridge to read merchant_entity_id (M1T rung-0). Provide an (empty) bridge so
@@ -1457,16 +1474,9 @@ def test_categorize_items_uses_constant_number_of_db_calls(
         "merchant_entity_source_type VARCHAR)"
     )
 
-    # Seed 25 transactions and 25 corresponding category items.
+    # Seed 25 live transactions and 25 corresponding category items.
     for i in range(25):
-        db.execute(
-            f"""
-            INSERT INTO {FCT_TRANSACTIONS.full_name}
-            (transaction_id, account_id, transaction_date, amount, description, source_type)
-            VALUES (?, 'acct1', DATE '2025-01-01', -10.00, ?, 'csv')
-            """,  # noqa: S608  # building test input string, not executing SQL
-            [f"txn_{i}", f"Coffee shop {i}"],
-        )
+        _seed_live_transaction(db, f"txn_{i}", description=f"Coffee shop {i}")
     items = [
         CategorizationItem(
             transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
@@ -1491,16 +1501,16 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     # so must the shared curation-id liveness resolver it now also runs
     # (issue #538) — both are O(1) queries against a "transaction_id IN (...)"
     # list, so distinguish them by their distinct table shapes rather than
-    # asserting one combined count. Per-row fetches inside _auto_rule
+    # asserting one combined count. The liveness query reads
+    # prep.int_transactions__matched, not the fact, so it is matched on its
+    # manual-transactions arm alone. Per-row fetches inside _auto_rule
     # recording are a separate concern and are out of scope here.
-    batched = [
-        q
-        for q in select_calls
-        if "fct_transactions" in q.lower() and "transaction_id in (" in q.lower()
-    ]
+    batched = [q for q in select_calls if "transaction_id in (" in q.lower()]
     liveness_queries = [q for q in batched if "manual_transactions" in q.lower()]
     description_queries = [
-        q for q in batched if "bridge_merchant_entities" in q.lower()
+        q
+        for q in batched
+        if "fct_transactions" in q.lower() and "bridge_merchant_entities" in q.lower()
     ]
     assert len(liveness_queries) == 1, (
         f"Expected exactly 1 batched liveness resolve, got {len(liveness_queries)}:\n"
@@ -3851,17 +3861,14 @@ class TestApplySourceCategoryMap:
         assert row == ("cat-utilities",)
 
     @pytest.mark.unit
-    def test_superseded_id_still_counts_toward_the_provider_native_metric(
+    def test_a_written_candidate_counts_toward_the_provider_native_metric(
         self, db: Database
     ) -> None:
-        """A remapped id must not silently drop its metric increment.
+        """The per-source_type counter keys on the ids the write returned.
 
-        ``write_categorizations`` returns *resolved* ids. Matching those
-        against this leg's own pre-resolution ids compared two different id
-        spaces: the write landed and ``count`` stayed right, but the per-
-        ``source_type`` counter skipped any row an account-merge or dedup
-        event had superseded — a silent observability hole rather than a
-        visible failure.
+        Candidates come from ``prep.int_transactions__matched``, the liveness
+        oracle, so a candidate is always the live id and the write returns it
+        unchanged; the counter must still see the row it landed on.
         """
         from moneybin.metrics.registry import CATEGORIZE_PROVIDER_NATIVE_TOTAL
 
@@ -3878,18 +3885,13 @@ class TestApplySourceCategoryMap:
         )
         _insert_matched_txn(
             db,
-            "t_superseded",
+            "t_live",
             source_type="csv",
             source_origin="chase_credit",
             category="Gas",
             subcategory=None,
         )
         _seed_gold_transaction(db, "t_live")
-        db.execute(
-            "INSERT INTO app.transaction_id_aliases "
-            "(old_transaction_id, new_transaction_id, created_at) "
-            "VALUES ('t_superseded', 't_live', CURRENT_TIMESTAMP)"
-        )
         before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
             source_type="csv", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
@@ -3900,7 +3902,7 @@ class TestApplySourceCategoryMap:
             source_type="csv", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 1
-        assert after == before + 1, "a superseded id dropped its metric increment"
+        assert after == before + 1, "the written row dropped its metric increment"
         row = db.execute(
             "SELECT category_id FROM app.transaction_categories "
             "WHERE transaction_id='t_live'"

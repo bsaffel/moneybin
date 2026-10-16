@@ -27,14 +27,14 @@ def test_returns_freshness_for_known_model() -> None:
         run_step("generate", scenario.setup, db, env=env)
         run_step("transform", scenario.setup, db, env=env)
 
-        result = SystemService(db).model_freshness("core.dim_accounts")
+        result = SystemService(db).model_freshness("core.bridge_transfers")
 
     assert result is not None
     assert isinstance(result, ModelFreshness)
-    assert result.model_name == "core.dim_accounts"
+    assert result.model_name == "core.bridge_transfers"
     assert isinstance(result.last_changed_at, datetime)
     assert isinstance(result.last_applied_at, datetime)
-    # The step above ran a full apply, and dim_accounts.sql declares `kind FULL`
+    # The step above ran a full apply, and bridge_transfers.sql declares `kind FULL`
     # — a kind every refresh re-executes — so its current version must carry an
     # interval. Asserting the kind too pins the ordinal mapping from the SELECT
     # in `model_freshness()` onto the dataclass: swap the last two columns and

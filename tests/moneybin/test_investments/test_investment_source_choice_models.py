@@ -11,7 +11,9 @@ from datetime import date, datetime
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.investments.source_overlap import (
     investment_source_overlap,
     stale_source_choice_accounts,
@@ -252,22 +254,29 @@ def test_clear_returns_rows_with_a_newer_watermark(db: Database) -> None:
     assert _status(db) == "source_overlap", "clearing should bring the overlap back"
 
 
+def _fail_restatement(*_args: object, committed_change: str) -> None:
+    """Fail the post-write restate the way ``restate_after_write`` does."""
+    raise UserError(
+        f"The {committed_change} was saved, but the reports that read it could "
+        "not be rebuilt.",
+        code=error_codes.REFRESH_MODEL_FAILED,
+    )
+
+
 def test_failed_restate_leaves_a_stale_choice_until_refresh(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The choice commits before the restate, so a failed restate must stay visible."""
     _seed_overlap(db)
 
-    def _fail(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("restate failed")
-
     monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_investment_ledger", _fail
+        "moneybin.services.restate.restate_after_write", _fail_restatement
     )
-    with pytest.raises(RuntimeError, match="restate failed"):
+    with pytest.raises(UserError) as failed:
         AccountService(db).settings_update(
             _ACCOUNT, actor="test", investment_source_type="manual"
         )
+    assert failed.value.code == error_codes.REFRESH_MODEL_FAILED
 
     assert investment_source_overlap(db) == [], "a chosen account is not offered"
     assert stale_source_choice_accounts(db) == [_ACCOUNT]
@@ -306,16 +315,14 @@ def test_failed_restate_after_a_clear_is_stale_until_refresh(
     )
     assert _ledger(db) == [("manual", None)]
 
-    def _fail(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("restate failed")
-
     monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_investment_ledger", _fail
+        "moneybin.services.restate.restate_after_write", _fail_restatement
     )
-    with pytest.raises(RuntimeError, match="restate failed"):
+    with pytest.raises(UserError) as failed:
         AccountService(db).settings_update(
             _ACCOUNT, actor="test", investment_source_type=CLEAR
         )
+    assert failed.value.code == error_codes.REFRESH_MODEL_FAILED
 
     assert _ledger(db) == [("manual", None)], "the failed restate built nothing"
     assert stale_source_choice_accounts(db) == [_ACCOUNT]

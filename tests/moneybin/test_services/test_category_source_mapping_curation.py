@@ -891,6 +891,16 @@ def _seed_plaid_pfc(db: Database) -> None:
         "INSERT INTO prep.int_transactions__merged VALUES "
         "('t_plaid', NULL, 'FOOD_AND_DRINK', 'HIGH')"
     )
+    # The liveness oracle carries every fact id, Plaid's included; a NULL
+    # category keeps the row out of the imported-term bridge.
+    _insert_matched_txn(
+        db,
+        "t_plaid",
+        source_type="plaid",
+        source_origin="plaid",
+        category=None,
+        subcategory=None,
+    )
     _seed_gold_transaction(db, "t_plaid")
 
 
@@ -1404,16 +1414,21 @@ class TestMappingFollowsThrough:
             ({"category_id": "cat-b"}, [("t_live", "cat-b", "provider_native")]),
         ],
     )
-    def test_change_reaches_a_row_whose_id_was_superseded(
+    def test_change_reaches_a_rekeyed_row_under_its_live_id(
         self, db: Database, change: dict[str, Any], expected: list[tuple[str, ...]]
     ) -> None:
-        """The sweep writes under the live id; the withdrawal must look there."""
+        """A re-keyed row's sweep and withdrawal both act on its live id.
+
+        The matched layer derives canonical ids from current decisions, so it
+        carries the live id, never the superseded one; the alias row is the
+        re-key's history and must not divert either leg onto the dead id.
+        """
         refresh_views(db)
         _seed_active_category(db, "cat-a", "Category A")
         _seed_active_category(db, "cat-b", "Category B")
         _insert_matched_txn(
             db,
-            "t_superseded",
+            "t_live",
             source_type="csv",
             source_origin="chase_credit",
             category="Coffee Shops",

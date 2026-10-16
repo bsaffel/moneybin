@@ -226,12 +226,17 @@ def _restate_rate_spine(db: Database) -> str | None:
     `core.fct_exchange_rates_daily` is kind FULL: the full cascade picks new
     rates up with its second apply, but `steps=["rates"]` runs no apply, so
     without this the net-worth reports keep pricing at the old carried-forward
-    rate. The same narrow restatement `fx set` runs.
+    rate. Restates from the two raw tables the step writes.
     """
-    from moneybin.services.fx_accounting_refresh import restate_fx_accounting
+    from moneybin.services.restate import restate_after_write
+    from moneybin.tables import EXCHANGE_RATE_COVERAGE, EXCHANGE_RATES
 
     try:
-        restate_fx_accounting(db, committed_change="exchange rate")
+        restate_after_write(
+            db,
+            [EXCHANGE_RATES, EXCHANGE_RATE_COVERAGE],
+            committed_change="exchange rate",
+        )
     except UserError as exc:
         logger.error(f"Rate spine restatement failed: {exc.code}")
         return exc.message
@@ -372,7 +377,10 @@ def refresh(
         if progress is not None:
             progress(ProgressEvent("Matching transactions"))
         try:
-            match_result = MatchingService(db).run(actor=actor)
+            # The transform below rebuilds everything the decisions feed.
+            match_result = MatchingService(db).run(
+                actor=actor, restate="transform" not in requested
+            )
             auto_merged = match_result.auto_merged
             pending_review = match_result.pending_review
             pending_transfers = match_result.pending_transfers

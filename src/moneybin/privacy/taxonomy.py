@@ -216,6 +216,9 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         # When archived last moved; freshness bookkeeping, like updated_at.
         "archived_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        # When the currency / cost-basis method last moved; the same bookkeeping.
+        "currency_code_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "default_cost_basis_method_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,

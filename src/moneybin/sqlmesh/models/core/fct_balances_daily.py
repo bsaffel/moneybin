@@ -357,7 +357,7 @@ def _build_spine_rows(
         "core.fct_transactions",
         "core.fct_investment_transactions",
         "core.dim_holdings_broker_reported",
-        "core.dim_accounts",
+        "prep.int_accounts__merged",
     },
     columns={
         "account_id": "VARCHAR",
@@ -376,7 +376,7 @@ def _build_spine_rows(
         "balance": "Balance as of end of this day; NULL when the account holds value (a transaction, a trade, or a broker-reported position) but has no balance observation. Count those rows before trusting a SUM: SUM() skips them silently",
         "reconciliation_delta": "Difference between observed and transaction-derived balance; NULL on interpolated days, on the first observation, and when the account has no balance observation",
         "is_observed": "TRUE if an authoritative observation exists for this date",
-        "in_net_worth": "TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from core.dim_accounts on every refresh, which holds only while this model is kind FULL",
+        "in_net_worth": "TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from the account's settings on every rebuild, and rebuilt whenever an archive or net-worth setting changes",
         "balance_date": "Calendar date",
     },
     description=(
@@ -405,7 +405,7 @@ def execute(
     fct_transactions_table = context.resolve_table("core.fct_transactions")
     investment_table = context.resolve_table("core.fct_investment_transactions")
     broker_table = context.resolve_table("core.dim_holdings_broker_reported")
-    accounts_table = context.resolve_table("core.dim_accounts")
+    accounts_table = context.resolve_table("prep.int_accounts__merged")
 
     obs: pd.DataFrame = context.fetchdf(
         f"""
