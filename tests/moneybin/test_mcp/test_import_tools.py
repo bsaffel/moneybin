@@ -3748,6 +3748,112 @@ async def test_confirm_refusal_names_both_recoveries_for_an_unreadable_date(
     assert "'<dest_field>'" not in hint, hint
 
 
+@pytest.mark.parametrize("unreadable_date", [False, True])
+@pytest.mark.parametrize("omit_status", [False, True])
+async def test_confirm_recovery_retains_optional_omissions(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    unreadable_date: bool,
+    omit_status: bool,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "confirm-recovery.csv"
+    csv.write_text(
+        "Date,Description,Amount,State\nnot-a-date,Coffee,-4.50,WA\n"
+        if unreadable_date
+        else "Notes,Reference,Unmapped,State\nCoffee,-4.50,2026-01-01,WA\n"
+    )
+    preview = await import_preview_coarse(
+        file_path=str(csv), omit_fields=["status"] if omit_status else None
+    )
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        stored = ImportPreviewsRepo(db).get(preview.data.preview_id)
+        assert stored is not None
+        assert stored["snapshot_json"].get("omit_fields") == (
+            ["status"] if omit_status else None
+        )
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id, account_name="Checking"
+    )
+    hint = " ".join(confirmed.actions)
+    assert ("omit_fields=['status']" in hint) is omit_status, hint
+    if unreadable_date:
+        assert ("--omit-field status" in hint) is omit_status, hint
+    import ast
+    import re
+
+    command = re.search(r"import_preview\((.*?)\)", hint)
+    assert command is not None
+    call = ast.parse("import_preview(" + command.group(1) + ")", mode="eval").body
+    assert isinstance(call, ast.Call)
+    arguments: dict[str, Any] = {}
+    for keyword in call.keywords:
+        assert keyword.arg is not None
+        arguments[keyword.arg] = ast.literal_eval(keyword.value)
+    arguments["mapping"] = (
+        {"transaction_date": "Date"}
+        if unreadable_date
+        else {
+            "transaction_date": "Unmapped",
+            "amount": "Reference",
+            "description": "Notes",
+        }
+    )
+    retried = await import_preview_coarse(**arguments)
+    assert retried.error is None
+    assert ("status" not in retried.data.mapping) is omit_status
+
+
+@pytest.mark.parametrize("unreadable_date", [False, True])
+async def test_preview_recovery_retains_optional_omissions(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    unreadable_date: bool,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "recovery.csv"
+    csv.write_text(
+        "Date,Description,Amount,State\nnot-a-date,Coffee,-4.50,WA\n"
+        if unreadable_date
+        else "Notes,Reference,Unmapped,State\nCoffee,-4.50,2026-01-01,WA\n"
+    )
+    preview = await import_preview_coarse(file_path=str(csv), omit_fields=["status"])
+    hint = " ".join(preview.actions)
+    assert "omit_fields=['status']" in hint, hint
+    if unreadable_date:
+        assert "--omit-field status" in hint, hint
+
+    # Follow the executable MCP restaging call with an actual source column.
+    import ast
+    import re
+
+    command = re.search(r"import_preview\((.*?)\)", hint)
+    assert command is not None
+    call = ast.parse("import_preview(" + command.group(1) + ")", mode="eval").body
+    assert isinstance(call, ast.Call)
+    arguments: dict[str, Any] = {}
+    for keyword in call.keywords:
+        assert keyword.arg is not None
+        arguments[keyword.arg] = ast.literal_eval(keyword.value)
+    arguments["mapping"] = (
+        {"transaction_date": "Date"}
+        if unreadable_date
+        else {
+            "transaction_date": "Unmapped",
+            "amount": "Reference",
+            "description": "Notes",
+        }
+    )
+    retried = await import_preview_coarse(**arguments)
+    assert retried.error is None
+    assert "status" not in retried.data.mapping
+
+
 async def test_preview_keeps_the_correction_hint_for_an_unconfirmable_plan(
     mcp_db: object,
     tmp_path: Path,

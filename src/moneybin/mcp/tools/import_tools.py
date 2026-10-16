@@ -1083,12 +1083,18 @@ def import_preview_coarse(
         elif plan_reason == "header_row_consumed":
             actions = [header_row_consumed_recovery_mcp()]
         elif plan_reason == "unreadable_date":
-            actions = [unreadable_date_recovery_mcp(file_path)]
+            actions = [
+                unreadable_date_recovery_mcp(
+                    file_path, omitted_fields=frozenset(omit_fields or ())
+                )
+            ]
         else:
             actions = [
                 "This mapping is not confirmable as staged. Use import_preview("
                 f"file_path={file_path!r}, mapping={{'<dest_field>': "
-                "'<source_column>'}) to correct it; data.sample_values and "
+                "'<source_column>'}"
+                + (f", omit_fields={omit_fields!r}" if omit_fields else "")
+                + ") to correct it; data.sample_values and "
                 "data.unmapped_columns name the file's columns.",
             ]
     elif data.get("status") == "confirmation_required" and "bridge_payload" in data:
@@ -1132,6 +1138,10 @@ def import_preview_coarse(
         "sensitivity": classify(type(payload)).sensitivity,
         "plan": reviewed_plan,
     }
+    if omit_fields:
+        # Retain explicit intent for fresh-preview recovery, without inferring
+        # omissions from destinations absent in the resolved mapping.
+        snapshot["omit_fields"] = sorted(set(omit_fields))
     channel: Literal["tabular", "pdf", "ofx"] = (
         "pdf" if path.suffix.lower() == ".pdf" else "tabular"
     )
@@ -2042,6 +2052,7 @@ def _import_confirm_coarse_confirmation_actions(
     outcome: ConfirmationRequired,
     *,
     sign_already_approved: bool = False,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Build the actions[] hints for a non-sign confirmation_required envelope.
 
@@ -2117,12 +2128,16 @@ def _import_confirm_coarse_confirmation_actions(
             unreadable_date_recovery_mcp,
         )
 
-        actions.append(unreadable_date_recovery_mcp(file_path))
+        actions.append(
+            unreadable_date_recovery_mcp(file_path, omitted_fields=omitted_fields)
+        )
         return actions
     actions.append(
         f"This preview's mapping cannot be corrected in place — staged "
         "previews are immutable. Use import_preview(file_path="
-        f"{file_path!r}, mapping={{'<dest_field>': '<source_column>'}}) to "
+        f"{file_path!r}, mapping={{'<dest_field>': '<source_column>'}}"
+        + (f", omit_fields={sorted(omitted_fields)!r}" if omitted_fields else "")
+        + ") to "
         "build a corrected preview, then import_confirm(preview_id=...) on "
         "the new preview_id."
     )
@@ -2264,6 +2279,12 @@ async def import_confirm_coarse(
                             str(path),
                             outcome,
                             sign_already_approved=approved_sign_proposal is not None,
+                            omitted_fields=frozenset(
+                                cast(
+                                    list[str],
+                                    preview["snapshot_json"].get("omit_fields", []),
+                                )
+                            ),
                         ),
                     ),
                 )

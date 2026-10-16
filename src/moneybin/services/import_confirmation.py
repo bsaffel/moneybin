@@ -803,7 +803,9 @@ def header_position_ambiguous_recovery_sidecar(file_path: str) -> str:
     )
 
 
-def unreadable_date_recovery_mcp(file_path: str) -> str:
+def unreadable_date_recovery_mcp(
+    file_path: str, *, omitted_fields: frozenset[str] = frozenset()
+) -> str:
     """The same two recoveries as above, in MCP's idiom.
 
     Kept adjacent to the CLI wording on purpose: this claim has drifted three
@@ -813,16 +815,20 @@ def unreadable_date_recovery_mcp(file_path: str) -> str:
     must stay identical; only the command names differ. MCP exposes no
     date-format parameter, so that branch names the CLI.
     """
+    omission_input = (
+        f", omit_fields={sorted(omitted_fields)!r}" if omitted_fields else ""
+    )
     return (
         "This mapping is not confirmable as staged: no date format could "
         "be read from the mapped date column. If the wrong column is "
         f"mapped, use import_preview(file_path={file_path!r}, "
-        "mapping={'transaction_date': '<source_column>'}); "
+        "mapping={'transaction_date': '<source_column>'}"
+        f"{omission_input}); "
         "data.sample_values and data.unmapped_columns name the file's "
         "columns. If the column is right and its format is simply "
         "unrecognized, no mapping correction can change that — import "
         "it with `moneybin import files <file> --confirm --date-format "
-        "<strptime>`."
+        f"<strptime>{tabular_omission_fragment(omitted_fields)}`."
     )
 
 
