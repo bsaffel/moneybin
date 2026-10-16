@@ -35,6 +35,11 @@ class ReviewCandidate:
 class SavedDecisionError(Exception):
     """A decision committed but its required follow-up failed."""
 
+    def __init__(self, error: UserError | None = None) -> None:
+        """Retain the original recovery error for the session handler."""
+        super().__init__()
+        self.error = error
+
 
 @dataclass(frozen=True)
 class ReviewItem:
@@ -332,8 +337,10 @@ def run_review(type_: str, limit: int, policy: TerminalPolicy) -> None:
                         )
                     else:
                         stale += 1
-                except SavedDecisionError:
+                except SavedDecisionError as exc:
                     saved += 1
+                    if exc.error is not None:
+                        raise exc.error from exc.error.__cause__
                     raise typer.Exit(1) from None
                 except UserError as exc:
                     if (
@@ -539,9 +546,29 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
 
             service = SecurityLinksService(db, actor="cli")
             if target is not None:
-                result_kind = service.accept(
-                    decision_id, into=target, decided_by="user"
-                )
+                try:
+                    result_kind = service.accept(
+                        decision_id, into=target, decided_by="user"
+                    )
+                except UserError as exc:
+                    if exc.code == error_codes.REFRESH_MODEL_FAILED:
+                        committed = service.decision_by_id(decision_id)
+                        if (
+                            committed is not None
+                            and committed["status"] == "accepted"
+                            and committed.get("reversed_at") is None
+                            and committed["candidate_security_id"] == target
+                        ):
+                            _show(
+                                [
+                                    ("Decision", decision_id),
+                                    ("Committed status", "accepted"),
+                                ],
+                                "Security decision committed; reports stale",
+                                policy,
+                            )
+                            raise SavedDecisionError(exc) from None
+                    raise
                 typer.echo(f"Security decision saved: {result_kind}.")
             else:
                 service.reject_merge(decision_id, decided_by="user")
