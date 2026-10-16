@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.services.account_service import AccountService
@@ -27,7 +28,12 @@ def _row(*, archived: bool, include: bool) -> dict[str, object]:
 
 
 @pytest.fixture()
-def intent_db(db: Database) -> Database:
+def intent_db(db: Database, mocker: MockerFixture) -> Database:
+    # Archive, include and currency writes restate; create_core_tables makes
+    # model_presence.never_built False, so the real restate would reach for a
+    # SQLMesh 'prod' environment a unit test never builds. Which writes restate
+    # is test_account_service's concern, not this invariant's.
+    mocker.patch("moneybin.services.restate.restate_after_write")
     create_core_tables(db)
     db.execute(
         "INSERT INTO core.dim_accounts (account_id) VALUES ('acct_a'), ('acct_b')"
@@ -110,23 +116,8 @@ def test_explicit_include_or_exclude_clears_it(
     assert _result(intent_db).status == "pass"
 
 
-def _noop_restate(db: Database, *, account_currency_changed: bool = False) -> None:
-    """Stand in for ``restate_fx_accounting`` — see the caller for why."""
-
-
 @pytest.mark.unit
-def test_unrelated_settings_write_does_not_clear_it(
-    intent_db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # currency_code triggers an FX restate (settings_update); intent_db's
-    # create_core_tables fixture makes model_presence.never_built False, so
-    # the real restate would try to reach a SQLMesh 'prod' environment that
-    # doesn't exist in a unit test. Stub it out like
-    # test_unrelated_account_setting_does_not_restate_fx_accounting does.
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        _noop_restate,
-    )
+def test_unrelated_settings_write_does_not_clear_it(intent_db: Database) -> None:
     _cascade_archive(intent_db, "acct_a")
     service = AccountService(intent_db)
     service.settings_update("acct_a", display_name="Renamed", actor="cli")

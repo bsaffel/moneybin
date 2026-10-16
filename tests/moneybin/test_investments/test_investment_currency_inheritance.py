@@ -96,8 +96,9 @@ def _install_ledger_chain(
     db.execute(
         f"CREATE TABLE prep.stg_plaid__opening_lots ({_PLAID_COLUMNS})"
     )  # static test DDL
+    # The ledger reads the account base, not the dim view over it.
     db.execute("""
-        CREATE TABLE core.dim_accounts (
+        CREATE TABLE prep.int_accounts__merged (
             account_id VARCHAR,
             currency_code VARCHAR,
             updated_at TIMESTAMP,
@@ -106,7 +107,7 @@ def _install_ledger_chain(
         )
     """)
     db.execute(
-        "INSERT INTO core.dim_accounts (account_id, currency_code, updated_at) "
+        "INSERT INTO prep.int_accounts__merged (account_id, currency_code, updated_at) "
         "VALUES (?, ?, ?::TIMESTAMP)",
         [_ACCOUNT_ID, account_currency, account_updated_at],
     )
@@ -205,7 +206,7 @@ class TestInvestmentEventCurrencyInheritance:
             datetime(2026, 5, 12, 9),
         )
         db.execute(
-            """UPDATE core.dim_accounts
+            """UPDATE prep.int_accounts__merged
             SET currency_code = 'EUR', updated_at = TIMESTAMP '2026-05-13 10:00:00'
             WHERE account_id = ?""",
             [_ACCOUNT_ID],

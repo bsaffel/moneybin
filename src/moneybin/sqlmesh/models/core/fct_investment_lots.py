@@ -32,11 +32,15 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
 @model(
     "core.fct_investment_lots",
     kind="FULL",
-    # fetchdf() SQL is opaque to SQLMesh's dependency scanner; declare the one
-    # SQLMesh-built input so it materialises before this model runs. The app.*
-    # inputs (securities, account_settings, lot_selections) are external tables
-    # populated outside SQLMesh — always present, so they need no ordering edge.
-    depends_on={"core.fct_investment_transactions"},
+    # fetchdf() SQL is opaque to SQLMesh's dependency scanner, so every input
+    # is declared: the built ones for ordering, the app.* ones so a write to
+    # them restates this model (services/restate.py).
+    depends_on={
+        "app.lot_selections",
+        "app.securities",
+        "core.fct_investment_transactions",
+        "prep.int_accounts__merged",
+    },
     columns={
         "lot_id": "VARCHAR",
         "account_id": "VARCHAR",

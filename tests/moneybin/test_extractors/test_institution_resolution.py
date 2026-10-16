@@ -330,11 +330,15 @@ class TestRegistryAliasLookup:
         known = {row["slug"] for row in self._registry_rows()}
         assert {slug for _spelling, slug in variants} <= known, known
 
-        model = Path("src/moneybin/sqlmesh/models/core/dim_accounts.sql").read_text()
+        # The account merge, institution normalization included, lives in the
+        # materialized base under core.dim_accounts.
+        model = Path(
+            "src/moneybin/sqlmesh/models/prep/int_accounts__merged.sql"
+        ).read_text()
         patterns = set(
             re.findall(r"REGEXP_REPLACE\(LOWER\([^)]*\), '([^']*)', '', 'g'\)", model)
         )
-        assert patterns, "dim_accounts no longer normalizes institutions in SQL"
+        assert patterns, "int_accounts__merged no longer normalizes institutions in SQL"
         assert len(patterns) == 1, f"model uses more than one normalization: {patterns}"
         pattern = patterns.pop()
 

@@ -171,6 +171,7 @@ class BalanceService:
             account_id, assertion_date, balance=balance, notes=notes, actor=actor
         )
         logger.info(f"Asserted balance for account {account_id} on {assertion_date}")
+        self._restate()
         return BalanceAssertionPayload(
             assertion=self._load_assertion(account_id, assertion_date)
         )
@@ -225,7 +226,16 @@ class BalanceService:
             logger.info(
                 f"Deleted balance assertion for account {account_id} on {assertion_date}"
             )
+            self._restate()
             return True
+
+    def _restate(self) -> None:
+        """Rebuild the daily balances, which anchor on assertions."""
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(
+            self._db, [BALANCE_ASSERTIONS], committed_change="balance assertion"
+        )
 
     def _fetch_assertions(
         self, tail: str, params: list[object]

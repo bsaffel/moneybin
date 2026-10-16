@@ -204,6 +204,17 @@ def refresh_views(db: Database) -> None:
         if has_column(db, USER_CATEGORIES, "class")
         else f"({CATEGORY_CLASS_FROM_ID_CASE_SQL}) AS class"
     )
+    # V010 adds updated_at to both tables; guarded the same way for a pre-V010 open.
+    override_updated_at_expr = (
+        "o.updated_at"
+        if has_column(db, CATEGORY_OVERRIDES, "updated_at")
+        else "NULL::TIMESTAMP"
+    )
+    user_updated_at_expr = (
+        "updated_at"
+        if has_column(db, USER_CATEGORIES, "updated_at")
+        else "NULL::TIMESTAMP"
+    )
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS
@@ -215,7 +226,8 @@ def refresh_views(db: Database) -> None:
             {seed_class_expr},
             true AS is_default,
             COALESCE(o.is_active, true) AS is_active,
-            NULL::TIMESTAMP AS created_at
+            NULL::TIMESTAMP AS created_at,
+            {override_updated_at_expr} AS updated_at
         FROM {SEED_CATEGORIES.full_name} s
         LEFT JOIN {CATEGORY_OVERRIDES.full_name} o USING (category_id)
         UNION
@@ -227,7 +239,8 @@ def refresh_views(db: Database) -> None:
             {user_class_expr},
             false AS is_default,
             is_active,
-            created_at
+            created_at,
+            {user_updated_at_expr} AS updated_at
         FROM {USER_CATEGORIES.full_name}
         """  # noqa: S608  # all interpolated names are TableRef constants or the category_class module constant, not user input
     )

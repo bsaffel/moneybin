@@ -429,9 +429,11 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             ('txn-missing-in', 'native-missing-in', 'manual', 'user', 'acct-gbp')
         """
     )
+    # The loader reads the account base, whose updated_at folds only restating
+    # stamps; the fact's updated_at below also folds curation and is never read.
     db.execute(
         """
-        CREATE OR REPLACE TABLE core.dim_accounts (
+        CREATE OR REPLACE TABLE prep.int_accounts__merged (
             account_id VARCHAR,
             currency_code VARCHAR,
             updated_at TIMESTAMP
@@ -440,7 +442,8 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     )
     db.execute(
         """
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO prep.int_accounts__merged VALUES
+            ('acct-usd', 'USD', '2026-03-15 09:00:00'::TIMESTAMP),
             ('acct-eur', 'EUR', '2026-03-19 09:00:00'::TIMESTAMP)
         """
     )
@@ -473,7 +476,8 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     )
     assert linked.from_source_transaction_id == "native-linked-out"
     assert linked.coverage_status == "complete"
-    assert str(linked.updated_at) == "2026-03-18 10:00:00"
+    # Both legs inherit their Account Currency, so acct-eur's 03-19 stamp leads.
+    assert str(linked.updated_at) == "2026-03-19 09:00:00"
 
     single = by_shape["single_row"]
     assert (single.from_currency, single.to_currency) == ("EUR", "USD")
@@ -487,7 +491,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
 
     db.execute(
         """
-        UPDATE core.dim_accounts
+        UPDATE prep.int_accounts__merged
            SET currency_code = NULL,
                updated_at = '2026-03-20 09:00:00'::TIMESTAMP
          WHERE account_id = 'acct-eur'
@@ -517,7 +521,9 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     }["linked_two_row"]
     assert cleared_linked.to_currency is None
     assert cleared_linked.coverage_reason == "unknown_currency"
-    assert str(cleared_linked.updated_at) == "2026-03-21 09:00:00"
+    # The clear happened at the account's 03-20 stamp; the fact's later
+    # updated_at is curation freshness, which a materialized row must not fold.
+    assert str(cleared_linked.updated_at) == "2026-03-20 09:00:00"
 
     db.execute(
         """

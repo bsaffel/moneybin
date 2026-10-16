@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 
 import pytest
 from pytest_mock import MockerFixture
@@ -21,6 +22,7 @@ from moneybin.matching.persistence import (
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.services.matching_service import MatchingService
+from moneybin.tables import MATCH_DECISIONS, TableRef
 from tests.moneybin.test_mcp.schema_assertions import (
     assert_recovery_actions_executable,
 )
@@ -132,63 +134,58 @@ def test_set_status_accepts_pending(db: Database) -> None:
     assert _status_of(db, "m1") == "accepted"
 
 
-def test_accepting_transfer_restates_fx_accounting(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+_Restatement = tuple[Database, list[TableRef], str]
+
+
+def _record_restatements(monkeypatch: pytest.MonkeyPatch) -> list[_Restatement]:
+    """Replace ``restate_after_write`` with a recorder of what each write restated."""
+    restated: list[_Restatement] = []
+
+    def record(
+        target_db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        restated.append((target_db, list(inputs), committed_change))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", record)
+    return restated
+
+
+@pytest.mark.parametrize("match_type", ["transfer", "dedup"])
+def test_accepting_a_match_restates_match_decisions(
+    db: Database, monkeypatch: pytest.MonkeyPatch, match_type: str
 ) -> None:
-    _seed(db, "fx-transfer", "pending", match_type="transfer")
-    restated: list[Database] = []
+    """Any accept restates, dedup included: a merge re-keys the ledger."""
+    _seed(db, "accepted-match", "pending", match_type=match_type)
+    restated = _record_restatements(monkeypatch)
 
-    def record_restatement(target_db: Database, **_kwargs: object) -> None:
-        restated.append(target_db)
+    MatchingService(db).set_status("accepted-match", status="accepted")
 
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
-
-    MatchingService(db).set_status("fx-transfer", status="accepted")
-
-    assert restated == [db]
+    assert restated == [(db, [MATCH_DECISIONS], "match decision")]
 
 
-def test_rejecting_transfer_does_not_restate_fx_accounting(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("match_type", ["transfer", "dedup"])
+def test_rejecting_a_pending_match_restates_nothing(
+    db: Database, monkeypatch: pytest.MonkeyPatch, match_type: str
 ) -> None:
-    _seed(db, "rejected-fx-transfer", "pending", match_type="transfer")
-    restated: list[Database] = []
+    """Models read only accepted decisions, so pending → rejected changes none."""
+    _seed(db, "rejected-match", "pending", match_type=match_type)
+    restated = _record_restatements(monkeypatch)
 
-    def record_restatement(target_db: Database, **_kwargs: object) -> None:
-        restated.append(target_db)
-
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
-
-    MatchingService(db).set_status("rejected-fx-transfer", status="rejected")
+    MatchingService(db).set_status("rejected-match", status="rejected")
 
     assert restated == []
 
 
-def test_reversing_transfer_restates_fx_accounting_as_committed_undo(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("match_type", ["transfer", "dedup"])
+def test_reversing_a_match_restates_match_decisions_as_committed_undo(
+    db: Database, monkeypatch: pytest.MonkeyPatch, match_type: str
 ) -> None:
-    _seed(db, "reversed-fx-transfer", "accepted", match_type="transfer")
-    restated: list[tuple[Database, str]] = []
+    _seed(db, "reversed-match", "accepted", match_type=match_type)
+    restated = _record_restatements(monkeypatch)
 
-    def record_restatement(
-        target_db: Database, *, committed_change: str = "setting"
-    ) -> None:
-        restated.append((target_db, committed_change))
+    MatchingService(db).undo("reversed-match")
 
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
-
-    MatchingService(db).undo("reversed-fx-transfer")
-
-    assert restated == [(db, "undo")]
+    assert restated == [(db, [MATCH_DECISIONS], "undo")]
 
 
 def test_set_status_rejects_pending(db: Database) -> None:
@@ -411,23 +408,25 @@ def test_accept_previewed_accepts_equivalent_match_signals_json(db: Database) ->
     assert _status_of(db, "selected") == "accepted"
 
 
-def test_accept_previewed_reports_committed_effects_when_fx_restatement_fails(
+def test_accept_previewed_reports_committed_effects_when_restatement_fails(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """FX runs after commit, so its failure cannot turn saved work into a rollback."""
+    """The restate runs after commit, so its failure cannot roll saved work back."""
     _seed(db, "selected", "pending")
     selection = MatchingService(db).preview_pending(limit=1)
 
     def _fail_restatement(*_args: object, **_kwargs: object) -> None:
         raise UserError(
-            "FX accounting needs refresh.",
+            "The match decision was committed, but the reports that read it "
+            "could not be rebuilt.",
             code=error_codes.REFRESH_MODEL_FAILED,
-            hint="Run 'moneybin refresh' before relying on FX lots or gains.",
+            hint="Run 'moneybin refresh' before relying on balances, holdings, "
+            "lots or gains.",
             recovery_actions=[
                 RecoveryAction(
                     tool="refresh",
                     arguments={},
-                    rationale="Rebuild derived FX accounting after the saved match decision.",
+                    rationale="Rebuild the reports after the saved match decision.",
                     confidence="suggested",
                     idempotent=True,
                 )
@@ -435,7 +434,7 @@ def test_accept_previewed_reports_committed_effects_when_fx_restatement_fails(
         )
 
     monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting_after_match_effects",
+        "moneybin.services.restate.restate_after_match_effects",
         _fail_restatement,
     )
 
@@ -444,15 +443,14 @@ def test_accept_previewed_reports_committed_effects_when_fx_restatement_fails(
     assert outcome.accepted == 1
     assert outcome.accounting_stale is True
     assert outcome.accounting_error_code == error_codes.REFRESH_MODEL_FAILED
-    assert (
-        outcome.accounting_hint
-        == "Run 'moneybin refresh' before relying on FX lots or gains."
+    assert outcome.accounting_hint == (
+        "Run 'moneybin refresh' before relying on balances, holdings, lots or gains."
     )
     assert outcome.accounting_recovery_actions[0].tool == "refresh"
     assert _status_of(db, "selected") == "accepted"
 
 
-def test_accept_all_pending_keeps_its_existing_fx_error_behavior(
+def test_accept_all_pending_keeps_its_existing_restatement_error_behavior(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The bounded receipt does not change legacy bulk callers' exception contract."""
@@ -460,37 +458,32 @@ def test_accept_all_pending_keeps_its_existing_fx_error_behavior(
 
     def _fail_restatement(*_args: object, **_kwargs: object) -> None:
         raise UserError(
-            "FX accounting needs refresh.", code=error_codes.REFRESH_MODEL_FAILED
+            "The match decision was committed, but the reports that read it could "
+            "not be rebuilt.",
+            code=error_codes.REFRESH_MODEL_FAILED,
         )
 
     monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting_after_match_effects",
+        "moneybin.services.restate.restate_after_match_effects",
         _fail_restatement,
     )
 
-    with pytest.raises(UserError, match="FX accounting"):
+    with pytest.raises(UserError, match="could not be rebuilt"):
         MatchingService(db).accept_all_pending(actor="cli")
 
     assert _status_of(db, "selected") == "accepted"
 
 
-def test_accept_all_pending_restates_when_it_accepts_a_transfer(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("match_type", ["transfer", "dedup"])
+def test_accept_all_pending_restates_match_decisions(
+    db: Database, monkeypatch: pytest.MonkeyPatch, match_type: str
 ) -> None:
-    _seed(db, "bulk-fx-transfer", "pending", match_type="transfer")
-    restated: list[Database] = []
+    _seed(db, "bulk-match", "pending", match_type=match_type)
+    restated = _record_restatements(monkeypatch)
 
-    def record_restatement(target_db: Database, **_kwargs: object) -> None:
-        restated.append(target_db)
+    MatchingService(db).accept_all_pending(match_type=match_type)
 
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
-
-    MatchingService(db).accept_all_pending(match_type="transfer")
-
-    assert restated == [db]
+    assert restated == [(db, [MATCH_DECISIONS], "match decision")]
 
 
 def test_set_status_application_effects_match_persisted_outcome(db: Database) -> None:
@@ -944,10 +937,7 @@ class TestForwardingNeverMasksTheMatchersError:
             "forward_rekeyed_transaction_ids",
             side_effect=forwarding_failure,
         )
-        restate = mocker.patch(
-            "moneybin.services.fx_accounting_refresh."
-            "restate_fx_accounting_after_match_run"
-        )
+        restate = mocker.patch("moneybin.services.restate.restate_after_match_run")
 
         with pytest.raises(RuntimeError) as excinfo:
             MatchingService(db).run(actor="system")
@@ -963,7 +953,7 @@ class TestForwardingNeverMasksTheMatchersError:
         result = MatchResult(transfers_retired=1)
         forwarding_failure = RuntimeError("app.transaction_categories is damaged")
         restatement_failure = UserError(
-            "FX restatement failed", code=error_codes.REFRESH_MODEL_FAILED
+            "restatement failed", code=error_codes.REFRESH_MODEL_FAILED
         )
         mocker.patch.object(
             matching_service.TransactionMatcher, "run", return_value=result
@@ -974,8 +964,7 @@ class TestForwardingNeverMasksTheMatchersError:
             side_effect=forwarding_failure,
         )
         mocker.patch(
-            "moneybin.services.fx_accounting_refresh."
-            "restate_fx_accounting_after_match_run",
+            "moneybin.services.restate.restate_after_match_run",
             side_effect=restatement_failure,
         )
 

@@ -33,9 +33,13 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
 @model(
     "core.fct_realized_gains",
     kind="FULL",
-    # See core.fct_investment_lots: only the SQLMesh-built ledger needs an
-    # ordering edge; the app.* inputs are always-present external tables.
-    depends_on={"core.fct_investment_transactions"},
+    # Same inputs as core.fct_investment_lots, declared for the same reason.
+    depends_on={
+        "app.lot_selections",
+        "app.securities",
+        "core.fct_investment_transactions",
+        "prep.int_accounts__merged",
+    },
     columns={
         "realized_gain_id": "VARCHAR",
         "account_id": "VARCHAR",
