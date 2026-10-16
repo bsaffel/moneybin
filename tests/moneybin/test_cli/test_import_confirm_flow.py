@@ -452,6 +452,74 @@ def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 
+    def test_preparation_unreadable_date_uses_existing_recovery_without_writes(
+        self, db: Database, mocker: Any, tmp_path: Path
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        from moneybin.services.import_service import ImportService
+
+        path = tmp_path / "statement.csv"
+        path.write_text(
+            "Date,Amount,Description,Unrecognized\n2026-01-01,-2,Example,pending\n"
+        )
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        prepared = mocker.spy(ImportService, "prepare_tabular_import")
+        imported = mocker.spy(ImportService, "import_file")
+        answers = iter(["edit", "transaction_date", "column:Unrecognized", "confirm"])
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            answer = next(answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            row = db.conn.execute(
+                "SELECT count(*) FROM raw.tabular_transactions"
+            ).fetchone()
+            assert row is not None and row[0] == 0
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(app, ["files", str(path), "--no-refresh"])
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit), repr(result.exception)
+        assert isinstance(prepared.spy_exception, ImportConfirmationRequiredError)
+        assert prepared.spy_exception.outcome.reason == "unreadable_date"
+        assert "--date-format" in result.output
+        assert "moneybin import preview" in result.output
+        assert "Traceback" not in result.output
+        assert imported.call_count == 1
+        for query in (
+            "SELECT count(*) FROM raw.tabular_transactions",
+            "SELECT count(*) FROM app.import_log",
+            "SELECT count(*) FROM app.account_links",
+            "SELECT count(*) FROM app.tabular_formats",
+        ):
+            row = db.conn.execute(query).fetchone()
+            assert row is not None and row[0] == 0
+
     def test_prepared_import_keeps_explicit_nondefault_worksheet(
         self, db: Database, mocker: Any, tmp_path: Path
     ) -> None:

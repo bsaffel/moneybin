@@ -2855,130 +2855,6 @@ def _complete_import_confirmation(
 
     prepared_plan = None
     prepared_source = None
-    if reviewed_mapping is not None and get_terminal_policy().interactive:
-        from moneybin.services.import_service import PreparedTabularImport
-
-        prepared_source = (
-            reviewed_source if reviewed_source is not None else file_path.read_bytes()
-        )
-        if file_path.read_bytes() != prepared_source:
-            raise UserError(
-                "The file changed after review. Preview and confirm it again.",
-                code=error_codes.IMPORT_PREVIEW_CHANGED,
-            )
-        preparation_options: dict[str, Any] = {
-            "overrides": parsed_mapping,
-            "format_name": format_name,
-            "account_id": account_id,
-            "account_name": account_name,
-            "account_bindings": parsed_bindings,
-            "account_metadata": parsed_metadata,
-            "sign": sign,
-            "human_sign_confirmation": confirm_sign,
-            "confirm": accept,
-            "date_format_override": date_format,
-            "number_format_override": number_format,
-            "sheet": sheet,
-            "delimiter": delimiter,
-            "encoding": encoding,
-            "no_row_limit": no_row_limit,
-            "no_size_limit": no_size_limit,
-            "auto_accept": auto_accept,
-        }
-        remaining_omissions: frozenset[str] = omitted_fields
-        while True:
-            # Close the read connection before every human question.
-            with get_database(read_only=True) as preview_db:
-                prepared: PreparedTabularImport = ImportService(
-                    preview_db
-                ).prepare_tabular_import(
-                    file_path,
-                    source_bytes=prepared_source,
-                    omitted_fields=remaining_omissions,
-                    **preparation_options,
-                )
-            prepared_plan = prepared.plan
-            remaining_omissions = frozenset()
-            preparation_options["reviewed_plan"] = prepared_plan
-            preparation_options["overrides"] = None
-            pending = prepared.confirmation
-            if pending is None:
-                break
-            if pending.reason == "sign_convention":
-                _render_confirmation_prompt(
-                    pending,
-                    str(file_path),
-                    mapping=parsed_mapping,
-                    omitted_fields=omitted_fields,
-                    save_format=save_format,
-                    account_id=account_id,
-                    account_name=account_name,
-                    account_bindings=parsed_bindings,
-                    read_options=read_options,
-                )
-                selected_sign = choose_required(
-                    None,
-                    choices=(
-                        Choice(
-                            "negative_is_income",
-                            "Invert the printed signs (credit-card convention)",
-                        ),
-                        Choice("negative_is_expense", "Keep the printed signs"),
-                        Choice("cancel", "Cancel"),
-                    ),
-                    flag="sign convention",
-                    policy=get_terminal_policy(),
-                )
-                if selected_sign == "cancel":
-                    raise typer.Exit(1)
-                sign = cast(SignConventionType, selected_sign)
-                preparation_options["sign"] = sign
-            elif pending.reason == "account_confirmation":
-                _render_confirmation_prompt(
-                    pending,
-                    str(file_path),
-                    mapping=parsed_mapping,
-                    omitted_fields=omitted_fields,
-                    save_format=save_format,
-                    account_id=account_id,
-                    account_name=account_name,
-                    account_bindings=parsed_bindings,
-                    read_options=read_options,
-                )
-                selected_bindings = _choose_account_bindings(
-                    pending,
-                    parsed_bindings,
-                    policy=get_terminal_policy(),
-                    allow_new=True,
-                )
-                if selected_bindings is None:
-                    raise typer.Exit(1)
-                parsed_bindings = selected_bindings
-                preparation_options["account_bindings"] = parsed_bindings
-            else:
-                raise ImportConfirmationRequiredError(pending)
-
-        review_facts = [
-            (f"Mapping: {destination}", source)
-            for destination, source in prepared_plan.field_mapping.items()
-        ]
-        if omitted_fields:
-            review_facts.append(("Omitted fields", ", ".join(sorted(omitted_fields))))
-        review_facts.append(("Sign convention", prepared_plan.sign_convention))
-        for ref, binding in (parsed_bindings or {}).items():
-            review_facts.append((f"Account {ref}", binding))
-        _confirm_receipt("Prepared import", review_facts)
-        answer = choose_required(
-            None,
-            choices=(
-                Choice("confirm", "Import this prepared file"),
-                Choice("cancel", "Cancel"),
-            ),
-            flag="import confirmation",
-            policy=get_terminal_policy(),
-        )
-        if answer != "confirm":
-            raise typer.Exit(1)
 
     def run_confirmation(
         bindings: dict[str, str] | None,
@@ -3051,6 +2927,135 @@ def _complete_import_confirmation(
                     return exc.result, None
 
     try:
+        if reviewed_mapping is not None and get_terminal_policy().interactive:
+            from moneybin.services.import_service import PreparedTabularImport
+
+            prepared_source = (
+                reviewed_source
+                if reviewed_source is not None
+                else file_path.read_bytes()
+            )
+            if file_path.read_bytes() != prepared_source:
+                raise UserError(
+                    "The file changed after review. Preview and confirm it again.",
+                    code=error_codes.IMPORT_PREVIEW_CHANGED,
+                )
+            preparation_options: dict[str, Any] = {
+                "overrides": parsed_mapping,
+                "format_name": format_name,
+                "account_id": account_id,
+                "account_name": account_name,
+                "account_bindings": parsed_bindings,
+                "account_metadata": parsed_metadata,
+                "sign": sign,
+                "human_sign_confirmation": confirm_sign,
+                "confirm": accept,
+                "date_format_override": date_format,
+                "number_format_override": number_format,
+                "sheet": sheet,
+                "delimiter": delimiter,
+                "encoding": encoding,
+                "no_row_limit": no_row_limit,
+                "no_size_limit": no_size_limit,
+                "auto_accept": auto_accept,
+            }
+            remaining_omissions: frozenset[str] = omitted_fields
+            while True:
+                # Close the read connection before every human question.
+                with get_database(read_only=True) as preview_db:
+                    prepared: PreparedTabularImport = ImportService(
+                        preview_db
+                    ).prepare_tabular_import(
+                        file_path,
+                        source_bytes=prepared_source,
+                        omitted_fields=remaining_omissions,
+                        **preparation_options,
+                    )
+                prepared_plan = prepared.plan
+                remaining_omissions = frozenset()
+                preparation_options["reviewed_plan"] = prepared_plan
+                preparation_options["overrides"] = None
+                pending = prepared.confirmation
+                if pending is None:
+                    break
+                if pending.reason == "sign_convention":
+                    _render_confirmation_prompt(
+                        pending,
+                        str(file_path),
+                        mapping=parsed_mapping,
+                        omitted_fields=omitted_fields,
+                        save_format=save_format,
+                        account_id=account_id,
+                        account_name=account_name,
+                        account_bindings=parsed_bindings,
+                        read_options=read_options,
+                    )
+                    selected_sign = choose_required(
+                        None,
+                        choices=(
+                            Choice(
+                                "negative_is_income",
+                                "Invert the printed signs (credit-card convention)",
+                            ),
+                            Choice("negative_is_expense", "Keep the printed signs"),
+                            Choice("cancel", "Cancel"),
+                        ),
+                        flag="sign convention",
+                        policy=get_terminal_policy(),
+                    )
+                    if selected_sign == "cancel":
+                        raise typer.Exit(1)
+                    sign = cast(SignConventionType, selected_sign)
+                    preparation_options["sign"] = sign
+                elif pending.reason == "account_confirmation":
+                    _render_confirmation_prompt(
+                        pending,
+                        str(file_path),
+                        mapping=parsed_mapping,
+                        omitted_fields=omitted_fields,
+                        save_format=save_format,
+                        account_id=account_id,
+                        account_name=account_name,
+                        account_bindings=parsed_bindings,
+                        read_options=read_options,
+                    )
+                    selected_bindings = _choose_account_bindings(
+                        pending,
+                        parsed_bindings,
+                        policy=get_terminal_policy(),
+                        allow_new=True,
+                    )
+                    if selected_bindings is None:
+                        raise typer.Exit(1)
+                    parsed_bindings = selected_bindings
+                    preparation_options["account_bindings"] = parsed_bindings
+                else:
+                    raise ImportConfirmationRequiredError(pending)
+
+            review_facts = [
+                (f"Mapping: {destination}", source)
+                for destination, source in prepared_plan.field_mapping.items()
+            ]
+            if omitted_fields:
+                review_facts.append((
+                    "Omitted fields",
+                    ", ".join(sorted(omitted_fields)),
+                ))
+            review_facts.append(("Sign convention", prepared_plan.sign_convention))
+            for ref, binding in (parsed_bindings or {}).items():
+                review_facts.append((f"Account {ref}", binding))
+            _confirm_receipt("Prepared import", review_facts)
+            answer = choose_required(
+                None,
+                choices=(
+                    Choice("confirm", "Import this prepared file"),
+                    Choice("cancel", "Cancel"),
+                ),
+                flag="import confirmation",
+                policy=get_terminal_policy(),
+            )
+            if answer != "confirm":
+                raise typer.Exit(1)
         try:
             result, bridge_result = run_confirmation(parsed_bindings)
         except ImportConfirmationRequiredError as initial_error:
