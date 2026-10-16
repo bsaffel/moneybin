@@ -1050,3 +1050,75 @@ def test_scripted_categorization_discovery_and_rejection_persists_versioned_stat
             "SELECT COUNT(*) FROM app.categorization_decisions"
         ).fetchone() == (1,)
         choose.assert_not_called()
+
+
+def test_scripted_categorization_rejection_refuses_transaction_no_longer_eligible(
+    db: object,
+) -> None:
+    """A queued decision cannot suppress categorization after eligibility moves."""
+    from contextlib import nullcontext
+    from typing import cast
+
+    from moneybin.database import Database
+    from moneybin.repositories.categorization_decisions_repo import (
+        CategorizationDecisionsRepo,
+    )
+    from tests.moneybin.db_helpers import (
+        create_core_tables,
+        derive_is_categorizable,
+    )
+
+    database = cast(Database, db)
+    create_core_tables(database)
+    database.execute("""
+        INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount,
+             currency_code, description, source_type, is_transfer)
+        VALUES ('stale-scripted-transaction', 'synthetic-account', DATE '2026-10-15',
+                -1.00, 'USD', 'Synthetic purchase', 'manual', FALSE)
+    """)
+    database.execute("""INSERT INTO core.dim_accounts (account_id, display_name, archived)
+                       VALUES ('synthetic-account', 'Synthetic account', FALSE)""")
+    derive_is_categorizable(database)
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_database",
+            return_value=nullcontext(database),
+        ),
+        patch(
+            "moneybin.cli.commands.transactions.categorize.get_database",
+            return_value=nullcontext(database),
+        ),
+    ):
+        pending = runner.invoke(
+            app, ["transactions", "categorize", "pending", "--output", "json"]
+        )
+        assert pending.exit_code == 0, pending.output
+        decision_id = json.loads(pending.stdout)["data"]["transactions"][0][
+            "decision_id"
+        ]
+        assert decision_id
+
+        database.execute("""
+            UPDATE core.fct_transactions
+            SET is_transfer = TRUE
+            WHERE transaction_id = 'stale-scripted-transaction'
+        """)
+        derive_is_categorizable(database)
+
+        rejected = runner.invoke(
+            app,
+            [
+                "review",
+                "--type",
+                "categorize",
+                "--reject",
+                decision_id,
+                "--output",
+                "json",
+            ],
+        )
+
+    assert rejected.exit_code == 1, rejected.output
+    assert json.loads(rejected.stdout)["error"] is not None
+    assert CategorizationDecisionsRepo(database).fetch_by_id(decision_id) is None

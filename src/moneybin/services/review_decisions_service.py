@@ -275,6 +275,7 @@ class ReviewDecisionsService:
                         = left(?, 20)
                 )
             )
+              AND tx.is_categorizable
             LIMIT 1
             """,  # TableRef constants + parameterized value
             [
