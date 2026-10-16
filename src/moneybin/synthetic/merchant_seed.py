@@ -58,7 +58,7 @@ def seed_merchant_catalog(db: Database, result: GenerationResult) -> int:
     # purchases under Shopping *while still counting them categorized* — a wrong
     # answer dressed up as a right one. Leave them uncategorized instead; that is
     # honest, and it is what the descriptions actually support. The shipped catalogs
-    # overlap by design (big-box stores span categories), so this is debug, not a
+    # overlap by design (big-box stores span categories), so this is info, not a
     # warning: there is nothing for the user to act on.
     categories_per_pattern: dict[str, set[str]] = {}
     for merchant in result.merchant_seeds:
@@ -67,7 +67,7 @@ def seed_merchant_catalog(db: Database, result: GenerationResult) -> int:
         )
     ambiguous = {p for p, cats in categories_per_pattern.items() if len(cats) > 1}
     if ambiguous:
-        logger.debug(
+        logger.info(
             f"Skipping {len(ambiguous)} merchant pattern(s) claimed by more than one "
             f"category: {', '.join(sorted(ambiguous))}"
         )
