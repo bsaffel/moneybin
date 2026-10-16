@@ -362,6 +362,15 @@ Numbered, each independently testable.
     milestone's own transcript surfaced it, and a percent contract (places,
     and whether the column carries `%` or a ratio) is the natural companion to
     the money contract rather than a second idiom invented later.
+
+    **Resolved by the percent declaration.** A report column storing a ratio
+    declares `OutputColumn(percent=True)` (a refinement of `numeric`, exclusive
+    with `grouped`), and `format_percent` renders it in the text branch to one
+    place with the terminal's minus: `0.0943` → `+9.4%`, a value rounding to
+    zero → `0.0%`. JSON and MCP keep the stored fraction. `mom_pct`, `yoy_pct`,
+    `drift_pct`, and `change_pct` declare it, and
+    `test_every_ratio_is_a_percent_and_nothing_else_is` holds every `_pct`
+    column to it.
 12. Every money column declares a **money kind**, and the renderer never infers
     meaning from the raw number. Four kinds:
     - `flow` — signed under the AGENTS.md accounting convention (negative =

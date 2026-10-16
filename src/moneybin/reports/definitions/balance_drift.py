@@ -151,6 +151,7 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
             "Drift divided by asserted balance.",
             DataClass.AGGREGATE,
             numeric=True,
+            percent=True,
         ),
         OutputColumn(
             "drift",

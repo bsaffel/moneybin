@@ -31,7 +31,13 @@ from moneybin.cli.output import (
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import Money, build_rows, count_wide_request
+from moneybin.cli.render import (
+    UNCATEGORIZED_LABEL,
+    Money,
+    Placeholder,
+    build_rows,
+    count_wide_request,
+)
 from moneybin.cli.utils import (
     generated_cli_command,
     get_terminal_policy,
@@ -39,6 +45,7 @@ from moneybin.cli.utils import (
 )
 from moneybin.database import get_database
 from moneybin.errors import NextStep
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
     ReportSpec,
@@ -190,6 +197,8 @@ class ColumnView(NamedTuple):
     columns: tuple[str, ...]
     fit: bool
     optional: tuple[str, ...] = ()
+    implied_currency: str | None = None
+    """The one currency every row is in, when its column left the table."""
 
 
 def column_view(
@@ -199,6 +208,7 @@ def column_view(
     parameters: Mapping[str, Any],
     wide: bool,
     output: OutputFormat,
+    display_currency: str | None = None,
 ) -> ColumnView:
     """One report's whole text-branch column decision (requirements 6, 7).
 
@@ -211,6 +221,10 @@ def column_view(
     view before :func:`render_report_result` branches on the format, so this
     function — unlike ``render.py``'s namesake, which its callers reach only
     after their own JSON branch has returned — runs on the JSON path too.
+
+    ``display_currency`` is the result's own, set only when every row shares one
+    known currency. The narrow table then drops the currency column — it would
+    repeat one value down every row — and names the currency once beneath it.
     """
     if wide and output != OutputFormat.JSON:
         # Counted here rather than in the generated command body, for the same
@@ -223,8 +237,14 @@ def column_view(
         # against it, so counting the request alone would inflate one half of
         # the ratio requirement 7 reads and leave the other at zero.
         count_wide_request()
+    visible = visible_columns(spec, result_columns, parameters=parameters, wide=wide)
+    currency = spec.semantics.currency
+    implied = None
+    if not wide and display_currency is not None and currency in visible:
+        visible = tuple(name for name in visible if name != currency)
+        implied = display_currency
     return ColumnView(
-        visible_columns(spec, result_columns, parameters=parameters, wide=wide),
+        visible,
         # Only a report that named no columns of its own. `--wide` is a request
         # for the whole projection, not for a fitted one.
         fit=spec.default_columns is None and not wide,
@@ -233,6 +253,7 @@ def column_view(
             if wide
             else ()
         ),
+        implied_currency=implied,
     )
 
 
@@ -388,6 +409,21 @@ def grouped_columns(spec: ReportSpec) -> tuple[str, ...]:
     return tuple(column.name for column in spec.columns if column.grouped)
 
 
+def percent_columns(spec: ReportSpec) -> tuple[str, ...]:
+    """The `numeric` columns storing a ratio, for `build_rows(percent=...)`."""
+    return tuple(column.name for column in spec.columns if column.percent)
+
+
+def _category_placeholder(
+    classes: Mapping[str, DataClass], visible: Sequence[str]
+) -> Placeholder | None:
+    """Label a NULL in the first shown category column; the renderer takes one."""
+    for name in visible:
+        if classes.get(name) is DataClass.CATEGORY:
+            return Placeholder(name, UNCATEGORIZED_LABEL)
+    return None
+
+
 def render_report_result(
     result: CatalogReportResult,
     output: OutputFormat,
@@ -396,8 +432,10 @@ def render_report_result(
     money: Mapping[str, Money] | None = None,
     numeric: Sequence[str] | None = None,
     grouped: Sequence[str] | None = None,
+    percent: Sequence[str] | None = None,
     quiet: bool = False,
     columns: Sequence[str] | None = None,
+    implied_currency: str | None = None,
     fit: bool = False,
     optional: Sequence[str] | None = None,
     no_pager: bool = False,
@@ -416,7 +454,14 @@ def render_report_result(
     :func:`numeric_columns` — requirement 9's right-alignment for a column
     that is a count or a score rather than an amount. ``grouped`` is the
     count subset of it, from :func:`grouped_columns`, that also gets thousands
-    grouping; a rate declared ``numeric`` alone prints as stored.
+    grouping; a rate declared ``numeric`` alone prints as stored. ``percent``
+    is the ratio subset, from :func:`percent_columns`, printed as ``+9.4%``.
+
+    ``implied_currency`` is :class:`ColumnView`'s: the currency every row is in
+    after its column left the table, named once on the framing line instead.
+
+    A ``CATEGORY`` column prints a NULL as ``Uncategorized``, the word
+    ``transactions list`` uses; JSON keeps the NULL.
 
     ``columns`` is the text branch's narrowed view, from
     :func:`visible_columns`. It never reaches the JSON envelope — requirement 8
@@ -460,7 +505,10 @@ def render_report_result(
             money=money,
             numeric=numeric,
             grouped=grouped,
+            percent=percent,
             total_columns=len(result.columns),
+            placeholder=_category_placeholder(result.output_classes, visible),
+            framing=((f"amounts in {implied_currency}",) if implied_currency else ()),
             fit=fit,
             optional=optional,
             terminal=policy,
@@ -527,7 +575,12 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     home_currency=profile_home_currency(db),
                 )
             view = column_view(
-                spec, result.columns, parameters=kwargs, wide=wide, output=output
+                spec,
+                result.columns,
+                parameters=kwargs,
+                wide=wide,
+                output=output,
+                display_currency=result.display_currency,
             )
             render_report_result(
                 result,
@@ -536,8 +589,10 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 money=money_columns(spec),
                 numeric=numeric_columns(spec),
                 grouped=grouped_columns(spec),
+                percent=percent_columns(spec),
                 quiet=quiet,
                 columns=view.columns,
+                implied_currency=view.implied_currency,
                 fit=view.fit,
                 optional=view.optional,
                 no_pager=no_pager,

@@ -26,7 +26,7 @@ import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import accumulate
 from typing import TYPE_CHECKING, cast
@@ -53,6 +53,7 @@ __all__ = [
     "column_view",
     "count_wide_request",
     "format_money",
+    "format_percent",
     "render_human_text",
     "render_note",
     "render_rows",
@@ -192,6 +193,22 @@ def format_money(value: object, kind: MoneyKind, *, minus: str = MINUS) -> str:
     if kind in ("flow", "delta") and amount > 0:
         return f"+{digits}"
     return digits
+
+
+def format_percent(value: object, *, minus: str = MINUS) -> str:
+    """Stringify one stored ratio as a percent to one place: ``0.0943`` → ``+9.4%``.
+
+    Signed like a ``delta``: the ratios this renders are changes and drifts,
+    so the sign is the direction. A value that rounds to zero states none. A
+    missing ratio renders ``-``, as a missing amount does in ``format_money``.
+    """
+    ratio = _as_decimal(value)
+    if ratio is None:
+        return value if isinstance(value, str) and value else "-"
+    pct = (ratio * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    if pct == 0:
+        return "0.0%"
+    return f"{minus if pct < 0 else '+'}{abs(pct):,}%"
 
 
 def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
@@ -493,11 +510,13 @@ def build_rows(
     money: Mapping[str, Money] | None = None,
     numeric: Sequence[str] | None = None,
     grouped: Sequence[str] | None = None,
+    percent: Sequence[str] | None = None,
     nowrap: Sequence[str] | None = None,
     total_columns: int | None = None,
     total_rows: int | None = None,
     has_more: bool = False,
     placeholder: Placeholder | None = None,
+    framing: Sequence[str] = (),
     fit: bool = False,
     optional: Sequence[str] | None = None,
     terminal: TerminalPolicy | None = None,
@@ -529,6 +548,9 @@ def build_rows(
     precision than `int`/`Decimal` would preserve, e.g. `"8.2987654321"`)
     is never grouped regardless of this declaration.
 
+    ``percent`` is the subset of ``numeric`` holding a stored ratio, rendered
+    by :func:`format_percent` as ``+9.4%`` rather than as stored.
+
     ``nowrap`` names a column that holds ordinary text this table must not fold
     — a timestamp, a status word — where requirement 13's right-alignment does
     not apply because the column is not a number. It shares ``numeric``'s
@@ -552,6 +574,9 @@ def build_rows(
     narrowed view of it, and produces the result-framing line beneath the table
     (requirement 10). A caller with no column policy leaves it ``None`` and
     frames nothing.
+
+    ``framing`` adds the caller's own clauses to that line — a fact every row
+    shares and the table therefore omits, such as the one currency they are in.
 
     ``total_rows`` is the size of the whole result when ``rows`` is one page of
     it, and frames the remainder (requirement 34). ``has_more`` says whether a
@@ -644,6 +669,7 @@ def build_rows(
             absent_at,
             absent_as,
             grouped=frozenset(grouped or ()) & declared_numeric,
+            percent=frozenset(percent or ()) & declared_numeric,
             minus=terminal.minus,
         )
         for row in rows
@@ -770,6 +796,7 @@ def build_rows(
         clauses.append(f"{len(kept)} of {whole} columns shown — --wide for all")
     if placeholder is not None and flagged:
         clauses.append(f"{flagged} {placeholder.value.lower()}")
+    clauses.extend(framing)
     if clauses:
         # stdout, and reachable under `-q` (this renderer takes no such
         # parameter): both are load-bearing. `moneybin reports spending-trend >
@@ -786,11 +813,13 @@ def render_rows(
     money: Mapping[str, Money] | None = None,
     numeric: Sequence[str] | None = None,
     grouped: Sequence[str] | None = None,
+    percent: Sequence[str] | None = None,
     nowrap: Sequence[str] | None = None,
     total_columns: int | None = None,
     total_rows: int | None = None,
     has_more: bool = False,
     placeholder: Placeholder | None = None,
+    framing: Sequence[str] = (),
     fit: bool = False,
     optional: Sequence[str] | None = None,
     terminal: TerminalPolicy | None = None,
@@ -816,11 +845,13 @@ def render_rows(
         money=money,
         numeric=numeric,
         grouped=grouped,
+        percent=percent,
         nowrap=nowrap,
         total_columns=total_columns,
         total_rows=total_rows,
         has_more=has_more,
         placeholder=placeholder,
+        framing=framing,
         fit=fit,
         optional=optional,
         terminal=terminal,
@@ -971,6 +1002,7 @@ def _cells(
     absent_as: str = "",
     *,
     grouped: Sequence[str] | frozenset[str] = (),
+    percent: Sequence[str] | frozenset[str] = (),
     minus: str = MINUS,
 ) -> tuple[list[RenderableType], bool]:
     """Render one record's cells, and report whether the declared value was absent.
@@ -1015,6 +1047,8 @@ def _cells(
                 # to what the queue contains rather than to how it renders.
                 absent = True
                 cells.append(Text(absent_as))
+            elif name in percent and not isinstance(value, bool):
+                cells.append(Text(format_percent(value, minus=minus)))
             elif (
                 name in grouped
                 and not isinstance(value, bool)

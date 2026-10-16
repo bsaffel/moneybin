@@ -25,8 +25,10 @@ from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.cli_register import (
     build_cli_command,
+    column_view,
     money_columns,
     numeric_columns,
+    percent_columns,
     register_report_cli,
     report_note_lines,
     visible_columns,
@@ -833,6 +835,53 @@ def test_every_declared_numeric_column_survives_spec_registration() -> None:
     assert declared == ("txn_count",), "net/spend are money, not bare numbers"
 
 
+def test_a_reports_declared_percent_column_reaches_its_rendered_table() -> None:
+    """`percent=True` is inert unless `percent_columns` reaches `build_rows`."""
+    spec = build_spec(
+        _money_runner,
+        report_id="test:ratio",
+        name="ratio",
+        view=_VIEW,
+        classes={"yoy_pct": DataClass.AGGREGATE},
+        parameter_classes={},
+        columns=(
+            OutputColumn(
+                "yoy_pct",
+                "A ratio.",
+                DataClass.AGGREGATE,
+                numeric=True,
+                percent=True,
+            ),
+        ),
+        semantics=TEST_SEMANTICS,
+    )
+    app = typer.Typer()
+    register_report_cli(spec, app)
+    app.command("noop")(lambda: None)
+    result = ReportResult(
+        records=[{"yoy_pct": 0.09434186779842532}],
+        columns=["yoy_pct"],
+        output_classes={"yoy_pct": DataClass.AGGREGATE},
+        tier=Tier.MEDIUM,
+        total_count=1,
+        truncated=False,
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = result
+        out = _runner_cli.invoke(app, ["ratio"], env={"COLUMNS": "200"})
+
+    assert out.exit_code == 0, out.output
+    assert percent_columns(spec) == ("yoy_pct",)
+    assert "+9.4%" in out.output
+    assert "0.0943" not in out.output
+
+
 def _noisy_result() -> ReportResult:
     """A result carrying both a next-step hint and a fidelity warning."""
     return ReportResult(
@@ -1155,6 +1204,111 @@ def test_an_unconverted_read_does_not_invent_that_column() -> None:
     )
 
     assert ORIGINAL_CURRENCY_COLUMN not in visible
+
+
+def _currency_spec(default_columns: DefaultColumns | None = None):  # test helper
+    """A spec whose semantics name `currency_code` as the row's denomination."""
+    return replace(
+        _wide_spec(default_columns),
+        semantics=replace(TEST_SEMANTICS, currency="currency_code"),
+    )
+
+
+_SPEND_DEFAULT = ("category", "currency_code", "year_month", "net")
+
+
+def test_a_single_currency_column_leaves_the_narrow_table() -> None:
+    """Every row in one currency: the column repeats one value, so it goes."""
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+        display_currency="USD",
+    )
+
+    assert view.columns == ("category", "year_month", "net")
+    assert view.implied_currency == "USD"
+
+
+def test_a_mixed_currency_result_keeps_its_currency_column() -> None:
+    """No single currency resolves, so each row still has to name its own."""
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+        display_currency=None,
+    )
+
+    assert "currency_code" in view.columns
+    assert view.implied_currency is None
+
+
+def test_wide_keeps_a_single_currency_column() -> None:
+    """`--wide` asks for the whole projection, redundant columns included."""
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=True,
+        output=OutputFormat.TEXT,
+        display_currency="USD",
+    )
+
+    assert "currency_code" in view.columns
+    assert view.implied_currency is None
+
+
+def _invoke_spend(records: list[dict[str, Any]], display_currency: str | None):
+    app = typer.Typer()
+    register_report_cli(_currency_spec(_SPEND_DEFAULT), app)
+    app.command("noop")(lambda: None)
+    result = ReportResult(
+        records=records,
+        columns=list(_WIDE_COLUMN_NAMES),
+        output_classes=dict(_WIDE_CLASSES),
+        tier=Tier.MEDIUM,
+        total_count=len(records),
+        truncated=False,
+        display_currency=display_currency,
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = result
+        return _runner_cli.invoke(app, ["wide"], env={"COLUMNS": "200"})
+
+
+def _spend_row(category: str | None) -> dict[str, Any]:
+    row: dict[str, Any] = dict.fromkeys(_WIDE_COLUMN_NAMES, "x")
+    row.update(category=category, currency_code="USD", year_month="2025-11")
+    return row
+
+
+def test_the_dropped_currency_is_named_beneath_the_table() -> None:
+    """The unit leaves the rows but not the answer: `> out.txt` still records it."""
+    result = _invoke_spend([_spend_row("Food")], display_currency="USD")
+
+    assert result.exit_code == 0, result.output
+    assert "currency_code" not in result.output
+    assert "amounts in USD" in result.output
+
+
+def test_a_null_category_renders_as_uncategorized_in_a_report() -> None:
+    """A NULL category is a taxonomy gap, not a blank — same word `transactions list` uses."""
+    result = _invoke_spend(
+        [_spend_row("Food"), _spend_row(None)], display_currency="USD"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Uncategorized" in result.output
 
 
 def _invoke_wide(*args: str) -> Result:
