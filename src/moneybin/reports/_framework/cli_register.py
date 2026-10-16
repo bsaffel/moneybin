@@ -45,7 +45,6 @@ from moneybin.cli.utils import (
 )
 from moneybin.database import get_database
 from moneybin.errors import NextStep
-from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
     ReportSpec,
@@ -199,6 +198,8 @@ class ColumnView(NamedTuple):
     optional: tuple[str, ...] = ()
     implied_currency: str | None = None
     """The one currency every row is in, when its column left the table."""
+    placeholder: Placeholder | None = None
+    """The shown column declaring ``uncategorized``, whose NULL prints as that word."""
 
 
 def column_view(
@@ -225,6 +226,8 @@ def column_view(
     ``display_currency`` is the result's own, set only when every row shares one
     known currency. The narrow table then drops the currency column — it would
     repeat one value down every row — and names the currency once beneath it.
+    Not while a ``currency_basis="home"`` column is shown: that column is in the
+    home currency, which the one footer currency would mislabel.
     """
     if wide and output != OutputFormat.JSON:
         # Counted here rather than in the generated command body, for the same
@@ -240,9 +243,24 @@ def column_view(
     visible = visible_columns(spec, result_columns, parameters=parameters, wide=wide)
     currency = spec.semantics.currency
     implied = None
-    if not wide and display_currency is not None and currency in visible:
+    home_basis = {c.name for c in spec.columns if c.currency_basis == "home"}
+    if (
+        not wide
+        and display_currency is not None
+        and currency in visible
+        and home_basis.isdisjoint(visible)
+    ):
         visible = tuple(name for name in visible if name != currency)
         implied = display_currency
+    uncategorized = {c.name for c in spec.columns if c.uncategorized}
+    placeholder = next(
+        (
+            Placeholder(name, UNCATEGORIZED_LABEL)
+            for name in visible
+            if name in uncategorized
+        ),
+        None,
+    )
     return ColumnView(
         visible,
         # Only a report that named no columns of its own. `--wide` is a request
@@ -254,6 +272,7 @@ def column_view(
             else ()
         ),
         implied_currency=implied,
+        placeholder=placeholder,
     )
 
 
@@ -414,16 +433,6 @@ def percent_columns(spec: ReportSpec) -> tuple[str, ...]:
     return tuple(column.name for column in spec.columns if column.percent)
 
 
-def _category_placeholder(
-    classes: Mapping[str, DataClass], visible: Sequence[str]
-) -> Placeholder | None:
-    """Label a NULL in the first shown category column; the renderer takes one."""
-    for name in visible:
-        if classes.get(name) is DataClass.CATEGORY:
-            return Placeholder(name, UNCATEGORIZED_LABEL)
-    return None
-
-
 def render_report_result(
     result: CatalogReportResult,
     output: OutputFormat,
@@ -436,6 +445,7 @@ def render_report_result(
     quiet: bool = False,
     columns: Sequence[str] | None = None,
     implied_currency: str | None = None,
+    placeholder: Placeholder | None = None,
     fit: bool = False,
     optional: Sequence[str] | None = None,
     no_pager: bool = False,
@@ -460,7 +470,8 @@ def render_report_result(
     ``implied_currency`` is :class:`ColumnView`'s: the currency every row is in
     after its column left the table, named once on the framing line instead.
 
-    A ``CATEGORY`` column prints a NULL as ``Uncategorized``, the word
+    ``placeholder`` is :class:`ColumnView`'s too: a column declaring
+    ``uncategorized`` prints a NULL as ``Uncategorized``, the word
     ``transactions list`` uses; JSON keeps the NULL.
 
     ``columns`` is the text branch's narrowed view, from
@@ -507,7 +518,7 @@ def render_report_result(
             grouped=grouped,
             percent=percent,
             total_columns=len(result.columns),
-            placeholder=_category_placeholder(result.output_classes, visible),
+            placeholder=placeholder,
             framing=((f"amounts in {implied_currency}",) if implied_currency else ()),
             fit=fit,
             optional=optional,
@@ -593,6 +604,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 quiet=quiet,
                 columns=view.columns,
                 implied_currency=view.implied_currency,
+                placeholder=view.placeholder,
                 fit=view.fit,
                 optional=view.optional,
                 no_pager=no_pager,

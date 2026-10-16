@@ -875,6 +875,14 @@ Numbered, each independently testable.
     same absence; it now renders the same word, because two placeholders for one
     condition is the second pattern the coherence rule prohibits.
 
+    A report declares its column as `OutputColumn(uncategorized=True)`; the
+    column's `DataClass.CATEGORY` alone does not qualify it, because that class
+    also covers `subcategory`, where a NULL is not a taxonomy gap. The framing
+    count on a report counts rows of the report's grain — a category-month on
+    `spending-trend` — not transactions, so one NULL-category series over a
+    twelve-month window reads `12 uncategorized`. Dropping the count from
+    report tables is planned.
+
 **Stubs (F4)**
 
 31. Unimplemented commands are hidden from `--help` output at every level

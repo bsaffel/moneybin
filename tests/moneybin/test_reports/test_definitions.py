@@ -1037,3 +1037,23 @@ def test_every_ratio_is_a_percent_and_nothing_else_is() -> None:
 
     assert percent == ratios
     assert ("spending_trend", "yoy_pct") in percent
+
+
+def test_every_assigned_category_column_declares_uncategorized() -> None:
+    """A NULL `category` or `top_category` is a taxonomy gap, printed `Uncategorized`.
+
+    Set equality: an undeclared one prints a blank cell, and a declaration on
+    any other column would relabel a NULL that means something else.
+    """
+    columns = [
+        (spec.name, column)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+    ]
+    declared = sorted((name, c.name) for name, c in columns if c.uncategorized)
+    categories = sorted(
+        (name, c.name) for name, c in columns if c.name in {"category", "top_category"}
+    )
+
+    assert declared == categories
+    assert ("spending_trend", "category") in declared

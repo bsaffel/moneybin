@@ -26,7 +26,7 @@ import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import accumulate
 from typing import TYPE_CHECKING, cast
@@ -198,14 +198,15 @@ def format_money(value: object, kind: MoneyKind, *, minus: str = MINUS) -> str:
 def format_percent(value: object, *, minus: str = MINUS) -> str:
     """Stringify one stored ratio as a percent to one place: ``0.0943`` → ``+9.4%``.
 
-    Signed like a ``delta``: the ratios this renders are changes and drifts,
-    so the sign is the direction. A value that rounds to zero states none. A
-    missing ratio renders ``-``, as a missing amount does in ``format_money``.
+    Always signed, like a ``delta``: the sign is the stored ratio's, so a ratio
+    over a negative base reads opposite to its numerator. A value that rounds
+    to zero states none. Rounds half-even, as ``format_money`` does. A missing
+    ratio renders ``-``, as a missing amount does in ``format_money``.
     """
     ratio = _as_decimal(value)
     if ratio is None:
         return value if isinstance(value, str) and value else "-"
-    pct = (ratio * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    pct = (ratio * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_EVEN)
     if pct == 0:
         return "0.0%"
     return f"{minus if pct < 0 else '+'}{abs(pct):,}%"

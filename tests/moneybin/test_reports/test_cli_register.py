@@ -18,7 +18,7 @@ from typer.testing import CliRunner, Result
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat
-from moneybin.cli.render import Money
+from moneybin.cli.render import UNCATEGORIZED_LABEL, Money, Placeholder
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.cli.utils import generated_cli_command
 from moneybin.database import Database
@@ -1206,15 +1206,63 @@ def test_an_unconverted_read_does_not_invent_that_column() -> None:
     assert ORIGINAL_CURRENCY_COLUMN not in visible
 
 
-def _currency_spec(default_columns: DefaultColumns | None = None):  # test helper
-    """A spec whose semantics name `currency_code` as the row's denomination."""
+def _currency_spec(  # test helper
+    default_columns: DefaultColumns | None = None, **declared: dict[str, Any]
+):
+    """A spec whose semantics name `currency_code` as the row's denomination.
+
+    ``category`` declares ``uncategorized``; ``declared`` adds per-column fields.
+    """
+    declared = {"category": {"uncategorized": True}, **declared}
+    spec = _wide_spec(default_columns)
     return replace(
-        _wide_spec(default_columns),
+        spec,
+        columns=tuple(replace(c, **declared.get(c.name, {})) for c in spec.columns),
         semantics=replace(TEST_SEMANTICS, currency="currency_code"),
     )
 
 
 _SPEND_DEFAULT = ("category", "currency_code", "year_month", "net")
+
+
+def test_a_home_basis_column_keeps_the_currency_column() -> None:
+    """A home-currency amount is not in the rows' currency; one footer would mislabel it."""
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT, net={"currency_basis": "home"}),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+        display_currency="USD",
+    )
+
+    assert "currency_code" in view.columns
+    assert view.implied_currency is None
+
+
+def test_the_declared_uncategorized_column_gets_the_placeholder() -> None:
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+    )
+
+    assert view.placeholder == Placeholder("category", UNCATEGORIZED_LABEL)
+
+
+def test_an_undeclared_category_column_gets_no_placeholder() -> None:
+    """`DataClass.CATEGORY` alone also covers `subcategory`, where NULL is not a gap."""
+    view = column_view(
+        _wide_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+    )
+
+    assert view.placeholder is None
 
 
 def test_a_single_currency_column_leaves_the_narrow_table() -> None:

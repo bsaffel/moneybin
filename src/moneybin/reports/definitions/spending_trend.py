@@ -84,7 +84,9 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
         "compare": DataClass.TXN_TYPE,
     },
     columns=(
-        OutputColumn("category", "Spending category.", DataClass.CATEGORY),
+        OutputColumn(
+            "category", "Spending category.", DataClass.CATEGORY, uncategorized=True
+        ),
         OutputColumn(
             "currency_code",
             "ISO 4217 currency this row is denominated in; null means unknown.",

@@ -332,7 +332,8 @@ stays out of it. `percent=` names the subset storing a ratio, printed by
 and a `_pct` column that omits it prints eighteen float digits. `nowrap=` gives
 a text column the same no-fold guarantee without right-aligning it: a
 timestamp, an actor, an action name that would be misread split across two
-lines.
+lines. A report column whose NULL means no category was assigned declares
+`OutputColumn(uncategorized=True)` and prints that NULL as `Uncategorized`.
 
 Curation is still the answer for a table that is simply too wide. The renderer
 guarantees no amount is *wrong*; only the author can decide which columns are

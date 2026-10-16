@@ -244,6 +244,7 @@ def reports_run(
         quiet=quiet,
         columns=view.columns,
         implied_currency=view.implied_currency,
+        placeholder=view.placeholder,
         fit=view.fit,
         optional=view.optional,
         no_pager=no_pager,
