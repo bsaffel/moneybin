@@ -4125,6 +4125,7 @@ def import_preview(
                 f"{get_terminal_policy().symbols.action} "
                 + header_position_ambiguous_recovery(
                     str(source),
+                    omitted_fields=omissions,
                     read_options=TabularReadOptions(
                         format_name=format_name,
                         date_format=date_format,
