@@ -580,15 +580,11 @@ def import_files_command(
                         if confirm_sign:
                             import_kwargs["human_sign_confirmation"] = True
                         try:
-                            if file_paths[0].suffix.lower() in {
-                                ".csv",
-                                ".tsv",
-                                ".txt",
-                                ".xlsx",
-                                ".xls",
-                                ".parquet",
-                                ".feather",
-                            }:
+                            from moneybin.services.import_service import (
+                                detect_import_file_type,
+                            )
+
+                            if detect_import_file_type(file_paths[0]) == "tabular":
                                 from moneybin.services.tabular_preparation import (
                                     read_tabular_source,
                                 )
@@ -3858,16 +3854,6 @@ def import_preview(
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="'--omit-field'") from exc
-    if omissions and source.suffix.lower() not in {
-        ".csv",
-        ".tsv",
-        ".txt",
-        ".xlsx",
-        ".xls",
-        ".parquet",
-        ".feather",
-    }:
-        raise typer.BadParameter("--omit-field requires a tabular file.")
 
     # Wrapped for the same reason as the `import files` preflight: `Path.exists()`
     # raises rather than returning False under a macOS TCC denial, so an
@@ -3877,6 +3863,11 @@ def import_preview(
         if not source.exists():
             logger.error(format_cli_failure(f"File not found: {source}"))
             raise typer.Exit(1)
+        if omissions:
+            from moneybin.services.import_service import detect_import_file_type
+
+            if detect_import_file_type(source) != "tabular":
+                raise typer.BadParameter("--omit-field requires a tabular file.")
 
     if source.suffix.lower() == ".pdf":
         # Routed before the tabular stages below: none of format detection,

@@ -1213,6 +1213,11 @@ def _detect_file_type(file_path: Path) -> str:
     )
 
 
+def detect_import_file_type(file_path: Path) -> str:
+    """Expose canonical channel routing to read-only import callers."""
+    return _detect_file_type(file_path)
+
+
 # Fields a caller may capture for a freshly-minted ("new"-bound) account at
 # import time. Mirrors the import-time-relevant subset of app.account_settings.
 _NEW_ACCOUNT_META_KEYS = frozenset({

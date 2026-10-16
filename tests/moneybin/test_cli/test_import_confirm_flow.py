@@ -452,6 +452,202 @@ def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 
+    @pytest.mark.parametrize("suffix", [".txt", ".dat"])
+    def test_generic_ofx_source_does_not_use_tabular_snapshot(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        suffix: str,
+    ) -> None:
+        path = tmp_path / f"statement{suffix}"
+        path.write_text("OFXHEADER:100\nDATA:OFXSGML\n<OFX></OFX>")
+        snapshot = mocker.patch(
+            "moneybin.services.tabular_preparation.read_tabular_source"
+        )
+        result = runner.invoke(app, ["files", str(path), "--no-refresh"])
+        assert result.exit_code == 0, result.output
+        snapshot.assert_not_called()
+        assert "source_bytes" not in mock_import_file.call_args.kwargs
+
+    @pytest.mark.parametrize(
+        "scenario", ["ofx_dat", "unsupported", "missing", "permission"]
+    )
+    def test_preview_optional_omission_preserves_channel_and_read_refusals(
+        self,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: Any,
+        scenario: str,
+    ) -> None:
+        suffix = (
+            ".dat"
+            if scenario in {"ofx_dat", "permission"}
+            else ".bin"
+            if scenario == "unsupported"
+            else ".csv"
+        )
+        path = tmp_path / f"statement{suffix}"
+        if scenario != "missing":
+            path.write_text(
+                "OFXHEADER:100\nDATA:OFXSGML\n<OFX></OFX>"
+                if scenario == "ofx_dat"
+                else "Date,Amount,Description\n2026-01-01,-2,Example\n"
+            )
+        if scenario == "permission":
+            mocker.patch(
+                "moneybin.services.import_service.detect_import_file_type",
+                side_effect=PermissionError("denied"),
+            )
+        read = mocker.patch("moneybin.extractors.tabular.readers.read_file")
+        result = runner.invoke(app, ["preview", str(path), "--omit-field", "status"])
+        assert result.exit_code != 0
+        read.assert_not_called()
+        if scenario == "ofx_dat":
+            assert "requires a tabular file" in result.output
+        elif scenario == "unsupported":
+            assert "Unsupported file type" in caplog.text
+        elif scenario == "missing":
+            assert "File not found" in caplog.text
+        else:
+            assert "denied" in caplog.text or "Permission" in caplog.text
+
+    @pytest.mark.parametrize("suffix", [".tab", ".pq", ".arrow", ".ipc", ".dat"])
+    def test_tabular_alias_snapshot_binds_mapping_review(
+        self, db: Database, mocker: Any, tmp_path: Path, caplog: Any, suffix: str
+    ) -> None:
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        import polars as pl
+
+        path = tmp_path / f"statement{suffix}"
+
+        def write(description: str) -> None:
+            frame = pl.DataFrame({
+                "Date": ["2026-01-01"],
+                "Amount": ["-2"],
+                "Description": [description],
+                "State": ["WA"],
+            })
+            if suffix == ".pq":
+                frame.write_parquet(path)
+            elif suffix in {".arrow", ".ipc"}:
+                frame.write_ipc(path)
+            else:
+                frame.write_csv(path, separator="\t" if suffix == ".tab" else ",")
+
+        write("Example")
+
+        @contextmanager
+        def connect(**kwargs: Any) -> Generator[Database, None, None]:
+            yield db
+
+        mocker.patch("moneybin.database.get_database", side_effect=connect)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                width=80,
+                height=24,
+                output="text",
+                page=False,
+                style=False,
+                color=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+            return_value=MagicMock(),
+        )
+        mapping_answers = iter(["edit", "remove:status", "confirm"])
+        observed: list[str] = []
+
+        def choose(*args: Any, **kwargs: Any) -> str:
+            observed.append(kwargs["flag"])
+            if kwargs["flag"] == "import confirmation":
+                return "confirm"
+            answer = next(mapping_answers)
+            assert answer in [choice.value for choice in kwargs["choices"]]
+            if kwargs["flag"] == "mapping confirmation":
+                write("Changed")
+            return answer
+
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", side_effect=choose
+        )
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(path),
+                "--no-refresh",
+                "--account-name",
+                "test",
+                "--account-binding",
+                "test=new",
+            ],
+        )
+        assert "mapping confirmation" in observed, result.output
+        assert result.exit_code == 1, result.output
+        assert "file changed after review" in caplog.text
+        for query in (
+            "SELECT count(*) FROM raw.tabular_transactions",
+            "SELECT count(*) FROM app.import_log",
+            "SELECT count(*) FROM app.account_links",
+        ):
+            row = db.conn.execute(query).fetchone()
+            assert row is not None and row[0] == 0
+
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            ".csv",
+            ".tsv",
+            ".tab",
+            ".txt",
+            ".dat",
+            ".xlsx",
+            ".parquet",
+            ".pq",
+            ".feather",
+            ".arrow",
+            ".ipc",
+        ],
+    )
+    def test_preview_optional_omission_supports_tabular_aliases(
+        self, mock_db: MagicMock, tmp_path: Path, suffix: str
+    ) -> None:
+        import polars as pl
+
+        path = tmp_path / f"statement{suffix}"
+        frame = pl.DataFrame({
+            "Date": ["2026-01-01"],
+            "Amount": ["-2"],
+            "Description": ["Example"],
+            "State": ["WA"],
+        })
+        if suffix in {".parquet", ".pq"}:
+            frame.write_parquet(path)
+        elif suffix in {".feather", ".arrow", ".ipc"}:
+            frame.write_ipc(path)
+        elif suffix == ".xlsx":
+            import openpyxl
+
+            book = openpyxl.Workbook()
+            sheet = book.active
+            assert sheet is not None
+            sheet.append(frame.columns)
+            sheet.append(frame.row(0))
+            book.save(path)
+        else:
+            frame.write_csv(path, separator="\t" if suffix in {".tab", ".tsv"} else ",")
+        result = runner.invoke(app, ["preview", str(path), "--omit-field", "status"])
+        assert result.exit_code == 0, result.output
+        assert "transaction_date" in result.output
+        assert "status" not in result.output
+
     def test_bridge_confirmation_refuses_optional_omissions(
         self, mock_db: MagicMock, mocker: Any, tmp_path: Path
     ) -> None:
