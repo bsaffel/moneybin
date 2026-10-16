@@ -81,6 +81,24 @@ def transaction_db(db: Database) -> Database:
     return db
 
 
+def _mirror_fct_ids_into_matched(db: Database) -> None:
+    """Seed the curation resolver's liveness oracle with the fact's id set.
+
+    Resolution reads ``prep.int_transactions__matched`` (production: the same
+    id set as ``core.fct_transactions``) and passes ids through unchanged when
+    it is absent, so a test of resolution needs it present.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(transaction_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "
+        "SELECT transaction_id FROM core.fct_transactions"
+    )
+
+
 class TestEmptyResults:
     """Tests for service behavior with no data in tables."""
 
@@ -2064,11 +2082,18 @@ class TestManualEntry:
 class TestCurationTransactionIdResolution:
     """Curation writes resolve a superseded transaction_id (issue #538).
 
-    ``transaction_db`` seeds ``core.fct_transactions`` with a live 'T1'; each
+    ``transaction_db`` seeds ``core.fct_transactions`` (and, via the class
+    override below, ``prep.int_transactions__matched``) with a live 'T1'; each
     test additionally aliases 'T1_OLD' -> 'T1' in ``app.transaction_id_aliases``
     to model a dedup merge that re-keyed the canonical id after a caller had
     already been handed the old one.
     """
+
+    @pytest.fixture()
+    def transaction_db(self, transaction_db: Database) -> Database:
+        """The module fixture, with the liveness oracle seeded from the fact."""
+        _mirror_fct_ids_into_matched(transaction_db)
+        return transaction_db
 
     @pytest.fixture()
     def superseded_db(self, transaction_db: Database) -> Database:

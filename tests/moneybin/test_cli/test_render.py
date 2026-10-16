@@ -40,6 +40,7 @@ from moneybin.cli.render import (
     build_summary,
     color_enabled,
     format_money,
+    format_percent,
     render_human_text,
     render_note,
     render_rows,
@@ -705,6 +706,43 @@ def test_a_numeric_string_value_is_never_regrouped(
     )
 
     assert "8.2987654321" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("ratio", "expected"),
+    [
+        (0.09434186779842532, "+9.4%"),
+        (-0.007958851886049634, "−0.8%"),
+        (Decimal("1.9034869240348693"), "+190.3%"),
+        (0.0, "0.0%"),
+        # Rounds to zero, so it states no direction rather than a `−0.0%`.
+        (-0.0004, "0.0%"),
+        (None, "-"),
+    ],
+)
+def test_format_percent_renders_a_ratio_to_one_place(
+    ratio: object, expected: str
+) -> None:
+    """A stored ratio reads as a signed percent, not eighteen float digits."""
+    assert format_percent(ratio) == expected
+
+
+def test_a_percent_column_reaches_the_table_with_the_terminals_minus(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`percent=` routes a declared ratio column through `format_percent`."""
+    render_rows(
+        ["category", "yoy_pct"],
+        [("Food", 0.09434186779842532), ("Rent", -0.007958851886049634)],
+        numeric=("yoy_pct",),
+        percent=("yoy_pct",),
+        terminal=_ascii_terminal_policy(),
+    )
+
+    out = capsys.readouterr().out
+    assert "+9.4%" in out
+    assert "-0.8%" in out
+    assert "0.0943" not in out
 
 
 def test_a_numeric_value_outside_grouped_keeps_its_own_convention(

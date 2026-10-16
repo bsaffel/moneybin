@@ -1304,7 +1304,7 @@ class TestARepointBlocksUndoOfTheEditItMoved:
 
 
 class TestResolutionBeforeTheFactViewExists:
-    """A first load precedes the transform that builds ``core.fct_transactions``.
+    """A first load precedes the transform that builds the liveness oracle.
 
     The catalog lacks the liveness oracle entirely at that point (issue #593),
     not merely a row within it — the same absence :func:`_heal_stranded_curation`
@@ -1316,7 +1316,7 @@ class TestResolutionBeforeTheFactViewExists:
     def test_single_id_required_true_passes_through_unchanged(
         self, db: Database
     ) -> None:
-        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+        db.execute("DROP VIEW IF EXISTS prep.int_transactions__matched")
 
         assert resolve_curation_transaction_id(db, "plaid_abc123") == "plaid_abc123"
 
@@ -1324,7 +1324,7 @@ class TestResolutionBeforeTheFactViewExists:
     def test_single_id_required_false_passes_through_unchanged(
         self, db: Database
     ) -> None:
-        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+        db.execute("DROP VIEW IF EXISTS prep.int_transactions__matched")
 
         assert (
             resolve_curation_transaction_id(db, "plaid_abc123", required=False)
@@ -1335,7 +1335,7 @@ class TestResolutionBeforeTheFactViewExists:
     def test_bulk_resolution_returns_an_identity_map_for_every_id(
         self, db: Database
     ) -> None:
-        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+        db.execute("DROP VIEW IF EXISTS prep.int_transactions__matched")
         ids = ["plaid_abc123", "csv_def456", "ofx_ghi789"]
 
         assert resolve_curation_transaction_ids(db, ids) == dict(
@@ -1365,6 +1365,22 @@ def _insert_alias(db: Database, *, old_id: str, new_id: str) -> None:
     )
 
 
+def _seed_live(db: Database, transaction_id: str) -> None:
+    """Make an id live: the fact row and the matched row liveness reads."""
+    db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id) VALUES (?)",
+        [transaction_id],
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(transaction_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched VALUES (?)", [transaction_id]
+    )
+
+
 class TestDedupedAwayManualIsNotLive:
     """A manual transaction's raw row never rewrites its predicted id.
 
@@ -1383,9 +1399,7 @@ class TestDedupedAwayManualIsNotLive:
         _insert_manual_transaction(
             db, source_transaction_id="manual_src1", transaction_id="manual_abc"
         )
-        db.execute(
-            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('csv_xyz')"
-        )
+        _seed_live(db, "csv_xyz")
         _insert_alias(db, old_id="manual_abc", new_id="csv_xyz")
 
         assert resolve_curation_transaction_id(db, "manual_abc") == "csv_xyz"
@@ -1398,9 +1412,7 @@ class TestDedupedAwayManualIsNotLive:
         _insert_manual_transaction(
             db, source_transaction_id="manual_src2", transaction_id="manual_def"
         )
-        db.execute(
-            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('csv_uvw')"
-        )
+        _seed_live(db, "csv_uvw")
         _insert_alias(db, old_id="manual_def", new_id="csv_uvw")
 
         assert resolve_curation_transaction_ids(db, ["manual_def"]) == {
@@ -1435,9 +1447,7 @@ class TestBulkFallbackSharesOneReversedEdgeScan:
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         create_core_tables_raw(db.conn)
-        db.execute(
-            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('txn-live')"
-        )
+        _seed_live(db, "txn-live")
         _insert_alias(db, old_id="stale-a", new_id="txn-live")
         _insert_alias(db, old_id="stale-b", new_id="txn-live")
 

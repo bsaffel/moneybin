@@ -105,7 +105,7 @@ the design system".
 | Layer | Schema | Materialized | Purpose |
 |-------|--------|-------------|---------|
 | Raw | `raw` | Table | Untouched data from loaders (Python) |
-| Staging | `prep` | View | Light cleaning, type casting (SQLMesh `stg_*`) |
+| Staging | `prep` | View (`int_*` may be Table) | Light cleaning, type casting (SQLMesh `stg_*`) |
 | Core | `core` | Table / View | Canonical, deduplicated, multi-source (`fct_*`, `dim_*`, `bridge_*`) |
 | App | `app` | Table | User-state and application-managed metadata (mutable; not derivable from raw) |
 | Reports | `reports` | View | Curated presentation models, one per CLI/MCP report |

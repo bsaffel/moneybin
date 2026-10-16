@@ -357,27 +357,27 @@ def _build_spine_rows(
         "core.fct_transactions",
         "core.fct_investment_transactions",
         "core.dim_holdings_broker_reported",
-        "core.dim_accounts",
+        "prep.int_accounts__merged",
     },
     columns={
         "account_id": "VARCHAR",
-        "balance_date": "DATE",
+        "observation_source": "VARCHAR",
+        "currency_code": "VARCHAR",
         "balance": "DECIMAL(18, 2)",
+        "reconciliation_delta": "DECIMAL(18, 2)",
         "is_observed": "BOOLEAN",
         "in_net_worth": "BOOLEAN",
-        "observation_source": "VARCHAR",
-        "reconciliation_delta": "DECIMAL(18, 2)",
-        "currency_code": "VARCHAR",
+        "balance_date": "DATE",
     },
     column_descriptions={
         "account_id": "Foreign key to core.dim_accounts.account_id",
-        "balance_date": "Calendar date",
-        "balance": "Balance as of end of this day; NULL when the account holds value (a transaction, a trade, or a broker-reported position) but has no balance observation. Count those rows before trusting a SUM: SUM() skips them silently",
-        "is_observed": "TRUE if an authoritative observation exists for this date",
-        "in_net_worth": "TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from core.dim_accounts on every refresh, which holds only while this model is kind FULL",
         "observation_source": "source_type of the winning observation (ofx, tabular, assertion, plaid); NULL if interpolated or the account has no balance observation",
-        "reconciliation_delta": "Difference between observed and transaction-derived balance; NULL on interpolated days, on the first observation, and when the account has no balance observation",
         "currency_code": "ISO 4217 currency code, carried forward from the winning observation (or its interpolated predecessor) on each day; core.dim_accounts.currency_code when the account has no balance observation",
+        "balance": "Balance as of end of this day; NULL when the account holds value (a transaction, a trade, or a broker-reported position) but has no balance observation. Count those rows before trusting a SUM: SUM() skips them silently",
+        "reconciliation_delta": "Difference between observed and transaction-derived balance; NULL on interpolated days, on the first observation, and when the account has no balance observation",
+        "is_observed": "TRUE if an authoritative observation exists for this date",
+        "in_net_worth": "TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from the account's settings on every rebuild, and rebuilt whenever an archive or net-worth setting changes",
+        "balance_date": "Calendar date",
     },
     description=(
         "One row per account per day, from the account's first observation (or "
@@ -405,7 +405,7 @@ def execute(
     fct_transactions_table = context.resolve_table("core.fct_transactions")
     investment_table = context.resolve_table("core.fct_investment_transactions")
     broker_table = context.resolve_table("core.dim_holdings_broker_reported")
-    accounts_table = context.resolve_table("core.dim_accounts")
+    accounts_table = context.resolve_table("prep.int_accounts__merged")
 
     obs: pd.DataFrame = context.fetchdf(
         f"""
@@ -454,13 +454,13 @@ def execute(
     # Decimal precision through to the engine.
     schema = pa.schema([
         pa.field("account_id", pa.string()),
-        pa.field("balance_date", pa.date32()),
+        pa.field("observation_source", pa.string()),
+        pa.field("currency_code", pa.string()),
         pa.field("balance", pa.decimal128(18, 2)),
+        pa.field("reconciliation_delta", pa.decimal128(18, 2)),
         pa.field("is_observed", pa.bool_()),
         pa.field("in_net_worth", pa.bool_()),
-        pa.field("observation_source", pa.string()),
-        pa.field("reconciliation_delta", pa.decimal128(18, 2)),
-        pa.field("currency_code", pa.string()),
+        pa.field("balance_date", pa.date32()),
     ])
     table = pa.Table.from_pylist(rows, schema=schema)
     yield table.to_pandas(types_mapper=pd.ArrowDtype)  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list

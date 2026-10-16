@@ -6,7 +6,6 @@ from decimal import Decimal
 
 import pytest
 
-from moneybin.database import sqlmesh_context
 from tests.scenarios._runner import load_shipped_scenario, scenario_env
 from tests.scenarios._runner.fixture_loader import load_fixture_into_db
 from tests.scenarios._runner.loader import FixtureSpec
@@ -114,16 +113,8 @@ def test_reconciliation_self_heal() -> None:
         )
         load_fixture_into_db(db, gap_spec)
 
-        # Force-restate fct_balances_daily so SQLMesh re-executes it even though
-        # the model code is unchanged from the first plan. Without restate, SQLMesh
-        # sees the model as already applied and skips it (FULL kind only skips when
-        # previously applied in the same or a prior plan with identical fingerprints).
-        with sqlmesh_context(db) as ctx:
-            ctx.plan(
-                auto_apply=True,
-                no_prompts=True,
-                restate_models=["core.fct_balances_daily"],
-            )
+        # New raw rows reach FULL models through the same apply a refresh runs.
+        run_step("transform", scenario.setup, db, env=env)
 
         row = db.execute(
             """

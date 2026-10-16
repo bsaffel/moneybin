@@ -190,6 +190,7 @@ def reports_run(
         grouped_columns,
         money_columns,
         numeric_columns,
+        percent_columns,
         render_report_result,
     )
 
@@ -212,6 +213,7 @@ def reports_run(
             money = money_columns(spec)
             numeric = numeric_columns(spec)
             grouped = grouped_columns(spec)
+            percent = percent_columns(spec)
             result = catalog.execute(
                 db,
                 report_id=handle,
@@ -224,7 +226,12 @@ def reports_run(
             # a user-tier spec is built from a row, and this is the only scope
             # holding the connection that builds it.
             view = column_view(
-                spec, result.columns, parameters=parameters, wide=wide, output=output
+                spec,
+                result.columns,
+                parameters=parameters,
+                wide=wide,
+                output=output,
+                display_currency=result.display_currency,
             )
     render_report_result(
         result,
@@ -233,8 +240,11 @@ def reports_run(
         money=money,
         numeric=numeric,
         grouped=grouped,
+        percent=percent,
         quiet=quiet,
         columns=view.columns,
+        implied_currency=view.implied_currency,
+        placeholder=view.placeholder,
         fit=view.fit,
         optional=view.optional,
         no_pager=no_pager,

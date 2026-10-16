@@ -1088,7 +1088,8 @@ def test_sync_disconnect_purge_with_yes_plans_then_purges(
     assert re.search(r"Rows deleted:\s+7", result.stdout)
     assert re.search(r"Account links reversed:\s+4", result.stdout)
     assert re.search(r"Proposals withdrawn:\s+1", result.stdout)
-    assert "refresh run" in result.stdout
+    # The purge rebuilds the models it fed, so nothing is left to refresh.
+    assert "refresh run" not in result.stdout
 
 
 @pytest.mark.unit
@@ -1122,7 +1123,7 @@ def test_sync_disconnect_purge_json_carries_the_counts(mock_build: MagicMock) ->
     assert payload["data"]["account_links_reversed"] == 4
     assert payload["data"]["provider_item_id"] == "item_a"
     assert payload["data"]["institution"] == "Chase"
-    assert any("refresh run" in action for action in payload["actions"])
+    assert not any("refresh run" in action for action in payload["actions"])
 
 
 @pytest.mark.unit

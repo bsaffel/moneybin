@@ -230,11 +230,11 @@ WITH provider AS (
 )
 SELECT
   security_id, /* FK to core.dim_securities (grain) */
-  price_date, /* The date this close applies to (grain) */
-  quote_currency, /* ISO 4217 the close is expressed in (grain); this model converts nothing — M1K.2 owns FX */
-  close, /* The winning close for one unit, in quote_currency */
   source_type, /* Which source supplied the winning close; seeds.price_source_map is the closed set it can name — see docs/specs/investments-price-feeds.md */
   price_basis, /* Always 'raw' here; adjusted provider observations are excluded upstream and stay visible in prep.stg_security_prices, and the two derived sources are raw by construction */
+  quote_currency, /* ISO 4217 the close is expressed in (grain); this model converts nothing — M1K.2 owns FX */
+  close, /* The winning close for one unit, in quote_currency */
+  price_date, /* The date this close applies to (grain) */
   extracted_at AS updated_at /* When the winning observation was served: the provider's own timestamp, the mark's last edit, or the trade's ledger timestamp */
 FROM ranked
 QUALIFY

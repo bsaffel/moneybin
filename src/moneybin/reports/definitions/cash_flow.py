@@ -41,7 +41,9 @@ from moneybin.tables import REPORTS_CASH_FLOW
     columns=(
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
-        OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
+        OutputColumn(
+            "category", "Transaction category.", DataClass.CATEGORY, uncategorized=True
+        ),
         OutputColumn(
             "currency_code",
             "ISO 4217 currency these sums are denominated in; null means unknown.",

@@ -39,16 +39,9 @@ from moneybin.database import sqlmesh_context
 from tests.scenarios._runner import load_shipped_scenario, scenario_env
 from tests.scenarios._runner.steps import run_step
 
-# Models that read from app.account_settings and their dependents.
-# SQLMesh's interval-based optimizer skips FULL-kind models if their intervals
-# are already covered for the current day. After writing to app.account_settings
-# (an external table, invisible to SQLMesh's dependency graph), we must
-# explicitly restate these models so the updated archived/archived_at flags
-# are picked up without waiting for the next calendar day.
-_ARCHIVE_RESTATE_MODELS = [
-    "core.dim_accounts",
-    "core.fct_balances_daily",
-]
+# Restating the written input cascades to every model downstream of it, the
+# way restate_after_write does after a service write.
+_ARCHIVE_RESTATE_MODELS = ["app.account_settings"]
 
 
 @pytest.mark.scenarios

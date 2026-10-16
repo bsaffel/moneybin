@@ -714,6 +714,8 @@ def _upsert_settings(
         investment_source_type=None,
         investment_source_type_changed_at=None,
         archived_changed_at=None,
+        currency_code_changed_at=None,
+        default_cost_basis_method_changed_at=None,
         actor="cli",
     )
 

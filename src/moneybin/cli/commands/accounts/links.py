@@ -74,10 +74,20 @@ def links_pending(
     signal, ledger overlap, and the ids to act on. Use `accounts links set` to
     decide each group.
     """
+    from moneybin.cli.progress import operation_progress
+    from moneybin.progress import ProgressEvent
+
     with handle_cli_errors():
-        with get_database(read_only=True) as db:
+        with (
+            operation_progress(
+                get_terminal_policy(no_pager=no_pager),
+                quiet=quiet or output == OutputFormat.JSON,
+            ) as report,
+            get_database(read_only=True) as db,
+        ):
+            report(ProgressEvent("Reading pending account links"))
             svc = AccountLinksService(db, actor="cli")
-            groups = svc.pending()
+            groups = svc.pending(progress=report)
             n_pending = svc.count_pending()
 
     payload = AccountLinksPendingPayload.from_service(groups, n_pending)

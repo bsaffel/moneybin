@@ -13,15 +13,18 @@ from moneybin.sql.migrations.V074__add_archived_changed_at import migrate
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
 _NEW_COLUMN = "archived_changed_at"
+#: Added by later migrations, so absent from a database V074 upgrades.
+_LATER_COLUMNS = ("currency_code_changed_at", "default_cost_basis_method_changed_at")
 _SETTINGS_COLUMNS = ("account_id", "display_name", "archived", "include_in_net_worth")
 
 
 @pytest.fixture()
 def pre_v074_db(db: Database) -> Database:
     """app.account_settings without the V074 column, holding three rows."""
-    db.execute(
-        f"ALTER TABLE app.account_settings DROP COLUMN {_NEW_COLUMN}"
-    )  # test fixture, hardcoded column name
+    for column in (_NEW_COLUMN, *_LATER_COLUMNS):
+        db.execute(
+            f"ALTER TABLE app.account_settings DROP COLUMN {column}"
+        )  # test fixture, hardcoded column names
     insert_rows(
         db,
         "app",
@@ -80,10 +83,12 @@ def test_v074_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
     fresh_schema = [
         (row[1], row[2])
         for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
+        if row[1] not in _LATER_COLUMNS
     ]
-    db.execute(
-        f"ALTER TABLE app.account_settings DROP COLUMN {_NEW_COLUMN}"
-    )  # test fixture, hardcoded column name
+    for column in (_NEW_COLUMN, *_LATER_COLUMNS):
+        db.execute(
+            f"ALTER TABLE app.account_settings DROP COLUMN {column}"
+        )  # test fixture, hardcoded column names
 
     run_migration(db, migrate)
 

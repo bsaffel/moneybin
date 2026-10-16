@@ -1,0 +1,1 @@
+`core.dim_categories.updated_at` is present after `moneybin transform apply` and on every database open. The view those steps rebuild had dropped the column, so a query naming it failed with a binder error.

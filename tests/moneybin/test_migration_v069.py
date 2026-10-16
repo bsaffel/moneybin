@@ -14,7 +14,11 @@ from tests.moneybin.migration_helpers import column_exists, insert_rows, run_mig
 
 _NEW_COLUMNS = ("investment_source_type", "investment_source_type_changed_at")
 #: Added by later migrations, so absent from a database V069 upgrades.
-_LATER_COLUMNS = ("archived_changed_at",)
+_LATER_COLUMNS = (
+    "archived_changed_at",
+    "currency_code_changed_at",
+    "default_cost_basis_method_changed_at",
+)
 _SETTINGS_COLUMNS = ("account_id", "display_name", "archived", "include_in_net_worth")
 
 
