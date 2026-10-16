@@ -107,7 +107,7 @@ sequenceDiagram
     CLI->>DB: Provider extractor → raw.{provider}_* tables
     CLI->>DB: Handle removed transactions
     CLI->>Server: POST /sync/ack (best effort)
-    CLI->>DB: sqlmesh run → prep → core
+    CLI->>DB: refresh cascade (SQLMesh apply) → prep → core
     CLI->>User: Summary: N transactions from M institutions
 ```
 
@@ -149,7 +149,7 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 - Provider-specific extractor parses JSON into provider-specific raw tables (e.g., `raw.plaid_*` for Plaid).
 - Extractor handles provider-specific semantics (e.g., Plaid's `removed_transactions` — deletes from raw).
 - After the raw writes are durable, client calls `POST /sync/ack` before transforming. Ack is best-effort: a failure is logged without failing the pull, leaving the broker cursor unadvanced so the next pull re-delivers a loss-free, deduplicated payload.
-- Runs `sqlmesh run` to propagate through staging → core.
+- Runs the refresh cascade (a SQLMesh apply) to propagate through staging → core.
 - Connection health remains server-authoritative and is read through `GET /institutions`.
 
 ---
@@ -339,7 +339,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
 | `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
 | `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
-| `moneybin sync disconnect --institution NAME \| --provider-item-id ID [--purge]` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink). Local rows are kept by default. `--purge` previews, then also deletes every row the item pulled (`raw.plaid_*` and its `raw.security_prices` observations, scoped by `source_origin`), reverses the item's accepted `app.account_links`, and rejects pending merge proposals that only its accounts still describe; with `--provider-item-id` it also reaches an item the server no longer lists, which is the orphan a plain disconnect leaves behind (the server still has to answer: the by-item lookup asks it first, and an unreachable server fails the plan before any local row is read). The server call runs first, so a remote failure changes nothing and a local failure leaves a re-runnable orphan, with the error naming the `provider_item_id` to re-run with. Core tables drop the rows on the next `refresh run` |
+| `moneybin sync disconnect --institution NAME \| --provider-item-id ID [--purge]` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink). Local rows are kept by default. `--purge` previews, then also deletes every row the item pulled (`raw.plaid_*` and its `raw.security_prices` observations, scoped by `source_origin`), reverses the item's accepted `app.account_links`, and rejects pending merge proposals that only its accounts still describe; with `--provider-item-id` it also reaches an item the server no longer lists, which is the orphan a plain disconnect leaves behind (the server still has to answer: the by-item lookup asks it first, and an unreachable server fails the plan before any local row is read). The server call runs first, so a remote failure changes nothing and a local failure before the delete commits leaves a re-runnable orphan, with the error naming the `provider_item_id` to re-run with. Once the delete commits, the purge restates the materialized models the deleted rows feed (a warehouse that was never built has nothing to restate); if that rebuild fails, the purge has still completed and the error names `moneybin refresh` as the next step |
 | `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger a server-completed sync, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
 
@@ -461,8 +461,8 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
   the exact connection being removed.
 - `sync_disconnect(mode="institution", state="absent", ...)` is the purging
   form, the mediated twin of the Google Sheets purge (`state="absent"` on
-  `gsheet_disconnect`). The same
-  two-call flow applies, and the binding carries the per-table row counts,
+  `gsheet_disconnect`) in its confirmation flow. The same two-call flow
+  applies, and the binding carries the per-table row counts,
   the link ids, and the proposal ids the purge will touch, so a pull that
   lands between preview and confirm changes the digest and the confirm is
   refused. The response reports `status="purged"`, `rows_deleted`, and
@@ -647,7 +647,7 @@ generic re-authentication guidance.
 | Server unreachable | Network or server down | Retry with exponential backoff (3 attempts). Clear error: "Cannot reach moneybin-sync at {url}." |
 | Sync job timeout | The synchronous trigger request exceeded its wait | Report that completion is unknown; no job id was returned. Retry `moneybin sync pull`. Use `moneybin sync status` only to inspect current connection health. |
 | Load failure | DuckDB write error during load | Roll back partial load (transaction). No raw data corruption. |
-| Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh`) independently. |
+| Transform failure | SQLMesh apply error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh`) independently. |
 
 ### Partial success handling
 

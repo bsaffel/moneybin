@@ -188,7 +188,7 @@ Both consumers and reviewers should be able to read this without opening this sp
 | **SQLMesh model** | Each touched core model has an audit (or scenario assertion) that `updated_at` is non-`NULL` for rows whose inputs all have timestamps, and is `NULL` only where expected (pure-seed rows in `dim_categories`). |
 | **Migration** | DDL migration adds the column with the documented default; existing rows get `CURRENT_TIMESTAMP` at migration time. |
 | **Service** | Each updated write path sets `updated_at = NOW()` on UPDATE; verified by inspecting the row after edit. |
-| **Scenario** | One end-to-end scenario: edit a user-category, run `refresh run --steps transform` (or call `refresh_run(steps=["transform"])`), verify `core.dim_categories.updated_at` advances for that row and not for unrelated rows. |
+| **Scenario** | One end-to-end scenario (`tests/scenarios/test_dim_categories_updated_at.py`): edit a user-category, then verify `core.dim_categories.updated_at` advances for that row and not for unrelated rows. `core.dim_categories` is a view, so no refresh step sits between the edit and the read. |
 | **`meta.model_freshness`** | Smoke test: applying the pipeline, then querying the view, returns a row per registered SQLMesh model with non-`NULL` `last_applied_at`. |
 
 ## Open verification — resolved
