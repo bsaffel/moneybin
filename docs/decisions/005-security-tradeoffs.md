@@ -1,7 +1,16 @@
 # ADR-005: Security Tradeoffs and Threat Model
 
 ## Status
-proposed
+Superseded proposal by
+[ADR-017: Client-owned encryption, device authorization, and recovery](017-client-owned-encryption-and-recovery.md)
+on 2026-10-18.
+
+The original analysis below is retained as history, not a security guarantee.
+Its bank-to-client end-to-end wording, blanket compromise/subpoena protections,
+and claims that source or reproducible builds prove deployed behavior are
+withdrawn. The broker sees provider plaintext during processing. ADR-017
+defines the accepted stored-data boundary; implementation and operational
+verification remain required.
 
 ## Context
 

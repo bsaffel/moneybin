@@ -1,6 +1,6 @@
 # Sync — Overview
 
-> Last updated: 2026-10-14 — server address is saved per profile at login instead of requiring an environment variable; login offers the local server address
+> Last updated: 2026-10-18 — ADR-017 governs encryption custody and recovery; the older encryption protocol sketch is historical
 > Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
@@ -8,17 +8,17 @@
 
 ## Purpose
 
-Sync is MoneyBin's framework for pulling financial data from external providers (banks, brokerages, aggregators) through moneybin-sync. This doc is the umbrella: it defines the client-side interaction model, infrastructure, CLI/MCP surface, E2E encryption design, error handling, and the contract for plugging in new providers. Provider-specific design and implementation details live in the child specs it points to.
+Sync is MoneyBin's framework for pulling financial data from external providers (banks, brokerages, aggregators) through moneybin-sync. This doc is the umbrella: it defines the client-side interaction model, infrastructure, CLI/MCP surface, error handling, and the contract for plugging in new providers. [ADR-017](../decisions/017-client-owned-encryption-and-recovery.md) governs accepted encryption custody and recovery principles. Provider-specific design and implementation details live in the child specs it points to.
 
 ## Vision
 
-> **Connect your bank, pull your data, keep it local. The server is a conduit — it never stores your financial data, and with E2E encryption, it can never read it either.**
+> **Connect your bank, pull your data, keep it local.** The broker handles readable provider data during processing. The client-owned encryption target protects stored financial content; it does not remove that processing trust boundary.
 
 Three commitments, in order:
 
 1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The client never knows which aggregator backs a connection — that's a server implementation detail.
 2. **Provider-specific raw schemas.** Each provider gets its own raw tables that preserve the provider's native data shape. No generic "sync schema" that forces every provider into a least-common-denominator format. The data warehouse layers (prep → core) handle homogenization through staging views and `UNION ALL`.
-3. **Financial-grade security.** E2E encryption is designed into the protocol from day one. v1 ships with TLS + encrypted-at-rest (acceptable baseline). v2 adds full zero-knowledge encryption where the server cannot read financial data, even under subpoena. The `EncryptionBackend` abstraction supports algorithm upgrades (X25519 → hybrid post-quantum) without protocol changes.
+3. **Client-owned stored-data encryption.** Local database encryption, sync delivery keys, and device authorization have separate responsibilities under ADR-017. A concrete protocol and its security evidence must establish those protections before release; neither zero-knowledge processing nor transparent algorithm upgrades are promised here.
 
 ## Target users
 
@@ -36,7 +36,7 @@ Sync is the bridge between MoneyBin's power-user core and mainstream usability:
 - The provider-agnostic interaction model (authenticate → connect → pull → decrypt → load → transform)
 - Client infrastructure: `SyncClient`, connection health tracking, provider extractors
 - CLI namespace (`moneybin sync *`) and MCP tools
-- E2E encryption design with `EncryptionBackend` abstraction
+- Historical encryption sketch, superseded in principle by ADR-017
 - Error handling and recovery patterns
 - The contract new providers must satisfy to plug into the framework
 - Schedule management for automated sync
@@ -489,6 +489,12 @@ No additional sync-specific read tools are needed. Once data is pulled and trans
 
 ## E2E encryption design
 
+**Historical sketch.** This section's protocol, key-storage paths, enrollment,
+and algorithm-upgrade assumptions are retained for context, not implementation
+authority. [ADR-017](../decisions/017-client-owned-encryption-and-recovery.md)
+supersedes its custody and recovery model. Concrete mechanisms require separate
+design and validation; the legacy section title remains for existing links.
+
 ### Threat model
 
 | Layer | Protects against | Limitation |
@@ -496,11 +502,13 @@ No additional sync-specific read tools are needed. Once data is pulled and trans
 | **TLS (v1 baseline)** | Network observers, MITM | Server can read plaintext |
 | **Server TTL store** | Persistent server-side storage | Data exists in-memory for 30 minutes |
 | **DuckDB encryption at rest** | Stolen laptop, cloud sync exposure | Only protects the local database file |
-| **E2E encryption (v2)** | Compromised server, subpoena, rogue employee, data breach | Requires key management on client |
+| **Client-owned encrypted storage (target)** | Disclosure of stored ciphertext without usable client keys | Broker still sees provider plaintext; active processing, metadata, and client compromise remain separate risks |
 
 v1 provides defense-in-depth: TLS in transit, ephemeral server storage (30-minute TTL, no persistent plaintext), and AES-256-GCM encryption at rest once data reaches DuckDB. This is an acceptable baseline for a beta product with a single-digit user count.
 
-v2 achieves full zero-knowledge: the server never sees plaintext financial data. This is the target state, designed now and implemented when the server completes its Phase 5.
+The broker receives provider plaintext before encryption. ADR-017 therefore
+rejects the former full-zero-knowledge claim. This section does not establish
+that the target protections are implemented.
 
 ### Key lifecycle
 
@@ -541,11 +549,17 @@ Path B (passphrase, shared-machine protection):
   User passphrase → [Argon2id] → derived key → unlocks age private key → decrypts sync payload
 ```
 
-Both paths are implemented by the `keyring` library. Path B adds protection when the OS keychain itself isn't trustworthy (shared machines, compromised user accounts).
+These were proposed storage paths. The passphrase protection depends on which
+usable keys persist, not the choice of keyring library; ADR-009's persistence
+policy remains a separate decision.
 
 ### Multi-device
 
-Each device has its own key pair. Server encrypts to the requesting device's registered public key. No key sharing between devices — each device registers independently after `moneybin sync login`. This avoids the complexity of key distribution and ensures a compromised device's key doesn't affect other devices.
+ADR-017 replaces login-only enrollment: an existing authorized device or the
+user's recovery secret must authorize decryption on a new device. Device-local
+database keys need not be shared. The concrete distribution and revocation
+protocol remains to be designed; an independently registered public key alone
+does not establish access to existing encrypted history.
 
 ### Auto-negotiation
 

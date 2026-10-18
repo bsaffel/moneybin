@@ -1,7 +1,15 @@
 # ADR-004: End-to-End Encryption Design
 
 ## Status
-proposed
+Superseded proposal by
+[ADR-017: Client-owned encryption, device authorization, and recovery](017-client-owned-encryption-and-recovery.md)
+on 2026-10-18.
+
+The original proposal below is retained as history, not implementation
+authority. Its master-password/session-key scheme and broad protection claims
+were not accepted. In particular, the broker sees provider plaintext during
+processing; ADR-017 defines the narrower stored-data boundary and leaves the
+concrete multi-device protocol to separate design.
 
 ## Context
 
