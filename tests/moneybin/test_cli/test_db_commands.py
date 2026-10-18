@@ -2422,7 +2422,8 @@ def test_restore_invalid_source_preserves_destination_before_copy(
     source.write_bytes(b"wrong-key or legacy backup")
     _make_settings_mock(destination, mocker)
     mocker.patch(
-        "moneybin.database.Database", side_effect=ValueError("UTC upgrade required")
+        "moneybin.services.database_restore_service.Database",
+        side_effect=ValueError("UTC upgrade required"),
     )
     mocker.patch("moneybin.secrets.SecretStore")
     original = destination.read_bytes()
