@@ -315,6 +315,33 @@ def sniff_ofx_content(file_path: Path) -> bool:
 class _UTCOFXParser(ofxparse.OfxParser):
     """Adapt ofxparse's UTC-naive results without changing its global parser."""
 
+    @staticmethod
+    def _source_date(tag: Any) -> date | None:
+        """Read the source calendar before the parser's offset normalization."""
+        if tag is None or not tag.contents:
+            return None
+        text = tag.contents[0].strip()
+        if text[:8] == "00000000":
+            return None
+        return datetime.strptime(text[:8], "%Y%m%d").date()
+
+    @classmethod
+    def parseTransaction(cls, txn_ofx: Any) -> Any:  # noqa: N802  # ofxparse hook
+        transaction: Any = super().parseTransaction(txn_ofx)  # pyright: ignore[reportUnknownMemberType]  # ofxparse leaves parser hooks untyped
+        transaction.source_date = cls._source_date(txn_ofx.find("dtposted"))
+        return transaction
+
+    @classmethod
+    def parseStatement(cls, stmt_ofx: Any) -> Any:  # noqa: N802  # ofxparse hook
+        statement: Any = super().parseStatement(stmt_ofx)  # pyright: ignore[reportUnknownMemberType]  # ofxparse leaves parser hooks untyped
+        statement.start_source_date = cls._source_date(stmt_ofx.find("dtstart"))
+        statement.end_source_date = cls._source_date(stmt_ofx.find("dtend"))
+        ledger = stmt_ofx.find("ledgerbal")
+        statement.balance_source_date = cls._source_date(
+            ledger.find("dtasof") if ledger is not None else None
+        )
+        return statement
+
     @classmethod
     def parseOfxDateTime(cls, ofxDateTime: str) -> datetime | None:  # noqa: N802, N803  # required ofxparse override signature
         # GMT is the default only when no explicit zone was supplied.
@@ -454,12 +481,8 @@ def incoming_ofx_transactions(
             continue
         currency = account.curdef if hasattr(account, "curdef") else None
         for transaction in statement.transactions:
-            raw_date = transaction.date
-            if isinstance(raw_date, datetime):
-                tx_date = raw_date.date()
-            elif isinstance(raw_date, date):
-                tx_date = raw_date
-            else:
+            tx_date = transaction.source_date
+            if tx_date is None:
                 continue
             amount = coerce_to_decimal(transaction.amount)
             if amount is None:
@@ -796,6 +819,7 @@ class OFXExtractor:
                     if hasattr(account, "curdef")
                     else None,
                     "date_posted": tx_schema.date.replace(tzinfo=None).isoformat(),
+                    "date_posted_source_date": transaction.source_date,
                     "amount": tx_schema.amount,
                     "payee": _decode_text_field(tx_schema.payee),
                     "memo": _decode_text_field(tx_schema.memo),
@@ -845,6 +869,7 @@ class OFXExtractor:
                 "transaction_type": pl.String,
                 "currency_code": pl.String,
                 "date_posted": pl.Datetime("us", time_zone="UTC"),
+                "date_posted_source_date": pl.Date,
                 "amount": _DECIMAL_AMOUNT,
                 "payee": pl.String,
                 "memo": pl.String,
@@ -880,12 +905,15 @@ class OFXExtractor:
                     "statement_end_date": statement.end_date
                     if statement.end_date
                     else None,
+                    "statement_start_source_date": statement.start_source_date,
+                    "statement_end_source_date": statement.end_source_date,
                     "ledger_balance": statement.balance
                     if statement.balance is not None
                     else None,
                     "ledger_balance_date": statement.balance_date
                     if hasattr(statement, "balance_date") and statement.balance_date
                     else None,
+                    "ledger_balance_source_date": statement.balance_source_date,
                     "available_balance": statement.available_balance
                     if hasattr(statement, "available_balance")
                     and statement.available_balance is not None
@@ -913,8 +941,11 @@ class OFXExtractor:
                 "account_id": pl.String,
                 "statement_start_date": pl.Datetime("us", time_zone="UTC"),
                 "statement_end_date": pl.Datetime("us", time_zone="UTC"),
+                "statement_start_source_date": pl.Date,
+                "statement_end_source_date": pl.Date,
                 "ledger_balance": _DECIMAL_AMOUNT,
                 "ledger_balance_date": pl.Datetime("us", time_zone="UTC"),
+                "ledger_balance_source_date": pl.Date,
                 "available_balance": _DECIMAL_AMOUNT,
                 "currency_code": pl.String,
                 "source_file": pl.String,

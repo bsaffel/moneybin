@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
     source_transaction_id VARCHAR, -- OFX FITID element; institution-assigned unique transaction identifier
     account_id VARCHAR, -- Account this transaction belongs to; foreign key to raw.ofx_accounts; part of primary key
     transaction_type VARCHAR, -- OFX TRNTYPE element, e.g. DEBIT, CREDIT, CHECK, INT, DIV
-    date_posted TIMESTAMPTZ, -- OFX DTPOSTED element; mapped to transaction_date in core
+    date_posted TIMESTAMPTZ, -- UTC instant represented by OFX DTPOSTED
+    date_posted_source_date DATE, -- Calendar date stated by DTPOSTED before UTC normalization; maps to transaction_date in core
     amount DECIMAL(18, 2), -- OFX TRNAMT element; negative = expense, positive = income
     payee VARCHAR, -- OFX NAME element (payee/merchant); mapped to description in core
     memo VARCHAR, -- OFX MEMO element; supplemental transaction notes from the institution

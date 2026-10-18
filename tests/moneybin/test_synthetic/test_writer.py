@@ -76,6 +76,22 @@ def _make_result(
 class TestSyntheticWriter:
     """Test writing generated data to raw tables."""
 
+    def test_ofx_source_dates_preserve_generated_calendar(self, db: Database) -> None:
+        from moneybin.synthetic.writer import SyntheticWriter
+
+        SyntheticWriter(db).write(_make_result())
+        db.execute("SET TimeZone = 'America/Los_Angeles'")
+        assert db.execute(
+            "SELECT date_posted_source_date FROM raw.ofx_transactions"
+        ).fetchone() == (date(2024, 1, 15),)
+        assert (
+            db.execute(
+                "SELECT statement_start_source_date, statement_end_source_date, "
+                "ledger_balance_source_date FROM raw.ofx_balances"
+            ).fetchone()
+            == (date(2023, 12, 31),) * 3
+        )
+
     def test_write_ofx_account(self, db: Database) -> None:
         from moneybin.synthetic.writer import SyntheticWriter
 

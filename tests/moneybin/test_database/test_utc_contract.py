@@ -366,3 +366,34 @@ def test_bootstrap_covers_all_maintained_instant_columns(
         assert db.execute(
             "SELECT rules FROM app.utc_upgrade_provenance WHERE contract_version = 2"
         ).fetchone() == ("[]",)
+
+
+@pytest.mark.parametrize(
+    "table,column",
+    [
+        ("ofx_transactions", "date_posted_source_date"),
+        ("ofx_balances", "statement_start_source_date"),
+        ("ofx_balances", "statement_end_source_date"),
+        ("ofx_balances", "ledger_balance_source_date"),
+    ],
+)
+@pytest.mark.parametrize("read_only", [True, False])
+def test_missing_ofx_source_date_refuses_before_write(
+    tmp_path: Path,
+    mock_secret_store: MagicMock,
+    table: str,
+    column: str,
+    read_only: bool,
+) -> None:
+    path = tmp_path / "missing-source-date.duckdb"
+    with Database(
+        path, secret_store=mock_secret_store, read_only=False, no_auto_upgrade=True
+    ) as db:
+        db.execute(
+            f'ALTER TABLE raw."{table}" RENAME COLUMN "{column}" TO "missing_{column}"'
+        )  # fixed synthetic schema identifiers from parametrization
+        db.execute("CHECKPOINT")
+    before = path.read_bytes()
+    with pytest.raises(Exception, match="UTC.*compatibility|compatibility.*UTC"):
+        Database(path, secret_store=mock_secret_store, read_only=read_only)
+    assert path.read_bytes() == before

@@ -10,9 +10,75 @@ import pytest
 from pydantic import ValidationError
 
 import moneybin.connectors.sync_models as sync_models
+from moneybin.extractors.simplefin.extractor import SimpleFINJobContext
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sync_v2"
 _CREDENTIAL_KEYS = {"access_url", "access_token", "setup_token", "secret"}
+
+
+def _job_metadata(
+    model: str, started: str, completed: str
+) -> SimpleFINJobContext | sync_models.SyncStatusV2Response:
+    values: dict[str, Any] = {
+        "status": "completed",
+        "started_at": started,
+        "completed_at": completed,
+    }
+    if model == "context":
+        return SimpleFINJobContext.model_validate(values)
+    return sync_models.SyncStatusV2Response.model_validate({
+        **values,
+        "job_id": "11111111-1111-4111-8111-111111111111",
+        "contract_version": 2,
+        "transaction_count": 0,
+        "error": None,
+        "acked_at": None,
+        "results": [],
+    })
+
+
+@pytest.mark.parametrize("model", ["context", "status"])
+@pytest.mark.parametrize("field", ["started_at", "completed_at"])
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-10-01T12:05:00.000001Z",
+        "2026-10-01T08:05:00.000001-04:00",
+        "2099-01-01T00:00:00Z",
+    ],
+)
+def test_job_metadata_rejects_time_beyond_clock_skew(
+    model: str, field: str, timestamp: str
+) -> None:
+    started = timestamp if field == "started_at" else "2026-10-01T12:00:00Z"
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        with pytest.raises(ValidationError, match="clock skew"):
+            _job_metadata(model, started, timestamp)
+
+
+@pytest.mark.parametrize("model", ["context", "status"])
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-10-01T12:05:00Z",
+        "2026-10-01T08:05:00-04:00",
+        "2001-01-01T00:00:00Z",
+    ],
+)
+def test_job_metadata_preserves_clock_boundary_offsets_and_history(
+    model: str, timestamp: str
+) -> None:
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        metadata = _job_metadata(model, timestamp, timestamp)
+        clock.now.return_value = datetime(2027, 1, 1, tzinfo=UTC)
+        restored = type(metadata).model_validate_json(metadata.model_dump_json())
+    expected = datetime.fromisoformat(timestamp)
+    for value in (restored.started_at, restored.completed_at):
+        assert value is not None
+        assert value == expected
+        assert value.utcoffset() == expected.utcoffset()
 
 
 def _assert_no_credentials(value: object) -> None:

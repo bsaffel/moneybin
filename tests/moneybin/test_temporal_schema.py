@@ -181,7 +181,7 @@ def test_bulk_ingestion_normalizes_offset_strings_and_preserves_nulls(
         ),
     ],
 )
-def test_ofx_business_dates_preserve_utc_parser_date_in_non_utc_session(
+def test_ofx_business_dates_preserve_source_date_in_non_utc_session(
     db: Database, host_zone: str, model: str, date_columns: list[str]
 ) -> None:
     from sqlmesh.core.dialect import parse
@@ -189,15 +189,23 @@ def test_ofx_business_dates_preserve_utc_parser_date_in_non_utc_session(
     instant = datetime(2025, 1, 2, tzinfo=UTC)
     db.execute(
         "INSERT INTO raw.ofx_transactions "
-        "(source_transaction_id, account_id, source_file, date_posted, amount) "
-        "VALUES ('synthetic-date', 'synthetic-account', 'synthetic.ofx', ?, -12.34)",
-        [instant],
+        "(source_transaction_id, account_id, source_file, date_posted, date_posted_source_date, amount) "
+        "VALUES ('synthetic-date', 'synthetic-account', 'synthetic.ofx', ?, ?, -12.34)",
+        [instant, date(2025, 1, 2)],
     )
     db.execute(
         "INSERT INTO raw.ofx_balances "
-        "(account_id, source_file, statement_start_date, statement_end_date, ledger_balance_date) "
-        "VALUES ('synthetic-account', 'synthetic.ofx', ?, ?, ?)",
-        [instant, instant, instant],
+        "(account_id, source_file, statement_start_date, statement_end_date, ledger_balance_date, "
+        "statement_start_source_date, statement_end_source_date, ledger_balance_source_date) "
+        "VALUES ('synthetic-account', 'synthetic.ofx', ?, ?, ?, ?, ?, ?)",
+        [
+            instant,
+            instant,
+            instant,
+            date(2025, 1, 2),
+            date(2025, 1, 2),
+            date(2025, 1, 2),
+        ],
     )
     db.execute("SET TimeZone = 'America/Los_Angeles'")
     source = Path(f"src/moneybin/sqlmesh/models/prep/{model}.sql").read_text()
@@ -210,3 +218,64 @@ def test_ofx_business_dates_preserve_utc_parser_date_in_non_utc_session(
     assert {name: row[name] for name in date_columns} == {
         name: date(2025, 1, 2) for name in date_columns
     }
+
+
+@pytest.mark.parametrize(
+    ("source_time", "instant"),
+    [
+        ("20250102003000[+5.5]", datetime(2025, 1, 1, 19, tzinfo=UTC)),
+        ("20250102233000[-5:EST]", datetime(2025, 1, 3, 4, 30, tzinfo=UTC)),
+    ],
+)
+def test_ofx_source_dates_reach_raw_prep_and_import_summary(
+    db: Database, tmp_path: Path, host_zone: str, source_time: str, instant: datetime
+) -> None:
+    from sqlmesh.core.dialect import parse
+
+    from moneybin.services.import_service import ImportService
+    from tests.import_helpers import import_answering_gate
+
+    source = Path("tests/fixtures/sample_statement.qfx").read_bytes()
+    for original in (
+        b"20250101120000",
+        b"20250131120000",
+        b"20250102120000",
+        b"20250115120000",
+        b"20250120120000",
+    ):
+        source = source.replace(original, source_time.encode())
+    path = tmp_path / "source-calendar.ofx"
+    path.write_bytes(source)
+    db.execute("SET TimeZone = 'America/Los_Angeles'")
+    imported = import_answering_gate(ImportService(db), path, refresh=False)
+    assert imported.date_range == "2025-01-02 to 2025-01-02"
+    # Instant assertions are independent of the business-date companion contract.
+    assert db.execute(
+        "SELECT date_posted FROM raw.ofx_transactions LIMIT 1"
+    ).fetchone() == (instant,)
+    assert db.execute(
+        "SELECT statement_start_date, statement_end_date, ledger_balance_date FROM raw.ofx_balances"
+    ).fetchone() == (instant, instant, instant)
+    for model, columns in (
+        ("stg_ofx__transactions", ["posted_date"]),
+        (
+            "stg_ofx__balances",
+            ["statement_start_date", "statement_end_date", "ledger_balance_date"],
+        ),
+    ):
+        query = parse(
+            Path(f"src/moneybin/sqlmesh/models/prep/{model}.sql").read_text(),
+            default_dialect="duckdb",
+        )[-1]
+        assert query is not None
+        result = db.execute(query.sql(dialect="duckdb"))
+        names = [column[0] for column in result.description]
+        for values in result.fetchall():
+            row = dict(zip(names, values, strict=True))
+            assert [row[column] for column in columns] == [date(2025, 1, 2)] * len(
+                columns
+            )
+    stat = next(
+        s for s in ImportService(db).raw_data_summary() if s.table == "ofx_transactions"
+    )
+    assert (stat.date_min, stat.date_max) == (date(2025, 1, 2), date(2025, 1, 2))

@@ -16,7 +16,13 @@ from pydantic import ConfigDict, PlainSerializer, TypeAdapter
 from pydantic.dataclasses import dataclass
 from sqlglot import expressions as exp
 
-from moneybin.tables import PROFILE_SETTINGS, UTC_UPGRADE_PROVENANCE, VERSIONS
+from moneybin.tables import (
+    OFX_BALANCES,
+    OFX_TRANSACTIONS,
+    PROFILE_SETTINGS,
+    UTC_UPGRADE_PROVENANCE,
+    VERSIONS,
+)
 from moneybin.temporal import as_utc, format_utc, interpret_legacy_time, parse_utc
 
 if TYPE_CHECKING:
@@ -83,7 +89,18 @@ def _utc_schema_complete(connection: duckdb.DuckDBPyConnection) -> bool:
         re.search(r"\bTIMESTAMP(?:_NS|_MS|_S)?\b(?! WITH TIME ZONE)", kind)
         for _schema, _table, _column, kind in columns
     )
-    return not naive and _expected_instant_columns() <= aware
+    dates = {
+        (schema, table, column)
+        for schema, table, column, kind in columns
+        if kind == "DATE" and (schema, table) in tables
+    }
+    source_dates = {
+        (OFX_TRANSACTIONS.schema, OFX_TRANSACTIONS.name, "date_posted_source_date"),
+        (OFX_BALANCES.schema, OFX_BALANCES.name, "statement_start_source_date"),
+        (OFX_BALANCES.schema, OFX_BALANCES.name, "statement_end_source_date"),
+        (OFX_BALANCES.schema, OFX_BALANCES.name, "ledger_balance_source_date"),
+    }
+    return not naive and _expected_instant_columns() <= aware and source_dates <= dates
 
 
 def inspect_temporal_contract(

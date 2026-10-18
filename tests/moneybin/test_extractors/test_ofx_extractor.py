@@ -5,7 +5,7 @@ parsing, validation, and data extraction into raw table structures.
 """
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -798,6 +798,94 @@ def test_ofx_extraction_metadata_and_provider_columns_are_aware(
     assert frames["transactions"]["date_posted"][0] == datetime(
         2025, 1, 2, 12, tzinfo=UTC
     )
+
+
+@pytest.mark.parametrize(
+    ("source_time", "expected_instant"),
+    [
+        ("20250102003000[+5]", "2025-01-01T19:30:00+00:00"),
+        ("20250102233000[-5:EST]", "2025-01-03T04:30:00+00:00"),
+        ("20250102003000[+5.5:IST]", "2025-01-01T19:00:00+00:00"),
+        ("20250102233000[-3.5]", "2025-01-03T03:00:00+00:00"),
+        ("20250102003000", "2025-01-02T00:30:00+00:00"),
+        ("20250102", "2025-01-02T00:00:00+00:00"),
+    ],
+)
+def test_ofx_source_calendar_dates_survive_utc_normalization(
+    sample_ofx_file: Path,
+    tmp_path: Path,
+    source_time: str,
+    expected_instant: str,
+    host_zone: str,
+) -> None:
+    from moneybin.extractors.ofx.extractor import (
+        incoming_ofx_transactions,
+        parse_ofx_content,
+    )
+
+    source = sample_ofx_file.read_bytes()
+    for original in (b"20250102120000", b"20250101120000", b"20250131120000"):
+        source = source.replace(original, source_time.encode())
+    path = tmp_path / "source-calendar.ofx"
+    path.write_bytes(source)
+    parsed = parse_ofx_content(source, source_label=path.name)
+
+    incoming = incoming_ofx_transactions(parsed)
+    assert incoming["9876543210"][0].transaction_date == date(2025, 1, 2)
+    frames = OFXExtractor().extract_from_file(
+        path, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
+    transaction = frames["transactions"].row(0, named=True)
+    assert transaction["date_posted"] == datetime.fromisoformat(expected_instant)
+    assert transaction["date_posted_source_date"] == date(2025, 1, 2)
+    assert frames["transactions"].schema["date_posted_source_date"] == pl.Date
+    balance = frames["balances"].row(0, named=True)
+    for instant_column, date_column in (
+        ("statement_start_date", "statement_start_source_date"),
+        ("statement_end_date", "statement_end_source_date"),
+        ("ledger_balance_date", "ledger_balance_source_date"),
+    ):
+        assert balance[instant_column] == datetime.fromisoformat(expected_instant)
+        assert balance[date_column] == date(2025, 1, 2)
+        assert frames["balances"].schema[date_column] == pl.Date
+    assert path.read_bytes() == source
+
+
+def test_ofx_source_dates_stay_with_rows_when_fitids_repeat(
+    sample_ofx_file: Path, tmp_path: Path
+) -> None:
+    from moneybin.extractors.ofx.extractor import (
+        incoming_ofx_transactions,
+        parse_ofx_content,
+    )
+
+    source = (
+        sample_ofx_file
+        .read_bytes()
+        .replace(b"20250102120000", b"20250102233000[-5]")
+        .replace(b"20250115120000", b"20250115003000[+5]")
+        .replace(b"TXN002", b"TXN001")
+    )
+    path = tmp_path / "repeated-fitid.ofx"
+    path.write_bytes(source)
+    incoming = incoming_ofx_transactions(
+        parse_ofx_content(source, source_label=path.name)
+    )
+    assert [row.transaction_date for row in incoming["9876543210"]] == [
+        date(2025, 1, 2),
+        date(2025, 1, 15),
+        date(2025, 1, 20),
+    ]
+    frames = OFXExtractor().extract_from_file(
+        path, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
+    rows = frames["transactions"].to_dicts()
+    assert [row["date_posted_source_date"] for row in rows] == [
+        date(2025, 1, 2),
+        date(2025, 1, 15),
+        date(2025, 1, 20),
+    ]
+    assert rows[0]["source_transaction_id"] != rows[1]["source_transaction_id"]
 
 
 @pytest.mark.parametrize(

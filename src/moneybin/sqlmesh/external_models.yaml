@@ -320,8 +320,11 @@
     account_id: TEXT
     statement_start_date: TIMESTAMPTZ
     statement_end_date: TIMESTAMPTZ
+    statement_start_source_date: DATE
+    statement_end_source_date: DATE
     ledger_balance: DECIMAL(18, 2)
     ledger_balance_date: TIMESTAMPTZ
+    ledger_balance_source_date: DATE
     available_balance: DECIMAL(18, 2)
     source_file: TEXT
     extracted_at: TIMESTAMPTZ
@@ -336,6 +339,7 @@
     account_id: TEXT
     transaction_type: TEXT
     date_posted: TIMESTAMPTZ
+    date_posted_source_date: DATE
     amount: DECIMAL(18, 2)
     payee: TEXT
     memo: TEXT

@@ -29,7 +29,7 @@ even though the higher-priority OFX source has no currency of its own.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import polars as pl
@@ -131,6 +131,7 @@ def _seed_ofx_twin(db: Database, *, account_id: str) -> None:
                 "account_id": account_id,
                 "transaction_type": "DEBIT",
                 "date_posted": datetime(2026, 6, 1, tzinfo=UTC),
+                "date_posted_source_date": date.fromisoformat(_DEDUP_DATE),
                 "amount": _OFX_RAW_AMOUNT,
                 "payee": "EURO MERCHANT CO",
                 "memo": None,

@@ -1,15 +1,20 @@
 """Whole-job durability and local recovery across provider acknowledgement."""
 
+import json
+from copy import deepcopy
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import UUID
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
+import moneybin.connectors.sync_models as sync_models
 from moneybin.connectors.sync_models import (
     PlaidSource,
     PlaidSyncDataResponse,
@@ -199,6 +204,81 @@ def test_mismatched_terminal_metadata_rolls_back_before_ack(db: Database) -> Non
         "SELECT count(*) FROM raw.simplefin_sync_receipts"
     ).fetchone() == (0,)
     client.ack.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["started_at", "completed_at"])
+def test_future_job_metadata_refused_before_mutation(db: Database, field: str) -> None:
+    client = _client(_envelope())
+    future = datetime(2099, 1, 1, tzinfo=UTC)
+    client.get_status.return_value.completed_at = future
+    if field == "started_at":
+        client.get_status.return_value.started_at = future
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = NOW
+        with pytest.raises((ValidationError, sync_service.SyncAPIError)):
+            _service(db, client).pull(refresh=False)
+
+    for table in (
+        "raw.simplefin_sync_receipts",
+        "raw.simplefin_responses",
+        "raw.simplefin_accounts",
+        "raw.simplefin_transactions",
+        "raw.simplefin_balances",
+        "app.sync_job_state",
+    ):
+        assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names
+    client.ack.assert_not_called()
+
+
+@pytest.mark.parametrize("across_sources", [False, True])
+def test_repeated_plaid_batch_id_preserves_each_payload(
+    db: Database, across_sources: bool
+) -> None:
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    original = json.loads(fixture.read_text())
+    original["job_id"] = str(JOB)
+    first = original["sources"][0]
+    first["outcomes"] = []
+    first["batches"][0]["payload"]["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    second = deepcopy(first)
+    second["connection_id"] = str(UUID(int=302))
+    payload = second["batches"][0]["payload"]
+    payload["transactions"][0]["transaction_id"] = "plaid-transaction-2"
+    payload["transactions"][0]["amount"] = "56.78"
+    payload["metadata"]["institutions"][0]["provider_item_id"] = "plaid-item-2"
+    if across_sources:
+        original["sources"].append(second)
+    else:
+        first["batches"].extend(second["batches"])
+    data = SyncEnvelopeV2.model_validate(original)
+
+    result = _service(db, _client(data)).pull(refresh=False)
+
+    assert result.transactions_loaded == 2
+    assert db.execute(
+        "SELECT transaction_id, amount, source_origin, source_file FROM raw.plaid_transactions ORDER BY transaction_id"
+    ).fetchall() == [
+        (
+            "plaid-transaction-1",
+            Decimal("12.34"),
+            "plaid-item-1",
+            f"sync_{JOB}_33333333-3333-4333-8333-333333333333",
+        ),
+        (
+            "plaid-transaction-2",
+            Decimal("56.78"),
+            "plaid-item-2",
+            f"sync_{JOB}_33333333-3333-4333-8333-333333333333",
+        ),
+    ]
+    assert data.model_dump(mode="json", exclude_unset=True) == original
 
 
 def _plaid() -> PlaidSyncDataResponse:

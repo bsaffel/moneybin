@@ -36,6 +36,13 @@ historical audit JSON.
 | Market observations | Preserve the adapter's explicit valuation-date rule. |
 | Application clocks | Generate aware UTC at creation. |
 
+OFX posting, statement-boundary and ledger-balance source dates are stored
+separately from their UTC instants. Matching, staging and import summaries use
+those source dates; UTC conversion cannot shift their business day. Fresh
+profiles include the source-date columns. Profiles missing them fail the
+startup contract and require fresh creation or separately arranged offline
+maintenance; the application does not infer historical source dates from UTC.
+
 Provider details remain behind the existing sync API and source adapters;
 consumers use canonical tables.
 

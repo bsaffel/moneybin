@@ -137,9 +137,9 @@ class TestImportOFXBatchLifecycle:
             """
             INSERT INTO raw.ofx_transactions
                 (source_transaction_id, account_id, transaction_type,
-                 date_posted, amount, payee, source_file, source_type)
+                 date_posted, date_posted_source_date, amount, payee, source_file, source_type)
             VALUES ('SHAREDFITID999', '4242', 'DEBIT', TIMESTAMP '2025-11-19',
-                    -0.39, 'FOREIGN TRANSACTION FEE', ?, 'ofx')
+                    DATE '2025-11-19', -0.39, 'FOREIGN TRANSACTION FEE', ?, 'ofx')
             """,
             [str(fixture.resolve())],
         )

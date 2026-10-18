@@ -33,6 +33,15 @@ UTCInstant = Annotated[AwareDatetime, AfterValidator(as_utc)]
 _MAX_BROKER_CLOCK_SKEW = timedelta(minutes=5)
 
 
+def _validate_job_time(value: datetime) -> datetime:
+    if value > datetime.now(UTC) + _MAX_BROKER_CLOCK_SKEW:
+        raise ValueError("Broker job time exceeds allowed clock skew")
+    return value
+
+
+BrokerJobInstant = Annotated[AwareDatetime, AfterValidator(_validate_job_time)]
+
+
 def _blank_to_none(value: object) -> object:
     """An empty or whitespace-only string means absent, not ''."""
     if isinstance(value, str) and not value.strip():
@@ -921,8 +930,8 @@ class SyncStatusV2Response(_ContractModel):
     status: Literal["pending", "running", "completed", "partial", "failed", "deferred"]
     transaction_count: int
     error: str | None
-    started_at: AwareDatetime | None
-    completed_at: AwareDatetime | None
+    started_at: BrokerJobInstant | None
+    completed_at: BrokerJobInstant | None
     acked_at: UTCInstant | None
     results: list[ProviderSourceResult]
 

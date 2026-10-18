@@ -52,9 +52,10 @@ def test_stg_ofx_transactions_translates_to_canonical_account_id(
         """
         INSERT INTO raw.ofx_transactions
             (source_transaction_id, account_id, transaction_type, date_posted,
+             date_posted_source_date,
              amount, source_file, extracted_at, loaded_at, import_id,
              source_type, source_origin)
-        VALUES ('fitid-001', ?, 'DEBIT', CURRENT_TIMESTAMP,
+        VALUES ('fitid-001', ?, 'DEBIT', TIMESTAMPTZ '2024-01-31 00:00:00+00', DATE '2024-01-31',
                 -10.00, '/tmp/test.ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                 'imp-ofx-txn-001', 'ofx', 'test_bank_ofx_txn')
         """,  # test fixture
@@ -251,8 +252,9 @@ def test_stg_ofx_balances_translates_to_canonical_account_id(
         """
         INSERT INTO raw.ofx_balances
             (account_id, statement_end_date, ledger_balance, ledger_balance_date,
+             statement_end_source_date, ledger_balance_source_date,
              source_file, extracted_at, loaded_at, import_id, source_type, source_origin)
-        VALUES (?, '2024-01-31', 1000.00, '2024-01-31',
+        VALUES (?, '2024-01-31', 1000.00, '2024-01-31', DATE '2024-01-31', DATE '2024-01-31',
                 '/tmp/test.ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                 'imp-bal-001', 'ofx', 'test_bank_ofx_bal')
         """,  # test fixture

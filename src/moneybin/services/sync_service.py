@@ -491,12 +491,12 @@ class SyncService:
                 "Sync source metadata does not match the accepted result"
             )
         # Validate provider payload shapes before any mutations; never expose Pydantic input dumps.
-        plaid_data: dict[UUID, PlaidSyncDataResponse] = {}
+        plaid_data: dict[tuple[int, int], PlaidSyncDataResponse] = {}
         try:
-            for source in data.sources:
+            for source_index, source in enumerate(data.sources):
                 if isinstance(source, PlaidSource):
-                    for batch in source.batches:
-                        plaid_data[batch.batch_id] = (
+                    for batch_index, batch in enumerate(source.batches):
+                        plaid_data[source_index, batch_index] = (
                             PlaidSyncDataResponse.model_validate(batch.payload)
                         )
         except ValidationError:
@@ -523,7 +523,9 @@ class SyncService:
         references: list[SyncJobSource] = []
         self.db.begin()
         try:
-            for source, source_result in zip(data.sources, expected, strict=True):
+            for source_index, (source, source_result) in enumerate(
+                zip(data.sources, expected, strict=True)
+            ):
                 item_ids: set[str] = set()
                 if isinstance(source, SimpleFINSource):
                     loaded = SimpleFINExtractor(self.db).load(
@@ -536,8 +538,8 @@ class SyncService:
                     result.balances_loaded += loaded.balances
                     source_result.outcomes = loaded.outcomes
                 else:
-                    for batch in source.batches:
-                        native = plaid_data[batch.batch_id]
+                    for batch_index, batch in enumerate(source.batches):
+                        native = plaid_data[source_index, batch_index]
                         item_ids.update(
                             self.loader.build_account_to_item_map(native).values()
                         )

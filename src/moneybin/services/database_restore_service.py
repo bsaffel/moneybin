@@ -28,13 +28,32 @@ def _require_snapshot(path: Path) -> None:
         )
 
 
-def _copy_exclusive(source: Path, target: Path) -> None:
+def _unlink_owned(path: Path, identity: os.stat_result) -> None:
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+        path.unlink()
+        _sync_directory(path.parent)
+
+
+def _copy_exclusive(
+    source: Path, target: Path, *, remove_on_failure: bool = False
+) -> os.stat_result:
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as output, source.open("rb") as input_file:
-        shutil.copyfileobj(input_file, output)
-        output.flush()
-        os.fsync(output.fileno())
-    _sync_directory(target.parent)
+    identity = os.fstat(fd)
+    try:
+        with os.fdopen(fd, "wb") as output, source.open("rb") as input_file:
+            shutil.copyfileobj(input_file, output)
+            output.flush()
+            os.fsync(output.fileno())
+        _sync_directory(target.parent)
+    except BaseException:
+        if remove_on_failure:
+            _unlink_owned(target, identity)
+        raise
+    return identity
 
 
 def _sync_directory(path: Path) -> None:
@@ -101,33 +120,38 @@ def restore_encrypted_database(
             if destination.exists()
             else None
         )
-        _copy_exclusive(source, candidate)
-        with Database(candidate, read_only=True, secret_store=secret_store):
-            pass
-        if _fingerprint(candidate) != source_fingerprint:
-            raise ValueError("copy_verification_failed")
-        if destination_lease is None:
-            # link is an atomic create-if-absent: a concurrent creator wins
-            # without its bytes being overwritten.
-            with exclusive_source(candidate) as candidate_lease:
-                candidate_lease.publish(destination)
-            return None
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        _copy_exclusive(destination, backup_path)
-        if _fingerprint(backup_path) != destination_lease.fingerprint:
-            raise ValueError("copy_verification_failed")
-        _write_journal(
-            journal,
-            {
-                "source_fingerprint": destination_lease.fingerprint,
-                "candidate_fingerprint": source_fingerprint,
-                "backup_path": str(backup_path.resolve()),
-            },
-        )
-        destination_lease.promote(candidate, fingerprint=source_fingerprint)
-        journal.unlink()
-        _sync_directory(destination.parent)
-        return backup_path
+        candidate_identity = _copy_exclusive(source, candidate, remove_on_failure=True)
+        try:
+            with Database(candidate, read_only=True, secret_store=secret_store):
+                pass
+            if _fingerprint(candidate) != source_fingerprint:
+                raise ValueError("copy_verification_failed")
+            if destination_lease is None:
+                # link is an atomic create-if-absent: a concurrent creator wins
+                # without its bytes being overwritten.
+                with exclusive_source(candidate) as candidate_lease:
+                    candidate_lease.publish(destination)
+                return None
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            _copy_exclusive(destination, backup_path)
+            if _fingerprint(backup_path) != destination_lease.fingerprint:
+                raise ValueError("copy_verification_failed")
+            _write_journal(
+                journal,
+                {
+                    "source_fingerprint": destination_lease.fingerprint,
+                    "candidate_fingerprint": source_fingerprint,
+                    "backup_path": str(backup_path.resolve()),
+                },
+            )
+            destination_lease.promote(candidate, fingerprint=source_fingerprint)
+            journal.unlink()
+            _sync_directory(destination.parent)
+            return backup_path
+        finally:
+            # Once journaled, the candidate belongs to the recovery protocol.
+            if not journal.exists():
+                _unlink_owned(candidate, candidate_identity)
 
 
 def recover_restore(destination: Path) -> None:

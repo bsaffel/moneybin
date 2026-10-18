@@ -13,9 +13,10 @@ from typing import Any, Self, cast
 from uuid import UUID
 
 import polars as pl
-from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from moneybin.connectors.sync_models import (
+    BrokerJobInstant,
     JobTerminalStatus,
     ProviderBatch,
     ScopeOutcome,
@@ -53,8 +54,8 @@ class SimpleFINJobContext(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     status: JobTerminalStatus
-    started_at: AwareDatetime
-    completed_at: AwareDatetime
+    started_at: BrokerJobInstant
+    completed_at: BrokerJobInstant
 
     @model_validator(mode="after")
     def _ordered(self) -> Self:

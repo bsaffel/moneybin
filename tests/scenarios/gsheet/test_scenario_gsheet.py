@@ -15,7 +15,7 @@ file, not by running the pipeline. See ``.claude/rules/testing.md``
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +122,7 @@ def _seed_ofx_rows(db: Database, account_id: str, rows: list[dict[str, str]]) ->
             "date_posted": datetime.fromisoformat(r["transaction_date"]).replace(
                 tzinfo=UTC
             ),
+            "date_posted_source_date": date.fromisoformat(r["transaction_date"]),
             "amount": pl.Decimal(18, 2),  # placeholder for typing — overwritten below
             "payee": r["payee"],
             "memo": None,

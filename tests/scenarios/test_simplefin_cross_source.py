@@ -112,9 +112,11 @@ def seed_other_source(db: Database, kind: str) -> None:
             (account_id, account_type, source_type, source_origin, source_file, extracted_at)
             VALUES ('other', 'CHECKING', 'ofx', 'bank', 'statement.qfx', CURRENT_TIMESTAMP)""")
         db.execute("""INSERT INTO raw.ofx_transactions
-            (source_transaction_id, account_id, date_posted, amount, payee,
+            (source_transaction_id, account_id, date_posted, date_posted_source_date,
+             amount, payee,
              source_type, source_origin, source_file, currency_code)
-            VALUES ('statement', 'other', '2026-09-20', -12.30, 'Synthetic purchase',
+            VALUES ('statement', 'other', '2026-09-20', '2026-09-20',
+                    -12.30, 'Synthetic purchase',
                     'ofx', 'bank', 'statement.qfx', 'USD')""")
     elif kind == "plaid":
         db.execute("""INSERT INTO raw.plaid_accounts

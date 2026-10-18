@@ -365,7 +365,9 @@ source offsets at this boundary. Native payloads remain unchanged.
 Plaid's nested `metadata.synced_at` obeys the same clock-skew bound before
 extraction; its historical instant remains independent of the batch fetch time.
 SimpleFIN history `observed_at` obeys the same five-minute bound and requires
-UTC; historical snapshots have no age limit. Acknowledged history intervals
+UTC; historical snapshots have no age limit. Broker job start and completion
+timestamps obey the same bound before receipt ingestion, preserving their
+source offsets and historical replay. Acknowledged history intervals
 contain only complete UTC days, ending no later than the current UTC midnight.
 
 Both protocol versions derive display-ready institution labels with the shared

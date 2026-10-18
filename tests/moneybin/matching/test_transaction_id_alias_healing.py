@@ -236,13 +236,15 @@ def _load_ofx_row(
         """
         INSERT INTO raw.ofx_transactions (
             source_transaction_id, account_id, transaction_type, date_posted,
+            date_posted_source_date,
             amount, payee, source_file, extracted_at, loaded_at, import_id,
             source_type, source_origin, currency_code
-        ) VALUES (?, ?, 'DEBIT', ?, ?, ?, 'statement.qfx', ?, ?, ?, 'ofx', ?, 'USD')
+        ) VALUES (?, ?, 'DEBIT', ?, ?, ?, ?, 'statement.qfx', ?, ?, ?, 'ofx', ?, 'USD')
         """,
         [
             source_transaction_id,
             _OFX_ACCOUNT_KEY,
+            txn_date,
             txn_date,
             Decimal(amount),
             description,

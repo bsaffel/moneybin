@@ -3,8 +3,11 @@ CREATE TABLE IF NOT EXISTS raw.ofx_balances (
     account_id VARCHAR, -- Account this balance snapshot belongs to; foreign key to raw.ofx_accounts; part of primary key
     statement_start_date TIMESTAMPTZ, -- Start of the statement period covered by this OFX file
     statement_end_date TIMESTAMPTZ, -- End of the statement period covered by this OFX file; part of primary key
+    statement_start_source_date DATE, -- Calendar date stated by DTSTART before UTC normalization
+    statement_end_source_date DATE, -- Calendar date stated by DTEND before UTC normalization
     ledger_balance DECIMAL(18, 2), -- OFX LEDGERBAL: settled balance including pending items
     ledger_balance_date TIMESTAMPTZ, -- OFX DTASOF for the ledger balance snapshot
+    ledger_balance_source_date DATE, -- Calendar date stated by LEDGERBAL DTASOF before UTC normalization
     available_balance DECIMAL(18, 2), -- OFX AVAILBAL: funds available for withdrawal; NULL when not provided
     source_file VARCHAR, -- Path to the OFX/QFX file this record was loaded from; part of primary key
     extracted_at TIMESTAMPTZ, -- Timestamp when the OFX file was parsed
