@@ -21,6 +21,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 from moneybin import error_codes
 from moneybin.errors import UserError, exception_origin
 from moneybin.seeds import INIT_CREATED_MODELS
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MODELS_DIR = Path(__file__).parent / "sqlmesh" / "models"
+_EXTERNAL_MODELS = Path(__file__).parent / "sqlmesh" / "external_models.yaml"
 
 # `MODEL (` header in .sql models: `name <schema>.<model>,` on its own line.
 _SQL_MODEL_NAME = re.compile(
@@ -124,6 +127,21 @@ def raw_tables_read_by_models() -> frozenset[str]:
             m.group(1).lower() for m in _RAW_TABLE_REF.finditer(path.read_text())
         )
     return frozenset(names)
+
+
+@lru_cache(maxsize=1)
+def external_model_names() -> frozenset[str]:
+    """``schema.table`` names ``external_models.yaml`` declares.
+
+    The only relations SQLMesh accepts as a restate root: naming an undeclared
+    table in ``restate_models`` fails the whole plan. Read from the file for
+    the same reason as :func:`registered_model_names`.
+    """
+    declared = yaml.safe_load(_EXTERNAL_MODELS.read_text(encoding="utf-8"))
+    return frozenset(
+        ".".join(str(entry["name"]).replace('"', "").lower().split(".")[-2:])
+        for entry in declared
+    )
 
 
 def _sql_model_node(text: str) -> tuple[str, _ModelNode] | None:

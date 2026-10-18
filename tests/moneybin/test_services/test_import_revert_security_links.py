@@ -6,10 +6,13 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.repositories.import_log_repo import REVERT_TABLES
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.import_service import ImportService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_service import UndoService
+from moneybin.tables import SECURITY_LINKS
+from tests.moneybin.db_helpers import spy_restate
 
 
 def _batch(db: Database, suffix: str) -> tuple[str, str]:
@@ -43,6 +46,18 @@ def _status(db: Database, link_id: str) -> str:
     ).fetchone()
     assert row is not None
     return str(row[0])
+
+
+def test_revert_restates_the_links_it_reversed_with_its_rows(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``app.security_links`` is a restating input the revert also writes."""
+    batch, link = _batch(db, "removed")
+    calls = spy_restate(monkeypatch, lambda: int(_status(db, link) == "reversed"))
+
+    ImportService(db).revert_confirmed(batch, verify=lambda _: None)
+
+    assert calls == [((*REVERT_TABLES["manual"], SECURITY_LINKS), "import revert", 1)]
 
 
 @pytest.mark.parametrize("actor", ["system", "cli", "mcp"])

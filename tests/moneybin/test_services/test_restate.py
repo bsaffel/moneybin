@@ -23,7 +23,11 @@ from moneybin.sqlmesh_registry import ModelPresence
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     EXCHANGE_RATES,
+    GSHEET_SEEDS,
     MATCH_DECISIONS,
+    PDF_SEEDS,
+    TABULAR_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
     TRANSACTION_NOTES,
     USER_REPORTS,
 )
@@ -88,6 +92,28 @@ def test_a_mixed_set_restates_only_its_restating_tables(
         db, [TRANSACTION_NOTES, ACCOUNT_SETTINGS], committed_change="setting"
     )
     restate_models.assert_called_once_with(["app.account_settings"])
+
+
+def test_a_table_no_external_model_declares_restates_nothing(
+    db: Database, restate_models: MagicMock
+) -> None:
+    """Only a declared external model can be a root; naming another fails the plan."""
+    restate_after_write(db, [GSHEET_SEEDS, PDF_SEEDS], committed_change="purge")
+    restate_models.assert_not_called()
+
+
+def test_a_revert_restates_only_its_declared_external_models(
+    db: Database, restate_models: MagicMock
+) -> None:
+    restate_after_write(
+        db,
+        [PDF_SEEDS, TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS],
+        committed_change="import revert",
+    )
+    restate_models.assert_called_once_with([
+        "raw.tabular_transactions",
+        "raw.tabular_accounts",
+    ])
 
 
 def test_an_unbuilt_warehouse_has_nothing_to_restate(

@@ -473,8 +473,11 @@ async def test_back_to_back_call_after_timeout_succeeds(
     # fake) registers only AFTER the connection opens. Too short a cap lets the
     # timeout fire mid-open — before the holder is set — so the reset is skipped
     # and hang_tool never releases. Production caps (30 s) dwarf the open, so
-    # this only bites the test; 1 s gives ample headroom under loaded CI.
-    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 1.0)
+    # this only bites the test. A 1 s cap lost that race on a loaded CI shard
+    # (observed: "timed out after 1.16s (cap 1.0s); no connection acquired"),
+    # so the cap carries a 3x margin over that and stays well under hang_tool's
+    # 10 s stop-wait, which is what makes a skipped reset observable.
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 3.0)
 
     @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def hang_tool() -> ResponseEnvelope[Any]:

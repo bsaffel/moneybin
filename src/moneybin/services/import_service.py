@@ -110,7 +110,9 @@ from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.tables import (
     IMPORTS,
     OFX_TRANSACTIONS,
+    SECURITY_LINKS,
     TABULAR_TRANSACTIONS,
+    TableRef,
 )
 from moneybin.utils.file import source_sha256
 
@@ -6891,6 +6893,20 @@ class ImportService:
         logger.info(
             f"Reverted import {import_id[:8]}...: {live.rows_to_delete} rows deleted"
         )
+        # Materialized models read these raw tables and app.security_links, so
+        # without a restate the reverted rows and the reversed links stay in
+        # every report until the next refresh. Last, so a failed rebuild leaves
+        # the revert itself intact; the error names `moneybin refresh`. A
+        # revert that changed nothing restates nothing.
+        changed: list[TableRef] = []
+        if live.rows_to_delete:
+            changed.extend(REVERT_TABLES[cast(str, live.source_type)])
+        if live.security_link_ids:
+            changed.append(SECURITY_LINKS)
+        if changed:
+            from moneybin.services.restate import restate_after_write
+
+            restate_after_write(self._db, changed, committed_change="import revert")
         return {"status": "reverted", "rows_deleted": live.rows_to_delete}
 
     # ------------------------------------------------------------------
