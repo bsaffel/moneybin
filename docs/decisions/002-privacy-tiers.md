@@ -109,6 +109,7 @@ The Local Only tier's promise — "nothing leaves this machine" — remains inta
 ## References
 
 - [ADR-017: Client-owned encryption and recovery](017-client-owned-encryption-and-recovery.md) -- Accepted encrypted-custody, device authorization, and recovery principles
-- [ADR-004](004-e2e-encryption.md) and [ADR-005](005-security-tradeoffs.md) -- Superseded encryption and threat-model proposals
+- [ADR-005: Security Tradeoffs](005-security-tradeoffs.md) -- Retained and clarified broker-processing trust boundary
+- [ADR-004](004-e2e-encryption.md) -- Superseded encryption proposal
 - [Plaid Integration Spec](../specs/sync-plaid.md) -- Implementation plan for Encrypted Sync
 - [Privacy & AI Trust](../specs/privacy-and-ai-trust.md) -- AI data flow tiers, consent model, and provider profiles

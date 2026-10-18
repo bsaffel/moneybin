@@ -2,11 +2,26 @@
 
 ## Status
 
-Accepted principles, 2026-10-18. Protocol design and implementation remain
-separate work. This supersedes the proposed designs in
-[ADR-004](004-e2e-encryption.md) and [ADR-005](005-security-tradeoffs.md).
-[ADR-009](009-encryption-key-management.md) continues to govern local database
-keys; this decision does not resolve its passphrase-mode persistence policy.
+Accepted principles, 2026-10-18. Multi-device protocol design and implementation
+remain separate work. The supersession scope is defined below; this decision
+does not replace every encryption contract.
+
+### Relationship to earlier decisions
+
+| Record or approach | What changes | What remains authoritative |
+|---|---|---|
+| [ADR-004](004-e2e-encryption.md) | Supersede its master-password-derived session-key scheme, password-coupled whole-data rotation, and no-recovery policy. | Client custody and encryption before durable broker storage remain principles; a library's appearance in the old proposal does not disqualify its selection by a later contract. |
+| [ADR-005](005-security-tradeoffs.md) | Correct end-to-end wording and blanket protection or deployment-verification claims. | Retain its broker-processing trust boundary: transient provider plaintext followed by encryption for the client. |
+| [ADR-009](009-encryption-key-management.md) | Clarify scope and the limits of a persisted derived key. | Local database key management; its passphrase persistence policy remains an unresolved decision. |
+| Client-owned sync-delivery contract | Do not reopen its selected cryptography or delivery lifecycle. | Its age/X25519 delivery format, encrypted recovery wrapper, and rotation/recovery rules govern bank delivery within that contract's scope. |
+| Historical sync-overview device enrollment | Replace login-only enrollment as authority to decrypt existing financial history. | The opaque broker API boundary remains; authenticated login is still required but is insufficient to recover decryption authority. |
+
+The sync-delivery contract supports recovering the same recipient key on
+another device. That creates another copy of the secret, not an independently
+revocable cryptographic recipient. Lost-device response requires session
+revocation and recipient rotation on a clean device. This remains a valid
+delivery boundary; it does not establish the future device-authorization or
+multi-device history-synchronization protocol described here.
 
 ## Context
 
@@ -94,12 +109,14 @@ decision. That review may propose another custody model, but changing this
 boundary requires an explicit decision covering security, migration, and user
 consent. It does not authorize a service-held recovery key today.
 
-Implementation still requires a reviewed key hierarchy, authenticated device
-enrollment and revocation protocol, recovery format, synchronization and
-conflict rules, secure delivery and replay handling, and platform choices.
-Independent security review and operational evidence are release gates. This
-ADR selects no new algorithms, parameters, wire format, or database schema,
-and makes no claim that these protections have shipped.
+The future multi-device history service still requires a reviewed key
+hierarchy, authenticated device enrollment and revocation protocol, recovery
+format, synchronization and conflict rules, secure delivery and replay
+handling, and platform choices. Existing bank-delivery mechanisms remain
+governed by their own contract; their reuse for shared history needs explicit
+design. Independent security review and operational evidence are release
+gates. This ADR selects no new algorithms, parameters, wire format, or database
+schema, and makes no claim that these protections have shipped.
 
 The local passphrase question remains separate: persisting a derived database
 key can permit decryption through keychain access without entering the

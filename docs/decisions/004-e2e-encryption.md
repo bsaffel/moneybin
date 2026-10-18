@@ -6,10 +6,12 @@ Superseded proposal by
 on 2026-10-18.
 
 The original proposal below is retained as history, not implementation
-authority. Its master-password/session-key scheme and broad protection claims
-were not accepted. In particular, the broker sees provider plaintext during
-processing; ADR-017 defines the narrower stored-data boundary and leaves the
-concrete multi-device protocol to separate design.
+authority. ADR-017 supersedes its master-password/session-key scheme,
+password-coupled whole-data rotation, and no-recovery policy. Client custody
+and encryption before durable broker storage remain principles. This does not
+invalidate age or other primitives independently selected by a later scoped
+contract. The broker sees provider plaintext during processing; the broad
+protection claims below must be read against ADR-005's clarified trust boundary.
 
 ## Context
 
