@@ -107,7 +107,7 @@ sequenceDiagram
     CLI->>DB: Provider extractor → raw.{provider}_* tables
     CLI->>DB: Handle removed transactions
     CLI->>Server: POST /sync/ack (best effort)
-    CLI->>DB: refresh cascade (SQLMesh apply) → prep → core
+    CLI->>DB: refresh cascade: SQLMesh apply → prep → core, then match, categorize, identity, rates
     CLI->>User: Summary: N transactions from M institutions
 ```
 
@@ -149,7 +149,7 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 - Provider-specific extractor parses JSON into provider-specific raw tables (e.g., `raw.plaid_*` for Plaid).
 - Extractor handles provider-specific semantics (e.g., Plaid's `removed_transactions` — deletes from raw).
 - After the raw writes are durable, client calls `POST /sync/ack` before transforming. Ack is best-effort: a failure is logged without failing the pull, leaving the broker cursor unadvanced so the next pull re-delivers a loss-free, deduplicated payload.
-- Runs the refresh cascade (a SQLMesh apply) to propagate through staging → core.
+- Runs the refresh cascade, the same steps `moneybin refresh` runs: the SQLMesh apply (its `transform` step) propagates the raw rows through staging → core, and the matching, categorization, identity-resolution, and rate-backfill steps run over the result.
 - Connection health remains server-authoritative and is read through `GET /institutions`.
 
 ---
