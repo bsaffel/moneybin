@@ -23,8 +23,8 @@ BalanceCLI = tuple[BalanceService, list[dict[str, bool]]]
 def balance_cli(db: Database) -> Iterator[BalanceCLI]:
     create_core_tables(db)
     db.execute("""INSERT INTO core.dim_accounts
-        (account_id, account_type, institution_name, source_type)
-        VALUES ('acct_a', 'CHECKING', 'Test Bank', 'ofx')""")
+        (account_id, account_type, institution_name, source_type, currency_code)
+        VALUES ('acct_a', 'CHECKING', 'Test Bank', 'ofx', 'USD')""")
     active: list[dict[str, bool]] = []
 
     @contextmanager
@@ -41,6 +41,46 @@ def balance_cli(db: Database) -> Iterator[BalanceCLI]:
 
 def invoke(runner: CliRunner, *args: str) -> Result:
     return runner.invoke(app, ["accounts", "balance", *args])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ascii_only,minus", [(True, "-"), (False, "−")])
+@pytest.mark.parametrize("operation", ["assert", "assertion-delete"])
+def test_confirmation_formats_balances_with_terminal_money_policy(
+    runner: CliRunner,
+    balance_cli: BalanceCLI,
+    ascii_only: bool,
+    minus: str,
+    operation: str,
+) -> None:
+    service, _ = balance_cli
+    service.assert_balance(
+        "acct_a", date(2026, 1, 31), Decimal("-1234.56"), actor="cli"
+    )
+    policy = replace(
+        get_terminal_policy(), interactive=True, ascii=ascii_only, minus=minus
+    )
+    args = [operation, "acct_a", "2026-01-31"]
+    if operation == "assert":
+        args.extend(["--", "-2345.67"])
+    with (
+        patch(
+            "moneybin.cli.commands.accounts.balance.get_terminal_policy",
+            return_value=policy,
+        ),
+        patch("typer.confirm", return_value=False),
+    ):
+        result = invoke(runner, *args)
+    assert result.exit_code == 0, result.output
+    before = next(
+        line for line in result.output.splitlines() if "Before balance" in line
+    )
+    after = next(line for line in result.output.splitlines() if "After balance" in line)
+    assert f"{minus}1,234.56 USD" in before
+    if operation == "assert":
+        assert f"{minus}2,345.67 USD" in after
+    else:
+        assert after.split(":", 1)[1].strip() == "absent"
 
 
 @pytest.mark.unit
@@ -63,7 +103,7 @@ def test_preview_and_noop_use_the_stored_decimal_amount(
     with (
         patch(
             "moneybin.cli.commands.accounts.balance.get_terminal_policy",
-            return_value=replace(get_terminal_policy(), interactive=True),
+            return_value=replace(get_terminal_policy(), interactive=True, minus="-"),
         ),
         patch(
             "typer.confirm",

@@ -92,9 +92,17 @@ def _confirm_assertion_change(
     pairs = [
         ("Account", before.account_id),
         ("Date", str(before.assertion_date)),
-        ("Before balance", f"{before.balance} {currency}"),
+        (
+            "Before balance",
+            f"{format_money(before.balance, 'balance', minus=policy.minus)} {currency}",
+        ),
         ("Before notes", repr(before.notes)),
-        ("After balance", "absent" if balance is None else f"{balance} {currency}"),
+        (
+            "After balance",
+            "absent"
+            if balance is None
+            else f"{format_money(balance, 'balance', minus=policy.minus)} {currency}",
+        ),
         ("After notes", "absent" if balance is None else repr(notes)),
     ]
     emit_human_result(
