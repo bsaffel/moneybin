@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
 from dataclasses import replace
 from decimal import Decimal
 from unittest.mock import patch
@@ -34,8 +33,8 @@ from moneybin.tables import (
     GSHEET_SEEDS,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
-    TableRef,
 )
+from tests.moneybin.db_helpers import spy_restate
 
 
 def _confirmation_count(outcome: str) -> float:
@@ -1655,23 +1654,12 @@ def test_purge_leaves_another_channels_rows_alone(
     assert survivors == (1, 1)
 
 
-def _spy_restate(
-    monkeypatch: pytest.MonkeyPatch, db: Database, source_origin: str
-) -> list[tuple[tuple[TableRef, ...], str, int]]:
-    """Record each restate call with the connection's raw rows left at that moment."""
-    calls: list[tuple[tuple[TableRef, ...], str, int]] = []
-
-    def spy(
-        _db: Database, inputs: Collection[TableRef], *, committed_change: str
-    ) -> None:
-        row = db.execute(
-            "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_origin = ?",
-            [source_origin],
-        ).fetchone()
-        calls.append((tuple(inputs), committed_change, int(row[0]) if row else -1))
-
-    monkeypatch.setattr("moneybin.services.restate.restate_after_write", spy)
-    return calls
+def _rows_left(db: Database, source_origin: str) -> int:
+    row = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_origin = ?",
+        [source_origin],
+    ).fetchone()
+    return int(row[0]) if row else -1
 
 
 def test_purge_restates_the_tables_it_deleted_from_after_the_commit(
@@ -1684,11 +1672,29 @@ def test_purge_restates_the_tables_it_deleted_from_after_the_commit(
     """
     svc, sheets, _ = _make_service(in_memory_db)
     connection_id = _connect_multi_account(svc, sheets, "ss-purge-restate")
-    calls = _spy_restate(monkeypatch, in_memory_db, connection_id)
+    calls = spy_restate(monkeypatch, lambda: _rows_left(in_memory_db, connection_id))
 
     svc.disconnect(connection_id, purge=True)
 
     assert calls == [((TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS), "purge", 0)]
+
+
+def test_a_purge_that_deletes_nothing_restates_nothing(
+    in_memory_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection whose rows are already gone changes no model input."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-empty")
+    for table in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
+        in_memory_db.execute(
+            f"DELETE FROM {table.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
+            [connection_id],
+        )
+    calls = spy_restate(monkeypatch, lambda: _rows_left(in_memory_db, connection_id))
+
+    svc.disconnect(connection_id, purge=True)
+
+    assert calls == []
 
 
 def test_a_seed_purge_names_the_seed_table_it_emptied(
@@ -1706,7 +1712,7 @@ def test_a_seed_purge_names_the_seed_table_it_emptied(
         )
     )
     connection_id = result.connection.connection_id
-    calls = _spy_restate(monkeypatch, in_memory_db, connection_id)
+    calls = spy_restate(monkeypatch, lambda: _rows_left(in_memory_db, connection_id))
 
     svc.disconnect(connection_id, purge=True)
 

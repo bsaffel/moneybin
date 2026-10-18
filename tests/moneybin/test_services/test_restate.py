@@ -94,15 +94,15 @@ def test_a_mixed_set_restates_only_its_restating_tables(
     restate_models.assert_called_once_with(["app.account_settings"])
 
 
-def test_a_raw_table_no_model_reads_restates_nothing(
+def test_a_table_no_external_model_declares_restates_nothing(
     db: Database, restate_models: MagicMock
 ) -> None:
-    """An unread raw table is not an external model; naming it fails the plan."""
+    """Only a declared external model can be a root; naming another fails the plan."""
     restate_after_write(db, [GSHEET_SEEDS, PDF_SEEDS], committed_change="purge")
     restate_models.assert_not_called()
 
 
-def test_a_revert_restates_only_the_raw_tables_a_model_reads(
+def test_a_revert_restates_only_its_declared_external_models(
     db: Database, restate_models: MagicMock
 ) -> None:
     restate_after_write(

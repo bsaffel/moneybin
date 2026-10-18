@@ -718,10 +718,12 @@ class GSheetConnectionService:
         # The materialized transaction and account merges read these raw
         # tables, so without a restate the purged rows stay in every report
         # until the next refresh. Last, so a failed rebuild leaves the purge
-        # itself intact; the error names `moneybin refresh`.
-        from moneybin.services.restate import restate_after_write
+        # itself intact; the error names `moneybin refresh`. A purge that
+        # deleted no raw row changed no model input.
+        if live_plan.rows_to_delete:
+            from moneybin.services.restate import restate_after_write
 
-        restate_after_write(self._db, deleted_from, committed_change="purge")
+            restate_after_write(self._db, deleted_from, committed_change="purge")
 
     def reconnect(
         self,

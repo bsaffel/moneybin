@@ -65,15 +65,15 @@ def restate_after_write(
 ) -> None:
     """Rebuild every materialized model that reads one of *inputs*.
 
-    Read-through inputs are dropped, and so is a ``raw`` table no model reads
-    (``raw.gsheet_seeds``, ``raw.pdf_seeds``), so a caller that wrote a mixed
-    set may pass all of it. A warehouse that was never built has nothing to
-    rebuild. Raises the coded ``REFRESH_MODEL_FAILED`` error when the rebuild
-    fails; the write itself has already committed.
+    Read-through inputs are dropped, and so is a table no external model
+    declares (``raw.gsheet_seeds``, ``raw.pdf_seeds``), so a caller that wrote
+    a mixed set may pass all of it. A warehouse that was never built has
+    nothing to rebuild. Raises the coded ``REFRESH_MODEL_FAILED`` error when
+    the rebuild fails; the write itself has already committed.
     """
     roots = list(
         dict.fromkeys(
-            t.full_name for t in inputs if restates(t) and _read_by_a_model(t)
+            t.full_name for t in inputs if restates(t) and _is_external_model(t)
         )
     )
     if not roots:
@@ -99,15 +99,9 @@ def restate_after_write(
     raise _committed_refresh_error(committed_change)
 
 
-def _read_by_a_model(table: TableRef) -> bool:
-    """Whether SQLMesh can take *table* as a restate root.
-
-    A ``raw`` table no model reads is not an external model, and naming it
-    fails the whole plan; ``app`` inputs are already filtered by the registry.
-    """
-    if table.schema != "raw":
-        return True
-    return table.name in sqlmesh_registry.raw_tables_read_by_models()
+def _is_external_model(table: TableRef) -> bool:
+    """Whether SQLMesh can take *table* as a restate root: only a declared one."""
+    return table.full_name in sqlmesh_registry.external_model_names()
 
 
 def _has_prod_environment(db: Database) -> bool:
