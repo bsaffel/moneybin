@@ -109,7 +109,7 @@ dependencies = [
     "pillow>=12.3.0",
     "anyio>=4.15.1",
     "soupsieve>=2.9.2",
-    "starlette>=1.7.0",
+    "starlette>=1.8.0",
     # Secret management and key derivation
     "keyring>=25.7.0",
     "argon2-cffi>=25.1.0",
