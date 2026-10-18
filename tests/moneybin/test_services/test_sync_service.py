@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,7 @@ from moneybin.metrics.registry import SYNC_DISCONNECT_OUTCOMES
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services import sync_service
 from moneybin.services.sync_service import SyncService
+from moneybin.tables import ACCOUNT_LINKS, SECURITY_PRICES, TableRef
 
 FIXTURE = (
     Path(__file__).parent.parent
@@ -2007,6 +2009,33 @@ def test_purge_reaches_an_item_the_server_no_longer_lists(
     mock_client.disconnect.assert_not_called()
     assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 0
     assert _raw_counts(db, _OTHER_ITEM)["plaid_transactions"] == 1
+
+
+def test_purge_restates_the_tables_it_deleted_from_after_the_commit(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The materialized models read the purged raw rows and the reversed links."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    calls: list[tuple[tuple[TableRef, ...], str, int]] = []
+
+    def spy(
+        _db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        remaining = _raw_counts(db, _CHASE_ITEM)["plaid_transactions"]
+        calls.append((tuple(inputs), committed_change, remaining))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", spy)
+
+    service.purge_confirmed(
+        provider_item_id=_CHASE_ITEM, verify=lambda _live: None, actor="cli"
+    )
+
+    purged = sync_service._PURGE_TABLES  # type: ignore[reportPrivateUsage]  # the list the purge deletes from
+    assert calls == [((ACCOUNT_LINKS, *purged, SECURITY_PRICES), "purge", 0)]
 
 
 def test_plan_purge_refuses_an_item_with_neither_connection_nor_rows(

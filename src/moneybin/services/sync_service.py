@@ -775,7 +775,7 @@ class SyncService:
         restate_after_write(
             self.db,
             (ACCOUNT_LINKS, *_PURGE_TABLES, SECURITY_PRICES),
-            committed_change="account link",
+            committed_change="purge",
         )
         return live
 

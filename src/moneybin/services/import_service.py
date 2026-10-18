@@ -6891,6 +6891,17 @@ class ImportService:
         logger.info(
             f"Reverted import {import_id[:8]}...: {live.rows_to_delete} rows deleted"
         )
+        # The materialized transaction and account merges read these raw
+        # tables, so without a restate the reverted rows stay in every report
+        # until the next refresh. Last, so a failed rebuild leaves the revert
+        # itself intact; the error names `moneybin refresh`.
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(
+            self._db,
+            REVERT_TABLES[cast(str, live.source_type)],
+            committed_change="import revert",
+        )
         return {"status": "reverted", "rows_deleted": live.rows_to_delete}
 
     # ------------------------------------------------------------------

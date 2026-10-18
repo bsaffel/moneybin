@@ -7,13 +7,17 @@ tabular source_types. ``not_found`` ships with a ``reason`` field.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from moneybin.database import Database
-from moneybin.repositories.import_log_repo import ImportLogRepo
+from moneybin.repositories.import_log_repo import REVERT_TABLES, ImportLogRepo
 from moneybin.services.import_service import ImportService
 from moneybin.services.investment_service import InvestmentService
+from moneybin.tables import TableRef
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -274,3 +278,84 @@ def test_plan_revert_of_unknown_batch_is_not_revertable(db: Database) -> None:
     assert not plan.revertable
     assert plan.outcome == "not_found"
     assert plan.as_result()["status"] == "not_found"
+
+
+def _spy_restate(
+    monkeypatch: pytest.MonkeyPatch, db: Database, import_id: str
+) -> list[tuple[tuple[TableRef, ...], str, int]]:
+    """Record each restate call with the batch's raw rows left at that moment."""
+    calls: list[tuple[tuple[TableRef, ...], str, int]] = []
+
+    def spy(
+        _db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        row = db.execute(
+            "SELECT COUNT(*) FROM raw.tabular_transactions WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+        calls.append((tuple(inputs), committed_change, int(row[0]) if row else -1))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", spy)
+    return calls
+
+
+def _complete_tabular_batch(db: Database) -> str:
+    import_id = ImportLogRepo(db).begin_import(
+        source_file="/tmp/test.csv",  # noqa: S108  # test fixture path
+        source_type="csv",
+        source_origin="tiller",
+        account_names=["checking"],
+    )
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions (
+            transaction_id, account_id, transaction_date, amount, description,
+            source_file, source_type, source_origin, import_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            "csv_restate",
+            "checking",
+            "2026-01-01",
+            "-10.00",
+            "X",
+            "/tmp/test.csv",  # noqa: S108  # test fixture path
+            "csv",
+            "tiller",
+            import_id,
+        ],
+    )
+    ImportLogRepo(db).finalize_import(
+        import_id, status="complete", rows_total=1, rows_imported=1
+    )
+    return import_id
+
+
+def test_revert_restates_the_tables_it_deleted_from_after_the_commit(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The materialized merges read ``raw.tabular_*``.
+
+    Without a restate the reverted rows stay in every report until the next
+    refresh, while the receipt says the import is gone.
+    """
+    import_id = _complete_tabular_batch(db)
+    calls = _spy_restate(monkeypatch, db, import_id)
+
+    result = ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
+
+    assert result["status"] == "reverted"
+    assert calls == [(tuple(REVERT_TABLES["csv"]), "import revert", 0)]
+
+
+def test_a_revert_that_deletes_nothing_restates_nothing(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import_id = _complete_tabular_batch(db)
+    ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
+    calls = _spy_restate(monkeypatch, db, import_id)
+
+    result = ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
+
+    assert result == {"status": "already_reverted"}
+    assert calls == []
