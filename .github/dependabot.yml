@@ -1,6 +1,8 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # `uv`, not `pip`: the pip ecosystem edits pyproject.toml alone, leaving
+  # uv.lock stale, so every `--locked` install in CI refused the PR.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
