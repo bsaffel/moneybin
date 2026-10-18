@@ -59,8 +59,8 @@ def transactions_create(
         None, "--currency", help="ISO 4217 currency code"
     ),
     yes: bool = typer.Option(
-        False, "--yes", "-y", help="Skip confirmation"
-    ),  # no interactive prompt yet; flag reserved for parity
+        False, "--yes", "-y", help="Compatibility flag; creation never prompts"
+    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Create a single manual transaction."""

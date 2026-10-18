@@ -7,6 +7,7 @@ All delegate to BalanceService — no business logic here.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date as _date
 from decimal import Decimal
 
@@ -34,6 +35,7 @@ from moneybin.cli.utils import (
     handle_cli_errors,
 )
 from moneybin.database import get_database
+from moneybin.errors import UserError, error_codes
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
     BalanceObservationListPayload,
@@ -41,6 +43,7 @@ from moneybin.privacy.payloads.balances import (
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.balance_service import (
+    BalanceAssertionSnapshot,
     BalanceService,
     balances_display_currency,
 )
@@ -51,6 +54,62 @@ app = typer.Typer(
     help="Balance assertions, history, and reconciliation",
     no_args_is_help=True,
 )
+
+
+def _assertion_drift_check(
+    expected: BalanceAssertionSnapshot | None,
+) -> Callable[[BalanceAssertionSnapshot | None], None]:
+    """Bind the write to the assertion read before confirmation."""
+
+    def verify(current: BalanceAssertionSnapshot | None) -> None:
+        if current != expected:
+            raise UserError(
+                "The balance assertion changed while confirmation was open. "
+                "Nothing was written. Re-run the command to review it again.",
+                code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+            )
+
+    return verify
+
+
+def _confirm_assertion_change(
+    before: BalanceAssertionSnapshot,
+    *,
+    balance: Decimal | None,
+    notes: str | None,
+    currency_code: str | None,
+) -> None:
+    """Preview replacement or removal after releasing the read connection."""
+    policy = get_terminal_policy()
+    if not policy.interactive:
+        typer.echo(
+            "Changing an existing balance assertion requires an interactive "
+            "terminal. Use --yes after reviewing the assertion.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    currency = currency_label(currency_code)
+    pairs = [
+        ("Account", before.account_id),
+        ("Date", str(before.assertion_date)),
+        ("Before balance", f"{before.balance} {currency}"),
+        ("Before notes", repr(before.notes)),
+        ("After balance", "absent" if balance is None else f"{balance} {currency}"),
+        ("After notes", "absent" if balance is None else repr(notes)),
+    ]
+    emit_human_result(
+        build_summary(pairs, title="Balance assertion change", terminal=policy),
+        policy=policy,
+        finite_read=False,
+    )
+    question = (
+        "Delete this balance assertion?"
+        if balance is None
+        else "Replace this balance assertion?"
+    )
+    if not typer.confirm(question, default=False, err=True):
+        typer.echo("Cancelled — nothing was changed.", err=True)
+        raise typer.Exit(0)
 
 
 def _emit_observations(
@@ -162,21 +221,42 @@ def accounts_balance_assert(
     amount: str = typer.Argument(..., help="Balance amount as decimal"),
     notes: str | None = typer.Option(None, "--notes"),
     yes: bool = typer.Option(
-        False, "--yes", "-y"
-    ),  # accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation when replacing an existing assertion",
+    ),
 ) -> None:
     """Assert a balance for an account on a specific date."""
     parsed_date: _date
     with handle_cli_errors():
+        parsed_date = _date.fromisoformat(assertion_date)
+        parsed_amount = Decimal(amount)
+        verify = None
+        if not yes:
+            with get_database(read_only=True) as db:
+                service = BalanceService(db)
+                parsed_amount = service.prepare_assertion_balance(parsed_amount)
+                before = service.get_assertion_snapshot(account_id, parsed_date)
+                row = service.get_assertion(account_id, parsed_date)
+            if before is not None and (
+                before.balance != parsed_amount or before.notes != notes
+            ):
+                _confirm_assertion_change(
+                    before,
+                    balance=parsed_amount,
+                    notes=notes,
+                    currency_code=row.currency_code if row is not None else None,
+                )
+            verify = _assertion_drift_check(before)
         with get_database(read_only=False) as db:
-            parsed_date = _date.fromisoformat(assertion_date)
-            parsed_amount = Decimal(amount)
             result = BalanceService(db).assert_balance(
                 account_id=account_id,
                 assertion_date=parsed_date,
                 balance=parsed_amount,
                 notes=notes,
                 actor="cli",
+                verify=verify,
             )
     policy = get_terminal_policy()
     emit_human_result(
@@ -251,16 +331,33 @@ def accounts_balance_assertion_delete(
     account_id: str = typer.Argument(...),
     assertion_date: str = typer.Argument(..., help="ISO date (YYYY-MM-DD)"),
     yes: bool = typer.Option(
-        False, "--yes", "-y"
-    ),  # accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation when deleting an existing assertion",
+    ),
 ) -> None:
     """Delete a balance assertion. Silent no-op if no row exists."""
     parsed_date: _date
     with handle_cli_errors():
+        parsed_date = _date.fromisoformat(assertion_date)
+        verify = None
+        if not yes:
+            with get_database(read_only=True) as db:
+                service = BalanceService(db)
+                before = service.get_assertion_snapshot(account_id, parsed_date)
+                row = service.get_assertion(account_id, parsed_date)
+            if before is not None:
+                _confirm_assertion_change(
+                    before,
+                    balance=None,
+                    notes=None,
+                    currency_code=row.currency_code if row is not None else None,
+                )
+            verify = _assertion_drift_check(before)
         with get_database(read_only=False) as db:
-            parsed_date = _date.fromisoformat(assertion_date)
             deleted = BalanceService(db).delete_assertion(
-                account_id, parsed_date, actor="cli"
+                account_id, parsed_date, actor="cli", verify=verify
             )
     emit_human_result(
         compose_human_result([
