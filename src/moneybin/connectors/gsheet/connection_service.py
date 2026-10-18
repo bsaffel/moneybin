@@ -50,7 +50,12 @@ from moneybin.services.import_confirmation import (
     MappingValidationError,
     validate_partial_mapping,
 )
-from moneybin.tables import GSHEET_SEEDS, TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
+from moneybin.tables import (
+    GSHEET_SEEDS,
+    TABULAR_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
+    TableRef,
+)
 from moneybin.temporal import format_utc, parse_utc
 
 logger = logging.getLogger(__name__)
@@ -657,7 +662,9 @@ class GSheetConnectionService:
             if verify is not None:
                 verify(live_plan)
             conn = live_plan.connection_before_state
+            deleted_from: tuple[TableRef, ...]
             if conn["adapter"] == "seed":
+                deleted_from = (GSHEET_SEEDS,)
                 alias = conn.get("alias")
                 if alias:
                     # Defense-in-depth: re-validate the alias before
@@ -683,6 +690,7 @@ class GSheetConnectionService:
                     [connection_id],
                 )
             else:
+                deleted_from = (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS)
                 # Scoped by the (source_type, source_origin) pair both tables
                 # treat as account identity. source_origin alone is not unique
                 # across channels — a file import naming its origin the same
@@ -708,6 +716,15 @@ class GSheetConnectionService:
             # transaction. Matches BaseRepo._transaction / MatchApplier._transaction.
             self._db.rollback()
             raise
+        # The materialized transaction and account merges read these raw
+        # tables, so without a restate the purged rows stay in every report
+        # until the next refresh. Last, so a failed rebuild leaves the purge
+        # itself intact; the error names `moneybin refresh`. A purge that
+        # deleted no raw row changed no model input.
+        if live_plan.rows_to_delete:
+            from moneybin.services.restate import restate_after_write
+
+            restate_after_write(self._db, deleted_from, committed_change="purge")
 
     def reconnect(
         self,

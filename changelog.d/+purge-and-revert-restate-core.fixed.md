@@ -1,0 +1,1 @@
+`gsheet disconnect --purge` and `import revert` now rebuild the materialized transaction and account models once their delete commits, so the purged or reverted rows leave reports and `accounts list` immediately instead of on the next `moneybin refresh`.

@@ -528,7 +528,9 @@ def gsheet_disconnect(
 
     Mutation surface: writes app.gsheet_connections.status (audited). With
     purge=True also deletes raw.gsheet_seeds rows (seed adapter) or
-    raw.tabular_transactions rows (transactions adapter) for this connection.
+    raw.tabular_transactions and raw.tabular_accounts rows (transactions
+    adapter) for this connection, then rebuilds the materialized models those
+    rows feed.
     """
     with _build_connection_service() as service:
         service.disconnect(connection_id, purge=purge, actor="mcp")

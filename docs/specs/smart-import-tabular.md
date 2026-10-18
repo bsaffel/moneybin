@@ -618,8 +618,11 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
 
 **Import reverting:** `moneybin import revert <import-id>` deletes all
 `raw.tabular_transactions` and `raw.tabular_accounts` rows matching that
-`import_id`, marks the import log record as `reverted`, and triggers a SQLMesh
-re-run to propagate the removal through staging and core. This is critical for
+`import_id`, marks the import log record as `reverted`, and once the delete
+commits restates the materialized models those rows feed, so the removal
+reaches core without a refresh step (a warehouse that was never built has
+nothing to restate; if the rebuild fails, the revert has still completed and
+the error names `moneybin refresh`). This is critical for
 user confidence during early adoption — importing the wrong file or with the
 wrong column mapping should be trivially recoverable, not a "wipe the database
 and start over" event. The revert operation is idempotent (reverting an already-

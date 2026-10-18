@@ -37,6 +37,8 @@ CommittedChange = Literal[
     "price",
     "lot selection",
     "manual transaction",
+    "purge",
+    "import revert",
 ]
 
 
@@ -63,12 +65,17 @@ def restate_after_write(
 ) -> None:
     """Rebuild every materialized model that reads one of *inputs*.
 
-    Read-through inputs are dropped, so a caller that wrote a mixed set may pass
-    all of it. A warehouse that was never built has nothing to rebuild. Raises
-    the coded ``REFRESH_MODEL_FAILED`` error when the rebuild fails; the write
-    itself has already committed.
+    Read-through inputs are dropped, and so is a table no external model
+    declares (``raw.gsheet_seeds``, ``raw.pdf_seeds``), so a caller that wrote
+    a mixed set may pass all of it. A warehouse that was never built has
+    nothing to rebuild. Raises the coded ``REFRESH_MODEL_FAILED`` error when
+    the rebuild fails; the write itself has already committed.
     """
-    roots = list(dict.fromkeys(t.full_name for t in inputs if restates(t)))
+    roots = list(
+        dict.fromkeys(
+            t.full_name for t in inputs if restates(t) and _is_external_model(t)
+        )
+    )
     if not roots:
         return
     label = ",".join(sorted(roots))
@@ -90,6 +97,11 @@ def restate_after_write(
         return
     _record(roots, "failed")
     raise _committed_refresh_error(committed_change)
+
+
+def _is_external_model(table: TableRef) -> bool:
+    """Whether SQLMesh can take *table* as a restate root: only a declared one."""
+    return table.full_name in sqlmesh_registry.external_model_names()
 
 
 def _has_prod_environment(db: Database) -> bool:

@@ -1988,7 +1988,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "respx", specifier = ">=0.23.1" },
     { name = "ruff", specifier = ">=0.17.0" },
-    { name = "sqlmesh", extras = ["lsp"], specifier = ">=0.236.2" },
+    { name = "sqlmesh", extras = ["lsp"], specifier = ">=0.236.3" },
     { name = "towncrier", specifier = ">=26.9.0,<27" },
 ]
 server = [
@@ -3584,7 +3584,7 @@ wheels = [
 
 [[package]]
 name = "sqlmesh"
-version = "0.236.2"
+version = "0.236.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -3607,9 +3607,9 @@ dependencies = [
     { name = "tenacity" },
     { name = "time-machine" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b3/3b/269d6548b10904acb7d4dcccf45e76d7488957213585c169f9e5bdfde538/sqlmesh-0.236.2.tar.gz", hash = "sha256:2f826dbe243cdea083383c59f6390597eec23bc0f83cb0de4a4522b6387d01b4", size = 13629348, upload-time = "2026-09-08T20:50:56.433Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/e6/2d71001171bcca7108770c0b92afbb8b2740c75376ddf5286d414405f87d/sqlmesh-0.236.3.tar.gz", hash = "sha256:7114e62c1b2ae3a29c52ba671633339d256cc7fef54b2ba2dd4bb4657acf90b0", size = 13683090, upload-time = "2026-10-06T05:33:30.561Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/aa/49/8397d0a8afbd0a5f62479e5dabd9f08f1c91c953e6632c346b6ee8e8a511/sqlmesh-0.236.2-py3-none-any.whl", hash = "sha256:77bd9e5332569d18f44bc7eace01b81e92410e16cddf155d24356b936115bc33", size = 5662257, upload-time = "2026-09-08T20:50:53.288Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/31/c342755cafecd260594d7b21f9ae43d33ec3a5b718b7511a33c8d2d9c7e1/sqlmesh-0.236.3-py3-none-any.whl", hash = "sha256:e8953e86479022b9c825a514a3f485931d16b2021d7c07a320e7e0ee92293ac2", size = 5681377, upload-time = "2026-10-06T05:33:27.724Z" },
 ]
 
 [package.optional-dependencies]

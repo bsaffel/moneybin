@@ -257,6 +257,19 @@ def _pin_cursor_to_moneybin(cur: Any) -> None:
     cur.execute(f"USE {_DATABASE_ALIAS}")
 
 
+def _release_sqlmesh_cursor(adapter: Any) -> None:
+    """Close SQLMesh's duplicate cursor without closing MoneyBin's connection.
+
+    The cursor is a ``conn.cursor()`` duplicate, and a result SQLMesh left
+    unconsumed keeps its transaction open (``Context.migrate()`` ends on a
+    ``fetchone`` since 0.236.3). Once MoneyBin writes, CHECKPOINT then raises
+    "other write transactions active". The pool's ``close()`` would close the
+    shared connection itself, so only the cursor is closed. Idempotent.
+    """
+    if adapter is not None:
+        adapter._connection_pool.close_cursor()  # pyright: ignore[reportPrivateUsage]  # no public API closes only the cursor
+
+
 def build_attach_sql(
     db_path: Path,
     encryption_key: str,
@@ -987,6 +1000,7 @@ class Database:
         # Note: _data_file_to_adapter is a class-level dict — not thread-safe
         # for concurrent init with the same db_path. Acceptable for single-user.
         adapter_key = str(self._db_path)
+        adapter: DuckDBEngineAdapter | None = None
         try:
             conn = self._conn
             if conn is None:
@@ -1038,6 +1052,7 @@ class Database:
             logger.warning("⚠️  Transform state migration failed — see logs for details")
             return False
         finally:
+            _release_sqlmesh_cursor(adapter)
             BaseDuckDBConnectionConfig._data_file_to_adapter.pop(adapter_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
     def repair_sqlmesh_state(self) -> bool:
@@ -1906,6 +1921,7 @@ def sqlmesh_context(
         )
 
     cache_key = str(db_path)
+    adapter: DuckDBEngineAdapter | None = None
     try:
         # _pin_cursor_to_moneybin (module-level) routes SQLMesh's state writes to
         # the persistent moneybin.sqlmesh.* catalog instead of the throwaway
@@ -1939,6 +1955,8 @@ def sqlmesh_context(
             gateway=_DATABASE_ALIAS,
         )
         yield ctx
+        # SQLMesh is done; close its cursor before the comment sync writes.
+        _release_sqlmesh_cursor(adapter)
         # After the caller's SQLMesh plan/run has written
         # register_comments output to core.*, append the privacy
         # classification sigils. Idempotent — short-circuits when the
@@ -1957,6 +1975,7 @@ def sqlmesh_context(
                     exc_info=True,
                 )
     finally:
+        _release_sqlmesh_cursor(adapter)
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
 
