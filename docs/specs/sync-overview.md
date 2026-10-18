@@ -1,7 +1,7 @@
 # Sync — Overview
 
 > Last updated: 2026-10-18 — ADR-017 governs encryption custody and recovery; the older encryption protocol sketch is historical
-> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
+> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 require protocol design under ADR-017. All older encryption mechanism sketches in this document are historical, not selected contracts.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
 > Replaces: `plaid-integration.md` (removed in #28) and `sync-client-integration.md` (moved to `archived/`)
@@ -136,12 +136,14 @@ sequenceDiagram
 
 ### Phase 4: Decrypt
 
-Designed as a first-class part of the protocol. v1 ships without encryption; v2 activates when the server implements its Phase 5.
+The current baseline returns JSON over HTTPS and encrypts the local DuckDB
+database. The broker has read access during provider processing.
 
-- **v1 (current):** Server returns plain JSON over HTTPS. TLS protects data in transit. DuckDB encryption at rest protects data once loaded. Server has read access to plaintext financial data — an accepted and documented risk (see [E2E encryption design](#e2e-encryption-design) for mitigation).
-- **v2 (designed, implementation phased):** Server encrypts the sync payload to the client's registered public key. Client decrypts locally. The JSON shape inside the encrypted blob is identical to the unencrypted format — everything downstream (extractors, staging, core) is unchanged.
-
-The client auto-negotiates: if the server returns `Content-Type: application/json`, parse directly. If the server returns `Content-Type: application/age`, decrypt first. No client-side configuration needed — a v2 client works against both v1 and v2 servers.
+Client-owned delivery encryption must follow ADR-017 and a separately reviewed
+sync API contract. The former public-key registration and `application/age`
+auto-negotiation sketch is unselected; server readiness alone does not activate
+an approved client protocol. Compatibility and refusal behavior must be
+explicit, including how a client prevents an unintended plaintext downgrade.
 
 ### Phase 5: Load & Transform
 
@@ -859,19 +861,17 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 
 ### Phase 3: E2E encryption
 
-- `EncryptionBackend` protocol and `AgeX25519Backend` implementation
-- Key generation, OS keychain storage, passphrase-protected storage
-- `POST /auth/register-key` integration
-- Auto-negotiation (`application/json` vs `application/age`)
-- `moneybin sync key rotate` command
-- Blocked on moneybin-sync Phase 5
+The legacy phase name is retained for navigation. Deliver client-owned stored
+payload protection under ADR-017 through a reviewed sync API and key-lifecycle
+contract. This includes rotation, interruption, recovery, and downgrade
+handling. The historical named backend, registration endpoint, and content-type
+negotiation are not implementation instructions.
 
 ### Phase 4: Post-quantum upgrade
 
-- `HybridPQBackend` (X25519 + ML-KEM) behind the same `EncryptionBackend` protocol
-- Algorithm negotiation via `algorithm_id` during key registration
-- Swap without protocol, CLI, or server API changes
-- Timing: when the hybrid library ecosystem matures (Signal PQXDH and Apple PQ3 shipped in 2024; Rust/Python libraries are emerging)
+Any algorithm upgrade needs a separate protocol and compatibility assessment.
+The historical hybrid-backend sketch does not establish an algorithm choice,
+release date, or a guarantee of unchanged CLI and server APIs.
 
 ### Relationship to roadmap
 
@@ -907,7 +907,11 @@ Peer initiative. Sync produces raw rows that may duplicate records already loade
 
 ### Privacy & AI Trust — `privacy-and-ai-trust.md`
 
-Framework spec. Sync operates in the "Encrypted Sync" data flow tier (ADR-002). The E2E encryption design in this spec implements that tier's contract. The consent model does not apply to sync (no AI involvement) — sync is a direct data pipeline, not an AI-assisted feature.
+Framework spec. ADR-017 defines the accepted custody boundary for the
+"Encrypted Sync" tier in ADR-002. This overview's historical encryption sketch
+does not implement or prove that contract. Provider ingestion is a direct data
+pipeline; any AI access to the resulting data remains subject to the separate
+consent model.
 
 ### Data Protection — `privacy-data-protection.md`
 
@@ -932,7 +936,7 @@ Not designed here. Architectural constraints noted so the current design does no
 - **Provider expansion boundary.** A second provider (SimpleFIN or MX) needs a
   child spec, the provider artifacts, and the unresolved response-model and
   extractor-dispatch decision; it is not yet a no-framework-change extension.
-- **Encryption readiness.** When the server implements Phase 5, the client activates E2E encryption with a key generation step and zero changes to the loading pipeline.
+- **Encryption readiness.** The client and server satisfy a reviewed delivery and key-lifecycle contract under ADR-017, with recovery and adversarial evidence. Server availability or key generation alone does not establish readiness.
 - **No plaintext leakage.** Sync payloads are never written to disk in plaintext. In v1, they exist only in process memory during load. In v2, they're decrypted in memory only. The `SanitizedLogFormatter` prevents PII from appearing in logs.
 
 ## Open questions
