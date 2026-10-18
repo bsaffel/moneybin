@@ -58,7 +58,7 @@ dependencies = [
     "sqlglot>=30.8.0",
     # Database and data manipulation
     "duckdb>=1.5.5",
-    "polars>=1.44.2",
+    "polars>=2.0.0",
     "pyarrow>=25.0.1",
     # API integrations
     "plaid-python>=44.0.0",
