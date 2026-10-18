@@ -58,7 +58,7 @@ dependencies = [
     "sqlglot>=30.8.0",
     # Database and data manipulation
     "duckdb>=1.5.5",
-    "polars>=1.44.2",
+    "polars>=2.0.0",
     "pyarrow>=25.0.1",
     # API integrations
     "plaid-python>=44.0.0",
@@ -68,7 +68,7 @@ dependencies = [
     # Google Sheets connector (gsheet domain)
     "google-api-python-client>=2.200.0",
     "google-auth>=2.58.0",
-    "google-auth-oauthlib>=1.4.1",
+    "google-auth-oauthlib>=1.5.0",
     # Also a transitive dep of google-api-python-client, but declared directly
     # because sheets_api.py imports it to build the timeout-bearing Http client —
     # a future google-api-python-client pin change must not silently break that.
@@ -109,7 +109,7 @@ dependencies = [
     "pillow>=12.3.0",
     "anyio>=4.15.1",
     "soupsieve>=2.9.2",
-    "starlette>=1.7.0",
+    "starlette>=1.8.0",
     # Secret management and key derivation
     "keyring>=25.7.0",
     "argon2-cffi>=25.1.0",
@@ -211,9 +211,9 @@ moneybin = "moneybin.cli.main:main"
 dev = [
     "towncrier>=26.9.0,<27",
     # Code quality and formatting
-    "ruff>=0.16.8",
+    "ruff>=0.17.0",
     "pyright>=1.1.414",
-    "pre-commit>=4.6.2",
+    "pre-commit>=4.7.0",
     "sqlmesh[lsp]>=0.236.2",
     # Security auditing
     "pip-audit>=2.10.1",
@@ -229,7 +229,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pytest-json-report>=1.5.0",
-    "pytest-mock>=3.15.1",
+    "pytest-mock>=3.16.0",
     "pytest-asyncio>=1.4.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
