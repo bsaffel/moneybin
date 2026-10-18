@@ -2389,13 +2389,24 @@ class TestDbMaintenanceInterrupts:
         destination, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
         _make_settings_mock(destination, mocker)
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
-        mocker.patch(
+        promote = mocker.patch(
             "moneybin.services.database_restore_lock.SourceLease.promote",
             side_effect=KeyboardInterrupt,
         )
         original = destination.read_bytes()
         result = CliRunner().invoke(app, ["restore", "--from", str(source), "--yes"])
-        assert result.exit_code == 130, result.output
+        import traceback
+
+        errors: list[str] = []
+        error = result.exception
+        while error is not None:
+            errors.extend(traceback.format_exception(error, chain=False))
+            error = error.__context__
+        assert result.exit_code == 130, (
+            result.output,
+            f"promotion calls: {promote.call_count}",
+            "".join(errors),
+        )
         assert "Pre-restore backup saved" in result.output
         assert destination.read_bytes() == original
         backups = list((tmp_path / "backups").glob("*_pre_restore.duckdb"))
