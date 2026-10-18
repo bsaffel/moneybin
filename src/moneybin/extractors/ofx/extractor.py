@@ -318,10 +318,12 @@ class _UTCOFXParser(ofxparse.OfxParser):
     @classmethod
     def parseOfxDateTime(cls, ofxDateTime: str) -> datetime | None:  # noqa: N802, N803  # required ofxparse override signature
         # GMT is the default only when no explicit zone was supplied.
-        if ("[" in ofxDateTime or "]" in ofxDateTime) and not re.fullmatch(
-            r"[^\[\]]*\[[-+]?\d+\.?\d*(?::\w*)?\]", ofxDateTime
-        ):
-            raise ValueError("Unsupported explicit OFX timezone")
+        if "[" in ofxDateTime or "]" in ofxDateTime:
+            zone = re.fullmatch(r"[^\[\]]*\[([-+]?\d+\.?\d*)(?::\w*)?\]", ofxDateTime)
+            # OFX 2.2 section 3.2.8.2 bounds offsets to [-12, 12], not civil zones.
+            # https://financialdataexchange.org/wp-content/uploads/2025/12/OFX-2.2.pdf
+            if zone is None or not -12 <= Decimal(zone[1]) <= 12:
+                raise ValueError("Unsupported explicit OFX timezone")
         # OFX 2.2 section 3.2.8.2: the numeric offset is valid without a name.
         text = re.sub(r"\[([-+]?\d+\.?\d*)\]$", r"[\1:UTC]", ofxDateTime)
         value = super().parseOfxDateTime(text)  # pyright: ignore[reportUnknownMemberType]  # ofxparse leaves its string argument untyped

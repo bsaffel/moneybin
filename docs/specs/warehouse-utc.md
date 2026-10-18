@@ -31,7 +31,7 @@ historical audit JSON.
 | SimpleFIN epoch seconds | Convert directly to UTC instants. |
 | Plaid posting and authorization dates | Preserve business DATEs. |
 | Plaid optional date-times | Require an explicit offset. Midnight placeholders do not establish actual event precision. |
-| OFX date-times | Apply the protocol numeric offset or GMT default; preserve date precision and original evidence. |
+| OFX date-times | Apply the protocol numeric offset (inclusive −12 to +12 hours, including fractions) or GMT default; reject offsets outside that range and preserve date precision and original evidence. |
 | Tabular, PDF and Sheets transaction dates | Preserve DATE semantics; arbitrary wall-clock cells establish no timezone. |
 | Market observations | Preserve the adapter's explicit valuation-date rule. |
 | Application clocks | Generate aware UTC at creation. |

@@ -362,6 +362,8 @@ Broker batch validation rejects `fetched_at` more than five minutes ahead of
 the client's current UTC clock, allowing bounded broker/client clock skew;
 historical fetch times have no age limit, and accepted timestamps retain their
 source offsets at this boundary. Native payloads remain unchanged.
+Plaid's nested `metadata.synced_at` obeys the same clock-skew bound before
+extraction; its historical instant remains independent of the batch fetch time.
 
 Both protocol versions derive display-ready institution labels with the shared
 account-number masker. Whitespace-only institution names become NULL. Original

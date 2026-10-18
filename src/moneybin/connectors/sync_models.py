@@ -364,6 +364,12 @@ class SyncMetadata(BaseModel):
     synced_at: UTCInstant
     institutions: list[InstitutionResult]
 
+    @model_validator(mode="after")
+    def _validate_sync_time(self) -> Self:
+        if self.synced_at > datetime.now(UTC) + _MAX_BROKER_CLOCK_SKEW:
+            raise ValueError("Broker sync time exceeds allowed clock skew")
+        return self
+
 
 class PlaidSyncDataResponse(BaseModel):
     """Full response shape from GET /sync/data."""

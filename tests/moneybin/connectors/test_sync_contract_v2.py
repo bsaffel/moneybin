@@ -229,6 +229,61 @@ def test_v2_preserves_valid_fetch_time_and_historical_replay(fetched_at: str) ->
     assert batch.payload == original["sources"][0]["batches"][0]["payload"]
 
 
+@pytest.mark.parametrize("through_envelope", [False, True])
+@pytest.mark.parametrize(
+    "synced_at",
+    [
+        "2026-10-01T12:05:00.000001Z",
+        "2026-10-01T08:05:00.000001-04:00",
+        "2099-01-01T00:00:00Z",
+    ],
+)
+def test_plaid_rejects_nested_sync_time_beyond_clock_skew(
+    synced_at: str, through_envelope: bool
+) -> None:
+    original = json.loads((FIXTURES / "plaid.json").read_text())
+    original["sources"][0]["batches"][0]["payload"]["metadata"]["synced_at"] = synced_at
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        payload = (
+            _validate_envelope(original).sources[0].batches[0].payload
+            if through_envelope
+            else original["sources"][0]["batches"][0]["payload"]
+        )
+        with pytest.raises(ValidationError, match="sync time"):
+            sync_models.PlaidSyncDataResponse.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "synced_at",
+    [
+        "2026-10-01T12:05:00Z",
+        "2026-10-01T08:05:00-04:00",
+        "2001-01-01T00:00:00Z",
+    ],
+)
+def test_plaid_preserves_valid_nested_sync_time_for_replay(synced_at: str) -> None:
+    original = json.loads((FIXTURES / "plaid.json").read_text())
+    original["sources"][0]["batches"][0]["payload"]["metadata"]["synced_at"] = synced_at
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        envelope = _validate_envelope(original)
+        payload = envelope.sources[0].batches[0].payload
+        parsed = sync_models.PlaidSyncDataResponse.model_validate(payload)
+        restored = sync_models.PlaidSyncDataResponse.model_validate_json(
+            parsed.model_dump_json()
+        )
+
+    assert restored.metadata.synced_at == datetime.fromisoformat(synced_at)
+    assert restored.metadata.synced_at.tzinfo == UTC
+    assert restored.metadata.synced_at != envelope.sources[0].batches[0].fetched_at
+    assert restored.transactions[0].transaction_date.isoformat() == "2026-09-10"
+    assert payload == original["sources"][0]["batches"][0]["payload"]
+    assert payload["metadata"]["synced_at"] == synced_at
+
+
 def test_v2_rejects_reversed_window() -> None:
     original = json.loads((FIXTURES / "simplefin_v2.json").read_text())
     original["sources"][0]["batches"][0]["window"]["end"] = "2026-08-31T00:00:00Z"

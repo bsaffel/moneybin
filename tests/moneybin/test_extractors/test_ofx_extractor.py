@@ -749,6 +749,33 @@ def test_ofx_adapter_preserves_numeric_offset_and_protocol_defaults(
     assert source_time.encode() in source
 
 
+@pytest.mark.parametrize(
+    ("zone", "expected"),
+    [
+        ("+12", "2025-01-02T00:00:00+00:00"),
+        ("-12", "2025-01-03T00:00:00+00:00"),
+        ("+12.00:ZONE", "2025-01-02T00:00:00+00:00"),
+        ("-12.00:ZONE", "2025-01-03T00:00:00+00:00"),
+        ("+5.5", "2025-01-02T06:30:00+00:00"),
+        ("-3.5:NST", "2025-01-02T15:30:00+00:00"),
+        ("0:UTC", "2025-01-02T12:00:00+00:00"),
+    ],
+)
+def test_ofx_adapter_preserves_offset_boundaries_and_fractional_hours(
+    sample_ofx_file: Path, zone: str, expected: str, host_zone: str
+) -> None:
+    from moneybin.extractors.ofx.extractor import parse_ofx_content
+
+    source_time = f"20250102120000[{zone}]".encode()
+    source = sample_ofx_file.read_bytes().replace(b"20250102120000", source_time)
+    parsed = parse_ofx_content(source, source_label="synthetic-offset-boundary.ofx")
+
+    assert parsed.accounts[0].statement.transactions[0].date == datetime.fromisoformat(
+        expected
+    )
+    assert source_time in source
+
+
 def test_ofx_extraction_metadata_and_provider_columns_are_aware(
     sample_ofx_file: Path,
     extractor_config: OFXProviderConfig,
@@ -782,6 +809,12 @@ def test_ofx_extraction_metadata_and_provider_columns_are_aware(
         "20250102120000-5:EST]",
         "20250102120000[-5:EST]trailing",
         "20250102120000[-5:EST][UTC]",
+        "20250102120000[999]",
+        "20250102120000[-999:ZONE]",
+        "20250102120000[+13:ZONE]",
+        "20250102120000[-13]",
+        "20250102120000[+12.01]",
+        "20250102120000[-12.01:ZONE]",
     ],
 )
 def test_ofx_adapter_rejects_unrecognized_explicit_zone(
