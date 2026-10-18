@@ -82,6 +82,7 @@ Usage: `moneybin import files [OPTIONS] {file_paths}...`
 | `--yes, -y` | flag |  | Auto-accept the top fuzzy account match without prompting |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--omit-field` | text, repeatable |  | Omit an optional destination field, repeatable. Tabular files only. |
 
 ## moneybin import confirm
 
@@ -138,6 +139,7 @@ Usage: `moneybin import confirm [OPTIONS] {file_path}`
 | `--save-format / --no-save-format` | flag | `true` | Auto-save the confirmed mapping as a named format for future imports. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--omit-field` | text, repeatable |  | Omit an optional destination field, repeatable. Tabular files only. |
 
 ## moneybin import history
 
@@ -236,6 +238,7 @@ Usage: `moneybin import preview [OPTIONS] {file_path}`
 | `--no-row-limit` | flag |  | Override row count limit (carry over from the 'import files' call). |
 | `--no-size-limit` | flag |  | Override file size limit (carry over from the 'import files' call). |
 | `--override` | text, repeatable |  | Field→column override, repeatable (e.g. --override date=Date) |
+| `--omit-field` | text, repeatable |  | Omit an optional destination field, repeatable. Tabular files only. |
 
 ## moneybin import status
 

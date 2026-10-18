@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         ImportRevertPlan,
         SavedFormatDeletePlan,
     )
+    from moneybin.services.tabular_preparation import TabularPreviewPreparation
 
 from moneybin.adapters.imports_adapters import (
     pdf_format_row,
@@ -107,7 +108,6 @@ from moneybin.protocol.pagination import (
     validate_keyset_shape,
 )
 from moneybin.services.import_confirmation import (
-    disputed_row_fields,
     sign_convention_effect,
 )
 from moneybin.services.refresh_outcome import RefreshStepOutcome
@@ -865,174 +865,51 @@ def _import_preview_tabular(
     *,
     source_bytes: bytes | None = None,
     mapping: dict[str, str] | None = None,
+    omit_fields: list[str] | None = None,
+    _prepared: TabularPreviewPreparation | None = None,
 ) -> ResponseEnvelope[ImportPreviewPayload]:
-    """Build a tabular preview from one optional immutable byte object.
+    """Render shared read-only preparation with the existing privacy envelope."""
+    from moneybin.services.tabular_preparation import prepare_tabular_preview
 
-    ``mapping`` is an optional partial-merge field->column override, validated
-    the same way the confirm-time Override signal used to be for a
-    first-encounter file (Req 11 in smart-import-confirmation.md). Staged
-    previews are immutable (Req 8), so this is the only place a mapping
-    correction can be made — a validated override reports ``confidence:
-    "high"``, matching how ``resolve_or_confirm`` treats a ratified Override
-    as ``Resolved`` rather than leaving it at whatever tier the raw detector
-    scored. A structural red flag still pins the tier to ``low``: the override
-    answers a column question, not a "the header row is a transaction" one.
-    """
-    from moneybin.config import get_settings
-    from moneybin.extractors.tabular.column_mapper import (
-        collect_field_samples,
-        map_columns,
+    plan, sample_values, disputed_rows, rows_read = (
+        _prepared
+        or prepare_tabular_preview(
+            path, source_bytes=source_bytes, mapping=mapping, omit_fields=omit_fields
+        )
     )
-    from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
-    from moneybin.extractors.tabular.format_detector import detect_format
-    from moneybin.extractors.tabular.readers import (
-        normalize_excel_date_columns_after_mapping,
-        normalize_excel_date_columns_for_detection,
-        read_file,
-    )
-    from moneybin.services.import_confirmation import (
-        MappingValidationError,
-        coerce_confidence_tier,
-        coerce_number_format,
-        coerce_sign_convention,
-        tabular_required_fields,
-        validate_partial_mapping,
-    )
-
-    bands = get_settings().import_.confidence
-    try:
-        format_info = detect_format(path, source_bytes=source_bytes)
-        read_result = read_file(path, format_info, source_bytes=source_bytes)
-        # No saved/matched format and no date-format parameter exist on this
-        # preview path. detection_df is a throwaway copy — never imported,
-        # never shown as a sample — that only exists so map_columns /
-        # detect_date_format can recognize a native-typed date column's
-        # content; read_result.df stays untouched until the final render,
-        # below.
-        detection_df = normalize_excel_date_columns_for_detection(
-            read_result.df, file_type=format_info.file_type, date_format=None
-        )
-        mapping_result = map_columns(
-            detection_df,
-            overrides=mapping,
-            t_high=bands.t_high,
-            t_med=bands.t_med,
-            structural_red_flag=read_result.header_row_looks_like_data,
-        )
-    except ValueError as e:
-        raise UserError(str(e), code=error_codes.IMPORT_PREVIEW_ERROR) from e
-
-    field_mapping = mapping_result.field_mapping
-    unmapped_columns = mapping_result.unmapped_columns
-    confidence = mapping_result.confidence
-    sign_convention = mapping_result.sign_convention
-    number_format = mapping_result.number_format
-    if mapping:
-        required_fields = tabular_required_fields(
-            proposed_keys=set(field_mapping.keys()),
-            override_keys=set(mapping.keys()),
-        )
-        try:
-            field_mapping = validate_partial_mapping(
-                proposed=field_mapping,
-                override=mapping,
-                available_columns=tuple(read_result.df.columns),
-                required_fields=required_fields,
-                valid_destinations=tuple(FIELD_ALIASES.keys()),
-            )
-        except MappingValidationError as e:
-            raise UserError(
-                str(e), code=error_codes.IMPORT_PREVIEW_MAPPING_INVALID
-            ) from e
-        unmapped_columns = [
-            c for c in read_result.df.columns if c not in field_mapping.values()
-        ]
-
-    # The ONLY render of read_result.df — exactly once, against the FINAL
-    # mapping, whether a column got there via the caller's own `mapping`
-    # override or map_columns's own alias detection. No --date-format
-    # parameter exists on this preview path, so the detector's own
-    # mapping_result.date_format is always the effective one. field_mapping
-    # and mapping_result.date_format are both already final here, before
-    # anything below reads the frame's date-column text.
-    read_result.df = normalize_excel_date_columns_after_mapping(
-        read_result.df,
-        file_type=format_info.file_type,
-        field_mapping=field_mapping,
-        date_format=mapping_result.date_format,
-    )
-    # Every caller-visible sample comes from the just-rendered frame under
-    # the FINAL field_mapping — never mapping_result.sample_values, which
-    # map_columns computed from detection_df: detection_df renders every
-    # string column for format detection, so a native column mapped to a
-    # non-date field (a Memo mapped to memo) would otherwise show a
-    # rendering the real import never reproduces for it.
-    sample_values = collect_field_samples(read_result.df, field_mapping)
-
-    if mapping:
-        sign_convention = coerce_sign_convention(
-            field_mapping=field_mapping, detected=sign_convention
-        )
-        number_format = coerce_number_format(
-            field_mapping=field_mapping,
-            sample_values=sample_values,
-            detected=number_format,
-        )
-        # A caller-validated override resolves the ambiguity the detector
-        # couldn't (Req 11), but only for the fields it actually names. Re-score
-        # and re-band through the canonical path rather than asserting a tier:
-        # a hand-kept list of "facts an override cannot answer" was reported
-        # incomplete twice — first missing the structural red flag and the
-        # unreadable date, then missing a *second* required field still weakly
-        # matched, which promoted an untouched weak match to `high` and made it
-        # eligible for agent self-accept. score_mapping and resolve_tier already
-        # know all three: a red flag forces low, an unread date scores 0.75, and
-        # a surviving flag scores 0.85.
-        confidence = coerce_confidence_tier(
-            field_mapping=field_mapping,
-            detected_flagged=mapping_result.flagged_fields,
-            override_keys=set(mapping.keys()),
-            date_format=mapping_result.date_format,
-            structural_red_flag=read_result.header_row_looks_like_data,
-            t_high=bands.t_high,
-            t_med=bands.t_med,
-        )
-
     return build_envelope(
         data=ImportPreviewPayload(
             file=path.name,
             format=ImportFormatInfoPayload(
-                file_type=format_info.file_type,
-                delimiter=format_info.delimiter,
-                encoding=format_info.encoding,
-                file_size_bytes=format_info.file_size,
+                file_type=plan.file_type,
+                delimiter=plan.delimiter,
+                encoding=plan.encoding,
+                file_size_bytes=plan.file_size,
             ),
-            mapping=field_mapping,
-            confidence=confidence,
-            date_format=mapping_result.date_format,
-            number_format=number_format,
-            sign_convention=sign_convention,
-            is_multi_account=mapping_result.is_multi_account,
-            unmapped_columns=unmapped_columns,
-            flagged_fields=mapping_result.flagged_fields,
+            mapping=plan.field_mapping,
+            confidence=plan.confidence,
+            date_format=plan.date_format,
+            number_format=plan.number_format,
+            sign_convention=plan.sign_convention,
+            is_multi_account=plan.is_multi_account,
+            unmapped_columns=[
+                c for c in plan.header_signature if c not in plan.field_mapping.values()
+            ],
+            flagged_fields=plan.flagged_fields,
             sample_values=sample_values,
-            rows_read=len(read_result.df),
-            rows_skipped_trailing=read_result.rows_skipped_trailing,
-            skip_rows=read_result.skip_rows,
-            has_header=read_result.has_header,
-            rows_in_file=read_result.rows_in_file,
-            header_row_looks_like_data=read_result.header_row_looks_like_data,
-            header_position_ambiguous=read_result.header_position_ambiguous,
+            rows_read=rows_read,
+            rows_skipped_trailing=plan.rows_skipped_trailing,
+            skip_rows=plan.skip_rows,
+            has_header=plan.has_header,
+            rows_in_file=plan.rows_in_file,
+            header_row_looks_like_data=plan.header_row_looks_like_data,
+            header_position_ambiguous=plan.header_position_ambiguous,
             # DataClass.DESCRIPTION drives sensitivity-tier classification only
             # (privacy/redaction.py's _TRANSFORMS maps it to _passthrough), not
             # value masking — so this field needs its own selection pass.
             # field_mapping is the FINAL mapping here (the render above
             # already used it), so the disputed row reflects what imports.
-            header_position_ambiguous_rows=disputed_row_fields(
-                read_result.header_position_ambiguous_rows,
-                read_result.header_position_ambiguous_header_cells,
-                field_mapping,
-            ),
+            header_position_ambiguous_rows=disputed_rows,
         ),
         # Consistent with the PDF branches; the @mcp_tool decorator also stamps
         # medium from ImportPreviewPayload (sample_values is row-level content).
@@ -1056,21 +933,12 @@ def _bytes_identity(source_bytes: bytes) -> tuple[str, int]:
 
 def _read_tabular_preview_bytes(path: Path) -> bytes:
     """Enforce the tabular size limit before materializing one exact snapshot."""
-    from moneybin.extractors.tabular.format_detector import detect_format
+    from moneybin.services.tabular_preparation import read_tabular_source
 
     try:
-        format_info = detect_format(path)
+        return read_tabular_source(path)
     except ValueError as exc:
         raise UserError(str(exc), code=error_codes.IMPORT_PREVIEW_ERROR) from exc
-
-    with path.open("rb") as handle:
-        source_bytes = handle.read(format_info.file_size + 1)
-    if len(source_bytes) != format_info.file_size:
-        raise UserError(
-            "The file changed while MoneyBin was preparing its preview. Retry.",
-            code=error_codes.IMPORT_PREVIEW_CHANGED,
-        )
-    return source_bytes
 
 
 def _read_pdf_preview_bytes(path: Path) -> bytes:
@@ -1106,6 +974,7 @@ def _read_pdf_preview_bytes(path: Path) -> bytes:
 def import_preview_coarse(
     file_path: str,
     mapping: dict[str, str] | None = None,
+    omit_fields: list[str] | None = None,
 ) -> ResponseEnvelope[ImportPreviewCoarsePayload]:
     """Persist a complete staged-import preview for one exact file snapshot.
 
@@ -1114,6 +983,8 @@ def import_preview_coarse(
     the detected proposal. Unrecognized destination fields or absent source
     columns raise. Staged previews are immutable, so a mapping correction is
     made here, at preview time, never at ``import_confirm``.
+    ``omit_fields`` suppresses optional tabular destinations before detection;
+    required destinations and conflicts with ``mapping`` are refused.
     """
     from moneybin.config import get_settings
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
@@ -1126,57 +997,25 @@ def import_preview_coarse(
             code=error_codes.IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED,
         )
     response: ResponseEnvelope[ImportPreviewPayload] | ResponseEnvelope[dict[str, Any]]
+    reviewed_plan: dict[str, Any] | None = None
     if path.suffix.lower() == ".pdf":
-        if mapping is not None:
+        if mapping is not None or omit_fields:
             raise UserError(
-                "mapping is valid only for a tabular preview — a PDF has no "
+                "mapping and omit_fields are valid only for a tabular preview — a PDF has no "
                 "column-mapping proposal to override.",
                 code=error_codes.IMPORT_PREVIEW_CHANNEL_CONFLICT,
             )
         source_bytes = _read_pdf_preview_bytes(path)
         response = _import_preview_pdf(path, source_bytes=source_bytes)
     else:
-        source_bytes = _read_tabular_preview_bytes(path)
-        response = _import_preview_tabular(
-            path, source_bytes=source_bytes, mapping=mapping
-        )
-    reviewed_plan: dict[str, Any] | None = None
-    if isinstance(response.data, ImportPreviewPayload):
-        from moneybin.services.import_service import ReviewedTabularPlan
+        from moneybin.services.tabular_preparation import prepare_tabular_preview
 
-        data = response.data
-        reviewed_plan = ReviewedTabularPlan(
-            file_type=data.format.file_type,
-            delimiter=data.format.delimiter,
-            encoding=data.format.encoding or "utf-8",
-            file_size=data.format.file_size_bytes or len(source_bytes),
-            field_mapping=dict(data.mapping),
-            # Persist the detector's answer verbatim, including None. Defaulting
-            # here would replay a format the detector never read and drop every
-            # row at parse time under a "complete" status.
-            date_format=data.date_format,
-            sign_convention=cast(Any, data.sign_convention or "negative_is_expense"),
-            number_format=cast(Any, data.number_format or "us"),
-            is_multi_account=bool(data.is_multi_account),
-            confidence=data.confidence or "low",
-            skip_rows=data.skip_rows,
-            has_header=data.has_header,
-            rows_in_file=data.rows_in_file,
-            rows_skipped_trailing=data.rows_skipped_trailing,
-            header_row_looks_like_data=data.header_row_looks_like_data,
-            header_signature=sorted({
-                *data.mapping.values(),
-                *data.unmapped_columns,
-            }),
-            # Carried so a later refusal re-scores against the same evidence the
-            # caller reviewed, instead of a clean mapping it never saw.
-            flagged_fields=list(data.flagged_fields),
-            # Persisted so the confirm-time replay knows the preview already
-            # surfaced this — replaying THIS plan is itself the ratification
-            # (see ReviewedTabularPlan's docstring), unlike header_row_looks_
-            # like_data above.
-            header_position_ambiguous=data.header_position_ambiguous,
-        ).to_dict()
+        source_bytes = _read_tabular_preview_bytes(path)
+        prepared = prepare_tabular_preview(
+            path, source_bytes=source_bytes, mapping=mapping, omit_fields=omit_fields
+        )
+        response = _import_preview_tabular(path, _prepared=prepared)
+        reviewed_plan = prepared[0].to_dict()
     sha256, size = _bytes_identity(source_bytes)
     issued_at = datetime.now(UTC)
     expires_at = issued_at + timedelta(
@@ -1244,12 +1083,18 @@ def import_preview_coarse(
         elif plan_reason == "header_row_consumed":
             actions = [header_row_consumed_recovery_mcp()]
         elif plan_reason == "unreadable_date":
-            actions = [unreadable_date_recovery_mcp(file_path)]
+            actions = [
+                unreadable_date_recovery_mcp(
+                    file_path, omitted_fields=frozenset(omit_fields or ())
+                )
+            ]
         else:
             actions = [
                 "This mapping is not confirmable as staged. Use import_preview("
                 f"file_path={file_path!r}, mapping={{'<dest_field>': "
-                "'<source_column>'}) to correct it; data.sample_values and "
+                "'<source_column>'}"
+                + (f", omit_fields={omit_fields!r}" if omit_fields else "")
+                + ") to correct it; data.sample_values and "
                 "data.unmapped_columns name the file's columns.",
             ]
     elif data.get("status") == "confirmation_required" and "bridge_payload" in data:
@@ -1293,6 +1138,10 @@ def import_preview_coarse(
         "sensitivity": classify(type(payload)).sensitivity,
         "plan": reviewed_plan,
     }
+    if omit_fields:
+        # Retain explicit intent for fresh-preview recovery, without inferring
+        # omissions from destinations absent in the resolved mapping.
+        snapshot["omit_fields"] = sorted(set(omit_fields))
     channel: Literal["tabular", "pdf", "ofx"] = (
         "pdf" if path.suffix.lower() == ".pdf" else "tabular"
     )
@@ -2203,6 +2052,7 @@ def _import_confirm_coarse_confirmation_actions(
     outcome: ConfirmationRequired,
     *,
     sign_already_approved: bool = False,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Build the actions[] hints for a non-sign confirmation_required envelope.
 
@@ -2278,12 +2128,16 @@ def _import_confirm_coarse_confirmation_actions(
             unreadable_date_recovery_mcp,
         )
 
-        actions.append(unreadable_date_recovery_mcp(file_path))
+        actions.append(
+            unreadable_date_recovery_mcp(file_path, omitted_fields=omitted_fields)
+        )
         return actions
     actions.append(
         f"This preview's mapping cannot be corrected in place — staged "
         "previews are immutable. Use import_preview(file_path="
-        f"{file_path!r}, mapping={{'<dest_field>': '<source_column>'}}) to "
+        f"{file_path!r}, mapping={{'<dest_field>': '<source_column>'}}"
+        + (f", omit_fields={sorted(omitted_fields)!r}" if omitted_fields else "")
+        + ") to "
         "build a corrected preview, then import_confirm(preview_id=...) on "
         "the new preview_id."
     )
@@ -2425,6 +2279,12 @@ async def import_confirm_coarse(
                             str(path),
                             outcome,
                             sign_already_approved=approved_sign_proposal is not None,
+                            omitted_fields=frozenset(
+                                cast(
+                                    list[str],
+                                    preview["snapshot_json"].get("omit_fields", []),
+                                )
+                            ),
                         ),
                     ),
                 )

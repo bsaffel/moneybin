@@ -1182,6 +1182,50 @@ async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     ]
 
 
+async def test_import_preview_coarse_persists_explicit_optional_omission(
+    mcp_db: object, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    path = tmp_path / "geography.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    response = await import_preview_coarse(file_path=str(path), omit_fields=["status"])
+    assert response.error is None, response.error
+    assert "status" not in response.data.mapping
+
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        stored = ImportPreviewsRepo(db).get(response.data.preview_id)
+        assert stored is not None
+        snapshot = stored["snapshot_json"]
+        assert "status" not in snapshot["plan"]["field_mapping"]
+        rows = db.conn.execute(
+            "SELECT count(*) FROM raw.tabular_transactions"
+        ).fetchone()
+        assert rows is not None and rows[0] == 0
+
+
+@pytest.mark.parametrize(
+    "omitted,mapping",
+    [(["amount"], None), (["unknown"], None), (["status"], {"status": "State"})],
+)
+async def test_import_preview_coarse_rejects_invalid_omission(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    omitted: list[str],
+    mapping: dict[str, str] | None,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    path = tmp_path / "geography.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    response = await import_preview_coarse(
+        file_path=str(path), omit_fields=omitted, mapping=mapping
+    )
+    assert response.error is not None
+
+
 async def test_import_preview_coarse_post_date_matches_what_import_stores(
     mcp_db: object,
     tmp_path: Path,
@@ -1521,7 +1565,20 @@ async def test_import_preview_rejects_file_growth_during_bounded_capture(
 
     from moneybin.extractors.tabular.format_detector import FormatInfo
 
-    def stale_format(_path: Path) -> FormatInfo:
+    def stale_format(
+        _path: Path,
+        *,
+        no_size_limit: bool = False,
+        format_override: str | None = None,
+        delimiter_override: str | None = None,
+        encoding_override: str | None = None,
+    ) -> FormatInfo:
+        assert no_size_limit is False
+        assert (format_override, delimiter_override, encoding_override) == (
+            None,
+            None,
+            None,
+        )
         return FormatInfo(file_type="csv", file_size=4)
 
     monkeypatch.setattr(
@@ -3701,6 +3758,112 @@ async def test_confirm_refusal_names_both_recoveries_for_an_unreadable_date(
     assert "--date-format" in hint, hint
     # The generic hint's dead-end phrasing must not be what the agent reads.
     assert "'<dest_field>'" not in hint, hint
+
+
+@pytest.mark.parametrize("unreadable_date", [False, True])
+@pytest.mark.parametrize("omit_status", [False, True])
+async def test_confirm_recovery_retains_optional_omissions(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    unreadable_date: bool,
+    omit_status: bool,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "confirm-recovery.csv"
+    csv.write_text(
+        "Date,Description,Amount,State\nnot-a-date,Coffee,-4.50,WA\n"
+        if unreadable_date
+        else "Notes,Reference,Unmapped,State\nCoffee,-4.50,2026-01-01,WA\n"
+    )
+    preview = await import_preview_coarse(
+        file_path=str(csv), omit_fields=["status"] if omit_status else None
+    )
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        stored = ImportPreviewsRepo(db).get(preview.data.preview_id)
+        assert stored is not None
+        assert stored["snapshot_json"].get("omit_fields") == (
+            ["status"] if omit_status else None
+        )
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id, account_name="Checking"
+    )
+    hint = " ".join(confirmed.actions)
+    assert ("omit_fields=['status']" in hint) is omit_status, hint
+    if unreadable_date:
+        assert ("--omit-field status" in hint) is omit_status, hint
+    import ast
+    import re
+
+    command = re.search(r"import_preview\((.*?)\)", hint)
+    assert command is not None
+    call = ast.parse("import_preview(" + command.group(1) + ")", mode="eval").body
+    assert isinstance(call, ast.Call)
+    arguments: dict[str, Any] = {}
+    for keyword in call.keywords:
+        assert keyword.arg is not None
+        arguments[keyword.arg] = ast.literal_eval(keyword.value)
+    arguments["mapping"] = (
+        {"transaction_date": "Date"}
+        if unreadable_date
+        else {
+            "transaction_date": "Unmapped",
+            "amount": "Reference",
+            "description": "Notes",
+        }
+    )
+    retried = await import_preview_coarse(**arguments)
+    assert retried.error is None
+    assert ("status" not in retried.data.mapping) is omit_status
+
+
+@pytest.mark.parametrize("unreadable_date", [False, True])
+async def test_preview_recovery_retains_optional_omissions(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    unreadable_date: bool,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "recovery.csv"
+    csv.write_text(
+        "Date,Description,Amount,State\nnot-a-date,Coffee,-4.50,WA\n"
+        if unreadable_date
+        else "Notes,Reference,Unmapped,State\nCoffee,-4.50,2026-01-01,WA\n"
+    )
+    preview = await import_preview_coarse(file_path=str(csv), omit_fields=["status"])
+    hint = " ".join(preview.actions)
+    assert "omit_fields=['status']" in hint, hint
+    if unreadable_date:
+        assert "--omit-field status" in hint, hint
+
+    # Follow the executable MCP restaging call with an actual source column.
+    import ast
+    import re
+
+    command = re.search(r"import_preview\((.*?)\)", hint)
+    assert command is not None
+    call = ast.parse("import_preview(" + command.group(1) + ")", mode="eval").body
+    assert isinstance(call, ast.Call)
+    arguments: dict[str, Any] = {}
+    for keyword in call.keywords:
+        assert keyword.arg is not None
+        arguments[keyword.arg] = ast.literal_eval(keyword.value)
+    arguments["mapping"] = (
+        {"transaction_date": "Date"}
+        if unreadable_date
+        else {
+            "transaction_date": "Unmapped",
+            "amount": "Reference",
+            "description": "Notes",
+        }
+    )
+    retried = await import_preview_coarse(**arguments)
+    assert retried.error is None
+    assert "status" not in retried.data.mapping
 
 
 async def test_preview_keeps_the_correction_hint_for_an_unconfirmable_plan(

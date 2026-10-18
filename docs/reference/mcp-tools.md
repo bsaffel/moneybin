@@ -387,6 +387,7 @@ Access: write, not idempotent. Sensitivity: up to `critical`.
 |---|---|---|---|
 | `file_path` | string |  | required |
 | `mapping` | object of string |  |  |
+| `omit_fields` | array of string |  |  |
 
 ### import_revert
 

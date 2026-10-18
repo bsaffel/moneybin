@@ -457,10 +457,21 @@ class TabularReadOptions:
         return f" {shlex.join(args)}" if args else ""
 
 
+def tabular_omission_fragment(omitted_fields: frozenset[str]) -> str:
+    """Serialize optional omissions on every applicable explicit retry."""
+    import shlex
+
+    args = [
+        part for field in sorted(omitted_fields) for part in ("--omit-field", field)
+    ]
+    return f" {shlex.join(args)}" if args else ""
+
+
 def unreadable_date_recovery(
     file_path: str,
     *,
     read_options: TabularReadOptions | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> str:
     """Name both recoveries for a date column nothing could parse.
 
@@ -491,7 +502,9 @@ def unreadable_date_recovery(
     # Neither printed command repeats the format that just failed — the
     # preview would re-read the file with it, and the retry carries its own
     # <strptime> placeholder in its place.
-    read_args_str = replace(opts, date_format=None).cli_fragment()
+    read_args_str = replace(
+        opts, date_format=None
+    ).cli_fragment() + tabular_omission_fragment(omitted_fields)
     return (
         "No date format could be read from the mapped date column. If the "
         "wrong column is mapped — a status column can claim the date alias "
@@ -578,6 +591,7 @@ def header_row_consumed_recovery(
     format_name: str | None,
     read_options: TabularReadOptions | None = None,
     retry_command: str = "import files",
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> str:
     """The consumed-header recovery, for the CLI and the inbox sidecar.
 
@@ -642,7 +656,9 @@ def header_row_consumed_recovery(
     # dropped, but a retry that re-names the format is the one command this
     # text must never print — it reproduces the failure it is answering.
     retry_args = replace(read_options or TabularReadOptions(), format_name=None)
-    read_args_str = retry_args.cli_fragment()
+    read_args_str = retry_args.cli_fragment() + tabular_omission_fragment(
+        omitted_fields
+    )
     if format_name is not None:
         removal = (
             "run `moneybin import formats delete "
@@ -701,6 +717,7 @@ def header_position_ambiguous_recovery(
     file_path: str,
     *,
     read_options: TabularReadOptions | None = None,
+    omitted_fields: frozenset[str] = frozenset(),
 ) -> str:
     """The dismissible recovery for an ambiguous auto-detected header, CLI.
 
@@ -721,7 +738,9 @@ def header_position_ambiguous_recovery(
     import shlex
 
     quoted = shlex.quote(file_path)
-    read_args_str = (read_options or TabularReadOptions()).cli_fragment()
+    read_args_str = (
+        read_options or TabularReadOptions()
+    ).cli_fragment() + tabular_omission_fragment(omitted_fields)
     return (
         "A row before the detected header also reads as a transaction. If "
         "it is a balance summary or similar preamble, the detected header is "
@@ -784,7 +803,9 @@ def header_position_ambiguous_recovery_sidecar(file_path: str) -> str:
     )
 
 
-def unreadable_date_recovery_mcp(file_path: str) -> str:
+def unreadable_date_recovery_mcp(
+    file_path: str, *, omitted_fields: frozenset[str] = frozenset()
+) -> str:
     """The same two recoveries as above, in MCP's idiom.
 
     Kept adjacent to the CLI wording on purpose: this claim has drifted three
@@ -794,16 +815,20 @@ def unreadable_date_recovery_mcp(file_path: str) -> str:
     must stay identical; only the command names differ. MCP exposes no
     date-format parameter, so that branch names the CLI.
     """
+    omission_input = (
+        f", omit_fields={sorted(omitted_fields)!r}" if omitted_fields else ""
+    )
     return (
         "This mapping is not confirmable as staged: no date format could "
         "be read from the mapped date column. If the wrong column is "
         f"mapped, use import_preview(file_path={file_path!r}, "
-        "mapping={'transaction_date': '<source_column>'}); "
+        "mapping={'transaction_date': '<source_column>'}"
+        f"{omission_input}); "
         "data.sample_values and data.unmapped_columns name the file's "
         "columns. If the column is right and its format is simply "
         "unrecognized, no mapping correction can change that — import "
         "it with `moneybin import files <file> --confirm --date-format "
-        "<strptime>`."
+        f"<strptime>{tabular_omission_fragment(omitted_fields)}`."
     )
 
 
@@ -994,6 +1019,22 @@ def coerce_confidence_tier(
         t_med=t_med,
         structural_red_flag=structural_red_flag,
     )
+
+
+def validate_omitted_fields(
+    omitted_fields: frozenset[str], overrides: Mapping[str, str] | None = None
+) -> frozenset[str]:
+    """Validate explicit optional omissions independently of partial overrides."""
+    from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES, REQUIRED_FIELDS
+
+    protected = REQUIRED_FIELDS | {"debit_amount", "credit_amount"}
+    if omitted_fields.difference(FIELD_ALIASES) or omitted_fields.intersection(
+        protected
+    ):
+        raise ValueError("Only optional destination fields may be omitted.")
+    if omitted_fields.intersection(overrides or {}):
+        raise ValueError("An omitted destination cannot also have an override.")
+    return omitted_fields
 
 
 def validate_partial_mapping(

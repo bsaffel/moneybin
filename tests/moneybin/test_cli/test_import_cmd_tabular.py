@@ -76,6 +76,7 @@ class TestImportFileAccountName:
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
             file_path=csv_file,
+            source_bytes=csv_file.read_bytes(),
             refresh=True,
             institution=None,
             force=False,
@@ -737,8 +738,9 @@ class TestPreview:
         assert "declared" in line, line
         assert "not detected" not in line, line
 
+    @pytest.mark.parametrize("omit_status", [False, True])
     def test_preview_header_position_ambiguous_uses_shared_recovery_text(
-        self, tmp_path: Path, caplog: LogCaptureFixture
+        self, tmp_path: Path, caplog: LogCaptureFixture, omit_status: bool
     ) -> None:
         """`import preview` has no --confirm flag.
 
@@ -760,19 +762,31 @@ class TestPreview:
         )
 
         csv_file = tmp_path / "data_before_header.csv"
+        value_suffix = ",WA" if omit_status else ""
+        header_suffix = ",State" if omit_status else ""
         csv_file.write_text(
-            "2026-01-01,42.50,Coffee\n"
-            "2026-01-02,10.00,Tea\n"
-            "Date,Amount,Description\n"
-            "2026-01-03,5.00,Snack\n",
+            f"2026-01-01,42.50,Coffee{value_suffix}\n"
+            f"2026-01-02,10.00,Tea{value_suffix}\n"
+            f"Date,Amount,Description{header_suffix}\n"
+            f"2026-01-03,5.00,Snack{value_suffix}\n",
             encoding="utf-8",
         )
 
         with caplog.at_level(logging.WARNING):
-            result = runner.invoke(app, ["preview", str(csv_file)])
+            result = runner.invoke(
+                app,
+                [
+                    "preview",
+                    str(csv_file),
+                    *(["--omit-field", "status"] if omit_status else []),
+                ],
+            )
 
         assert result.exit_code == 0
-        expected = header_position_ambiguous_recovery(str(csv_file))
+        expected = header_position_ambiguous_recovery(
+            str(csv_file),
+            omitted_fields=frozenset({"status"}) if omit_status else frozenset(),
+        )
         assert expected in result.output, result.output
         # ...and never a log record, for the reason in the docstring.
         assert not any(expected in r.message for r in caplog.records), caplog.text

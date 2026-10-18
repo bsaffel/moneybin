@@ -29,6 +29,25 @@ from moneybin.services.import_confirmation import (
 )
 
 
+def test_structural_recovery_commands_preserve_optional_omissions() -> None:
+    from moneybin.services.import_confirmation import (
+        header_position_ambiguous_recovery,
+        header_row_consumed_recovery,
+        unreadable_date_recovery,
+    )
+
+    omitted = frozenset({"status", "memo"})
+    messages = [
+        header_position_ambiguous_recovery("example.csv", omitted_fields=omitted),
+        header_row_consumed_recovery(
+            "example.csv", format_name=None, omitted_fields=omitted
+        ),
+        unreadable_date_recovery("example.csv", omitted_fields=omitted),
+    ]
+    for message in messages:
+        assert "--omit-field memo --omit-field status" in message
+
+
 def _account_proposal_dict() -> AccountProposalDict:
     """One account proposal dict via the real serializer (guarantees the shape)."""
     return AccountProposal(
