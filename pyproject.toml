@@ -213,7 +213,7 @@ dev = [
     # Code quality and formatting
     "ruff>=0.16.8",
     "pyright>=1.1.414",
-    "pre-commit>=4.6.2",
+    "pre-commit>=4.7.0",
     "sqlmesh[lsp]>=0.236.2",
     # Security auditing
     "pip-audit>=2.10.1",
