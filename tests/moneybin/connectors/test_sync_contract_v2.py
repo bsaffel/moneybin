@@ -392,6 +392,108 @@ def test_simplefin_requires_requested_window(name: str, collection: str) -> None
         _validate_envelope(original)
 
 
+def _simplefin_envelope_with_history(name: str) -> dict[str, Any]:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    source = original["sources"][0]
+    source["history"] = {
+        "observed_at": "2026-10-01T12:00:00Z",
+        "replay_required": False,
+        "discovery_history_target": None,
+        "accounts": [
+            {
+                "account_id": outcome["account_id"],
+                "native_scope": outcome["native_scope"],
+                "acknowledged_intervals": [
+                    {"start": "2026-09-01T00:00:00Z", "end": "2026-10-01T00:00:00Z"}
+                ],
+                "history_target": None,
+            }
+            for outcome in source["outcomes"]
+        ],
+    }
+    return original
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize("end", ["2026-10-02T00:00:00Z", "2099-01-01T00:00:00Z"])
+def test_simplefin_history_rejects_coverage_after_current_utc_day(
+    name: str, end: str
+) -> None:
+    original = _simplefin_envelope_with_history(name)
+    original["sources"][0]["history"]["accounts"][0]["acknowledged_intervals"][0][
+        "end"
+    ] = end
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        with pytest.raises(ValidationError, match="Acknowledged intervals"):
+            _validate_envelope(original)
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize(
+    "observed_at", ["2026-10-01T12:05:00.000001Z", "2099-01-01T00:00:00Z"]
+)
+def test_simplefin_history_rejects_observation_beyond_clock_skew(
+    name: str, observed_at: str
+) -> None:
+    original = _simplefin_envelope_with_history(name)
+    original["sources"][0]["history"]["observed_at"] = observed_at
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        with pytest.raises(ValidationError, match="History observation time"):
+            _validate_envelope(original)
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize(
+    "observed_at", ["2026-10-01T12:05:00Z", "2001-01-01T00:00:00Z"]
+)
+def test_simplefin_history_preserves_valid_boundaries_and_historical_replay(
+    name: str, observed_at: str
+) -> None:
+    original = _simplefin_envelope_with_history(name)
+    history = original["sources"][0]["history"]
+    history["observed_at"] = observed_at
+    if observed_at.startswith("2001"):
+        for account in history["accounts"]:
+            account["acknowledged_intervals"] = [
+                {"start": "2000-12-01T00:00:00Z", "end": "2001-01-01T00:00:00Z"}
+            ]
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        envelope = _validate_envelope(original)
+        clock.now.return_value = datetime(2027, 1, 1, tzinfo=UTC)
+        restored = sync_models.SyncEnvelopeV2.model_validate_json(
+            envelope.model_dump_json(by_alias=True, exclude_unset=True)
+        )
+
+    assert json.loads(restored.model_dump_json(exclude_unset=True)) == original
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize("field", ["observed_at", "interval_start", "interval_end"])
+@pytest.mark.parametrize("offset", ["", "-04:00"])
+def test_simplefin_history_requires_explicit_utc(
+    name: str, field: str, offset: str
+) -> None:
+    original = _simplefin_envelope_with_history(name)
+    history = original["sources"][0]["history"]
+    if field == "observed_at":
+        history[field] = "2026-10-01T08:00:00" + offset
+    else:
+        interval = history["accounts"][0]["acknowledged_intervals"][0]
+        boundary = field.removeprefix("interval_")
+        interval[boundary] = interval[boundary].removesuffix("Z") + offset
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        with pytest.raises(ValidationError):
+            _validate_envelope(original)
+
+
 def test_plaid_null_window_preserves_investment_metadata() -> None:
     """The investment date range remains native metadata beside cursor cash."""
     original = json.loads((FIXTURES / "plaid.json").read_text())

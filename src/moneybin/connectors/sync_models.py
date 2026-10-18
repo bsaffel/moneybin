@@ -516,6 +516,7 @@ class SimpleFINAccountHistory(_ContractModel):
 
     @model_validator(mode="after")
     def _validate_intervals(self) -> Self:
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         previous = None
         for interval in self.acknowledged_intervals:
             if any(
@@ -524,6 +525,8 @@ class SimpleFINAccountHistory(_ContractModel):
                 for point in (interval.start, interval.end)
             ):
                 raise ValueError("Acknowledged intervals require complete UTC days")
+            if interval.end > today:
+                raise ValueError("Acknowledged intervals cannot extend beyond today")
             if previous is not None and interval.start <= previous:
                 raise ValueError("Acknowledged intervals must be ordered and disjoint")
             previous = interval.end
@@ -542,6 +545,8 @@ class SimpleFINHistorySnapshot(_ContractModel):
     def _validate_accounts(self) -> Self:
         if self.observed_at.utcoffset() != timedelta(0):
             raise ValueError("History observation time must be UTC")
+        if self.observed_at > datetime.now(UTC) + _MAX_BROKER_CLOCK_SKEW:
+            raise ValueError("History observation time exceeds allowed clock skew")
         keys = [
             (account.native_scope.model_dump_json(), account.account_id)
             for account in self.accounts
