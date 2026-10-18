@@ -152,11 +152,12 @@ uv run pytest <tests for the changed code and what imports it>
 
 Ruff format, Ruff lint, Pyright, and the tests closest to the change. CI runs
 every tier — unit, integration, e2e, and scenarios — on each push to a pull
-request, so open a draft PR and let it run them rather than running the broad
-`make test-*` targets locally; a draft skips the AI review until you mark it
-ready. A `.sql` diff runs `make format-sql` and the tests that read the changed
-model. Any other diff runs its layer's gate instead — docs and agent
-instructions take
+request, so open the PR and let it run them rather than running the broad
+`make test-*` targets locally; the AI review runs alongside CI. Open a draft
+only for work that is visibly incomplete, since a draft skips the AI review
+until you mark it ready. A `.sql` diff runs `make format-sql` and the tests
+that read the changed model. Any other diff runs its layer's gate instead —
+docs and agent instructions take
 `uv run pytest tests/test_documentation_policy.py`. A diff that changes a CLI
 command, an MCP tool description, or a setting also runs `make generate-docs`
 and commits the rewritten pages under `docs/reference/`; that same policy test
@@ -173,7 +174,7 @@ see [`.claude/rules/branching.md`](.claude/rules/branching.md).
 git add <specific files>     # prefer over `git add -A`
 git commit
 git push -u origin <branch>
-gh pr create --draft         # CI runs every tier; mark ready for review after
+gh pr create                 # CI runs every tier; the AI review runs alongside
 ```
 
 CI must pass before merge. Commits land as authored (no mandatory squash);
