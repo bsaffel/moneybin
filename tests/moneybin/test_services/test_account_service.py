@@ -195,7 +195,7 @@ class TestPreV063SchemaToleranceOnReadOnlyOpen:
     migrations, and SQLMesh model materialization entirely -- so an existing
     profile whose ``core.dim_accounts`` was materialized before this column
     existed hits this path on every ``moneybin accounts list`` / ``accounts
-    get`` until something else (``transform apply``, ``refresh run``, or an
+    get`` until something else (``transform apply``, ``refresh``, or an
     ``mcp serve`` boot self-heal) rebuilds the model. Neither read-only NOR
     write-mode ``Database.__init__`` ever materializes SQLMesh models
     automatically, so this is not a transient window -- an unconditional
