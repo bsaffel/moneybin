@@ -68,7 +68,7 @@ dependencies = [
     # Google Sheets connector (gsheet domain)
     "google-api-python-client>=2.200.0",
     "google-auth>=2.58.0",
-    "google-auth-oauthlib>=1.4.1",
+    "google-auth-oauthlib>=1.5.0",
     # Also a transitive dep of google-api-python-client, but declared directly
     # because sheets_api.py imports it to build the timeout-bearing Http client —
     # a future google-api-python-client pin change must not silently break that.
