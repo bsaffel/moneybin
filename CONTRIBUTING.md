@@ -155,8 +155,8 @@ every tier — unit, integration, e2e, and scenarios — on each push to a pull
 request, so open the PR and let it run them rather than running the broad
 `make test-*` targets locally; the AI review runs alongside CI. Open a draft
 only for work that is visibly incomplete, since a draft skips the AI review
-until you mark it ready. A `.sql` diff runs `make format-sql` and the tests that read the changed
-model. Any other diff runs its layer's gate instead — docs and agent
+until you mark it ready. A `.sql` diff runs `make format-sql` and the tests
+that read the changed model. Any other diff runs its layer's gate instead — docs and agent
 instructions take
 `uv run pytest tests/test_documentation_policy.py`. A diff that changes a CLI
 command, an MCP tool description, or a setting also runs `make generate-docs`
