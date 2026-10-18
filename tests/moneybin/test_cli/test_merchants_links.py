@@ -7,6 +7,7 @@ service layer and test argument parsing, exit codes, and output shape.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -281,7 +282,7 @@ class TestMerchantLinksHistory:
                 "candidate_merchant_id": "merch001aa",
                 "status": "accepted",
                 "decided_by": "user",
-                "decided_at": "2025-06-01T10:00:00",
+                "decided_at": datetime(2025, 6, 1, 10, 0, tzinfo=UTC),
                 "confidence_score": 0.85,
                 "match_signals": {"signal": "merchant_entity_id"},
                 "match_reason": None,

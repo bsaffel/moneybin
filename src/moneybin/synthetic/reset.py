@@ -28,6 +28,7 @@ from moneybin.tables import (
     TABULAR_TRANSACTIONS,
     TRANSACTION_CATEGORIES,
     USER_MERCHANTS,
+    UTC_UPGRADE_PROVENANCE,
     VERSIONS,
 )
 from moneybin.temporal import format_utc
@@ -196,6 +197,17 @@ def _has_only_bootstrap_settings(db: Database) -> bool:
         return False
 
 
+def _has_only_fresh_utc_provenance(db: Database) -> bool:
+    """Ignore only reproducible bootstrap metadata, never historical attribution."""
+    try:
+        rows = db.execute(
+            f"SELECT contract_version, rules FROM {UTC_UPGRADE_PROVENANCE.full_name}"  # noqa: S608  # fixed TableRef
+        ).fetchall()
+        return rows == [(2, "[]")]
+    except duckdb.Error:
+        return False
+
+
 def _real_row_checks(db: Database) -> list[tuple[str, str]]:
     """Build the (quoted table, WHERE clause) checks that detect real user data.
 
@@ -221,6 +233,11 @@ def _real_row_checks(db: Database) -> list[tuple[str, str]]:
         qualified = f"{schema}.{name}"
         if qualified == PROFILE_SETTINGS.full_name and _has_only_bootstrap_settings(db):
             continue
+        if (
+            qualified == UTC_UPGRADE_PROVENANCE.full_name
+            and _has_only_fresh_utc_provenance(db)
+        ):
+            continue
         if qualified in _NON_USER_TABLES:
             continue  # platform state; the rebuild recreates it
 
@@ -241,7 +258,8 @@ def has_any_user_content(db: Database) -> bool:
     a safe table: `app.securities`, `app.budgets`, and `app.user_categories` are
     all real, user-authored state reachable with no transaction behind them, and
     the list grows. So rather than enumerate them, refuse on any row at all outside
-    `_NON_USER_TABLES`, except the exact, audited UTC bootstrap settings.
+    `_NON_USER_TABLES`, except the audited UTC bootstrap settings and the exact
+    empty clock-attribution policy created by fresh initialization.
 
     Being maximally conservative is nearly free here: this is the not-ours path, so
     over-refusing only ever declines to destroy someone else's profile. It must
@@ -256,6 +274,11 @@ def has_any_user_content(db: Database) -> bool:
         if (
             f"{schema}.{name}" == PROFILE_SETTINGS.full_name
             and _has_only_bootstrap_settings(db)
+        ):
+            continue
+        if (
+            f"{schema}.{name}" == UTC_UPGRADE_PROVENANCE.full_name
+            and _has_only_fresh_utc_provenance(db)
         ):
             continue
         if f"{schema}.{name}" in _NON_USER_TABLES:

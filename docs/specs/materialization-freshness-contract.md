@@ -124,6 +124,7 @@ such table: its display fields read through and everything else restates.
 | `app.securities`, `app.security_links`, `app.security_price_overrides` | `RESTATES` |
 | `app.lot_selections` | `RESTATES` (newly declared as an external model) |
 | `app.exchange_rate_overrides`, `app.profile_settings` | `RESTATES` |
+| `app.utc_upgrade_provenance` | `RESTATES` (fresh bootstrap precedes model builds; offline changes require rebuilding dependent materializations) |
 | `app.audit_log` | `TARGET_SCOPED` |
 | `app.transaction_categories`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` | `READ_THROUGH` |
 | `app.user_categories`, `app.category_overrides`, `app.user_merchants`, `app.category_source_map` | `READ_THROUGH` |

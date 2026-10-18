@@ -2395,7 +2395,7 @@ class TestDbMaintenanceInterrupts:
         )
         original = destination.read_bytes()
         result = CliRunner().invoke(app, ["restore", "--from", str(source), "--yes"])
-        assert result.exit_code == 130
+        assert result.exit_code == 130, result.output
         assert "Pre-restore backup saved" in result.output
         assert destination.read_bytes() == original
         backups = list((tmp_path / "backups").glob("*_pre_restore.duckdb"))

@@ -119,7 +119,9 @@ def _seed_ofx_rows(db: Database, account_id: str, rows: list[dict[str, str]]) ->
             "account_id": account_id,
             "source_origin": "scenario",
             "transaction_type": r["transaction_type"],
-            "date_posted": datetime.fromisoformat(r["transaction_date"]),
+            "date_posted": datetime.fromisoformat(r["transaction_date"]).replace(
+                tzinfo=UTC
+            ),
             "amount": pl.Decimal(18, 2),  # placeholder for typing — overwritten below
             "payee": r["payee"],
             "memo": None,

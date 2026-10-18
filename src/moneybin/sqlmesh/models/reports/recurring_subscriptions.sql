@@ -32,10 +32,10 @@ WITH eligible AS (
     AND t.transaction_date >= timezone(
       (
         SELECT
-          reporting_timezone
-        FROM app.profile_settings
+          ps.reporting_timezone
+        FROM app.profile_settings AS ps
         WHERE
-          scope = 'profile'
+          ps.scope = 'profile'
       ),
       CURRENT_TIMESTAMP
     )::DATE - INTERVAL '18' MONTHS
@@ -107,10 +107,10 @@ SELECT
     WHEN timezone(
       (
         SELECT
-          reporting_timezone
-        FROM app.profile_settings
+          ps.reporting_timezone
+        FROM app.profile_settings AS ps
         WHERE
-          scope = 'profile'
+          ps.scope = 'profile'
       ),
       CURRENT_TIMESTAMP
     )::DATE - last_seen <= GREATEST(60, interval_days_avg * 2)

@@ -30,6 +30,13 @@ implemented
 > and immutable source receipts remain in Raw. The initial pending row commits
 > atomically with the whole accepted job, before broker acknowledgement.
 
+> **UTC bootstrap provenance.** `UTCUpgradeProvenanceRepo` follows the same
+> operational metadata boundary for `app.utc_upgrade_provenance`. Its sole
+> application write inserts the empty policy after fresh UTC initialization is
+> verified. It does not subclass `BaseRepo`, emit a user audit action, or expose
+> edits or undo. Historical attribution remains separately arranged offline
+> maintenance; ordinary runtime initialization cannot replace it.
+
 > **MB-255 reconciliation (2026-09-17).** Resolved Decision 2 below said
 > `raw.import_log` sits outside Invariant 10 "by design (the schema boundary
 > is load-bearing)." MB-255 moved the table to `app.import_log` —

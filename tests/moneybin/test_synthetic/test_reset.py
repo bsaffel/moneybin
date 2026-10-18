@@ -11,7 +11,7 @@ from moneybin.synthetic.reset import (
     has_non_synthetic_data,
     reset_synthetic_rows,
 )
-from moneybin.tables import AUDIT_LOG
+from moneybin.tables import AUDIT_LOG, UTC_UPGRADE_PROVENANCE
 
 _INSERT = (
     "INSERT INTO raw.tabular_transactions "
@@ -25,6 +25,38 @@ _INSERT = (
 def _bootstrap_settings_audit(db: Database) -> None:
     """Restore bootstrap provenance omitted by the shared audit-count fixture."""
     ProfileSettingsRepo(db).set_reporting_timezone("UTC", actor="database.init")
+
+
+@pytest.mark.unit
+def test_fresh_utc_provenance_is_reproducible_bootstrap_state(db: Database) -> None:
+    assert db.execute(
+        f"SELECT contract_version, rules FROM {UTC_UPGRADE_PROVENANCE.full_name}"  # noqa: S608  # fixed TableRef
+    ).fetchall() == [(2, "[]")]
+    assert has_any_user_content(db) is False
+    assert has_non_synthetic_data(db) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rules",
+    [
+        '[{"schema":"app","table":"profile_settings","column":"updated_at",'
+        '"writer_era":"utc-naive","recorded_from":"2025-01-01T00:00:00Z",'
+        '"recorded_until":"2026-01-01T00:00:00Z","zone":"UTC"}]',
+        "{}",
+        "null",
+    ],
+    ids=["historical-rule", "object", "null"],
+)
+def test_historical_or_malformed_utc_provenance_blocks_reset(
+    db: Database, rules: str
+) -> None:
+    db.execute(
+        f"UPDATE {UTC_UPGRADE_PROVENANCE.full_name} SET rules = ?",  # noqa: S608  # fixed TableRef; test historical/corrupt evidence
+        [rules],
+    )
+    assert has_any_user_content(db) is True
+    assert has_non_synthetic_data(db) is True
 
 
 @pytest.mark.parametrize("setting", ["zone", "home", "targets", "explicit-utc"])

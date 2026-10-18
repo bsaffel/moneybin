@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -91,8 +91,8 @@ _POSITION_TRADE_DATE = date(2026, 1, 5)
 # The two fixture timestamps behind the overlap-watermark case. Spelled here as
 # constants because the assertion is an equality against them, not a comparison
 # against whatever the model happened to produce.
-_OVERLAP_HELD_LOT_AT = "2026-01-06 09:00:00"
-_OVERLAP_SECOND_SOURCE_AT = "2026-02-10 09:00:00"
+_OVERLAP_HELD_LOT_AT = "2026-01-06 09:00:00+00:00"
+_OVERLAP_SECOND_SOURCE_AT = "2026-02-10 09:00:00+00:00"
 
 
 def _seed_position(
@@ -128,7 +128,7 @@ def _seed_position(
             investment_transaction_id, currency_code, created_at
         ) VALUES (?, ?, ?, ?, 'VTI', ?,
                   ?::DATE, ?, ?, ?, 0.00, 'test', ?, ?,
-                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
+                  COALESCE(?::TIMESTAMPTZ, CURRENT_TIMESTAMP))
         """,  # test fixture, not executing user SQL
         [
             transaction_id,
@@ -173,7 +173,7 @@ def _seed_price(
             (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?, ?, 'plaid', 'item_1', ?, 'raw',
-                COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                COALESCE(?::TIMESTAMPTZ, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         """,  # test fixture, not executing user SQL
         [provider_key, price_date, quote_currency, close, extracted_at],
     )
@@ -222,7 +222,7 @@ def _seed_broker_snapshot(
             source_origin, source_file, holdings_date, holdings_count,
             transactions_window_start, source_type, extracted_at, loaded_at
         ) VALUES (?, ?, CURRENT_DATE, 1, DATE '2026-01-01', 'plaid',
-                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                  COALESCE(?::TIMESTAMPTZ, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         ON CONFLICT DO NOTHING
         """,  # test fixture, not executing user SQL
         [source_origin, source_file, extracted_at],
@@ -292,7 +292,7 @@ def _seed_plaid_buy(
             investment_transaction_id, source_origin, source_file,
             observation_version, extracted_at, loaded_at
         ) VALUES (?, ?, 'sync_test', 'plaid_fixture', CURRENT_TIMESTAMP,
-                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))""",
+                  COALESCE(?::TIMESTAMPTZ, CURRENT_TIMESTAMP))""",
         [f"itx_buy_{account_id}", source_origin, loaded_at],
     )
 
@@ -1459,7 +1459,7 @@ def test_updated_at_reflects_the_resolved_close_freshness(
         [_case_account("updated_close")],
     ).fetchone()
     assert row is not None
-    assert row[0] == datetime(2099, 1, 1), (
+    assert row[0] == datetime(2099, 1, 1, tzinfo=UTC), (
         "the resolved close's freshness must fold into the row watermark"
     )
 
@@ -1488,7 +1488,7 @@ def test_updated_at_reflects_an_omitting_snapshot(
     assert row[0] == "withheld", (
         "the newest snapshot omits the position — it is a phantom"
     )
-    assert row[1] == datetime(2099, 1, 1), (
+    assert row[1] == datetime(2099, 1, 1, tzinfo=UTC), (
         "the omitting pull's receipt freshness must fold into the row watermark"
     )
 

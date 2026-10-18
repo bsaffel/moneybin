@@ -9,7 +9,7 @@ condition.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -167,7 +167,7 @@ def test_an_archive_change_advances_updated_at_on_every_row_of_the_account(
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    stamp = datetime(2099, 1, 1)
+    stamp = datetime(2099, 1, 1, tzinfo=UTC)
     rows = {
         account_id: (currency_code, updated_at)
         for account_id, currency_code, updated_at in db.execute(

@@ -111,7 +111,10 @@ def test_unresolved_history_cannot_claim_attempt_complete(
 def test_human_status_distinguishes_history_provider_balance_and_local_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from tests.database_mocks import with_reporting_timezone
+
     service = MagicMock()
+    service.db = with_reporting_timezone(MagicMock())
     service.list_connections.return_value = [
         SyncConnectionView(
             id=CONNECTION,

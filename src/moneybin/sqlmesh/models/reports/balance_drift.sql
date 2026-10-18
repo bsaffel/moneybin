@@ -99,10 +99,10 @@ SELECT
   CAST(timezone(
     (
       SELECT
-        reporting_timezone
-      FROM app.profile_settings
+        ps.reporting_timezone
+      FROM app.profile_settings AS ps
       WHERE
-        scope = 'profile'
+        ps.scope = 'profile'
     ),
     CURRENT_TIMESTAMP
   )::DATE - assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */

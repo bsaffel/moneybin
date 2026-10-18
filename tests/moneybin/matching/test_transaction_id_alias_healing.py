@@ -116,6 +116,11 @@ def pipeline_db(db: Database) -> Generator[Database, None, None]:
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(CORE_DIM_ACCOUNTS_DDL)
+    db.execute(
+        "CREATE VIEW prep.int_accounts__merged AS SELECT *, "
+        "NULL::TIMESTAMPTZ AS account_type_changed_at, "
+        "NULL::TIMESTAMPTZ AS account_subtype_changed_at FROM core.dim_accounts"
+    )
     db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
     db.execute("CREATE TABLE seeds.iso_currencies (currency_code TEXT, minor_unit INT)")
     for name in _PREP_MODELS:
@@ -997,6 +1002,11 @@ class TestHealingSkipsBeforeTheFactViewExists:
         db.execute("CREATE SCHEMA IF NOT EXISTS prep")
         db.execute("CREATE SCHEMA IF NOT EXISTS core")
         db.execute(CORE_DIM_ACCOUNTS_DDL)
+        db.execute(
+            "CREATE VIEW prep.int_accounts__merged AS SELECT *, "
+            "NULL::TIMESTAMPTZ AS account_type_changed_at, "
+            "NULL::TIMESTAMPTZ AS account_subtype_changed_at FROM core.dim_accounts"
+        )
         db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
         db.execute(
             "CREATE TABLE seeds.iso_currencies (currency_code TEXT, minor_unit INT)"

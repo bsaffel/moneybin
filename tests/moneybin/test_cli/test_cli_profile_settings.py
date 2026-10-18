@@ -187,7 +187,12 @@ def test_show_survives_a_database_that_predates_the_settings_table(
         result = runner.invoke(app, ["show"])
 
     assert result.exit_code != 0
-    assert "UTC" in result.output and "upgrade" in result.output.lower()
+    assert "separate offline maintenance" in result.output
+    assert "proven timezone mappings" in result.output
+    assert db.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_schema = 'app' AND table_name = 'profile_settings'"
+    ).fetchone() == (0,)
 
 
 def test_managed_key_on_a_non_active_profile_is_refused(

@@ -646,11 +646,11 @@ async def test_utc_audit_import_rows_share_public_wire_contract(mcp_db: object) 
             "completed_at = CAST(? AS TIMESTAMPTZ) WHERE import_id = ?",
             [source_stamp, source_stamp, import_id],
         )
-        stored = AuditService(db).list_events(limit=1)[0]
+        stored = AuditService(db).chain_for(event.audit_id)[0]
         assert stored.before_value == {"source_stamp": source_stamp}
         assert stored.after_value == {"business_date": "2026-10-01"}
 
-    audit = await system_audit_coarse(view="events")
+    audit = await system_audit_coarse(view="detail", audit_id=event.audit_id)
     imports = await import_status_coarse(sections=["imports"])
     assert audit.error is None
     assert imports.error is None

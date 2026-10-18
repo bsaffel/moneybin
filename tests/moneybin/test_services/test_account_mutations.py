@@ -86,9 +86,10 @@ def test_refresh_failure_reports_the_durable_classification_change(
     undo: bool,
 ) -> None:
     with operation() as change_op:
-        AccountService(account_db).settings_update(
+        initial, _ = AccountService(account_db).settings_update(
             "account", account_type="depository", actor="cli"
         )
+    assert initial.account_type_changed_at is not None
     result = RefreshResult(
         applied=failure != "apply_failed",
         duration_seconds=0.1,
@@ -118,9 +119,14 @@ def test_refresh_failure_reports_the_durable_classification_change(
                 account_db, "account", account_type="credit", actor="cli"
             )
     assert error.value.code == "refresh_model_failed"
-    assert account_db.execute(
-        "SELECT account_type FROM app.account_settings WHERE account_id = 'account'"
-    ).fetchone() == (None if undo else ("credit",))
+    saved = account_db.execute(
+        "SELECT account_type, account_type_changed_at FROM app.account_settings "
+        "WHERE account_id = 'account'"
+    ).fetchone()
+    # Undo retains a default row so classification freshness cannot disappear.
+    assert saved is not None
+    assert saved[0] == (None if undo else "credit")
+    assert saved[1] is not None and saved[1] >= initial.account_type_changed_at
 
 
 @pytest.mark.parametrize("kind", ["unchanged", "display_only", "never_built"])

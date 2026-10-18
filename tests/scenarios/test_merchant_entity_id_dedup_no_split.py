@@ -141,7 +141,7 @@ def _seed_ofx_twin(db: Database, *, account_id: str) -> None:
                 "source_transaction_id": "ofx_dedup_001",
                 "account_id": account_id,
                 "transaction_type": "DEBIT",
-                "date_posted": datetime(2026, 5, 10, tzinfo=UTC).replace(tzinfo=None),
+                "date_posted": datetime(2026, 5, 10, tzinfo=UTC),
                 "amount": _OFX_RAW_AMOUNT,
                 "payee": "SHARED MERCHANT CO",
                 "memo": None,

@@ -156,6 +156,10 @@ def _reporting_policy_complete(connection: duckdb.DuckDBPyConnection) -> bool:
 
 def certify_fresh_temporal_contract(connection: duckdb.DuckDBPyConnection) -> None:
     """Certify a genuinely empty Database bootstrap only after complete init."""
+    from moneybin.repositories.utc_upgrade_provenance_repo import (
+        UTCUpgradeProvenanceRepo,
+    )
+
     if not _utc_schema_complete(connection) or not _reporting_policy_complete(
         connection
     ):
@@ -163,10 +167,7 @@ def certify_fresh_temporal_contract(connection: duckdb.DuckDBPyConnection) -> No
             "Fresh initialization produced an incomplete UTC schema; the profile "
             "requires separately arranged offline maintenance before it can be opened."
         )
-    connection.execute(
-        f"INSERT INTO {UTC_UPGRADE_PROVENANCE.full_name} VALUES (?, ?)",  # noqa: S608  # migration-owned TableRef
-        [2, "[]"],
-    )
+    UTCUpgradeProvenanceRepo(connection).initialize_fresh()
     connection.execute(
         f"""INSERT INTO {VERSIONS.full_name} (component, version) VALUES (?, ?)""",  # noqa: S608  # TableRef constant
         ["utc_contract", "2"],
