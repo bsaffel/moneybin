@@ -73,6 +73,8 @@ def test_restore_preserves_existing_reader_locks(
         ):
             pass
     source_bytes, destination_bytes = source.read_bytes(), destination.read_bytes()
+    backup = tmp_path / "recovery.duckdb"
+    journal = destination.with_name(destination.name + ".restore-promotion.json")
     with Database(
         source if held == "source" else destination,
         read_only=True,
@@ -83,10 +85,24 @@ def test_restore_preserves_existing_reader_locks(
                 source,
                 destination,
                 secret_store=mock_secret_store,
-                backup_path=tmp_path / "recovery.duckdb",
+                backup_path=backup,
             )
     assert source.read_bytes() == source_bytes
     assert destination.read_bytes() == destination_bytes
+    assert not list(tmp_path.glob("destination.restore-*.duckdb"))
+    assert not journal.exists()
+    assert not backup.exists()
+
+    assert (
+        restore_encrypted_database(
+            source, destination, secret_store=mock_secret_store, backup_path=backup
+        )
+        == backup
+    )
+    assert source.read_bytes() == source_bytes
+    assert destination.read_bytes() == source_bytes
+    assert backup.read_bytes() == destination_bytes
+    assert not journal.exists()
 
 
 @pytest.mark.parametrize("fail_validation", [False, True])

@@ -358,6 +358,10 @@ A → B → A has three batch associations and two distinct content digests. The
 latest selector orders by broker `fetched_at`, then immutable `batch_id` and
 content digest for deterministic ties; the tie rule does not establish provider
 chronology. Reusing a batch ID with different immutable content is rejected.
+Broker batch validation rejects `fetched_at` more than five minutes ahead of
+the client's current UTC clock, allowing bounded broker/client clock skew;
+historical fetch times have no age limit, and accepted timestamps retain their
+source offsets at this boundary. Native payloads remain unchanged.
 
 Both protocol versions derive display-ready institution labels with the shared
 account-number masker. Whitespace-only institution names become NULL. Original

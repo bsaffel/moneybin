@@ -7,7 +7,7 @@ related types live together.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal, Self, cast
 from uuid import UUID
@@ -30,6 +30,7 @@ from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.temporal import as_utc
 
 UTCInstant = Annotated[AwareDatetime, AfterValidator(as_utc)]
+_MAX_BROKER_CLOCK_SKEW = timedelta(minutes=5)
 
 
 def _blank_to_none(value: object) -> object:
@@ -412,6 +413,13 @@ class ProviderBatch(_ContractModel):
     fetched_at: AwareDatetime
     window: UTCWindow | None
     payload: dict[str, object]
+
+    @model_validator(mode="after")
+    def _validate_fetch_time(self) -> Self:
+        # Bound broker clock skew without expiring historical replay evidence.
+        if self.fetched_at > datetime.now(UTC) + _MAX_BROKER_CLOCK_SKEW:
+            raise ValueError("Broker fetch time exceeds allowed clock skew")
+        return self
 
 
 class PlaidItemScope(_ContractModel):

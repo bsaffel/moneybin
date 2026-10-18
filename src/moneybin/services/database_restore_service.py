@@ -96,18 +96,22 @@ def restore_encrypted_database(
             raise ValueError("stale_preflight")
         if candidate.exists() or journal.exists():
             raise ValueError("recovery_required")
+        destination_lease = (
+            stack.enter_context(exclusive_source(destination))
+            if destination.exists()
+            else None
+        )
         _copy_exclusive(source, candidate)
         with Database(candidate, read_only=True, secret_store=secret_store):
             pass
         if _fingerprint(candidate) != source_fingerprint:
             raise ValueError("copy_verification_failed")
-        if not destination.exists():
+        if destination_lease is None:
             # link is an atomic create-if-absent: a concurrent creator wins
             # without its bytes being overwritten.
             with exclusive_source(candidate) as candidate_lease:
                 candidate_lease.publish(destination)
             return None
-        destination_lease = stack.enter_context(exclusive_source(destination))
         backup_path.parent.mkdir(parents=True, exist_ok=True)
         _copy_exclusive(destination, backup_path)
         if _fingerprint(backup_path) != destination_lease.fingerprint:

@@ -1,8 +1,10 @@
 """The version-2 broker contract preserves native provider data."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -180,6 +182,51 @@ def test_v2_requires_aware_timestamps(field: str) -> None:
 
     with pytest.raises(ValidationError):
         _validate_envelope(original)
+
+
+@pytest.mark.parametrize("name", ["plaid", "simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize(
+    "fetched_at",
+    [
+        "2026-10-01T12:05:00.000001Z",
+        "2026-10-01T08:05:00.000001-04:00",
+        "2099-01-01T00:00:00Z",
+    ],
+)
+def test_v2_rejects_fetch_time_beyond_clock_skew(name: str, fetched_at: str) -> None:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    original["sources"][0]["batches"][0]["fetched_at"] = fetched_at
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        with pytest.raises(ValidationError, match="fetch time"):
+            _validate_envelope(original)
+
+
+@pytest.mark.parametrize(
+    "fetched_at",
+    [
+        "2026-10-01T12:05:00Z",
+        "2026-10-01T08:05:00-04:00",
+        "2001-01-01T00:00:00Z",
+    ],
+)
+def test_v2_preserves_valid_fetch_time_and_historical_replay(fetched_at: str) -> None:
+    original = json.loads((FIXTURES / "simplefin_v2.json").read_text())
+    original["sources"][0]["batches"][0]["fetched_at"] = fetched_at
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        envelope = _validate_envelope(original)
+        restored = sync_models.SyncEnvelopeV2.model_validate_json(
+            envelope.model_dump_json(by_alias=True)
+        )
+
+    batch = restored.sources[0].batches[0]
+    expected = datetime.fromisoformat(fetched_at)
+    assert batch.fetched_at == expected
+    assert batch.fetched_at.utcoffset() == expected.utcoffset()
+    assert batch.payload == original["sources"][0]["batches"][0]["payload"]
 
 
 def test_v2_rejects_reversed_window() -> None:
