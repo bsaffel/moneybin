@@ -211,7 +211,7 @@ moneybin = "moneybin.cli.main:main"
 dev = [
     "towncrier>=26.9.0,<27",
     # Code quality and formatting
-    "ruff>=0.16.8",
+    "ruff>=0.17.0",
     "pyright>=1.1.414",
     "pre-commit>=4.6.2",
     "sqlmesh[lsp]>=0.236.2",
@@ -229,7 +229,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pytest-json-report>=1.5.0",
-    "pytest-mock>=3.15.1",
+    "pytest-mock>=3.16.0",
     "pytest-asyncio>=1.4.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
