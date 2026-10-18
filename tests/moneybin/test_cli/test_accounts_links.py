@@ -24,9 +24,9 @@ from moneybin.cli.commands.accounts.links import (
     # build an approval or resolve a preview — so the tests that cover them
     # reach in rather than widening the surface to make them reachable.
     _ApprovedMerge,  # pyright: ignore[reportPrivateUsage]
-    _drift_check,  # pyright: ignore[reportPrivateUsage]
     _merge_preview,  # pyright: ignore[reportPrivateUsage]
     app,
+    merge_drift_check,  # pyright: ignore[reportPrivateUsage]
 )
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.errors import UserError
@@ -963,7 +963,9 @@ class TestLinksSet:
         The plan is pinned unchanged so only the row comparison can refuse.
         """
         mock_plan.return_value = _merge_plan(transactions=("t1",))
-        verify = _drift_check(MagicMock(), "dec001", _approved_merge(links=("L1",)))
+        verify = merge_drift_check(
+            MagicMock(), "dec001", _approved_merge(links=("L1",))
+        )
         assert verify is not None
 
         with pytest.raises(UserError) as excinfo:
@@ -978,7 +980,7 @@ class TestLinksSet:
         """The prompt named which settings move; a different plan is a different yes."""
         mock_plan.return_value = _merge_plan(transactions=("t1",))
         approved = replace(_approved_merge(), settings_moved=("display_name",))
-        verify = _drift_check(MagicMock(), "dec001", approved)
+        verify = merge_drift_check(MagicMock(), "dec001", approved)
         assert verify is not None
 
         drifted = replace(
@@ -1002,7 +1004,7 @@ class TestLinksSet:
             settings_moved=("credit_limit",),
             settings_revision=(("CAND001", None), ("PROV1", "2026-01-01T00:00:00")),
         )
-        verify = _drift_check(MagicMock(), "dec001", approved)
+        verify = merge_drift_check(MagicMock(), "dec001", approved)
         assert verify is not None
 
         drifted = replace(
@@ -1030,7 +1032,7 @@ class TestLinksSet:
         """
         mock_plan.return_value = _merge_plan(transactions=("t1",))
         approved = _approved_merge(decisions=("dec001", "dec002"))
-        verify = _drift_check(MagicMock(), "dec001", approved)
+        verify = merge_drift_check(MagicMock(), "dec001", approved)
         assert verify is not None
 
         swapped = _accept_impact(decisions=("dec001", "dec003"))

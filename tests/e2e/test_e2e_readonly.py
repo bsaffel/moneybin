@@ -186,6 +186,19 @@ class TestNoDBCommands:
         assert "MONEYBIN_" not in result.stderr
         assert "Traceback" not in result.stderr
 
+    @pytest.mark.parametrize("output_args", [[], ["--output", "json"]])
+    def test_interactive_review_refuses_scripted_input(
+        self, e2e_env: dict[str, str], output_args: list[str]
+    ) -> None:
+        """The implemented workflow rejects nonterminal input without hanging."""
+        result = run_cli(
+            "review", "--interactive", *output_args, env=e2e_env, timeout=15
+        )
+        assert result.exit_code == 2
+        assert "requires a terminal" in result.stderr
+        assert "not yet implemented" not in result.stdout + result.stderr
+        assert "Traceback" not in result.stderr
+
     def test_db_ps(self) -> None:
         result = run_cli("db", "ps")
         result.assert_success()
@@ -214,8 +227,6 @@ class TestStubCommands:
             ["sync", "schedule", "remove"],
             ["budget", "set", "Food", "500"],
             ["budget", "delete", "Food"],
-            # Only the explicit walk is a stub; a bare `review` prints counts.
-            ["review", "--interactive"],
         ],
         ids=lambda c: " ".join(c),
     )

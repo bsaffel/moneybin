@@ -254,9 +254,15 @@ class AccountLinksService:
             return 0
 
     def pending(
-        self, progress: Callable[[ProgressEvent], None] | None = None
+        self,
+        *,
+        limit: int | None = None,
+        decision_id: str | None = None,
+        progress: Callable[[ProgressEvent], None] | None = None,
     ) -> list[PendingLinkGroup]:
         """Return pending decisions grouped by provisional account.
+
+        ``limit`` selects complete groups; ``decision_id`` selects its full group.
 
         Reads ``AccountLinkDecisionsRepo.list_pending()`` (already ordered
         ``provisional_account_id, decision_id``) and groups into
@@ -265,7 +271,16 @@ class AccountLinksService:
         table is not yet materialized (``CatalogException`` guard).
         Read-only — no audit emitted.
         """
-        rows = self._decisions.list_pending()
+        rows = (
+            self._decisions.list_pending()
+            if limit is None and decision_id is None
+            else self._decisions.list_pending_groups(
+                group_columns=("provisional_account_id",),
+                item_id_columns=("provisional_account_id",),
+                limit=limit,
+                decision_id=decision_id,
+            )
+        )
         if not rows:
             return []
 

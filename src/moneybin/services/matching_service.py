@@ -43,7 +43,7 @@ from moneybin.matching.persistence import (
     get_pending_matches,
 )
 from moneybin.matching.priority import seed_source_priority
-from moneybin.tables import MATCH_DECISIONS
+from moneybin.tables import DIM_ACCOUNTS, INT_TRANSACTIONS_UNIONED, MATCH_DECISIONS
 
 if TYPE_CHECKING:
     from moneybin.matching.engine import MatchResult
@@ -540,7 +540,11 @@ class MatchingService:
         return component_key
 
     def get_pending(
-        self, *, match_type: str | None = None, limit: int | None = None
+        self,
+        *,
+        match_type: str | None = None,
+        limit: int | None = None,
+        match_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return pending match decisions awaiting review, enriched with component_key.
 
@@ -552,9 +556,11 @@ class MatchingService:
         Transfer rows are not grouped; their ``component_key`` is their own
         ``match_id``.
 
-        ``limit`` is pushed to SQL; None returns all pending.
+        ``limit`` and optional exact ``match_id`` are pushed to SQL.
         """
-        rows = get_pending_matches(self._db, match_type=match_type, limit=limit)
+        rows = get_pending_matches(
+            self._db, match_type=match_type, limit=limit, match_id=match_id
+        )
         if not rows:
             return rows
 
@@ -571,6 +577,28 @@ class MatchingService:
             enriched.append({**row, "component_key": component_key})
 
         return enriched
+
+    def get_source_observation(
+        self, *, source_type: str, source_transaction_id: str, account_id: str
+    ) -> dict[str, Any] | None:
+        """Read one exact matcher observation, before dedup loses either side."""
+        result = self._db.execute(
+            f"""
+            SELECT tx.source_type, tx.source_transaction_id, tx.account_id,
+                   accounts.display_name AS account_name, tx.transaction_date,
+                   tx.amount, tx.currency_code, tx.description
+            FROM {INT_TRANSACTIONS_UNIONED.full_name} AS tx
+            LEFT JOIN {DIM_ACCOUNTS.full_name} AS accounts
+              ON accounts.account_id = tx.account_id
+            WHERE tx.source_type = ? AND tx.source_transaction_id = ?
+              AND tx.account_id = ?
+            """,  # TableRef constants and parameterized source/account keys
+            [source_type, source_transaction_id, account_id],
+        )
+        row = result.fetchone()
+        if row is None:
+            return None
+        return dict(zip([column[0] for column in result.description], row, strict=True))
 
     def count_pending_dedup_groups(self, *, match_type: str | None = None) -> int:
         """Distinct dedup components across the FULL pending queue (not one page).

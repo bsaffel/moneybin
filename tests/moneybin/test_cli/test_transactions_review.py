@@ -69,11 +69,11 @@ def test_review_type_filter_without_status_prints_the_count(
     assert "matches pending" in out
 
 
-def test_interactive_is_the_only_stubbed_path() -> None:
-    """The unbuilt walk is reachable only by asking for it by name."""
+def test_interactive_requires_a_terminal() -> None:
+    """A scripted call fails before the terminal workflow can ask for input."""
     result = runner.invoke(app, ["review", "--interactive"])
-    assert result.exit_code == 0
-    assert "not yet implemented" in result.output.lower()
+    assert result.exit_code == 2
+    assert "requires a terminal" in result.output.lower()
 
 
 @patch("moneybin.services.matching_service.MatchingService")
@@ -870,3 +870,255 @@ def test_review_status_json_type_filter(
     assert "matches_pending" in payload
     assert "categorize_pending" not in payload
     assert "total" not in payload
+
+
+@pytest.mark.parametrize("output_args", [[], ["--output", "json"]])
+def test_categorization_reject_uses_versioned_service_without_prompt(
+    output_args: list[str],
+) -> None:
+    from moneybin.protocol.write_contracts import CategorizationDecisionRequest
+    from moneybin.services.review_decisions_service import (
+        OrdinaryApplyOutcome,
+        OrdinaryDecisionPlanItem,
+    )
+
+    request = CategorizationDecisionRequest(
+        kind="categorization", decision_id="cat_attempt", decision="reject"
+    )
+    with (
+        patch("moneybin.cli.commands.transactions.review.get_database"),
+        patch("moneybin.cli.commands.transactions.review.choose_required") as choose,
+        patch(
+            "moneybin.services.review_decisions_service.ReviewDecisionsService"
+        ) as service,
+    ):
+        service.return_value.apply_ordinary.return_value = OrdinaryApplyOutcome(
+            (OrdinaryDecisionPlanItem(request, True, "rejected"),), None
+        )
+        result = runner.invoke(
+            app,
+            ["review", "--type", "categorize", "--reject", "cat_attempt", *output_args],
+        )
+    assert result.exit_code == 0, result.output
+    choose.assert_not_called()
+    assert service.return_value.apply_ordinary.call_args.args[0] == [request]
+    if output_args:
+        receipt = json.loads(result.stdout)["data"]
+        assert receipt["results"][0]["decision_id"] == "cat_attempt"
+        assert receipt["results"][0]["status"] == "rejected"
+        assert receipt["applied_count"] == 1
+    else:
+        assert "rejected" in result.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--confirm", "other"], ["--confirm-all"], ["--interactive"], ["--status"]],
+)
+def test_categorize_reject_rejects_conflicting_modes_before_database(
+    extra: list[str],
+) -> None:
+    with patch("moneybin.cli.commands.transactions.review.get_database") as database:
+        result = runner.invoke(
+            app, ["review", "--type", "categorize", "--reject", "cat_attempt", *extra]
+        )
+    assert result.exit_code == 2
+    database.assert_not_called()
+
+
+def test_json_review_requires_explicit_queue_even_when_terminal_is_available() -> None:
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_terminal_policy"
+        ) as policy,
+        patch(
+            "moneybin.cli.commands.transactions.review.choose_required",
+            return_value="matches",
+        ) as choose,
+        patch("moneybin.cli.commands.transactions.review.get_database") as database,
+    ):
+        policy.return_value.interactive = True
+        result = runner.invoke(
+            app, ["review", "--reject", "cat_attempt", "--output", "json"]
+        )
+    assert result.exit_code == 2
+    choose.assert_not_called()
+    database.assert_not_called()
+
+
+def test_scripted_categorization_discovery_and_rejection_persists_versioned_status(
+    db: object,
+) -> None:
+    from contextlib import nullcontext
+    from typing import cast
+
+    from moneybin.database import Database
+    from moneybin.repositories.categorization_decisions_repo import (
+        CategorizationDecisionsRepo,
+    )
+    from tests.moneybin.db_helpers import create_core_tables
+
+    database = cast(Database, db)
+    create_core_tables(database)
+    database.execute("""
+        INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount,
+             currency_code, description, source_type)
+        VALUES ('scripted-transaction', 'synthetic-account', DATE '2026-10-15',
+                -1.00, 'USD', 'Synthetic purchase', 'manual')
+    """)
+    database.execute("""INSERT INTO core.dim_accounts (account_id, display_name, archived)
+                       VALUES ('synthetic-account', 'Synthetic account', FALSE)""")
+    from tests.moneybin.db_helpers import derive_is_categorizable
+
+    database.execute("UPDATE core.fct_transactions SET is_transfer = FALSE")
+    derive_is_categorizable(database)
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_database",
+            return_value=nullcontext(database),
+        ),
+        patch(
+            "moneybin.cli.commands.transactions.categorize.get_database",
+            return_value=nullcontext(database),
+        ) as read_database,
+        patch("moneybin.cli.commands.transactions.review.choose_required") as choose,
+    ):
+        pending = runner.invoke(
+            app, ["transactions", "categorize", "pending", "--output", "json"]
+        )
+        assert pending.exit_code == 0, pending.output
+        pending_row = json.loads(pending.stdout)["data"]["transactions"][0]
+        assert pending_row["transaction_id"] == "scripted-transaction"
+        decision_id = pending_row["decision_id"]
+        assert decision_id
+        repo = CategorizationDecisionsRepo(database)
+        assert repo.fetch_by_id(decision_id) is None
+        assert read_database.call_args.kwargs == {"read_only": True}
+        text_pending = runner.invoke(app, ["transactions", "categorize", "pending"])
+        assert text_pending.exit_code == 0, text_pending.output
+        assert decision_id in text_pending.stdout
+
+        rejected = runner.invoke(
+            app,
+            [
+                "review",
+                "--type",
+                "categorize",
+                "--reject",
+                decision_id,
+                "--output",
+                "json",
+            ],
+        )
+        assert rejected.exit_code == 0, rejected.output
+        receipt = json.loads(rejected.stdout)["data"]
+        stored = repo.fetch_by_id(decision_id)
+        assert stored is not None
+        assert stored["status"] == "rejected"
+        assert stored["attempt_number"] == 1
+        assert receipt["results"][0]["decision_id"] == decision_id
+        assert receipt["results"][0]["status"] == stored["status"]
+        audit_operation = database.execute(
+            "SELECT DISTINCT operation_id FROM app.audit_log WHERE target_table = 'categorization_decisions' AND target_id = ?",
+            [decision_id],
+        ).fetchall()
+        assert audit_operation == [(receipt["operation_id"],)]
+        after = runner.invoke(
+            app, ["transactions", "categorize", "pending", "--output", "json"]
+        )
+        after_row = json.loads(after.stdout)["data"]["transactions"][0]
+        assert after_row["transaction_id"] == "scripted-transaction"
+        assert after_row["decision_id"] is None
+
+        for invalid_id in (decision_id, "cat_missing"):
+            invalid = runner.invoke(
+                app,
+                [
+                    "review",
+                    "--type",
+                    "categorize",
+                    "--reject",
+                    invalid_id,
+                    "--output",
+                    "json",
+                ],
+            )
+            assert invalid.exit_code == 1, invalid.output
+            assert json.loads(invalid.stdout)["error"] is not None
+        assert database.execute(
+            "SELECT COUNT(*) FROM app.categorization_decisions"
+        ).fetchone() == (1,)
+        choose.assert_not_called()
+
+
+def test_scripted_categorization_rejection_refuses_transaction_no_longer_eligible(
+    db: object,
+) -> None:
+    """A queued decision cannot suppress categorization after eligibility moves."""
+    from contextlib import nullcontext
+    from typing import cast
+
+    from moneybin.database import Database
+    from moneybin.repositories.categorization_decisions_repo import (
+        CategorizationDecisionsRepo,
+    )
+    from tests.moneybin.db_helpers import (
+        create_core_tables,
+        derive_is_categorizable,
+    )
+
+    database = cast(Database, db)
+    create_core_tables(database)
+    database.execute("""
+        INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount,
+             currency_code, description, source_type, is_transfer)
+        VALUES ('stale-scripted-transaction', 'synthetic-account', DATE '2026-10-15',
+                -1.00, 'USD', 'Synthetic purchase', 'manual', FALSE)
+    """)
+    database.execute("""INSERT INTO core.dim_accounts (account_id, display_name, archived)
+                       VALUES ('synthetic-account', 'Synthetic account', FALSE)""")
+    derive_is_categorizable(database)
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_database",
+            return_value=nullcontext(database),
+        ),
+        patch(
+            "moneybin.cli.commands.transactions.categorize.get_database",
+            return_value=nullcontext(database),
+        ),
+    ):
+        pending = runner.invoke(
+            app, ["transactions", "categorize", "pending", "--output", "json"]
+        )
+        assert pending.exit_code == 0, pending.output
+        decision_id = json.loads(pending.stdout)["data"]["transactions"][0][
+            "decision_id"
+        ]
+        assert decision_id
+
+        database.execute("""
+            UPDATE core.fct_transactions
+            SET is_transfer = TRUE
+            WHERE transaction_id = 'stale-scripted-transaction'
+        """)
+        derive_is_categorizable(database)
+
+        rejected = runner.invoke(
+            app,
+            [
+                "review",
+                "--type",
+                "categorize",
+                "--reject",
+                decision_id,
+                "--output",
+                "json",
+            ],
+        )
+
+    assert rejected.exit_code == 1, rejected.output
+    assert json.loads(rejected.stdout)["error"] is not None
+    assert CategorizationDecisionsRepo(database).fetch_by_id(decision_id) is None

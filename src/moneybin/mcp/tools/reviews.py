@@ -265,7 +265,7 @@ def _pending_categorization_rows(
     reports one broken queue as ``unavailable`` instead of failing the
     aggregate.
     """
-    raw_rows = service.list_uncategorized_transactions(limit=None) or []
+    raw_rows = service.list_pending_review_transactions(limit=None) or []
     ordered = sorted(
         raw_rows,
         key=lambda row: (
@@ -274,9 +274,6 @@ def _pending_categorization_rows(
         ),
         reverse=True,
     )
-    attempts = service.project_pending_review_attempts([
-        str(row["transaction_id"]) for row in ordered
-    ])
     result: list[CategorizationReviewRow] = []
     for row in ordered:
         transaction = PendingTxnRow(
@@ -299,12 +296,9 @@ def _pending_categorization_rows(
             pending_transfer_match=bool(row.get("pending_transfer_match", False)),
         )
         summary = transaction.description or f"Transaction {transaction.transaction_id}"
-        attempt = attempts.get(transaction.transaction_id)
-        if attempt is None:
-            continue
         result.append(
             CategorizationReviewRow(
-                decision_id=str(attempt["decision_id"]),
+                decision_id=str(row["decision_id"]),
                 status="pending",
                 created_at=transaction.transaction_date,
                 summary=summary,
@@ -955,6 +949,8 @@ def _review_count(
     status: ReviewStatus,
 ) -> int:
     """Count one queue without materializing expensive row enrichments."""
+    if kind == "categorization" and status == "pending":
+        return CategorizationService(db).count_pending_review()
     if kind == "auto_rules":
         service = AutoRuleService(db)
         return (
