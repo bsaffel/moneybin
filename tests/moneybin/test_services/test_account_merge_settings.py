@@ -7,7 +7,7 @@ never do. Values are synthetic throughout.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -52,15 +52,16 @@ def rematch(mocker: MockerFixture) -> MagicMock:
 
 
 @pytest.fixture(autouse=True)
-def restate_ledger(mocker: MockerFixture) -> MagicMock:
-    return mocker.patch(
-        "moneybin.services.fx_accounting_refresh.restate_investment_ledger"
-    )
+def restate(mocker: MockerFixture) -> MagicMock:
+    """Catch any separate post-merge restate; the rematch's transform is the rebuild."""
+    return mocker.patch("moneybin.services.restate.restate_after_write")
 
 
-@pytest.fixture(autouse=True)
-def restate_fx(mocker: MockerFixture) -> MagicMock:
-    return mocker.patch("moneybin.services.fx_accounting_refresh.restate_fx_accounting")
+def _assert_rebuilt_by_the_rematch_alone(
+    db: Database, rematch: MagicMock, restate: MagicMock
+) -> None:
+    rematch.assert_called_once_with(db, steps=["match", "transform"], actor="cli")
+    restate.assert_not_called()
 
 
 @pytest.fixture()
@@ -113,6 +114,8 @@ def _put(db: Database, account_id: str, **fields: Any) -> None:
         "investment_source_type": None,
         "investment_source_type_changed_at": None,
         "archived_changed_at": None,
+        "currency_code_changed_at": None,
+        "default_cost_basis_method_changed_at": None,
     }
     values.update(fields)
     AccountSettingsRepo(db).set(account_id=account_id, actor="cli", **values)
@@ -258,80 +261,76 @@ def test_the_absorbed_row_is_left_untouched(
     assert _row(db, _ABSORBED) == before
 
 
-def test_a_moved_investment_source_is_stamped_and_restates_the_ledger_after_commit(
-    svc: AccountLinksService, db: Database, restate_ledger: MagicMock
+_STAMPS = {
+    "investment_source_type": "investment_source_type_changed_at",
+    "currency_code": "currency_code_changed_at",
+    "default_cost_basis_method": "default_cost_basis_method_changed_at",
+}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("investment_source_type", "manual"),
+        ("currency_code", "EUR"),
+        ("default_cost_basis_method", "hifo"),
+    ],
+)
+def test_a_moved_ledger_setting_is_stamped_and_rebuilt_by_the_rematch(
+    svc: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    restate: MagicMock,
+    field: str,
+    value: str,
 ) -> None:
-    _put(db, _ABSORBED, investment_source_type="manual", currency_code="EUR")
-    began = db.execute("SELECT NOW()::TIMESTAMP").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+    """The rematch's transform rebuilds every model, so no separate restate runs."""
+    _put(db, _ABSORBED, **{field: value})
+    began = db.execute("SELECT NOW()::TIMESTAMPTZ").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
 
     svc.set(_DECISION, target_account_id=_SURVIVOR)
 
     row = _row(db, _SURVIVOR)
     assert row is not None
-    assert row["investment_source_type"] == "manual"
-    assert isinstance(row["investment_source_type_changed_at"], datetime)
-    assert row["investment_source_type_changed_at"] >= began
-    restate_ledger.assert_called_once_with(db)
+    assert row[field] == value
+    assert isinstance(row[_STAMPS[field]], datetime)
+    assert row[_STAMPS[field]] >= began
+    unmoved = set(_STAMPS) - {field}
+    assert all(row[_STAMPS[other]] is None for other in unmoved)
+    _assert_rebuilt_by_the_rematch_alone(db, rematch, restate)
 
 
-def test_a_moved_currency_restates_fx_accounting_not_the_ledger(
-    svc: AccountLinksService,
-    db: Database,
-    restate_ledger: MagicMock,
-    restate_fx: MagicMock,
-) -> None:
-    _put(db, _ABSORBED, currency_code="EUR", display_name="Vacation Fund")
-
-    svc.set(_DECISION, target_account_id=_SURVIVOR)
-
-    restate_ledger.assert_not_called()
-    restate_fx.assert_called_once_with(db, account_currency_changed=True)
-
-
-def test_a_moved_cost_basis_method_restates_fx_without_a_currency_change(
-    svc: AccountLinksService, db: Database, restate_fx: MagicMock
-) -> None:
-    _put(db, _ABSORBED, default_cost_basis_method="hifo")
-
-    svc.set(_DECISION, target_account_id=_SURVIVOR)
-
-    restate_fx.assert_called_once_with(db, account_currency_changed=False)
-
-
-def test_a_label_only_move_restates_nothing(
-    svc: AccountLinksService,
-    db: Database,
-    restate_ledger: MagicMock,
-    restate_fx: MagicMock,
+def test_a_label_only_move_stamps_nothing(
+    svc: AccountLinksService, db: Database, rematch: MagicMock, restate: MagicMock
 ) -> None:
     _put(db, _ABSORBED, display_name="Vacation Fund")
 
     svc.set(_DECISION, target_account_id=_SURVIVOR)
 
-    restate_ledger.assert_not_called()
-    restate_fx.assert_not_called()
+    row = _row(db, _SURVIVOR)
+    assert row is not None
+    assert all(row[stamp] is None for stamp in _STAMPS.values())
+    _assert_rebuilt_by_the_rematch_alone(db, rematch, restate)
 
 
-def test_the_batched_path_restates_when_its_caller_runs_the_post_commit_pass(
-    svc: AccountLinksService, db: Database, restate_ledger: MagicMock
+def test_the_batched_path_leaves_the_rebuild_to_its_callers_rematch(
+    svc: AccountLinksService, db: Database, rematch: MagicMock, restate: MagicMock
 ) -> None:
-    """Under ``in_outer_txn`` the caller owns the post-commit work, as for the re-match."""
+    """Under ``in_outer_txn`` the caller owns the post-commit re-match."""
     _put(db, _ABSORBED, investment_source_type="manual")
 
     db.begin()
     svc.set(_DECISION, target_account_id=_SURVIVOR, in_outer_txn=True)
     db.commit()
-    restate_ledger.assert_not_called()
+    rematch.assert_not_called()
 
     svc.rematch_after_merge()
 
-    restate_ledger.assert_called_once_with(db)
-    svc.rematch_after_merge()
-    restate_ledger.assert_called_once()
+    _assert_rebuilt_by_the_rematch_alone(db, rematch, restate)
 
 
-def test_a_rolled_back_merge_owes_no_restatement(
-    svc: AccountLinksService, db: Database, restate_ledger: MagicMock
+def test_a_rolled_back_merge_moves_nothing_and_rebuilds_nothing(
+    svc: AccountLinksService, db: Database, rematch: MagicMock, restate: MagicMock
 ) -> None:
     _put(db, _ABSORBED, investment_source_type="manual")
 
@@ -342,8 +341,8 @@ def test_a_rolled_back_merge_owes_no_restatement(
         svc.set(_DECISION, target_account_id=_SURVIVOR, verify_accept=refuse)
 
     assert _row(db, _SURVIVOR) is None
-    svc.rematch_after_merge()
-    restate_ledger.assert_not_called()
+    rematch.assert_not_called()
+    restate.assert_not_called()
 
 
 def test_nothing_to_move_writes_no_settings_audit_row(
@@ -493,20 +492,16 @@ def test_undo_restores_both_rows_without_moving_updated_at_back(
     survivor_after = _row(db, _SURVIVOR)
     assert survivor_after is not None
     assert _row(db, _ABSORBED) == absorbed_before
-    # Every captured column returns to its pre-merge value. The two source
-    # columns are the exception: undoing a source change advances the change
-    # time (so re-entering ledger rows are never rewound).
-    unchanged = {
-        k: v
-        for k, v in survivor_before.items()
-        if k != "investment_source_type_changed_at"
-    }
+    # Every captured column returns to its pre-merge value. The change times of
+    # the moved ledger settings are the exception: undoing a change advances
+    # its change time (so re-entering ledger rows are never rewound).
+    advanced = ("investment_source_type_changed_at", "currency_code_changed_at")
+    unchanged = {k: v for k, v in survivor_before.items() if k not in advanced}
     assert {k: survivor_after[k] for k in unchanged} == unchanged
     assert survivor_after["investment_source_type"] is None
-    assert (
-        survivor_after["investment_source_type_changed_at"]
-        >= (merged["investment_source_type_changed_at"])
-    )
+    assert survivor_after["currency_code"] is None
+    for stamp in advanced:
+        assert survivor_after[stamp] >= merged[stamp]
     # The row's own updated_at is restored with the rest of the image; the
     # watermark that must not rewind is the change time, which dim_accounts
     # and the ledger fold in (asserted above).
@@ -722,7 +717,7 @@ def test_the_cli_drift_check_refuses_a_moved_value_edited_after_approval(
             _DECISION,
             target_account_id=_SURVIVOR,
             decided_by="user",
-            verify_accept=cli_links._drift_check(db, _DECISION, approved),  # pyright: ignore[reportPrivateUsage]  # test exercises the drift seam
+            verify_accept=cli_links.merge_drift_check(db, _DECISION, approved),  # pyright: ignore[reportPrivateUsage]  # test exercises the drift seam
         )
 
     assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
@@ -801,12 +796,16 @@ def test_label_merge_preserves_existing_canonical_type_override(
 def test_moved_classification_restates_account_projections(
     svc: AccountLinksService,
     db: Database,
-    restate_fx: MagicMock,
+    rematch: MagicMock,
+    restate: MagicMock,
     field: str,
     value: str,
 ) -> None:
     _put(db, _ABSORBED, **{field: value})
     svc.set(_DECISION, target_account_id=_SURVIVOR)
-    restate_fx.assert_called_once_with(
-        db, account_currency_changed=False, account_type_changed=True
-    )
+    row = _row(db, _SURVIVOR)
+    assert row is not None
+    stamp = row[f"{field}_changed_at"]
+    assert stamp is not None and stamp.utcoffset() == timedelta(0)
+    assert row[field] == value
+    _assert_rebuilt_by_the_rematch_alone(db, rematch, restate)

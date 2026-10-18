@@ -286,7 +286,7 @@ def test_categorize_pending_stacked_amount_uses_the_ascii_minus(
 @patch("moneybin.cli.commands.transactions.categorize.get_database")
 @pytest.mark.parametrize(
     ("columns", "expects_table"),
-    [(80, False), (81, True)],
+    [(106, False), (107, True)],
 )
 def test_categorize_pending_uses_a_table_only_when_complete_rows_fit(
     mock_get_db: MagicMock,
@@ -295,9 +295,17 @@ def test_categorize_pending_uses_a_table_only_when_complete_rows_fit(
     expects_table: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The measured boundary keeps complete facts in a table when possible."""
+    """One column below/at fit preserves both IDs and all financial facts."""
+    from moneybin.repositories.categorization_decisions_repo import (
+        categorization_decision_id,
+    )
+
     mock_get_db.return_value.__enter__.return_value = MagicMock()
     mock_svc_cls.return_value.list_uncategorized_transactions.return_value = [_ROW]
+    decision_id = categorization_decision_id("txn_1", attempt_number=2)
+    mock_svc_cls.return_value.project_pending_review_attempts.return_value = {
+        "txn_1": {"decision_id": decision_id}
+    }
     monkeypatch.setattr(
         "moneybin.cli.commands.transactions.categorize.get_terminal_policy",
         lambda *, no_pager=False: _pager_policy(page=False, width=columns),
@@ -308,6 +316,10 @@ def test_categorize_pending_uses_a_table_only_when_complete_rows_fit(
     assert result.exit_code == 0, result.output
     assert ("+-" in result.stdout) is expects_table
     assert ("Transaction 1" in result.stdout) is not expects_table
+    assert "txn_1" in result.stdout
+    assert decision_id in result.stdout
+    assert "Decision ID" in result.stdout
+    assert "-42.50 n/a" in result.stdout
 
 
 @patch("moneybin.services.categorization.CategorizationService")

@@ -87,6 +87,8 @@ def _set_account_default_method(db: Database, method: str) -> None:
         investment_source_type=None,
         investment_source_type_changed_at=None,
         archived_changed_at=None,
+        currency_code_changed_at=None,
+        default_cost_basis_method_changed_at=None,
         actor="cli",
     )
 
@@ -1546,7 +1548,7 @@ class TestSelectLots:
         assert _selected_lots(db) == []
 
     def test_unknown_disposal_hints_at_refresh(self, db: Database) -> None:
-        # A just-recorded sell lives in raw until `refresh run` materializes core;
+        # A just-recorded sell lives in raw until `moneybin refresh` materializes core;
         # the not-found error must point the user at refresh, not read as a dead
         # end for an id the record tool just returned as valid.
         _seed_disposal_and_lots(db)

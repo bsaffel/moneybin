@@ -257,6 +257,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "net_worth is null, or when the preceding value is zero.",
             DataClass.AGGREGATE,
             numeric=True,
+            percent=True,
         ),
     ),
     semantics=ReportSemantics(

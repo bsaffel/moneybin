@@ -34,7 +34,7 @@ from tests.scenarios._runner.steps import run_step
 
 pytestmark = [pytest.mark.scenarios, pytest.mark.slow]
 
-_RESTATE_AFTER_SETTINGS = ["core.dim_accounts", "core.fct_balances_daily"]
+_RESTATE_AFTER_SETTINGS = ["app.account_settings"]
 _CURRENCY_MEASURES = (
     "total_assets",
     "total_liabilities",

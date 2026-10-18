@@ -863,7 +863,6 @@ async def _sync_disconnect_absent(
     connection = live.connection
     remote = live.remote_result
     actions = [
-        "Run refresh_run so core tables drop the purged rows.",
         "Use sync_status to inspect remaining institution connections.",
     ]
     if remote is not None and connection is not None:
@@ -939,7 +938,7 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
             "local history and may require revocation in SimpleFIN Bridge. "
             "Purge confirmation binds the connection, credential generation, "
             "full account identities, and local deletion scope; a disconnect "
-            "confirmation cannot authorize purge. Run refresh_run afterwards.",
+            "confirmation cannot authorize purge. ",
         ),
     ):
         register(

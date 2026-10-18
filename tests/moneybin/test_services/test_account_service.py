@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -33,7 +34,30 @@ from moneybin.services.account_service import (
     suggest_holder_category,
     suggest_subtype,
 )
+from moneybin.tables import ACCOUNT_SETTINGS
 from tests.moneybin.db_helpers import create_core_tables, create_core_tables_raw
+
+
+@pytest.fixture(autouse=True)
+def restate(mocker: MockerFixture) -> MagicMock:
+    """Record post-write restates instead of running them.
+
+    ``test_db`` builds core tables but no SQLMesh state, so a real restate would
+    reach for a 'prod' environment that never exists here. A test that pins which
+    writes restate requests this fixture by name.
+    """
+    return mocker.patch("moneybin.services.restate.restate_after_write")
+
+
+@pytest.fixture()
+def live_restate(mocker: MockerFixture, restate: MagicMock) -> None:
+    """Exercise the real post-commit failure path against a built warehouse seam."""
+    mocker.stop(restate)
+    mocker.patch("moneybin.services.restate._has_prod_environment", return_value=True)
+
+
+def _assert_restated_settings(restate: MagicMock, db: Database) -> None:
+    restate.assert_called_once_with(db, [ACCOUNT_SETTINGS], committed_change="setting")
 
 
 class TestSubtypeClassifier:
@@ -178,7 +202,7 @@ class TestPreV063SchemaToleranceOnReadOnlyOpen:
     migrations, and SQLMesh model materialization entirely -- so an existing
     profile whose ``core.dim_accounts`` was materialized before this column
     existed hits this path on every ``moneybin accounts list`` / ``accounts
-    get`` until something else (``transform apply``, ``refresh run``, or an
+    get`` until something else (``transform apply``, ``refresh``, or an
     ``mcp serve`` boot self-heal) rebuilds the model. Neither read-only NOR
     write-mode ``Database.__init__`` ever materializes SQLMesh models
     automatically, so this is not a transient window -- an unconditional
@@ -267,6 +291,8 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
             investment_source_type=None,
             investment_source_type_changed_at=None,
             archived_changed_at=None,
+            currency_code_changed_at=None,
+            default_cost_basis_method_changed_at=None,
             actor="cli",
         )
         loaded = AccountService(pre_v063_rw_db)._load_settings("acct_a")
@@ -493,6 +519,8 @@ def _seed_blank_settings_row(db: Database) -> None:
         investment_source_type=None,
         investment_source_type_changed_at=None,
         archived_changed_at=None,
+        currency_code_changed_at=None,
+        default_cost_basis_method_changed_at=None,
         actor="test",
     )
 
@@ -587,13 +615,8 @@ class TestAccountServiceMutators:
 
     @pytest.mark.unit
     def test_settings_update_partial(
-        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+        self, test_db: Database, restate: MagicMock
     ) -> None:
-        refresh = MagicMock(return_value=MagicMock(applied=True))
-        monkeypatch.setattr(
-            "moneybin.services.transform_service.TransformService.restate_models",
-            refresh,
-        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a",
@@ -609,7 +632,7 @@ class TestAccountServiceMutators:
         assert loaded is not None
         assert loaded.account_subtype == "checking"
         assert loaded.credit_limit == Decimal("5000.00")
-        refresh.assert_called_once_with(["core.dim_accounts"])
+        _assert_restated_settings(restate, test_db)
 
     @pytest.mark.unit
     def test_settings_update_clears_with_clear_sentinel(
@@ -622,13 +645,8 @@ class TestAccountServiceMutators:
 
     @pytest.mark.unit
     def test_settings_update_soft_validation_warning(
-        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+        self, test_db: Database, restate: MagicMock
     ) -> None:
-        refresh = MagicMock(return_value=MagicMock(applied=True))
-        monkeypatch.setattr(
-            "moneybin.services.transform_service.TransformService.restate_models",
-            refresh,
-        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a", actor="cli", account_subtype="chequing"
@@ -638,7 +656,7 @@ class TestAccountServiceMutators:
         assert warnings[0]["field"] == "account_subtype"
         assert "chequing" in warnings[0]["message"]
         assert warnings[0]["suggestion"] == "checking"
-        refresh.assert_called_once_with(["core.dim_accounts"])
+        _assert_restated_settings(restate, test_db)
 
     @pytest.mark.unit
     def test_settings_update_holder_category_warning(self, test_db: Database) -> None:
@@ -652,7 +670,7 @@ class TestAccountServiceMutators:
 
     @pytest.mark.unit
     def test_a_padded_canonical_value_warns_about_nothing(
-        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+        self, test_db: Database, restate: MagicMock
     ) -> None:
         """The warning has to describe the value that actually gets stored.
 
@@ -661,18 +679,13 @@ class TestAccountServiceMutators:
         raw caller value instead reports that MoneyBin does not know a subtype
         it just recognized, normalized, and stored.
         """
-        refresh = MagicMock(return_value=MagicMock(applied=True))
-        monkeypatch.setattr(
-            "moneybin.services.transform_service.TransformService.restate_models",
-            refresh,
-        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a", actor="cli", account_subtype="  checking  "
         )
         assert updated.account_subtype == "checking"
         assert warnings == []
-        refresh.assert_called_once_with(["core.dim_accounts"])
+        _assert_restated_settings(restate, test_db)
 
     @pytest.mark.unit
     def test_a_padded_unknown_value_is_reported_by_its_stored_spelling(
@@ -694,19 +707,8 @@ class TestAccountServiceMutators:
 
     @pytest.mark.unit
     def test_settings_update_default_cost_basis_method_persists(
-        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+        self, test_db: Database, restate: MagicMock
     ) -> None:
-        restated: list[tuple[Database, bool]] = []
-
-        def record_restatement(
-            db: Database, *, account_currency_changed: bool = False
-        ) -> None:
-            restated.append((db, account_currency_changed))
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a", actor="cli", default_cost_basis_method="hifo"
@@ -716,54 +718,97 @@ class TestAccountServiceMutators:
         loaded = svc._load_settings("acct_a")
         assert loaded is not None
         assert loaded.default_cost_basis_method == "hifo"
-        assert restated == [(test_db, False)]
+        assert loaded.default_cost_basis_method_changed_at is not None
+        _assert_restated_settings(restate, test_db)
 
     @pytest.mark.unit
-    def test_currency_update_restates_from_the_account_dimension(
-        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    def test_currency_update_stamps_and_restates_account_settings(
+        self, test_db: Database, restate: MagicMock
     ) -> None:
-        restated: list[tuple[Database, bool]] = []
-
-        def record_restatement(
-            db: Database, *, account_currency_changed: bool = False
-        ) -> None:
-            restated.append((db, account_currency_changed))
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
-
-        AccountService(test_db).settings_update(
+        updated, _ = AccountService(test_db).settings_update(
             "acct_a", actor="cli", currency_code="EUR"
         )
 
-        assert restated == [(test_db, True)]
+        assert updated.currency_code_changed_at is not None
+        _assert_restated_settings(restate, test_db)
 
     @pytest.mark.unit
-    def test_unrelated_account_setting_does_not_restate_fx_accounting(
-        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"archived": True},
+            {"include_in_net_worth": False},
+            {"currency_code": "EUR"},
+            {"default_cost_basis_method": "hifo"},
+            {"investment_source_type": "manual"},
+            {"account_type": "depository"},
+            {"account_subtype": "checking"},
+        ],
+        ids=lambda change: next(iter(change)),
+    )
+    def test_a_setting_a_materialized_model_reads_restates(
+        self, test_db: Database, restate: MagicMock, change: dict[str, Any]
     ) -> None:
-        restated: list[Database] = []
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            restated.append,
-        )
+        """Archive and include toggles restate too: the ledger and net worth read them."""
+        AccountService(test_db).settings_update("acct_a", actor="cli", **change)
 
-        AccountService(test_db).settings_update(
-            "acct_a", actor="cli", display_name="Everyday"
-        )
+        _assert_restated_settings(restate, test_db)
 
-        assert restated == []
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"display_name": "Everyday"},
+            {"official_name": "Everyday Checking"},
+            {"last_four": "1234"},
+            {"holder_category": "personal"},
+            {"credit_limit": Decimal("500.00")},
+        ],
+        ids=lambda change: next(iter(change)),
+    )
+    def test_a_display_only_setting_does_not_restate(
+        self, test_db: Database, restate: MagicMock, change: dict[str, Any]
+    ) -> None:
+        """Only the core.dim_accounts view reads these, so they cost no rebuild."""
+        AccountService(test_db).settings_update("acct_a", actor="cli", **change)
+
+        restate.assert_not_called()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("field", "value", "stamp"),
+        [
+            ("currency_code", "EUR", "currency_code_changed_at"),
+            (
+                "default_cost_basis_method",
+                "hifo",
+                "default_cost_basis_method_changed_at",
+            ),
+        ],
+    )
+    def test_repeating_the_current_ledger_setting_neither_stamps_nor_restates(
+        self,
+        test_db: Database,
+        restate: MagicMock,
+        field: str,
+        value: str,
+        stamp: str,
+    ) -> None:
+        svc = AccountService(test_db)
+        change: dict[str, Any] = {field: value}
+        first, _ = svc.settings_update("acct_a", actor="cli", **change)
+        restate.reset_mock()
+
+        again, _ = svc.settings_update("acct_a", actor="cli", **change)
+
+        assert getattr(again, stamp) == getattr(first, stamp)
+        assert getattr(first, stamp) is not None
+        restate.assert_not_called()
 
     @pytest.mark.unit
     def test_settings_update_default_cost_basis_method_clear_sentinel(
-        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+        self, test_db: Database
     ) -> None:
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            MagicMock(),
-        )
         svc = AccountService(test_db)
         svc.settings_update("acct_a", actor="cli", default_cost_basis_method="fifo")
         updated, _ = svc.settings_update(
@@ -786,19 +831,8 @@ class TestInvestmentSourceChoice:
     """``investment_source_type`` on ``settings_update`` (investment-source-choice.md)."""
 
     @pytest.fixture()
-    def restate_ledger(self, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-        restate = MagicMock()
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            restate,
-        )
-        return restate
-
-    @pytest.fixture()
-    def pre_v069_rw_db(
-        self, test_db: Database, mock_secret_store: MagicMock
-    ) -> Generator[Database, None, None]:
-        """A write-mode Database over account_settings missing the V069 pair."""
+    def pre_v069_rw_db(self, test_db: Database) -> Database:
+        """Project the already-open UTC fixture onto the pre-V069 catalog."""
         test_db.execute(
             "ALTER TABLE app.account_settings "
             "DROP COLUMN investment_source_type_changed_at"
@@ -806,19 +840,10 @@ class TestInvestmentSourceChoice:
         test_db.execute(
             "ALTER TABLE app.account_settings DROP COLUMN investment_source_type"
         )
-        db_path = test_db.path
-        test_db.close()
-        rw_db = Database(
-            db_path,
-            secret_store=mock_secret_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
-        yield rw_db
-        rw_db.close()
+        return test_db
 
     def test_set_saves_and_stamps_change_time(
-        self, test_db: Database, restate_ledger: MagicMock
+        self, test_db: Database, restate: MagicMock
     ) -> None:
         updated, _ = AccountService(test_db).settings_update(
             "acct_a", actor="cli", investment_source_type="manual"
@@ -830,10 +855,10 @@ class TestInvestmentSourceChoice:
         assert loaded is not None
         assert loaded.investment_source_type == "manual"
         assert loaded.investment_source_type_changed_at is not None
-        restate_ledger.assert_called_once_with(test_db)
+        _assert_restated_settings(restate, test_db)
 
     def test_setting_the_same_source_again_keeps_the_change_time(
-        self, test_db: Database, restate_ledger: MagicMock
+        self, test_db: Database, restate: MagicMock
     ) -> None:
         svc = AccountService(test_db)
         first, _ = svc.settings_update(
@@ -848,10 +873,10 @@ class TestInvestmentSourceChoice:
             second.investment_source_type_changed_at
             == first.investment_source_type_changed_at
         )
-        restate_ledger.assert_called_once()
+        restate.assert_called_once()
 
     def test_clear_advances_the_change_time(
-        self, test_db: Database, restate_ledger: MagicMock
+        self, test_db: Database, restate: MagicMock
     ) -> None:
         svc = AccountService(test_db)
         first, _ = svc.settings_update(
@@ -868,10 +893,10 @@ class TestInvestmentSourceChoice:
             cleared.investment_source_type_changed_at
             >= first.investment_source_type_changed_at
         )
-        assert restate_ledger.call_count == 2
+        assert restate.call_count == 2
 
     def test_clearing_an_unset_source_changes_nothing(
-        self, test_db: Database, restate_ledger: MagicMock
+        self, test_db: Database, restate: MagicMock
     ) -> None:
         updated, _ = AccountService(test_db).settings_update(
             "acct_a", actor="cli", investment_source_type=CLEAR
@@ -879,11 +904,11 @@ class TestInvestmentSourceChoice:
 
         assert updated.investment_source_type is None
         assert updated.investment_source_type_changed_at is None
-        restate_ledger.assert_not_called()
+        restate.assert_not_called()
 
     @pytest.mark.parametrize("value", ["ofx", "MANUAL", ""])
     def test_unknown_or_uppercase_source_is_refused(
-        self, test_db: Database, restate_ledger: MagicMock, value: str
+        self, test_db: Database, restate: MagicMock, value: str
     ) -> None:
         svc = AccountService(test_db)
         with pytest.raises(UserError) as caught:
@@ -892,10 +917,10 @@ class TestInvestmentSourceChoice:
         assert caught.value.code == "mutation_invalid_input"
         assert "manual, plaid" in str(caught.value)
         assert svc._load_settings("acct_a") is None
-        restate_ledger.assert_not_called()
+        restate.assert_not_called()
 
     def test_source_choice_on_unmigrated_catalog_is_refused(
-        self, pre_v069_rw_db: Database, restate_ledger: MagicMock
+        self, pre_v069_rw_db: Database, restate: MagicMock
     ) -> None:
         svc = AccountService(pre_v069_rw_db)
         with pytest.raises(UserError) as caught:
@@ -907,26 +932,12 @@ class TestInvestmentSourceChoice:
         renamed, _ = svc.settings_update("acct_a", actor="cli", display_name="Renamed")
         assert renamed.display_name == "Renamed"
         assert renamed.investment_source_type is None
-        restate_ledger.assert_not_called()
+        restate.assert_not_called()
 
     @pytest.mark.parametrize("account_type", [None, "investment"])
-    def test_source_change_restates_from_dim_accounts_not_fx(
-        self,
-        test_db: Database,
-        monkeypatch: pytest.MonkeyPatch,
-        account_type: str | None,
+    def test_source_and_currency_change_restate_account_settings_once(
+        self, test_db: Database, restate: MagicMock, account_type: str | None
     ) -> None:
-        restate_ledger = MagicMock()
-        restate_fx = MagicMock()
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            restate_ledger,
-        )
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            restate_fx,
-        )
-
         AccountService(test_db).settings_update(
             "acct_a",
             actor="cli",
@@ -935,11 +946,10 @@ class TestInvestmentSourceChoice:
             account_type=account_type,
         )
 
-        restate_ledger.assert_called_once()
-        restate_fx.assert_not_called()
+        _assert_restated_settings(restate, test_db)
 
     def test_investment_source_type_reader(
-        self, test_db: Database, restate_ledger: MagicMock
+        self, test_db: Database, restate: MagicMock
     ) -> None:
         svc = AccountService(test_db)
         assert svc.investment_source_type("acct_a") is None
@@ -1154,6 +1164,8 @@ class TestSettingsUpdateExtended:
             investment_source_type=None,
             investment_source_type_changed_at=None,
             archived_changed_at=None,
+            currency_code_changed_at=None,
+            default_cost_basis_method_changed_at=None,
             actor="test",
         )
         loaded = AccountService(test_db)._load_settings("acct_a")
@@ -2084,6 +2096,7 @@ class TestCanonicalTypeOverride:
         assert cleared.official_name == "Formal"
         assert cleared.account_subtype == "checking"
 
+    @pytest.mark.usefixtures("live_restate")
     def test_type_change_refreshes_projection(
         self, test_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2098,11 +2111,12 @@ class TestCanonicalTypeOverride:
         )
         service = AccountService(test_db)
         service.settings_update("acct_a", actor="cli", account_type="depository")
-        refresh.assert_called_once_with(["core.dim_accounts"])
+        refresh.assert_called_once_with([ACCOUNT_SETTINGS.full_name])
         refresh.reset_mock()
         service.settings_update("acct_a", actor="cli", account_type=CLEAR)
-        refresh.assert_called_once_with(["core.dim_accounts"])
+        refresh.assert_called_once_with([ACCOUNT_SETTINGS.full_name])
 
+    @pytest.mark.usefixtures("live_restate")
     def test_type_refresh_failure_reports_saved_setting(
         self, test_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2139,6 +2153,7 @@ def test_type_change_requires_upgrade_but_legacy_settings_work(
     assert saved.display_name == "Legacy" and saved.holder_category == "joint"
 
 
+@pytest.mark.usefixtures("live_restate")
 def test_type_undo_refresh_failure_reports_committed_restore(
     test_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2163,11 +2178,12 @@ def test_type_undo_refresh_failure_reports_committed_restore(
     with pytest.raises(UserError, match="undo was committed") as error:
         UndoService(test_db).undo(clear_op, actor="cli")
     assert error.value.code == "refresh_model_failed"
-    refresh.assert_called_once_with(["core.dim_accounts"])
+    refresh.assert_called_once_with([ACCOUNT_SETTINGS.full_name])
     restored = service._load_settings("acct_a")
     assert restored is not None and restored.to_dict()["account_type"] == "credit"
 
 
+@pytest.mark.usefixtures("live_restate")
 def test_subtype_refresh_failure_reports_durably_saved_setting(
     test_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2191,13 +2207,6 @@ def test_subtype_refresh_failure_reports_durably_saved_setting(
 
 class TestInvestmentSourceConfirmation:
     """``investment_source_confirmation`` words what the ledger now uses and ignores."""
-
-    @pytest.fixture(autouse=True)
-    def _no_restate(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
-        )
 
     @staticmethod
     def _evidence(
@@ -2315,3 +2324,42 @@ class TestInvestmentSourceConfirmation:
         detail = AccountService(extended_db).get_account("acct_get3")
         assert detail is not None
         assert detail.investment_source_type is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("account_type", "depository"), ("account_subtype", "checking")],
+)
+def test_classification_stamp_edit_noop_clear_and_undo(
+    test_db: Database, restate: MagicMock, field: str, value: str
+) -> None:
+    """Classification changes advance eligibility freshness; renames do not."""
+    from datetime import UTC, datetime
+
+    from moneybin.services.mutation_context import operation
+    from moneybin.services.undo_service import UndoService
+
+    svc = AccountService(test_db)
+    change: dict[str, Any] = {field: value}
+    changed, _ = svc.settings_update("acct_a", actor="cli", **change)
+    stamp_name = f"{field}_changed_at"
+    stamp = getattr(changed, stamp_name, None)
+    assert isinstance(stamp, datetime), "classification edit must stamp freshness"
+    assert stamp.utcoffset() == UTC.utcoffset(stamp)
+    restate.reset_mock()
+    repeated, _ = svc.settings_update("acct_a", actor="cli", **change)
+    assert getattr(repeated, stamp_name) == stamp
+    svc.settings_update("acct_a", actor="cli", display_name="Renamed")
+    assert getattr(svc._load_settings("acct_a"), stamp_name) == stamp
+    restate.assert_not_called()
+
+    clear: dict[str, Any] = {field: CLEAR}
+    with operation() as clear_op:
+        cleared, _ = svc.settings_update("acct_a", actor="cli", **clear)
+    assert getattr(cleared, field) is None
+    assert getattr(cleared, stamp_name) >= stamp
+    UndoService(test_db).undo(clear_op, actor="cli")
+    restored = svc._load_settings("acct_a")
+    assert restored is not None
+    assert getattr(restored, field) == value
+    assert getattr(restored, stamp_name) >= getattr(cleared, stamp_name)

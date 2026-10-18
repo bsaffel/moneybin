@@ -268,6 +268,17 @@ class OutputColumn:
     `.claude/rules/cli.md` reserves grouping for counts and keeps a rate or a
     per-unit price out of it. Requires ``numeric``.
     """
+    percent: bool = False
+    """A ``numeric`` column storing a ratio, rendered as a percent: ``0.094`` → ``+9.4%``.
+
+    Text only — ``--output json`` and MCP carry the stored fraction. Requires
+    ``numeric``; exclusive with ``grouped``, since a ratio is not a count.
+    """
+    uncategorized: bool = False
+    """A NULL here means no category was assigned; the text table prints it
+    ``Uncategorized``. Declared rather than read off ``DataClass.CATEGORY``, which
+    also covers ``subcategory``, where a NULL means something else. Text only.
+    """
     currency_basis: CurrencyBasis | None = None
     """``None`` (default) — this amount is in the row's own currency, the one
     ``ReportSemantics.currency`` names, and ``convert_records`` prices it from
@@ -347,6 +358,16 @@ class OutputColumn:
             raise ValueError(
                 f"column {self.name!r} declares grouped without numeric; "
                 "thousands grouping refines a bare-number column"
+            )
+        if self.percent and (not self.numeric or self.grouped):
+            raise ValueError(
+                f"column {self.name!r} declares percent without numeric, or with "
+                "grouped; a percent refines a bare-number column that is not a count"
+            )
+        if self.uncategorized and self.data_class is not DataClass.CATEGORY:
+            raise ValueError(
+                f"column {self.name!r} declares uncategorized but its data_class "
+                f"{self.data_class.value!r} is not category"
             )
         if self.currency_basis is not None and self.data_class not in MONEY_CLASSES:
             raise ValueError(

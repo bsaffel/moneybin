@@ -191,13 +191,15 @@ Commands: [`reference/cli/system.md`](../reference/cli/system.md).
 What needs your attention, across every queue that holds a pending decision.
 A bare `moneybin review` prints the counts for all five queues: matches,
 uncategorized, account-links, merchant-links, security-links. `--type` narrows
-to one queue; `--confirm <id>` and `--reject <id>` decide one pending match
-without opening a queue command and require `--type matches`; `--confirm-all`
-accepts the whole match queue. To see the rows behind a count, use that queue's
-own command — `transactions matches pending`, `transactions categorize
-pending`, `accounts links pending`, `merchants links pending`, `investments
-securities links pending`. The item-by-item walk (`--interactive`) is not built
-yet. Commands: [`reference/cli/review.md`](../reference/cli/review.md).
+to one queue. `--interactive` walks pending decisions in a terminal, with
+accept, reject, skip, and quit actions; `--limit` bounds the items shown.
+For scripted match decisions, use `--type matches` with `--confirm <id>`,
+`--reject <id>`, or `--confirm-all`. To reject a categorization attempt, discover
+its ID with `transactions categorize pending --pending-only`, then pass
+`--type categorize --reject <decision-id>`. To inspect the queues, use
+`transactions matches pending`, `transactions categorize pending`,
+`accounts links pending`, `merchants links pending`, or `investments securities
+links pending`. Commands: [`reference/cli/review.md`](../reference/cli/review.md).
 
 ## Ingestion
 
@@ -781,6 +783,48 @@ moneybin system status --output json \
   && echo "data present" \
   || moneybin transactions categorize run
 ```
+
+### Interactive review
+
+Run `moneybin review --interactive --type all --limit 20` in a terminal to
+review matches, uncategorized transactions, and account, merchant, and security
+links. Bare `moneybin review` continues to show queue counts.
+
+Each item shows its evidence before offering accept, reject, skip, or quit.
+Identity groups show all candidates together; accepting requires an explicit
+candidate choice. Categorization requires an explicit active category. Account
+merges keep their impact confirmation. Security identity accepts merge and delete
+the provisional security; price-feed accepts only bind a key.
+
+The session limit counts every displayed item, including skipped items; one
+identity group counts as one item. Changed decisions are skipped for fresh review.
+Each authorized decision commits separately, so quitting or cancelling keeps
+earlier decisions and prints their saved count. JSON output and redirected input
+reject interactive mode before opening a writable database. Use the existing
+`transactions matches set`, `transactions categorize`, `accounts links set`,
+`merchants links set`, and `investments securities links set` commands for
+scripted decisions. Categorization rejection uses the existing review command:
+
+```bash
+moneybin transactions categorize pending --pending-only --output json
+moneybin review --type categorize --reject <decision-id> --output json
+```
+
+Use `data.transactions[].decision_id` from the pending response, or the complete
+Decision ID in its text output. IDs are projected without creating decisions;
+`null` means the transaction has no pending review attempt, including after a
+rejection. The transaction remains uncategorized until an assignment is committed.
+JSON review decisions require an explicit `--type` and never prompt for it.
+
+`--pending-only` filters eligible review attempts before applying the limit, so
+closed rejections cannot hide older pending items. Without that flag, the command
+keeps its uncategorized-inventory view, including rejected rows with a null
+Decision ID. Review counts use current pending attempts, so those rejected rows
+are absent from `moneybin review` counts until their review lifecycle changes.
+Interactive revalidation checks the selected transaction, independently of newer
+queue arrivals.
+
+
 
 ## See also
 

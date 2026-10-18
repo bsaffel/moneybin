@@ -32,11 +32,18 @@ from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_dispatch import is_registered, repo_for
+from moneybin.sqlmesh_freshness import (
+    fully_restates,
+    input_class,
+    restates,
+    restating_columns,
+)
 from moneybin.tables import (
     AUDIT_LOG,
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     LOT_SELECTIONS,
+    TableRef,
 )
 from moneybin.temporal import format_utc
 
@@ -153,76 +160,30 @@ def _undo_action(
     )
 
 
-def _fx_restatement_requirement(
-    events: list[AuditEvent],
-) -> tuple[bool, bool, bool, bool]:
-    """Return changes to FX inputs, account currency, type, and investment source."""
-    needs_restatement = False
-    account_currency_changed = False
-    account_type_changed = False
-    investment_source_changed = False
+def _restated_inputs(events: list[AuditEvent]) -> list[TableRef]:
+    """The restating ``app.*`` inputs an undo changed, per the freshness registry.
+
+    A table with display-only columns counts only when a restating column moved
+    between the before and after images, so undoing a rename restates nothing.
+    """
+    inputs: dict[str, TableRef] = {}
     for event in events:
-        if event.target_schema != "app":
+        if event.target_schema != "app" or not event.target_table:
             continue
-        if event.target_table == "exchange_rate_overrides":
-            needs_restatement = True
+        entry = input_class(TableRef("app", event.target_table))
+        if entry is None or not restates(entry.table):
             continue
-        if event.target_table == "profile_settings":
+        table = entry.table
+        if not fully_restates(table):
             before = event.before_value or {}
             after = event.after_value or {}
-            if before.get("home_currency") != after.get("home_currency"):
-                needs_restatement = True
-            continue
-        if event.target_table == "match_decisions":
-            before = event.before_value or {}
-            after = event.after_value or {}
-            before_is_accepted_transfer = (
-                before.get("match_type") == "transfer"
-                and before.get("match_status") == "accepted"
-                and before.get("reversed_at") is None
-            )
-            after_is_accepted_transfer = (
-                after.get("match_type") == "transfer"
-                and after.get("match_status") == "accepted"
-                and after.get("reversed_at") is None
-            )
-            if before_is_accepted_transfer != after_is_accepted_transfer:
-                needs_restatement = True
-            before_endpoints = (before.get("account_id"), before.get("account_id_b"))
-            after_endpoints = (after.get("account_id"), after.get("account_id_b"))
-            if (
-                before_is_accepted_transfer
-                and after_is_accepted_transfer
-                and before_endpoints != after_endpoints
-            ):
-                needs_restatement = True
-                account_currency_changed = True
-            continue
-        if event.target_table != "account_settings":
-            continue
-        before = event.before_value or {}
-        after = event.after_value or {}
-        if any(
-            before.get(field) != after.get(field)
-            for field in ("account_type", "account_subtype")
-        ):
-            needs_restatement = True
-            account_type_changed = True
-        if before.get("currency_code") != after.get("currency_code"):
-            needs_restatement = True
-            account_currency_changed = True
-        if before.get("default_cost_basis_method") != after.get(
-            "default_cost_basis_method"
-        ):
-            needs_restatement = True
-        if before.get("investment_source_type") != after.get("investment_source_type"):
-            investment_source_changed = True
-    return (
-        needs_restatement,
-        account_currency_changed,
-        account_type_changed,
-        investment_source_changed,
-    )
+            moved = {
+                k for k in before.keys() | after.keys() if before.get(k) != after.get(k)
+            }
+            if not restating_columns(table, moved):
+                continue
+        inputs.setdefault(table.full_name, table)
+    return list(inputs.values())
 
 
 class UndoService:
@@ -359,30 +320,11 @@ class UndoService:
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
         )
-        (
-            needs_fx_restatement,
-            account_currency_changed,
-            account_type_changed,
-            investment_source_changed,
-        ) = _fx_restatement_requirement(undone)
-        if investment_source_changed:
-            # The account root covers the FX root, so one restate serves both.
-            from moneybin.services.fx_accounting_refresh import (
-                restate_investment_ledger,
-            )
+        restated = _restated_inputs(undone)
+        if restated:
+            from moneybin.services.restate import restate_after_write
 
-            restate_investment_ledger(self._db, committed_change="undo")
-        elif needs_fx_restatement:
-            from moneybin.services.fx_accounting_refresh import (
-                restate_fx_accounting,
-            )
-
-            restate_fx_accounting(
-                self._db,
-                account_currency_changed=account_currency_changed,
-                committed_change="undo",
-                **({"account_type_changed": True} if account_type_changed else {}),
-            )
+            restate_after_write(self._db, restated, committed_change="undo")
         return UndoResult(
             undo_operation_id=undo_op,
             undone_operation_id=operation_id,

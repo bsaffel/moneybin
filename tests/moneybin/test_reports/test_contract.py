@@ -513,6 +513,41 @@ def test_grouped_without_numeric_is_refused() -> None:
         )
 
 
+def test_uncategorized_on_a_non_category_column_is_refused() -> None:
+    """Only a category column has a NULL that means no category was assigned."""
+    with pytest.raises(ValueError, match="uncategorized"):
+        OutputColumn(
+            name="description",
+            description="Text.",
+            data_class=DataClass.DESCRIPTION,
+            uncategorized=True,
+        )
+
+
+def test_percent_without_numeric_is_refused() -> None:
+    """A percent refines a bare-number column, like thousands grouping does."""
+    with pytest.raises(ValueError, match="percent"):
+        OutputColumn(
+            name="yoy_pct",
+            description="Ratio.",
+            data_class=DataClass.AGGREGATE,
+            percent=True,
+        )
+
+
+def test_a_percent_column_cannot_also_be_grouped() -> None:
+    """A ratio is not a count; the two refinements format the same cell two ways."""
+    with pytest.raises(ValueError, match="percent"):
+        OutputColumn(
+            name="yoy_pct",
+            description="Ratio.",
+            data_class=DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
+            percent=True,
+        )
+
+
 def test_a_currency_basis_outside_the_vocabulary_is_refused() -> None:
     """The same runtime gate as `money_kind`, for the same reason.
 

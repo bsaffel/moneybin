@@ -8,6 +8,7 @@ from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.matching.engine import MatchResult, MatchRunError
 from moneybin.services.matching_service import MatchingService
+from moneybin.tables import MATCH_DECISIONS
 
 
 def test_run_delegates_to_transaction_matcher() -> None:
@@ -43,16 +44,13 @@ def test_auto_accept_transfers_passed_through() -> None:
     "result",
     [MatchResult(transfers_retired=1), MatchResult(accepted_transfers=1)],
 )
-def test_run_restates_fx_after_committed_transfer_changes(result: MatchResult) -> None:
-    """A clean matcher run restates FX after accepting or retiring a transfer."""
+def test_run_restates_after_committed_decision_changes(result: MatchResult) -> None:
+    """A clean matcher run hands its result to the match-run restate."""
     db = MagicMock()
     with (
         patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
         patch("moneybin.services.matching_service.seed_source_priority"),
-        patch(
-            "moneybin.services.fx_accounting_refresh."
-            "restate_fx_accounting_after_match_run"
-        ) as restate,
+        patch("moneybin.services.restate.restate_after_match_run") as restate,
     ):
         matcher_cls.return_value.run.return_value = result
 
@@ -61,18 +59,15 @@ def test_run_restates_fx_after_committed_transfer_changes(result: MatchResult) -
     restate.assert_called_once_with(db, result)
 
 
-def test_run_restates_fx_after_partial_transfer_failure() -> None:
-    """A failed matcher run restates FX when its partial effects committed."""
+def test_run_restates_after_partial_failure() -> None:
+    """A failed matcher run restates the partial effects that committed."""
     db = MagicMock()
     partial = MatchResult(transfers_retired=1)
     failure = MatchRunError(RuntimeError("tier 4 boom"), partial=partial)
     with (
         patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
         patch("moneybin.services.matching_service.seed_source_priority"),
-        patch(
-            "moneybin.services.fx_accounting_refresh."
-            "restate_fx_accounting_after_match_run"
-        ) as restate,
+        patch("moneybin.services.restate.restate_after_match_run") as restate,
     ):
         matcher_cls.return_value.run.side_effect = failure
 
@@ -90,14 +85,13 @@ def test_run_preserves_partial_outcome_when_restatement_also_fails() -> None:
     match_failure = RuntimeError("tier 4 boom")
     failure = MatchRunError(match_failure, partial=partial)
     restatement_failure = UserError(
-        "FX restatement failed", code=error_codes.REFRESH_MODEL_FAILED
+        "restatement failed", code=error_codes.REFRESH_MODEL_FAILED
     )
     with (
         patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
         patch("moneybin.services.matching_service.seed_source_priority"),
         patch(
-            "moneybin.services.fx_accounting_refresh."
-            "restate_fx_accounting_after_match_run",
+            "moneybin.services.restate.restate_after_match_run",
             side_effect=restatement_failure,
         ),
     ):
@@ -113,23 +107,51 @@ def test_run_preserves_partial_outcome_when_restatement_also_fails() -> None:
     assert caught.value.__cause__ is restatement_failure
 
 
-def test_run_skips_fx_restatement_without_transfer_changes() -> None:
-    """Dedup-only matcher effects do not rebuild FX accounting."""
+@pytest.mark.parametrize(
+    ("result", "restated"),
+    [
+        (MatchResult(auto_merged=1), True),
+        (MatchResult(accepted_transfers=1), True),
+        (MatchResult(transfers_retired=1), True),
+        (MatchResult(pending_review=1, pending_transfers=1), False),
+    ],
+    ids=["dedup-merge", "accepted-transfer", "retired-transfer", "pending-only"],
+)
+def test_run_restates_match_decisions_only_after_an_accept_or_retire(
+    result: MatchResult, restated: bool
+) -> None:
+    """A dedup-only run restates too: merged transactions re-key the ledger."""
     db = MagicMock()
-    result = MatchResult(auto_merged=1)
     with (
         patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
         patch("moneybin.services.matching_service.seed_source_priority"),
-        patch(
-            "moneybin.services.fx_accounting_refresh."
-            "restate_fx_accounting_after_match_run"
-        ) as restate,
+        patch("moneybin.services.restate.restate_after_write") as restate,
     ):
         matcher_cls.return_value.run.return_value = result
 
         assert MatchingService(db).run() is result
 
-    restate.assert_called_once_with(db, result)
+    if restated:
+        restate.assert_called_once_with(
+            db, [MATCH_DECISIONS], committed_change="match decision"
+        )
+    else:
+        restate.assert_not_called()
+
+
+def test_run_skips_the_restate_when_the_caller_transforms_next() -> None:
+    """``restate=False`` leaves the rebuild to the caller's own transform."""
+    db = MagicMock()
+    with (
+        patch("moneybin.services.matching_service.TransactionMatcher") as matcher_cls,
+        patch("moneybin.services.matching_service.seed_source_priority"),
+        patch("moneybin.services.restate.restate_after_write") as restate,
+    ):
+        matcher_cls.return_value.run.return_value = MatchResult(auto_merged=1)
+
+        MatchingService(db).run(restate=False)
+
+    restate.assert_not_called()
 
 
 def test_uses_default_settings_when_omitted() -> None:
@@ -148,11 +170,14 @@ def test_uses_default_settings_when_omitted() -> None:
 
 
 def test_undo_delegates_to_match_decisions_repo() -> None:
-    """MatchingService.undo() should delegate to MatchDecisionsRepo.reverse()."""
+    """MatchingService.undo() delegates to the repo, then restates the decisions."""
     db = MagicMock()
-    with patch(
-        "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
-    ) as repo_cls:
+    with (
+        patch(
+            "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
+        ) as repo_cls,
+        patch("moneybin.services.restate.restate_after_write") as restate,
+    ):
         MatchingService(db).undo("match-123", reversed_by="user", actor="cli")
     repo_cls.assert_called_once_with(db)
     # ``in_outer_txn`` because the reversal and the curation restore that follows
@@ -162,27 +187,35 @@ def test_undo_delegates_to_match_decisions_repo() -> None:
     )
     db.begin.assert_called_once_with()
     db.commit.assert_called_once_with()
+    restate.assert_called_once_with(db, [MATCH_DECISIONS], committed_change="undo")
 
 
 def test_undo_rolls_back_when_the_reversal_raises() -> None:
     """A refused reversal must not leave the transaction it opened dangling."""
     db = MagicMock()
-    with patch(
-        "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
-    ) as repo_cls:
+    with (
+        patch(
+            "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
+        ) as repo_cls,
+        patch("moneybin.services.restate.restate_after_write") as restate,
+    ):
         repo_cls.return_value.reverse.side_effect = ValueError("already reversed")
         with pytest.raises(ValueError, match="already reversed"):
             MatchingService(db).undo("match-123")
     db.rollback.assert_called_once_with()
     db.commit.assert_not_called()
+    restate.assert_not_called()
 
 
 def test_undo_default_reversed_by_and_actor() -> None:
     """reversed_by defaults to 'user'; actor defaults to the 'system' surface."""
     db = MagicMock()
-    with patch(
-        "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
-    ) as repo_cls:
+    with (
+        patch(
+            "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
+        ) as repo_cls,
+        patch("moneybin.services.restate.restate_after_write"),
+    ):
         MatchingService(db).undo("match-123")
     repo_cls.return_value.reverse.assert_called_once_with(
         "match-123", reversed_by="user", actor="system", in_outer_txn=True

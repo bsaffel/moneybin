@@ -73,10 +73,9 @@ class TestAccountsBalanceMutationPresentation:
         # Routed through `format_money` (rule 11): grouped thousands, same as
         # every other rendered amount — `1234.56` bypassed it entirely before.
         assert "1,234.56 USD" in result.stdout
-        # Rule 34: `reports.net_worth_accounts` reads `core.fct_balances_daily`,
-        # a FULL SQLMesh model, so the assertion is invisible until the next
-        # `refresh --step transform` — the receipt must say so.
-        assert "moneybin refresh --step transform" in result.output
+        # The service rebuilds the daily balances the assertion anchors, so the
+        # receipt points at no refresh.
+        assert "refresh --step transform" not in result.output
 
 
 class TestAccountsBalanceShow:

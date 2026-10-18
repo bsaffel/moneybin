@@ -13,14 +13,24 @@ from moneybin.sql.migrations.V069__add_investment_source_type import migrate
 from moneybin.sql.migrations.V074__add_archived_changed_at import (
     migrate as migrate_v074,
 )
-from moneybin.sql.migrations.V076__add_account_type_override import (
-    migrate as migrate_v076,
+from moneybin.sql.migrations.V075__add_ledger_setting_change_stamps import (
+    migrate as migrate_v075,
+)
+from moneybin.sql.migrations.V077__add_account_type_override import (
+    migrate as migrate_v077,
 )
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
 _NEW_COLUMNS = ("investment_source_type", "investment_source_type_changed_at")
 #: Added by later migrations, so absent from a database V069 upgrades.
-_LATER_COLUMNS = ("archived_changed_at", "account_type")
+_LATER_COLUMNS = (
+    "archived_changed_at",
+    "currency_code_changed_at",
+    "default_cost_basis_method_changed_at",
+    "account_type",
+    "account_type_changed_at",
+    "account_subtype_changed_at",
+)
 _SETTINGS_COLUMNS = ("account_id", "display_name", "archived", "include_in_net_worth")
 
 
@@ -108,10 +118,27 @@ def test_v069_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
 
     run_migration(db, migrate)
     run_migration(db, migrate_v074)
-    run_migration(db, migrate_v076)
+    run_migration(db, migrate_v075)
+    run_migration(db, migrate_v077)
 
     upgraded_schema = [
         (row[1], row[2])
         for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
     ]
-    assert upgraded_schema == fresh_schema
+    # Published migrations preserve historical naive types; fresh UTC DDL does not.
+    historical_schema = [
+        (
+            name,
+            "TIMESTAMP"
+            if name
+            in (
+                "investment_source_type_changed_at",
+                "archived_changed_at",
+                "currency_code_changed_at",
+                "default_cost_basis_method_changed_at",
+            )
+            else kind,
+        )
+        for name, kind in fresh_schema
+    ]
+    assert upgraded_schema == historical_schema

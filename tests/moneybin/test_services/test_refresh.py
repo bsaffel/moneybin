@@ -14,7 +14,7 @@ that ``refresh()``:
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from datetime import date, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -44,6 +44,7 @@ from moneybin.services.rate_backfill import (
 )
 from moneybin.services.refresh_outcome import StageOutcome
 from moneybin.services.transform_service import ApplyResult
+from moneybin.tables import EXCHANGE_RATE_COVERAGE, EXCHANGE_RATES, TableRef
 
 
 def _make_apply_result(applied: bool = True) -> ApplyResult:
@@ -143,6 +144,7 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         *,
         auto_accept_transfers: bool = False,
         actor: str = "system",
+        restate: bool = True,
     ) -> Any:
         # Mirrors `MatchingService.run`'s keyword-only signature rather than
         # absorbing `**kwargs`: a double that swallows arguments turns a caller
@@ -547,20 +549,20 @@ def test_rates_only_refresh_restates_the_spine_it_wrote_into(
         calls.append("rates")
         return RateBackfillResult(rates_written=2, pairs_failed=()), None
 
-    restated: list[str] = []
+    restated: list[tuple[list[TableRef], str]] = []
 
-    def _restate(_db: Database, *, committed_change: str) -> None:
-        restated.append(committed_change)
+    def _restate(
+        _db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        restated.append((list(inputs), committed_change))
 
     monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", _restate
-    )
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", _restate)
 
     result = refresh(MagicMock(), steps=["rates"])
 
     assert calls == ["rates"]
-    assert restated == ["exchange rate"]
+    assert restated == [([EXCHANGE_RATES, EXCHANGE_RATE_COVERAGE], "exchange rate")]
     assert result.stage("rates") == StageOutcome(
         step="rates", ran=True, counts={"rates_written": 2}
     )
@@ -578,9 +580,7 @@ def test_rates_only_refresh_skips_the_restatement_when_nothing_was_written(
 
     restate = MagicMock()
     monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", restate
-    )
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
 
     refresh(MagicMock(), steps=["rates"])
 
@@ -597,16 +597,17 @@ def test_rates_only_refresh_reports_a_failed_restatement_on_the_rates_stage(
     def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
         return RateBackfillResult(rates_written=1, pairs_failed=()), None
 
-    def _fail(_db: Database, *, committed_change: str) -> None:
+    def _fail(
+        _db: Database, _inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
         raise UserError(
-            "The exchange rate was saved, but derived FX accounting could not be rebuilt.",
+            "The exchange rate was saved, but the reports that read it could not "
+            "be rebuilt.",
             code=error_codes.REFRESH_MODEL_FAILED,
         )
 
     monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", _fail
-    )
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", _fail)
 
     result = refresh(MagicMock(), steps=["rates"])
 
@@ -614,8 +615,41 @@ def test_rates_only_refresh_reports_a_failed_restatement_on_the_rates_stage(
     assert stage is not None
     assert stage.ran is True
     assert stage.error == (
-        "The exchange rate was saved, but derived FX accounting could not be rebuilt."
+        "The exchange rate was saved, but the reports that read it could not "
+        "be rebuilt."
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("steps", "expected_restate"),
+    [(None, False), (["match"], True)],
+    ids=["transform-rebuilds-decisions", "match-only-restates-them"],
+)
+def test_match_restates_its_decisions_only_when_no_transform_follows(
+    monkeypatch: pytest.MonkeyPatch,
+    steps: list[str] | None,
+    expected_restate: bool,
+) -> None:
+    """The cascade's transform rebuilds what decisions feed; alone, match restates."""
+    patch_all_refresh_stages(monkeypatch, [])
+    restates: list[bool] = []
+
+    def _match(
+        _self: matching_service.MatchingService,
+        *,
+        auto_accept_transfers: bool = False,
+        actor: str = "system",
+        restate: bool = True,
+    ) -> Any:
+        restates.append(restate)
+        return _match_double()
+
+    monkeypatch.setattr(matching_service.MatchingService, "run", _match)
+
+    refresh(MagicMock(), steps=steps)
+
+    assert restates == [expected_restate]
 
 
 @pytest.mark.unit

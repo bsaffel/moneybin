@@ -67,8 +67,8 @@ def test_many_disjoint_pairs_are_not_penalized_by_one_shared_call() -> None:
         neighbors[left] = {right}
         neighbors[right] = {left}
 
-    start = perf_counter()
+    # No wall-clock bound: a summed bound fails by raising, not by running
+    # slow, and this ~0.5s call took over 5s on contended CI runners.
     groups = list(_groups(nodes, neighbors))
-    assert perf_counter() - start < 5.0
     assert len(groups) == 25_000
     assert all(len(group) == 2 for group in groups)

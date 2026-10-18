@@ -2,6 +2,7 @@
 
 import datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -26,6 +27,219 @@ _CITI_CSV = (
     _FIXTURES / "citi_credit.csv"
 )  # split debit/credit (Status,Date,Description,Debit,Credit,Member Name)
 _TILLER_CSV = _FIXTURES / "tiller.csv"  # headers match the built-in `tiller` format
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_reviewed_worksheet_roundtrip_applies_exact_data(
+    db: Database, tmp_path: Path, legacy: bool
+) -> None:
+    import json
+
+    import openpyxl
+
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    path = tmp_path / "workbook.xlsx"
+    book = openpyxl.Workbook()
+    first = book.active
+    assert first is not None
+    first.title = "Default"
+    second = book.create_sheet("Selected worksheet")
+    for sheet, description in [(first, "Default row"), (second, "Selected row")]:
+        sheet.append(["Date", "Amount", "Description"])
+        sheet.append(["2026-01-01", "-2", description])
+    book.save(path)
+    source = path.read_bytes()
+    service = ImportService(db)
+    prepared = service.prepare_tabular_import(
+        path,
+        source_bytes=source,
+        sheet=None if legacy else "Selected worksheet",
+        confirm=True,
+        account_name="test",
+        account_bindings={"test": "new"},
+    )
+    assert prepared.confirmation is None
+    encoded = json.loads(json.dumps(prepared.plan.to_dict()))
+    if legacy:
+        # Old staged MCP previews had no explicit worksheet input: replaying
+        # their identical bytes retains the deterministic default selection.
+        encoded.pop("sheet", None)
+    else:
+        assert encoded.get("sheet") == "Selected worksheet"
+    plan = ReviewedTabularPlan.from_dict(encoded)
+    result = service.import_file(
+        path,
+        source_bytes=source,
+        reviewed_plan=plan,
+        account_name="test",
+        account_bindings={"test": "new"},
+        refresh=False,
+        save_format=False,
+    )
+    assert result.rows_loaded == 1
+    assert db.conn.execute(
+        "SELECT description FROM raw.tabular_transactions"
+    ).fetchall() == [("Default row" if legacy else "Selected row",)]
+
+
+@pytest.mark.parametrize("sign", [None, "negative_is_income"])
+def test_prepare_tabular_import_is_read_only_and_retains_exact_decision(
+    db: Database, tmp_path: Path, mocker: MockerFixture, sign: str | None
+) -> None:
+    from moneybin.repositories.import_log_repo import ImportLogRepo
+    from moneybin.services.account_resolver import AccountResolver
+    from moneybin.services.import_service import ImportService
+
+    path = tmp_path / "geography.csv"
+    path.write_text(
+        "Date,Transaction Credit,Description,State\n2026-01-01,-2,Example,WA\n"
+    )
+    service = ImportService(db)
+    mocker.patch(
+        "moneybin.repositories.base.BaseRepo._transaction",
+        side_effect=AssertionError("repository write during preparation"),
+    )
+    mocker.patch.object(
+        AccountResolver,
+        "resolve",
+        side_effect=AssertionError("write during preparation"),
+    )
+    mocker.patch.object(
+        ImportLogRepo,
+        "begin_import",
+        side_effect=AssertionError("write during preparation"),
+    )
+    prepared = service.prepare_tabular_import(
+        path,
+        source_bytes=path.read_bytes(),
+        overrides={
+            "transaction_date": "Date",
+            "amount": "Transaction Credit",
+            "description": "Description",
+        },
+        omitted_fields=frozenset({"status"}),
+        sign=sign,
+    )
+    assert "status" not in prepared.plan.field_mapping
+    assert prepared.confirmation is not None
+    assert prepared.confirmation.reason == (
+        "sign_convention" if sign is None else "account_confirmation"
+    )
+    if sign is None:
+        from moneybin.extractors.tabular import readers
+
+        read = mocker.spy(readers, "read_file")
+        try:
+            following = service.prepare_tabular_import(
+                path,
+                source_bytes=path.read_bytes(),
+                reviewed_plan=prepared.plan,
+                sign="negative_is_income",
+            )
+        except Exception as exc:
+            pytest.fail(
+                f"Replay failed: {exc}; expected={prepared.plan.header_signature!r}; actual={read.spy_return.df.columns!r}"
+            )
+        assert following.confirmation is not None
+        assert following.confirmation.reason == "account_confirmation"
+    row = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert row is not None and row[0] == 0
+    row = db.conn.execute("SELECT count(*) FROM app.import_log").fetchone()
+    assert row is not None and row[0] == 0
+
+
+@pytest.mark.parametrize(
+    "omitted",
+    [
+        "transaction_date",
+        "description",
+        "amount",
+        "debit_amount",
+        "credit_amount",
+        "unknown",
+    ],
+)
+def test_private_omissions_refuse_required_or_unknown_fields_before_writing(
+    db: Database,
+    tmp_path: Path,
+    omitted: str,
+) -> None:
+    from moneybin.services.import_service import ImportService
+
+    path = tmp_path / "optional.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    with pytest.raises(ValueError, match="optional destination"):
+        ImportService(db).import_file(
+            path, refresh=False, _omitted_fields=frozenset({omitted})
+        )
+    count = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert count is not None and count[0] == 0
+
+
+@pytest.mark.parametrize("mode", ["implicit", "explicit", "reviewed"])
+def test_private_omissions_refuse_saved_or_reviewed_precedence_before_writing(
+    db: Database,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    path = tmp_path / "optional.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    mapping = {
+        "transaction_date": "Date",
+        "amount": "Amount",
+        "description": "Description",
+        "status": "State",
+    }
+    save_format_to_db(
+        db,
+        TabularFormat(
+            name="optional",
+            institution_name="Fixture",
+            file_type="csv",
+            header_signature=["Date", "Amount", "Description", "State"],
+            field_mapping=mapping,
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            number_format="us",
+        ),
+        actor="test",
+    )
+    kwargs: dict[str, Any] = {}
+    if mode == "explicit":
+        kwargs["format_name"] = "optional"
+    elif mode == "reviewed":
+        kwargs["reviewed_plan"] = ReviewedTabularPlan(
+            file_type="csv",
+            delimiter=",",
+            encoding="utf-8",
+            file_size=path.stat().st_size,
+            field_mapping=mapping,
+            date_format="%Y-%m-%d",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            is_multi_account=False,
+            confidence="high",
+            skip_rows=0,
+            has_header=True,
+            rows_in_file=1,
+            rows_skipped_trailing=0,
+            header_row_looks_like_data=False,
+            header_signature=sorted(["Date", "Amount", "Description", "State"]),
+            flagged_fields=[],
+        )
+    before = db.conn.execute("SELECT count(*) FROM app.audit_log").fetchone()
+    assert before is not None
+    with pytest.raises(ValueError, match="fresh tabular mapping"):
+        ImportService(db).import_file(
+            path, refresh=False, _omitted_fields=frozenset({"status"}), **kwargs
+        )
+    assert db.conn.execute("SELECT count(*) FROM app.audit_log").fetchone() == before
+    count = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert count is not None and count[0] == 0
 
 
 def _make_mapping_result(

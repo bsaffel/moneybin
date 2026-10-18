@@ -374,11 +374,11 @@ class CurrencyService:
         event = ExchangeRateOverridesRepo(self._db).set(
             base, quote, on, rate=rate, note=note, actor=self._actor
         )
-        from moneybin.services.fx_accounting_refresh import (
-            restate_fx_accounting,
-        )
+        from moneybin.services.restate import restate_after_write
 
-        restate_fx_accounting(self._db)
+        restate_after_write(
+            self._db, [EXCHANGE_RATE_OVERRIDES], committed_change="exchange rate"
+        )
         return event
 
     def delete_override(self, from_currency: str, to_currency: str, on: date) -> bool:
@@ -396,11 +396,11 @@ class CurrencyService:
         )
         if event is None:
             return False
-        from moneybin.services.fx_accounting_refresh import (
-            restate_fx_accounting,
-        )
+        from moneybin.services.restate import restate_after_write
 
-        restate_fx_accounting(self._db)
+        restate_after_write(
+            self._db, [EXCHANGE_RATE_OVERRIDES], committed_change="exchange rate"
+        )
         return True
 
     # -------------------------------- storage --------------------------------
@@ -453,11 +453,13 @@ class CurrencyService:
         """Append one observation to the cache, returning rows actually written."""
         written = self.store_observations((observation,))
         if written:
-            from moneybin.services.fx_accounting_refresh import (
-                restate_fx_accounting,
-            )
+            from moneybin.services.restate import restate_after_write
 
-            restate_fx_accounting(self._db, committed_change="exchange rate")
+            restate_after_write(
+                self._db,
+                [EXCHANGE_RATES, EXCHANGE_RATE_COVERAGE],
+                committed_change="exchange rate",
+            )
         return written
 
     def store_observations(self, observations: Sequence[RateObservation]) -> int:

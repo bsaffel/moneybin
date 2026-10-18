@@ -115,6 +115,7 @@ The engine room — the generic substrate every later milestone builds on. No do
 | **M0B** | Database engine: connection factory, migrations, writer coordination | ✅ | Short-lived per-call connections; writer coordination hardened (ADR-010 + 2026-Q2 hardening pass). |
 | **M0C** | Observability: metrics + sanitized logging | ✅ | No PII or financial data in logs. |
 | **M0D** | Shared primitives + `core.updated_at` convention | ✅ | The internal contract later features inherit. [`architecture.md`](architecture.md). |
+| **M0D.1** | Materialization freshness contract | ✅ | Model kind as a freshness contract; the hybrid materialization of the transaction identity layers. [`materialization-freshness-contract.md`](specs/materialization-freshness-contract.md). |
 | **M0E** | MCP framework: scaffold, v2 taxonomy, schema discoverability, timeouts | ✅ | `moneybin://schema`, 30s dispatch cap, response envelope. v2 naming ongoing. |
 | **M0F** | CLI framework: command taxonomy | ✅ | v1 shipped; v2 taxonomy ongoing. |
 | **M0G** | Testing infrastructure | ✅ | Synthetic data, e2e harness, scenario runner, five-tier assertion taxonomy. |

@@ -19,7 +19,7 @@ from moneybin.services.transform_service import TransformService
 _PERSISTED_INSTANTS = {
     "app.account_link_decisions": "decided_at reversed_at",
     "app.account_links": "decided_at reversed_at",
-    "app.account_settings": "updated_at investment_source_type_changed_at archived_changed_at",
+    "app.account_settings": "updated_at investment_source_type_changed_at archived_changed_at currency_code_changed_at default_cost_basis_method_changed_at account_type_changed_at account_subtype_changed_at",
     "app.ai_consent_grants": "granted_at revoked_at",
     "app.audit_log": "occurred_at",
     "app.balance_assertions": "created_at updated_at",
@@ -111,6 +111,7 @@ _DERIVED_INSTANTS = {
     "prep.stg_plaid__securities": "extracted_at loaded_at",
     "prep.stg_plaid__transactions": "extracted_at loaded_at",
     "prep.stg_security_prices": "extracted_at loaded_at",
+    "prep.int_accounts__merged": "extracted_at loaded_at updated_at investment_source_type_changed_at archived_changed_at currency_code_changed_at default_cost_basis_method_changed_at account_type_changed_at account_subtype_changed_at",
     "prep.stg_simplefin__accounts": "extracted_at loaded_at",
     "prep.stg_simplefin__balances": "balance_at extracted_at loaded_at",
     "prep.stg_simplefin__transactions": "posted_at transacted_at extracted_at loaded_at",

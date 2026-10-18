@@ -85,7 +85,27 @@ class TestMatchesRun:
 
         result = runner.invoke(app, ["run", "--skip-transform"])
         assert result.exit_code == 0
-        mock_run.assert_called_once_with(auto_accept_transfers=False, actor="cli")
+        mock_run.assert_called_once_with(
+            auto_accept_transfers=False, actor="cli", restate=False
+        )
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_run_rebuilds_through_the_service_by_default(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        from moneybin.matching.engine import MatchResult
+
+        mock_get_db.return_value = MagicMock()
+        mock_run.return_value = MatchResult(auto_merged=3)
+
+        result = runner.invoke(app, ["run"])
+        assert result.exit_code == 0
+        mock_run.assert_called_once_with(
+            auto_accept_transfers=False, actor="cli", restate=True
+        )
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.run")

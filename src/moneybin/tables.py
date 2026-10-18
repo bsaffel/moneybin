@@ -182,10 +182,11 @@ SEED_ACCOUNT_TYPE_MAP = TableRef("seeds", "account_type_map")
 SEED_INSTITUTIONS = TableRef("seeds", "institutions")
 SEED_PRICE_SOURCE_MAP = TableRef("seeds", "price_source_map")
 
-# -- Prep / staging views (built by SQLMesh transforms) --
+# -- Prep / staging models (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
 INT_TRANSACTIONS_MERGED = TableRef("prep", "int_transactions__merged")
+INT_ACCOUNTS_MERGED = TableRef("prep", "int_accounts__merged")
 STG_OFX_ACCOUNTS = TableRef("prep", "stg_ofx__accounts")
 STG_PLAID_ACCOUNTS = TableRef("prep", "stg_plaid__accounts")
 STG_PLAID_TRANSACTIONS = TableRef("prep", "stg_plaid__transactions")

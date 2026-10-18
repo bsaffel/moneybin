@@ -10,10 +10,10 @@ MODEL (
 
 SELECT
   um.merchant_id, /* UUID hex from uuid.uuid4().hex[:12] */
+  um.category_id, /* Foreign key to core.dim_categories.category_id; NULL for merchants without a default category */
   um.raw_pattern, /* Pattern matched against transaction descriptions; NULL for exemplar-only merchants (match_type='oneOf') */
   um.match_type, /* contains | exact | regex | oneOf */
   um.canonical_name, /* Normalized merchant display name */
-  um.category_id, /* Foreign key to core.dim_categories.category_id; NULL for merchants without a default category */
   COALESCE(dc.category, um.category) AS category, /* Default category resolved via category_id FK; falls back to app.user_merchants.category snapshot for orphaned rows */
   COALESCE(dc.subcategory, um.subcategory) AS subcategory, /* Default subcategory resolved via FK; same fallback as category */
   um.created_by, /* 'user' | 'ai' | 'rule' | 'plaid' | 'migration' */

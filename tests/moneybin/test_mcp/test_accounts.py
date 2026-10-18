@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import FastMCP
+from pytest_mock import MockerFixture
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -43,7 +44,17 @@ from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisio
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.entity_reference import ResolvedEntity, resolve_entity_reference
 
-pytestmark = pytest.mark.usefixtures("mcp_db")
+pytestmark = pytest.mark.usefixtures("mcp_db", "no_restate")
+
+
+@pytest.fixture()
+def no_restate(mocker: MockerFixture) -> MagicMock:
+    """Stub the post-write restate: ``mcp_db`` has tables but no SQLMesh state.
+
+    Archive, include, cost-basis, source and balance-assertion writes all
+    restate; the service tests pin which inputs each one names.
+    """
+    return mocker.patch("moneybin.services.restate.restate_after_write")
 
 
 def _seed_named_account(
@@ -1363,14 +1374,8 @@ class TestAccountsSetExtended:
         assert parsed["data"]["display_name"] is None
 
     @pytest.mark.unit
-    async def test_default_cost_basis_method_round_trips(
-        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_default_cost_basis_method_round_trips(self, mcp_db: Path) -> None:
         """default_cost_basis_method param round-trips through the payload."""
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            MagicMock(),
-        )
         result = await accounts_set(
             account_id="ACC001", default_cost_basis_method="hifo"
         )
@@ -1378,14 +1383,8 @@ class TestAccountsSetExtended:
         assert parsed["data"]["default_cost_basis_method"] == "hifo"
 
     @pytest.mark.unit
-    async def test_clear_default_cost_basis_method(
-        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_clear_default_cost_basis_method(self, mcp_db: Path) -> None:
         """default_cost_basis_method is in _CLEARABLE_FIELDS; clearing it returns NULL."""
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            MagicMock(),
-        )
         await accounts_set(account_id="ACC001", default_cost_basis_method="fifo")
         result = await accounts_set(
             account_id="ACC001", clear_fields=["default_cost_basis_method"]
@@ -1394,27 +1393,15 @@ class TestAccountsSetExtended:
         assert parsed["data"]["default_cost_basis_method"] is None
 
     @pytest.mark.unit
-    async def test_investment_source_type_round_trips(
-        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_investment_source_type_round_trips(self, mcp_db: Path) -> None:
         """investment_source_type round-trips through the payload."""
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
-        )
         result = await accounts_set(account_id="ACC001", investment_source_type="plaid")
         parsed = result.to_dict()
         assert parsed["data"]["investment_source_type"] == "plaid"
 
     @pytest.mark.unit
-    async def test_clear_investment_source_type(
-        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_clear_investment_source_type(self, mcp_db: Path) -> None:
         """investment_source_type is in _CLEARABLE_FIELDS; clearing it returns NULL."""
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
-        )
         await accounts_set(account_id="ACC001", investment_source_type="manual")
         result = await accounts_set(
             account_id="ACC001", clear_fields=["investment_source_type"]
@@ -1427,10 +1414,6 @@ class TestAccountsSetExtended:
         self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A set or clear answers with what the ledger now uses and ignores."""
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_investment_ledger",
-            MagicMock(),
-        )
         monkeypatch.setattr(
             "moneybin.services.account_service.AccountService."
             "investment_source_confirmation",
@@ -2099,9 +2082,7 @@ async def test_type_override_normalizes_and_clears_through_mcp(
     from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.refresh_outcome import StageOutcome
 
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", MagicMock()
-    )
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", MagicMock())
     refresh = MagicMock(
         return_value=RefreshResult(
             applied=True,

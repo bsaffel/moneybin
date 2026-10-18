@@ -356,9 +356,28 @@ def test_splits_clear_refuses_piped_confirmation_without_yes(
     assert len(TransactionService(db).list_splits("T1")) == 1
 
 
+def _seed_liveness_oracle(db: Database, *transaction_ids: str) -> None:
+    """Seed ``prep.int_transactions__matched``, the id resolver's liveness oracle.
+
+    Production: the same id set as ``core.fct_transactions``. Absent, the
+    resolver passes every id through unresolved.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(transaction_id VARCHAR)"
+    )
+    for transaction_id in transaction_ids:
+        db.execute(
+            "INSERT INTO prep.int_transactions__matched (transaction_id) VALUES (?)",
+            [transaction_id],
+        )
+
+
 def test_splits_clear_receipt_uses_resolved_transaction_and_actual_count(
     runner: CliRunner, db: Database
 ) -> None:
+    _seed_liveness_oracle(db, "T1")
     db.conn.execute(
         "INSERT INTO app.transaction_id_aliases "
         "(old_transaction_id, new_transaction_id, created_at) "

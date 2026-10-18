@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-10-08 -->
+<!-- Last reviewed: 2026-10-15 -->
 # Data Model
 
 The user-facing data model. Tables in `core.*`, `reports.*`, and `app.*` are the surfaces consumers (CLI, MCP, your own SQL) read from for analysis; `raw.*` and `prep.*` are readable for inspection through the agent-safe SQL paths. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
@@ -73,7 +73,7 @@ Every `reports.*` view that sums money per currency carries a `currency_code` co
 
 ### `reports.*` refresh cadence
 
-`reports.*` are SQLMesh views (`kind VIEW`), not materialized tables. They reflect the current state of `core.*` at read time. `core.*` is updated by `moneybin refresh`.
+`reports.*` are SQLMesh views (`kind VIEW`), not materialized tables. They reflect the current state of `core.*` at read time. Materialized `core.*` models rebuild on `moneybin refresh` and after any write whose value they read, so an edit through a MoneyBin command is visible on the next read.
 
 ## `core.*` — canonical analytical tables
 
@@ -81,7 +81,7 @@ Every `reports.*` view that sums money per currency carries a `currency_code` co
 
 The canonical transaction fact. Grain: one row per `transaction_id` (gold key — a deterministic SHA-256 hash unique per real-world transaction).
 
-This is a `VIEW` over `prep.int_transactions__merged` joined to category, merchant, transfer, and curation overlays. The fact already aggregates per-transaction `notes`, `tags`, and `splits` as nested `LIST(STRUCT(...))` columns — consumers should not query `app.transaction_notes` etc. directly.
+This is a `VIEW` over the materialized `prep.int_transactions__merged` joined to category, merchant, transfer, and curation overlays. The fact already aggregates per-transaction `notes`, `tags`, and `splits` as nested `LIST(STRUCT(...))` columns — consumers should not query `app.transaction_notes` etc. directly.
 
 | Column | Type | Description |
 |---|---|---|
@@ -128,7 +128,7 @@ Logical grain key: `transaction_id` (declared via the `MODEL ... grain transacti
 
 ### `core.dim_accounts`
 
-Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Joins `app.account_settings` so consumers see one resolved view — no consumer joins `app.account_settings` directly.
+Canonical accounts dimension. Grain: one row per `account_id`. A `VIEW` over the materialized `prep.int_accounts__merged`, which holds the cross-source merge and the settings materialized models read; the view joins the display-only `app.account_settings` fields, so a rename shows on the next read. No consumer joins `app.account_settings` directly.
 
 | Column | Type | Description |
 |---|---|---|
@@ -230,7 +230,7 @@ The source system's own merchant-entity reference for a gold transaction. Grain:
 
 ### `core.bridge_transfers`
 
-Confirmed transfer pairs linking two `fct_transactions` rows. Grain: one row per `transfer_id`. `VIEW` derived from `app.match_decisions` where `match_type = 'transfer'`, `match_status = 'accepted'`, and `reversed_at IS NULL` — a later-reversed match drops out even though its `match_status` still reads `'accepted'`.
+Confirmed transfer pairs linking two `fct_transactions` rows. Grain: one row per `transfer_id`. `FULL` model, restated whenever a match decision changes, derived from `app.match_decisions` where `match_type = 'transfer'`, `match_status = 'accepted'`, and `reversed_at IS NULL` — a later-reversed match drops out even though its `match_status` still reads `'accepted'`.
 
 | Column | Type | Description |
 |---|---|---|
@@ -291,7 +291,7 @@ An account that holds value (a transaction, a trade, or a broker-reported positi
 | `balance_date` | DATE | Calendar date (institution-local). |
 | `balance` | DECIMAL(18,2) | End-of-day balance; NULL when the account holds value (a transaction, a trade, or a broker-reported position) but has no balance observation. Count those rows before trusting a SUM: `SUM()` skips them silently. |
 | `is_observed` | BOOLEAN | TRUE if an authoritative observation exists for this date. |
-| `in_net_worth` | BOOLEAN | TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from `core.dim_accounts` on every refresh, which holds only while this model is kind `FULL`. |
+| `in_net_worth` | BOOLEAN | TRUE when this account counts toward net worth on this date: included in net worth, and not archived or archived on or after this date. Recomputed from the account's settings on every rebuild, and rebuilt whenever an archive or net-worth setting changes. |
 | `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated or the account has no balance observation. |
 | `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, when the account has no balance observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, and this model converts nothing, so no comparison is defined. |
 | `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day; `core.dim_accounts.currency_code` when the account has no balance observation. |

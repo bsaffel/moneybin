@@ -97,6 +97,32 @@ and prevents inconsistent overrides between surfaces.
 Precedent: `core.dim_accounts` joins `app.account_settings` (per
 `docs/specs/account-management.md`).
 
+## A Model's Kind Is a Freshness Contract
+
+A `FULL` SQLMesh model may read only values whose every writer restates it: raw
+loads, which refresh transforms, and the `app.*` inputs
+`src/moneybin/sqlmesh_freshness.py` classifies `RESTATES`. Curation — an app
+write that runs no transform (notes, tags, splits, categories, merchants, an
+account's display name) — is read only by `VIEW` models. A model that needs both
+splits into a `FULL` base and a thin `VIEW`: `prep.int_accounts__merged` under
+`core.dim_accounts` is the pattern. Materialized models read the base, never the
+view that joins curation.
+
+- **A new `app.*` table a model reads** is declared in `external_models.yaml`
+  and classified in the registry; a Python model also lists it in `depends_on`,
+  or a write to it restates nothing.
+- **A writer of a `RESTATES` input** calls
+  `services/restate.py::restate_after_write` with the table it wrote, after its
+  transaction commits. It never names a model.
+- **Changing a model's kind** needs an inventory of every writer of every input.
+- **Materialized `updated_at`** folds only restating timestamps — a field's own
+  `*_changed_at`, never a settings row's `updated_at`, which a rename advances.
+
+Two guards enforce it: `tests/integration/test_materialization_freshness.py`
+(column lineage) and `test_materialization_freshness_writes.py` (each write,
+then a full apply, changes nothing). Design:
+[`materialization-freshness-contract.md`](../../docs/specs/materialization-freshness-contract.md).
+
 ## Touchpoints When Changing a Core Fact or an App Write
 
 [`.claude/references/data-layer-touchpoints.md`](../references/data-layer-touchpoints.md)
@@ -112,6 +138,8 @@ none of it erroring at the point of the mistake. Read it before you:
 - **carry a provider-specific id through `int_transactions__merged`** — it does
   *not* pair with `canonical_source_type`, and keying a binding on that column
   silently splits one entity into two;
+- **change a model's kind, or point a materialized model at a new input** — the
+  restate cascade and both freshness guards key on the graph, not on the SQL;
 - **reuse a guarded-UPSERT write helper** for a caller that updates existing rows
   — `upsert_guarded` overwrites *every* column, so an omitted argument NULLs it.
 

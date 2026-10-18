@@ -74,10 +74,20 @@ def links_pending(
     signal, ledger overlap, and the ids to act on. Use `accounts links set` to
     decide each group.
     """
+    from moneybin.cli.progress import operation_progress
+    from moneybin.progress import ProgressEvent
+
     with handle_cli_errors():
-        with get_database(read_only=True) as db:
+        with (
+            operation_progress(
+                get_terminal_policy(no_pager=no_pager),
+                quiet=quiet or output == OutputFormat.JSON,
+            ) as report,
+            get_database(read_only=True) as db,
+        ):
+            report(ProgressEvent("Reading pending account links"))
             svc = AccountLinksService(db, actor="cli")
-            groups = svc.pending()
+            groups = svc.pending(progress=report)
             n_pending = svc.count_pending()
 
     payload = AccountLinksPendingPayload.from_service(groups, n_pending)
@@ -124,7 +134,7 @@ def links_pending(
                     (
                         c.candidate_display_name or "-",
                         c.signal,
-                        _overlap_cell(c.overlap),
+                        overlap_cell(c.overlap),
                         c.decision_id[:12],
                         c.candidate_account_id[:12],
                     )
@@ -151,7 +161,7 @@ def links_pending(
     )
 
 
-def _overlap_cell(overlap: LedgerOverlap) -> str:
+def overlap_cell(overlap: LedgerOverlap) -> str:
     """One cell of measured evidence, or an honest dash when there is none.
 
     "0 of 0" would read as two ledgers with nothing in common — evidence against
@@ -223,13 +233,13 @@ def links_set(
     with handle_cli_errors():
         approved: _ApprovedMerge | None = None
         if target_account_id is not None and not yes:
-            approved = _confirm_merge(decision_id, target_account_id)
+            approved = confirm_merge(decision_id, target_account_id)
         with get_database(read_only=False) as db:
             rematch = AccountLinksService(db, actor="cli").set(
                 decision_id,
                 target_account_id=target_account_id,
                 decided_by="user",
-                verify_accept=_drift_check(db, decision_id, approved),
+                verify_accept=merge_drift_check(db, decision_id, approved),
             )
 
     action = (
@@ -237,7 +247,7 @@ def links_set(
         if target_account_id
         else "standalone (rejected)"
     )
-    rematch_notes = _report_rematch(rematch)
+    rematch_notes = report_rematch(rematch)
     emit_human_result(
         compose_human_result(
             [
@@ -261,7 +271,7 @@ def links_set(
         raise typer.Exit(1)
 
 
-def _report_rematch(rematch: RefreshResult | None) -> list[str]:
+def report_rematch(rematch: RefreshResult | None) -> list[str]:
     """Say what the post-merge match pass did — it may have merged rows unasked.
 
     ``None`` means no pass ran (a standalone reject repoints nothing), and
@@ -488,7 +498,7 @@ def _merge_preview(
     )
 
 
-def _drift_check(
+def merge_drift_check(
     db: Database, decision_id: str, approved: _ApprovedMerge | None
 ) -> Callable[[AccountLinkAcceptImpact], None] | None:
     """Refuse the write if the merge stopped matching the sentence the operator read.
@@ -576,7 +586,7 @@ def _preflight_reason(exc: UserError) -> UserError:
     )
 
 
-def _confirm_merge(decision_id: str, target_account_id: str) -> _ApprovedMerge | None:
+def confirm_merge(decision_id: str, target_account_id: str) -> _ApprovedMerge | None:
     """Show what the merge moves, require a yes, and return what was approved.
 
     Renders the same sentence the MCP elicitation shows, from the same preflight,

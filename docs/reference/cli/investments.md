@@ -334,8 +334,8 @@ Without --currency the mark takes the currency the position is held in. A
 mark only values a holding quoted in the same currency, so a fixed default
 would write successfully and value nothing for any non-USD position.
 
-The mark lands in app; holdings value from core. Pass --refresh to rebuild
-the models in the same command, or run 'moneybin refresh' afterwards.
+The mark values holdings as soon as it is saved: the price models rebuild
+in the same command.
 
 Usage: `moneybin investments prices set [OPTIONS] {security} {price_date} {price}`
 
@@ -353,7 +353,6 @@ Usage: `moneybin investments prices set [OPTIONS] {security} {price_date} {price
 |---|---|---|---|
 | `--currency` | text |  | ISO-4217 quote currency. Defaults to the currency the position is held in; required when nothing is held or two denominations are in use. |
 | `--note` | text |  | Why this price was set (e.g. a 409A valuation) |
-| `--refresh` | flag |  | Rebuild the price models so the mark values holdings right away |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin investments prices delete
@@ -365,8 +364,8 @@ row for its date, and 'set' can only change the number, so without this a
 mark is unreachable once written. Removing one is permanent — the audit log
 records it, but the previous value is not restored by re-running anything.
 
-The removal lands in app; holdings value from core. Pass --refresh to rebuild
-the models in the same command, or run 'moneybin refresh' afterwards.
+The removal takes effect as soon as it is saved: the price models rebuild
+in the same command.
 
 Usage: `moneybin investments prices delete [OPTIONS] {security} {price_date}`
 
@@ -382,7 +381,6 @@ Usage: `moneybin investments prices delete [OPTIONS] {security} {price_date}`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--currency` | text |  | ISO-4217 quote currency. Defaults to the currency the position is held in; required when nothing is held or two denominations are in use. |
-| `--refresh` | flag |  | Rebuild the price models so the removal values holdings right away |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin investments prices list

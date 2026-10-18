@@ -18,6 +18,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services.audit_service import AuditService
+from moneybin.tables import PROFILE_SETTINGS
 
 #: Keys ``profile set`` routes to the database instead of ``config.yaml``.
 #: Undotted by construction, so they can never collide with a
@@ -93,6 +94,7 @@ class ProfileSettingsService:
                 raise UserError(
                     str(exc), code=error_codes.MUTATION_INVALID_INPUT
                 ) from exc
+            self._restate()
             return
         if key == "home_currency":
             if not isinstance(value, str):
@@ -108,11 +110,7 @@ class ProfileSettingsService:
                     "such as USD, EUR, or GBP.",
                     code=error_codes.MUTATION_INVALID_INPUT,
                 ) from exc
-            from moneybin.services.fx_accounting_refresh import (
-                restate_fx_accounting,
-            )
-
-            restate_fx_accounting(self._db)
+            self._restate()
             return
 
         try:
@@ -127,6 +125,17 @@ class ProfileSettingsService:
                 "comma-separated ISO 4217 codes such as USD, EUR, or GBP.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             ) from exc
+        self._restate()
+
+    def _restate(self) -> None:
+        """Rebuild what reads the settings row.
+
+        The currency lots read the home currency, and the change time they fold
+        comes from this row's audit history, which every setting extends.
+        """
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(self._db, [PROFILE_SETTINGS], committed_change="setting")
 
 
 def _parse_display_currency_targets(value: str | Sequence[str]) -> tuple[str, ...]:

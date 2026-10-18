@@ -15,7 +15,6 @@ import logging
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -26,6 +25,7 @@ from moneybin.errors import UserError
 from moneybin.extractors.account_identity import mask_embedded_account_number
 from moneybin.investments.identity import manual_identity_sql
 from moneybin.matching.reconciliation import record_account_merge_retirements
+from moneybin.progress import ProgressEvent
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
@@ -38,7 +38,10 @@ from moneybin.services.identity_confirmation import (
     AccountLedgerFacts,
     AccountMergeFacts,
 )
-from moneybin.services.ledger_overlap import probe_ledger_overlap
+from moneybin.services.ledger_overlap import (
+    probe_ledger_overlap,
+    probe_ledger_overlaps,
+)
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -110,7 +113,21 @@ _UNMOVED_SETTING_DEFAULTS: dict[str, Any] = {
     "include_in_net_worth": True,
     "investment_source_type_changed_at": None,
     "archived_changed_at": None,
+    "account_type_changed_at": None,
+    "account_subtype_changed_at": None,
+    "currency_code_changed_at": None,
+    "default_cost_basis_method_changed_at": None,
 }
+
+
+#: Moved settings whose change time a merge stamps, as a direct edit would.
+_MERGE_CHANGE_STAMPS = (
+    ("investment_source_type", "investment_source_type_changed_at"),
+    ("account_type", "account_type_changed_at"),
+    ("account_subtype", "account_subtype_changed_at"),
+    ("currency_code", "currency_code_changed_at"),
+    ("default_cost_basis_method", "default_cost_basis_method_changed_at"),
+)
 
 
 @dataclass(frozen=True)
@@ -153,17 +170,6 @@ def plan_settings_reconciliation(
     return SettingsReconciliation(
         moved=tuple(sorted(moved)), kept=tuple(sorted(kept)), row=row
     )
-
-
-def plan_restate_fields(moved: Iterable[str]) -> frozenset[str]:
-    """The moved settings that change ledger or FX output, not just a label."""
-    return frozenset(moved) & {
-        "account_type",
-        "account_subtype",
-        "investment_source_type",
-        "currency_code",
-        "default_cost_basis_method",
-    }
 
 
 def _resolve_display_name(db: Database, account_id: str) -> str:
@@ -228,10 +234,6 @@ class AccountLinksService:
         # reads-and-resets, so neither a failed accept nor a second merge can
         # disclose a retirement twice.
         self._transfers_retired_by_collapse = 0
-        # Moved settings the ledger must be restated for once the merge commits;
-        # same hand-off as the retirement count above, consumed by
-        # rematch_after_merge.
-        self._pending_restate: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Read-only methods
@@ -256,8 +258,16 @@ class AccountLinksService:
         except duckdb.CatalogException:
             return 0
 
-    def pending(self) -> list[PendingLinkGroup]:
+    def pending(
+        self,
+        *,
+        limit: int | None = None,
+        decision_id: str | None = None,
+        progress: Callable[[ProgressEvent], None] | None = None,
+    ) -> list[PendingLinkGroup]:
         """Return pending decisions grouped by provisional account.
+
+        ``limit`` selects complete groups; ``decision_id`` selects its full group.
 
         Reads ``AccountLinkDecisionsRepo.list_pending()`` (already ordered
         ``provisional_account_id, decision_id``) and groups into
@@ -266,7 +276,16 @@ class AccountLinksService:
         table is not yet materialized (``CatalogException`` guard).
         Read-only — no audit emitted.
         """
-        rows = self._decisions.list_pending()
+        rows = (
+            self._decisions.list_pending()
+            if limit is None and decision_id is None
+            else self._decisions.list_pending_groups(
+                group_columns=("provisional_account_id",),
+                item_id_columns=("provisional_account_id",),
+                limit=limit,
+                decision_id=decision_id,
+            )
+        )
         if not rows:
             return []
 
@@ -276,47 +295,59 @@ class AccountLinksService:
             pid = row["provisional_account_id"]
             groups.setdefault(pid, []).append(row)
 
+        if progress is not None:
+            progress(ProgressEvent("Measuring ledger overlap"))
+        # One read per question rather than per candidate: the per-candidate
+        # probes re-read the transactions fact twice each.
+        pairs = [
+            (provisional_id, d["candidate_account_id"])
+            for provisional_id, decisions in groups.items()
+            for d in decisions
+        ]
+        overlaps = dict(zip(pairs, probe_ledger_overlaps(self._db, pairs), strict=True))
+        names = _resolve_display_names(
+            self._db, {account for pair in pairs for account in pair}
+        )
+        sizes = self._ledger_sizes(groups)
+
         result: list[PendingLinkGroup] = []
         for provisional_id, decisions in groups.items():
-            prov_display = _resolve_display_name(self._db, provisional_id)
             candidates = tuple(
                 PendingLinkCandidate(
                     decision_id=d["decision_id"],
                     candidate_account_id=d["candidate_account_id"],
-                    candidate_display_name=_resolve_display_name(
-                        self._db, d["candidate_account_id"]
-                    ),
+                    candidate_display_name=names.get(d["candidate_account_id"], ""),
                     # match_signals is already decoded by list_pending(); cast for pyright.
                     signal=signal_from_match_signals(d["match_signals"]),
-                    overlap=probe_ledger_overlap(
-                        self._db,
-                        account_id=provisional_id,
-                        against_account_id=d["candidate_account_id"],
-                    ),
+                    overlap=overlaps[(provisional_id, d["candidate_account_id"])],
                 )
                 for d in decisions
             )
             result.append(
                 PendingLinkGroup(
                     provisional_account_id=provisional_id,
-                    provisional_display_name=prov_display,
+                    provisional_display_name=names.get(provisional_id, ""),
                     candidates=candidates,
-                    transactions=self._ledger_size(provisional_id),
+                    transactions=sizes.get(provisional_id, 0),
                 )
             )
         return result
 
-    def _ledger_size(self, account_id: str) -> int:
-        """How many transactions the account holds; 0 when core is not materialized."""
+    def _ledger_sizes(self, account_ids: Iterable[str]) -> dict[str, int]:
+        """Transactions held per account; absent when none or core is not materialized."""
+        ids = sorted(set(account_ids))
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" * len(ids))
         try:
-            row = self._db.execute(
-                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # TableRef constant + parameterized value
-                "WHERE account_id = ?",
-                [account_id],
-            ).fetchone()
+            rows = self._db.execute(
+                f"SELECT account_id, COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # TableRef constant + parameterized values
+                f"WHERE account_id IN ({placeholders}) GROUP BY account_id",
+                ids,
+            ).fetchall()
         except duckdb.CatalogException:
-            return 0
-        return int(row[0]) if row else 0
+            return {}
+        return {str(row[0]): int(row[1]) for row in rows}
 
     def ledger_facts(self, account_id: str) -> AccountLedgerFacts:
         """Describe one account in the terms that tell it apart from its twin.
@@ -905,7 +936,6 @@ class AccountLinksService:
           (MUTATION_INVALID_INPUT).
         """
         collapsed = 0
-        restate: frozenset[str] = frozenset()
         if not in_outer_txn:
             self._db.begin()
         try:
@@ -989,7 +1019,7 @@ class AccountLinksService:
                         actor=self._actor,
                         in_outer_txn=True,
                     )
-                restate = self._reconcile_settings(provisional_id, target_account_id)
+                self._reconcile_settings(provisional_id, target_account_id)
                 # Carry existing match decisions onto the survivor in the same
                 # transaction. They store the account_id they were made under,
                 # and both the rejected-pair key and the active-edge NodeKey are
@@ -1088,7 +1118,6 @@ class AccountLinksService:
         # would not roll back with it, and the next merge here would report a
         # transfer retired that is still accepted.
         self._transfers_retired_by_collapse += collapsed
-        self._pending_restate |= restate
         if in_outer_txn:
             return None
         # Accept/reject changed the pending count — refresh the gauge (only
@@ -1104,24 +1133,25 @@ class AccountLinksService:
 
     def _reconcile_settings(
         self, absorbed_account_id: str, survivor_account_id: str
-    ) -> frozenset[str]:
+    ) -> None:
         """Move the absorbed account's settings onto the survivor, in the caller's txn.
 
-        Returns the moved fields that need a ledger restatement after commit.
         The absorbed row stays put so undoing the merge has nothing to un-delete.
+        The rematch after commit transforms, which rebuilds what they feed.
         """
         plan = self.plan_settings(absorbed_account_id, survivor_account_id)
         if not plan.moved or plan.row is None:
-            return frozenset()
+            return
         row: dict[str, Any] = dict(plan.row)
-        changed_at: datetime | None = row["investment_source_type_changed_at"]
         # archived, archived_at, archived_changed_at and include_in_net_worth
         # never move (see _UNMOVED_SETTING_DEFAULTS): the survivor's own values
-        # ride through.
-        if "investment_source_type" in plan.moved:
-            # Same stamp AccountService.settings_update applies to a source change.
-            now_row = self._db.execute("SELECT NOW()::TIMESTAMPTZ").fetchone()
-            changed_at = now_row[0] if now_row else None
+        # ride through. A moved stamped setting takes the change time
+        # AccountService.settings_update would give it.
+        now_row = self._db.execute("SELECT NOW()::TIMESTAMPTZ").fetchone()
+        now = now_row[0] if now_row else None
+        for field_name, stamp in _MERGE_CHANGE_STAMPS:
+            if field_name in plan.moved:
+                row[stamp] = now
         self._settings.set(
             account_id=survivor_account_id,
             display_name=row.get("display_name"),
@@ -1137,33 +1167,17 @@ class AccountLinksService:
             include_in_net_worth=row["include_in_net_worth"],
             default_cost_basis_method=row.get("default_cost_basis_method"),
             investment_source_type=row.get("investment_source_type"),
-            investment_source_type_changed_at=changed_at,
+            investment_source_type_changed_at=row["investment_source_type_changed_at"],
             archived_changed_at=row["archived_changed_at"],
+            account_type_changed_at=row["account_type_changed_at"],
+            account_subtype_changed_at=row["account_subtype_changed_at"],
+            currency_code_changed_at=row["currency_code_changed_at"],
+            default_cost_basis_method_changed_at=row[
+                "default_cost_basis_method_changed_at"
+            ],
             actor=self._actor,
             in_outer_txn=True,
         )
-        return plan_restate_fields(plan.moved)
-
-    def _restate_for_settings(self, moved: frozenset[str]) -> None:
-        """Rebuild what the moved settings feed, as ``AccountService`` would."""
-        # Function-local: fx_accounting_refresh pulls in the transform stack.
-        from moneybin.services.fx_accounting_refresh import (
-            restate_fx_accounting,
-            restate_investment_ledger,
-        )
-
-        if "investment_source_type" in moved:
-            restate_investment_ledger(self._db)
-        elif moved & {"account_type", "account_subtype"}:
-            restate_fx_accounting(
-                self._db,
-                account_currency_changed="currency_code" in moved,
-                account_type_changed=True,
-            )
-        elif moved:
-            restate_fx_accounting(
-                self._db, account_currency_changed="currency_code" in moved
-            )
 
     def rematch_after_merge(self) -> RefreshResult:
         """Re-run matching now that the merge made two sources' rows co-resident.
@@ -1211,8 +1225,6 @@ class AccountLinksService:
 
         collapsed = self._transfers_retired_by_collapse
         self._transfers_retired_by_collapse = 0
-        restate = self._pending_restate
-        self._pending_restate = frozenset()
         # Emitted here rather than where the repo reverses, because this is the
         # one seam both paths reach only after their own commit — `set` calls it
         # at the end of its post-commit tail, and the batched caller calls it
@@ -1222,10 +1234,9 @@ class AccountLinksService:
         # on the next line.
         record_account_merge_retirements(collapsed)
         try:
+            # The transform rebuilds every materialized model, settings moved
+            # by the merge included.
             result = refresh(self._db, steps=["match", "transform"], actor=self._actor)
-            # Inside the same guard: a failed restate must not take the
-            # retirement disclosure with it any more than a failed rebuild does.
-            self._restate_for_settings(restate)
         except Exception:
             # The reversal committed with the merge, but `collapsed` has already
             # been taken off the instance and is only re-attached to the result

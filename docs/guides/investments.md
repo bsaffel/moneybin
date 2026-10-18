@@ -165,8 +165,7 @@ Price mark saved
 Security: 78a2a9e9fc16
 Price:    52.25 USD
 Date:     2026-09-10
-Prices will value holdings after moneybin refresh.
-$ uv run moneybin investments prices set BMKT 2026-09-10 231.40 --note "closing price from the broker statement" --refresh
+$ uv run moneybin investments prices set BMKT 2026-09-10 231.40 --note "closing price from the broker statement"
 Price mark saved
 Security: 04745acccc8a
 Price:    231.40 USD

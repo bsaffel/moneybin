@@ -31,6 +31,9 @@ from moneybin.privacy.payloads.categorize import (
     CategorizeStatsPayload,
     RuleRow,
 )
+from moneybin.repositories.categorization_decisions_repo import (
+    PENDING_ATTEMPT_PREDICATE,
+)
 from moneybin.services.categorization._shared import (
     did_you_mean,
     plaid_bridge_match_predicate,
@@ -426,6 +429,8 @@ class CategorizationQueries:
         sort: Literal["date", "impact"] = "date",
         min_amount: Decimal = Decimal("0"),
         account_id: str | None = None,
+        pending_only: bool = False,
+        transaction_id: str | None = None,
     ) -> list[dict[str, Any]] | None:
         """List the transactions that need a category.
 
@@ -478,13 +483,19 @@ class CategorizationQueries:
                 LEFT JOIN {DIM_ACCOUNTS.full_name} AS a
                   ON t.account_id = a.account_id
                 WHERE t.is_categorizable AND t.category IS NULL
-            )
+            ) AS queue
             WHERE ABS(amount) >= ?
         """  # TableRef constants + fixed column list
         params: list[object] = [min_amount]
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
+
+        if transaction_id is not None:
+            sql += " AND transaction_id = ?"
+            params.append(transaction_id)
+        if pending_only:
+            sql += f" AND {PENDING_ATTEMPT_PREDICATE}"  # fixed internal SQL predicate
 
         if sort == "impact":
             # priority_score is ABS(amount) * age_days — a nominal magnitude,
@@ -534,8 +545,14 @@ class CategorizationQueries:
                 },
             ) from e
 
-        pending_matches = self._transactions_with_pending_matches()
         result_rows = [dict(zip(columns, row, strict=False)) for row in rows]
+        pending_matches = (
+            self._transactions_with_pending_matches([
+                str(row["transaction_id"]) for row in result_rows
+            ])
+            if pending_only
+            else self._transactions_with_pending_matches()
+        )
         for row in result_rows:
             row["pending_transfer_match"] = row["transaction_id"] in pending_matches
         return result_rows
@@ -557,7 +574,9 @@ class CategorizationQueries:
         except duckdb.CatalogException:
             return []
 
-    def _transactions_with_pending_matches(self) -> set[str]:
+    def _transactions_with_pending_matches(
+        self, transaction_ids: list[str] | None = None
+    ) -> set[str]:
         """Return gold transaction_ids that have an unresolved match decision.
 
         ``app.match_decisions`` keys on ``(source_type, source_transaction_id)``,
@@ -589,6 +608,14 @@ class CategorizationQueries:
         decision would falsely flag its transactions as an unresolved
         transfer.
         """
+        if transaction_ids is not None and not transaction_ids:
+            return set()
+        scope_clause = ""
+        params: list[str] | None = None
+        if transaction_ids is not None:
+            placeholders = ", ".join("?" for _ in transaction_ids)
+            scope_clause = f"AND m.transaction_id IN ({placeholders})"
+            params = transaction_ids * 2
         try:
             rows = self._db.execute(
                 f"""
@@ -600,6 +627,7 @@ class CategorizationQueries:
                   AND d.account_id = m.account_id
                 WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
                   AND d.match_type = 'transfer'
+                  {scope_clause}
 
                 UNION
 
@@ -611,7 +639,9 @@ class CategorizationQueries:
                   AND COALESCE(d.account_id_b, d.account_id) = m.account_id
                 WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
                   AND d.match_type = 'transfer'
-                """  # TableRef constants + literal predicates, no user input
+                  {scope_clause}
+                """,  # TableRefs + placeholder count only; selected IDs parameterized
+                params,
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
             # CatalogException: pre-matching (no matches run yet) or
@@ -624,6 +654,37 @@ class CategorizationQueries:
             # crashing the whole pending queue.
             return set()
         return {str(r[0]) for r in rows}
+
+    def count_pending_review(self) -> int:
+        """Count current eligible attempts without hydrating the queue."""
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} AS queue
+                WHERE queue.is_categorizable AND queue.category IS NULL
+                  AND {PENDING_ATTEMPT_PREDICATE}
+                """,  # TableRef and fixed internal eligibility predicate
+            ).fetchone()
+        except (duckdb.CatalogException, duckdb.BinderException) as exc:
+            if not self._fct_transactions_exists():
+                return 0
+            # An empty fact table proves zero work before its new column is built.
+            if (
+                self._db.execute(
+                    f"SELECT 1 FROM {FCT_TRANSACTIONS.full_name} LIMIT 1"  # TableRef constant
+                ).fetchone()
+                is None
+            ):
+                return 0
+            raise UserError(
+                "Categorization review state is missing or out of date; run moneybin refresh.",
+                code=error_codes.INFRA_SCHEMA_DRIFT,
+                hint="refresh_run",
+                details={
+                    "missing_object": f"{FCT_TRANSACTIONS.full_name}.is_categorizable"
+                },
+            ) from exc
+        return int(row[0]) if row else 0
 
     def count_uncategorized(self) -> int:
         """Return how many transactions need a category.

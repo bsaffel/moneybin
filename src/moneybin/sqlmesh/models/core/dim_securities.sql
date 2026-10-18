@@ -16,6 +16,6 @@ SELECT
   isin, /* International identifier */
   figi, /* OpenFIGI mapping */
   coingecko_id, /* Crypto price-lookup slug (Pillar C) */
-  is_cash_equivalent, /* Treat-like-cash flag (money-market/sweep) */
-  currency_code /* Denominating currency */
+  currency_code, /* Denominating currency */
+  is_cash_equivalent /* Treat-like-cash flag (money-market/sweep) */
 FROM app.securities /* Superseded (sync-plaid-investments.md): the SecurityResolver MINTS synced securities into app.securities, so a union here would double-count; the dim stays a catalog view (merchant precedent) */

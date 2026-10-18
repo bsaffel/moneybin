@@ -185,6 +185,12 @@ _SYMBOLIC_MODEL_KINDS: frozenset[str] = frozenset({"EMBEDDED", "EXTERNAL"})
 # INCREMENTAL_* kinds `apply()`'s `run()` step already covers.
 _UNREBUILT_MODEL_KINDS: frozenset[str] = _SYMBOLIC_MODEL_KINDS | {"SEED", "VIEW"}
 
+# The start every restatement plan passes. Without one SQLMesh takes the first
+# plan's day and refuses a plan whose end (now) precedes it, which a write made
+# under an earlier clock hits. No model reads the plan's dates, so it changes no
+# data: a FULL model rebuilds whole whatever the range.
+_RESTATE_START = "2000-01-01"
+
 
 def _oldest_execution_scan(model_count: int) -> str:
     """Scan for the least-recently-rebuilt model, over a bound name list.
@@ -358,6 +364,7 @@ class TransformService:
                     if full_models and not initial_plan_backfills_full_models:
                         ctx.plan(
                             restate_models=full_models,
+                            start=_RESTATE_START,
                             auto_apply=True,
                             no_prompts=True,
                         )
@@ -435,6 +442,7 @@ class TransformService:
                 with sqlmesh_context(self._db) as ctx:
                     ctx.plan(
                         restate_models=requested,
+                        start=_RESTATE_START,
                         auto_apply=True,
                         no_prompts=True,
                     )

@@ -30,17 +30,17 @@ def test_simplefin_schema_and_migration_equivalence(db: Database) -> None:
     for (name,) in names:
         db.execute(f"DROP TABLE raw.{name}")  # catalog-owned test identifiers
     migration = importlib.import_module(
-        "moneybin.sql.migrations.V075__add_simplefin_raw"
+        "moneybin.sql.migrations.V076__add_simplefin_raw"
     )
     run_migration(db, migration.migrate)
     run_migration(db, migration.migrate)
     label_migration = importlib.import_module(
-        "moneybin.sql.migrations.V077__add_simplefin_account_label"
+        "moneybin.sql.migrations.V078__add_simplefin_account_label"
     )
     run_migration(db, label_migration.migrate)
     run_migration(db, label_migration.migrate)
     institution_migration = importlib.import_module(
-        "moneybin.sql.migrations.V078__add_simplefin_institution_label"
+        "moneybin.sql.migrations.V079__add_simplefin_institution_label"
     )
     run_migration(db, institution_migration.migrate)
     run_migration(db, institution_migration.migrate)

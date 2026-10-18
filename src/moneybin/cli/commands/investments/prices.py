@@ -256,11 +256,6 @@ def investments_prices_set(
     note: str | None = typer.Option(
         None, "--note", help="Why this price was set (e.g. a 409A valuation)"
     ),
-    refresh: bool = typer.Option(
-        False,
-        "--refresh",
-        help="Rebuild the price models so the mark values holdings right away",
-    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Record your own price for one security and date.
@@ -277,8 +272,8 @@ def investments_prices_set(
     mark only values a holding quoted in the same currency, so a fixed default
     would write successfully and value nothing for any non-USD position.
 
-    The mark lands in app; holdings value from core. Pass --refresh to rebuild
-    the models in the same command, or run 'moneybin refresh' afterwards.
+    The mark values holdings as soon as it is saved: the price models rebuild
+    in the same command.
     """
     parsed_date = parse_cli_date(price_date, "DATE")
     parsed_price = parse_cli_decimal(price, "PRICE")
@@ -286,7 +281,6 @@ def investments_prices_set(
         cli_actor="investments_prices_set",
         payload_type=InvestmentPriceMarkPayload,
     ):
-        from moneybin.orchestration import refresh as refresh_module
         from moneybin.services.price_service import build_price_service
 
         with get_database(read_only=False) as db:
@@ -300,9 +294,6 @@ def investments_prices_set(
                 quote_currency=quote_currency,
                 note=note,
             )
-            refreshed = (
-                refresh_module.refresh(db, steps=["transform"]) if refresh else None
-            )
 
     payload = InvestmentPriceMarkPayload(
         security_id=security_id,
@@ -310,14 +301,11 @@ def investments_prices_set(
         quote_currency=quote_currency,
         close=parsed_price,
         removed=False,
-        refreshed=bool(refreshed and refreshed.applied),
-        refresh_error=refreshed.error if refreshed else None,
     )
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(data=payload), output, cli_actor="investments_prices_set"
         )
-        _report_refresh_failure(payload.refresh_error)
         return
     _emit_receipt(
         "Price mark saved",
@@ -326,13 +314,7 @@ def investments_prices_set(
             ("Price", f"{parsed_price} {quote_currency}"),
             ("Date", str(parsed_date)),
         ],
-        disclosures=(
-            ["Prices will value holdings after moneybin refresh."]
-            if refreshed is None
-            else []
-        ),
     )
-    _report_refresh_failure(payload.refresh_error)
 
 
 @app.command("delete")
@@ -352,11 +334,6 @@ def investments_prices_delete(
             "use."
         ),
     ),
-    refresh: bool = typer.Option(
-        False,
-        "--refresh",
-        help="Rebuild the price models so the removal values holdings right away",
-    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Remove a price mark, returning that date to provider-derived valuation.
@@ -366,15 +343,14 @@ def investments_prices_delete(
     mark is unreachable once written. Removing one is permanent — the audit log
     records it, but the previous value is not restored by re-running anything.
 
-    The removal lands in app; holdings value from core. Pass --refresh to rebuild
-    the models in the same command, or run 'moneybin refresh' afterwards.
+    The removal takes effect as soon as it is saved: the price models rebuild
+    in the same command.
     """
     parsed_date = parse_cli_date(price_date, "DATE")
     with handle_cli_errors(
         cli_actor="investments_prices_delete",
         payload_type=InvestmentPriceMarkPayload,
     ):
-        from moneybin.orchestration import refresh as refresh_module
         from moneybin.services.price_service import build_price_service
 
         with get_database(read_only=False) as db:
@@ -384,15 +360,6 @@ def investments_prices_delete(
             removed = service.delete_mark(
                 security_id, parsed_date, quote_currency=quote_currency
             )
-            # Gated on `removed`, unlike `pull --refresh`. A pull stays
-            # unconditional because an earlier pull may have been left
-            # unapplied; a delete that removed nothing cannot have stranded
-            # anything, so an apply here would be pure cost.
-            refreshed = (
-                refresh_module.refresh(db, steps=["transform"])
-                if refresh and removed
-                else None
-            )
 
     payload = InvestmentPriceMarkPayload(
         security_id=security_id,
@@ -400,24 +367,16 @@ def investments_prices_delete(
         quote_currency=quote_currency,
         close=None,
         removed=removed,
-        refreshed=bool(refreshed and refreshed.applied),
-        refresh_error=refreshed.error if refreshed else None,
     )
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(data=payload), output, cli_actor="investments_prices_delete"
         )
-        _report_refresh_failure(payload.refresh_error)
         return
     if removed:
         _emit_receipt(
             "Price mark removed",
             [("Security", security_id), ("Date", str(parsed_date))],
-            disclosures=(
-                ["Prices will value holdings after moneybin refresh."]
-                if refreshed is None
-                else []
-            ),
         )
     else:
         # Not an error: the end state the caller wanted already holds. Saying so
@@ -426,7 +385,6 @@ def investments_prices_delete(
             "Price mark unchanged",
             [("Security", security_id), ("Date", str(parsed_date))],
         )
-    _report_refresh_failure(payload.refresh_error)
 
 
 @app.command("list")

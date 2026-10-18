@@ -142,9 +142,9 @@ def register_profile_tools(mcp: FastMCP) -> None:
         mcp,
         profile,
         "profile",
-        "Read the active profile's name and managed settings, including its home "
-        "currency, declared display-currency targets, and reporting timezone. The home currency is null "
-        "until the user chooses one; MoneyBin never assumes USD.",
+        "Read the active profile's name and managed settings. Settings include home "
+        "currency, display-currency targets, and reporting timezone. Home currency "
+        "is null until the user chooses one; MoneyBin never assumes USD.",
     )
     register(
         mcp,
@@ -152,6 +152,7 @@ def register_profile_tools(mcp: FastMCP) -> None:
         "profile_set",
         "Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO "
         "4217). Updating targets prepares provider-published rate pairs; it converts "
-        "nothing and does not restate accounting. Writes app.profile_settings. Reverse with "
+        "nothing directly. Changes restate dependent accounting after commit. Writes "
+        "app.profile_settings. Reverse with "
         "system_audit_undo(operation_id=...).",
     )

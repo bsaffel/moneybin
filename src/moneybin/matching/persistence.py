@@ -74,7 +74,11 @@ def get_active_matches(
 
 
 def get_pending_matches(
-    db: Database, match_type: str | None = None, *, limit: int | None = None
+    db: Database,
+    match_type: str | None = None,
+    *,
+    limit: int | None = None,
+    match_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return pending match decisions awaiting user review.
 
@@ -82,6 +86,7 @@ def get_pending_matches(
         db: Database instance.
         match_type: Filter by type ('dedup', 'transfer'), or None for all.
         limit: Max rows (pushed to SQL ``LIMIT``), or None for all pending.
+        match_id: Exact pending decision, independent of confidence rank.
     """
     where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
     params: list[Any] = []
@@ -90,6 +95,9 @@ def get_pending_matches(
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
         params.append(match_type)
+    if match_id is not None:
+        where += " AND match_id = ?"
+        params.append(match_id)
     limit_clause = ""
     if limit is not None:
         limit_clause = "LIMIT ?"

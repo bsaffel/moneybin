@@ -1524,6 +1524,14 @@ class SyncService:
             f"rows deleted, {len(live.account_link_ids)} account links reversed, "
             f"{len(live.decision_ids)} proposals withdrawn"
         )
+        # Last, so a failed rebuild still leaves the purge counted and logged.
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(
+            self.db,
+            (ACCOUNT_LINKS, *_PURGE_TABLES, SECURITY_PRICES),
+            committed_change="account link",
+        )
         return replace(live, remote_result=remote_result)
 
     def _purge_local(self, live: SyncPurgePlan, actor: str) -> None:

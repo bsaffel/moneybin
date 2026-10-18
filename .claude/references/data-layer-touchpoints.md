@@ -3,7 +3,8 @@
 On-demand companion to [`.claude/rules/database.md`](../rules/database.md). Read
 this before **adding a column that reaches a core fact table**, **unioning a new
 balance or price source**, **carrying a provider-specific id through the merge**,
-or **reusing a guarded-UPSERT write helper for a new caller**.
+**changing a model's kind or a materialized model's inputs**, or **reusing a
+guarded-UPSERT write helper for a new caller**.
 
 Each section is a defect that shipped or was caught late. None of them produce an
 error at the point of the mistake — they produce wrong numbers, silently split
@@ -106,6 +107,24 @@ the validator only requires `source_priority` to be non-empty, so a user can omi
 never one without the other. Precedent: `core.bridge_merchant_entities` (MB-53),
 which promoted `merchant_entity_id` out of `prep.int_transactions__merged` after
 three consumers had bound to the merge layer directly.
+
+## Changing a model's kind, or a materialized model's inputs
+
+A `FULL` model holds what its inputs said at its last rebuild. Before this rule
+was written down, eight of ten `FULL` models read an `app.*` value whose writer
+ran no transform: a renamed account, an archive toggle, a balance assertion, a
+cost-basis method, a price mark or a dedup decision stayed invisible to every
+report until the next refresh, and no test noticed, because every test refreshed
+before it asserted.
+
+**How to apply:** list every writer of every input the model reads — services,
+undo, merges, migrations — and confirm each restates through
+`restate_after_write`. A Python model's `fetchdf` SQL is invisible to SQLMesh, so
+its `depends_on` must name every relation it reads, `app.*` included; without the
+edge, restating that table skips the model. Run
+`tests/integration/test_materialization_freshness.py` and
+`test_materialization_freshness_writes.py`; add the new write to the second
+one's `_WRITES` table.
 
 ## Reusing a guarded-UPSERT write helper
 

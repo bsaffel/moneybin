@@ -65,9 +65,9 @@ def test_dim_accounts_fixture_matches_model_projection_order() -> None:
 
     The set-based guard above catches a missing/extra column but not a
     transposition -- per ``.claude/rules/column-ordering.md``, the SQL
-    projection is the one source of column order, and Rule A ordering in
-    ``core``/``prep`` is otherwise review-enforced only (no live catalog
-    needed to check it, but nothing did). ``dim_accounts`` is ``kind FULL``
+    projection is the one source of column order. The integration-tier
+    ``test_core_column_order.py`` checks the model's own order; this checks
+    the unit-tier fixture stays in step with it. ``dim_accounts`` is ``kind FULL``
     with real SQL text, so its true order is derivable with no database --
     parse it the same connectionless way ``report_class_derivation.py``
     parses reports/core view models, and keep the fixture in lockstep so a
@@ -76,8 +76,8 @@ def test_dim_accounts_fixture_matches_model_projection_order() -> None:
 
     ``core.fct_balances_daily`` has no equivalent check: it is a Python
     model (``fct_balances_daily.py``) with no SQL text for this technique to
-    parse, so its fixture order stays review-enforced like the rest of
-    ``core``.
+    parse, so its fixture order stays review-enforced like the other
+    ``core`` fixtures.
     """
     model_path = SQLMESH_ROOT / "models" / "core" / "dim_accounts.sql"
     model = load_sql_based_model(

@@ -70,6 +70,8 @@ def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "investment_source_type": None,
         "investment_source_type_changed_at": None,
         "archived_changed_at": None,
+        "currency_code_changed_at": None,
+        "default_cost_basis_method_changed_at": None,
         "actor": "cli",
     }
     kwargs.update(overrides)
@@ -698,8 +700,16 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
     def pre_v063_rw_db(self, db: Database) -> Database:
         """Project an already-open encrypted fixture onto pre-V063 columns."""
         db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_at")
-        # Added by V074, after V063: a pre-V063 table cannot hold it either.
-        db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_changed_at")
+        # A historical projection stays on the already-open UTC fixture.
+        for column in (
+            "archived_changed_at",
+            "currency_code_changed_at",
+            "default_cost_basis_method_changed_at",
+            "account_type",
+            "account_type_changed_at",
+            "account_subtype_changed_at",
+        ):
+            db.execute(f"ALTER TABLE app.account_settings DROP COLUMN {column}")
         return db
 
     def test_set_insert_succeeds(self, pre_v063_rw_db: Database) -> None:

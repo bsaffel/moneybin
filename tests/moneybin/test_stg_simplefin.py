@@ -484,7 +484,7 @@ def test_legacy_v1_missing_safe_institution_label_does_not_fall_back_to_raw(
     run_migration(
         db,
         importlib.import_module(
-            "moneybin.sql.migrations.V075__add_simplefin_raw"
+            "moneybin.sql.migrations.V076__add_simplefin_raw"
         ).migrate,
     )
     db.execute("""INSERT INTO raw.simplefin_accounts
@@ -495,8 +495,8 @@ def test_legacy_v1_missing_safe_institution_label_does_not_fall_back_to_raw(
             'strong', 'revision', '{"name":"Synthetic account","org":{"name":"Bank 123456789012"}}',
             TIMESTAMPTZ '2026-09-21T00:00:00Z', 'old-batch', 'Synthetic account', 'USD')""")
     for module in (
-        "moneybin.sql.migrations.V077__add_simplefin_account_label",
-        "moneybin.sql.migrations.V078__add_simplefin_institution_label",
+        "moneybin.sql.migrations.V078__add_simplefin_account_label",
+        "moneybin.sql.migrations.V079__add_simplefin_institution_label",
     ):
         run_migration(db, importlib.import_module(module).migrate)
     before = db.execute(
@@ -632,9 +632,10 @@ def test_subtype_removal_and_restoration_rebuilds_materialized_money(
         )
     if change == "undo-redo":
         # Isolate undo detection even when the settings-write trigger is broken.
-        from moneybin.services.fx_accounting_refresh import restate_fx_accounting
+        from moneybin.services.restate import restate_after_write
+        from moneybin.tables import ACCOUNT_SETTINGS
 
-        restate_fx_accounting(db, account_type_changed=True)
+        restate_after_write(db, [ACCOUNT_SETTINGS], committed_change="setting")
         undone = UndoService(db).undo(operation_id, actor="cli")
         assert db.execute(
             "SELECT account_subtype FROM core.dim_accounts WHERE account_id='canonical'"

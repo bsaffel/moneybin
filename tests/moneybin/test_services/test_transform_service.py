@@ -527,6 +527,7 @@ def test_restate_models_targets_named_models_and_downstream(
     assert result.applied is True
     fake_ctx.plan.assert_called_once_with(
         restate_models=["core.bridge_currency_conversions"],
+        start="2000-01-01",
         auto_apply=True,
         no_prompts=True,
     )

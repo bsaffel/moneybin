@@ -717,12 +717,8 @@ class TestAccountsSet:
         assert "flag" in result.stderr.lower() or "required" in result.stderr.lower()
 
     @pytest.mark.unit
-    def test_set_currency_warns_reports_need_a_rebuild(self, runner: CliRunner) -> None:
-        """A currency change reaches `core.dim_accounts` (a FULL model) only.
-
-        Reports won't reflect it until `refresh --step transform`; the
-        receipt must say so (rule 34).
-        """
+    def test_set_currency_points_at_no_rebuild(self, runner: CliRunner) -> None:
+        """The service rebuilds what a currency change feeds before it returns."""
         with (
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
@@ -739,7 +735,7 @@ class TestAccountsSet:
             )
 
         assert result.exit_code == 0, result.output
-        assert "moneybin refresh --step transform" in result.output
+        assert "refresh --step transform" not in result.output
 
     @pytest.mark.unit
     def test_set_display_name_alone_has_no_rebuild_warning(
@@ -1315,9 +1311,7 @@ def test_type_override_normalizes_and_clears_through_cli(
         return nullcontext(db)
 
     monkeypatch.setattr("moneybin.cli.commands.accounts.get_database", database_context)
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", MagicMock()
-    )
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", MagicMock())
     refresh = MagicMock(
         return_value=RefreshResult(
             applied=True,

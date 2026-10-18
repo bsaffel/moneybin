@@ -900,6 +900,42 @@ class CategorizationService:
             account_id=account_id,
         )
 
+    def list_pending_review_transactions(
+        self,
+        *,
+        limit: int | None,
+        sort: Literal["date", "impact"] = "date",
+        min_amount: Decimal = Decimal("0"),
+        account_id: str | None = None,
+        transaction_id: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Filter eligible attempts before ordering/limiting, then project only those IDs."""
+        rows = self._queries.list_uncategorized_transactions(
+            limit=limit,
+            sort=sort,
+            min_amount=min_amount,
+            account_id=account_id,
+            pending_only=True,
+            transaction_id=transaction_id,
+        )
+        if rows is None:
+            return None
+        attempts = self.project_pending_review_attempts([
+            str(row["transaction_id"]) for row in rows
+        ])
+        return [
+            {
+                **row,
+                "decision_id": str(attempts[str(row["transaction_id"])]["decision_id"]),
+            }
+            for row in rows
+            if str(row["transaction_id"]) in attempts
+        ]
+
+    def count_pending_review(self) -> int:
+        """Count current pending attempts, distinct from uncategorized inventory."""
+        return self._queries.count_pending_review()
+
     def list_categorization_history(self) -> list[dict[str, Any]]:
         """Return persisted transaction-category decisions newest first."""
         return self._queries.list_categorization_history()

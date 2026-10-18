@@ -449,19 +449,24 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             ('txn-missing-in', 'native-missing-in', 'manual', 'user', 'acct-gbp')
         """
     )
+    # The loader reads the account base, whose updated_at folds only restating
+    # stamps; the fact's updated_at below also folds curation and is never read.
     db.execute(
         """
-        CREATE OR REPLACE TABLE core.dim_accounts (
+        CREATE OR REPLACE TABLE prep.int_accounts__merged (
             account_id VARCHAR,
             currency_code VARCHAR,
-            updated_at TIMESTAMPTZ
+            updated_at TIMESTAMPTZ,
+            account_type_changed_at TIMESTAMPTZ,
+            account_subtype_changed_at TIMESTAMPTZ
         )
         """
     )
     db.execute(
         """
-        INSERT INTO core.dim_accounts VALUES
-            ('acct-eur', 'EUR', '2026-03-19 09:00:00+00:00'::TIMESTAMPTZ)
+        INSERT INTO prep.int_accounts__merged (account_id, currency_code, updated_at) VALUES
+            ('acct-usd', 'USD', '2026-03-15 09:00:00'::TIMESTAMPTZ),
+            ('acct-eur', 'EUR', '2026-03-19 09:00:00'::TIMESTAMPTZ)
         """
     )
     db.execute(
@@ -494,7 +499,8 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     )
     assert linked.from_source_transaction_id == "native-linked-out"
     assert linked.coverage_status == "complete"
-    assert str(linked.updated_at) == "2026-03-18 10:00:00+00:00"
+    # Both legs inherit their Account Currency, so acct-eur's 03-19 stamp leads.
+    assert str(linked.updated_at) == "2026-03-19 09:00:00+00:00"
 
     single = by_shape["single_row"]
     assert (single.from_currency, single.to_currency) == ("EUR", "USD")
@@ -508,7 +514,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
 
     db.execute(
         """
-        UPDATE core.dim_accounts
+        UPDATE prep.int_accounts__merged
            SET currency_code = NULL,
                updated_at = '2026-03-20 09:00:00+00:00'::TIMESTAMPTZ
          WHERE account_id = 'acct-eur'
@@ -538,7 +544,9 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     }["linked_two_row"]
     assert cleared_linked.to_currency is None
     assert cleared_linked.coverage_reason == "unknown_currency"
-    assert str(cleared_linked.updated_at) == "2026-03-21 09:00:00+00:00"
+    # The clear happened at the account's 03-20 stamp; the fact's later
+    # updated_at is curation freshness, which a materialized row must not fold.
+    assert str(cleared_linked.updated_at) == "2026-03-20 09:00:00+00:00"
 
     db.execute(
         """
@@ -1456,3 +1464,118 @@ def test_fx_home_freshness_decodes_preserved_legacy_audit_with_provenance(
     assert db.execute(
         "SELECT before_value::VARCHAR FROM app.audit_log WHERE audit_id = 'synthetic-home'"
     ).fetchone() == (original,)
+
+
+@pytest.mark.parametrize("path", ["linked", "missing", "same_currency"])
+def test_simplefin_classification_advances_explicit_currency_transfer_freshness(
+    db: Database, path: str
+) -> None:
+    """Classifier edits reach derived money even with explicit captured currency."""
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    db.execute("""UPDATE app.profile_settings SET home_currency = 'USD',
+        updated_at = TIMESTAMPTZ '2026-03-01 09:00:00+00' WHERE scope = 'profile'
+    """)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("""CREATE OR REPLACE TABLE core.bridge_transfers (
+        transfer_id VARCHAR, debit_transaction_id VARCHAR, credit_transaction_id VARCHAR
+    )""")
+    db.execute("""CREATE OR REPLACE TABLE prep.int_transactions__matched (
+        transaction_id VARCHAR, source_transaction_id VARCHAR, source_type VARCHAR,
+        source_origin VARCHAR, account_id VARCHAR
+    )""")
+    db.execute("""CREATE OR REPLACE TABLE prep.int_transactions__merged (
+        transaction_id VARCHAR, account_id VARCHAR, transaction_date DATE,
+        amount DECIMAL(18, 2), currency_code VARCHAR,
+        conversion_from_date DATE, conversion_from_amount DECIMAL(18, 2),
+        conversion_from_currency VARCHAR, to_amount DECIMAL(18, 2),
+        to_currency VARCHAR, conversion_source_type VARCHAR,
+        conversion_source_origin VARCHAR, conversion_source_transaction_id VARCHAR,
+        loaded_at TIMESTAMPTZ
+    )""")
+    db.execute("""CREATE OR REPLACE TABLE core.fct_transactions (
+        transaction_id VARCHAR, account_id VARCHAR, transaction_date DATE,
+        amount DECIMAL(18, 2), currency_code VARCHAR,
+        loaded_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
+    )""")
+    db.execute("""CREATE OR REPLACE VIEW prep.int_accounts__merged AS
+        SELECT account_id, currency_code, account_type_changed_at,
+            account_subtype_changed_at,
+            GREATEST(TIMESTAMPTZ '2026-03-16 09:00:00+00',
+                account_type_changed_at, account_subtype_changed_at) AS updated_at
+        FROM app.account_settings
+    """)
+    debit_currency = "EUR" if path == "same_currency" else "USD"
+    credit_amount = Decimal("100.00") if path == "same_currency" else Decimal("90.00")
+    db.execute(
+        """INSERT INTO app.account_settings
+        (account_id, currency_code, updated_at) VALUES
+        ('acct-a', ?, TIMESTAMPTZ '2026-03-16 09:00:00+00'),
+        ('acct-b', 'EUR', TIMESTAMPTZ '2026-03-16 09:00:00+00')
+    """,
+        [debit_currency],
+    )
+    db.execute("""INSERT INTO app.match_decisions (
+        match_id, source_transaction_id_a, source_type_a, source_origin_a,
+        source_transaction_id_b, source_type_b, source_origin_b,
+        account_id, account_id_b, match_type, match_status, decided_by, decided_at
+    ) VALUES ('classification-transfer', 'native-a', 'simplefin', 'origin-a',
+        'native-b', 'simplefin', 'origin-b', 'acct-a', 'acct-b',
+        'transfer', 'accepted', 'user', TIMESTAMPTZ '2026-03-16 09:00:00+00')
+    """)
+    for transaction_id, account_id, amount, currency in [
+        ("txn-a", "acct-a", Decimal("-100.00"), debit_currency),
+        ("txn-b", "acct-b", credit_amount, "EUR"),
+    ]:
+        native = "native-a" if account_id == "acct-a" else "native-b"
+        origin = "origin-a" if account_id == "acct-a" else "origin-b"
+        db.execute(
+            "INSERT INTO prep.int_transactions__matched VALUES (?, ?, 'simplefin', ?, ?)",
+            [transaction_id, native, origin, account_id],
+        )
+        if path == "missing" and account_id == "acct-a":
+            continue
+        db.execute(
+            """INSERT INTO prep.int_transactions__merged
+            (transaction_id, account_id, transaction_date, amount, currency_code, loaded_at)
+            VALUES (?, ?, DATE '2026-03-16', ?, ?, TIMESTAMPTZ '2026-03-16 09:00:00+00')
+        """,
+            [transaction_id, account_id, amount, currency],
+        )
+        db.execute(
+            """INSERT INTO core.fct_transactions VALUES
+            (?, ?, DATE '2026-03-16', ?, ?, TIMESTAMPTZ '2026-03-16 09:00:00+00',
+                TIMESTAMPTZ '2026-04-01 09:00:00+00')
+        """,
+            [transaction_id, account_id, amount, currency],
+        )
+    if path != "missing":
+        db.execute(
+            "INSERT INTO core.bridge_transfers VALUES ('classification-transfer', 'txn-a', 'txn-b')"
+        )
+
+    def loaded_stamp() -> datetime | None:
+        context = t.cast(t.Any, _DatabaseContext(db))
+        if path == "same_currency":
+            rows = module._load_same_currency_transfers(
+                context, home_currency="USD", home_updated_at=None
+            )
+        else:
+            rows = module.load_conversion_rows(context)
+        assert len(rows) == 1
+        return rows[0].updated_at
+
+    assert loaded_stamp() == datetime(2026, 3, 16, 9, tzinfo=UTC)
+    for column, day in [
+        ("account_subtype_changed_at", 20),
+        ("account_type_changed_at", 21),
+    ]:
+        stamp = datetime(2026, 3, day, 9, tzinfo=UTC)
+        db.execute(
+            f"UPDATE app.account_settings SET {column} = ? WHERE account_id = 'acct-a'",  # noqa: S608  # literal test column names
+            [stamp],
+        )
+        assert loaded_stamp() == stamp
+    db.execute("""UPDATE app.account_settings SET display_name = 'Renamed',
+        updated_at = TIMESTAMPTZ '2026-04-01 09:00:00+00' WHERE account_id = 'acct-a'
+    """)
+    assert loaded_stamp() == datetime(2026, 3, 21, 9, tzinfo=UTC)

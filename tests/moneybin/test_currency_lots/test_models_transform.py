@@ -163,12 +163,29 @@ def _seed_real_transform_inputs(db: Database) -> None:
         VALUES ('USD', '2025-12-01 09:00:00'::TIMESTAMP)
         """
     )
+    # The lots read the method from the account base, which holds only accounts
+    # a source delivered, so the average-cost account needs a source row.
+    db.execute(
+        """
+        INSERT INTO raw.ofx_accounts (
+            account_id, account_type, source_file, extracted_at, loaded_at,
+            source_type, source_origin
+        ) VALUES (
+            'acct-gbp-average', 'CHECKING', 'currency-fixture.ofx',
+            '2025-12-01 09:00:00'::TIMESTAMP,
+            '2025-12-01 10:00:00'::TIMESTAMP, 'ofx', 'fixture-bank'
+        )
+        """
+    )
+    # A method write stamps its change time, as AccountService does.
     db.execute(
         """
         INSERT INTO app.account_settings (
-            account_id, default_cost_basis_method, updated_at
+            account_id, default_cost_basis_method,
+            default_cost_basis_method_changed_at, updated_at
         ) VALUES (
-            'acct-gbp-average', 'average', '2026-01-01 08:00:00'::TIMESTAMP
+            'acct-gbp-average', 'average', '2026-01-01 08:00:00'::TIMESTAMP,
+            '2026-01-01 08:00:00'::TIMESTAMP
         )
         """
     )

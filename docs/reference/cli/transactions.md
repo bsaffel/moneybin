@@ -35,9 +35,9 @@ Usage: `moneybin transactions review [OPTIONS]`
 |---|---|---|---|
 | `--type` | text |  | all \| matches \| categorize \| account-links \| merchant-links \| security-links |
 | `--status` | flag |  | Show queue counts (the default) |
-| `--interactive` | flag |  | Walk the queue item by item (not yet built) |
+| `--interactive` | flag |  | Review pending items with explicit decisions, skip, or quit |
 | `--confirm` | text |  | Non-interactive: confirm one item by ID |
-| `--reject` | text |  | Non-interactive: reject one item by ID |
+| `--reject` | text |  | Non-interactive: reject one match or categorization decision by ID |
 | `--confirm-all` | flag |  | Non-interactive: confirm all items in scope |
 | `--limit` | int | `50` | Cap items per session |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
@@ -210,7 +210,9 @@ Usage: `moneybin transactions categorize commit-from-file [OPTIONS] [input_path]
 
 List uncategorized transactions.
 
-Excludes transfer pairs and archived accounts.
+Excludes transfer pairs and archived accounts. The default is uncategorized
+inventory; --pending-only filters current review attempts before --limit.
+Decision IDs name those attempts; reject one with review --type categorize --reject.
 
 ```console
 moneybin transactions categorize pending
@@ -228,6 +230,7 @@ Usage: `moneybin transactions categorize pending [OPTIONS]`
 | `--sort` | text | `date` | Sort order: 'date' (most recent first) or 'impact' (ABS(amount)*age_days). |
 | `--min-amount` | text | `0` | Filter to ABS(amount) >= this value. |
 | `--account` | text |  | Filter to an account: accepts account_id or display_name (ambiguous matches error). |
+| `--pending-only` | flag |  | Only current pending review attempts; filter before --limit |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
@@ -621,7 +624,7 @@ Usage: `moneybin transactions matches run [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--skip-transform` | flag |  | Skip transforms after matching |
+| `--skip-transform` | flag |  | Skip rebuilding the reports the accepted matches feed |
 | `--auto-accept-transfers` | flag |  | Auto-accept transfer matches (skip interactive review) |
 
 ## moneybin transactions matches history
@@ -686,7 +689,7 @@ Usage: `moneybin transactions matches backfill [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--skip-transform` | flag |  | Skip transforms after matching |
+| `--skip-transform` | flag |  | Skip rebuilding the reports the accepted matches feed |
 | `--auto-accept-transfers` | flag |  | Auto-accept transfer matches (skip interactive review) |
 
 ## moneybin transactions notes

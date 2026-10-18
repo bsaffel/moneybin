@@ -59,7 +59,7 @@ JOIN app.account_links AS links
   AND links.source_type = b.source_type
   AND links.source_origin = b.source_origin
   AND links.ref_value = b.account_id
-JOIN core.dim_accounts AS a
+JOIN prep.int_accounts__merged AS a
   ON a.account_id = links.account_id
 JOIN seeds.iso_currencies AS c
   ON c.currency_code = b.currency

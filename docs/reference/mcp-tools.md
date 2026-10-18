@@ -32,7 +32,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`investments_securities_set`](#investments_securities_set) | Create or update securities in app.securities by stable ID or ticker. | write, idempotent | at least `low` |
 | [`privacy`](#privacy) | Read active AI consent status or exact, cursor-paginated privacy log events. | read-only, idempotent | up to `low` |
 | [`privacy_consent_set`](#privacy_consent_set) | Atomically grant or revoke consent for one or more feature categories. | write, destructive, idempotent | at least `low` |
-| [`profile`](#profile) | Read the active profile's name and managed settings, including its home currency, declared display-currency targets, and reporting timezone. | read-only, idempotent | at least `low` |
+| [`profile`](#profile) | Read the active profile's name and managed settings. | read-only, idempotent | at least `low` |
 | [`profile_set`](#profile_set) | Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO 4217). | write, idempotent | at least `low` |
 | [`refresh_run`](#refresh_run) | Run the post-load refresh pipeline. | write, idempotent | at least `medium` |
 | [`reports`](#reports) | Browse registered financial reports or run one by stable report ID. | read-only, idempotent | up to `critical` |
@@ -388,6 +388,7 @@ Access: write, not idempotent. Sensitivity: up to `critical`.
 |---|---|---|---|
 | `file_path` | string |  | required |
 | `mapping` | object of string |  |  |
+| `omit_fields` | array of string |  |  |
 
 ### import_revert
 
@@ -502,7 +503,7 @@ Access: write, destructive, idempotent. Sensitivity: at least `low`.
 
 ### profile
 
-Read the active profile's name and managed settings, including its home currency, declared display-currency targets, and reporting timezone. The home currency is null until the user chooses one; MoneyBin never assumes USD.
+Read the active profile's name and managed settings. Settings include home currency, display-currency targets, and reporting timezone. Home currency is null until the user chooses one; MoneyBin never assumes USD.
 
 Access: read-only, idempotent. Sensitivity: at least `low`.
 
@@ -510,7 +511,7 @@ No parameters.
 
 ### profile_set
 
-Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing and does not restate accounting. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).
+Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing directly. Changes restate dependent accounting after commit. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).
 
 Access: write, idempotent. Sensitivity: at least `low`.
 
@@ -640,7 +641,7 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### sync_disconnect
 
-Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge. Run refresh_run afterwards.
+Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge.
 
 Access: write, destructive, not idempotent, open world. Sensitivity: at least `medium`.
 

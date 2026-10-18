@@ -904,7 +904,8 @@ async def test_sync_disconnect_absent_confirms_then_purges(
     assert envelope.data.account_links_reversed == 2
     assert envelope.data.institution == "Chase"
     assert envelope.data.provider_item_id == "item_a"
-    assert any("refresh_run" in action for action in envelope.actions)
+    # The purge rebuilds the models it fed, so nothing is left to refresh.
+    assert not any("refresh_run" in action for action in envelope.actions)
 
 
 @pytest.mark.unit

@@ -45,7 +45,11 @@
     investment_source_type: TEXT
     investment_source_type_changed_at: TIMESTAMPTZ
     archived_changed_at: TIMESTAMPTZ
+    currency_code_changed_at: TIMESTAMPTZ
+    default_cost_basis_method_changed_at: TIMESTAMPTZ
     account_type: TEXT
+    account_type_changed_at: TIMESTAMPTZ
+    account_subtype_changed_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."audit_log"'
   columns:
     audit_id: TEXT
@@ -95,6 +99,12 @@
     note: TEXT
     created_at: TIMESTAMPTZ
     updated_at: TIMESTAMPTZ
+- name: '"moneybin"."app"."lot_selections"'
+  columns:
+    investment_transaction_id: TEXT
+    lot_id: TEXT
+    quantity: DECIMAL(28, 10)
+    created_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."match_decisions"'
   columns:
     match_id: TEXT

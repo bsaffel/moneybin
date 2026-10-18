@@ -36,8 +36,12 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "investment_source_type",
     "investment_source_type_changed_at",
     "archived_changed_at",
+    "currency_code_changed_at",
+    "default_cost_basis_method_changed_at",
     "updated_at",
     "account_type",
+    "account_type_changed_at",
+    "account_subtype_changed_at",
 )
 
 #: Each setting whose change moves rows downstream, the column recording when
@@ -46,6 +50,10 @@ _ACCOUNT_SETTINGS_COLUMNS = (
 _CHANGE_STAMPS: tuple[tuple[str, str, Any], ...] = (
     ("investment_source_type", "investment_source_type_changed_at", None),
     ("archived", "archived_changed_at", False),
+    ("account_type", "account_type_changed_at", None),
+    ("account_subtype", "account_subtype_changed_at", None),
+    ("currency_code", "currency_code_changed_at", None),
+    ("default_cost_basis_method", "default_cost_basis_method_changed_at", None),
 )
 
 
@@ -132,8 +140,12 @@ class AccountSettingsRepo(BaseRepo):
         investment_source_type: str | None,
         investment_source_type_changed_at: datetime | None,
         archived_changed_at: datetime | None,
+        currency_code_changed_at: datetime | None,
+        default_cost_basis_method_changed_at: datetime | None,
         actor: str,
         account_type: str | None = None,
+        account_type_changed_at: datetime | None = None,
+        account_subtype_changed_at: datetime | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
         context: dict[str, Any] | None = None,
@@ -147,7 +159,8 @@ class AccountSettingsRepo(BaseRepo):
 
         The INSERT/ON CONFLICT column list drops every column the live catalog
         lacks (``archived_at`` pre-V063, the investment-source pair pre-V069,
-        ``archived_changed_at`` pre-V074, ``no_auto_upgrade=True`` -- see ``_live_columns``): there is no column
+        ``archived_changed_at`` pre-V074, the ledger-setting stamps pre-V075,
+        ``no_auto_upgrade=True`` -- see ``_live_columns``): there is no column
         to write the caller's value into, so it is silently not persisted
         rather than raising a raw ``duckdb.BinderException``. A caller that
         needs the value persisted (``AccountService`` for a source choice)
@@ -179,6 +192,16 @@ class AccountSettingsRepo(BaseRepo):
                 "last_four": last_four,
                 "account_subtype": account_subtype,
                 "account_type": account_type,
+                "account_type_changed_at": (
+                    as_utc(account_type_changed_at)
+                    if account_type_changed_at is not None
+                    else None
+                ),
+                "account_subtype_changed_at": (
+                    as_utc(account_subtype_changed_at)
+                    if account_subtype_changed_at is not None
+                    else None
+                ),
                 "holder_category": holder_category,
                 "currency_code": currency_code,
                 "credit_limit": credit_limit,
@@ -189,6 +212,10 @@ class AccountSettingsRepo(BaseRepo):
                 "investment_source_type": investment_source_type,
                 "investment_source_type_changed_at": investment_source_type_changed_at,
                 "archived_changed_at": archived_changed_at,
+                "currency_code_changed_at": currency_code_changed_at,
+                "default_cost_basis_method_changed_at": (
+                    default_cost_basis_method_changed_at
+                ),
             }
             columns = [c for c in values_by_column if c in live]
             col_sql = ", ".join(columns)
@@ -275,7 +302,7 @@ class AccountSettingsRepo(BaseRepo):
                 else None
             )
         live = self._live_columns()
-        stamps = [(s, c, d) for s, c, d in _CHANGE_STAMPS if c in live]
+        stamps = [(s, c, d) for s, c, d in _CHANGE_STAMPS if c in live and s in live]
         if stamps:
             where, where_params = self._pk_where(row)
             columns = [name for s, c, _ in stamps for name in (s, c)]

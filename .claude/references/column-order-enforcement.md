@@ -63,12 +63,31 @@ correctly ordered file for putting a "measure" among the dimensions. Reading
 declared classes instead is no way out: a runner-less view has none. So the
 resolvable part is the half that was never in doubt.
 
-**Not guarded — `prep` and `core`.** Rule A is a data-type rule, and SQLMesh
-resolves every `core` column as `UNKNOWN` offline: the type chain bottoms out at
-`raw`, which Python loads and SQLMesh never sees. Checking real types needs a
-built database, which puts the guard at integration tier where `make test` would
-skip it. Rule A is therefore maintained by **review**, deliberately. A reviewer
-touching a `prep` or `core` projection is the enforcement point.
+**Guarded at integration tier — `core`.** Rule A is a data-type rule, and
+SQLMesh resolves every `core` column as `UNKNOWN` offline: the type chain
+bottoms out at `raw`, which Python loads and SQLMesh never sees. So
+`tests/integration/test_core_column_order.py` builds every model into a
+scratch database and ranks each `core` column by its real type from
+`duckdb_columns()`. It used to be review-only because `make test` skips the
+integration tier; CI now runs every tier on each PR push, which removed that
+objection. Two companion checks keep it honest: the built relation set must
+equal the `models/core/` files, so no model escapes, and every `_NON_KEY_IDS`
+entry must name a real column, so a stale exemption fails rather than silently
+exempting nothing.
+
+It ranks what types can tell it and no more. Adjacency inside a block — `amount`
+beside `currency_code` — is still review, as is every nested column, which the
+guard skips by design.
+
+The guard reads the *built* view, not the model file, and that matters here:
+`seeds.py::refresh_views` hand-writes `dim_categories`, `dim_merchants`, and
+`bridge_category_source_map`, and `TransformService.apply` re-runs it after the
+SQLMesh plan, so those copies are what a caller reads. Reorder a model and its
+copy together. Only a built-database check sees that drift.
+
+**Not guarded — `prep`.** Same type problem, and no built-database check
+covers it yet. A reviewer touching a `prep` projection is the enforcement
+point.
 
 **Not guarded anywhere — Rule C.** Nothing declares that `total_assets` and
 `total_liabilities` compose `net_worth`, that `prev_month_spend` is

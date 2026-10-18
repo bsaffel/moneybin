@@ -134,3 +134,21 @@ profile conversion and live acceptance remain distinct completion boundaries.
 - [Shared primitives](architecture-shared-primitives.md)
 - [Data protection](privacy-data-protection.md)
 - [Observability](observability.md)
+
+
+### Current-main classification and freshness integration
+
+`app.account_settings.account_type_changed_at` and
+`account_subtype_changed_at` are aware UTC instants. Actual classification edits,
+clears, merge moves and undo advance these stamps; no-op edits preserve them.
+`prep.int_accounts__merged` folds them into accounting freshness because
+SimpleFIN financial eligibility depends on effective type and subtype. Human
+renames remain read-through. Reporting-timezone writes use the ordinary
+post-commit profile-settings restatement, while business dates and source
+landing evidence retain their original meaning.
+
+Published migrations V001–V075 remain unchanged. Pending SimpleFIN and override
+migrations occupy V076–V080; V077 adds the canonical type override and the two
+classification stamps. Historical add/backfill behavior and fresh UTC bootstrap
+are separate contracts: a historical `TIMESTAMP` append is not a legacy-profile
+conversion, and no converter ships in the maintained runtime.

@@ -36,7 +36,6 @@ from moneybin.cli.render import (
 from moneybin.cli.terminal import TerminalPolicy
 from moneybin.cli.utils import (
     emit_json_failure,
-    generated_cli_command,
     get_terminal_policy,
     handle_cli_errors,
     terminal_safe_text,
@@ -903,14 +902,6 @@ def sync_disconnect(
         )
 
 
-def _purge_refresh_hint() -> str:
-    """The step that makes core tables drop the purged rows."""
-    return (
-        f"Run '{generated_cli_command('refresh', 'run')}' so core tables "
-        "drop the purged rows"
-    )
-
-
 def _sync_disconnect_purge(
     *,
     institution: str | None,
@@ -988,7 +979,6 @@ def _sync_disconnect_purge(
     from moneybin.adapters.sync_adapters import sync_disconnect_actions
 
     actions = [
-        _purge_refresh_hint(),
         "Use 'moneybin sync link' to reconnect an institution",
     ]
     if remote is not None and live.connection is not None:

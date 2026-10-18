@@ -44,6 +44,7 @@ from moneybin.services.account_resolution_types import (
     is_reserved_account_name,
 )
 from moneybin.services.audit_service import AuditService
+from moneybin.sqlmesh_freshness import restating_columns
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     DIM_ACCOUNTS,
@@ -209,6 +210,15 @@ _TRIMMED_SETTING_FIELDS = (
     "holder_category",
 )
 
+#: Ledger settings ``settings_update`` stamps with a change time. The source
+#: choice and archive state stamp their own times beside their special cases.
+_LEDGER_CHANGE_STAMPS = (
+    ("account_type", "account_type_changed_at"),
+    ("account_subtype", "account_subtype_changed_at"),
+    ("currency_code", "currency_code_changed_at"),
+    ("default_cost_basis_method", "default_cost_basis_method_changed_at"),
+)
+
 
 def normalize_setting_text(value: str) -> str:
     """A free-text setting as ``app.account_settings`` will hold it.
@@ -271,6 +281,10 @@ class AccountSettings:
     investment_source_type: str | None = None
     investment_source_type_changed_at: datetime | None = None
     archived_changed_at: datetime | None = None
+    account_type_changed_at: datetime | None = None
+    account_subtype_changed_at: datetime | None = None
+    currency_code_changed_at: datetime | None = None
+    default_cost_basis_method_changed_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict for JSON / envelope transport."""
@@ -291,6 +305,12 @@ class AccountSettings:
             "investment_source_type": self.investment_source_type,
             "investment_source_type_changed_at": self.investment_source_type_changed_at,
             "archived_changed_at": self.archived_changed_at,
+            "account_type_changed_at": self.account_type_changed_at,
+            "account_subtype_changed_at": self.account_subtype_changed_at,
+            "currency_code_changed_at": self.currency_code_changed_at,
+            "default_cost_basis_method_changed_at": (
+                self.default_cost_basis_method_changed_at
+            ),
         }
 
     def __post_init__(self) -> None:
@@ -477,14 +497,17 @@ class AccountService:
         """
         has_archived_at = has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
         has_account_type = has_column(self._db, ACCOUNT_SETTINGS, "account_type")
-        # Same drift guard for the V069 pair and V074's archived_changed_at:
-        # absent on a no_auto_upgrade profile.
+        # Later fields can be absent on a no_auto_upgrade profile.
         later_fields = [
             c
             for c in (
                 "investment_source_type",
                 "investment_source_type_changed_at",
                 "archived_changed_at",
+                "account_type_changed_at",
+                "account_subtype_changed_at",
+                "currency_code_changed_at",
+                "default_cost_basis_method_changed_at",
             )
             if has_column(self._db, ACCOUNT_SETTINGS, c)
         ]
@@ -535,6 +558,12 @@ class AccountService:
                 "investment_source_type_changed_at"
             ),  # type: ignore[arg-type]
             archived_changed_at=r.get("archived_changed_at"),  # type: ignore[arg-type]
+            account_type_changed_at=r.get("account_type_changed_at"),
+            account_subtype_changed_at=r.get("account_subtype_changed_at"),
+            currency_code_changed_at=r.get("currency_code_changed_at"),  # type: ignore[arg-type]
+            default_cost_basis_method_changed_at=r.get(
+                "default_cost_basis_method_changed_at"
+            ),  # type: ignore[arg-type]
         )
 
     def investment_source_type(self, account_id: str) -> str | None:
@@ -1019,6 +1048,21 @@ class AccountService:
                     "SELECT NOW()::TIMESTAMPTZ"
                 ).fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
 
+        # The materialized ledgers fold these change times instead of the row's
+        # updated_at, which a rename also advances. Repeating the current value
+        # is a no-op for the field, so it neither stamps nor restates.
+        for field_name, stamp in _LEDGER_CHANGE_STAMPS:
+            if field_name not in diff:
+                continue
+            if diff[field_name] == getattr(current, field_name):
+                del diff[field_name]
+            else:
+                # NOW() always returns one non-null aware instant.
+                diff[stamp] = cast(
+                    tuple[datetime],
+                    self._db.execute("SELECT NOW()::TIMESTAMPTZ").fetchone(),
+                )[0]
+
         # Reserved vocabulary: core shows this exact label for an account it
         # could not name, and `is_a_name` reads it that way everywhere. Taking
         # it as a user's name would drop that account out of fuzzy resolution,
@@ -1058,6 +1102,12 @@ class AccountService:
             investment_source_type=target.investment_source_type,
             investment_source_type_changed_at=target.investment_source_type_changed_at,
             archived_changed_at=target.archived_changed_at,
+            account_type_changed_at=target.account_type_changed_at,
+            account_subtype_changed_at=target.account_subtype_changed_at,
+            currency_code_changed_at=target.currency_code_changed_at,
+            default_cost_basis_method_changed_at=(
+                target.default_cost_basis_method_changed_at
+            ),
             actor=actor,
             context=(
                 {INCLUDE_DECISION_MARKER: True}
@@ -1068,32 +1118,14 @@ class AccountService:
         logger.info(
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )
-        if "investment_source_type" in diff:
-            from moneybin.services.fx_accounting_refresh import (
-                restate_investment_ledger,
-            )
+        # A display-only edit (a rename, a last four) is read by the
+        # core.dim_accounts view alone and needs no rebuild.
+        if restating_columns(ACCOUNT_SETTINGS, diff):
+            from moneybin.services.restate import restate_after_write
 
-            restate_investment_ledger(self._db)
-        elif diff.keys() & {
-            "currency_code",
-            "default_cost_basis_method",
-            "account_type",
-            "account_subtype",
-        }:
-            from moneybin.services.fx_accounting_refresh import (
-                restate_fx_accounting,
+            restate_after_write(
+                self._db, [ACCOUNT_SETTINGS], committed_change="setting"
             )
-
-            if diff.keys() & {"account_type", "account_subtype"}:
-                restate_fx_accounting(
-                    self._db,
-                    account_currency_changed="currency_code" in diff,
-                    account_type_changed=True,
-                )
-            else:
-                restate_fx_accounting(
-                    self._db, account_currency_changed="currency_code" in diff
-                )
         # Re-read rather than return `target`: on a pre-V063 catalog opened
         # with no_auto_upgrade=True, AccountSettingsRepo.set() silently drops
         # archived_at from the write (its own docstring says so), so `target`

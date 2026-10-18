@@ -5,7 +5,8 @@ Pending counts across all review queues: matches, uncategorized, account-links, 
 
 One sweep answers "what needs my attention?" across all review domains.
 Use --type to filter to a specific queue, then --confirm/--reject/
---confirm-all to decide matches without leaving the shell.
+--confirm-all to decide matches, or --type categorize --reject \<decision-id>
+to reject a categorization attempt without prompting.
 
 Generated from the registered command tree, so every option below is one the command declares; `--help` on any command prints the same text. Shared flags, exit codes, and JSON envelopes: [CLI reference](../../guides/cli-reference.md).
 
@@ -17,9 +18,9 @@ Usage: `moneybin review [OPTIONS]`
 |---|---|---|---|
 | `--type` | text |  | all \| matches \| categorize \| account-links \| merchant-links \| security-links |
 | `--status` | flag |  | Show queue counts (the default) |
-| `--interactive` | flag |  | Walk the queue item by item (not yet built) |
+| `--interactive` | flag |  | Review pending items with explicit decisions, skip, or quit |
 | `--confirm` | text |  | Non-interactive: confirm one match by ID |
-| `--reject` | text |  | Non-interactive: reject one match by ID |
+| `--reject` | text |  | Non-interactive: reject one match or categorization decision by ID |
 | `--confirm-all` | flag |  | Non-interactive: confirm all items in scope |
 | `--limit` | int | `50` | Cap items per session |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

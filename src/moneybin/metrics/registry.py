@@ -244,6 +244,13 @@ SQLMESH_RUN_DURATION_SECONDS = Histogram(
     ["model"],
 )
 
+MATERIALIZED_RESTATE_TOTAL = Counter(
+    "moneybin_materialized_restate_total",
+    "Restates of materialized models after an app write, by the app table "
+    "written; outcome is applied, failed, or unbuilt (no warehouse yet)",
+    ["input", "outcome"],
+)
+
 _FX_ACCOUNTING_GRAINS = (
     "conversion",
     "currency_lot",
@@ -1285,6 +1292,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_import_revalidation_failure": "Smart import confirmation",
     # SQLMesh transforms
     "moneybin_sqlmesh_run_duration_seconds": "SQLMesh transforms",
+    "moneybin_materialized_restate": "SQLMesh transforms",
     # Export delivery
     "moneybin_export_runs": "Export delivery",
     "moneybin_export_duration_seconds": "Export delivery",

@@ -1,5 +1,5 @@
 {
-  "sha256": "7c133912ed5d67f98765917a9e855a63eebbdebdd67b367f0b9a3cff62e6092d",
+  "sha256": "025f864689d5f66b7315cb3e758600742dc49009a36a21efc052845d4575f9aa",
   "tool_count": 50,
   "tools": [
     {
@@ -1844,6 +1844,20 @@
                 }
               ],
               "default": null
+            },
+            "omit_fields": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -1855,11 +1869,11 @@
         "title": "Import Preview"
       },
       "description_bytes": 494,
-      "input_schema_bytes": 228,
+      "input_schema_bytes": 328,
       "name": "import_preview",
       "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 945
+      "total_bytes": 1045
     },
     {
       "annotation_bytes": 90,
@@ -2653,7 +2667,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Read the active profile's name and managed settings, including its home currency and declared display-currency targets. The home currency is null until the user chooses one; MoneyBin never assumes USD.",
+        "description": "Read the active profile's name and managed settings. Settings include home currency, display-currency targets, and reporting timezone. Home currency is null until the user chooses one; MoneyBin never assumes USD.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {},
@@ -2662,12 +2676,12 @@
         "name": "profile",
         "title": "Profile"
       },
-      "description_bytes": 201,
+      "description_bytes": 212,
       "input_schema_bytes": 62,
       "name": "profile",
       "other_bytes": 77,
       "output_schema_bytes": 0,
-      "total_bytes": 476
+      "total_bytes": 487
     },
     {
       "annotation_bytes": 90,
@@ -2685,7 +2699,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Set the profile's home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing and does not restate accounting. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
+        "description": "Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing directly. Changes restate dependent accounting after commit. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2715,6 +2729,18 @@
               ],
               "default": null,
               "description": "ISO 4217 code, three uppercase letters (USD, EUR, GBP)."
+            },
+            "reporting_timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "IANA calendar for reports and human instant display."
             }
           },
           "type": "object"
@@ -2722,12 +2748,12 @@
         "name": "profile_set",
         "title": "Profile Set"
       },
-      "description_bytes": 267,
-      "input_schema_bytes": 383,
+      "description_bytes": 332,
+      "input_schema_bytes": 534,
       "name": "profile_set",
       "other_bytes": 85,
       "output_schema_bytes": 0,
-      "total_bytes": 872
+      "total_bytes": 1088
     },
     {
       "annotation_bytes": 90,
@@ -3390,7 +3416,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge. Run refresh_run afterwards.",
+        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge. ",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3460,12 +3486,12 @@
         "name": "sync_disconnect",
         "title": "Sync Disconnect"
       },
-      "description_bytes": 871,
+      "description_bytes": 844,
       "input_schema_bytes": 540,
       "name": "sync_disconnect",
       "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 1631
+      "total_bytes": 1604
     },
     {
       "annotation_bytes": 90,
@@ -5454,5 +5480,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 66245
+  "total_bytes": 66545
 }

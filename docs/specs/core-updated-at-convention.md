@@ -40,10 +40,11 @@ A separate concern is that two different questions get conflated under the name 
 
 **`core.<entity>.updated_at` = `MAX` of timestamps from inputs that change *per row*. Inputs that change *per model* (seeds, reference tables) contribute `NULL` to the per-row formula and are surfaced separately as model-level freshness in `meta.model_freshness`.**
 
-Two corollaries:
+Three corollaries:
 
 1. **Never use `CURRENT_TIMESTAMP AS updated_at` inside a view.** It evaluates at `SELECT` time and conveys nothing about row provenance.
 2. **Never use `CURRENT_TIMESTAMP AS updated_at` inside a FULL table either** unless the intent really is "every row gets the same timestamp on every apply." For the dim models in scope here, that's the wrong semantic — replace with a `GREATEST(...)` over real per-row inputs.
+3. **A FULL model folds only restating timestamps.** A curation timestamp (a settings row's `updated_at`, a note's `created_at`) advances at write time, while a materialized row moves only on its next rebuild, so folding one reports a change before it has happened. Materialized models fold a field's own `*_changed_at` instead — see [`materialization-freshness-contract.md`](materialization-freshness-contract.md).
 
 ### Per-model formulas
 
@@ -54,11 +55,11 @@ pre-v1 type replacement, machine formatting and explicit legacy conversion.
 
 | Model | `kind` | `updated_at` expression |
 |---|---|---|
-| `core.dim_accounts` | FULL | `GREATEST(winner.loaded_at, settings.updated_at, settings.investment_source_type_changed_at, settings.archived_changed_at)`. The two change times are folded because an undo writes the settings row's old `updated_at` back. |
-| `core.fct_transactions` | VIEW | `GREATEST(t.loaded_at, c.categorized_at, notes_latest, tags_latest, splits_latest, inherited_currency_latest, a.archived_changed_at)` where `notes_latest = MAX(notes.created_at)`, `tags_latest = MAX(tags.applied_at)`, `splits_latest = MAX(splits.created_at)`, each grouped per transaction. Notes/tags/splits are insert-only today, so their per-row freshness column is the create-time column. `c` is `app.transaction_categories`, whose write-time column is `categorized_at`. `inherited_currency_latest` is the account's `updated_at`, only for a row without its own currency. `a.archived_changed_at` applies to every row of the account, because archiving or restoring it moves `is_categorizable`. |
+| `core.dim_accounts` | VIEW (FULL until [`materialization-freshness-contract.md`](materialization-freshness-contract.md) split it over `prep.int_accounts__merged`) | `GREATEST(base.updated_at, settings.updated_at)`, where `base.updated_at = GREATEST(winner.loaded_at, settings.investment_source_type_changed_at, settings.archived_changed_at, settings.currency_code_changed_at, settings.default_cost_basis_method_changed_at, settings.account_type_changed_at, settings.account_subtype_changed_at)`. The change times are folded because an undo writes the settings row's old `updated_at` back. |
+| `core.fct_transactions` | VIEW | `GREATEST(t.loaded_at, c.categorized_at, notes_latest, tags_latest, splits_latest, inherited_currency_latest, a.archived_changed_at, classification_latest)` where `notes_latest = MAX(notes.created_at)`, `tags_latest = MAX(tags.applied_at)`, `splits_latest = MAX(splits.created_at)`, each grouped per transaction. Notes/tags/splits are insert-only today, so their per-row freshness column is the create-time column. `c` is `app.transaction_categories`, whose write-time column is `categorized_at`. `inherited_currency_latest` is the account's `updated_at`, only for a row without its own currency. `a.archived_changed_at` applies to every row of the account, because archiving or restoring it moves `is_categorizable`. For SimpleFIN rows, `classification_latest = GREATEST(account_base.account_type_changed_at, account_base.account_subtype_changed_at)` because those settings control eligibility. |
 | `core.dim_categories` | VIEW | `COALESCE(user_categories.updated_at, override.updated_at)` — `NULL` for pure-seed rows. |
 | `core.dim_merchants` | VIEW | `user_merchants.updated_at` — never `NULL` (all rows are user/system-created). |
-| `core.fct_balances` | VIEW | The contributing observation's freshness column: `loaded_at` from OFX/tabular staging sources, `updated_at` from `app.balance_assertions` (mutable; refreshed by `BalanceService.assert_balance` on conflict so edited assertions advance freshness). Requires extending `fct_balances` CTEs to project these timestamps through to a single `updated_at` output column. |
+| `core.fct_balances` | VIEW | The contributing observation's freshness column: `loaded_at` from OFX/tabular/Plaid/SimpleFIN staging sources, `updated_at` from `app.balance_assertions` (mutable; refreshed by `BalanceService.assert_balance` on conflict so edited assertions advance freshness). SimpleFIN rows additionally fold `account_base.account_type_changed_at` and `account_base.account_subtype_changed_at` with `GREATEST`, because classification controls balance eligibility. |
 
 ### Semantics for consumers
 
@@ -190,7 +191,7 @@ Both consumers and reviewers should be able to read this without opening this sp
 | **SQLMesh model** | Each touched core model has an audit (or scenario assertion) that `updated_at` is non-`NULL` for rows whose inputs all have timestamps, and is `NULL` only where expected (pure-seed rows in `dim_categories`). |
 | **Migration** | DDL migration adds the column with the documented default; existing rows get `CURRENT_TIMESTAMP` at migration time. |
 | **Service** | Each updated write path sets `updated_at = NOW()` on UPDATE; verified by inspecting the row after edit. |
-| **Scenario** | One end-to-end scenario: edit a user-category, run `refresh run --steps transform` (or call `refresh_run(steps=["transform"])`), verify `core.dim_categories.updated_at` advances for that row and not for unrelated rows. |
+| **Scenario** | Three end-to-end tests in `tests/scenarios/test_dim_categories_updated_at.py`, each against the `idempotency-rerun` scenario: a seed category with no override has `NULL` `updated_at`; a newly inserted user category surfaces in `core.dim_categories` with a non-`NULL` `updated_at`; a seed category given an override carries the override's `updated_at`. Not covered: that editing a row advances its `updated_at`, or that unrelated rows keep theirs. |
 | **`meta.model_freshness`** | Smoke test: applying the pipeline, then querying the view, returns a row per registered SQLMesh model with non-`NULL` `last_applied_at`. |
 
 ## Open verification — resolved

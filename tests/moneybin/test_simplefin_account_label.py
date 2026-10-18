@@ -35,7 +35,7 @@ def test_additive_safe_labels_migrations_preserve_prior_observations(
     ).fetchall()
     assert columns[-2:] == [("account_label",), ("institution_label",)]
     db.execute("DROP TABLE raw.simplefin_accounts")
-    old = importlib.import_module("moneybin.sql.migrations.V075__add_simplefin_raw")
+    old = importlib.import_module("moneybin.sql.migrations.V076__add_simplefin_raw")
     run_migration(db, old.migrate)
     db.execute("""INSERT INTO raw.simplefin_accounts
         (batch_id, source_origin, account_id, native_scope, identity_strength,
@@ -44,12 +44,12 @@ def test_additive_safe_labels_migrations_preserve_prior_observations(
                 'weak', 'revision', '{"name":"123456789"}', CURRENT_TIMESTAMP,
                 'old-batch', '123456789', 'USD')""")
     migration = importlib.import_module(
-        "moneybin.sql.migrations.V077__add_simplefin_account_label"
+        "moneybin.sql.migrations.V078__add_simplefin_account_label"
     )
     run_migration(db, migration.migrate)
     run_migration(db, migration.migrate)
     institution_migration = importlib.import_module(
-        "moneybin.sql.migrations.V078__add_simplefin_institution_label"
+        "moneybin.sql.migrations.V079__add_simplefin_institution_label"
     )
     run_migration(db, institution_migration.migrate)
     run_migration(db, institution_migration.migrate)
