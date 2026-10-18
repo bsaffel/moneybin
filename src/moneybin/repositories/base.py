@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar, cast
 
@@ -34,6 +35,8 @@ from moneybin.metrics.registry import app_mutation_audit_emitted_total
 from moneybin.services._validators import validate_category_text
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.tables import TableRef
+from moneybin.temporal import format_utc
+from moneybin.temporal_contract import decode_audit_row, read_audit_temporal_policy
 
 
 def quote_ident(name: str) -> str:
@@ -314,7 +317,9 @@ class BaseRepo:
         for key, value in row.items():
             if isinstance(value, Decimal):
                 out[key] = str(value)
-            elif hasattr(value, "isoformat"):
+            elif isinstance(value, datetime):
+                out[key] = format_utc(value)
+            elif isinstance(value, date):
                 out[key] = value.isoformat()
             else:
                 out[key] = value
@@ -355,8 +360,9 @@ class BaseRepo:
         audited (``is_undo=True``, ``undoes_operation_id=event.operation_id``) and
         the new event is returned — so it is undoable in turn (undo-the-undo).
 
-        Values come straight from the JSON-decoded audit payload: DuckDB
-        auto-casts ISO strings to ``DATE``/``TIMESTAMP`` and decimal strings to
+        Temporal fields are decoded on copies before validation or mutation.
+        Legacy naive instants require accepted migration provenance. DuckDB
+        auto-casts ISO business dates to ``DATE`` and decimal strings to
         ``DECIMAL``, and binds ``dict``/``list`` directly to ``JSON``/array
         columns — so no per-repo type handling is needed (``match_signals`` JSON
         and ``exemplars`` arrays round-trip natively).
@@ -368,10 +374,26 @@ class BaseRepo:
         write path can produce (#547). No-op on the many repos with no declared
         ``_CATEGORY_TEXT_COLUMNS``.
         """
-        before = event.before_value
-        after = event.after_value
-        if before == after:
+        if event.before_value == event.after_value:
             return None
+        try:
+            policy = read_audit_temporal_policy(self._db)
+            before = (
+                decode_audit_row(event, event.before_value, policy)
+                if event.before_value is not None
+                else None
+            )
+            after = (
+                decode_audit_row(event, event.after_value, policy)
+                if event.after_value is not None
+                else None
+            )
+        except ValueError:
+            raise UserError(
+                "Cannot undo: historical timestamps lack unambiguous accepted "
+                "UTC upgrade provenance. Inspect the operation and its upgrade evidence.",
+                code=error_codes.RECOVERY_NO_PATH,
+            ) from None
 
         with self._transaction(in_outer_txn=in_outer_txn):
             resulting = before
@@ -403,8 +425,8 @@ class BaseRepo:
                     event.target_table,
                     self._row_target_id(result_row),
                 ),
-                before=after,
-                after=resulting,
+                before=self._serialize_for_audit(after),
+                after=self._serialize_for_audit(resulting),
                 actor=actor,
                 is_undo=True,
                 undoes_operation_id=event.operation_id,

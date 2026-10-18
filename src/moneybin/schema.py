@@ -92,6 +92,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_metrics.sql",
     "app_schema_migrations.sql",
     "app_versions.sql",
+    "app_utc_upgrade_provenance.sql",
     "app_tabular_formats.sql",
     "app_match_decisions.sql",
     "app_investment_match_decisions.sql",

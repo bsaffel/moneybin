@@ -270,6 +270,7 @@ class AccountSettings:
     account_type: str | None = None
     investment_source_type: str | None = None
     investment_source_type_changed_at: datetime | None = None
+    archived_changed_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict for JSON / envelope transport."""
@@ -289,6 +290,7 @@ class AccountSettings:
             "default_cost_basis_method": self.default_cost_basis_method,
             "investment_source_type": self.investment_source_type,
             "investment_source_type_changed_at": self.investment_source_type_changed_at,
+            "archived_changed_at": self.archived_changed_at,
         }
 
     def __post_init__(self) -> None:
@@ -475,10 +477,15 @@ class AccountService:
         """
         has_archived_at = has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
         has_account_type = has_column(self._db, ACCOUNT_SETTINGS, "account_type")
-        # Same drift guard for the V069 pair: absent on a no_auto_upgrade profile.
-        source_fields = [
+        # Same drift guard for the V069 pair and V074's archived_changed_at:
+        # absent on a no_auto_upgrade profile.
+        later_fields = [
             c
-            for c in ("investment_source_type", "investment_source_type_changed_at")
+            for c in (
+                "investment_source_type",
+                "investment_source_type_changed_at",
+                "archived_changed_at",
+            )
             if has_column(self._db, ACCOUNT_SETTINGS, c)
         ]
         fields = [
@@ -495,7 +502,7 @@ class AccountService:
             "include_in_net_worth",
             "default_cost_basis_method",
             *(["account_type"] if has_account_type else []),
-            *source_fields,
+            *later_fields,
         ]
         field_list = ", ".join(fields)
         row = self._db.execute(
@@ -527,6 +534,7 @@ class AccountService:
             investment_source_type_changed_at=r.get(
                 "investment_source_type_changed_at"
             ),  # type: ignore[arg-type]
+            archived_changed_at=r.get("archived_changed_at"),  # type: ignore[arg-type]
         )
 
     def investment_source_type(self, account_id: str) -> str | None:
@@ -897,11 +905,17 @@ class AccountService:
         # input: stamp it with today's date on the FALSE->TRUE transition
         # (idempotent -- re-archiving an already-archived account leaves the
         # stored date alone), and clear it back to NULL on unarchive.
-        # include_in_net_worth is untouched either way (no cascade).
+        # include_in_net_worth is untouched either way (no cascade). Either
+        # transition also stamps archived_changed_at: it moves is_categorizable
+        # on every core.fct_transactions row of the account.
         if archived is True and not current.archived:
             diff["archived_at"] = date.today()
         elif archived is False and current.archived:
             diff["archived_at"] = None
+        if "archived_at" in diff:
+            diff["archived_changed_at"] = self._db.execute(
+                "SELECT NOW()::TIMESTAMPTZ"
+            ).fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
 
         def _resolve(field_name: str, new: object) -> None:
             if new is None:
@@ -1002,7 +1016,7 @@ class AccountService:
                 del diff["investment_source_type"]
             else:
                 diff["investment_source_type_changed_at"] = self._db.execute(
-                    "SELECT NOW()::TIMESTAMP"
+                    "SELECT NOW()::TIMESTAMPTZ"
                 ).fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
 
         # Reserved vocabulary: core shows this exact label for an account it
@@ -1043,6 +1057,7 @@ class AccountService:
             default_cost_basis_method=target.default_cost_basis_method,
             investment_source_type=target.investment_source_type,
             investment_source_type_changed_at=target.investment_source_type_changed_at,
+            archived_changed_at=target.archived_changed_at,
             actor=actor,
             context=(
                 {INCLUDE_DECISION_MARKER: True}

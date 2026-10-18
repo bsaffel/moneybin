@@ -47,12 +47,15 @@ Two corollaries:
 
 ### Per-model formulas
 
-All `updated_at` columns are `TIMESTAMP` and may be `NULL` only where the row's inputs all contribute `NULL` (pure-seed rows in `dim_categories`).
+`updated_at` uses `TIMESTAMPTZ` with aware UTC contributing clocks. Values may
+be `NULL` only where the row's inputs all contribute `NULL` (pure-seed rows in
+`dim_categories`). [Warehouse UTC](warehouse-utc.md) governs the coordinated
+pre-v1 type replacement, machine formatting and explicit legacy conversion.
 
 | Model | `kind` | `updated_at` expression |
 |---|---|---|
-| `core.dim_accounts` | FULL | `GREATEST(winner.loaded_at, settings.updated_at)` |
-| `core.fct_transactions` | VIEW | `GREATEST(t.loaded_at, c.categorized_at, notes_latest, tags_latest, splits_latest)` where `notes_latest = MAX(notes.created_at)`, `tags_latest = MAX(tags.applied_at)`, `splits_latest = MAX(splits.created_at)`, each grouped per transaction. Notes/tags/splits are insert-only today, so their per-row freshness column is the create-time column. `c` is `app.transaction_categories`, whose write-time column is `categorized_at`. |
+| `core.dim_accounts` | FULL | `GREATEST(winner.loaded_at, settings.updated_at, settings.investment_source_type_changed_at, settings.archived_changed_at)`. The two change times are folded because an undo writes the settings row's old `updated_at` back. |
+| `core.fct_transactions` | VIEW | `GREATEST(t.loaded_at, c.categorized_at, notes_latest, tags_latest, splits_latest, inherited_currency_latest, a.archived_changed_at)` where `notes_latest = MAX(notes.created_at)`, `tags_latest = MAX(tags.applied_at)`, `splits_latest = MAX(splits.created_at)`, each grouped per transaction. Notes/tags/splits are insert-only today, so their per-row freshness column is the create-time column. `c` is `app.transaction_categories`, whose write-time column is `categorized_at`. `inherited_currency_latest` is the account's `updated_at`, only for a row without its own currency. `a.archived_changed_at` applies to every row of the account, because archiving or restoring it moves `is_categorizable`. |
 | `core.dim_categories` | VIEW | `COALESCE(user_categories.updated_at, override.updated_at)` — `NULL` for pure-seed rows. |
 | `core.dim_merchants` | VIEW | `user_merchants.updated_at` — never `NULL` (all rows are user/system-created). |
 | `core.fct_balances` | VIEW | The contributing observation's freshness column: `loaded_at` from OFX/tabular staging sources, `updated_at` from `app.balance_assertions` (mutable; refreshed by `BalanceService.assert_balance` on conflict so edited assertions advance freshness). Requires extending `fct_balances` CTEs to project these timestamps through to a single `updated_at` output column. |
@@ -90,9 +93,9 @@ No current consumer polls `dim_holdings.updated_at` as an incremental cursor, so
 ```sql
 -- meta.model_freshness columns
 model_name        VARCHAR   -- fully-qualified name, e.g. 'core.dim_accounts', 'seeds.categories'
-last_changed_at   TIMESTAMP -- when SQLMesh last created a new snapshot for this model (i.e., the model's content or definition changed)
-last_applied_at   TIMESTAMP -- when SQLMesh last wrote to any snapshot row for this model; advances on metadata-only touches too, including environment promotion
-last_executed_at  TIMESTAMP -- when SQLMesh last actually backfilled this model; NULL if it has never run, or if its kind is symbolic
+last_changed_at   TIMESTAMPTZ -- when SQLMesh last created a new snapshot for this model (i.e., the model's content or definition changed)
+last_applied_at   TIMESTAMPTZ -- when SQLMesh last wrote to any snapshot row for this model; advances on metadata-only touches too, including environment promotion
+last_executed_at  TIMESTAMPTZ -- when SQLMesh last actually backfilled this model; NULL if it has never run, or if its kind is symbolic
 model_kind        VARCHAR   -- SQLMesh model kind: 'FULL', 'VIEW', 'SEED', 'EXTERNAL', 'EMBEDDED', an INCREMENTAL_* variant, …
 ```
 
@@ -136,14 +139,14 @@ The per-row formulas above require that every `app.*` reference table contributi
 
 | Table | DDL change |
 |---|---|
-| `app.user_categories` | Add `updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
-| `app.user_merchants` | Add `updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
+| `app.user_categories` | Add `updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
+| `app.user_merchants` | Add `updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
 
 DuckDB has no `ON UPDATE` trigger, so services that write to these tables must set `updated_at = NOW()` on `UPDATE` (and `INSERT … ON CONFLICT DO UPDATE` statements). This is the established pattern — see `account_service.py` and the write paths in `src/moneybin/services/categorization/applier.py` (post-PR #155 split). The exact call sites are enumerated during plan execution.
 
 The DDL change ships as a SQL migration under `src/moneybin/sql/migrations/`. Backfill: existing rows take `CURRENT_TIMESTAMP` at migration time (via the default). This is a one-time approximation — pre-existing rows lose their true last-edit time, which the project does not track today anyway.
 
-For the two existing `*_overrides` tables, the live schema is `updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP` (nullable). The DDL migration also tightens these to `NOT NULL` for uniform per-row freshness guarantees — all existing rows are already populated by the default, so the tightening succeeds without backfill.
+For the two existing `*_overrides` tables, the live schema is `updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP` (nullable). The DDL migration also tightens these to `NOT NULL` for uniform per-row freshness guarantees — all existing rows are already populated by the default, so the tightening succeeds without backfill.
 
 ## What ships
 
@@ -194,7 +197,7 @@ Both consumers and reviewers should be able to read this without opening this sp
 
 The four verification items deferred to plan time were resolved during plan preparation:
 
-1. **SQLMesh state schema** — confirmed as `sqlmesh._snapshots` (SQLMesh `c.SQLMESH` constant = `"sqlmesh"`; default `state_schema`). Relevant columns: `name` (quoted FQN like `"core"."dim_accounts"`), `version` (content fingerprint), `updated_ts` (BIGINT, Unix milliseconds). The `meta.model_freshness` view strips the quotes from `name` and converts `updated_ts` from millis to `TIMESTAMP`.
+1. **SQLMesh state schema** — confirmed as `sqlmesh._snapshots` (SQLMesh `c.SQLMESH` constant = `"sqlmesh"`; default `state_schema`). Relevant columns: `name` (quoted FQN like `"core"."dim_accounts"`), `version` (content fingerprint), `updated_ts` (BIGINT, Unix milliseconds). The `meta.model_freshness` view strips the quotes from `name` and converts `updated_ts` from millis to `TIMESTAMPTZ`.
 2. **`fct_balances` aggregation shape** — confirmed: one row per observation today, three UNION ALL CTEs (OFX, tabular, user assertion). Source CTEs do not currently project `loaded_at`/`created_at` to the final SELECT; the plan extends them.
 3. **Service call sites** — enumerated in the plan's File Structure section.
 4. **Curation-table timestamp columns** — confirmed via live schema: `app.transaction_notes.created_at`, `app.transaction_tags.applied_at`, `app.transaction_splits.created_at`, `app.transaction_categories.categorized_at`. All four tables are insert-only or have a single write-time column; the formulas use those columns directly.

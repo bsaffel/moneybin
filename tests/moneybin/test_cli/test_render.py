@@ -1037,7 +1037,7 @@ def test_a_blank_category_is_not_counted_as_absent(
 
     A whitespace-only category is reachable — Polars reads an empty CSV cell as
     NULL, but a cell holding spaces keeps them — and it is tempting to treat it
-    as a gap. `core.uncategorized_queue` selects `WHERE category IS NULL`, so
+    as a gap. The queue filter selects `category IS NULL`, so
     such a row is not in the queue: counting it would advertise a gap
     `transactions categorize run` cannot act on, which is the same class of lie
     as the provider code this milestone removed from the column. Making the two
@@ -2086,3 +2086,37 @@ def test_build_rows_groups_only_the_declared_count_subset() -> None:
     assert "1,381" in rendered
     assert "16000.1234" in rendered
     assert "16,000.1234" not in rendered
+
+
+def test_human_instant_uses_profile_zone_and_preserves_dates_and_strings() -> None:
+    from datetime import UTC, date, datetime
+
+    from moneybin.cli.render import _cells  # pyright: ignore[reportPrivateUsage]  # typed cell formatting is the regression boundary
+
+    instant = datetime(2026, 3, 1, 0, 30, tzinfo=UTC)
+    cells, _ = _cells(
+        ["instant", "date", "string"],
+        [instant, date(2026, 3, 1), "2026-03-01T00:30:00Z"],
+        {},
+        reporting_timezone="America/New_York",
+    )
+    assert [str(cell) for cell in cells] == [
+        "2026-02-28 19:30:00-05:00 [America/New_York]",
+        "2026-03-01",
+        "2026-03-01T00:30:00Z",
+    ]
+
+
+def test_human_instant_distinguishes_dst_fold() -> None:
+    from datetime import UTC, datetime
+
+    from moneybin.cli.render import format_instant
+
+    first = format_instant(
+        datetime(2026, 11, 1, 5, 30, tzinfo=UTC), reporting_timezone="America/New_York"
+    )
+    second = format_instant(
+        datetime(2026, 11, 1, 6, 30, tzinfo=UTC), reporting_timezone="America/New_York"
+    )
+    assert first == "2026-11-01 01:30:00-04:00 [America/New_York]"
+    assert second == "2026-11-01 01:30:00-05:00 [America/New_York]"

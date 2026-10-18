@@ -624,3 +624,93 @@ def test_paired_v1_organization_extension_keeps_identity_children_and_originals(
     ] = "forbidden"
     with pytest.raises(ValidationError):
         SyncEnvelopeV2.model_validate(invalid_envelope)
+
+
+def test_source_offset_evidence_keeps_existing_batch_and_receipt_digests(
+    db: Database,
+) -> None:
+    import hashlib
+    from datetime import timezone
+
+    module = loader(db)
+    wire = source().model_dump(mode="json")
+    wire["batches"][0]["fetched_at"] = "2026-09-20T20:00:00-04:00"
+    wire["outcomes"] = [
+        {
+            "account_id": None,
+            "native_scope": None,
+            "window": wire["batches"][0]["window"],
+            "status": "deferred",
+            "error_code": "rate_limited",
+            "retry_at": "2026-09-20T21:00:00-04:00",
+        }
+    ]
+    data = SimpleFINSource.model_validate(wire)
+    context = module.SimpleFINJobContext(
+        status="completed",
+        started_at=datetime(2026, 9, 20, 20, tzinfo=timezone(timedelta(hours=-4))),
+        completed_at=datetime(2026, 9, 20, 20, 1, tzinfo=timezone(timedelta(hours=-4))),
+    )
+    module.SimpleFINExtractor(db).load(data, job_id=UUID(int=1), job_context=context)
+    module.SimpleFINExtractor(db).load(data, job_id=UUID(int=1), job_context=context)
+    expected_batch = {
+        "connection_id": str(CONNECTION),
+        "credential_generation": 1,
+        "protocol_version": "2.0.0-draft",
+        "batch": wire["batches"][0],
+    }
+    expected_digest = hashlib.sha256(
+        json.dumps(
+            expected_batch,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+    row = db.execute(
+        "SELECT fetched_at, content_digest FROM raw.simplefin_responses"
+    ).fetchone()
+    assert row == (BASE + timedelta(days=1), expected_digest)
+    receipt = db.execute(
+        "SELECT started_at, completed_at, source_metadata, content_digest "
+        "FROM raw.simplefin_sync_receipts"
+    ).fetchone()
+    assert receipt is not None
+    assert receipt[:2] == (
+        BASE + timedelta(days=1),
+        BASE + timedelta(days=1, minutes=1),
+    )
+    assert (
+        json.loads(receipt[2])["outcomes"][0]["retry_at"] == "2026-09-20T21:00:00-04:00"
+    )
+    expected_receipt = {
+        "job_id": str(UUID(int=1)),
+        "connection_id": str(CONNECTION),
+        "credential_generation": 1,
+        "protocol_version": "2.0.0-draft",
+        "status": "completed",
+        "started_at": "2026-09-20T20:00:00-04:00",
+        "completed_at": "2026-09-20T20:01:00-04:00",
+        "batch_ids": json.dumps([str(UUID(int=1))], separators=(",", ":")),
+        "source_metadata": json.dumps(
+            {key: value for key, value in wire.items() if key != "batches"},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ),
+        "local_outcomes": "[]",
+    }
+    assert (
+        receipt[3]
+        == hashlib.sha256(
+            json.dumps(
+                expected_receipt,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+    )

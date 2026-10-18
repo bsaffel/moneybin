@@ -45,6 +45,7 @@ from moneybin.tables import (
     SIMPLEFIN_TRANSACTIONS,
     TableRef,
 )
+from moneybin.temporal import as_utc
 
 
 class SimpleFINJobContext(BaseModel):
@@ -272,9 +273,9 @@ class SimpleFINExtractor:
                 "connection_id": str(source.connection_id),
                 "credential_generation": source.credential_generation,
                 "protocol_version": source.protocol_version,
-                "fetched_at": batch.fetched_at,
-                "window_start": window.start,
-                "window_end": window.end,
+                "fetched_at": as_utc(batch.fetched_at),
+                "window_start": as_utc(window.start),
+                "window_end": as_utc(window.end),
                 "original_payload": _json(payload),
                 "source_errors": _json({
                     key: payload[key] for key in ("errors", "errlist") if key in payload
@@ -311,7 +312,7 @@ class SimpleFINExtractor:
                     "identity_strength": scope_identity_strength(
                         source.protocol_version, native_scope
                     ),
-                    "fetched_at": batch.fetched_at,
+                    "fetched_at": as_utc(batch.fetched_at),
                     "source_file": f"sync_{job_id}",
                 }
                 account_error = (
@@ -473,6 +474,9 @@ class SimpleFINExtractor:
             "started_at": job_context.started_at.isoformat(),
             "completed_at": job_context.completed_at.isoformat(),
         })
+        # Receipt digests retain the original aware source offsets.
+        receipt["started_at"] = as_utc(job_context.started_at)
+        receipt["completed_at"] = as_utc(job_context.completed_at)
         self._check_immutable(
             SIMPLEFIN_SYNC_RECEIPTS,
             {"job_id": str(job_id), "connection_id": str(source.connection_id)},

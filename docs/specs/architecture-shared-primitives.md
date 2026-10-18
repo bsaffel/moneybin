@@ -336,6 +336,10 @@ Both styles reach DuckDB's catalog: SQLMesh applies them on every `sqlmesh run` 
 
 ### Row-level freshness convention
 
+Maintained instants use `TIMESTAMPTZ`, aware UTC Python values and UTC database
+sessions. Business dates retain `DATE`. [Warehouse UTC](warehouse-utc.md) defines
+machine serialization, the saved reporting calendar and explicit legacy upgrade.
+
 Every `core.*` model exposes an `updated_at` column whose value is the `MAX` of timestamps from inputs that change *per row*. Inputs that change *per model* (seeds, reference tables) contribute `NULL` and are surfaced through `meta.model_freshness`. `CURRENT_TIMESTAMP AS updated_at` inside a model is an anti-pattern — it evaluates at write time only for `FULL` tables and at query time for views, so it never reliably means "this row's freshness." See [`core-updated-at-convention.md`](core-updated-at-convention.md) for per-model formulas.
 
 ### Observation staleness

@@ -21,6 +21,7 @@ from moneybin.database import Database, get_database
 from moneybin.errors import UserError
 from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS
 from moneybin.tables import GSHEET_CONNECTIONS, IMPORT_LOG, INTERFACE_TABLES
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,17 @@ EXAMPLES: dict[str, list[Example]] = {
                 WHERE note_count > 0
                 ORDER BY transaction_date DESC
                 LIMIT 50
+            """,
+        ),
+        Example(
+            question="Transactions that still need a category, most recent first",
+            sql="""
+                SELECT transaction_id, transaction_date, account_id, amount,
+                       currency_code, description
+                FROM core.fct_transactions
+                WHERE is_categorizable AND category IS NULL
+                ORDER BY transaction_date DESC, transaction_id
+                LIMIT 25
             """,
         ),
     ],
@@ -413,18 +425,6 @@ EXAMPLES: dict[str, list[Example]] = {
                   )
                 GROUP BY currency_code, balance_date
                 ORDER BY balance_date, currency_code
-            """,
-        ),
-    ],
-    "core.uncategorized_queue": [
-        Example(
-            question="Highest-impact uncategorized transactions",
-            sql="""
-                SELECT account_name, txn_date, amount, currency_code, description,
-                       age_days, priority_score
-                FROM core.uncategorized_queue
-                ORDER BY priority_score DESC
-                LIMIT 25
             """,
         ),
     ],
@@ -890,7 +890,7 @@ def _schema_doc(db: Database) -> dict[str, Any]:
 
     return {
         "version": 1,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": format_utc(datetime.now(UTC)),
         "conventions": dict(CONVENTIONS),
         "tables": tables,
         "beyond_the_interface": {

@@ -2179,6 +2179,7 @@ class ImportService:
             default_cost_basis_method=settings.default_cost_basis_method,
             investment_source_type=None,
             investment_source_type_changed_at=None,
+            archived_changed_at=None,
             actor="import",
             in_outer_txn=in_outer_txn,
         )

@@ -92,6 +92,17 @@ def test_splits_add_balanced(runner: CliRunner, db: Database) -> None:
     body = json.loads(result.stdout)["data"]
     assert body["split"]["amount"] == "-100.00"
     assert Decimal(body["residual"]) == Decimal("0")
+    db.execute(
+        "UPDATE app.transaction_splits SET created_at = "
+        "TIMESTAMPTZ '2025-11-02 01:30:00.123456-04:00'"
+    )
+    listed = runner.invoke(
+        app, ["transactions", "splits", "list", "T1", "--output", "json"]
+    )
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.stdout)["data"]["splits"][0]["created_at"] == (
+        "2025-11-02T05:30:00.123456Z"
+    )
 
 
 def test_splits_add_unbalanced_warns(runner: CliRunner, db: Database) -> None:

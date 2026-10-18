@@ -117,3 +117,18 @@ def test_home_currency_is_the_registered_managed_key() -> None:
     would silently route to the config.yaml path and write a key nothing reads.
     """
     assert "home_currency" in MANAGED_SETTING_KEYS
+
+
+def test_reporting_timezone_changes_without_accounting_restatement(
+    service: ProfileSettingsService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restated: list[Database] = []
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", restated.append
+    )
+    service.set_setting("reporting_timezone", "America/New_York", actor="cli")
+    assert service.get_settings().reporting_timezone == "America/New_York"
+    assert restated == []
+    with pytest.raises(UserError):
+        service.set_setting("reporting_timezone", "Unknown/Zone", actor="cli")
+    assert service.get_settings().reporting_timezone == "America/New_York"

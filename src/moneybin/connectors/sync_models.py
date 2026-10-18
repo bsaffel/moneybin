@@ -7,12 +7,13 @@ related types live together.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal, Self, cast
 from uuid import UUID
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     BeforeValidator,
@@ -26,6 +27,9 @@ from pydantic import (
 # construction. Safe on the CLI's cold path because that module is stdlib-only
 # by design — see its docstring.
 from moneybin.services.refresh_outcome import RefreshStepOutcome
+from moneybin.temporal import as_utc
+
+UTCInstant = Annotated[AwareDatetime, AfterValidator(as_utc)]
 
 
 def _blank_to_none(value: object) -> object:
@@ -123,7 +127,7 @@ class LinkInitiateResponse(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     link_url: str
     link_type: Literal["widget_flow", "token_paste"]
-    expiration: datetime
+    expiration: UTCInstant
 
 
 class LinkStatusResponse(BaseModel):
@@ -145,7 +149,7 @@ class LinkStatusResponse(BaseModel):
     provider_item_id: str | None = None
     institution_name: str | None = None
     error: str | None = None
-    expiration: datetime
+    expiration: UTCInstant
 
 
 class SyncTriggerResponse(BaseModel):
@@ -245,7 +249,7 @@ class PlaidSyncBalance(BaseModel):
     margin_loan_amount: Decimal | None = None
     iso_currency_code: CurrencyCode = None
     unofficial_currency_code: CurrencyCode = None
-    last_updated_datetime: datetime | None = None
+    last_updated_datetime: UTCInstant | None = None
 
 
 class SyncSecurity(BaseModel):
@@ -288,7 +292,7 @@ class SyncInvestmentTransaction(BaseModel):
     provider_item_id: str
     security_id: str | None = None
     transaction_date: date = Field(alias="date")
-    transaction_datetime: datetime | None = None
+    transaction_datetime: UTCInstant | None = None
     transaction_name: str | None = Field(default=None, alias="name")
     quantity: Decimal | None = None
     amount: Decimal
@@ -306,7 +310,7 @@ class SyncHoldingTaxLot(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     institution_lot_id: str | None = None
-    original_purchase_datetime: datetime | None = None
+    original_purchase_datetime: UTCInstant | None = None
     quantity: Decimal | None = None
     purchase_price: Decimal | None = None
     cost_basis: Decimal | None = None
@@ -356,7 +360,7 @@ class SyncMetadata(BaseModel):
     """metadata block in GET /sync/data response."""
 
     job_id: str
-    synced_at: datetime
+    synced_at: UTCInstant
     institutions: list[InstitutionResult]
 
 
@@ -624,7 +628,7 @@ class SyncHistoryAccountView(BaseModel):
 class SyncHistoryView(BaseModel):
     """Safe observed history; absence and pending intent remain distinct."""
 
-    observed_at: datetime
+    observed_at: UTCInstant
     replay_required: bool
     discovery_history_target: date | None
     accounts: list[SyncHistoryAccountView]
@@ -639,7 +643,7 @@ class SyncScopeView(BaseModel):
     status: str
     error_code: str | None
     window: UTCWindow | None
-    retry_at: AwareDatetime | None = None
+    retry_at: UTCInstant | None = None
 
 
 class SyncSourceView(BaseModel):
@@ -662,8 +666,8 @@ class ConnectedInstitution(BaseModel):
     provider: str
     institution_name: str | None = None
     status: Literal["active", "error", "revoked"]
-    last_sync: datetime | None = None
-    created_at: datetime
+    last_sync: UTCInstant | None = None
+    created_at: UTCInstant
     error_code: str | None = Field(
         default=None,
         description="Provider error code (e.g. ITEM_LOGIN_REQUIRED). Advisory — treat as None when absent.",
@@ -822,7 +826,7 @@ class SyncConnectionView(ConnectedInstitution):
     guidance: str | None = None
     safe_history: SyncHistoryView | None = None
     history_phase: Literal["unknown", "current"] = "unknown"
-    provider_balance_at: datetime | None = None
+    provider_balance_at: UTCInstant | None = None
     setup_state: str = "unknown"
     refresh_state: str = "unknown"
 
@@ -900,7 +904,7 @@ class SyncStatusV2Response(_ContractModel):
     error: str | None
     started_at: AwareDatetime | None
     completed_at: AwareDatetime | None
-    acked_at: AwareDatetime | None
+    acked_at: UTCInstant | None
     results: list[ProviderSourceResult]
 
 
@@ -910,7 +914,7 @@ class SyncAckV2Response(_ContractModel):
     job_id: UUID
     contract_version: Literal[2]
     status: Literal["acked"]
-    acked_at: AwareDatetime
+    acked_at: UTCInstant
     results: list[ProviderSourceResult]
 
 

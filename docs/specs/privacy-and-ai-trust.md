@@ -289,8 +289,8 @@ MCP tools prefer returning the minimum data needed to answer the query:
 | `grant_id` | `VARCHAR PRIMARY KEY` | Unique identifier |
 | `feature_category` | `VARCHAR` | e.g., `mcp-data-sharing`, `smart-import-parsing` |
 | `backend` | `VARCHAR` | Provider this consent applies to |
-| `granted_at` | `TIMESTAMP` | When consent was given |
-| `revoked_at` | `TIMESTAMP` | When revoked; NULL if active |
+| `granted_at` | `TIMESTAMPTZ` | When consent was given |
+| `revoked_at` | `TIMESTAMPTZ` | When revoked; NULL if active |
 | `grant_prompt` | `TEXT` | The exact prompt text the user saw and agreed to |
 | `consent_mode` | `VARCHAR` | `persistent` or `one-time` |
 

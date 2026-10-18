@@ -39,7 +39,7 @@ WITH ofx AS (
     source_type,
     source_origin,
     source_file,
-    extracted_at::TIMESTAMP AS source_extracted_at,
+    extracted_at::TIMESTAMPTZ AS source_extracted_at,
     loaded_at
   FROM prep.stg_ofx__transactions
 ), manual AS (
@@ -78,8 +78,8 @@ WITH ofx AS (
     source_type,
     source_origin,
     NULL::TEXT AS source_file,
-    created_at::TIMESTAMP AS source_extracted_at,
-    created_at::TIMESTAMP AS loaded_at
+    created_at::TIMESTAMPTZ AS source_extracted_at,
+    created_at::TIMESTAMPTZ AS loaded_at
   FROM prep.stg_manual__transactions
 ), tabular AS (
   SELECT
@@ -117,7 +117,7 @@ WITH ofx AS (
     source_type,
     source_origin,
     source_file,
-    extracted_at::TIMESTAMP AS source_extracted_at,
+    extracted_at::TIMESTAMPTZ AS source_extracted_at,
     loaded_at
   FROM prep.stg_tabular__transactions
 ), plaid AS (
@@ -133,7 +133,7 @@ WITH ofx AS (
     merchant_name,
     merchant_entity_id,
     NULL::TEXT AS memo,
-    NULL::TEXT AS category, /* Plaid contributes no category: a PFC code is a provider vocabulary, and it belongs in plaid_category below, which the categorizer reads. `category` carries a MoneyBin category or the user's own text (the tabular and manual branches above). Aliasing the PFC code here put FOOD_AND_DRINK beside Food & Drink in one rendered column and emptied core.uncategorized_queue, which selects WHERE category IS NULL */
+    NULL::TEXT AS category, /* Plaid contributes no category: a PFC code is a provider vocabulary, and it belongs in plaid_category below, which the categorizer reads. `category` carries a MoneyBin category or the user's own text (the tabular and manual branches above). Aliasing the PFC code here put FOOD_AND_DRINK beside Food & Drink in one rendered column and emptied the categorization queue, which selects category IS NULL */
     NULL::TEXT AS subcategory,
     category_detailed,
     plaid_category,
@@ -156,11 +156,10 @@ WITH ofx AS (
     source_type,
     source_origin,
     source_file,
-    extracted_at::TIMESTAMP AS source_extracted_at,
+    extracted_at::TIMESTAMPTZ AS source_extracted_at,
     loaded_at
   FROM prep.stg_plaid__transactions
 ), simplefin AS (
-  /* Keep the shared UTC-naive timestamp contract without promoting other sources. */
   SELECT
     source_transaction_id,
     account_id,
@@ -196,12 +195,8 @@ WITH ofx AS (
     source_type,
     source_origin,
     source_file,
-    (
-      extracted_at AT TIME ZONE 'UTC'
-    ) AS source_extracted_at,
-    (
-      loaded_at AT TIME ZONE 'UTC'
-    ) AS loaded_at
+    extracted_at AS source_extracted_at,
+    loaded_at AS loaded_at
   FROM prep.stg_simplefin__transactions
 )
 SELECT

@@ -4,7 +4,8 @@ This module tests the OFX extractor with sample QFX data to ensure proper
 parsing, validation, and data extraction into raw table structures.
 """
 
-from datetime import datetime
+import time
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -24,6 +25,15 @@ FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
 
 _IMPORT_ID = "00000000-0000-0000-0000-000000000001"
 _SOURCE_ORIGIN = "test_bank"
+
+
+@pytest.fixture(params=["UTC", "America/New_York", "Asia/Tokyo"])
+def host_zone(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TZ", request.param)
+    time.tzset()
+    yield request.param
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.fixture
@@ -360,8 +370,8 @@ def test_extract_preserves_metadata(
     assert str(sample_ofx_file) in first_tx["source_file"]
 
     # Verify extraction timestamp is recent (within last minute)
-    extracted_at = datetime.fromisoformat(first_tx["extracted_at"])
-    time_diff = datetime.now() - extracted_at
+    extracted_at = first_tx["extracted_at"]
+    time_diff = datetime.now(UTC) - extracted_at
     assert time_diff.total_seconds() < 60
 
 
@@ -708,3 +718,81 @@ class TestOFXAccountTypeDerivation:
         )
 
         assert ofx_account_type(self._account(declared, kind)) == expected
+
+
+@pytest.mark.parametrize(
+    ("source_time", "hour"),
+    [
+        ("20250102120000[-5]", 17),
+        ("20250102120000[-5:EST]", 17),
+        ("20250102120000", 12),
+        ("20250102", 0),
+    ],
+)
+def test_ofx_adapter_preserves_numeric_offset_and_protocol_defaults(
+    sample_ofx_file: Path,
+    source_time: str,
+    hour: int,
+    host_zone: str,
+) -> None:
+    from datetime import UTC
+
+    from moneybin.extractors.ofx.extractor import parse_ofx_content
+
+    source = sample_ofx_file.read_bytes().replace(
+        b"20250102120000", source_time.encode()
+    )
+    parsed = parse_ofx_content(source, source_label="synthetic-offset.ofx")
+    assert parsed.accounts[0].statement.transactions[0].date == datetime(
+        2025, 1, 2, hour, tzinfo=UTC
+    )
+    assert source_time.encode() in source
+
+
+def test_ofx_extraction_metadata_and_provider_columns_are_aware(
+    sample_ofx_file: Path,
+    extractor_config: OFXProviderConfig,
+    host_zone: str,
+) -> None:
+    from datetime import UTC
+
+    before = datetime.now(UTC)
+    frames = OFXExtractor(extractor_config).extract_from_file(
+        sample_ofx_file,
+        import_id=_IMPORT_ID,
+        source_origin=_SOURCE_ORIGIN,
+    )
+    for frame in frames.values():
+        assert frame.schema["extracted_at"] == pl.Datetime("us", time_zone="UTC")
+        assert before <= frame["extracted_at"][0] <= datetime.now(UTC)
+    assert frames["transactions"].schema["date_posted"] == pl.Datetime(
+        "us", time_zone="UTC"
+    )
+    assert frames["transactions"]["date_posted"][0] == datetime(
+        2025, 1, 2, 12, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize(
+    "source_time",
+    [
+        "20250102120000[EST]",
+        "20250102120000[-5.5.5]",
+        "20250102120000[-5:EST",
+        "20250102120000-5:EST]",
+        "20250102120000[-5:EST]trailing",
+        "20250102120000[-5:EST][UTC]",
+    ],
+)
+def test_ofx_adapter_rejects_unrecognized_explicit_zone(
+    sample_ofx_file: Path, source_time: str
+) -> None:
+    from ofxparse import OfxParserException
+
+    from moneybin.extractors.ofx.extractor import parse_ofx_content
+
+    source = sample_ofx_file.read_bytes().replace(
+        b"20250102120000", source_time.encode()
+    )
+    with pytest.raises(OfxParserException, match="timezone"):
+        parse_ofx_content(source, source_label="synthetic-invalid-offset.ofx")

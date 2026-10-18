@@ -355,7 +355,7 @@ def test_missing_currency_is_retained_but_never_inherited(db: Database) -> None:
     ).fetchone() == (0,)
 
 
-def test_shared_timestamps_keep_utc_naive_contract_in_non_utc_session(
+def test_shared_timestamps_keep_utc_aware_contract_in_non_utc_session(
     db: Database,
 ) -> None:
     load(db, source())
@@ -368,8 +368,8 @@ def test_shared_timestamps_keep_utc_naive_contract_in_non_utc_session(
     fetched_at, loaded_at = raw
     assert isinstance(fetched_at, datetime) and fetched_at.tzinfo is not None
     assert isinstance(loaded_at, datetime) and loaded_at.tzinfo is not None
-    expected_fetched = datetime(2026, 9, 21)
-    expected_loaded = loaded_at.astimezone(UTC).replace(tzinfo=None)
+    expected_fetched = datetime(2026, 9, 21, tzinfo=UTC)
+    expected_loaded = loaded_at.astimezone(UTC)
     materialize(db)
     types = {
         "accounts": db.execute(
@@ -386,10 +386,14 @@ def test_shared_timestamps_keep_utc_naive_contract_in_non_utc_session(
         ).fetchone(),
     }
     assert types == {
-        "accounts": ("TIMESTAMP", "TIMESTAMP", "TIMESTAMP"),
-        "union": ("TIMESTAMP", "TIMESTAMP"),
-        "transactions": ("TIMESTAMP",),
-        "balances": ("TIMESTAMP",),
+        "accounts": (
+            "TIMESTAMP WITH TIME ZONE",
+            "TIMESTAMP WITH TIME ZONE",
+            "TIMESTAMP WITH TIME ZONE",
+        ),
+        "union": ("TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH TIME ZONE"),
+        "transactions": ("TIMESTAMP WITH TIME ZONE",),
+        "balances": ("TIMESTAMP WITH TIME ZONE",),
     }, repr(types)
     assert db.execute("SELECT extracted_at FROM core.dim_accounts").fetchone() == (
         expected_fetched,
@@ -401,10 +405,10 @@ def test_shared_timestamps_keep_utc_naive_contract_in_non_utc_session(
     raw_balance = db.execute("SELECT loaded_at FROM raw.simplefin_balances").fetchone()
     assert raw_account is not None and raw_balance is not None
     assert db.execute("SELECT loaded_at FROM core.dim_accounts").fetchone() == (
-        raw_account[0].astimezone(UTC).replace(tzinfo=None),
+        raw_account[0].astimezone(UTC),
     )
     assert db.execute("SELECT updated_at FROM core.fct_balances").fetchone() == (
-        raw_balance[0].astimezone(UTC).replace(tzinfo=None),
+        raw_balance[0].astimezone(UTC),
     )
     assert (
         db.execute(
@@ -480,7 +484,7 @@ def test_legacy_v1_missing_safe_institution_label_does_not_fall_back_to_raw(
     run_migration(
         db,
         importlib.import_module(
-            "moneybin.sql.migrations.V074__add_simplefin_raw"
+            "moneybin.sql.migrations.V075__add_simplefin_raw"
         ).migrate,
     )
     db.execute("""INSERT INTO raw.simplefin_accounts
@@ -491,8 +495,8 @@ def test_legacy_v1_missing_safe_institution_label_does_not_fall_back_to_raw(
             'strong', 'revision', '{"name":"Synthetic account","org":{"name":"Bank 123456789012"}}',
             TIMESTAMPTZ '2026-09-21T00:00:00Z', 'old-batch', 'Synthetic account', 'USD')""")
     for module in (
-        "moneybin.sql.migrations.V076__add_simplefin_account_label",
-        "moneybin.sql.migrations.V077__add_simplefin_institution_label",
+        "moneybin.sql.migrations.V077__add_simplefin_account_label",
+        "moneybin.sql.migrations.V078__add_simplefin_institution_label",
     ):
         run_migration(db, importlib.import_module(module).migrate)
     before = db.execute(
@@ -540,6 +544,72 @@ def test_sequential_type_then_subtype_rebuilds_materialized_financial_outputs(
     assert db.execute(
         "SELECT count(*) FROM core.fct_balances WHERE account_id='canonical'"
     ).fetchone() == (1,)
+
+
+def test_archive_refresh_changes_simplefin_categorization_without_losing_history(
+    db: Database,
+) -> None:
+    from moneybin.services.account_service import AccountService
+    from moneybin.services.categorization import CategorizationService
+    from moneybin.services.transform_service import TransformService
+
+    load(db, source())
+    bind_account(db)
+    materialize(db)
+    accounts = AccountService(db)
+    categories = CategorizationService(db)
+    previous_updated_at = None
+    previous_archive_stamp = None
+
+    for archived, eligible, pending in (
+        (None, True, 1),
+        (True, False, 0),
+        (False, True, 1),
+    ):
+        if archived is not None:
+            settings, _ = accounts.settings_update(
+                "canonical", actor="cli", archived=archived
+            )
+            assert settings.archived_changed_at is not None
+            if previous_archive_stamp is not None:
+                assert settings.archived_changed_at > previous_archive_stamp
+            previous_archive_stamp = settings.archived_changed_at
+            # Archive changes reach materialized facts through the normal refresh.
+            assert TransformService(db).apply().applied
+
+        rows = db.execute("""SELECT amount, currency_code, category,
+                is_categorizable, updated_at
+            FROM core.fct_transactions WHERE account_id='canonical'""").fetchall()
+        assert len(rows) == 1
+        assert rows[0][:4] == (Decimal("-12.30"), "USD", None, eligible)
+        if previous_updated_at is not None:
+            assert rows[0][4] > previous_updated_at
+        previous_updated_at = rows[0][4]
+        assert db.execute("""SELECT count(*) FROM prep.int_transactions__unioned AS t
+            JOIN raw.simplefin_transactions AS r
+                ON t.source_transaction_id = r.transaction_reference
+            WHERE t.account_id='canonical' AND t.source_type='simplefin'
+                AND t.amount = r.amount""").fetchone() == (1,)
+
+        queue = categories.list_uncategorized_transactions(limit=None)
+        assert queue is not None and len(queue) == pending
+        if pending:
+            assert queue[0]["account_id"] == "canonical"
+            assert queue[0]["amount"] == Decimal("-12.30")
+        assert categories.count_uncategorized() == pending
+        coverage = categories.coverage()
+        assert (
+            coverage.categorizable,
+            coverage.uncategorized,
+            coverage.categorized,
+        ) == (
+            pending,
+            pending,
+            0,
+        )
+        assert db.execute(
+            "SELECT count(*) FROM raw.simplefin_transactions"
+        ).fetchone() == (1,)
 
 
 @pytest.mark.parametrize("change", ["unsupported", "clear", "undo-redo"])

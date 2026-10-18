@@ -112,6 +112,7 @@ def _put(db: Database, account_id: str, **fields: Any) -> None:
         "default_cost_basis_method": None,
         "investment_source_type": None,
         "investment_source_type_changed_at": None,
+        "archived_changed_at": None,
     }
     values.update(fields)
     AccountSettingsRepo(db).set(account_id=account_id, actor="cli", **values)

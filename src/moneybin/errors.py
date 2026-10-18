@@ -316,6 +316,17 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         SecretStorageUnavailableError,
         SecretUnavailableError,
     )
+    from moneybin.temporal_contract import UTCUpgradeRequiredError
+
+    if isinstance(exc, UTCUpgradeRequiredError):
+        return UserError(
+            str(exc),
+            code=error_codes.INFRA_UTC_UPGRADE_REQUIRED,
+            hint=(
+                "Create a fresh profile or arrange separate offline maintenance "
+                "with proven timezone mappings before reopening this profile."
+            ),
+        )
 
     if isinstance(exc, DatabaseNotInitializedError):
         # Registration, not the directory, decides the verb. `profile create`

@@ -143,10 +143,7 @@ def count_matches_settled_since(
     where = "WHERE (match_status = 'accepted' OR match_status = 'reversed')"
     params: list[Any] = []
     if since is not None:
-        # `decided_at`/`reversed_at` are naive local (a `CURRENT_TIMESTAMP`
-        # cast into a TIMESTAMP column); the rebuild stamp is UTC. Cast both to
-        # instants rather than comparing wall clocks an offset apart.
-        where += " AND COALESCE(reversed_at, decided_at)::TIMESTAMPTZ > ?"
+        where += " AND COALESCE(reversed_at, decided_at) > ?"
         params.append(since)
     if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:

@@ -401,6 +401,7 @@ def render_report_result(
     fit: bool = False,
     optional: Sequence[str] | None = None,
     no_pager: bool = False,
+    reporting_timezone: str | None = None,
 ) -> None:
     """Render one report result as a table or the JSON envelope.
 
@@ -460,6 +461,7 @@ def render_report_result(
             money=money,
             numeric=numeric,
             grouped=grouped,
+            reporting_timezone=reporting_timezone,
             total_columns=len(result.columns),
             fit=fit,
             optional=optional,
@@ -515,6 +517,11 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
             # raise typer.BadParameter would bypass that envelope (Typer prints
             # plain text, exit 2) — breaking the JSON contract for agents.
             with get_database(read_only=True) as db:
+                from moneybin.repositories.profile_settings_repo import (
+                    ProfileSettingsRepo,
+                )
+
+                reporting_timezone = None
                 # No `db` to the catalog: this command resolves the one fixed
                 # built-in ID it was generated from, so the user tier would add
                 # a per-row spec build that nothing here can reach.
@@ -526,6 +533,16 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     display_currency=display_currency,
                     home_currency=profile_home_currency(db),
                 )
+                from datetime import datetime
+
+                if output != OutputFormat.JSON and any(
+                    isinstance(value, datetime)
+                    for row in result.records
+                    for value in row.values()
+                ):
+                    reporting_timezone = ProfileSettingsRepo(
+                        db
+                    ).get_reporting_timezone()
             view = column_view(
                 spec, result.columns, parameters=kwargs, wide=wide, output=output
             )
@@ -533,6 +550,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 result,
                 output,
                 cli_actor=cli_actor,
+                reporting_timezone=reporting_timezone,
                 money=money_columns(spec),
                 numeric=numeric_columns(spec),
                 grouped=grouped_columns(spec),

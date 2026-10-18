@@ -3988,7 +3988,7 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
                 [
                     import_id,
                     f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
+                    "2099-01-01 00:00:00+00:00",
                 ],
             )
 
@@ -4017,7 +4017,7 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
                 account_names, status, started_at
             ) VALUES (
                 'imp_new', '/tmp/new.csv', 'csv', 'test', '[]', 'complete',
-                '2100-01-01 00:00:00'
+                '2100-01-01 00:00:00+00:00'
             )
             """
         )
@@ -4056,7 +4056,7 @@ async def test_import_status_mixed_cursor_carries_full_initial_total(
                     account_names, status, started_at
                 ) VALUES (
                     ?, ?, 'csv', 'test', '[]', 'complete',
-                    '2099-01-01 00:00:00'
+                    '2099-01-01 00:00:00+00:00'
                 )
                 """,
                 [import_id, f"/home/test/imports/{import_id}.csv"],
@@ -4070,7 +4070,11 @@ async def test_import_status_mixed_cursor_carries_full_initial_total(
     position = decode_keyset_cursor(
         first.next_cursor,
         namespace="import_status.imports",
-        scope={"import_id": None, "sections": ["imports", "formats"]},
+        scope={
+            "import_id": None,
+            "sections": ["imports", "formats"],
+            "temporal_contract": 2,
+        },
     )
 
     assert first.summary.total_count > 2
@@ -4086,9 +4090,9 @@ async def test_import_status_coarse_allows_multiple_canonical_prepends(
 
     with get_database(read_only=False) as db:
         for import_id, started_at in (
-            ("imp_a", "2099-01-01 00:00:00"),
-            ("imp_b", "2099-02-01 00:00:00"),
-            ("imp_c", "2099-03-01 00:00:00"),
+            ("imp_a", "2099-01-01 00:00:00+00:00"),
+            ("imp_b", "2099-02-01 00:00:00+00:00"),
+            ("imp_c", "2099-03-01 00:00:00+00:00"),
         ):
             db.execute(
                 """
@@ -4106,8 +4110,8 @@ async def test_import_status_coarse_allows_multiple_canonical_prepends(
 
     with get_database(read_only=False) as db:
         for import_id, started_at in (
-            ("imp_new_1", "2100-01-01 00:00:00"),
-            ("imp_new_2", "2100-02-01 00:00:00"),
+            ("imp_new_1", "2100-01-01 00:00:00+00:00"),
+            ("imp_new_2", "2100-02-01 00:00:00+00:00"),
         ):
             db.execute(
                 """
@@ -4153,7 +4157,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
                 [
                     import_id,
                     f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
+                    "2099-01-01 00:00:00+00:00",
                 ],
             )
 
@@ -4173,7 +4177,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
                 [
                     import_id,
                     f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
+                    "2099-01-01 00:00:00+00:00",
                 ],
             )
 
@@ -4196,9 +4200,9 @@ async def test_import_status_coarse_survives_removal_and_prepend_without_skippin
 
     with get_database(read_only=False) as db:
         for import_id, started_at in (
-            ("imp_a", "2099-01-01 00:00:00"),
-            ("imp_b", "2099-02-01 00:00:00"),
-            ("imp_c", "2099-03-01 00:00:00"),
+            ("imp_a", "2099-01-01 00:00:00+00:00"),
+            ("imp_b", "2099-02-01 00:00:00+00:00"),
+            ("imp_c", "2099-03-01 00:00:00+00:00"),
         ):
             db.execute(
                 """
@@ -4222,7 +4226,7 @@ async def test_import_status_coarse_survives_removal_and_prepend_without_skippin
                 account_names, status, started_at
             ) VALUES (
                 'imp_new', '/tmp/imp_new.csv', 'csv', 'test', '[]', 'complete',
-                '2100-01-01 00:00:00'
+                '2100-01-01 00:00:00+00:00'
             )
             """
         )
@@ -4254,7 +4258,7 @@ async def test_import_status_coarse_survives_unserved_row_removal_without_duplic
                 [
                     import_id,
                     f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
+                    "2099-01-01 00:00:00+00:00",
                 ],
             )
 
@@ -4282,9 +4286,9 @@ async def test_import_status_coarse_rejects_invalid_key_types_before_data_access
 
     invalid_cursor = encode_keyset_cursor(
         namespace="import_status.imports",
-        scope={"import_id": None, "sections": ["imports"]},
-        snapshot=(123, "imp_b"),
-        after=(123, "imp_b"),
+        scope={"import_id": None, "sections": ["imports"], "temporal_contract": 2},
+        snapshot=(123, "imp_b", 2),
+        after=(123, "imp_b", 2),
         total=2,
     )
     accessed = False

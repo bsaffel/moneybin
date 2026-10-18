@@ -1,6 +1,6 @@
 """V050: add persistent_account_id and name to raw.plaid_accounts.
 
-The broker has always sent both, but ``PlaidSyncAccount`` never declared them and
+The broker has always sent both, but ``SyncAccount`` never declared them and
 Pydantic's ``extra='ignore'`` destroyed each one at validation — silently, with
 no error and no log line. Existing databases therefore hold no copy anywhere:
 the values never survived past the wire.

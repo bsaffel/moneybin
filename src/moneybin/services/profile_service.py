@@ -182,7 +182,13 @@ class ProfileService:
             logger.debug(f"Completed registration for profile: {normalized}")
         return profile_dir
 
-    def create(self, name: str, *, init_inbox: bool = False) -> Path:
+    def create(
+        self,
+        name: str,
+        *,
+        init_inbox: bool = False,
+        reporting_timezone: str | None = None,
+    ) -> Path:
         """Create a profile, or complete an unregistered one, in place.
 
         Creates ``<base>/profiles/<normalized_name>/`` with subdirectories
@@ -198,6 +204,8 @@ class ProfileService:
 
         Args:
             name: Profile name (will be normalized to lowercase with hyphens).
+            reporting_timezone: IANA calendar for fresh profiles; defaults to UTC.
+                Adoption retains the existing database policy.
             init_inbox: When True, also create the import-inbox layout at
                 ``<inbox_root>/<normalized_name>/{inbox,processed,failed,pending}/``.
 
@@ -209,6 +217,12 @@ class ProfileService:
                 ``config.yaml``) already exists under the normalized name.
             ValueError: If the name contains no valid characters.
         """
+        from moneybin.repositories.profile_settings_repo import (
+            validate_reporting_timezone,
+        )
+
+        if reporting_timezone is not None:
+            validate_reporting_timezone(reporting_timezone)
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
         # 0o700: profile dir holds the encrypted DB, privacy.log.jsonl, and
@@ -246,7 +260,14 @@ class ProfileService:
             # first would leave a failed create visible to `list()` and refused by
             # `create()` — stranding the user exactly as before.
             if not (profile_dir / "moneybin.duckdb").exists():
-                self._init_database(profile_dir, normalized)
+                self._init_database(
+                    profile_dir,
+                    normalized,
+                    reporting_timezone=reporting_timezone or "UTC",
+                )
+            else:
+                # Adoption is read-only: retain both database bytes and its policy.
+                self.reporting_timezone(normalized)
             self.ensure_registered(normalized)
         except Exception:
             # Roll back only a directory we made ourselves. An adopted directory
@@ -294,17 +315,37 @@ class ProfileService:
             mode if isinstance(mode, str) and mode in ("auto", "passphrase") else None
         )
 
-    def _init_database(self, profile_dir: Path, profile: str) -> None:
+    def _init_database(
+        self, profile_dir: Path, profile: str, *, reporting_timezone: str = "UTC"
+    ) -> None:
         """Initialize an encrypted database for the profile.
 
         Args:
             profile_dir: Path to the profile directory.
+            reporting_timezone: IANA calendar to persist before registration.
             profile: Normalized profile name. Scopes the keychain entry so
                 profiles never share encryption keys.
         """
         from moneybin.database import init_db
 
-        init_db(profile_dir / "moneybin.duckdb", profile=profile)
+        init_db(
+            profile_dir / "moneybin.duckdb",
+            profile=profile,
+            reporting_timezone=reporting_timezone,
+        )
+
+    def reporting_timezone(self, name: str) -> str:
+        """Read an existing profile's calendar without adopting or mutating it."""
+        from moneybin.database import Database
+        from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+        from moneybin.secrets import SecretStore
+
+        with Database(
+            self._profile_dir(name) / "moneybin.duckdb",
+            read_only=True,
+            secret_store=SecretStore(profile=normalize_profile_name(name)),
+        ) as db:
+            return ProfileSettingsRepo(db).get_reporting_timezone()
 
     def list(self) -> list[dict[str, str | bool]]:
         """List all profiles with their active status.

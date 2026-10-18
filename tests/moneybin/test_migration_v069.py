@@ -10,19 +10,24 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.sql.migrations.V069__add_investment_source_type import migrate
-from moneybin.sql.migrations.V075__add_account_type_override import (
-    migrate as migrate_v075,
+from moneybin.sql.migrations.V074__add_archived_changed_at import (
+    migrate as migrate_v074,
+)
+from moneybin.sql.migrations.V076__add_account_type_override import (
+    migrate as migrate_v076,
 )
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
 _NEW_COLUMNS = ("investment_source_type", "investment_source_type_changed_at")
+#: Added by later migrations, so absent from a database V069 upgrades.
+_LATER_COLUMNS = ("archived_changed_at", "account_type")
 _SETTINGS_COLUMNS = ("account_id", "display_name", "archived", "include_in_net_worth")
 
 
 @pytest.fixture()
 def pre_v069_db(db: Database) -> Database:
     """Pre-V069 settings without later appends, holding three rows."""
-    for column in (*_NEW_COLUMNS, "account_type"):
+    for column in (*_NEW_COLUMNS, *_LATER_COLUMNS):
         db.execute(
             f"ALTER TABLE app.account_settings DROP COLUMN {column}"
         )  # test fixture, hardcoded column names
@@ -96,13 +101,14 @@ def test_v069_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
         (row[1], row[2])
         for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
     ]
-    for column in (*_NEW_COLUMNS, "account_type"):
+    for column in (*_NEW_COLUMNS, *_LATER_COLUMNS):
         db.execute(
             f"ALTER TABLE app.account_settings DROP COLUMN {column}"
         )  # test fixture, hardcoded column names
 
     run_migration(db, migrate)
-    run_migration(db, migrate_v075)
+    run_migration(db, migrate_v074)
+    run_migration(db, migrate_v076)
 
     upgraded_schema = [
         (row[1], row[2])

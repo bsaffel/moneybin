@@ -3,6 +3,7 @@
 import pytest
 
 from moneybin.database import Database
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.synthetic.reset import (
     GENERATOR_WRITTEN_TABLES,
     RESET_DELETIONS,
@@ -10,6 +11,7 @@ from moneybin.synthetic.reset import (
     has_non_synthetic_data,
     reset_synthetic_rows,
 )
+from moneybin.tables import AUDIT_LOG
 
 _INSERT = (
     "INSERT INTO raw.tabular_transactions "
@@ -17,6 +19,43 @@ _INSERT = (
     "source_file, source_type, source_origin, import_id) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 )
+
+
+@pytest.fixture(autouse=True)
+def _bootstrap_settings_audit(db: Database) -> None:
+    """Restore bootstrap provenance omitted by the shared audit-count fixture."""
+    ProfileSettingsRepo(db).set_reporting_timezone("UTC", actor="database.init")
+
+
+@pytest.mark.parametrize("setting", ["zone", "home", "targets", "explicit-utc"])
+def test_profile_settings_user_choices_block_both_reset_guards(
+    db: Database, setting: str
+) -> None:
+    repo = ProfileSettingsRepo(db)
+    if setting == "zone":
+        repo.set_reporting_timezone("America/New_York", actor="cli")
+    elif setting == "home":
+        repo.set_home_currency("USD", actor="cli")
+    elif setting == "targets":
+        repo.set_display_currency_targets(["EUR"], actor="cli")
+    else:
+        repo.set_reporting_timezone("UTC", actor="cli")
+    assert has_any_user_content(db) is True
+    assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.parametrize("provenance", ["missing", "unknown-actor", "stale-image"])
+def test_bootstrap_settings_without_matching_provenance_block_reset(
+    db: Database, provenance: str
+) -> None:
+    if provenance == "missing":
+        db.execute(f"DELETE FROM {AUDIT_LOG.full_name}")  # noqa: S608  # fixed TableRef in corruption fixture
+    elif provenance == "unknown-actor":
+        db.execute(f"UPDATE {AUDIT_LOG.full_name} SET actor = 'unknown'")  # noqa: S608  # fixed TableRef in corruption fixture
+    else:
+        db.execute(f"UPDATE {AUDIT_LOG.full_name} SET after_value = '{{}}'")  # noqa: S608  # fixed TableRef in corruption fixture
+    assert has_any_user_content(db) is True
+    assert has_non_synthetic_data(db) is True
 
 
 @pytest.mark.unit
@@ -249,8 +288,8 @@ def test_generator_output_is_invisible_to_the_real_data_guard(db: Database) -> N
 @pytest.mark.unit
 def test_has_any_user_content_is_false_for_a_fresh_database(db: Database) -> None:
     # The invariant the not-ours guard rests on: a freshly-initialized profile has
-    # no user content, so ANY row is the user's. If `init_db` ever starts seeding a
-    # table, this fails and _INIT_POPULATED_TABLES must be updated deliberately —
+    # no user content; known bootstrap settings carry matching audit evidence.
+    # Any new initialization state must be classified deliberately —
     # otherwise `moneybin demo` would refuse to build on a bare `db init` profile.
     assert has_any_user_content(db) is False
 

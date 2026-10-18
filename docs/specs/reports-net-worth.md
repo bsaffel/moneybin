@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS app.balance_assertions (
     assertion_date DATE NOT NULL,   -- Date the balance was observed
     balance DECIMAL(18, 2) NOT NULL, -- Asserted balance amount
     notes VARCHAR,                  -- Optional user notes (e.g., "from paper statement")
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the assertion was entered
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the assertion was entered
     PRIMARY KEY (account_id, assertion_date)
 );
 ```
@@ -85,7 +85,7 @@ Per-account configuration. Initially just net worth inclusion; extensible for fu
 CREATE TABLE IF NOT EXISTS app.account_settings (
     account_id VARCHAR NOT NULL PRIMARY KEY, -- Foreign key to core.dim_accounts
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE, -- Whether this account contributes to net worth
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last modification time
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last modification time
 );
 ```
 

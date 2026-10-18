@@ -51,6 +51,7 @@ from moneybin.services.import_confirmation import (
     validate_partial_mapping,
 )
 from moneybin.tables import GSHEET_SEEDS, TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
+from moneybin.temporal import format_utc, parse_utc
 
 logger = logging.getLogger(__name__)
 
@@ -1025,9 +1026,9 @@ def row_to_connection(row: dict[str, Any]) -> GSheetConnection:
 
 
 def _to_iso(value: Any) -> str | None:
-    """Stringify a datetime to ISO format; pass through None and strings."""
+    """Render a stored instant canonically, retaining nulls."""
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
+        return format_utc(value)
+    return format_utc(parse_utc(str(value)))

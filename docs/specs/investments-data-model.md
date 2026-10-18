@@ -182,8 +182,8 @@ CREATE TABLE IF NOT EXISTS app.securities (
     is_cash_equivalent BOOLEAN,                         -- Highly liquid, treat-like-cash flag (money-market/sweep); NULL = unknown
     cost_basis_method VARCHAR CHECK (cost_basis_method IN ('fifo', 'hifo', 'specific', 'average')), -- Per-security election override; NULL falls back to account default
     currency_code VARCHAR NOT NULL DEFAULT 'USD',       -- Instrument's denominating currency; canonical name per multi-currency.md; no FX conversion in v1
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the catalog entry was created
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When last modified; service must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the catalog entry was created
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When last modified; service must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
 );
 ```
 
@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     fees DECIMAL(18, 2),                       -- Commissions/fees component; folded into cost basis
     currency_code VARCHAR,                     -- Denominating currency as supplied; NULL when the user named none (never fabricated) — core.fct_investment_transactions inherits the account's (multi-currency.md Requirement 3)
     description VARCHAR,                       -- Free-text description
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by VARCHAR NOT NULL,               -- 'cli' or 'mcp'; future-extensible for multi-user identity
     investment_transaction_id VARCHAR          -- Predicted gold-key (content hash, per raw.manual_transactions.transaction_id precedent); populated at INSERT
 );
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS app.lot_selections (
     investment_transaction_id VARCHAR NOT NULL, -- FK to the disposal row in core.fct_investment_transactions
     lot_id VARCHAR NOT NULL,                     -- FK to core.fct_investment_lots; the chosen lot
     quantity DECIMAL(28, 10) NOT NULL,          -- Units to draw from this lot for this disposal
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the selection was recorded
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the selection was recorded
     PRIMARY KEY (investment_transaction_id, lot_id) -- One selection per (disposal, lot) pair
 );
 ```
@@ -319,7 +319,7 @@ Columns:
   provider_type              VARCHAR          -- Exact provider type from the same source member; nullable
   provider_subtype           VARCHAR          -- Exact provider subtype from the same source member; nullable
   description                VARCHAR          -- Free-text description
-  updated_at                 TIMESTAMP        -- Row freshness per core-updated-at-convention
+  updated_at                 TIMESTAMPTZ        -- Row freshness per core-updated-at-convention
 ```
 
 ### SQLMesh model: `core.fct_investment_lots` (TABLE, derived)
@@ -349,7 +349,7 @@ Columns:
   is_open                 BOOLEAN          -- remaining_quantity > 0
   source_transaction_id   VARCHAR          -- FK to the opening core.fct_investment_transactions row
   basis_incomplete        BOOLEAN          -- TRUE when this lot opened with no supplied basis (e.g. transfer_in with unknown cost basis); see "Oversold lots"
-  updated_at              TIMESTAMP        -- Row freshness
+  updated_at              TIMESTAMPTZ        -- Row freshness
 ```
 
 ### SQLMesh model: `core.fct_realized_gains` (TABLE, derived)
@@ -374,7 +374,7 @@ Columns:
   cost_basis_method   VARCHAR          -- Method that produced this basis
   basis_incomplete    BOOLEAN          -- TRUE when part of this disposal matched no tracked lot (zero-basis slice); see "Oversold lots"
   currency_code       VARCHAR          -- Denominating currency
-  updated_at          TIMESTAMP        -- Row freshness
+  updated_at          TIMESTAMPTZ        -- Row freshness
 ```
 
 ### SQLMesh model: `core.dim_holdings` (VIEW, derived)
@@ -397,7 +397,7 @@ Columns:
   price_source      VARCHAR          -- Which source supplied the close (see core.fct_security_prices); NULL when no close resolved
   days_since_observed INT            -- Calendar days between price_date and today; 0 on a same-day close; NULL when no close resolved
   valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld | source_overlap
-  updated_at        TIMESTAMP        -- Row freshness; folds the position's lots, its close, its broker snapshot receipt, and — for a mixed-source account — the ledger rows behind the overlap, so a status flip caused by a sibling position still advances it
+  updated_at        TIMESTAMPTZ        -- Row freshness; folds the position's lots, its close, its broker snapshot receipt, and — for a mixed-source account — the ledger rows behind the overlap, so a status flip caused by a sibling position still advances it
 ```
 
 > **Unrealized gain/loss** arrived with Pillar C phase C.1

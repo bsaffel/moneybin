@@ -26,6 +26,7 @@ from moneybin.privacy.payloads.balances import (
 )
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.row_set import NO_ROW_SET, row_set
+from moneybin.temporal import format_utc
 from moneybin.utils.parsing import signal_from_match_signals
 
 if TYPE_CHECKING:
@@ -423,7 +424,7 @@ class LinkHistoryRow:
             status=r["status"],
             decided_by=r["decided_by"],
             decided_at=(
-                str(r["decided_at"]) if r.get("decided_at") is not None else None
+                format_utc(r["decided_at"]) if r.get("decided_at") is not None else None
             ),
             signal=signal_from_match_signals(r.get("match_signals")),
         )

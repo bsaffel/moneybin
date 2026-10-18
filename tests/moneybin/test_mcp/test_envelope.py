@@ -151,7 +151,7 @@ class TestResponseEnvelope:
         }
         assert "classes_returned" not in as_dict["data"]
         assert as_dict["data"]["records"][0]["net_worth"] == Decimal("1234.56000000")
-        assert as_dict["data"]["records"][0]["balance_date"] == date(2026, 7, 1)
+        assert as_dict["data"]["records"][0]["balance_date"] == "2026-07-01"
 
         normalized = json.loads(envelope.to_json())
         assert normalized["data"]["parameters"] == {
@@ -563,3 +563,102 @@ def test_response_envelope_to_dict_does_not_chain_mock_model_dump() -> None:
     assert "model_dump" not in repr(data), (
         f"to_dict drilled into mock.model_dump(); repr={data!r}"
     )
+
+
+@pytest.mark.parametrize(
+    "instant,expected",
+    [
+        ("2026-10-01T09:00:00-04:00", "2026-10-01T13:00:00.000000Z"),
+        ("2026-10-01T15:00:00.1+02:00", "2026-10-01T13:00:00.100000Z"),
+    ],
+)
+def test_utc_output_matches_dict_json_and_exports(instant: str, expected: str) -> None:
+    """Typed datetimes normalize before dates without rewriting arbitrary text."""
+    from datetime import datetime
+
+    from moneybin.exports.renderers import normalize_tabular_cell
+
+    value = datetime.fromisoformat(instant)
+    envelope = build_envelope(
+        data={
+            "nested": [
+                {
+                    "at": value,
+                    "day": date(2026, 10, 1),
+                    "amount": Decimal("12.30"),
+                    "text": instant,
+                }
+            ]
+        }
+    )
+    row = envelope.to_dict()["data"]["nested"][0]
+    assert row == {
+        "at": expected,
+        "day": "2026-10-01",
+        "amount": Decimal("12.30"),
+        "text": instant,
+    }
+    encoded = json.loads(envelope.to_json())["data"]["nested"][0]
+    assert encoded == {
+        "at": expected,
+        "day": "2026-10-01",
+        "amount": 12.3,
+        "text": instant,
+    }
+    assert normalize_tabular_cell(value) == expected
+
+
+async def test_utc_audit_import_rows_share_public_wire_contract(mcp_db: object) -> None:
+    """Real warehouse rows reach public dict and JSON with identical UTC strings."""
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.import_tools import import_status_coarse
+    from moneybin.mcp.tools.system import system_audit_coarse
+    from moneybin.repositories.import_log_repo import ImportLogRepo
+    from moneybin.services.audit_service import AuditService
+
+    source_stamp = "2026-10-01T09:00:00.1-04:00"
+    expected = "2026-10-01T13:00:00.100000Z"
+    with get_database(read_only=False) as db:
+        event = AuditService(db).record_audit_event(
+            action="note.add",
+            target=("app", "transaction_notes", "synthetic"),
+            before={"source_stamp": source_stamp},
+            after={"business_date": "2026-10-01"},
+            actor="mcp",
+        )
+        db.execute(
+            "UPDATE app.audit_log SET occurred_at = CAST(? AS TIMESTAMPTZ) "
+            "WHERE audit_id = ?",
+            [source_stamp, event.audit_id],
+        )
+        repo = ImportLogRepo(db)
+        import_id = repo.begin_import(
+            source_file="synthetic.csv",
+            source_type="csv",
+            source_origin="synthetic",
+            account_names=[],
+        )
+        repo.finalize_import(
+            import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        db.execute(
+            "UPDATE app.import_log SET started_at = CAST(? AS TIMESTAMPTZ), "
+            "completed_at = CAST(? AS TIMESTAMPTZ) WHERE import_id = ?",
+            [source_stamp, source_stamp, import_id],
+        )
+        stored = AuditService(db).list_events(limit=1)[0]
+        assert stored.before_value == {"source_stamp": source_stamp}
+        assert stored.after_value == {"business_date": "2026-10-01"}
+
+    audit = await system_audit_coarse(view="events")
+    imports = await import_status_coarse(sections=["imports"])
+    assert audit.error is None
+    assert imports.error is None
+    for payload in (audit.to_dict(), json.loads(audit.to_json())):
+        assert payload["data"]["events"][0]["occurred_at"] == expected
+    for payload in (imports.to_dict(), json.loads(imports.to_json())):
+        row = payload["data"]["sections"][0]["records"][0]
+        assert row["import_id"] == import_id
+        assert row["started_at"] == expected
+        assert row["completed_at"] == expected
+        assert row["rows_imported"] == 1

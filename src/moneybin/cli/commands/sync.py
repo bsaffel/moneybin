@@ -1180,11 +1180,9 @@ _STATUS_COLUMNS: tuple[tuple[str, Callable[["SyncConnectionView"], object]], ...
     ("Status", lambda c: c.status),
     (
         "Last sync",
-        lambda c: (
-            c.last_sync.strftime("%Y-%m-%d %H:%M UTC") if c.last_sync else "never"
-        ),
+        lambda c: c.last_sync if c.last_sync else "never",
     ),
-    ("Linked", lambda c: c.created_at.strftime("%Y-%m-%d %H:%M UTC")),
+    ("Linked", lambda c: c.created_at),
     ("Error", lambda c: c.error_code or "-"),
     ("Item ID", lambda c: c.provider_item_id),
 )
@@ -1211,10 +1209,19 @@ def sync_status(
     ),
 ) -> None:
     """Show connected institutions, last sync times, and health."""
+    reporting_timezone: str | None = None
     with handle_cli_errors():
         with _build_sync_service() as service:
             connections = service.list_connections()
             recovery_jobs = service.recovery_jobs()
+            if output != OutputFormat.JSON:
+                from moneybin.repositories.profile_settings_repo import (
+                    ProfileSettingsRepo,
+                )
+
+                reporting_timezone = ProfileSettingsRepo(
+                    service.db
+                ).get_reporting_timezone()
 
     if output == OutputFormat.JSON:
         from moneybin.adapters.sync_adapters import (
@@ -1236,6 +1243,8 @@ def sync_status(
             cli_actor="sync_status",
         )
         return
+
+    from moneybin.cli.render import format_instant
 
     policy = get_terminal_policy(no_pager=no_pager)
     parts: list[object] = [
@@ -1262,6 +1271,7 @@ def sync_status(
                 view.rows,
                 total_columns=view.total,
                 terminal=policy,
+                reporting_timezone=reporting_timezone,
             )
         )
         for connection in connections:
@@ -1272,13 +1282,18 @@ def sync_status(
                 ("Connection", connection.id),
                 (
                     "Acknowledged sync",
-                    connection.last_sync.isoformat()
+                    format_instant(
+                        connection.last_sync, reporting_timezone=reporting_timezone
+                    )
                     if connection.last_sync
                     else "Unknown",
                 ),
                 (
                     "Provider balance",
-                    connection.provider_balance_at.isoformat()
+                    format_instant(
+                        connection.provider_balance_at,
+                        reporting_timezone=reporting_timezone,
+                    )
                     if connection.provider_balance_at
                     else "Unknown",
                 ),
@@ -1288,7 +1303,12 @@ def sync_status(
             ]
             if history is not None:
                 history_rows.extend([
-                    ("History observed", history.observed_at.isoformat()),
+                    (
+                        "History observed",
+                        format_instant(
+                            history.observed_at, reporting_timezone=reporting_timezone
+                        ),
+                    ),
                     ("Replay required", "Yes" if history.replay_required else "No"),
                     (
                         "Discovery history target",
@@ -1300,7 +1320,7 @@ def sync_status(
                 for account in history.accounts:
                     intervals = (
                         "; ".join(
-                            f"[{window.start.isoformat()}, {window.end.isoformat()})"
+                            f"[{format_instant(window.start, reporting_timezone=reporting_timezone)}, {format_instant(window.end, reporting_timezone=reporting_timezone)})"
                             for window in account.acknowledged_intervals
                         )
                         or "No acknowledged intervals"

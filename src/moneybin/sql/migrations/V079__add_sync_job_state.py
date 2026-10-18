@@ -1,4 +1,4 @@
-"""V078: add operational recovery for durably ingested broker jobs."""
+"""V079: add operational recovery for durably ingested broker jobs."""
 
 from __future__ import annotations
 

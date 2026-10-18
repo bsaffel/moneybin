@@ -418,3 +418,33 @@ class TestSyntheticWriter:
             "Writer produced Float columns for monetary fields; "
             f"expected pl.Decimal: {float_violations}"
         )
+
+
+@pytest.mark.parametrize("host_zone", ["UTC", "America/New_York", "Asia/Tokyo"])
+def test_synthetic_writer_preserves_utc_instants(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    host_zone: str,
+) -> None:
+    import time
+    from datetime import UTC, datetime
+
+    from moneybin.synthetic.writer import SyntheticWriter
+
+    monkeypatch.setenv("TZ", host_zone)
+    time.tzset()
+    try:
+        before = datetime.now(UTC)
+        SyntheticWriter(db).write(_make_result())
+        row = db.execute(
+            "SELECT extracted_at, loaded_at, date_posted, amount "
+            "FROM raw.ofx_transactions"
+        ).fetchone()
+        assert row is not None
+        assert before <= row[0] <= datetime.now(UTC)
+        assert before <= row[1] <= datetime.now(UTC)
+        assert row[2] == datetime(2024, 1, 15, tzinfo=UTC)
+        assert row[3] == Decimal("-42.50")
+    finally:
+        monkeypatch.undo()
+        time.tzset()

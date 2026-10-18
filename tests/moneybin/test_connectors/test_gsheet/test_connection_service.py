@@ -52,6 +52,36 @@ def _make_service(
     return svc, sheets, oauth
 
 
+def test_stored_connection_instants_reach_payload_as_canonical_utc(
+    in_memory_db: Database,
+) -> None:
+    from moneybin.adapters.gsheet_adapters import gsheet_connection_row
+    from moneybin.protocol.envelope import serialize_payload
+
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss-temporal", _seed_workbook(gid=0))
+    connection = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ss-temporal/edit#gid=0",
+            adapter="seed",
+            alias="temporal",
+            yes=True,
+            no_initial_pull=True,
+        )
+    ).connection
+    in_memory_db.execute(
+        "UPDATE app.gsheet_connections SET last_pull_at = "
+        "TIMESTAMPTZ '2025-11-02 01:30:00.123456-04:00', last_success_at = "
+        "TIMESTAMPTZ '2025-11-02 01:31:00-04:00' WHERE connection_id = ?",
+        [connection.connection_id],
+    )
+    loaded = svc.get(connection.connection_id)
+    assert loaded is not None
+    payload = serialize_payload(gsheet_connection_row(loaded))
+    assert payload["last_pull_at"] == "2025-11-02T05:30:00.123456Z"
+    assert payload["last_success_at"] == "2025-11-02T05:31:00.000000Z"
+
+
 def test_connect_rejects_export_overlap_before_oauth_or_sheets_api(
     in_memory_db: Database,
 ) -> None:

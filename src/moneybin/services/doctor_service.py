@@ -1111,7 +1111,7 @@ class DoctorService:
             sampled_sql = (
                 f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # TableRef + sqlglot-quoted pk + trusted watermark_sql
                 f"FROM {table_ref.full_name} "
-                f"WHERE {watermark_sql} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
+                f"WHERE {watermark_sql} >= (now()::TIMESTAMPTZ - (? * INTERVAL 1 DAY)) "
                 f"ORDER BY {watermark_sql} DESC LIMIT ?"
             )
             sample_params = [
@@ -1221,7 +1221,7 @@ class DoctorService:
                 f"""
                 SELECT m.merchant_id
                 FROM {USER_MERCHANTS.full_name} m
-                WHERE m.updated_at < (now()::TIMESTAMP - (? * INTERVAL 1 DAY))
+                WHERE m.updated_at < (now()::TIMESTAMPTZ - (? * INTERVAL 1 DAY))
                   AND NOT EXISTS (
                     SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} c
                     WHERE c.merchant_id = m.merchant_id
@@ -4638,8 +4638,8 @@ class DoctorService:
 
         Delegates the counting so this check and ``categorize stats`` cannot
         report different coverage for the same database: one query, scoped to
-        the population ``core.uncategorized_queue`` is drawn from, so the
-        percentage describes work ``moneybin review`` will actually offer.
+        ``core.fct_transactions.is_categorizable``, so the percentage describes
+        work ``moneybin review`` will actually offer.
         """
         try:
             coverage = CategorizationService(self._db).coverage()
@@ -4647,11 +4647,9 @@ class DoctorService:
             return InvariantResult(
                 name="categorization_coverage",
                 status="skipped",
-                # Names both models the delegated count reads: it joins
-                # dim_accounts to match the queue's population, so either being
-                # absent lands here and a reader sent to the wrong one looks
-                # for a table that is already there.
-                detail="fct_transactions or dim_accounts not available",
+                # Coverage reads only fct_transactions now; this also lands here
+                # when the fact predates is_categorizable (not yet refreshed).
+                detail="fct_transactions not available or not yet refreshed",
                 affected_ids=[],
             )
         if coverage.categorizable == 0:

@@ -188,7 +188,8 @@ def refresh_views(db: Database) -> None:
             {seed_class_expr},
             true AS is_default,
             COALESCE(o.is_active, true) AS is_active,
-            NULL::TIMESTAMP AS created_at
+            NULL::TIMESTAMPTZ AS created_at,
+            o.updated_at AS updated_at
         FROM {SEED_CATEGORIES.full_name} s
         LEFT JOIN {CATEGORY_OVERRIDES.full_name} o USING (category_id)
         UNION
@@ -200,7 +201,8 @@ def refresh_views(db: Database) -> None:
             {user_class_expr},
             false AS is_default,
             is_active,
-            created_at
+            created_at,
+            updated_at
         FROM {USER_CATEGORIES.full_name}
         """  # noqa: S608  # all interpolated names are TableRef constants or the category_class module constant, not user input
     )
@@ -275,7 +277,7 @@ def refresh_views(db: Database) -> None:
                 CAST(NULL AS VARCHAR) AS category_id,
                 category, subcategory, created_by, created_at,
                 CAST([] AS VARCHAR[]) AS exemplars,
-                CAST(NULL AS TIMESTAMP) AS updated_at
+                CAST(NULL AS TIMESTAMPTZ) AS updated_at
             FROM app.merchants
             """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
         )

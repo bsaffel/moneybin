@@ -52,34 +52,19 @@ from moneybin.tables import (
     PLAID_TRANSACTIONS,
     SECURITY_PRICES,
 )
+from moneybin.temporal import as_utc
 
 logger = logging.getLogger(__name__)
 
 
-def _utc_naive(value: datetime | None) -> datetime | None:
-    """Rebase an instant onto UTC and drop the tzinfo.
-
-    The raw.plaid_* datetime columns are naive ``TIMESTAMP``, and DuckDB
-    rebases a tz-AWARE value into the machine's session zone on insert — so a
-    tz-aware column would store the LOCAL wall clock, and every ``::DATE``
-    staging derives from it (``trade_date``, ``acquisition_date``) would be the
-    local calendar date, off by a day outside UTC. Storing the UTC wall clock
-    makes those casts the UTC calendar date on any machine, and keeps them on
-    the same calendar as ``holdings_date`` (also a UTC date, below) — a
-    mismatch between the two synthesizes phantom opening lots.
-
-    A naive input is taken as already-UTC: the sync server's contract is UTC.
-    """
-    if value is None or value.tzinfo is None:
-        return value
-    return value.astimezone(UTC).replace(tzinfo=None)
+def _utc_instant(value: datetime | None) -> datetime | None:
+    """Normalize a documented provider instant; reject unknown offset-free values."""
+    return as_utc(value) if value is not None else None
 
 
 def _utc_date(value: datetime) -> date:
     """The instant's UTC calendar date — never the machine's or the offset's."""
-    if value.tzinfo is None:
-        return value.date()
-    return value.astimezone(UTC).date()
+    return as_utc(value).date()
 
 
 @dataclass(frozen=True)
@@ -160,8 +145,7 @@ _BALANCES_SCHEMA = pl.Schema({
     "source_file": pl.Utf8,
     "source_type": pl.Utf8,
     "source_origin": pl.Utf8,
-    # Naive on purpose — see _utc_naive() and _INVESTMENT_TRANSACTIONS_SCHEMA.
-    "last_updated_datetime": pl.Datetime("us"),
+    "last_updated_datetime": pl.Datetime("us", time_zone="UTC"),
     "extracted_at": pl.Datetime(time_zone="UTC"),
     "loaded_at": pl.Datetime(time_zone="UTC"),
 })
@@ -205,10 +189,8 @@ _INVESTMENT_TRANSACTIONS_SCHEMA = pl.Schema({
     "account_id": pl.Utf8,
     "security_id": pl.Utf8,
     "transaction_date": pl.Date,
-    # Naive on purpose — carries a UTC wall clock via _utc_naive(). A tz-aware
-    # dtype here would make DuckDB rebase the instant into the machine's local
-    # zone on insert (the raw column is naive TIMESTAMP), misdating trade_date.
-    "transaction_datetime": pl.Datetime("us"),
+    # Provider instants remain aware; staging derives its UTC business date.
+    "transaction_datetime": pl.Datetime("us", time_zone="UTC"),
     "transaction_name": pl.Utf8,
     "quantity": pl.Decimal(28, 10),
     "amount": pl.Decimal(18, 2),
@@ -262,8 +244,7 @@ _INVESTMENT_HOLDING_LOTS_SCHEMA = pl.Schema({
     "security_id": pl.Utf8,
     "lot_index": pl.Int32,
     "institution_lot_id": pl.Utf8,
-    # Naive on purpose — see _utc_naive() and _INVESTMENT_TRANSACTIONS_SCHEMA.
-    "original_purchase_datetime": pl.Datetime("us"),
+    "original_purchase_datetime": pl.Datetime("us", time_zone="UTC"),
     "quantity": pl.Decimal(28, 10),
     "purchase_price": pl.Decimal(28, 10),
     "cost_basis": pl.Decimal(18, 2),
@@ -615,7 +596,7 @@ class PlaidExtractor:
             [
                 {
                     **bal.model_dump(),
-                    "last_updated_datetime": _utc_naive(bal.last_updated_datetime),
+                    "last_updated_datetime": _utc_instant(bal.last_updated_datetime),
                     "source_file": source_file,
                     "source_type": "plaid",
                     "source_origin": item_by_account[bal.account_id],
@@ -754,7 +735,7 @@ class PlaidExtractor:
             [
                 {
                     **txn.model_dump(exclude={"provider_item_id"}),
-                    "transaction_datetime": _utc_naive(txn.transaction_datetime),
+                    "transaction_datetime": _utc_instant(txn.transaction_datetime),
                     "source_file": source_file,
                     "source_type": "plaid",
                     "source_origin": txn.provider_item_id,
@@ -766,7 +747,14 @@ class PlaidExtractor:
             schema=_INVESTMENT_TRANSACTIONS_SCHEMA,
         )
         revisions = df.drop("source_file", "extracted_at", "loaded_at")
-        versions = [observation_version("plaid", row) for row in revisions.to_dicts()]
+        version_rows = revisions.to_dicts()
+        for row in version_rows:
+            if row["transaction_datetime"] is not None:
+                # Preserve the historical digest representation, not naive storage.
+                row["transaction_datetime"] = as_utc(
+                    row["transaction_datetime"]
+                ).replace(tzinfo=None)
+        versions = [observation_version("plaid", row) for row in version_rows]
         revisions = revisions.with_columns(pl.Series("observation_version", versions))
         receipts = df.select(
             "investment_transaction_id",
@@ -825,7 +813,7 @@ class PlaidExtractor:
                 # UTC calendar date of the snapshot instant — never the
                 # machine's local date. int_plaid__opening_positions compares
                 # this against trade_date, which SQL derives as a UTC date from
-                # the UTC-wall-clock columns; different calendars there push a
+                # the UTC business-date projections; different calendars there push a
                 # snapshot-day buy outside the in-window net and synthesize a
                 # phantom opening lot.
                 "holdings_date": _utc_date(extracted_at),
@@ -842,7 +830,7 @@ class PlaidExtractor:
                     "security_id": holding.security_id,
                     "lot_index": lot_index,
                     **lot.model_dump(),
-                    "original_purchase_datetime": _utc_naive(
+                    "original_purchase_datetime": _utc_instant(
                         lot.original_purchase_datetime
                     ),
                     "source_file": source_file,

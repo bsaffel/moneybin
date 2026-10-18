@@ -30,6 +30,19 @@ from moneybin.services.sync_service import SyncPurgePlan
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _mocked_service_reporting_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Service doubles carry no database; supply their saved display policy."""
+
+    def saved_timezone(_repo: object) -> str:
+        return "UTC"
+
+    monkeypatch.setattr(
+        "moneybin.repositories.profile_settings_repo.ProfileSettingsRepo.get_reporting_timezone",
+        saved_timezone,
+    )
+
+
 def _pager_policy(*, no_pager: bool = False, ascii: bool = False) -> TerminalPolicy:
     """Make a terminal answer pager-eligible unless the command opts out."""
     return TerminalPolicy(
@@ -2141,7 +2154,7 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
     assert rows[0]["status"] == "active"
     assert rows[0]["error_code"] is None
     # created_at must survive the projection to CLI JSON output.
-    assert rows[0]["created_at"] == "2026-01-05T09:00:00+00:00"
+    assert rows[0]["created_at"] == "2026-01-05T09:00:00.000000Z"
 
 
 @pytest.mark.unit
@@ -2490,3 +2503,37 @@ def test_sync_purge_json_reports_actual_broker_outcome(mock_build: MagicMock) ->
     assert data["remote_revocation"] == "user_action_required"
     assert data["affected_accounts"] == ["Checking"]
     assert data["connection_id"] == "00000000-0000-0000-0000-000000000001"
+
+
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_human_boundary_keeps_json_utc(
+    mock_build: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def saved_timezone(_repo: object) -> str:
+        return "America/New_York"
+
+    monkeypatch.setattr(
+        "moneybin.repositories.profile_settings_repo.ProfileSettingsRepo.get_reporting_timezone",
+        saved_timezone,
+    )
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Test institution",
+            provider="plaid",
+            status="active",
+            last_sync=datetime(2026, 3, 1, 0, 30, tzinfo=UTC),
+            created_at=datetime(2026, 3, 1, 0, 30, tzinfo=UTC),
+            guidance=None,
+        )
+    ]
+    service.recovery_jobs.return_value = []
+    mock_build.return_value.__enter__.return_value = service
+    human = runner.invoke(app, ["sync", "status"])
+    assert human.exit_code == 0, human.output
+    assert "2026-02-28" in human.stdout
+    machine = runner.invoke(app, ["sync", "status", "--output", "json"])
+    assert machine.exit_code == 0, machine.output
+    assert "2026-03-01T00:30:00.000000Z" in machine.stdout

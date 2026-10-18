@@ -5,6 +5,23 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _fresh_cli_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give each test default CLI flags.
+
+    `-q` and `-o` record into a module-global through their option callbacks,
+    and nothing resets it between tests. A test that drives the CLI with
+    `--quiet` otherwise leaves quiet on for whichever test its xdist worker runs
+    next, so a test calling a presenter directly fails depending on how CI
+    sharded the suite.
+    """
+    from moneybin.cli.utils import (
+        _CLIFlags,  # pyright: ignore[reportPrivateUsage]  # resetting the module's state
+    )
+
+    monkeypatch.setattr("moneybin.cli.utils._flags", _CLIFlags())
+
+
 @pytest.fixture
 def wide_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     """Render tables unwrapped, so a content assertion is only about content.

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal, cast
 
 from moneybin import error_codes
@@ -37,6 +38,7 @@ from moneybin.tables import (
     FCT_INVESTMENT_TRANSACTIONS,
     LOT_SELECTIONS,
 )
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -518,12 +520,16 @@ class UndoService:
         having_clauses: list[str] = []
         if snapshot is not None:
             having_clauses.append(
-                "(MAX(occurred_at) < ? OR (MAX(occurred_at) = ? AND operation_id <= ?))"
+                "(MAX(occurred_at) < CAST(? AS TIMESTAMPTZ) OR "
+                "(MAX(occurred_at) = CAST(? AS TIMESTAMPTZ) "
+                "AND operation_id <= ?))"
             )
             params.extend([snapshot[0], snapshot[0], snapshot[1]])
         if after is not None:
             having_clauses.append(
-                "(MAX(occurred_at) < ? OR (MAX(occurred_at) = ? AND operation_id < ?))"
+                "(MAX(occurred_at) < CAST(? AS TIMESTAMPTZ) OR "
+                "(MAX(occurred_at) = CAST(? AS TIMESTAMPTZ) "
+                "AND operation_id < ?))"
             )
             params.extend([after[0], after[0], after[1]])
         having = "HAVING " + " AND ".join(having_clauses) if having_clauses else ""
@@ -583,8 +589,8 @@ class UndoService:
         having = ""
         if snapshot is not None:
             having = (
-                "HAVING MAX(occurred_at) < ? OR "
-                "(MAX(occurred_at) = ? AND operation_id <= ?)"
+                "HAVING MAX(occurred_at) < CAST(? AS TIMESTAMPTZ) OR "
+                "(MAX(occurred_at) = CAST(? AS TIMESTAMPTZ) AND operation_id <= ?)"
             )
             params.extend([snapshot[0], snapshot[0], snapshot[1]])
         row = self._db.conn.execute(
@@ -724,7 +730,7 @@ class UndoService:
         tables = cast("list[str | None] | None", tables_raw) or []
         return OperationSummary(
             operation_id=operation_id,
-            occurred_at=str(occurred_at),
+            occurred_at=format_utc(cast(datetime, occurred_at)),
             actor=str(actor),
             actions=sorted(actions),
             tables=sorted(t for t in tables if t is not None),

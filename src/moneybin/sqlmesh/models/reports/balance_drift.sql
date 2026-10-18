@@ -96,7 +96,16 @@ SELECT
     ELSE 'drift'
   END AS status, /* clean (<1) | warning (<10) | drift (>=10) | no-data (computed_balance NULL) | currency-mismatch (the account's currency and the observation's disagree, so no drift is computable) | investment-ledger (the account carries investment ledger events, whose cash legs and positions no transaction-derived balance includes, so no drift is computable; it wins over currency-mismatch when both hold). The clean/warning thresholds are absolute amounts in the row's own currency_code. A display-converted read re-buckets them against the converted drift, in `reports/definitions/balance_drift.py::_rebucket_status` — SQL cannot read that module's `_CLEAN_BELOW` / `_WARNING_BELOW`, so changing 1.00 or 10.00 here means changing them there in the same edit. */
   assertion_date, /* User-asserted balance date */
-  CAST(CURRENT_DATE - assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */
+  CAST(timezone(
+    (
+      SELECT
+        reporting_timezone
+      FROM app.profile_settings
+      WHERE
+        scope = 'profile'
+    ),
+    CURRENT_TIMESTAMP
+  )::DATE - assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */
   asserted_balance, /* User-entered balance for this date */
   computed_balance, /* Interpolated daily balance or observed balance minus its adjustment; NULL for a missing row, a first observation, a currency mismatch, or an account with investment ledger events */
   ABS(drift) AS drift_abs, /* For default sort */

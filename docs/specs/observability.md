@@ -254,7 +254,7 @@ CREATE TABLE app.metrics (
     value DOUBLE NOT NULL,            -- counter/gauge value, or histogram sum
     bucket_bounds DOUBLE[],           -- histogram upper bounds (NULL for counter/gauge)
     bucket_counts BIGINT[],           -- histogram cumulative counts per bucket
-    recorded_at TIMESTAMP NOT NULL    -- snapshot timestamp
+    recorded_at TIMESTAMPTZ NOT NULL    -- snapshot timestamp
 );
 ```
 

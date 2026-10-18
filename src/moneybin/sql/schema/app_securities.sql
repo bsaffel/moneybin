@@ -17,6 +17,6 @@ CREATE TABLE IF NOT EXISTS app.securities (
     currency_code VARCHAR NOT NULL DEFAULT 'USD',       -- Instrument's denominating currency; no FX conversion in v1
     created_by VARCHAR NOT NULL DEFAULT 'user'          -- Catalog provenance: user-authored vs provider-minted ('plaid'); gates resolver attribute refresh
         CHECK (created_by IN ('user', 'plaid')),
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the catalog entry was created
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When last modified; service must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the catalog entry was created
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When last modified; service must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
 );

@@ -43,7 +43,7 @@ def _insert_transactions() -> None:
                     'txn_1', 'ACC001', '2025-06-01', -25.00,
                     25.00, 'expense', 'Morning coffee', NULL,
                     NULL, 'DEBIT', false, 'USD', 'ofx',
-                    '2025-06-01', CURRENT_TIMESTAMP, 2025, 6, 1, 0,
+                    '2025-06-01T00:00:00Z', CURRENT_TIMESTAMP, 2025, 6, 1, 0,
                     '2025-06', '2025-Q2', 'Food & Drink', 'user',
                     NULL, NULL, NULL
                 ),
@@ -51,7 +51,7 @@ def _insert_transactions() -> None:
                     'txn_2', 'ACC001', '2025-06-02', -75.00,
                     75.00, 'expense', 'Dinner', NULL,
                     NULL, 'DEBIT', false, 'USD', 'ofx',
-                    '2025-06-02', CURRENT_TIMESTAMP, 2025, 6, 2, 1,
+                    '2025-06-02T00:00:00Z', CURRENT_TIMESTAMP, 2025, 6, 2, 1,
                     '2025-06', '2025-Q2', 'Food & Drink', 'user',
                     NULL, NULL, NULL
                 ),
@@ -59,7 +59,7 @@ def _insert_transactions() -> None:
                     'txn_3', 'ACC001', '2025-06-03', -12.50,
                     12.50, 'expense', 'Bus fare', NULL,
                     NULL, 'DEBIT', false, 'USD', 'ofx',
-                    '2025-06-03', CURRENT_TIMESTAMP, 2025, 6, 3, 2,
+                    '2025-06-03T00:00:00Z', CURRENT_TIMESTAMP, 2025, 6, 3, 2,
                     '2025-06', '2025-Q2', 'Transport', 'user',
                     NULL, NULL, NULL
                 )

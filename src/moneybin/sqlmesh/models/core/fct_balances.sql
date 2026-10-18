@@ -85,9 +85,7 @@ WITH ofx_balances AS (
     current_balance AS balance,
     source_type,
     source_file AS source_ref,
-    (
-      loaded_at AT TIME ZONE 'UTC'
-    ) AS updated_at,
+    loaded_at AS updated_at,
     currency_code
   FROM prep.stg_simplefin__balances
 ), unioned AS (

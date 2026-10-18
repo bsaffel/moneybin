@@ -150,7 +150,7 @@ delete is the whole-partition one a purging sync disconnect performs.
 | `source_origin` | VARCHAR | which connection produced it; `''` for single-tenant feeds |
 | `close` | DECIMAL(28,10) | price of one unit |
 | `price_basis` | VARCHAR | `raw`, `split_adjusted`, `split_and_dividend_adjusted` |
-| `fetched_at` | TIMESTAMP | when the row was observed |
+| `fetched_at` | TIMESTAMPTZ | when the row was observed |
 
 Primary key
 `(source, source_origin, provider_security_key, price_date, quote_currency)`.
@@ -206,7 +206,7 @@ User marks. Written through a `SecurityPriceRepo` per Invariant 10.
 | `quote_currency` | VARCHAR | ISO 4217 |
 | `close` | DECIMAL(28,10) | the user's price |
 | `note` | VARCHAR | why the user set it |
-| `created_at` | TIMESTAMP | |
+| `created_at` | TIMESTAMPTZ | |
 
 Primary key `(security_id, price_date, quote_currency)`. No provider write
 touches this table.

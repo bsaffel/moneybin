@@ -5,8 +5,11 @@ demo preset (``DemoService``) share one security-sensitive allowlist rather than
 duplicating the DELETE statements.
 """
 
+import json
 import logging
+from typing import Any, cast
 
+import duckdb
 from sqlglot import exp
 
 from moneybin.database import Database
@@ -18,6 +21,7 @@ from moneybin.tables import (
     OFX_ACCOUNTS,
     OFX_BALANCES,
     OFX_TRANSACTIONS,
+    PROFILE_SETTINGS,
     SCHEMA_MIGRATIONS,
     SEED_SOURCE_PRIORITY,
     TABULAR_ACCOUNTS,
@@ -26,6 +30,7 @@ from moneybin.tables import (
     USER_MERCHANTS,
     VERSIONS,
 )
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +134,68 @@ _OURS_IN_APP: dict[str, str] = {
 }
 
 
+def _has_only_bootstrap_settings(db: Database) -> bool:
+    """Recognize reproducible UTC defaults only with matching bootstrap evidence."""
+    try:
+        rows = db.execute(
+            f"""
+            SELECT scope, home_currency, display_currency_targets,
+                   reporting_timezone, updated_at
+            FROM {PROFILE_SETTINGS.full_name}
+            """  # noqa: S608  # fixed TableRef
+        ).fetchall()
+        if len(rows) != 1:
+            return False
+        scope, home, targets, zone, updated_at = rows[0]
+        current: dict[str, Any] = {
+            "scope": scope,
+            "home_currency": home,
+            "display_currency_targets": targets,
+            "reporting_timezone": zone,
+            "updated_at": format_utc(updated_at),
+        }
+        defaults = {
+            "scope": "profile",
+            "home_currency": None,
+            "display_currency_targets": [],
+            "reporting_timezone": "UTC",
+        }
+        if any(current[key] != value for key, value in defaults.items()):
+            return False
+        events = db.execute(
+            f"""
+            SELECT actor, action, target_id, is_undo, before_value, after_value
+            FROM {AUDIT_LOG.full_name}
+            WHERE target_schema = ? AND target_table = ?
+            """,  # noqa: S608  # fixed TableRef; values parameterized
+            [PROFILE_SETTINGS.schema, PROFILE_SETTINGS.name],
+        ).fetchall()
+        matched = False
+        for actor, action, target, is_undo, before, after in events:
+            if (
+                actor not in {"database.init", "profile.create"}
+                or action != "profile_settings.set"
+                or target != "profile"
+                or is_undo
+                or after is None
+            ):
+                return False
+            for payload in (before, after):
+                if payload is None:
+                    continue
+                image: object = json.loads(payload)
+                if not isinstance(image, dict) or any(
+                    cast(dict[str, object], image).get(key) != value
+                    for key, value in defaults.items()
+                ):
+                    return False
+            matched = matched or json.loads(after) == current
+        return matched
+    except (duckdb.Error, ValueError, TypeError):
+        # Incomplete or corrupt provenance must never authorize a destructive reset.
+        return False
+
+
 def _real_row_checks(db: Database) -> list[tuple[str, str]]:
     """Build the (quoted table, WHERE clause) checks that detect real user data.
 
@@ -152,6 +219,8 @@ def _real_row_checks(db: Database) -> list[tuple[str, str]]:
     checks: list[tuple[str, str]] = []
     for schema, name in rows:
         qualified = f"{schema}.{name}"
+        if qualified == PROFILE_SETTINGS.full_name and _has_only_bootstrap_settings(db):
+            continue
         if qualified in _NON_USER_TABLES:
             continue  # platform state; the rebuild recreates it
 
@@ -172,7 +241,7 @@ def has_any_user_content(db: Database) -> bool:
     a safe table: `app.securities`, `app.budgets`, and `app.user_categories` are
     all real, user-authored state reachable with no transaction behind them, and
     the list grows. So rather than enumerate them, refuse on any row at all outside
-    `_NON_USER_TABLES`.
+    `_NON_USER_TABLES`, except the exact, audited UTC bootstrap settings.
 
     Being maximally conservative is nearly free here: this is the not-ours path, so
     over-refusing only ever declines to destroy someone else's profile. It must
@@ -184,6 +253,11 @@ def has_any_user_content(db: Database) -> bool:
         "WHERE schema_name IN ('app', 'raw')"
     ).fetchall()
     for schema, name in rows:
+        if (
+            f"{schema}.{name}" == PROFILE_SETTINGS.full_name
+            and _has_only_bootstrap_settings(db)
+        ):
+            continue
         if f"{schema}.{name}" in _NON_USER_TABLES:
             continue
         try:

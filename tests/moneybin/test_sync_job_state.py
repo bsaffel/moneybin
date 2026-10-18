@@ -16,7 +16,7 @@ def test_sync_job_state_schema_matches_additive_migration(db: Database) -> None:
     fresh = db.execute(query).fetchall()
     db.execute("DROP TABLE app.sync_job_state")
     migration = importlib.import_module(
-        "moneybin.sql.migrations.V078__add_sync_job_state"
+        "moneybin.sql.migrations.V079__add_sync_job_state"
     )
     run_migration(db, migration.migrate)
     run_migration(db, migration.migrate)

@@ -2,5 +2,5 @@
 CREATE TABLE IF NOT EXISTS raw.import_preview_snapshots (
     preview_id VARCHAR PRIMARY KEY, -- Opaque app.import_previews handle
     source_bytes BLOB NOT NULL, -- Exact immutable source bytes parsed at preview and loaded at confirm
-    created_at TIMESTAMP NOT NULL -- UTC insertion time for orphan cleanup
+    created_at TIMESTAMPTZ NOT NULL -- UTC insertion time for orphan cleanup
 );

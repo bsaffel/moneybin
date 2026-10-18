@@ -135,7 +135,7 @@ is NULL, as `apply_plaid_categories` does.
 | `category_id` | `VARCHAR` | **FK** to `core.dim_categories.category_id` (Guard 3 — never text-key the relationship). May reference a `user_categories` row (app table only). Nullable in the app table and the view: NULL on a user row marks the term as ignored. A seed row always carries a category. |
 | `source_taxonomy_version` | `VARCHAR` | The provider taxonomy revision the row was curated against (e.g. `plaid_pfc_v2`). Non-PK — drift insurance; promote into the key only if historical multi-version rows ever coexist. |
 | `is_default` | `BOOLEAN` | View-only: `TRUE` for seed rows, `FALSE` for user rows (mirrors `dim_categories.is_default`). |
-| `created_at` / `updated_at` | `TIMESTAMP` | App table only — audit of user edits. |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | App table only — audit of user edits. |
 
 ### Accounting classification on the category dim
 
@@ -163,7 +163,7 @@ fall-through, not data loss.
 An imported row (tabular/CSV, manual entry) was passed straight through to
 `core.fct_transactions.category` via `fct_transactions.sql`'s
 `COALESCE(dc.category, c.category, t.category)` — no `categorized_by`
-attribution, invisible to `core.uncategorized_queue`, and never overridable
+attribution, invisible to the queue filter, and never overridable
 by a later rule. The owner's ruling: this text is only ever an INPUT to the
 existing bridge above, never a passed-through value. The engine leg
 (`CategorizationOrchestrator.apply_source_category_map`, PR1 of MB-180)

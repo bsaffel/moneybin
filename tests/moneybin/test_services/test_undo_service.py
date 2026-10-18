@@ -9,7 +9,7 @@ real repos (no mocks). Operations are built by wrapping repo calls in
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -211,6 +211,7 @@ class TestUndo:
                 default_cost_basis_method="average",
                 investment_source_type=None,
                 investment_source_type_changed_at=None,
+                archived_changed_at=None,
                 actor="test",
             )
             ExchangeRateOverridesRepo(db).set(
@@ -528,7 +529,7 @@ class TestUndo:
             "transaction_id": "txn_1",
             "text": "new",
             "author": "cli",
-            "created_at": "2026-05-24 00:00:00",
+            "created_at": "2026-05-24T00:00:00.000000Z",
         }
         db.execute(
             "INSERT INTO app.audit_log "
@@ -659,7 +660,7 @@ class TestUndo:
         assert rows == [("old",)]
 
 
-_SOURCE_SET_AT = datetime(2026, 1, 1, 9, 0, 0)
+_SOURCE_SET_AT = datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC)
 
 
 def _settings_set(db: Database, **overrides: Any) -> None:
@@ -679,6 +680,7 @@ def _settings_set(db: Database, **overrides: Any) -> None:
         "default_cost_basis_method": None,
         "investment_source_type": None,
         "investment_source_type_changed_at": None,
+        "archived_changed_at": None,
         "actor": "test",
     }
     kwargs.update(overrides)
@@ -943,6 +945,81 @@ class TestUndoOfInvestmentSourceChoice:
         UndoService(db).undo(op, actor="test")
 
         assert _source_row(db) is None
+
+
+def _archive_row(db: Database) -> tuple[bool, datetime | None] | None:
+    row = db.execute(
+        "SELECT archived, archived_changed_at "
+        "FROM app.account_settings WHERE account_id = 'acc_choice'"
+    ).fetchone()
+    return None if row is None else (row[0], row[1])
+
+
+class TestUndoOfArchive:
+    """An undo that moves ``archived`` stamps a new archive change time.
+
+    The change time feeds ``core.fct_transactions.updated_at``, because
+    archiving moves ``is_categorizable`` on every row of the account.
+    """
+
+    def test_undo_of_an_archive_advances_the_change_time(self, db: Database) -> None:
+        _settings_set(db, display_name="Checking")
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Checking",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        archived, changed_at = _archive_row(db) or (None, None)
+        assert archived is False
+        assert changed_at is not None and changed_at > _SOURCE_SET_AT
+
+    def test_undo_of_an_unrelated_setting_keeps_the_change_time(
+        self, db: Database
+    ) -> None:
+        _settings_set(
+            db,
+            display_name="Checking",
+            archived=True,
+            archived_at=date(2026, 1, 1),
+            archived_changed_at=_SOURCE_SET_AT,
+        )
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Renamed",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        assert _archive_row(db) == (True, _SOURCE_SET_AT)
+
+    def test_undo_that_would_delete_an_archive_resets_the_row_instead(
+        self, db: Database
+    ) -> None:
+        """Deleting the first write would unarchive without a change time."""
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Checking",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        archived, changed_at = _archive_row(db) or (None, None)
+        assert archived is False
+        assert changed_at is not None and changed_at > _SOURCE_SET_AT
 
 
 class TestHistory:
@@ -1243,3 +1320,61 @@ class TestUndoRefreshesPendingGauges:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "investment_source_type_changed_at",
+        "archived_changed_at",
+    ],
+)
+def test_account_settings_rejects_naive_change_stamps_before_mutation(
+    db: Database,
+    column: str,
+) -> None:
+    _settings_set(db, display_name="Original")
+    before = db.execute("SELECT * FROM app.account_settings").fetchall()
+    audit_before = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    with pytest.raises(ValueError, match="explicit UTC offset"):
+        _settings_set(db, display_name="Changed", **{column: datetime(2024, 7, 1, 12)})
+    assert db.execute("SELECT * FROM app.account_settings").fetchall() == before
+    assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == audit_before
+
+
+def test_account_settings_normalizes_aware_change_stamps_without_moving_dates(
+    db: Database,
+) -> None:
+    stamp = datetime(2024, 7, 1, 23, tzinfo=timezone(timedelta(hours=-4)))
+    _settings_set(
+        db,
+        investment_source_type="manual",
+        archived=True,
+        investment_source_type_changed_at=stamp,
+        archived_changed_at=stamp,
+        archived_at=date(2024, 7, 1),
+    )
+    assert db.execute(
+        "SELECT investment_source_type_changed_at, archived_changed_at, archived_at "
+        "FROM app.account_settings"
+    ).fetchone() == (
+        datetime(2024, 7, 2, 3, tzinfo=UTC),
+        datetime(2024, 7, 2, 3, tzinfo=UTC),
+        date(2024, 7, 1),
+    )
+
+
+def test_undo_history_emits_canonical_utc_and_pages_offset_ties(db: Database) -> None:
+    """Operation output and continuation refer to the same absolute instant."""
+    db.execute("SET TimeZone = 'America/New_York'")
+    op = _tag_op(db, "utc")
+    db.execute(
+        "UPDATE app.audit_log SET occurred_at = TIMESTAMPTZ '2026-10-01 09:00:00-04:00' WHERE operation_id = ?",
+        [op],
+    )
+    service = UndoService(db)
+    rows = service.history(snapshot=("2026-10-01T13:00:00Z", op))
+    assert len(rows) == 1
+    assert rows[0].occurred_at == "2026-10-01T13:00:00.000000Z"
+    assert service.history_count(snapshot=("2026-10-01T13:00:00Z", op)) == 1
+    assert service.history(after=("2026-10-01T13:00:00Z", op)) == []

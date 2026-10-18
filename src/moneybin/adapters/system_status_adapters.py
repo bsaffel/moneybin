@@ -33,6 +33,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusTransformsInfo,
     SystemStatusWriter,
 )
+from moneybin.temporal import format_utc
 
 if TYPE_CHECKING:
     from moneybin.exports.service import ExportReadinessStatus
@@ -135,7 +136,7 @@ def overview_payload(
         transforms=SystemStatusTransformsInfo(
             pending=status.transforms_pending,
             last_apply_at=(
-                status.transforms_last_apply_at.isoformat()
+                format_utc(status.transforms_last_apply_at)
                 if status.transforms_last_apply_at
                 else None
             ),

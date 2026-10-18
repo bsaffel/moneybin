@@ -13,10 +13,10 @@ CREATE TABLE IF NOT EXISTS app.categorization_decisions (
     rule_id VARCHAR, -- Immutable accepted categorization-rule snapshot
     source_type VARCHAR, -- Immutable accepted source snapshot
     category_revision BIGINT NOT NULL CHECK (category_revision >= 0), -- Category audit revision observed by this attempt
-    proposed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the pending proposal was materialized
-    decided_at TIMESTAMP, -- When accepted or rejected; NULL while pending
+    proposed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the pending proposal was materialized
+    decided_at TIMESTAMPTZ, -- When accepted or rejected; NULL while pending
     decided_by VARCHAR CHECK (decided_by IS NULL OR decided_by IN ('user', 'system')), -- User for MCP/CLI decisions; system for migration backfill
-    reversed_at TIMESTAMP, -- When audit undo reversed the terminal outcome without deleting history
+    reversed_at TIMESTAMPTZ, -- When audit undo reversed the terminal outcome without deleting history
     reversed_by VARCHAR, -- Actor that reversed the terminal outcome
     UNIQUE (transaction_id, attempt_number),
     CHECK (

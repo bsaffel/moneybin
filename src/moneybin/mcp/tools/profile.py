@@ -41,6 +41,7 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
     return build_envelope(
         data=ProfilePayload(
             name=get_current_profile(auto_resolve=False),
+            reporting_timezone=settings.reporting_timezone,
             home_currency=settings.home_currency,
             display_currency_targets=settings.display_currency_targets,
         ),
@@ -64,12 +65,14 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
 def profile_set(
     home_currency: str | None = None,
     display_currency_targets: list[str] | None = None,
+    reporting_timezone: str | None = None,
 ) -> ResponseEnvelope[ProfileSetPayload]:
     """Set one independent profile preference: home currency or display targets.
 
     Args:
         home_currency: ISO 4217 code, three uppercase letters (USD, EUR, GBP).
         display_currency_targets: ISO 4217 codes to prepare for report reads.
+        reporting_timezone: IANA calendar for reports and human instant display.
 
     A home-currency change restates FX accounting; a display-target change only
     prepares direct provider pairs for reports. Neither converts a stored
@@ -80,14 +83,24 @@ def profile_set(
     that disclosure is in ``register_profile_tools`` below — this docstring is
     not served.
     """
-    if (home_currency is None) == (display_currency_targets is None):
+    if (
+        sum(
+            value is not None
+            for value in (home_currency, display_currency_targets, reporting_timezone)
+        )
+        != 1
+    ):
         raise UserError(
-            "Set exactly one of home_currency or display_currency_targets.",
+            "Set exactly one of home_currency, display_currency_targets, or reporting_timezone.",
             code=error_codes.MUTATION_INVALID_INPUT,
         )
     with get_database(read_only=False) as db:
         service = ProfileSettingsService(db)
-        if home_currency is not None:
+        if reporting_timezone is not None:
+            service.set_setting(
+                "reporting_timezone", reporting_timezone, actor="mcp.profile_set"
+            )
+        elif home_currency is not None:
             service.set_setting("home_currency", home_currency, actor="mcp.profile_set")
         else:
             service.set_setting(
@@ -105,6 +118,7 @@ def profile_set(
         )
     return build_envelope(
         data=ProfileSetPayload(
+            reporting_timezone=settings.reporting_timezone,
             home_currency=settings.home_currency,
             display_currency_targets=settings.display_currency_targets,
             operation_id=operation_id,
@@ -129,14 +143,14 @@ def register_profile_tools(mcp: FastMCP) -> None:
         profile,
         "profile",
         "Read the active profile's name and managed settings, including its home "
-        "currency and declared display-currency targets. The home currency is null "
+        "currency, declared display-currency targets, and reporting timezone. The home currency is null "
         "until the user chooses one; MoneyBin never assumes USD.",
     )
     register(
         mcp,
         profile_set,
         "profile_set",
-        "Set the profile's home currency or report display-currency targets (ISO "
+        "Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO "
         "4217). Updating targets prepares provider-published rate pairs; it converts "
         "nothing and does not restate accounting. Writes app.profile_settings. Reverse with "
         "system_audit_undo(operation_id=...).",

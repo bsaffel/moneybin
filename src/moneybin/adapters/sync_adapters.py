@@ -20,6 +20,7 @@ from moneybin.extractors.account_identity import (
     mask_embedded_account_number,
 )
 from moneybin.privacy.payloads.sync import (
+    SyncAuthView,
     SyncConnectionRow,
     SyncCoverageInterval,
     SyncDisconnectPayload,
@@ -35,10 +36,12 @@ from moneybin.privacy.payloads.sync import (
     SyncStatusPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.temporal import format_utc, parse_utc
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from moneybin.connectors.sync_auth import SyncAuthResult
     from moneybin.connectors.sync_models import (
         LinkInitiateResponse,
         LinkStatusResponse,
@@ -50,6 +53,19 @@ if TYPE_CHECKING:
     from moneybin.errors import RecoveryAction
 
 
+def sync_auth_view(result: SyncAuthResult) -> SyncAuthView:
+    """Normalize stored auth expiration only at the public payload boundary."""
+    return SyncAuthView(
+        auth_session_id=result.auth_session_id,
+        status=result.status,
+        user_code=result.user_code,
+        verification_url=result.verification_url,
+        expiration=format_utc(parse_utc(result.expiration)),
+        replayed=result.replayed,
+        error_code=result.error_code,
+    )
+
+
 def sync_account_label(name: str) -> str:
     """Mask native labels only for display, leaving confirmation identity intact."""
     return mask_embedded_account_number(name.strip()) or UNNAMED_ACCOUNT_LABEL
@@ -59,7 +75,7 @@ def _history_payload(history: SyncHistoryView | None) -> SyncHistoryPayload | No
     if history is None:
         return None
     return SyncHistoryPayload(
-        observed_at=history.observed_at.isoformat(),
+        observed_at=format_utc(history.observed_at),
         replay_required=history.replay_required,
         discovery_history_target=history.discovery_history_target.isoformat()
         if history.discovery_history_target
@@ -71,7 +87,7 @@ def _history_payload(history: SyncHistoryView | None) -> SyncHistoryPayload | No
                 display_name=account.display_name,
                 acknowledged_intervals=[
                     SyncCoverageInterval(
-                        start=window.start.isoformat(), end=window.end.isoformat()
+                        start=format_utc(window.start), end=format_utc(window.end)
                     )
                     for window in account.acknowledged_intervals
                 ],
@@ -100,12 +116,12 @@ def _source_row(source: SyncSourceView) -> SyncSourceRow:
                 scope_kind=outcome.scope_kind,
                 status=outcome.status,
                 error_code=outcome.error_code,
-                retry_at=outcome.retry_at.isoformat()
+                retry_at=format_utc(outcome.retry_at)
                 if outcome.retry_at is not None
                 else None,
                 window=SyncCoverageInterval(
-                    start=outcome.window.start.isoformat(),
-                    end=outcome.window.end.isoformat(),
+                    start=format_utc(outcome.window.start),
+                    end=format_utc(outcome.window.end),
                 )
                 if outcome.window
                 else None,
@@ -192,7 +208,7 @@ def sync_link_envelope(
         data=SyncLinkPayload(
             session_id=initiate.session_id,
             link_url=initiate.link_url,
-            expiration=initiate.expiration.isoformat(),
+            expiration=format_utc(initiate.expiration),
             link_type=initiate.link_type,
         ),
         actions=actions,
@@ -215,7 +231,7 @@ def sync_link_status_envelope(
             provider_item_id=status.provider_item_id,
             institution_name=status.institution_name,
             error=status.error,
-            expiration=status.expiration.isoformat(),
+            expiration=format_utc(status.expiration),
         ),
         actions=actions,
     )
@@ -229,8 +245,8 @@ def sync_connection_row(connection: SyncConnectionView) -> SyncConnectionRow:
         institution_name=connection.institution_name,
         provider=connection.provider,
         status=connection.status,
-        last_sync=(connection.last_sync.isoformat() if connection.last_sync else None),
-        created_at=connection.created_at.isoformat(),
+        last_sync=(format_utc(connection.last_sync) if connection.last_sync else None),
+        created_at=format_utc(connection.created_at),
         error_code=connection.error_code,
         guidance=connection.guidance,
         credential_generation=connection.credential_generation,
@@ -238,7 +254,7 @@ def sync_connection_row(connection: SyncConnectionView) -> SyncConnectionRow:
         history_phase=connection.history_phase,
         history=_history_payload(connection.safe_history),
         history_unavailable_reason=connection.history_unavailable_reason,
-        provider_balance_at=connection.provider_balance_at.isoformat()
+        provider_balance_at=format_utc(connection.provider_balance_at)
         if connection.provider_balance_at
         else None,
         setup_state=connection.setup_state,

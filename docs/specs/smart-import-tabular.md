@@ -661,8 +661,8 @@ CREATE TABLE raw.tabular_transactions (
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data (e.g. "chase_credit", "tiller", Plaid item_id); scopes Tier 2b dedup
     import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in app.import_log; enables import reverting and history
     row_number INTEGER,                         -- 1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation
-    extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
+    extracted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
     PRIMARY KEY (transaction_id, account_id, source_file)
 );
 
@@ -683,8 +683,8 @@ CREATE TABLE raw.tabular_accounts (
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data; matches the format name for tabular imports
     import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in app.import_log; enables import reverting and history
-    extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
+    extracted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
     PRIMARY KEY (account_id, source_file)
 );
 ```
@@ -714,9 +714,9 @@ CREATE TABLE app.import_log (
     date_format VARCHAR,                        -- Date format string used for parsing
     sign_convention VARCHAR,                    -- Sign convention applied: negative_is_expense, negative_is_income, split_debit_credit
     balance_validated BOOLEAN,                  -- Whether running balance validation passed (NULL if no balance column)
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the import batch began
-    completed_at TIMESTAMP,                     -- When the import batch finished (NULL if still running or failed)
-    reverted_at TIMESTAMP                       -- When the import was reverted (NULL if not reverted)
+    started_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- When the import batch began
+    completed_at TIMESTAMPTZ,                     -- When the import batch finished (NULL if still running or failed)
+    reverted_at TIMESTAMPTZ                       -- When the import was reverted (NULL if not reverted)
 );
 ```
 
@@ -744,9 +744,9 @@ CREATE TABLE app.tabular_formats (
     multi_account BOOLEAN NOT NULL DEFAULT FALSE, -- Whether this format expects per-row account identification (Tiller, Mint, Monarch)
     source VARCHAR NOT NULL DEFAULT 'detected', -- How this format was created: "detected" (auto-saved), "manual" (user-created), "built-in-override" (customized built-in)
     times_used INTEGER NOT NULL DEFAULT 0,      -- Number of successful imports completed using this format
-    last_used_at TIMESTAMP,                     -- Timestamp of the most recent successful import using this format
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this format was first created
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this format was last modified (override, re-detection, or manual edit)
+    last_used_at TIMESTAMPTZ,                     -- Timestamp of the most recent successful import using this format
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this format was first created
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this format was last modified (override, re-detection, or manual edit)
 );
 ```
 

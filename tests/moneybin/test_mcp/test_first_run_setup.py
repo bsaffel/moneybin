@@ -320,3 +320,10 @@ def test_unconfigured_predicate(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         flags.profile = None
         assert _is_unconfigured() is False
+
+
+def test_first_run_discloses_fresh_utc_and_retained_existing_policy() -> None:
+    from moneybin.mcp.first_run import _ELICIT_PROMPT  # pyright: ignore[reportPrivateUsage]  # verify the user-visible elicitation contract
+
+    assert "reporting timezone UTC" in _ELICIT_PROMPT
+    assert "Existing profiles keep their saved timezone" in _ELICIT_PROMPT

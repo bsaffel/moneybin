@@ -105,16 +105,20 @@ async def test_sync_workflow_renders_explicit_auth_variants() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "expiration", ["2026-07-19T00:15:00+00:00", "2026-07-18T20:15:00-04:00"]
+)
 @patch("moneybin.mcp.tools.sync._build_sync_auth_service")
 async def test_sync_link_login_begins_nonblocking_safe_session(
     mock_build: MagicMock,
+    expiration: str,
 ) -> None:
     mock_build.return_value.begin.return_value = SyncAuthResult(
         auth_session_id="syncauth_abc",
         status="pending",
         user_code="ABCD-EFGH",
         verification_url="https://auth.example/activate?code=ABCD-EFGH",
-        expiration="2026-07-19T00:15:00+00:00",
+        expiration=expiration,
     )
 
     envelope = await sync_module.sync_link_coarse(mode="login")
@@ -125,18 +129,25 @@ async def test_sync_link_login_begins_nonblocking_safe_session(
     assert "device_code" not in envelope.to_dict()["data"]
     assert any("sync_status" in action for action in envelope.actions)
 
+    assert envelope.data.expiration == "2026-07-19T00:15:00.000000Z"
+    assert envelope.to_dict()["data"]["expiration"] == "2026-07-19T00:15:00.000000Z"
+
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "expiration", ["2026-07-19T00:15:00+00:00", "2026-07-18T20:15:00-04:00"]
+)
 @patch("moneybin.mcp.tools.sync._build_sync_auth_service")
 async def test_sync_status_completes_auth_session_idempotently(
     mock_build: MagicMock,
+    expiration: str,
 ) -> None:
     mock_build.return_value.status.return_value = SyncAuthResult(
         auth_session_id="syncauth_abc",
         status="authenticated",
         user_code="ABCD-EFGH",
         verification_url="https://auth.example/activate?code=ABCD-EFGH",
-        expiration="2026-07-19T00:15:00+00:00",
+        expiration=expiration,
         replayed=True,
     )
 
@@ -146,6 +157,9 @@ async def test_sync_status_completes_auth_session_idempotently(
     assert envelope.data.status == "authenticated"
     assert envelope.data.replayed is True
     mock_build.return_value.status.assert_called_once_with("syncauth_abc")
+
+    assert envelope.data.expiration == "2026-07-19T00:15:00.000000Z"
+    assert envelope.to_dict()["data"]["expiration"] == "2026-07-19T00:15:00.000000Z"
 
 
 @pytest.mark.unit

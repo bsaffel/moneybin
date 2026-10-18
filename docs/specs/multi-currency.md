@@ -4,6 +4,10 @@
 
 in-progress
 
+Instant fields follow [Warehouse UTC](warehouse-utc.md), including provider-rate
+ranking and inherited freshness. Provider publication and valuation DATEs retain
+their explicit calendar policy.
+
 ## Goal
 
 Make every monetary value in MoneyBin carry an explicit currency, let a user
@@ -236,7 +240,7 @@ Numbered, testable. Tagged by phase.
    rationale the next paragraph retracts.) Separately, `core.fct_transaction_lines` — the
    canonical split-expanded grain — projected every parent column except the
    denomination, so an agent on it could not tell a EUR line from a USD one; it
-   now carries `currency_code`, as does `core.uncategorized_queue`, whose review
+   now carries `currency_code`, as does the categorization queue, whose review
    surface asks a user to act on the amount it shows. The curated `sql_schema`
    examples that sum money across `core.*` group by currency, held by
    `test_every_money_aggregating_example_names_its_currency`, which derives its
@@ -272,8 +276,8 @@ Numbered, testable. Tagged by phase.
    currency opened partway through the window vanished from a capped response
    instead of showing a shorter series. And the `sort="impact"` branch of
    `CategorizationQueries.list_uncategorized_transactions` ranks `priority_score`
-   — `ABS(amount) * age_days`, which `core.uncategorized_queue`'s own column
-   comment calls meaningful only within one currency — across denominations
+   — `ABS(amount) * age_days`, which the categorization queue's own query comment
+   calls meaningful only within one currency — across denominations
    before `LIMIT`, so the highest-denomination currency filled the whole queue.
    That last one names no `currency_code` in its sort at all. The class has two
    limbs, and only one is a property of the sort keys:
@@ -980,7 +984,7 @@ CREATE TABLE raw.exchange_rates (
     rate_date      DATE    NOT NULL,   -- resolved trading day
     rate           DECIMAL(18,8) NOT NULL,  -- from->to multiplier; precision per database.md
     source         VARCHAR NOT NULL,   -- provider only: 'frankfurter' | 'exchangerate_host' | ...
-    fetched_at     TIMESTAMP NOT NULL,
+    fetched_at     TIMESTAMPTZ NOT NULL,
     UNIQUE (from_currency, to_currency, rate_date, source)
 );
 
@@ -993,8 +997,8 @@ CREATE TABLE app.exchange_rate_overrides (
     rate_date      DATE    NOT NULL,
     rate           DECIMAL(18,8) NOT NULL,     -- user-entered; precision per database.md
     note           VARCHAR,                    -- why the user overrode the provider rate
-    created_at     TIMESTAMP NOT NULL,
-    updated_at     TIMESTAMP NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL,
+    updated_at     TIMESTAMPTZ NOT NULL,
     UNIQUE (from_currency, to_currency, rate_date)
 );
 ```
@@ -1034,7 +1038,7 @@ CREATE TABLE core.bridge_currency_conversions (
     from_date                DATE,
     to_date                  DATE,
     valuation_rate_date      DATE,
-    updated_at               TIMESTAMP
+    updated_at               TIMESTAMPTZ
 );
 
 CREATE TABLE core.fct_currency_lots (
@@ -1055,7 +1059,7 @@ CREATE TABLE core.fct_currency_lots (
     cost_basis_remaining     DECIMAL(18,2),
     basis_incomplete         BOOLEAN,
     acquisition_date         DATE,
-    updated_at               TIMESTAMP
+    updated_at               TIMESTAMPTZ
 );
 
 CREATE TABLE core.fct_realized_fx_gains (
@@ -1078,7 +1082,7 @@ CREATE TABLE core.fct_realized_fx_gains (
     acquisition_date         DATE,
     disposal_date            DATE,
     valuation_rate_date      DATE,
-    updated_at               TIMESTAMP
+    updated_at               TIMESTAMPTZ
 );
 ```
 

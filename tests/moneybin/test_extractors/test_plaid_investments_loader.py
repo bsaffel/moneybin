@@ -1,5 +1,6 @@
 """PlaidExtractor investment loading: counts, scoping, snapshots, drift."""
 
+import time
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,15 @@ from moneybin.database import Database
 from moneybin.extractors.plaid.extractor import PlaidExtractor
 
 FIXTURE = Path(__file__).parent / "fixtures" / "plaid_investments_sync_response.yaml"
+
+
+@pytest.fixture(params=["UTC", "America/New_York", "Asia/Tokyo"])
+def host_zone(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TZ", request.param)
+    time.tzset()
+    yield request.param
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.fixture
@@ -418,24 +428,10 @@ def test_zero_quantity_buy_reaches_reconciliation_and_counts_drift(
     assert (REGISTRY.get_sample_value(name) or 0.0) - before == 1.0
 
 
-def test_event_timestamps_land_as_utc_wall_clocks_in_a_non_utc_session(
-    db: Database, sync_data: PlaidSyncDataResponse
+def test_event_timestamps_preserve_instants_in_a_non_utc_session(
+    db: Database, sync_data: PlaidSyncDataResponse, host_zone: str
 ) -> None:
-    """A UTC instant must store the UTC wall clock whatever the machine's zone.
-
-    The raw datetime columns are naive TIMESTAMP and staging derives dates
-    from them (`transaction_datetime::DATE` -> trade_date;
-    `original_purchase_datetime::DATE` -> acquisition_date). Hand DuckDB a
-    tz-AWARE value and it rebases the instant into the session zone on
-    insert: in America/Los_Angeles a 2026-03-10T01:30Z trade lands as
-    2026-03-09 18:30, so trade_date comes out a day early -- misdating
-    cost-basis lots, inverting FIFO order between adjacent days, flipping an
-    anniversary sale from long to short, and desyncing trade_date from
-    holdings_date (a UTC date computed in Python).
-
-    Must go through the loader: inserting a naive string straight into raw
-    bypasses the exact coercion under test.
-    """
+    """Aware provider values preserve epochs and explicit UTC business dates."""
     db.execute("SET TimeZone = 'America/Los_Angeles'")
     payload = sync_data.model_copy(deep=True)
     instant = datetime(2026, 3, 10, 1, 30, tzinfo=UTC)  # 2026-03-09 18:30 in LA
@@ -446,21 +442,21 @@ def test_event_timestamps_land_as_utc_wall_clocks_in_a_non_utc_session(
 
     txn = db.execute(
         """
-        SELECT transaction_datetime, transaction_datetime::DATE
+        SELECT transaction_datetime, (transaction_datetime AT TIME ZONE 'UTC')::DATE
         FROM raw.plaid_investment_transactions
         WHERE investment_transaction_id = 'itx_buy_1'
         """
     ).fetchone()
-    assert txn == (datetime(2026, 3, 10, 1, 30), date(2026, 3, 10))
+    assert txn == (instant, date(2026, 3, 10))
 
     lot = db.execute(
         """
-        SELECT original_purchase_datetime, original_purchase_datetime::DATE
+        SELECT original_purchase_datetime, (original_purchase_datetime AT TIME ZONE 'UTC')::DATE
         FROM raw.plaid_investment_holding_lots
         WHERE account_id = 'acc_1' AND security_id = 'sec_aapl' AND lot_index = 0
         """
     ).fetchone()
-    assert lot == (datetime(2026, 3, 10, 1, 30), date(2026, 3, 10))
+    assert lot == (instant, date(2026, 3, 10))
 
 
 def test_holdings_date_is_the_utc_date_of_the_sync_instant(

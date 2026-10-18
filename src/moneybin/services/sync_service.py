@@ -106,6 +106,7 @@ from moneybin.tables import (
     SIMPLEFIN_SYNC_RECEIPTS,
     TableRef,
 )
+from moneybin.temporal import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -1008,10 +1009,10 @@ class SyncService:
                     "batches": [
                         {
                             "batch_id": row[0],
-                            "fetched_at": row[1].replace(tzinfo=UTC),
+                            "fetched_at": as_utc(row[1]),
                             "window": {
-                                "start": row[2].replace(tzinfo=UTC),
-                                "end": row[3].replace(tzinfo=UTC),
+                                "start": as_utc(row[2]),
+                                "end": as_utc(row[3]),
                             },
                             "payload": json.loads(row[4]),
                         }

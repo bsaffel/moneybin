@@ -11,9 +11,10 @@ import hashlib
 import html
 import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -311,6 +312,23 @@ def sniff_ofx_content(file_path: Path) -> bool:
     return False
 
 
+class _UTCOFXParser(ofxparse.OfxParser):
+    """Adapt ofxparse's UTC-naive results without changing its global parser."""
+
+    @classmethod
+    def parseOfxDateTime(cls, ofxDateTime: str) -> datetime | None:  # noqa: N802, N803  # required ofxparse override signature
+        # GMT is the default only when no explicit zone was supplied.
+        if ("[" in ofxDateTime or "]" in ofxDateTime) and not re.fullmatch(
+            r"[^\[\]]*\[[-+]?\d+\.?\d*(?::\w*)?\]", ofxDateTime
+        ):
+            raise ValueError("Unsupported explicit OFX timezone")
+        # OFX 2.2 section 3.2.8.2: the numeric offset is valid without a name.
+        text = re.sub(r"\[([-+]?\d+\.?\d*)\]$", r"[\1:UTC]", ofxDateTime)
+        value = super().parseOfxDateTime(text)  # pyright: ignore[reportUnknownMemberType]  # ofxparse leaves its string argument untyped
+        # ofxparse subtracts the source offset; an omitted zone means GMT.
+        return value.replace(tzinfo=UTC) if value is not None else None
+
+
 def parse_ofx_content(source_bytes: bytes, *, source_label: str) -> Any:
     """Decode, SGML-preprocess, and parse OFX/QFX bytes into an ofxparse object.
 
@@ -326,7 +344,7 @@ def parse_ofx_content(source_bytes: bytes, *, source_label: str) -> Any:
             f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: {source_label}"
         )
     content = preprocess_ofx_content(content)
-    return ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType]
+    return _UTCOFXParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType]
 
 
 def ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccount]:
@@ -599,7 +617,7 @@ class OFXExtractor:
                     source_bytes = f.read()
             ofx = parse_ofx_content(source_bytes, source_label=str(file_path))
 
-            extraction_timestamp = datetime.now()
+            extraction_timestamp = datetime.now(UTC)
             source_file = str(file_path)
 
             results = {
@@ -716,7 +734,7 @@ class OFXExtractor:
                     account.institution.fid if account.institution else None
                 ),
                 "source_file": source_file,
-                "extracted_at": extraction_timestamp.isoformat(),
+                "extracted_at": extraction_timestamp,
                 "import_id": import_id,
                 "source_type": "ofx",
                 # source_origin must match app.account_links.source_origin so the
@@ -736,7 +754,7 @@ class OFXExtractor:
                 "institution_org": pl.String,
                 "institution_fid": pl.String,
                 "source_file": pl.String,
-                "extracted_at": pl.String,
+                "extracted_at": pl.Datetime("us", time_zone="UTC"),
                 "import_id": pl.String,
                 "source_type": pl.String,
                 "source_origin": pl.String,
@@ -775,13 +793,13 @@ class OFXExtractor:
                     "currency_code": account.curdef
                     if hasattr(account, "curdef")
                     else None,
-                    "date_posted": tx_schema.date.isoformat(),
+                    "date_posted": tx_schema.date.replace(tzinfo=None).isoformat(),
                     "amount": tx_schema.amount,
                     "payee": _decode_text_field(tx_schema.payee),
                     "memo": _decode_text_field(tx_schema.memo),
                     "check_number": tx_schema.checknum,
                     "source_file": source_file,
-                    "extracted_at": extraction_timestamp.isoformat(),
+                    "extracted_at": extraction_timestamp,
                     "import_id": import_id,
                     "source_type": "ofx",
                     "source_origin": source_origin,
@@ -805,6 +823,11 @@ class OFXExtractor:
                     f"FITID within one file (institution reused a FITID for distinct "
                     f"transactions); disambiguated by content to prevent dedup loss"
                 )
+            # The collision signature retains its historical UTC clock text.
+            for row in transactions_data:
+                row["date_posted"] = datetime.fromisoformat(row["date_posted"]).replace(
+                    tzinfo=UTC
+                )
             return pl.DataFrame(
                 transactions_data,
                 schema_overrides=_TRANSACTIONS_AMOUNT_OVERRIDES,
@@ -819,13 +842,13 @@ class OFXExtractor:
                 "account_id": pl.String,
                 "transaction_type": pl.String,
                 "currency_code": pl.String,
-                "date_posted": pl.String,
+                "date_posted": pl.Datetime("us", time_zone="UTC"),
                 "amount": _DECIMAL_AMOUNT,
                 "payee": pl.String,
                 "memo": pl.String,
                 "check_number": pl.String,
                 "source_file": pl.String,
-                "extracted_at": pl.String,
+                "extracted_at": pl.Datetime("us", time_zone="UTC"),
                 "import_id": pl.String,
                 "source_type": pl.String,
                 "source_origin": pl.String,
@@ -849,16 +872,16 @@ class OFXExtractor:
             if statement:
                 balance_info = {
                     "account_id": account.account_id,
-                    "statement_start_date": statement.start_date.isoformat()
+                    "statement_start_date": statement.start_date
                     if statement.start_date
                     else None,
-                    "statement_end_date": statement.end_date.isoformat()
+                    "statement_end_date": statement.end_date
                     if statement.end_date
                     else None,
                     "ledger_balance": statement.balance
                     if statement.balance is not None
                     else None,
-                    "ledger_balance_date": statement.balance_date.isoformat()
+                    "ledger_balance_date": statement.balance_date
                     if hasattr(statement, "balance_date") and statement.balance_date
                     else None,
                     "available_balance": statement.available_balance
@@ -869,7 +892,7 @@ class OFXExtractor:
                     if hasattr(account, "curdef")
                     else None,
                     "source_file": source_file,
-                    "extracted_at": extraction_timestamp.isoformat(),
+                    "extracted_at": extraction_timestamp,
                     "import_id": import_id,
                     "source_type": "ofx",
                     # source_origin must match app.account_links.source_origin so the
@@ -886,14 +909,14 @@ class OFXExtractor:
         return pl.DataFrame(
             schema={
                 "account_id": pl.String,
-                "statement_start_date": pl.String,
-                "statement_end_date": pl.String,
+                "statement_start_date": pl.Datetime("us", time_zone="UTC"),
+                "statement_end_date": pl.Datetime("us", time_zone="UTC"),
                 "ledger_balance": _DECIMAL_AMOUNT,
-                "ledger_balance_date": pl.String,
+                "ledger_balance_date": pl.Datetime("us", time_zone="UTC"),
                 "available_balance": _DECIMAL_AMOUNT,
                 "currency_code": pl.String,
                 "source_file": pl.String,
-                "extracted_at": pl.String,
+                "extracted_at": pl.Datetime("us", time_zone="UTC"),
                 "import_id": pl.String,
                 "source_type": pl.String,
                 "source_origin": pl.String,

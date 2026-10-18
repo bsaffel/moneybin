@@ -70,6 +70,7 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "updated_at": "TIMESTAMP",
     "is_transfer": "BOOLEAN",
     "transfer_pair_id": "VARCHAR",
+    "is_categorizable": "BOOLEAN",
     "transaction_year": "BIGINT",
     "transaction_month": "BIGINT",
     "transaction_day": "BIGINT",

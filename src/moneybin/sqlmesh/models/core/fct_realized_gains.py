@@ -52,7 +52,7 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
         "cost_basis_method": "VARCHAR",
         "basis_incomplete": "BOOLEAN",
         "currency_code": "VARCHAR",
-        "updated_at": "TIMESTAMP",
+        "updated_at": "TIMESTAMPTZ",
     },
     column_descriptions={
         "realized_gain_id": "Content hash of (disposal txn id, lot_id)",
@@ -137,7 +137,7 @@ def execute(
         pa.field("cost_basis_method", pa.string()),
         pa.field("basis_incomplete", pa.bool_()),
         pa.field("currency_code", pa.string()),
-        pa.field("updated_at", pa.timestamp("us")),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
     ])
     yield pa.Table.from_pylist(rows, schema=schema).to_pandas(  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list
         types_mapper=pd.ArrowDtype

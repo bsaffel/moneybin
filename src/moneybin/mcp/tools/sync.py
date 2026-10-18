@@ -24,6 +24,7 @@ from moneybin.adapters.refresh_adapters import (
 from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.adapters.sync_adapters import (
     sync_account_label,
+    sync_auth_view,
     sync_link_envelope,
     sync_link_status_actions,
     sync_link_status_envelope,
@@ -49,7 +50,6 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.metrics.registry import SYNC_SERVER_ADDRESS_OUTCOMES
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.sync import (
-    SyncAuthView,
     SyncDisconnectCoarsePayload,
     SyncGlobalStatusView,
     SyncInstitutionDisconnectView,
@@ -299,15 +299,7 @@ def sync_status_coarse(
         )
     if auth_session_id is not None:
         result = _build_sync_auth_service().status(auth_session_id)
-        data: SyncStatusCoarsePayload = SyncAuthView(
-            auth_session_id=result.auth_session_id,
-            status=result.status,
-            user_code=result.user_code,
-            verification_url=result.verification_url,
-            expiration=result.expiration,
-            replayed=result.replayed,
-            error_code=result.error_code,
-        )
+        data: SyncStatusCoarsePayload = sync_auth_view(result)
         if result.status == "pending":
             actions = [
                 "Ask the user to complete the verification URL, then call "
@@ -472,15 +464,7 @@ async def sync_link_coarse(
                 result = await _begin_login_at(
                     sync_server_address.SUGGESTED_SERVER_URL, suggested=True
                 )
-        data: SyncLinkCoarsePayload = SyncAuthView(
-            auth_session_id=result.auth_session_id,
-            status=result.status,
-            user_code=result.user_code,
-            verification_url=result.verification_url,
-            expiration=result.expiration,
-            replayed=result.replayed,
-            error_code=result.error_code,
-        )
+        data: SyncLinkCoarsePayload = sync_auth_view(result)
         return build_envelope(
             data=data,
             actions=[

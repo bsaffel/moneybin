@@ -52,7 +52,7 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
         "is_open": "BOOLEAN",
         "source_transaction_id": "VARCHAR",
         "basis_incomplete": "BOOLEAN",
-        "updated_at": "TIMESTAMP",
+        "updated_at": "TIMESTAMPTZ",
     },
     column_descriptions={
         "lot_id": "Content hash of (account_id, security_id, acquisition_date, source acquisition txn id); prefix 'lot_'",
@@ -139,7 +139,7 @@ def execute(
         pa.field("is_open", pa.bool_()),
         pa.field("source_transaction_id", pa.string()),
         pa.field("basis_incomplete", pa.bool_()),
-        pa.field("updated_at", pa.timestamp("us")),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
     ])
     yield pa.Table.from_pylist(rows, schema=schema).to_pandas(  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list
         types_mapper=pd.ArrowDtype

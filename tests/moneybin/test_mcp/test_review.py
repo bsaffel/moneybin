@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, cast, get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -79,7 +78,7 @@ from moneybin.services.undo_service import UndoService
 from tests.moneybin.db_helpers import (
     CORE_FCT_INVESTMENT_LOTS_DDL,
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
-    install_uncategorized_queue_view,
+    simulate_pre_refresh_fct_transactions,
 )
 
 from .schema_assertions import (
@@ -90,20 +89,6 @@ from .schema_assertions import (
 )
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
-
-
-@pytest.fixture(autouse=True)
-def _canonical_uncategorized_queue(  # pyright: ignore[reportUnusedFunction]  # autouse pytest fixture
-    mcp_db: Path,
-) -> None:
-    """Give every review test the canonical queue view production always has.
-
-    ``core.uncategorized_queue`` is the single definition of an uncategorized
-    transaction, so a review DB without it is a drifted one — a state one test
-    below asserts on deliberately by dropping the view again.
-    """
-    with get_database(read_only=False) as db:
-        install_uncategorized_queue_view(db)
 
 
 _NOW = datetime.now(tz=UTC).isoformat()
@@ -446,16 +431,15 @@ async def test_review_queue_uses_one_envelope(kind: str) -> None:
     assert response.data.status == "pending"
 
 
-async def test_categorization_queue_reports_a_missing_canonical_view() -> None:
-    """An absent core.uncategorized_queue is surfaced, not rendered as "none pending".
+async def test_categorization_queue_reports_a_pre_refresh_fact() -> None:
+    """A fact without is_categorizable is surfaced, not rendered as "none pending".
 
-    core.uncategorized_queue is the single definition of an uncategorized
-    transaction, so when the view is missing the queue's contents are unknown
-    — not empty. Returning an empty queue would tell a curator their work is
-    done while the refresh that builds the view has never run.
+    Upgraded code over a database not yet refreshed cannot know which
+    transactions need a category. Returning an empty queue would tell a curator
+    their work is done while the refresh that adds the column has never run.
     """
     with get_database(read_only=False) as db:
-        db.execute("DROP VIEW core.uncategorized_queue")
+        simulate_pre_refresh_fct_transactions(db)
 
     response = await reviews_coarse(kind="categorization", status="pending")
 
@@ -492,7 +476,7 @@ async def test_review_summary_degrades_when_one_queue_is_unavailable(
 ) -> None:
     """One broken queue is marked unavailable; the other six still report counts.
 
-    A missing view (core.uncategorized_queue after #340 moved it) previously
+    A missing relation previously
     failed the whole aggregate, so the default reviews() call was a dead end
     while six of seven queues were healthy.
     """
@@ -500,7 +484,9 @@ async def test_review_summary_degrades_when_one_queue_is_unavailable(
 
     def count_or_fail(db: object, *, kind: str, status: str) -> int:
         if kind == "categorization":
-            raise duckdb.CatalogException("Table with name uncategorized_queue does")
+            raise duckdb.CatalogException(
+                "Table with name fct_transactions does not exist"
+            )
         return real_count(db, kind=kind, status=status)  # pyright: ignore[reportArgumentType]
 
     monkeypatch.setattr(reviews_module, "_review_count", count_or_fail)
@@ -627,7 +613,7 @@ async def test_review_rows_expose_common_and_typed_fields(mcp_db: object) -> Non
         provisional_account_id="PROV-COMMON",
         candidate_account_id="ACC001",
         status="pending",
-        decided_at="2026-07-18T12:00:00",
+        decided_at="2026-07-18T12:00:00Z",
     )
 
     response = await reviews_coarse(kind="account_links", status="pending")
@@ -638,10 +624,26 @@ async def test_review_rows_expose_common_and_typed_fields(mcp_db: object) -> Non
     assert row.decision_id == "decision-common"
     assert row.kind == "account_links"
     assert row.status == "pending"
-    assert row.created_at == "2026-07-18 12:00:00"
+    assert row.created_at == "2026-07-18T12:00:00.000000Z"
     assert row.summary
     assert row.details.state == "pending"
     assert row.details.candidates[0].decision_id == "decision-common"
+
+
+async def test_account_link_history_keeps_canonical_nested_instant(
+    mcp_db: object,
+) -> None:
+    _insert_account_link_decision(
+        decision_id="synthetic-utc-history",
+        provisional_account_id="synthetic-provisional",
+        candidate_account_id="ACC001",
+        status="rejected",
+        decided_at="2025-11-02T01:30:00.123456-04:00",
+    )
+    response = await reviews_coarse(kind="account_links", status="history")
+    row = response.to_dict()["data"]["rows"][0]
+    assert row["created_at"] == "2025-11-02T05:30:00.123456Z"
+    assert row["details"]["decision"]["decided_at"] == "2025-11-02T05:30:00.123456Z"
 
 
 async def test_review_history_calls_history_not_pending() -> None:
@@ -1061,31 +1063,6 @@ def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
             [transaction_id],
         )
         CategorizationService(db).create_category(category, actor="test")
-        db.execute(
-            """
-            CREATE OR REPLACE VIEW core.uncategorized_queue AS
-            SELECT
-                transaction_id,
-                account_id,
-                CAST(NULL AS VARCHAR) AS account_name,
-                transaction_date AS txn_date,
-                amount,
-                currency_code,
-                description,
-                CAST(NULL AS VARCHAR) AS merchant_id,
-                CAST(NULL AS VARCHAR) AS merchant_normalized,
-                CAST(1 AS INTEGER) AS age_days,
-                CAST(1 AS DOUBLE) AS priority_score,
-                source_type,
-                CAST(NULL AS VARCHAR) AS source_id
-            FROM core.fct_transactions AS tx
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM app.transaction_categories AS tc
-                WHERE tc.transaction_id = tx.transaction_id
-            )
-            """
-        )
         MatchDecisionsRepo(db).insert(
             match_id=match_id,
             source_transaction_id_a="ordinary-a",

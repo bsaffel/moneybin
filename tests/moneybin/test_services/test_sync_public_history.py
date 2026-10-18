@@ -2,7 +2,7 @@
 
 import json
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -202,3 +202,53 @@ def test_status_scope_mapping_never_leaks_unresolved_native_identity(
     assert entries[1]["account_id"] is None
     assert entries[1]["display_name"] == "Unresolved account"
     assert entries[1]["history_target"] == "2026-07-01"
+
+
+def test_public_sync_instants_are_fixed_utc_and_dates_remain_days() -> None:
+    from moneybin.connectors.sync_models import (
+        SyncConnectionView,
+        SyncHistoryAccountView,
+        SyncHistoryView,
+    )
+
+    stamp = datetime.fromisoformat("2026-10-01T09:00:00.1-04:00")
+    history = SyncHistoryView(
+        observed_at=stamp,
+        replay_required=True,
+        discovery_history_target=date(2026, 7, 1),
+        accounts=[
+            SyncHistoryAccountView(
+                account_id=None,
+                display_name="Synthetic",
+                acknowledged_intervals=[
+                    UTCWindow(
+                        start=datetime(2026, 9, 1, tzinfo=UTC),
+                        end=datetime(2026, 10, 1, tzinfo=UTC),
+                    )
+                ],
+                history_target=date(2026, 7, 1),
+            )
+        ],
+    )
+    connection = SyncConnectionView(
+        id="synthetic",
+        provider="simplefin",
+        provider_item_id=None,
+        status="active",
+        created_at=stamp,
+        last_sync=stamp,
+        safe_history=history,
+        provider_balance_at=stamp,
+    )
+    row = sync_status_envelope([connection], actions=[]).to_dict()["data"][
+        "connections"
+    ][0]
+    for key in ("created_at", "last_sync", "provider_balance_at"):
+        assert row[key] == "2026-10-01T13:00:00.100000Z"
+    assert row["history"]["observed_at"] == "2026-10-01T13:00:00.100000Z"
+    assert row["history"]["discovery_history_target"] == "2026-07-01"
+    account = row["history"]["accounts"][0]
+    assert account["history_target"] == "2026-07-01"
+    assert account["acknowledged_intervals"] == [
+        {"start": "2026-09-01T00:00:00.000000Z", "end": "2026-10-01T00:00:00.000000Z"}
+    ]

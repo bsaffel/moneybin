@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import date
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
@@ -199,6 +200,7 @@ class CatalogReportExecution:
     #: The row cap this execution still owes, or ``None`` once one has been
     #: applied. Set only on the converting path, where the cap has to wait for
     #: ``on_converted`` — see ``truncate_execution``.
+    reporting_date: date | None = None
     pending_limit: int | None = None
     on_converted: RecomputeDerived | None = None
     """The report's own repair for values *derived* from its money columns.
@@ -249,6 +251,7 @@ def convert_execution(
     *,
     to_currency: str,
     service: CurrencyService,
+    today: date,
     home_currency: str | None = None,
 ) -> CatalogReportExecution:
     """Price one execution's rows in ``to_currency``, or leave them segmented.
@@ -266,6 +269,7 @@ def convert_execution(
         semantics=execution.semantics,
         to_currency=to_currency,
         service=service,
+        today=today,
         columns=execution.output_columns,
         home_currency=home_currency,
     )
@@ -335,6 +339,7 @@ def convert_execution(
         display_currency=outcome.display_currency or execution.display_currency,
         degraded_reason=outcome.degraded_reason,
         home_currency=home_currency,
+        reporting_date=today,
     )
 
 
@@ -357,6 +362,8 @@ def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecut
     if max_rows is None:
         return execution
     truncated = len(execution.records) > max_rows
+    if execution.applied_rates and execution.reporting_date is None:
+        raise ValueError("Converted execution is missing its report calendar date")
     records = execution.records[:max_rows]
     return replace(
         execution,
@@ -372,6 +379,7 @@ def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecut
             date_column=execution.semantics.fx_date,
             columns=execution.output_columns,
             home_currency=execution.home_currency,
+            today=execution.reporting_date,
         )
         if truncated
         else execution.applied_rates,

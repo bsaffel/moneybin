@@ -1,0 +1,136 @@
+# Warehouse UTC timestamp contract
+
+- **Type:** Architecture
+- **Status:** in-progress
+- **Delivery:** M1G.5 prerequisite; coordinated pre-v1 breaking migration.
+
+The coordinated implementation is present; integration verification and delivery
+remain in progress. Fresh profiles are expected after the upcoming SQL baseline.
+Any retained-profile conversion is a separately prepared, explicitly authorized
+one-time offline operation; it is not an installed application feature.
+
+## Contract
+
+All maintained instants use DuckDB `TIMESTAMPTZ`, aware UTC Python datetimes,
+and UTC database sessions. Machine output uses
+`YYYY-MM-DDTHH:MM:SS.ffffffZ`. Business dates retain `DATE` and ISO
+`YYYY-MM-DD`; posting, statement and valuation dates do not move when a
+profile's reporting timezone changes.
+
+Schemas, writers, transformations and consumers migrate together. Changing
+only the connection timezone cannot repair historical values or naive Python
+writers. Normalize an explicit offset with `astimezone(UTC)`. Interpret an
+offset-free value only with an established source timezone or protocol default.
+Unknown wall times fail validation. Preserve original provider payloads and
+historical audit JSON.
+
+## Source meaning
+
+| Input | Treatment |
+|---|---|
+| SimpleFIN epoch seconds | Convert directly to UTC instants. |
+| Plaid posting and authorization dates | Preserve business DATEs. |
+| Plaid optional date-times | Require an explicit offset. Midnight placeholders do not establish actual event precision. |
+| OFX date-times | Apply the protocol numeric offset or GMT default; preserve date precision and original evidence. |
+| Tabular, PDF and Sheets transaction dates | Preserve DATE semantics; arbitrary wall-clock cells establish no timezone. |
+| Market observations | Preserve the adapter's explicit valuation-date rule. |
+| Application clocks | Generate aware UTC at creation. |
+
+Provider details remain behind the existing sync API and source adapters;
+consumers use canonical tables.
+
+## Reporting calendar
+
+Persist an IANA `reporting_timezone` in the existing audited profile settings
+row. Interactive creation suggests the machine's zone and records the chosen
+value. Headless creation accepts an explicit value or persists and reports
+UTC. Moving computers never changes the saved policy.
+
+Resolve local default periods and day grouping before aggregation. Convert
+calendar bounds to UTC and filter instants with `[start, end)`. DST days may
+have 23 or 25 hours. Business-DATE reports filter the source date directly.
+CLI, MCP and SQL-backed reports share the policy.
+
+## Incompatible profiles and offline maintenance
+
+Normal opens inspect stored types and the temporal contract before schema
+initialization, automatic migrations or transformations. Read-only opens and
+initialization shortcuts cannot bypass this gate. Managed connections,
+including SQLMesh cursors, select UTC before configuration sealing.
+
+The installed application has no UTC inspection, preparation, conversion or
+conversion-recovery commands, no conversion migration and no opener bypass.
+Old incompatible profiles are refused. Create fresh profiles after the planned
+SQL baseline, or arrange separate offline maintenance when retaining history
+is necessary. The SQL baseline and profile resets require separate approval.
+
+Completed converter source is preserved as a local reference, not a supported
+standalone utility. If needed, reconstruct a compatible isolated maintenance
+checkout from that source and obtain explicit approval for the data operation.
+Historical timezone provenance must be proven: the current host timezone,
+a date interval or a guessed writer era cannot supply missing evidence.
+Unknown zones, ambiguous DST folds and nonexistent wall times block conversion.
+Keep original encrypted backups and original provider/audit evidence.
+
+`app.versions` records `utc_contract = 2` only for a complete UTC schema and
+valid saved reporting policy. A marker alone does not excuse an incompatible
+schema. Retain `app.utc_upgrade_provenance` and strict field-specific audit
+replay for any history already converted by separately arranged maintenance.
+Fresh profiles record an empty provenance rule set and canonical UTC evidence.
+Never broaden legacy acceptance or infer absent provenance.
+
+Encrypted database restore remains an installed operation. Before validation,
+stop processes and close connections using either source or destination,
+including MoneyBin, MCP, CLI, notebooks and external database clients. Keep
+both databases closed through replacement and any recovery. Offline means no
+other database users. Locks, fingerprints and encrypted snapshots are additional
+safeguards. Restore validates the source key and temporal contract before
+replacing the destination and retains an encrypted original backup. Use
+`moneybin db restore --recover` to reconcile a completed interrupted promotion
+against its journal and matching original backup. Recovery cannot select a
+backup through `--from` or `--latest`.
+
+## Consumers
+
+- Audit replay decodes known temporal fields before mutation with persisted,
+  field-specific provenance. Preserve original JSON, nulls and omitted fields;
+  alias-forwarded undo uses the same decoder.
+- Timestamp cursors use canonical UTC keys and stable tie-breakers. Scopes
+  carry temporal contract version 2; old tokens request a pagination restart.
+  DATE/id and other non-temporal cursor scopes retain their contracts.
+- Export artifact version 2 uses canonical timestamps in dictionaries, JSON,
+  CSV and checksums. Encrypted database restore validates source contract and
+  key before destination replacement. Incompatible old backups require fresh profiles or separately arranged offline maintenance.
+- Sync recovery retains checkpoints, acknowledgments and retry phases.
+  Amounts, signs, currencies, identities and source dates are invariant.
+- Consent, current rules, review history, notes/splits, schema resources, report
+  explanations and Sheets connections use the same canonical machine timestamps.
+  Human instant output uses the saved reporting calendar, offset and IANA zone.
+- FX freshness derived from historical profile audit images uses the same
+  persisted field-specific decoder as replay. Missing or ambiguous provenance
+  refuses interpretation while preserving original JSON.
+
+## Observability and verification
+
+Restore retains writer-lock and checkpoint observability through existing
+operation classes. Converter-only metrics are absent. Logs contain no payloads,
+timestamp samples, timezone maps or credentials.
+
+Verify fresh and synthetic incompatible databases under UTC, America/New_York
+and Asia/Tokyo, including defaults, bulk loading, read-only startup, DST
+folds/gaps, audit undo/redo, equal-instant pagination and reporting boundaries.
+Archive and restore must change eligibility and advance freshness. Verify
+preservation of financial values and source evidence, source-key/type refusal
+before replacement, reader-lock protection and interrupted-restore recovery.
+Subprocess tests cover installed restore/recover and absent converter commands;
+package tests exclude converter modules and the unpublished conversion migration.
+
+Targeted local checks precede broad CI. Implementation, publication, retained
+profile conversion and live acceptance remain distinct completion boundaries.
+
+## Related contracts
+
+- [Core freshness](core-updated-at-convention.md)
+- [Shared primitives](architecture-shared-primitives.md)
+- [Data protection](privacy-data-protection.md)
+- [Observability](observability.md)

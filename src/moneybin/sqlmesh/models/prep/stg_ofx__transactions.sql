@@ -46,7 +46,9 @@ WITH superseding AS (
     t.source_transaction_id,
     t.account_id,
     t.transaction_type,
-    t.date_posted::DATE AS posted_date,
+    (
+      t.date_posted AT TIME ZONE 'UTC'
+    )::DATE AS posted_date,
     t.amount,
     TRIM(t.payee) AS payee,
     TRIM(t.memo) AS memo,

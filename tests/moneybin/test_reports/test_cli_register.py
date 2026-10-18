@@ -1322,3 +1322,45 @@ def test_the_narrow_balance_drift_view_is_unchanged_by_the_drop_list(
     assert "5 of 11 columns shown — --wide for all" in result.output
     assert "columns fit" not in result.output
     assert "account_id" not in result.output
+
+
+def test_report_human_instants_and_machine_dates_use_separate_formats(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from datetime import UTC, datetime
+
+    from moneybin.reports._framework.cli_register import render_report_result
+
+    result = replace(
+        _money_result(),
+        records=[
+            {
+                "observed_at": datetime(2026, 3, 1, 0, 30, tzinfo=UTC),
+                "posting_date": date(2026, 3, 1),
+            }
+        ],
+        columns=["observed_at", "posting_date"],
+        output_classes={
+            "observed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+            "posting_date": DataClass.TXN_DATE,
+        },
+    )
+    render_report_result(
+        result,
+        OutputFormat.TEXT,
+        cli_actor="test",
+        reporting_timezone="America/New_York",
+        no_pager=True,
+    )
+    human = capsys.readouterr().out
+    assert "2026-02-28" in human and "America/New_York" in human
+    assert "2026-03-01" in human
+    render_report_result(
+        result,
+        OutputFormat.JSON,
+        cli_actor="test",
+        reporting_timezone="America/New_York",
+    )
+    machine = json.loads(capsys.readouterr().out)
+    assert machine["data"][0]["observed_at"] == "2026-03-01T00:30:00.000000Z"
+    assert machine["data"][0]["posting_date"] == "2026-03-01"

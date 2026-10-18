@@ -1,6 +1,6 @@
 """V058: capture the Plaid balance fields the client was discarding.
 
-``PlaidSyncBalance`` declared six of the nine keys moneybin-sync sends in
+``SyncBalance`` declared six of the nine keys moneybin-sync sends in
 ``balances[]``. Pydantic's default ``extra='ignore'`` destroyed the other three
 at validation with no error and no log line, so they reached nothing downstream
 — the same mechanism that stranded ``persistent_account_id`` (V050).

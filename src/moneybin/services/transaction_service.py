@@ -67,6 +67,7 @@ from moneybin.tables import (
     TRANSACTION_SPLITS,
     TRANSACTION_TAGS,
 )
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -2182,7 +2183,7 @@ class TransactionService:
             subcategory=row["subcategory"],
             note=row["note"],
             ord=row["ord"],
-            created_at=str(row["created_at"]),
+            created_at=format_utc(row["created_at"]),
             created_by=str(row["created_by"]),
         )
 
@@ -2222,7 +2223,7 @@ def _row_to_split(row: tuple[Any, ...]) -> Split:
         subcategory=str(row[4]) if row[4] is not None else None,
         note=str(row[5]) if row[5] is not None else None,
         ord=int(row[6]),
-        created_at=str(row[7]),
+        created_at=format_utc(row[7]),
         created_by=str(row[8]),
     )
 
@@ -2233,5 +2234,5 @@ def _row_to_note(row: tuple[Any, ...]) -> Note:
         transaction_id=str(row[1]),
         text=str(row[2]),
         author=str(row[3]),
-        created_at=str(row[4]),
+        created_at=format_utc(row[4]),
     )

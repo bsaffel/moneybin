@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import importlib
-from datetime import UTC, datetime, timedelta
+import time
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -311,3 +312,71 @@ def test_purge_expired_removes_orphaned_app_and_raw_rows(db: Database) -> None:
     assert repo.get_source_bytes(raw_orphan) is None  # type: ignore[attr-defined]
     assert repo.get(live) is not None  # type: ignore[attr-defined]
     assert repo.get_source_bytes(live) == b"live bytes"  # type: ignore[attr-defined]
+
+
+def test_preview_rejects_unknown_naive_issue_time(db: Database) -> None:
+    with pytest.raises(ValueError, match="offset"):
+        _issue(_repo(db), issued_at=datetime(2026, 7, 19, 12))
+
+
+@pytest.fixture(params=["UTC", "America/New_York", "Asia/Tokyo"])
+def host_zone(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TZ", request.param)
+    time.tzset()
+    yield request.param
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.parametrize("at_expiry", [False, True])
+def test_preview_expiry_preserves_instants_and_exact_boundary(
+    db: Database, host_zone: str, at_expiry: bool
+) -> None:
+    repo = _repo(db)
+    issued = datetime(
+        2025, 11, 2, 1, 30, 0, 123456, tzinfo=timezone(timedelta(hours=-4))
+    )
+    expires = issued + timedelta(minutes=5)
+    db.execute("SET TimeZone = 'America/Los_Angeles'")
+    preview_id = _issue(repo, issued_at=issued, expires_at=expires)
+    stored = db.execute(
+        "SELECT issued_at, expires_at, epoch_us(issued_at), epoch_us(expires_at), "
+        "epoch_us(created_at) FROM app.import_previews "
+        "JOIN raw.import_preview_snapshots USING (preview_id) WHERE preview_id = ?",
+        [preview_id],
+    ).fetchone()
+    assert stored == (
+        datetime(2025, 11, 2, 5, 30, 0, 123456, tzinfo=UTC),
+        datetime(2025, 11, 2, 5, 35, 0, 123456, tzinfo=UTC),
+        1762061400123456,
+        1762061700123456,
+        1762061400123456,
+    )
+    now = expires if at_expiry else expires - timedelta(microseconds=1)
+    if at_expiry:
+        with pytest.raises(UserError) as exc_info:
+            repo.consume(  # type: ignore[attr-defined]
+                preview_id,
+                file_sha256="a" * 64,
+                file_size_bytes=128,
+                now=now,
+                actor="mcp",
+            )
+        assert exc_info.value.code == "import_preview_expired"
+        assert db.execute(
+            "SELECT consumed_at FROM app.import_previews WHERE preview_id = ?",
+            [preview_id],
+        ).fetchone() == (None,)
+    else:
+        repo.consume(  # type: ignore[attr-defined]
+            preview_id,
+            file_sha256="a" * 64,
+            file_size_bytes=128,
+            now=now,
+            actor="mcp",
+        )
+        assert db.execute(
+            "SELECT epoch_us(consumed_at), epoch_us(updated_at) "
+            "FROM app.import_previews WHERE preview_id = ?",
+            [preview_id],
+        ).fetchone() == (1762061700123455, 1762061700123455)

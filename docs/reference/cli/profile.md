@@ -42,6 +42,7 @@ Usage: `moneybin profile create [OPTIONS] {name}`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
+| `--reporting-timezone` | text |  | IANA reporting timezone; fresh headless profiles use UTC. |
 | `--init-inbox / --no-init-inbox` | flag |  | Create the import-inbox layout (\<inbox_root>/\<profile>/{inbox,processed,failed,pending}/; inbox_root defaults to ~/Documents/MoneyBin). If unset, prompts when interactive and skips when not. |
 
 ## moneybin profile list
@@ -122,7 +123,7 @@ Usage: `moneybin profile set [OPTIONS] {key} {value}`
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `key` | text | yes | Config key (e.g., logging.level) or managed key (home_currency, display_currency_targets) |
+| `key` | text | yes | Config key (e.g., logging.level) or managed key (home_currency, display_currency_targets, reporting_timezone) |
 | `value` | text | yes | Value to set |
 
 **Options**

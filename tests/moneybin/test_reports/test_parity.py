@@ -338,3 +338,53 @@ def test_a_saved_report_and_a_builtin_build_structurally_identical_envelopes(
     assert [row["account_id"] for row in results[1].records] == [
         row["account_id"] for row in results[0].records
     ]
+
+
+async def test_report_calendar_sql_cli_mcp_parity(saved_db: Database) -> None:
+    import json
+    from datetime import UTC, datetime
+
+    from typer.testing import CliRunner
+
+    from moneybin.mcp.tools.reports import reports
+    from moneybin.reports.definitions.cash_flow import cash_flow
+    from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+    ProfileSettingsRepo(saved_db).set_reporting_timezone(
+        "America/New_York", actor="test"
+    )
+    saved_db.execute("""CREATE OR REPLACE VIEW reports.cash_flow AS
+        SELECT 'account' AS account_id, 'Checking' AS account_name,
+               'Food' AS category, 'USD' AS currency_code, year_month,
+               1 AS txn_count, 0::DECIMAL(18,2) AS inflow,
+               10::DECIMAL(18,2) AS outflow, -10::DECIMAL(18,2) AS net
+        FROM (VALUES ('2026-02'), ('2026-03')) AS months(year_month)
+    """)
+
+    @contextmanager
+    def opened(**_kwargs: object) -> Generator[Database, None, None]:
+        yield saved_db
+
+    with (
+        patch("moneybin.reports.definitions._shared.datetime") as clock,
+        patch("moneybin.reports._framework.cli_register.get_database", opened),
+        patch("moneybin.mcp.tools.reports.get_database", opened),
+    ):
+        clock.now.return_value = datetime(2026, 3, 1, 0, 30, tzinfo=UTC)
+        query = cash_flow(saved_db)
+        assert query.period == "2025-03 to 2026-02"
+        cli = CliRunner().invoke(REPORTS_APP, ["cash-flow", "--output", "json"])
+        assert cli.exit_code == 0, cli.output
+        mcp = await reports(report_id="core:cash_flow")
+    assert mcp.error is None
+    assert (
+        json.loads(cli.stdout)["summary"]["period"]
+        == mcp.summary.period
+        == query.period
+    )
+    assert [row["year_month"] for row in mcp.data.rows] == ["2026-02"]
+    day = saved_db.execute(
+        "SELECT CAST(timezone((SELECT reporting_timezone FROM app.profile_settings), TIMESTAMPTZ '2026-03-01 00:30:00+00') AS DATE)"
+    ).fetchone()
+    assert day is not None
+    assert str(day[0]) == "2026-02-28"

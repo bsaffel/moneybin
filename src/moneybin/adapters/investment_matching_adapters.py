@@ -8,6 +8,7 @@ from moneybin.privacy.payloads.reviews import (
     ReviewStatus,
 )
 from moneybin.services.investment_matching_service import InvestmentMatchingService
+from moneybin.temporal import format_utc
 
 
 def investment_review_view(
@@ -22,7 +23,7 @@ def investment_review_view(
             InvestmentMatchReviewRow(
                 decision_id=row["proposal_id"],
                 status=row["status"],
-                created_at=str(row["created_at"])
+                created_at=format_utc(row["created_at"])
                 if row["created_at"] is not None
                 else None,
                 summary="Competing investment Proposal"

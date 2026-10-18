@@ -164,9 +164,6 @@ def schema_catalog_db(
     create_core_dim_stub_views(database)
     # Reports.* views — production builds these via SQLMesh; tests stub the
     # shape so schema-catalog interface tests can resolve the names.
-    # core.uncategorized_queue (moved out of reports.* per
-    # reports-foundation.md R5) is stubbed by create_core_dim_stub_views()
-    # above, alongside the other core.* SQLMesh-managed views.
     database.execute(
         "CREATE OR REPLACE VIEW reports.cash_flow AS "
         "SELECT CAST(NULL AS VARCHAR) AS year_month, "
@@ -330,9 +327,14 @@ def _db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture ref
     store = MagicMock()
     store.get_key.return_value = "test-encryption-key-for-unit-tests"
     template_path = tmp_path_factory.mktemp("db_template") / "template.duckdb"
-    Database(
+    with Database(
         template_path, secret_store=store, no_auto_upgrade=True, read_only=False
-    ).close()
+    ) as database:
+        # Schema fixtures start after initialization; keep the saved policy but
+        # exclude only its known bootstrap event from later mutation assertions.
+        database.execute(
+            "DELETE FROM app.audit_log WHERE actor = 'database.init' AND action = 'profile_settings.set' AND target_table = 'profile_settings'"
+        )
     return template_path
 
 

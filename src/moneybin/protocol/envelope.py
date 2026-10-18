@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, cast
@@ -25,10 +26,15 @@ from moneybin import error_codes
 from moneybin.errors import ErrorDetail, RecoveryAction, UserError
 from moneybin.privacy.payloads.sync_completeness import SyncCompleteness
 from moneybin.protocol.row_set import row_set_rows
+from moneybin.temporal import format_utc
 
 
 def serialize_payload(value: Any) -> Any:
-    """Recursively expose payload containers without copying scalar leaves."""
+    """Expose payload containers, formatting typed instants and business dates."""
+    if isinstance(value, datetime):
+        return format_utc(value)
+    if isinstance(value, date):
+        return value.isoformat()
     if is_dataclass(value) and not isinstance(value, type):
         return {
             item.name: serialize_payload(getattr(value, item.name))
@@ -36,9 +42,10 @@ def serialize_payload(value: Any) -> Any:
         }
     if isinstance(value, BaseModel):
         try:
-            return serialize_payload(value.model_dump())
+            dumped = value.model_dump()
         except Exception:  # preserve existing fallback contract
             return value
+        return serialize_payload(dumped)
     if isinstance(value, Mapping):
         mapping = cast(Mapping[Any, Any], value)
         return {key: serialize_payload(item) for key, item in mapping.items()}
@@ -190,7 +197,7 @@ class PayloadEncoder(json.JSONEncoder):
     value above ~$10^{13} would round on the way out; the wire contract
     documents money types up to that cap.
 
-    Catch-all for non-serializable types (datetime, UUID, etc.) falls back
+    Catch-all for other non-serializable types (UUID, etc.) falls back
     to `str(o)` here rather than via `json.dumps(..., default=str)` because
     passing both `cls=` and `default=` to `json.dumps` causes `default=` to
     REPLACE the encoder's `default()` method — silently dropping the
@@ -205,7 +212,7 @@ class PayloadEncoder(json.JSONEncoder):
         converted = serialize_payload(o)
         if converted is not o:
             return converted
-        # Existing fallback: str(o) for datetime, UUID, Enum, etc.
+        # Existing fallback for UUID, Enum, and other unsupported scalars.
         try:
             return super().default(o)
         except TypeError:
@@ -300,7 +307,7 @@ class ResponseEnvelope[T]:
                 ra if isinstance(ra, dict) else ra.model_dump()
                 for ra in self.recovery_actions
             ]
-        return d
+        return serialize_payload(d)
 
     def to_json(self) -> str:
         """Serialize to JSON string via PayloadEncoder.
