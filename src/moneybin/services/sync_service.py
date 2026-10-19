@@ -486,7 +486,7 @@ class SyncService:
             for source in data.sources
         ]
         observed = _SOURCE_RESULTS.validate_python(context.results)
-        if self._source_keys(expected) != self._source_keys(observed):
+        if self._source_evidence(expected) != self._source_evidence(observed):
             raise SyncAPIError(
                 "Sync source metadata does not match the accepted result"
             )
@@ -664,20 +664,28 @@ class SyncService:
         )
 
     @staticmethod
-    def _source_keys(
-        sources: list[ProviderSourceResult],
-    ) -> list[tuple[str, str, int, str | None]]:
-        return sorted(
-            (
-                source.provider,
-                str(source.connection_id),
-                source.credential_generation,
-                source.protocol_version
-                if isinstance(source, SimpleFINSourceResult)
-                else None,
+    def _source_evidence(
+        sources: list[ProviderSourceResult], *, after_ack: bool = False
+    ) -> list[dict[str, object]]:
+        return [
+            source.model_dump(
+                # Only SimpleFIN history changes when the broker grants ack credit.
+                exclude={"history"}
+                if after_ack and isinstance(source, SimpleFINSourceResult)
+                else set()
             )
-            for source in sources
-        )
+            for source in sorted(
+                sources,
+                key=lambda source: (
+                    source.provider,
+                    str(source.connection_id),
+                    source.credential_generation,
+                    source.protocol_version
+                    if isinstance(source, SimpleFINSourceResult)
+                    else None,
+                ),
+            )
+        ]
 
     def recover(
         self,
@@ -721,7 +729,7 @@ class SyncService:
                     status = self.client.get_status(job_id)
                     if status.acked_at is not None:
                         ack = SyncAckV2Response(
-                            job_id=state.job_id,
+                            job_id=status.job_id,
                             contract_version=2,
                             status="acked",
                             acked_at=status.acked_at,
@@ -731,9 +739,11 @@ class SyncService:
                     ack = SyncAckV2Response.model_validate(
                         self.client.ack(job_id), from_attributes=True
                     )
-                if ack.job_id != state.job_id or self._source_keys(
-                    ack.results
-                ) != self._source_keys([item.source for item in state.details.sources]):
+                if ack.job_id != state.job_id or self._source_evidence(
+                    ack.results, after_ack=True
+                ) != self._source_evidence(
+                    [item.source for item in state.details.sources], after_ack=True
+                ):
                     raise ValueError("Mismatched acknowledgement evidence")
                 result.ack_state, result.ack_error_code = "confirmed", None
                 state.acked_at = ack.acked_at

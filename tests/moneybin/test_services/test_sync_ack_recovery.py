@@ -1,11 +1,14 @@
 """Crash and terminal acknowledgement recovery never requires held provider data."""
 
 from copy import deepcopy
+from typing import Any, cast
 from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 
 from moneybin.connectors.sync_errors import SyncAPIError
+from moneybin.connectors.sync_models import ScopeOutcome, SimpleFINSource
 from moneybin.database import Database
 from moneybin.repositories.sync_job_state_repo import SyncJobStateRepo
 from tests.moneybin.test_services.test_simplefin_sync_service import (
@@ -108,11 +111,95 @@ def test_mismatched_ack_generation_remains_unknown(db: Database) -> None:
     assert db.execute("SELECT acked_at FROM app.sync_job_state").fetchone() == (None,)
 
 
+@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("missing", [False, True])
+def test_changed_ack_outcomes_remain_unknown(
+    db: Database, recover: bool, missing: bool
+) -> None:
+    data = _envelope()
+    native = data.sources[0]
+    assert isinstance(native, SimpleFINSource)
+    native.outcomes = [
+        ScopeOutcome(
+            account_id=None,
+            native_scope=None,
+            window=native.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    client = _client(data)
+    service = _service(db, client)
+    changed = deepcopy(client.ack.return_value.results)
+    if missing:
+        changed[0]["outcomes"] = []
+    else:
+        changed[0]["outcomes"][0]["status"] = "failed"
+        changed[0]["outcomes"][0]["error_code"] = "provider_error"
+    if recover:
+        client.ack.side_effect = OSError("synthetic lost response")
+        assert service.pull(refresh=False).ack_state == "unknown"
+        client.get_status.return_value.acked_at = NOW
+        client.get_status.return_value.results = changed
+        result = service.recover(str(JOB), refresh=False)
+    else:
+        client.ack.return_value.results = changed
+        result = service.pull(refresh=False)
+
+    assert result.ack_state == "unknown"
+    assert result.complete is False
+    assert result.ingestion_state == "committed"
+    state = SyncJobStateRepo(db).get(str(JOB), client.consumer_id)
+    assert state is not None
+    assert state.acked_at is None
+    assert state.details.acknowledgement is None
+    assert state.details.sources[0].source.outcomes[0].status == "complete"
+    assert db.execute(
+        "SELECT count(*) FROM raw.simplefin_sync_receipts"
+    ).fetchone() == (1,)
+
+
+def test_ack_preserves_local_validation_outcomes(db: Database) -> None:
+    data = _envelope()
+    payload = cast(dict[str, Any], data.sources[0].batches[0].payload)
+    payload["accounts"][0]["transactions"][0]["amount"] = "-1.001"
+    client = _client(data)
+
+    result = _service(db, client).pull(refresh=False)
+
+    assert result.ack_state == "confirmed"
+    assert any(
+        outcome.error_code == "unsupported_precision"
+        for outcome in result.source_results[0].outcomes
+    )
+    state = SyncJobStateRepo(db).get(str(JOB), client.consumer_id)
+    assert state is not None
+    assert state.details.sources[0].source.outcomes == []
+    assert state.details.acknowledgement is not None
+    assert state.details.acknowledgement.results[0].outcomes == []
+
+
+def test_recovery_refuses_acknowledged_status_for_another_job(db: Database) -> None:
+    client = _client(_envelope())
+    client.ack.side_effect = OSError("synthetic lost response")
+    service = _service(db, client)
+    assert service.pull(refresh=False).ack_state == "unknown"
+    client.get_status.return_value.acked_at = NOW
+    client.get_status.return_value.job_id = UUID(int=801)
+
+    result = service.recover(str(JOB), refresh=False)
+
+    assert result.ack_state == "unknown"
+    assert result.ingestion_state == "committed"
+    state = SyncJobStateRepo(db).get(str(JOB), client.consumer_id)
+    assert state is not None
+    assert state.acked_at is None
+    assert state.details.acknowledgement is None
+
+
 def test_mixed_replay_returns_delivery_counts_without_rewriting_ingestion_evidence(
     db: Database,
 ) -> None:
-    from uuid import UUID
-
     from moneybin.connectors.sync_models import PlaidSource
     from tests.moneybin.test_services.test_simplefin_sync_service import _plaid  # pyright: ignore[reportPrivateUsage]  # synthetic investment fixture
 

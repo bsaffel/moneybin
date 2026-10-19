@@ -206,6 +206,51 @@ def test_mismatched_terminal_metadata_rolls_back_before_ack(db: Database) -> Non
     client.ack.assert_not_called()
 
 
+@pytest.mark.parametrize("evidence", ["outcomes", "history"])
+def test_mismatched_source_evidence_refused_before_ingestion(
+    db: Database, evidence: str
+) -> None:
+    client = _client(_envelope())
+    client.get_status.return_value.results = deepcopy(
+        client.get_status.return_value.results
+    )
+    observed = client.get_status.return_value.results[0]
+    if evidence == "outcomes":
+        observed["outcomes"] = [
+            {
+                "account_id": None,
+                "native_scope": None,
+                "window": {
+                    "start": "2026-09-01T00:00:00Z",
+                    "end": "2026-09-20T00:00:00Z",
+                },
+                "status": "failed",
+                "error_code": "provider_error",
+            }
+        ]
+    else:
+        observed["history"] = {
+            "observed_at": NOW.isoformat(),
+            "replay_required": True,
+            "discovery_history_target": "2026-07-01",
+            "accounts": [],
+        }
+
+    with pytest.raises(sync_service.SyncAPIError):
+        _service(db, client).pull(refresh=False)
+
+    for table in (
+        "raw.simplefin_sync_receipts",
+        "raw.simplefin_responses",
+        "raw.simplefin_accounts",
+        "raw.simplefin_transactions",
+        "raw.simplefin_balances",
+        "app.sync_job_state",
+    ):
+        assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names
+    client.ack.assert_not_called()
+
+
 @pytest.mark.parametrize("field", ["started_at", "completed_at"])
 def test_future_job_metadata_refused_before_mutation(db: Database, field: str) -> None:
     client = _client(_envelope())
