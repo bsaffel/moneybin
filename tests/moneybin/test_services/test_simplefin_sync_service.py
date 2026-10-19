@@ -277,7 +277,7 @@ def test_future_job_metadata_refused_before_mutation(db: Database, field: str) -
 
 
 @pytest.mark.parametrize("across_sources", [False, True])
-def test_repeated_plaid_batch_id_preserves_each_payload(
+def test_distinct_plaid_batch_ids_preserve_each_payload(
     db: Database, across_sources: bool
 ) -> None:
     fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
@@ -294,6 +294,7 @@ def test_repeated_plaid_batch_id_preserves_each_payload(
     ]
     second = deepcopy(first)
     second["connection_id"] = str(UUID(int=302))
+    second["batches"][0]["batch_id"] = str(UUID(int=303))
     payload = second["batches"][0]["payload"]
     payload["transactions"][0]["transaction_id"] = "plaid-transaction-2"
     payload["transactions"][0]["amount"] = "56.78"
@@ -320,10 +321,97 @@ def test_repeated_plaid_batch_id_preserves_each_payload(
             "plaid-transaction-2",
             Decimal("56.78"),
             "plaid-item-2",
-            f"sync_{JOB}_33333333-3333-4333-8333-333333333333",
+            f"sync_{JOB}_00000000-0000-0000-0000-00000000012f",
         ),
     ]
     assert data.model_dump(mode="json", exclude_unset=True) == original
+
+
+@pytest.mark.parametrize("across_sources", [False, True])
+@pytest.mark.parametrize("changed_payload", [False, True])
+def test_duplicate_plaid_batch_ids_refused_before_any_ingestion(
+    db: Database, across_sources: bool, changed_payload: bool
+) -> None:
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    original = json.loads(fixture.read_text())
+    original["job_id"] = str(JOB)
+    first = original["sources"][0]
+    first["batches"][0]["payload"]["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    second = deepcopy(first)
+    if changed_payload:
+        second["batches"][0]["payload"]["transactions"][0]["amount"] = "56.78"
+    if across_sources:
+        second["connection_id"] = str(UUID(int=302))
+        original["sources"].append(second)
+    else:
+        first["batches"].extend(second["batches"])
+    original["sources"].insert(0, source().model_dump(mode="json"))
+    data = SyncEnvelopeV2.model_validate(original)
+    client = _client(data)
+    service = _service(db, client)
+    with (
+        patch.object(service.loader, "load", wraps=service.loader.load) as plaid_load,
+        patch.object(
+            service.loader,
+            "handle_removed_transactions",
+            wraps=service.loader.handle_removed_transactions,
+        ) as remove,
+        patch.object(
+            SimpleFINExtractor,
+            "load",
+            autospec=True,
+            side_effect=SimpleFINExtractor.load,
+        ) as simplefin_load,
+    ):
+        with pytest.raises(sync_service.SyncAPIError, match="[Bb]atch"):
+            service.pull(refresh=False)
+        plaid_load.assert_not_called()
+        simplefin_load.assert_not_called()
+        remove.assert_not_called()
+    for table in (
+        "raw.plaid_transactions",
+        "raw.plaid_accounts",
+        "raw.simplefin_sync_receipts",
+        "raw.simplefin_responses",
+        "raw.simplefin_transactions",
+        "app.sync_job_state",
+    ):
+        assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names
+    client.ack.assert_not_called()
+    assert data.model_dump(mode="json", exclude_unset=True) == original
+
+
+def test_same_batch_id_across_providers_preserves_each_payload(db: Database) -> None:
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    original = json.loads(fixture.read_text())
+    original["job_id"] = str(JOB)
+    original["sources"][0]["batches"][0]["payload"]["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    batch_id = original["sources"][0]["batches"][0]["batch_id"]
+    original["sources"].insert(
+        0, source(batch=UUID(batch_id).int).model_dump(mode="json")
+    )
+    result = _service(db, _client(SyncEnvelopeV2.model_validate(original))).pull(
+        refresh=False
+    )
+    assert result.transactions_loaded == 2
+    assert db.execute("SELECT amount FROM raw.plaid_transactions").fetchall() == [
+        (Decimal("12.34"),)
+    ]
+    assert db.execute("SELECT amount FROM raw.simplefin_transactions").fetchall() == [
+        (Decimal("-12.30"),)
+    ]
 
 
 def _plaid() -> PlaidSyncDataResponse:

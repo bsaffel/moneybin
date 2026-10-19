@@ -494,10 +494,17 @@ class SyncService:
             )
         # Validate provider payload shapes before any mutations; never expose Pydantic input dumps.
         plaid_data: dict[tuple[int, int], PlaidSyncDataResponse] = {}
+        plaid_batch_ids: set[UUID] = set()
         try:
             for source_index, source in enumerate(data.sources):
                 if isinstance(source, PlaidSource):
                     for batch_index, batch in enumerate(source.batches):
+                        # Plaid snapshot identity contains job and batch, not connection.
+                        if batch.batch_id in plaid_batch_ids:
+                            raise SyncAPIError(
+                                "Sync job contains duplicate Plaid batch IDs"
+                            )
+                        plaid_batch_ids.add(batch.batch_id)
                         plaid_data[source_index, batch_index] = (
                             PlaidSyncDataResponse.model_validate(batch.payload)
                         )
