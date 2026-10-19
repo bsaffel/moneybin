@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from moneybin.cli import pager
@@ -493,4 +494,45 @@ def test_delete_decline_is_a_truthful_unpaged_receipt(
     assert result.exit_code == 0, result.output
     assert "Deletion cancelled" in result.stdout
     assert "Profile alice was not deleted." in result.stdout
+    assert "Remote grants remain" in result.stderr
+    assert "Plaid" in result.stderr and "SimpleFIN" in result.stderr
+    assert "SimpleFIN Bridge may require manual revocation" in result.stderr
+    assert "moneybin --profile alice sync status --output json" in result.stderr
+    assert "Use each returned connection's id" in result.stderr
+    assert (
+        "moneybin --profile alice sync disconnect --connection-id <connection-id>"
+        in result.stderr
+    )
+    assert result.stderr.index("Remote grants remain") < result.stderr.index(
+        "Delete profile 'alice'"
+    )
     service.delete.assert_not_called()
+
+
+def test_delete_with_yes_warns_before_removing_local_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping confirmation still warns before credentials and identity disappear."""
+    service = MagicMock()
+
+    def delete(name: str) -> None:
+        typer.echo(f"Removing local identity for {name}", err=True)
+
+    service.delete.side_effect = delete
+    monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
+
+    result = runner.invoke(app, ["delete", "Alice_Work", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Remote grants remain" in result.stderr
+    assert "moneybin --profile alice-work sync status --output json" in result.stderr
+    assert "Use each returned connection's id" in result.stderr
+    assert (
+        "moneybin --profile alice-work sync disconnect --connection-id <connection-id>"
+        in result.stderr
+    )
+    assert result.stderr.index("Remote grants remain") < result.stderr.index(
+        "Removing local identity"
+    )
+    assert "Profile deleted" in result.stdout
+    service.delete.assert_called_once_with("alice-work")

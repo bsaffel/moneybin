@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import select
 import subprocess  # noqa: S404  # fixed local stdlib lock holder; no shell or credentials
 import sys
 import tempfile
@@ -20,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, cast
 
-_LEASE_REPLY_SECONDS = 10
+_HELPER_SHUTDOWN_SECONDS = 10
 
 
 @dataclass
@@ -61,8 +60,9 @@ class SourceLease:
 
 def _read_reply(process: subprocess.Popen[str]) -> dict[str, object]:
     output = process.stdout
-    if output is None or not select.select([output], [], [], _LEASE_REPLY_SECONDS)[0]:
+    if output is None:
         raise ValueError("lease_lost")
+    # Hashing, copying and syncing have no size-independent completion deadline.
     line = output.readline()
     if not line:
         raise ValueError("lease_lost")
@@ -147,7 +147,7 @@ def _source_lease(path: Path, *, shared: bool) -> Generator[SourceLease, None, N
         if process.stdin is not None:
             process.stdin.close()
         try:
-            process.wait(timeout=_LEASE_REPLY_SECONDS)
+            process.wait(timeout=_HELPER_SHUTDOWN_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()  # Only our own ephemeral lock helper.
             process.wait()
@@ -171,7 +171,6 @@ def fingerprint_file(path: Path) -> str:
             stderr=subprocess.DEVNULL,
             text=True,
             check=False,
-            timeout=_LEASE_REPLY_SECONDS,
         )
         fingerprint = result.stdout.strip()
         if (

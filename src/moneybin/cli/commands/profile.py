@@ -259,6 +259,18 @@ def profile_delete(
     """Delete a profile and all its data (database, logs, config)."""
     normalized = _normalize_mutation_profile(name)
     svc = ProfileService()
+    typer.echo(
+        "Remote grants remain after local profile deletion. Deleting this profile "
+        "removes its local sync identity and credentials. Disconnect linked Plaid "
+        "and SimpleFIN connections before deleting:\n"
+        f"  Inspect: moneybin --profile {normalized} sync status --output json\n"
+        "Use each returned connection's id as <connection-id>:\n"
+        f"  Disconnect each: moneybin --profile {normalized} sync disconnect "
+        "--connection-id <connection-id>\n"
+        "Follow any remaining revocation instructions from disconnect; "
+        "SimpleFIN Bridge may require manual revocation.",
+        err=True,
+    )
     if not yes:
         policy = get_terminal_policy()
         if not policy.interactive:
@@ -293,9 +305,6 @@ def profile_delete(
         except (ProfileNotFoundError, ValueError) as e:
             logger.error(str(e))
             raise typer.Exit(1) from e
-        typer.echo(
-            "Local profile deleted. Remote grants remain; disconnect them before deletion or revoke SimpleFIN grants directly in Bridge."
-        )
         _emit_receipt("Profile deleted", [("Profile", normalized)])
 
 
