@@ -779,7 +779,9 @@ class PullResult(BaseModel):
     def complete(self) -> bool:
         """Whether retrieval, acknowledgement and requested local work are complete."""
         return (
-            self.inspection_error_code is None
+            bool(self.source_results)
+            and all(source.outcomes for source in self.source_results)
+            and self.inspection_error_code is None
             and self.job_status == "completed"
             and self.ack_state == "confirmed"
             and self.setup_state == "complete"

@@ -162,3 +162,51 @@ def test_plaid_completeness_requires_every_payload_account_scope(
 
     assert recovered.complete is (coverage == "all")
     assert recovered.source_results[0].outcomes == result.source_results[0].outcomes
+
+
+@pytest.mark.parametrize(
+    "evidence", ["no_sources", "no_batches", "no_outcomes", "account", "item"]
+)
+def test_zero_transaction_pull_requires_retrieval_evidence(
+    db: Database, evidence: str
+) -> None:
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    envelope = json.loads(fixture.read_text())
+    envelope["job_id"] = str(JOB)
+    source = envelope["sources"][0]
+    payload = source["batches"][0]["payload"]
+    payload["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    payload["transactions"] = []
+    payload["balances"] = []
+    if evidence != "account":
+        payload["accounts"] = []
+    if evidence in {"no_batches", "no_outcomes"}:
+        source["outcomes"] = []
+    if evidence == "no_sources":
+        envelope["sources"] = []
+    elif evidence == "no_batches":
+        source["batches"] = []
+    elif evidence == "item":
+        source["outcomes"][0]["account_id"] = None
+    data = SyncEnvelopeV2.model_validate(envelope)
+    client = _client(data)
+    service = _service(db, client)
+
+    result = service.pull(refresh=False)
+
+    assert result.ingestion_state == "committed"
+    assert result.ack_state == "confirmed"
+    assert result.setup_state == "complete"
+    assert result.refresh_state == ("deferred" if evidence == "account" else "complete")
+    assert result.transactions_loaded == 0
+    assert result.complete is (evidence in {"account", "item"})
+
+    recovered = service.recover(str(JOB), refresh=False, local_only=True)
+
+    assert recovered.complete is (evidence in {"account", "item"})

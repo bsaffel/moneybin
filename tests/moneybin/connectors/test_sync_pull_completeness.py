@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from moneybin.connectors.sync_models import (
+    PlaidSourceResult,
     PullResult,
     SimpleFINSourceResult,
     SimpleFINV1OrgScope,
@@ -219,4 +220,38 @@ def test_historical_pull_uses_its_requested_window_instead_of_today(
     for account in public_history.accounts:
         account.acknowledged_intervals = [historical.model_copy()]
 
+    assert result.complete
+
+
+@pytest.mark.parametrize("evidence", ["no_sources", "no_outcomes", "mixed"])
+def test_pull_incomplete_without_source_retrieval_evidence(evidence: str) -> None:
+    result = _completed_pull("v2")
+    empty = PlaidSourceResult.model_validate({
+        "provider": "plaid",
+        "connection_id": "22222222-2222-4222-8222-222222222222",
+        "credential_generation": 1,
+        "outcomes": [],
+    })
+    if evidence == "mixed":
+        result.source_results.append(empty)
+    else:
+        result.sources = []
+        result.source_results = [] if evidence == "no_sources" else [empty]
+
+    assert not result.complete
+
+
+@pytest.mark.parametrize("account_id", ["plaid-account-1", None])
+def test_pull_complete_with_zero_transactions_and_plaid_retrieval_evidence(
+    account_id: str | None,
+) -> None:
+    result = _completed_pull("v2")
+    envelope = json.loads((FIXTURES / "plaid.json").read_text())
+    source = envelope["sources"][0]
+    del source["batches"]
+    source["outcomes"][0]["account_id"] = account_id
+    result.sources = []
+    result.source_results = [PlaidSourceResult.model_validate(source)]
+
+    assert result.transactions_loaded == 0
     assert result.complete

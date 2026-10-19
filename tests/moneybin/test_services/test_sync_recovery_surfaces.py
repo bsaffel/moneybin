@@ -170,3 +170,33 @@ async def test_four_sync_tools_expose_adopted_recovery_and_provider_selectors() 
         "force",
         "refresh",
     } <= set(properties)
+
+
+@pytest.mark.parametrize("surface", ["cli", "mcp"])
+async def test_empty_pull_surface_requires_new_retrieval(
+    surface: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _result()
+    result.ack_state = "confirmed"
+    result.setup_state = "complete"
+    result.refresh_state = "complete"
+    result.transactions_loaded = 0
+    result.accounts_loaded = 0
+    result.balances_loaded = 0
+    service = MagicMock()
+    service.pull.return_value = result
+    module = cli_sync if surface == "cli" else mcp_sync
+    monkeypatch.setattr(
+        module, "_build_sync_service", MagicMock(return_value=nullcontext(service))
+    )
+    if surface == "cli":
+        import json
+
+        response = CliRunner().invoke(app, ["sync", "pull", "--output", "json"])
+        body = json.loads(response.stdout)
+        assert response.exit_code == 1, response.output
+    else:
+        body = (await mcp_sync.sync_pull_coarse()).to_dict()
+
+    assert body["data"]["complete"] is False
+    assert any("choose a new pull explicitly" in action for action in body["actions"])

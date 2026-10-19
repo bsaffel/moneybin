@@ -398,6 +398,8 @@ def sync_repair_actions(result: PullResult, *, cli: bool = False) -> list[str]:
     if (
         result.ack_state == "unavailable"
         or result.job_status in {"partial", "failed"}
+        or not result.source_results
+        or any(not source.outcomes for source in result.source_results)
         or any(
             outcome.status != "complete"
             for source in result.source_results
