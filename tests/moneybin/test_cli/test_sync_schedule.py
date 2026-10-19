@@ -18,6 +18,13 @@ pytestmark = pytest.mark.unit
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def isolated_keyring_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "keyring.util.platform_.config_root", lambda: tmp_path / "keyring"
+    )
+
+
 def test_bound_scheduled_failure_reaches_real_configured_sanitized_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -56,7 +63,7 @@ def test_bound_scheduled_failure_reaches_real_configured_sanitized_log(
     )
 
     @contextmanager
-    def guard() -> Generator[None, None, None]:
+    def guard(addressing: object = None) -> Generator[None, None, None]:
         yield
 
     monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", guard)
@@ -375,7 +382,7 @@ def test_scheduled_pull_guards_service_cleanup_and_metrics(
     events: list[str] = []
 
     @contextmanager
-    def guard() -> Generator[None, None, None]:
+    def guard(addressing: object = None) -> Generator[None, None, None]:
         events.append("enter")
         if failure == "entry":
             raise RuntimeError("synthetic guard refusal")
@@ -430,7 +437,7 @@ def test_scheduled_database_refusal_does_not_recommend_env_fallback(
     from moneybin.database import DatabaseKeyError
 
     @contextmanager
-    def guard() -> Generator[None, None, None]:
+    def guard(addressing: object = None) -> Generator[None, None, None]:
         yield
 
     monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", guard)
@@ -535,7 +542,7 @@ def test_scheduled_child_passes_binding_to_service_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     @contextmanager
-    def guard() -> Generator[None, None, None]:
+    def guard(addressing: object = None) -> Generator[None, None, None]:
         yield
 
     @contextmanager
@@ -588,7 +595,7 @@ def test_stale_binding_cannot_reopen_database_for_shutdown_metrics(
     from moneybin.errors import UserError
 
     @contextmanager
-    def guard() -> Generator[None, None, None]:
+    def guard(addressing: object = None) -> Generator[None, None, None]:
         yield
 
     @contextmanager

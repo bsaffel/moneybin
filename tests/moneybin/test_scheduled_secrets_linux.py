@@ -66,6 +66,8 @@ class Connection:
         def reply(signature: str, *body: Any) -> Any:
             return jeepney.new_method_return(message, signature, body)
 
+        if interface == "org.freedesktop.DBus" and member == "NameHasOwner":
+            return reply("b", True)
         if member == self.vault.race_method:
             return jeepney.new_error(
                 message,
@@ -211,6 +213,78 @@ def test_existing_credential_identity_and_absent_marker_round_trip(
         create.body[0]["org.freedesktop.Secret.Item.Label"][1]
         == "Password for '0123456789ab:pending' on 'moneybin-sync'"
     )
+    assert_no_ui(synthetic)
+
+
+@pytest.mark.parametrize("explicit_selection", [False, True])
+def test_bound_addressing_reconstructs_fresh_stock_backend_without_address_drift(
+    vault: tuple[Vault, Keyring],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit_selection: bool,
+) -> None:
+    import moneybin.secrets as secrets
+    from moneybin.secrets import (
+        ScheduledSecretAddressing,
+        capture_scheduled_secret_addressing,
+        scheduled_secret_access,
+    )
+
+    synthetic, _ = vault
+    if explicit_selection:
+        (tmp_path / "keyringrc.cfg").write_text(
+            "[backend]\ndefault-keyring=keyring.backends.SecretService.Keyring\n"
+        )
+    addressing = ScheduledSecretAddressing(
+        backend="secret-service",
+        configuration=capture_scheduled_secret_addressing().configuration,
+        scheme="KeePassXC",
+        preferred_collection="/org/freedesktop/secrets/collection/synthetic",
+        appid="synthetic-application",
+    )
+    restored = ScheduledSecretAddressing.model_validate_json(
+        addressing.model_dump_json()
+    )
+    for name, value in restored.environment().items():
+        monkeypatch.setenv(name, value)
+    if explicit_selection:
+        monkeypatch.setattr(
+            "keyring.util.platform_.config_root", lambda: tmp_path / "unrelated-config"
+        )
+        monkeypatch.setattr(
+            secrets.keyring,
+            "get_keyring",
+            Mock(side_effect=AssertionError("bound selection used global discovery")),
+        )
+    else:
+        backend = Keyring()
+        monkeypatch.setattr(secrets.keyring, "get_keyring", lambda: backend)
+    store = SecretStore.for_sync("0123456789ab")
+    with scheduled_secret_access(restored):
+        store.set_key("pending", "synthetic-value")
+        assert store.get_key("pending") == "synthetic-value"
+        store.delete_key("pending")
+    assert (
+        any(
+            m.header.fields[jeepney.HeaderFields.member] == "NameHasOwner"
+            for m in synthetic.calls
+        )
+        is explicit_selection
+    )
+    created = next(
+        m
+        for m in synthetic.calls
+        if m.header.fields[jeepney.HeaderFields.member] == "CreateItem"
+    )
+    assert (
+        created.header.fields[jeepney.HeaderFields.path]
+        == addressing.preferred_collection
+    )
+    assert created.body[0]["org.freedesktop.Secret.Item.Attributes"][1] == {
+        "Title": "moneybin-sync",
+        "UserName": "0123456789ab:pending",
+        "application": addressing.appid,
+    }
     assert_no_ui(synthetic)
 
 

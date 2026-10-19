@@ -224,6 +224,10 @@ def test_linux_failed_recovery_cleanup_retains_exact_definitions(
 
 
 def make_job(tmp_path: Path) -> ScheduleDefinition:
+    from moneybin.secrets import (
+        ScheduledKeyringConfiguration,
+        ScheduledSecretAddressing,
+    )
     from moneybin.services.sync_schedule_native import ScheduleDefinition
 
     return ScheduleDefinition(
@@ -236,6 +240,70 @@ def make_job(tmp_path: Path) -> ScheduleDefinition:
         mechanism="launchd",
         installed_at=datetime(2026, 10, 18, 8, tzinfo=UTC),
         launcher=("/opt/space path/uv", "run", "--directory", "/opt/repo"),
+        secret_addressing=ScheduledSecretAddressing(
+            backend="keychain",
+            configuration=ScheduledKeyringConfiguration(
+                path=str(tmp_path / "keyringrc.cfg"),
+                present=False,
+                source="default",
+                selector=None,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("installation", ["persistent", "cache", "unresolved"])
+def test_installed_launcher_binds_current_persistent_tool_console(
+    monkeypatch: pytest.MonkeyPatch, installation: str
+) -> None:
+    from moneybin.errors import UserError
+    from moneybin.services import sync_schedule_native as native
+
+    prefixes = {
+        "persistent": "/opt/uv-tools/moneybin",
+        "cache": "/opt/uv-cache/archive-v0/synthetic",
+        "unresolved": "/opt/unregistered-venv",
+    }
+    prefix = prefixes[installation]
+    monkeypatch.setattr(native.sys, "prefix", prefix)
+    monkeypatch.setattr(native.sys, "executable", f"{prefix}/bin/python")
+    monkeypatch.setattr(native, "__file__", f"{prefix}/lib/moneybin/native.py")
+    monkeypatch.setattr(native.shutil, "which", Mock(return_value="/opt/uv"))
+    monkeypatch.setattr(native, "running_checkout_root", lambda: None)
+    monkeypatch.setattr(Path, "exists", Mock(return_value=True))
+    monkeypatch.setattr(Path, "is_file", Mock(return_value=True))
+    monkeypatch.setattr(native.os, "access", Mock(return_value=True))
+    monkeypatch.setattr(
+        native.subprocess,
+        "run",
+        Mock(return_value=Mock(returncode=0, stdout="/opt/uv-tools\n", stderr="")),
+    )
+    if installation == "persistent":
+        assert native.resolve_schedule_launcher() == (f"{prefix}/bin/moneybin",)
+    else:
+        with pytest.raises(UserError):
+            native.resolve_schedule_launcher()
+
+
+def test_checkout_launcher_keeps_canonical_offline_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.services import sync_schedule_native as native
+
+    monkeypatch.setattr(native.shutil, "which", Mock(return_value="/opt/uv"))
+    monkeypatch.setattr(native, "running_checkout_root", lambda: Path("/opt/worktree"))
+    monkeypatch.setattr(
+        native, "canonical_checkout_root", Mock(return_value=Path("/opt/main"))
+    )
+    monkeypatch.setattr(Path, "exists", Mock(return_value=True))
+    assert native.resolve_schedule_launcher() == (
+        "/opt/uv",
+        "run",
+        "--offline",
+        "--no-sync",
+        "--directory",
+        "/opt/main",
+        "moneybin",
     )
 
 

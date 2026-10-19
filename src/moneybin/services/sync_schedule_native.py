@@ -10,7 +10,6 @@ import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from importlib.metadata import version
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +18,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 from moneybin import error_codes
 from moneybin.config import canonical_checkout_root, running_checkout_root
 from moneybin.errors import UserError
+from moneybin.secrets import ScheduledSecretAddressing
 
 _SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 _Command = Callable[..., subprocess.CompletedProcess[str]]
@@ -51,7 +51,7 @@ def clean_environment() -> dict[str, str]:
 
 
 def resolve_schedule_launcher() -> tuple[str, ...]:
-    """Use MCP's canonical-checkout or version-pinned installed launch shape."""
+    """Bind the canonical checkout or the current persistent tool executable."""
     uv = shutil.which("uv")
     if uv is None:
         raise schedule_error("An absolute uv executable is required for scheduling.")
@@ -70,16 +70,41 @@ def resolve_schedule_launcher() -> tuple[str, ...]:
             "moneybin",
         )
     else:
-        paths = (executable, Path(sys.executable).resolve())
-        args = (
-            str(executable),
-            "tool",
-            "run",
-            "--offline",
-            "--from",
-            f"moneybin=={version('moneybin')}",
-            "moneybin",
-        )
+        environment = clean_environment()
+        for name in ("UV_TOOL_DIR", "XDG_DATA_HOME"):
+            if name in os.environ:
+                environment[name] = os.environ[name]
+        try:
+            result = subprocess.run(  # noqa: S603  # absolute uv, read-only directory query
+                [str(executable), "tool", "dir"],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=environment,
+                timeout=30,
+                check=False,
+            )
+            tools = Path(result.stdout.strip())
+            prefix = Path(sys.prefix).absolute()
+            console = prefix / "bin/moneybin"
+            if (
+                result.returncode
+                or not tools.is_absolute()
+                or prefix.resolve() != (tools / "moneybin").resolve()
+                or not Path(__file__).resolve().is_relative_to(prefix.resolve())
+                or not console.is_file()
+                or not console.resolve().is_relative_to(prefix.resolve())
+                or not os.access(console, os.X_OK)
+            ):
+                raise ValueError
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise schedule_error(
+                "Scheduling requires the current persistent uv tool installation."
+            ) from exc
+        # Keep the tool entrypoint in its venv; resolving its Python symlink
+        # instead would discard the installed package environment.
+        paths = (executable, prefix, console)
+        args = (str(console),)
     temporary_roots = {
         Path("/tmp").resolve(),  # noqa: S108  # rejection boundary, never a write target
         Path("/var/tmp").resolve(),  # noqa: S108  # rejection boundary, never a write target
@@ -106,6 +131,7 @@ class ScheduleDefinition(BaseModel):
     mechanism: Literal["launchd", "systemd"]
     installed_at: AwareDatetime
     launcher: tuple[str, ...] = Field(min_length=1, max_length=16)
+    secret_addressing: ScheduledSecretAddressing
 
     @field_validator("home")
     @classmethod
@@ -166,6 +192,10 @@ def _runner_args(job: ScheduleDefinition, user_home: Path) -> list[str]:
         "-i",
         f"HOME={user_home}",
         f"PATH={_SAFE_PATH}",
+        *(
+            f"{name}={value}"
+            for name, value in job.secret_addressing.environment().items()
+        ),
         *job.launcher,
         "--home",
         job.home,

@@ -419,11 +419,17 @@ Two homes with the same profile name must remain independent.
 
 Generated invocations pin the absolute executable, absolute `--home`, and
 explicit `--profile`. Reuse the installed-versus-checkout launch-resolution
-precedent used by MCP installation. Use argument arrays and each OS's native
+precedent used by MCP installation. An installed job binds the existing console
+entrypoint in the current persistent uv tool environment, verified through uv's
+tool directory and the loaded installation. It never resolves a package through
+`uv tool run` at execution time. Cache-only and unrecognized environments refuse
+scheduling; checkout jobs retain their canonical offline launch shape.
+Use argument arrays and each OS's native
 escaping, never a shell command assembled from profile or path input. Reject
 ephemeral or unresolved launch locations before changing any job. Current
 persisted profile configuration is read on each real sync; the job does not
-copy the current shell's configuration overrides or environment secrets.
+copy MoneyBin shell configuration overrides or environment secrets. Only validated
+nonsecret stock-store addressing selectors are captured in the job binding.
 
 Schedule metadata lives under the configured MoneyBin home, separately from
 the encrypted database, so inspection and removal need no database key. Paths
@@ -519,6 +525,24 @@ their access policy. Preserve the selected store's collection, scheme,
 application attributes, and existing credential addresses; do not substitute a
 backend or migrate credentials. Ordinary manual commands retain their existing
 authentication behavior.
+
+The pre-release scheduling format requires a typed store-address descriptor.
+For Secret Service, capture only its known scheme, preferred collection object
+path, and application attribute, with bounded values and no control characters.
+Reject arbitrary backend-property overrides before creating a schedule. The
+descriptor also binds the original keyring config path and its validated stock
+backend selection. Revalidate that file on each scheduled access; changed,
+unreadable, or unsupported configuration refuses access. An explicitly selected
+stock backend loads through keyring's public loader inside the no-UI scope,
+without forwarding a custom XDG configuration directory globally. Default
+discovery retains its guarded selection and exact-class check; a custom empty
+config also requires no competing effective global selection. The native
+definition binds the descriptor and the runner forwards only its known nonsecret
+store-address selectors to its fresh pull child; changed addressing starts a new
+revision. These selectors are not MoneyBin shell overrides or credential material.
+A direct scheduled child verifies the binding before keyring or database access.
+Older unbound metadata is refused through the existing unknown-format guidance;
+this unshipped format has no credential or schedule migration path.
 
 On macOS, disable process keychain interaction with the public Security
 framework API, restoring its previous state on exit. This deprecated API is

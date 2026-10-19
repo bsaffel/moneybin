@@ -10,6 +10,8 @@ commands that call set_key() / delete_key().
 """
 
 import ctypes
+import hashlib
+import io
 import logging
 import os
 import sys
@@ -20,7 +22,8 @@ from configparser import Error as ConfigError
 from contextlib import contextmanager, nullcontext
 from importlib import import_module
 from importlib.metadata import entry_points
-from typing import Any, Protocol, cast
+from pathlib import Path
+from typing import Any, Literal, Protocol, Self, cast
 
 import keyring
 from keyring.errors import (
@@ -29,6 +32,7 @@ from keyring.errors import (
     NoKeyringError,
     PasswordDeleteError,
 )
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +88,178 @@ class SecretStorageUnavailableError(Exception):
     vars, but writes have nowhere to go and must surface a clear error
     rather than silently losing the value.
     """
+
+
+_SCHEDULED_STORES = {
+    "darwin": ("keychain", "keyring.backends.macOS.Keyring"),
+    "linux": ("secret-service", "keyring.backends.SecretService.Keyring"),
+}
+_MAX_SCHEDULED_KEYRING_CONFIG_CHARS = 16_384
+
+
+class ScheduledKeyringConfiguration(BaseModel):
+    """Original config location and validated nonsecret backend selection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    path: str = Field(min_length=1, max_length=4096)
+    present: bool
+    source: Literal["environment", "config", "default"]
+    selector: (
+        Literal[
+            "keyring.backends.macOS.Keyring", "keyring.backends.SecretService.Keyring"
+        ]
+        | None
+    )
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> Self:
+        """Keep the persisted source and selection internally consistent."""
+        if not Path(self.path).is_absolute() or not self.path.isprintable():
+            raise ValueError("Keyring config requires a bounded absolute path")
+        if (self.source == "default") != (self.selector is None):
+            raise ValueError("Keyring selection source is inconsistent")
+        if self.source == "config" and not self.present:
+            raise ValueError("A configured keyring selection requires its source file")
+        return self
+
+
+class ScheduledSecretAddressing(BaseModel):
+    """Bound nonsecret stock-store selectors, never arbitrary backend properties."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    backend: Literal["keychain", "secret-service"]
+    configuration: ScheduledKeyringConfiguration
+    scheme: Literal["default", "KeePassXC"] = "default"
+    preferred_collection: str | None = Field(
+        default=None,
+        max_length=1024,
+        pattern=r"^/(?:[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*)?$",
+    )
+    appid: str = Field(
+        default="Python keyring library",
+        min_length=1,
+        max_length=256,
+        pattern=r"^[^\x00-\x1f\x7f]+$",
+    )
+
+    @model_validator(mode="after")
+    def validate_platform_fields(self) -> Self:
+        """MacOS has no Secret Service collection or attribute scheme."""
+        if not self.appid.isprintable():
+            raise ValueError("Application attributes must contain printable text")
+        allowed = _SCHEDULED_STORES[
+            "darwin" if self.backend == "keychain" else "linux"
+        ][1]
+        if self.configuration.selector not in (None, allowed):
+            raise ValueError("Keyring selection does not match its stock backend")
+        if self.backend == "keychain" and (
+            self.scheme != "default"
+            or self.preferred_collection is not None
+            or self.appid != "Python keyring library"
+        ):
+            raise ValueError("Secret Service selectors require its stock backend")
+        return self
+
+    def environment(self) -> dict[str, str]:
+        """Render only the validated selectors used by stock Secret Service."""
+        result = {
+            # Native argv ownership must bind the original config location too.
+            "_KEYRING_SCHEDULE_BINDING": hashlib.sha256(
+                self.model_dump_json().encode()
+            ).hexdigest(),
+        }
+        selector = self.configuration.selector
+        if self.configuration.source == "environment" and selector is not None:
+            result["PYTHON_KEYRING_BACKEND"] = selector
+        if self.backend == "secret-service":
+            result.update(
+                KEYRING_PROPERTY_SCHEME=self.scheme,
+                KEYRING_PROPERTY_APPID=self.appid,
+            )
+            if self.preferred_collection is not None:
+                result["KEYRING_PROPERTY_PREFERRED_COLLECTION"] = (
+                    self.preferred_collection
+                )
+        return result
+
+
+def _scheduled_keyring_configuration(path: Path) -> ScheduledKeyringConfiguration:
+    """Validate selectors before persisting them or loading any backend code."""
+    config = ConfigParser()
+    present = path.exists()
+    if present:
+        with path.open(encoding="utf-8") as source:
+            contents = source.read(_MAX_SCHEDULED_KEYRING_CONFIG_CHARS + 1)
+        if len(contents) > _MAX_SCHEDULED_KEYRING_CONFIG_CHARS:
+            raise ValueError("Keyring config is too large")
+        config.read_file(io.StringIO(contents))
+    allowed = _SCHEDULED_STORES[sys.platform][1]
+    configured = config.get("backend", "default-keyring", fallback=None)
+    selected = os.environ.get("PYTHON_KEYRING_BACKEND")
+    if config.has_option("backend", "keyring-path") or any(
+        value and value != allowed for value in (configured, selected)
+    ):
+        raise ValueError("Unsupported keyring selection")
+    return ScheduledKeyringConfiguration.model_validate({
+        "path": str(path.absolute()),
+        "present": present,
+        "source": "environment" if selected else "config" if configured else "default",
+        "selector": selected or configured or None,
+    })
+
+
+def capture_scheduled_secret_addressing(
+    *, configuration_path: Path | None = None
+) -> ScheduledSecretAddressing:
+    """Read only known addressing configuration without initializing a store."""
+    try:
+        from keyring.util.platform_ import config_root
+
+        backend = _SCHEDULED_STORES[sys.platform][0]
+        configuration = _scheduled_keyring_configuration(
+            configuration_path or config_root() / "keyringrc.cfg"
+        )
+        fields = {
+            "KEYRING_PROPERTY_SCHEME": "scheme",
+            "KEYRING_PROPERTY_PREFERRED_COLLECTION": "preferred_collection",
+            "KEYRING_PROPERTY_APPID": "appid",
+        }
+        values: dict[str, Any] = {
+            "backend": backend,
+            "configuration": configuration,
+        }
+        for name in os.environ:
+            # Upstream accepts this substring anywhere in an environment key.
+            if "KEYRING_PROPERTY_" not in name:
+                continue
+            if name not in fields or backend != "secret-service":
+                raise ValueError
+            values[fields[name]] = os.environ[name]
+        return ScheduledSecretAddressing.model_validate(values)
+    except (ConfigError, OSError, UnicodeError, KeyError, ValueError):
+        raise SecretStorageUnavailableError(
+            "Scheduled sync requires supported, bounded stock-store addressing."
+        ) from None
+
+
+def validate_scheduled_secret_addressing(
+    addressing: ScheduledSecretAddressing,
+) -> ScheduledSecretAddressing:
+    """Revalidate the bound source without changing global keyring discovery."""
+    current = capture_scheduled_secret_addressing(
+        configuration_path=Path(addressing.configuration.path)
+    )
+    if current != addressing:
+        raise SecretStorageUnavailableError(
+            "The scheduled store addressing has changed."
+        )
+    if addressing.configuration.source == "default":
+        effective = capture_scheduled_secret_addressing()
+        if effective.configuration.selector is not None:
+            raise SecretStorageUnavailableError(
+                "The effective keyring configuration conflicts with the scheduled store."
+            )
+    return current
 
 
 class _ScheduledBackend(Protocol):
@@ -333,35 +509,34 @@ class _LinuxSecrets:
         raise PasswordDeleteError("No such background credential.")
 
 
-def _scheduled_backend_selection() -> _ScheduledBackend:
-    from keyring.util.platform_ import config_root
-
-    allowed = {
-        "darwin": "keyring.backends.macOS.Keyring",
-        "linux": "keyring.backends.SecretService.Keyring",
-    }.get(sys.platform)
-    if allowed is None:
-        raise SecretStorageUnavailableError("Unsupported scheduled credential store.")
+def _scheduled_backend_selection(
+    addressing: ScheduledSecretAddressing | None = None,
+) -> _ScheduledBackend:
+    bound = addressing is not None
+    addressing = (
+        validate_scheduled_secret_addressing(addressing)
+        if addressing is not None
+        else capture_scheduled_secret_addressing()
+    )
+    allowed = _SCHEDULED_STORES[sys.platform][1]
     try:
-        config = ConfigParser()
-        config_path = config_root() / "keyringrc.cfg"
-        if config_path.exists():
-            with config_path.open(encoding="utf-8") as source:
-                config.read_file(source)
-        selector = os.environ.get("PYTHON_KEYRING_BACKEND") or config.get(
-            "backend", "default-keyring", fallback=None
-        )
-        if config.has_option("backend", "keyring-path") or (
-            selector and selector != allowed
-        ):
-            raise ValueError
+        selector = addressing.configuration.selector
         # Discovery evaluates plugin priorities; refuse unknown code before it runs.
         if not selector and any(
             ep.dist is None or ep.dist.name != "keyring"
             for ep in entry_points(group="keyring.backends")
         ):
             raise ValueError
-        backend = keyring.get_keyring()
+        if bound and selector:
+            from keyring.core import load_keyring
+
+            try:
+                backend = load_keyring(selector)
+            except (ImportError, RuntimeError):
+                # The public loader refuses missing or nonviable stock backends.
+                raise ValueError("The selected stock backend is unavailable") from None
+        else:
+            backend = keyring.get_keyring()
         module, name = allowed.rsplit(".", 1)
         if type(backend) is not getattr(import_module(module), name):
             raise ValueError
@@ -377,7 +552,9 @@ def _scheduled_backend_selection() -> _ScheduledBackend:
 
 
 @contextmanager
-def scheduled_secret_access() -> Generator[None, None, None]:
+def scheduled_secret_access(
+    addressing: ScheduledSecretAddressing | None = None,
+) -> Generator[None, None, None]:
     """Enforce no-UI, no-fallback access throughout a dedicated scheduled pull."""
     global _scheduled_backend
     from moneybin.database import invalidate_encryption_key_cache
@@ -393,7 +570,7 @@ def scheduled_secret_access() -> Generator[None, None, None]:
                 if sys.platform == "darwin"
                 else nullcontext()
             ):
-                _scheduled_backend = _scheduled_backend_selection()
+                _scheduled_backend = _scheduled_backend_selection(addressing)
                 try:
                     yield
                 finally:

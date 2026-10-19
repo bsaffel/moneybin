@@ -20,6 +20,12 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
 
 from moneybin.config import get_sync_schedule_dir
 from moneybin.errors import UserError
+from moneybin.secrets import (
+    ScheduledSecretAddressing,
+    SecretStorageUnavailableError,
+    capture_scheduled_secret_addressing,
+    validate_scheduled_secret_addressing,
+)
 from moneybin.services.sync_schedule_native import (
     NativeStatus,
     ScheduleDefinition,
@@ -57,7 +63,7 @@ class ScheduledAttempt(BaseModel):
 
 class _ScheduleState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     definition: ScheduleDefinition
     last_claimed_occurrence: date | None = None
     latest_attempt: ScheduledAttempt | None = None
@@ -280,6 +286,12 @@ class SyncScheduleService:
                 "The scheduled executable is unavailable or unresolved."
             )
         self.adapter.validate_session()
+        try:
+            addressing = capture_scheduled_secret_addressing()
+        except SecretStorageUnavailableError:
+            raise schedule_error(
+                "Scheduling requires supported stock-store addressing."
+            ) from None
         with self._locked():
             previous = self._read()
             if previous is not None:
@@ -295,6 +307,7 @@ class SyncScheduleService:
                 if (
                     old.time == time
                     and old.launcher == launcher
+                    and old.secret_addressing == addressing
                     and status.active
                     and not status.partial
                 ):
@@ -310,6 +323,7 @@ class SyncScheduleService:
                 mechanism=self.adapter.mechanism,
                 installed_at=self.now(),
                 launcher=launcher,
+                secret_addressing=addressing,
             )
             state = _ScheduleState(definition=definition)
             # A failed removal may leave files bound to the previous revision.
@@ -368,7 +382,9 @@ class SyncScheduleService:
             self._operation("remove", "absent")
             return self._result(None)
 
-    def validate_pull_binding(self, *, profile_id: str, revision: str) -> None:
+    def validate_pull_binding(
+        self, *, profile_id: str, revision: str
+    ) -> ScheduledSecretAddressing:
         """Fence a delayed child against removed schedules or replaced profiles."""
         if not self.state_path.exists():
             raise schedule_error("The scheduled job no longer exists.")
@@ -381,9 +397,18 @@ class SyncScheduleService:
                 or self._identity() != profile_id
             ):
                 raise schedule_error("The scheduled profile or revision is stale.")
+            try:
+                addressing = validate_scheduled_secret_addressing(
+                    state.definition.secret_addressing
+                )
+            except SecretStorageUnavailableError:
+                raise schedule_error(
+                    "The scheduled store addressing is unavailable."
+                ) from None
             status = self.adapter.inspect(state.definition)
             if not status.owned or not status.active or status.partial:
                 raise schedule_error("The scheduled job is not active and owned.")
+            return addressing
 
     def run(self, *, revision: str | None = None) -> int:
         """Claim and spawn while locked; wait and record only the same revision."""
@@ -442,7 +467,7 @@ class SyncScheduleService:
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
-                        env=clean_environment(),
+                        env=clean_environment() | job.secret_addressing.environment(),
                     )
                 except OSError:
                     self._write(

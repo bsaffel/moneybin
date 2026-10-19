@@ -67,9 +67,12 @@ def _latest(service: SyncScheduleService) -> ScheduledAttempt:
 
 
 @pytest.fixture
-def schedule(tmp_path: Path) -> ScheduleFixture:
+def schedule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ScheduleFixture:
     from moneybin.services.sync_schedule import SyncScheduleService
 
+    monkeypatch.setattr(
+        "keyring.util.platform_.config_root", lambda: tmp_path / "keyring"
+    )
     profile = tmp_path / "profiles" / "alice"
     profile.mkdir(parents=True)
     (profile / "profile_id").write_text("0123456789ab")
@@ -118,6 +121,341 @@ def test_atomic_owner_only_state_and_stable_lock(schedule: ScheduleFixture) -> N
     assert adapter.job is not None
     assert adapter.job.revision != first.revision
     assert service.lock_path.stat().st_ino == inode
+
+
+def test_schedule_binds_stock_secret_service_addressing_without_store_access(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from moneybin.services.sync_schedule_native import SystemdScheduleAdapter
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    for name, value in {
+        "SCHEME": "KeePassXC",
+        "PREFERRED_COLLECTION": "/org/freedesktop/secrets/collection/synthetic",
+        "APPID": "synthetic-application",
+    }.items():
+        monkeypatch.setenv(f"KEYRING_PROPERTY_{name}", value)
+    forbidden = Mock(side_effect=AssertionError("metadata must not open a store"))
+    monkeypatch.setattr("keyring.get_keyring", forbidden)
+    monkeypatch.setattr("moneybin.database.get_database", forbidden)
+    service.set("09:00")
+    assert adapter.job is not None
+    definition = json.loads(service.state_path.read_text())["definition"]
+    assert definition["secret_addressing"] == {
+        "backend": "secret-service",
+        "configuration": {
+            "path": str(service.home / "keyring/keyringrc.cfg"),
+            "present": False,
+            "source": "default",
+            "selector": None,
+        },
+        "scheme": "KeePassXC",
+        "preferred_collection": "/org/freedesktop/secrets/collection/synthetic",
+        "appid": "synthetic-application",
+    }
+    rendered = SystemdScheduleAdapter(user_home=service.home).render(adapter.job)
+    service_text = next(
+        v.decode() for p, v in rendered.items() if p.suffix == ".service"
+    )
+    assert '"KEYRING_PROPERTY_SCHEME=KeePassXC"' in service_text
+    assert '"KEYRING_PROPERTY_APPID=synthetic-application"' in service_text
+    assert "KEYRING_PROPERTY_PREFERRED_COLLECTION=" in service_text
+    forbidden.assert_not_called()
+
+
+def test_runner_forwards_bound_addressing_after_ambient_properties_change(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    service, _, clock = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("KEYRING_PROPERTY_SCHEME", "KeePassXC")
+    monkeypatch.setenv(
+        "KEYRING_PROPERTY_PREFERRED_COLLECTION",
+        "/org/freedesktop/secrets/collection/synthetic",
+    )
+    monkeypatch.setenv("KEYRING_PROPERTY_APPID", "synthetic-application")
+    service.set("09:00")
+    monkeypatch.setenv("KEYRING_PROPERTY_SCHEME", "default")
+    monkeypatch.setenv("KEYRING_PROPERTY_APPID", "other-application")
+    monkeypatch.setenv("KEYRING_PROPERTY_GET_PASSWORD", "must-not-copy")
+    monkeypatch.setenv("MONEYBIN_SYNTHETIC_SECRET", "must-not-copy")
+    clock.return_value += timedelta(hours=2)
+    spawn = Mock(return_value=Mock(wait=Mock(return_value=0)))
+    monkeypatch.setattr("moneybin.services.sync_schedule.subprocess.Popen", spawn)
+    assert service.run() == 0
+    environment = spawn.call_args.kwargs["env"]
+    assert environment["KEYRING_PROPERTY_SCHEME"] == "KeePassXC"
+    assert environment["KEYRING_PROPERTY_APPID"] == "synthetic-application"
+    assert environment["KEYRING_PROPERTY_PREFERRED_COLLECTION"].endswith("/synthetic")
+    assert "KEYRING_PROPERTY_GET_PASSWORD" not in environment
+    assert "MONEYBIN_SYNTHETIC_SECRET" not in environment
+
+
+def test_changed_store_addressing_starts_a_new_schedule_revision(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    service.set("09:00")
+    previous = adapter.job
+    monkeypatch.setenv("KEYRING_PROPERTY_SCHEME", "KeePassXC")
+    service.set("09:00")
+    assert adapter.job is not None and previous is not None
+    assert adapter.job.revision != previous.revision
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("GET_PASSWORD", "unsupported"),
+        ("PRIORITY", "999"),
+        ("SCHEME", "unknown"),
+        ("PREFERRED_COLLECTION", "not/an/object/path"),
+        ("PREFERRED_COLLECTION", "/collection/new\nline"),
+        ("APPID", "new\nline"),
+        ("APPID", "control\u0085value"),
+        ("APPID", "x" * 257),
+    ],
+)
+def test_invalid_store_addressing_refuses_before_schedule_mutation(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    import sys
+
+    from moneybin.errors import UserError
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv(f"KEYRING_PROPERTY_{name}", value)
+    with pytest.raises(UserError):
+        service.set("09:00")
+    assert adapter.job is None
+    assert not service.state_path.exists()
+
+
+def test_direct_scheduled_child_refuses_changed_addressing_before_secret_scope(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from moneybin.cli.commands import sync
+    from moneybin.errors import UserError
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("KEYRING_PROPERTY_SCHEME", "KeePassXC")
+    service.set("09:00")
+    assert adapter.job is not None
+    revision = adapter.job.revision
+    monkeypatch.setenv("KEYRING_PROPERTY_SCHEME", "default")
+    monkeypatch.setattr(sync, "_build_schedule_service", lambda: service)
+    monkeypatch.setattr("moneybin.observability.setup_observability", Mock())
+    monkeypatch.setattr("moneybin.observability.finish_cli_metrics", Mock())
+    forbidden = Mock(side_effect=AssertionError("credential policy entered too soon"))
+    monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", forbidden)
+    with pytest.raises(UserError):
+        with sync._scheduled_pull_access(True, "0123456789ab", revision):  # pyright: ignore[reportPrivateUsage]  # exercise the pre-credential startup boundary
+            raise AssertionError("scheduled child must refuse before work")
+    forbidden.assert_not_called()
+
+
+def test_schedule_refuses_unsupported_explicit_backend_without_discovery(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from moneybin.errors import UserError
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
+    forbidden = Mock(side_effect=AssertionError("backend discovery is forbidden"))
+    monkeypatch.setattr("keyring.get_keyring", forbidden)
+    with pytest.raises(UserError):
+        service.set("09:00")
+    assert adapter.job is None
+    forbidden.assert_not_called()
+
+
+def test_schedule_refuses_unbound_pre_release_metadata(
+    schedule: ScheduleFixture,
+) -> None:
+    from moneybin.errors import UserError
+
+    service, _, _ = schedule
+    service.set("09:00")
+    state = json.loads(service.state_path.read_text())
+    state["version"] = 1
+    state["definition"].pop("secret_addressing", None)
+    service.state_path.write_text(json.dumps(state))
+    with pytest.raises(UserError):
+        service.show()
+
+
+@pytest.mark.parametrize("drift", ["backend", "removed", "path", "unreadable"])
+def test_bound_keyring_config_drift_refuses_before_scheduled_access(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    import sys
+
+    from moneybin.errors import UserError
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    config = service.home / "keyring/keyringrc.cfg"
+    config.parent.mkdir()
+    config.write_text(
+        "[backend]\ndefault-keyring=keyring.backends.SecretService.Keyring\n"
+    )
+    service.set("09:00")
+    assert adapter.job is not None
+    if drift == "removed":
+        config.unlink()
+    elif drift == "backend":
+        config.write_text("[backend]\ndefault-keyring=custom.Backend\n")
+    elif drift == "path":
+        config.write_text("[backend]\nkeyring-path=/synthetic/untrusted\n")
+    else:
+        monkeypatch.setattr(
+            "moneybin.secrets.ConfigParser.read_file",
+            Mock(side_effect=OSError("synthetic unreadable config")),
+        )
+    with pytest.raises(UserError):
+        service.validate_pull_binding(
+            profile_id="0123456789ab", revision=adapter.job.revision
+        )
+
+
+def test_custom_keyring_config_uses_bound_stock_selection_after_env_clear(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from keyring.backends.SecretService import Keyring
+
+    from moneybin.cli.commands import sync
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    config = service.home / "keyring/keyringrc.cfg"
+    config.parent.mkdir()
+    config.write_text(
+        "[backend]\ndefault-keyring=keyring.backends.SecretService.Keyring\n"
+    )
+    service.set("09:00")
+    assert adapter.job is not None
+    original = adapter.job
+    competing = service.home / "unrelated-keyring"
+    competing.mkdir()
+    (competing / "keyringrc.cfg").write_text(
+        "[backend]\ndefault-keyring=custom.Backend\n"
+    )
+    monkeypatch.setattr("keyring.util.platform_.config_root", lambda: competing)
+    monkeypatch.setattr(sync, "_build_schedule_service", lambda: service)
+    monkeypatch.setattr("moneybin.observability.setup_observability", Mock())
+    monkeypatch.setattr("moneybin.observability.finish_cli_metrics", Mock())
+    loader = Mock(return_value=Keyring())
+    discovery = Mock(side_effect=AssertionError("unrelated discovery ran"))
+    monkeypatch.setattr("keyring.core.load_keyring", loader)
+    monkeypatch.setattr("keyring.get_keyring", discovery)
+    monkeypatch.setattr("moneybin.secrets._LinuxSecrets", Mock())
+    with sync._scheduled_pull_access(True, "0123456789ab", original.revision):  # pyright: ignore[reportPrivateUsage]  # exercise the bound startup policy
+        pass
+    loader.assert_called_once_with("keyring.backends.SecretService.Keyring")
+    discovery.assert_not_called()
+
+
+def test_custom_empty_keyring_config_refuses_competing_global_selection(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from moneybin.errors import UserError
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    config = service.home / "keyring/keyringrc.cfg"
+    config.parent.mkdir()
+    config.write_text("[backend]\n")
+    service.set("09:00")
+    assert adapter.job is not None
+    competing = service.home / "competing-keyring"
+    competing.mkdir()
+    (competing / "keyringrc.cfg").write_text(
+        "[backend]\ndefault-keyring=keyring.backends.SecretService.Keyring\n"
+    )
+    monkeypatch.setattr("keyring.util.platform_.config_root", lambda: competing)
+    with pytest.raises(UserError):
+        service.validate_pull_binding(
+            profile_id="0123456789ab", revision=adapter.job.revision
+        )
+
+
+def test_custom_empty_keyring_config_retains_guarded_default_discovery(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from keyring.backends.SecretService import Keyring
+
+    from moneybin.secrets import scheduled_secret_access
+
+    service, adapter, _ = schedule
+    monkeypatch.setattr(sys, "platform", "linux")
+    config = service.home / "keyring/keyringrc.cfg"
+    config.parent.mkdir()
+    config.write_text("[backend]\n")
+    service.set("09:00")
+    assert adapter.job is not None
+    monkeypatch.setattr(
+        "keyring.util.platform_.config_root", lambda: service.home / "default-keyring"
+    )
+    addressing = service.validate_pull_binding(
+        profile_id="0123456789ab", revision=adapter.job.revision
+    )
+    discovery = Mock(return_value=Keyring())
+    loader = Mock(
+        side_effect=AssertionError("default discovery must not force a store")
+    )
+    monkeypatch.setattr("keyring.get_keyring", discovery)
+    monkeypatch.setattr("keyring.core.load_keyring", loader)
+    monkeypatch.setattr("moneybin.secrets._LinuxSecrets", Mock())
+    with scheduled_secret_access(addressing):
+        pass
+    discovery.assert_called_once_with()
+    loader.assert_not_called()
+
+
+def test_keyring_config_location_is_part_of_native_binding(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.services.sync_schedule_native import LaunchdScheduleAdapter
+
+    service, adapter, _ = schedule
+    service.set("09:00")
+    assert adapter.job is not None
+    first = adapter.job
+    monkeypatch.setattr(
+        "keyring.util.platform_.config_root", lambda: service.home / "another-keyring"
+    )
+    service.set("09:00")
+    assert adapter.job is not None
+    assert adapter.job.revision != first.revision
+    assert (
+        adapter.job.secret_addressing.environment()
+        != first.secret_addressing.environment()
+    )
+    native = LaunchdScheduleAdapter(user_home=service.home)
+    assert list(native.render(first).values()) != list(
+        native.render(adapter.job).values()
+    )
 
 
 def test_identical_set_repairs_owned_active_partial_registration(

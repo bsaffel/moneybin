@@ -183,6 +183,46 @@ def test_third_party_discovery_is_refused_before_priority_execution(
     discovery.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("unavailable"), ImportError("missing")]
+)
+def test_explicit_bound_loader_refusal_is_controlled_and_guarded(
+    stock_store: tuple[Keyring, list[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    from moneybin.secrets import (
+        capture_scheduled_secret_addressing,
+        scheduled_secret_access,
+    )
+
+    backend, events = stock_store
+    (tmp_path / "keyringrc.cfg").write_text(
+        "[backend]\ndefault-keyring=keyring.backends.macOS.Keyring\n"
+    )
+    addressing = capture_scheduled_secret_addressing()
+
+    def load(selector: str) -> None:
+        assert selector == "keyring.backends.macOS.Keyring"
+        assert events == ["guarded"]
+        raise failure
+
+    monkeypatch.setattr("keyring.core.load_keyring", load)
+    credentials = Mock(side_effect=AssertionError("credential method ran"))
+    db = Mock(side_effect=AssertionError("database opened"))
+    monkeypatch.setattr(backend, "get_password", credentials)
+    monkeypatch.setattr("moneybin.database.get_database", db)
+    with (
+        pytest.raises(SecretStorageUnavailableError),
+        scheduled_secret_access(addressing),
+    ):
+        pytest.fail("unavailable loader was accepted")
+    assert events == ["guarded", "restored"]
+    credentials.assert_not_called()
+    db.assert_not_called()
+
+
 def test_selected_chain_is_not_replaced_by_stock_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

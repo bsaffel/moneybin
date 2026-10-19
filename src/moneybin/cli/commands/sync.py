@@ -46,6 +46,7 @@ from .stubs import _not_implemented
 
 if TYPE_CHECKING:
     from moneybin.connectors.sync_models import SyncConnectionView
+    from moneybin.secrets import ScheduledSecretAddressing
     from moneybin.services.sync_schedule import ScheduleResult, SyncScheduleService
     from moneybin.services.sync_service import SyncPurgePlan
 
@@ -228,14 +229,14 @@ def _emit_sync_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
 
 def _validate_scheduled_pull_binding(
     profile_id: str | None, revision: str | None
-) -> None:
+) -> "ScheduledSecretAddressing | None":
     if profile_id is None and revision is None:
         return
     from moneybin.services.sync_schedule_native import schedule_error
 
     if profile_id is None or revision is None:
         raise schedule_error("Scheduled pull binding is incomplete.")
-    _build_schedule_service().validate_pull_binding(
+    return _build_schedule_service().validate_pull_binding(
         profile_id=profile_id, revision=revision
     )
 
@@ -951,18 +952,23 @@ def _scheduled_pull_access(
 
     entered = False
     try:
+        addressing = None
         if profile_id is not None or revision is not None:
             from moneybin.cli.utils import get_verbose_flag
             from moneybin.config import get_current_profile
             from moneybin.observability import setup_observability
 
-            _validate_scheduled_pull_binding(profile_id, revision)
+            addressing = _validate_scheduled_pull_binding(profile_id, revision)
             setup_observability(
                 stream="cli",
                 verbose=get_verbose_flag(),
                 profile=get_current_profile(auto_resolve=False),
             )
-        with scheduled_secret_access():
+        with (
+            scheduled_secret_access(addressing)
+            if addressing is not None
+            else scheduled_secret_access()
+        ):
             entered = True
             try:
                 yield
