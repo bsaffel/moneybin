@@ -148,6 +148,80 @@ def _confirmed_job(
     )
 
 
+def test_missing_delivery_cannot_clear_prior_validation_hold(db: Database) -> None:
+    first = source(account_changes={"transactions": {}})
+    history = _history(1)
+    first.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=history.accounts[0].native_scope,
+            window=first.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    _confirmed_job(db, first, job=1, day=1, confirmed_history=history)
+    _bind(db)
+    assert "invalid_observation" in _kinds(_assess(db))
+
+    missing = first.model_copy(deep=True)
+    missing.batches[0].batch_id = UUID(int=2)
+    missing.batches[0].payload["accounts"] = []
+    _confirmed_job(db, missing, job=2, day=2, confirmed_history=_history(2))
+
+    assert "invalid_observation" in _kinds(_assess(db))
+
+    repaired = source(batch=3, day=3)
+    repaired.outcomes = first.outcomes
+    _confirmed_job(db, repaired, job=3, day=3, confirmed_history=_history(3))
+    assert _assess(db).complete
+
+
+@pytest.mark.parametrize("window", ["covering", "narrower", "disjoint"])
+@pytest.mark.parametrize("generation", [1, 2])
+def test_missing_delivery_requires_covering_repair(
+    db: Database, window: str, generation: int
+) -> None:
+    missing = source()
+    history = _history(1)
+    missing.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=history.accounts[0].native_scope,
+            window=missing.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    missing.batches[0].payload["accounts"] = []
+    _confirmed_job(db, missing, job=1, day=1, confirmed_history=history)
+
+    latest = source(batch=2, day=2)
+    latest.credential_generation = generation
+    if window != "covering":
+        latest.batches[0].window = UTCWindow.model_validate({
+            "start": "2026-09-10T00:00:00Z"
+            if window == "narrower"
+            else "2026-08-01T00:00:00Z",
+            "end": "2026-09-20T00:00:00Z"
+            if window == "narrower"
+            else "2026-09-01T00:00:00Z",
+        })
+    latest.outcomes = [
+        missing.outcomes[0].model_copy(update={"window": latest.batches[0].window})
+    ]
+    _confirmed_job(db, latest, job=2, day=2, confirmed_history=_history(2))
+    _bind(db)
+
+    assert ("retrieval_partial" in _kinds(_assess(db))) is (window != "covering")
+
+    repaired = source(batch=3, day=3)
+    repaired.credential_generation = generation
+    repaired.outcomes = missing.outcomes
+    _confirmed_job(db, repaired, job=3, day=3, confirmed_history=_history(3))
+    assert _assess(db).complete
+
+
 def test_unprojected_account_retains_unresolved_scope(db: Database) -> None:
     load(db, source())
     result = _assess(db)
@@ -344,8 +418,21 @@ def test_report_requires_latest_retrieval_for_each_history_scope(
     if latest_coverage == "complete":
         assert not result.reasons
     else:
-        assert _kinds(result) == {"evidence_unavailable"}
-        reason = result.reasons[0]
+        expected = {"evidence_unavailable"}
+        if latest_coverage == "other-native":
+            expected.add("retrieval_partial")
+            missing = next(
+                reason
+                for reason in result.reasons
+                if reason.kind == "retrieval_partial"
+            )
+            assert missing.affected_account_ids == ()
+            assert missing.affected_account_count == 0
+            assert missing.unresolved_scope_count == 1
+        assert _kinds(result) == expected
+        reason = next(
+            reason for reason in result.reasons if reason.kind == "evidence_unavailable"
+        )
         assert reason.affected_account_ids == ()
         assert reason.affected_account_count == 1
         assert reason.unresolved_scope_count == 0

@@ -70,6 +70,7 @@ def test_balance_revision_return_and_immutable_tie_use_broker_order(
 
 
 def test_historical_report_retains_malformed_balance_correction(db: Database) -> None:
+    from moneybin.connectors.sync_models import ScopeOutcome
     from moneybin.reports._framework.catalog import get_report_catalog
     from moneybin.services.transform_service import TransformService
     from tests.moneybin.test_services.test_sync_completeness import (
@@ -92,6 +93,15 @@ def test_historical_report_retains_malformed_balance_correction(db: Database) ->
             },
         )
         data.history = _history(number)
+        data.outcomes = [
+            ScopeOutcome(
+                account_id="acct",
+                native_scope=data.history.accounts[0].native_scope,
+                window=data.batches[0].window,
+                status="complete",
+                error_code=None,
+            )
+        ]
         load(db, data, job=number, day=number)
     bind_account(db)
     materialize(db)
@@ -119,6 +129,15 @@ def test_historical_report_retains_malformed_balance_correction(db: Database) ->
         },
     )
     correction.history = _history(4)
+    correction.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=correction.history.accounts[0].native_scope,
+            window=correction.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
     load(db, correction, job=4, day=4)
     TransformService(db).restate_models(["core.fct_balances_daily"])
     corrected = get_report_catalog().execute(

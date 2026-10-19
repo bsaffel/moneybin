@@ -806,6 +806,7 @@ def test_source_metadata_survives_fx_fallback_drift_and_truncation(
 def test_balance_drift_resolved_filter_excludes_unrelated_held_scope(
     model_db: Database,
 ) -> None:
+    from moneybin.connectors.sync_models import ScopeOutcome
     from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
     from tests.moneybin.test_services.test_sync_completeness import (
         _bind,  # pyright: ignore[reportPrivateUsage]
@@ -820,6 +821,16 @@ def test_balance_drift_resolved_filter_excludes_unrelated_held_scope(
     data.history.accounts.append(
         data.history.accounts[0].model_copy(update={"account_id": "held"})
     )
+    data.outcomes = [
+        ScopeOutcome(
+            account_id=account.account_id,
+            native_scope=account.native_scope,
+            window=data.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+        for account in data.history.accounts
+    ]
     load(model_db, data)
     _bind(model_db, canonical_id="selected")
     _bind(model_db, "held", "unrelated")

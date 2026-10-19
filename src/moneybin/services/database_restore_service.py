@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -65,17 +66,22 @@ def _sync_directory(path: Path) -> None:
 
 
 def _write_journal(path: Path, payload: dict[str, object]) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}-", suffix=".tmp"
+    )
+    temporary = Path(temporary_name)
     identity = os.fstat(fd)
     try:
         with os.fdopen(fd, "w") as output:
             json.dump(payload, output)
             output.flush()
             os.fsync(output.fileno())
+        # Publish complete evidence without replacing another actor's journal.
+        os.link(temporary, path)
         _sync_directory(path.parent)
-    except BaseException:
-        _unlink_owned(path, identity)
-        raise
+    finally:
+        # Published evidence survives even when directory syncing fails.
+        _unlink_owned(temporary, identity)
 
 
 def restore_encrypted_database(

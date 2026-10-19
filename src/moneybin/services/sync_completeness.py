@@ -342,12 +342,14 @@ class SyncCompletenessService:
                 for outcome in receipt.local_outcomes:
                     if (
                         outcome.error_code in _SKIPPED_CHILD_ERRORS
-                        and not self._local_hold_resolved(
-                            receipt, outcome, retained[connection]
-                        )
+                        or outcome.error_code == "provider_error"
+                    ) and not self._local_hold_resolved(
+                        receipt, outcome, retained[connection]
                     ):
                         add(
-                            "invalid_observation",
+                            "retrieval_partial"
+                            if outcome.error_code == "provider_error"
+                            else "invalid_observation",
                             self._outcome_scope(receipt.source, outcome),
                         )
             for receipt in candidates:
@@ -374,6 +376,8 @@ class SyncCompletenessService:
                         latest_scopes.add(scope)
                 for outcome in receipt.local_outcomes:
                     scope = self._outcome_scope(source, outcome)
+                    if outcome.error_code == "provider_error":
+                        outcomes[scope].append((receipt.started_at, outcome))
                     if outcome.account_id is None:
                         if receipt.started_at == newest:
                             add("invalid_observation", scope)
@@ -494,7 +498,10 @@ class SyncCompletenessService:
             if any(
                 local.account_id is None
                 or (
-                    local.error_code in _SKIPPED_CHILD_ERRORS
+                    (
+                        local.error_code in _SKIPPED_CHILD_ERRORS
+                        or local.error_code == "provider_error"
+                    )
                     and self._outcome_scope(candidate.source, local) == scope
                 )
                 for local in candidate.local_outcomes

@@ -1279,11 +1279,10 @@ class SyncService:
                         f"""SELECT MAX(balance_at) FROM {SIMPLEFIN_BALANCES.full_name} WHERE source_origin = ? AND account_id = ? AND validation_error IS NULL""",
                         [origin, account.account_id],
                     ).fetchone()  # trusted TableRef and bound native identity
-                    if (
-                        row
-                        and row[0] is not None
-                        and (balance_at is None or row[0] < balance_at)
-                    ):
+                    if row is None or row[0] is None:
+                        balance_at = None
+                        break
+                    if balance_at is None or row[0] < balance_at:
                         balance_at = row[0]
             result.append(
                 SyncConnectionView(

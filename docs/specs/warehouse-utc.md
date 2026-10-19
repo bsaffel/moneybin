@@ -104,6 +104,13 @@ replacing the destination and retains an encrypted original backup. Use
 against its journal and matching original backup. Recovery cannot select a
 backup through `--from` or `--latest`.
 
+Restore writes and syncs a private temporary journal beside the destination,
+then publishes the complete journal atomically without overwriting an existing
+journal. It syncs the directory before promotion. An abrupt exit before
+publication can leave an unjournaled candidate and temporary journal requiring
+deliberate manual cleanup while both databases remain offline. Recovery refuses
+a missing or unverifiable final journal and never promotes an unpromoted candidate.
+
 ## Consumers
 
 - Audit replay decodes known temporal fields before mutation with persisted,

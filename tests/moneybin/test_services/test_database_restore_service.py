@@ -1,7 +1,12 @@
 """Encrypted restore validates sources and retains recovery evidence."""
 
 import hashlib
+import json
 import os
+import stat
+import subprocess  # noqa: S404  # abrupt-exit test needs a controlled child process
+import sys
+import textwrap
 from pathlib import Path
 from typing import IO, Any, BinaryIO, TextIO
 from unittest.mock import MagicMock
@@ -100,11 +105,13 @@ def test_restore_journal_failure_cleans_owned_files_and_allows_retry(
     source_bytes, destination_bytes = source.read_bytes(), destination.read_bytes()
     journal = destination.with_name(destination.name + ".restore-promotion.json")
     original_fdopen, original_fsync = os.fdopen, os.fsync
+    journal_fds: set[int] = set()
 
     def failing_fdopen(fd: int, mode: str) -> IO[Any] | MagicMock:
         stream = original_fdopen(fd, mode)
         if mode != "w":
             return stream
+        journal_fds.add(fd)
         output = MagicMock(wraps=stream)
         output.__enter__.return_value = output
         output.__exit__.side_effect = stream.__exit__
@@ -120,7 +127,7 @@ def test_restore_journal_failure_cleans_owned_files_and_allows_retry(
         return output
 
     def failing_fsync(fd: int) -> None:
-        if journal.exists() and os.fstat(fd).st_ino == journal.stat().st_ino:
+        if fd in journal_fds and stat.S_ISREG(os.fstat(fd).st_mode):
             raise failure("synthetic_journal_failure")
         original_fsync(fd)
 
@@ -137,6 +144,7 @@ def test_restore_journal_failure_cleans_owned_files_and_allows_retry(
     assert destination.read_bytes() == destination_bytes
     assert backup.read_bytes() == destination_bytes
     assert not journal.exists()
+    assert not list(destination.parent.glob(".*.tmp"))
     assert not list(destination.parent.glob("destination.restore-*.duckdb"))
     retry_backup = backup.with_name("retry-original.duckdb")
     assert (
@@ -162,6 +170,119 @@ def test_write_journal_preserves_preexisting_journal(tmp_path: Path) -> None:
     with pytest.raises(FileExistsError):
         _write_journal(journal, {})
     assert journal.read_bytes() == b"existing recovery evidence"
+    assert list(tmp_path.iterdir()) == [journal]
+
+
+def test_write_journal_publishes_only_complete_synced_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.services import database_restore_service as service
+
+    journal = tmp_path / "restore-promotion.json"
+    payload: dict[str, object] = {"candidate_fingerprint": "synthetic"}
+    original_fsync, original_link = os.fsync, os.link
+    synced_files: set[int] = set()
+
+    def observe_fsync(fd: int) -> None:
+        identity = os.fstat(fd)
+        if stat.S_ISREG(identity.st_mode):
+            assert not journal.exists()
+            original_fsync(fd)
+            synced_files.add(identity.st_ino)
+        else:
+            original_fsync(fd)
+
+    def observe_link(source: Path, target: Path) -> None:
+        assert source.parent == journal.parent
+        assert json.loads(source.read_text()) == payload
+        assert source.stat().st_ino in synced_files
+        assert source.stat().st_mode & 0o777 == 0o600
+        original_link(source, target)
+        assert json.loads(journal.read_text()) == payload
+
+    monkeypatch.setattr(service.os, "fsync", observe_fsync)
+    monkeypatch.setattr(service.os, "link", observe_link)
+    service._write_journal(journal, payload)  # pyright: ignore[reportPrivateUsage]  # observe publication boundaries
+    assert json.loads(journal.read_text()) == payload
+    assert list(tmp_path.iterdir()) == [journal]
+
+
+def test_write_journal_abrupt_exit_never_publishes_partial_payload(
+    tmp_path: Path,
+) -> None:
+    from moneybin.services.database_restore_service import recover_restore
+
+    destination = tmp_path / "destination.duckdb"
+    destination.write_bytes(b"original database")
+    journal = destination.with_name(destination.name + ".restore-promotion.json")
+    script = textwrap.dedent("""\
+        import os
+        import sys
+        from pathlib import Path
+        from moneybin.services import database_restore_service as service
+
+        def exit_during_write(payload, output):
+            output.write('{')
+            output.flush()
+            os._exit(73)
+
+        service.json.dump = exit_during_write
+        service._write_journal(Path(sys.argv[1]), {})
+        """)
+    result = subprocess.run(  # noqa: S603  # fixed synthetic script and test-owned path
+        [sys.executable, "-c", script, str(journal)], check=False
+    )
+    assert result.returncode == 73
+    assert not journal.exists()
+    temporary = list(tmp_path.glob(".*.tmp"))
+    assert len(temporary) == 1
+    assert temporary[0].read_bytes() == b"{"
+    with pytest.raises(FileNotFoundError):
+        recover_restore(destination)
+    assert destination.read_bytes() == b"original database"
+
+
+@pytest.mark.parametrize("competing_journal", [False, True])
+def test_write_journal_link_failure_preserves_other_actor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, competing_journal: bool
+) -> None:
+    from moneybin.services import database_restore_service as service
+
+    journal = tmp_path / "restore-promotion.json"
+    original_link = os.link
+
+    def fail_link(source: Path, target: Path) -> None:
+        if competing_journal:
+            target.write_bytes(b"other actor")
+            original_link(source, target)
+        raise OSError("synthetic_link_failure")
+
+    monkeypatch.setattr(service.os, "link", fail_link)
+    with pytest.raises(OSError):
+        service._write_journal(journal, {})  # pyright: ignore[reportPrivateUsage]  # inject publication failure
+    assert not list(tmp_path.glob(".*.tmp"))
+    if competing_journal:
+        assert journal.read_bytes() == b"other actor"
+    else:
+        assert not journal.exists()
+
+
+def test_write_journal_directory_sync_failure_retains_complete_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.services import database_restore_service as service
+
+    journal = tmp_path / "restore-promotion.json"
+    payload: dict[str, object] = {"candidate_fingerprint": "synthetic"}
+
+    def fail_directory_sync(path: Path) -> None:
+        raise OSError("synthetic_directory_sync_failure")
+
+    monkeypatch.setattr(service, "_sync_directory", fail_directory_sync)
+    with pytest.raises(OSError, match="synthetic_directory_sync_failure"):
+        service._write_journal(journal, payload)  # pyright: ignore[reportPrivateUsage]  # preserve published recovery evidence
+    assert json.loads(journal.read_text()) == payload
+    assert list(tmp_path.iterdir()) == [journal]
 
 
 def test_write_journal_preserves_replacement_on_failure(
@@ -182,6 +303,54 @@ def test_write_journal_preserves_replacement_on_failure(
     with pytest.raises(KeyboardInterrupt):
         service._write_journal(journal, {})  # pyright: ignore[reportPrivateUsage]  # exercise interrupted journal ownership
     assert journal.read_bytes() == b"replacement recovery evidence"
+
+
+def test_write_journal_preserves_replaced_temporary_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.services import database_restore_service as service
+
+    journal = tmp_path / "restore-promotion.json"
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"other actor")
+
+    def replace_temporary(payload: dict[str, object], output: TextIO) -> None:
+        output.write("{")
+        identity = os.fstat(output.fileno())
+        temporary = next(
+            path for path in tmp_path.iterdir() if path.stat().st_ino == identity.st_ino
+        )
+        assert temporary != journal
+        replacement.replace(temporary)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(service.json, "dump", replace_temporary)
+    with pytest.raises(KeyboardInterrupt):
+        service._write_journal(journal, {})  # pyright: ignore[reportPrivateUsage]  # exercise temporary ownership
+    assert not journal.exists()
+    remaining = list(tmp_path.iterdir())
+    assert len(remaining) == 1
+    assert remaining[0].read_bytes() == b"other actor"
+
+
+@pytest.mark.parametrize("journal_bytes", [None, b"{", b"{}"])
+def test_recover_restore_refuses_missing_or_unverifiable_journal(
+    tmp_path: Path, journal_bytes: bytes | None
+) -> None:
+    from moneybin.services.database_restore_service import recover_restore
+
+    destination = tmp_path / "destination.duckdb"
+    destination.write_bytes(b"original database")
+    journal = destination.with_name(destination.name + ".restore-promotion.json")
+    if journal_bytes is not None:
+        journal.write_bytes(journal_bytes)
+    with pytest.raises((FileNotFoundError, ValueError)):
+        recover_restore(destination)
+    assert destination.read_bytes() == b"original database"
+    if journal_bytes is not None:
+        assert journal.read_bytes() == journal_bytes
+    else:
+        assert not journal.exists()
 
 
 def test_restore_preserves_preexisting_candidate(
