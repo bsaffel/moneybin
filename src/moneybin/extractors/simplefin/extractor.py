@@ -249,7 +249,7 @@ class SimpleFINExtractor:
         balances: list[dict[str, Any]] = []
         responses: list[dict[str, Any]] = []
         seen_batches: dict[UUID, str] = {}
-        delivered_scopes: set[tuple[str, str]] = set()
+        delivered_scopes: set[tuple[str, str, datetime, datetime]] = set()
         for batch in source.batches:
             digest = _revision({
                 "connection_id": str(source.connection_id),
@@ -288,7 +288,9 @@ class SimpleFINExtractor:
             records = [_record(item) for item in cast(list[object], native_accounts)]
             identified = [self._account_identity(source, item) for item in records]
             delivered_scopes.update(
-                (item[0], item[1]) for item in identified if item is not None
+                (item[0], item[1], window.start, window.end)
+                for item in identified
+                if item is not None
             )
             counts = Counter(
                 (item[0], item[1]) for item in identified if item is not None
@@ -458,7 +460,7 @@ class SimpleFINExtractor:
                     })
                     if error:
                         outcomes.append(self._outcome(batch, account_id, scope, error))
-        # Broker retrieval credit cannot substitute for a delivered native account.
+        # Retrieval credit requires the native account in the same requested window.
         for outcome in source.outcomes:
             scope = outcome.native_scope
             if outcome.status != "complete" or outcome.account_id is None:
@@ -472,7 +474,13 @@ class SimpleFINExtractor:
                 if isinstance(scope, SimpleFINV1OrgScope)
                 else scope.model_dump(by_alias=True),
             )
-            if (origin, outcome.account_id) not in delivered_scopes:
+            window = cast(UTCWindow, outcome.window)
+            if (
+                origin,
+                outcome.account_id,
+                window.start,
+                window.end,
+            ) not in delivered_scopes:
                 outcomes.append(
                     outcome.model_copy(
                         update={"status": "partial", "error_code": "provider_error"}

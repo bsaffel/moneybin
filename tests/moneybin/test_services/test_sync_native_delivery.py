@@ -2,7 +2,7 @@
 
 import json
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -75,7 +75,21 @@ def _delivery(db: Database, protocol: str) -> SyncEnvelopeV2:
 
 
 @pytest.mark.parametrize("protocol", ["v1", "v2"])
-@pytest.mark.parametrize("delivery", ["all", "empty", "subset", "split", "wrong_scope"])
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        "all",
+        "empty",
+        "subset",
+        "split",
+        "wrong_scope",
+        "older_window",
+        "narrower_window",
+        "shorter_window",
+        "wrong_scope_window",
+        "incidental_older_window",
+    ],
+)
 def test_simplefin_completeness_requires_delivered_native_accounts(
     db: Database, protocol: str, delivery: str
 ) -> None:
@@ -98,6 +112,28 @@ def test_simplefin_completeness_requires_delivered_native_accounts(
         second.payload["accounts"] = second_accounts[1:]
         source.batches.append(second)
         payload["accounts"] = accounts[:1]
+    elif delivery in {
+        "older_window",
+        "narrower_window",
+        "shorter_window",
+        "wrong_scope_window",
+        "incidental_older_window",
+    }:
+        older = source.batches[0].model_copy(deep=True)
+        older.batch_id = UUID(int=904)
+        assert older.window is not None
+        if delivery == "narrower_window":
+            older.window.start += timedelta(days=1)
+        elif delivery == "shorter_window":
+            older.window.end -= timedelta(days=1)
+        else:
+            older.window.start -= timedelta(days=30)
+            older.window.end -= timedelta(days=30)
+        source.batches.append(older)
+        if delivery in {"older_window", "narrower_window", "shorter_window"}:
+            source.batches.pop(0)
+        elif delivery == "wrong_scope_window":
+            payload["accounts"] = accounts[:1]
     if protocol == "v1":
         for batch in source.batches:
             for account in cast(list[dict[str, object]], batch.payload["accounts"]):
@@ -109,7 +145,7 @@ def test_simplefin_completeness_requires_delivered_native_accounts(
 
     result = service.pull(refresh=False)
 
-    complete = delivery in {"all", "split"}
+    complete = delivery in {"all", "split", "incidental_older_window"}
     assert SyncCompletenessService(db).assess().complete is complete
     assert result.complete is complete
     assert result.ingestion_state == "committed"

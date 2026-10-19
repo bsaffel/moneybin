@@ -148,7 +148,10 @@ def _confirmed_job(
     )
 
 
-def test_missing_delivery_cannot_clear_prior_validation_hold(db: Database) -> None:
+@pytest.mark.parametrize("delivery", ["missing", "wrong_window"])
+def test_missing_delivery_cannot_clear_prior_validation_hold(
+    db: Database, delivery: str
+) -> None:
     first = source(account_changes={"transactions": {}})
     history = _history(1)
     first.outcomes = [
@@ -166,7 +169,14 @@ def test_missing_delivery_cannot_clear_prior_validation_hold(db: Database) -> No
 
     missing = first.model_copy(deep=True)
     missing.batches[0].batch_id = UUID(int=2)
-    missing.batches[0].payload["accounts"] = []
+    if delivery == "missing":
+        missing.batches[0].payload["accounts"] = []
+    else:
+        missing.batches[0].payload = source().batches[0].payload
+        missing.batches[0].window = UTCWindow.model_validate({
+            "start": "2026-08-01T00:00:00Z",
+            "end": "2026-09-01T00:00:00Z",
+        })
     _confirmed_job(db, missing, job=2, day=2, confirmed_history=_history(2))
 
     assert "invalid_observation" in _kinds(_assess(db))
