@@ -164,6 +164,83 @@ def test_plaid_completeness_requires_every_payload_account_scope(
     assert recovered.source_results[0].outcomes == result.source_results[0].outcomes
 
 
+@pytest.mark.parametrize("delivery", ["all", "empty", "subset", "split", "wrong_item"])
+def test_plaid_completeness_requires_delivered_native_accounts(
+    db: Database, delivery: str
+) -> None:
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    envelope = json.loads(fixture.read_text())
+    envelope["job_id"] = str(JOB)
+    source = envelope["sources"][0]
+    payload = source["batches"][0]["payload"]
+    payload["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    payload["transactions"] = []
+    payload["balances"] = []
+    second_account = deepcopy(payload["accounts"][0])
+    second_account["account_id"] = "plaid-account-2"
+    payload["accounts"].append(second_account)
+    second_outcome = deepcopy(source["outcomes"][0])
+    second_outcome["account_id"] = "plaid-account-2"
+    source["outcomes"].append(second_outcome)
+    if delivery == "empty":
+        payload["accounts"] = []
+    elif delivery == "subset":
+        payload["accounts"] = payload["accounts"][:1]
+    elif delivery == "wrong_item":
+        payload["metadata"]["institutions"][0]["provider_item_id"] = "other-item"
+    elif delivery == "split":
+        second_batch = deepcopy(source["batches"][0])
+        second_batch["batch_id"] = str(UUID(int=901))
+        second_batch["payload"]["accounts"] = [second_account]
+        source["batches"].append(second_batch)
+        payload["accounts"] = payload["accounts"][:1]
+    data = SyncEnvelopeV2.model_validate(envelope)
+    original_outcomes = deepcopy(data.sources[0].outcomes)
+    client = _client(data)
+    service = _service(db, client)
+
+    result = service.pull(refresh=False)
+
+    complete = delivery in {"all", "split"}
+    assert result.complete is complete
+    assert result.ingestion_state == "committed"
+    assert result.ack_state == "confirmed"
+    assert result.transactions_loaded == 0
+    stored = SyncJobStateRepo(db).get(str(JOB), client.consumer_id)
+    assert stored is not None
+    assert stored.details.sources[0].source.outcomes == original_outcomes
+    assert stored.details.acknowledgement is not None
+    assert stored.details.acknowledgement.results[0].outcomes == original_outcomes
+    assert data.model_dump(mode="json", exclude_unset=True) == envelope
+    if not complete:
+        missing = {"plaid-account-2"}
+        if delivery != "subset":
+            missing.add("plaid-account-1")
+        local_outcomes = result.source_results[0].outcomes[len(original_outcomes) :]
+        for outcome in original_outcomes:
+            if outcome.account_id in missing:
+                assert (
+                    outcome.model_copy(
+                        update={"status": "partial", "error_code": "provider_error"}
+                    )
+                    in local_outcomes
+                )
+        assert any(
+            outcome.status == "partial" for outcome in result.sources[0].outcomes
+        )
+
+    recovered = service.recover(str(JOB), refresh=False, local_only=True)
+
+    assert recovered.complete is complete
+    assert recovered.source_results[0].outcomes == result.source_results[0].outcomes
+
+
 @pytest.mark.parametrize(
     "evidence", ["no_sources", "no_batches", "no_outcomes", "account", "item"]
 )

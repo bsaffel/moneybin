@@ -20,6 +20,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.services.audit_service import AuditEvent
+from moneybin.services.profile_settings_service import ProfileSettingsService
 from tests.moneybin.test_repositories.conftest import audit_rows_for as _audit_rows_for
 from tests.moneybin.test_repositories.conftest import metric_for
 
@@ -293,7 +294,53 @@ def test_undo_of_legacy_unarchive_row_derives_archived_at_today_on_rearchive(
         "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
         ["acct_legacy2"],
     ).fetchone()
-    assert row == (True, date.today())
+    assert row == (True, ProfileSettingsService(db).today())
+
+
+@pytest.mark.parametrize(
+    "zone,hour,expected",
+    [
+        ("America/Los_Angeles", 6, date(2025, 12, 31)),
+        ("Pacific/Kiritimati", 18, date(2026, 1, 2)),
+    ],
+)
+@pytest.mark.parametrize("missing_row", [False, True])
+def test_legacy_rearchive_uses_saved_calendar(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    zone: str,
+    hour: int,
+    expected: date,
+    missing_row: bool,
+) -> None:
+    from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+    ProfileSettingsRepo(db).set_reporting_timezone(zone, actor="test")
+    now = datetime(2026, 1, 1, hour, tzinfo=UTC)
+
+    def frozen_now(self: AccountSettingsRepo) -> datetime:
+        return now
+
+    monkeypatch.setattr(AccountSettingsRepo, "_now", frozen_now)
+    repo = AccountSettingsRepo(db)
+    if missing_row:
+        _set(repo, account_id="a", archived=True, archived_at=date(2024, 6, 1))
+        event = repo.delete("a", actor="cli")
+        assert event is not None
+        event = replace(
+            event,
+            before_value=_legacy_row(account_id="a", archived=True),
+            occurred_at="2025-06-01T00:00:00.000000Z",
+        )
+    else:
+        _set(repo, account_id="a", archived=False)
+        event = _legacy_undo_event(
+            account_id="a", before_archived=True, after_archived=False
+        )
+    repo.undo_event(event, actor="cli")
+    assert db.execute(
+        "SELECT archived_at FROM app.account_settings WHERE account_id = 'a'"
+    ).fetchone() == (expected,)
 
 
 def test_undo_of_undo_of_legacy_unarchive_row_leaves_active_account_null(
@@ -328,7 +375,7 @@ def test_undo_of_undo_of_legacy_unarchive_row_leaves_active_account_null(
         "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
         ["acct_legacy8"],
     ).fetchone()
-    assert mid_row == (True, date.today())
+    assert mid_row == (True, ProfileSettingsService(db).today())
 
     # Undo the undo (redo): back to active. Must clear archived_at, not
     # reuse today's date on an archived=False row.
@@ -475,7 +522,10 @@ def test_undo_of_legacy_row_normalizes_archived_at_into_its_own_audit(
 
     assert undo_result is not None
     assert undo_result.after_value is not None
-    assert undo_result.after_value["archived_at"] == date.today().isoformat()
+    assert (
+        undo_result.after_value["archived_at"]
+        == ProfileSettingsService(db).today().isoformat()
+    )
 
 
 def test_undo_of_legacy_archive_row_preserves_live_archived_at_in_capture(

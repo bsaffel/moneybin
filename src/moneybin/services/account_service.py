@@ -44,6 +44,7 @@ from moneybin.services.account_resolution_types import (
     is_reserved_account_name,
 )
 from moneybin.services.audit_service import AuditService
+from moneybin.services.profile_settings_service import ProfileSettingsService
 from moneybin.sqlmesh_freshness import restating_columns
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
@@ -800,8 +801,9 @@ class AccountService:
             f"""
             SELECT COUNT(DISTINCT account_id)
             FROM {FCT_TRANSACTIONS.full_name}
-            WHERE transaction_date >= CURRENT_DATE - INTERVAL '30' DAY
-            """
+            WHERE transaction_date >= ?::DATE - INTERVAL '30' DAY
+            """,
+            [ProfileSettingsService(self._db).today()],
         ).fetchone()
         recent = recent_row[0] if recent_row is not None else 0  # pragma: no cover
 
@@ -938,7 +940,7 @@ class AccountService:
         # transition also stamps archived_changed_at: it moves is_categorizable
         # on every core.fct_transactions row of the account.
         if archived is True and not current.archived:
-            diff["archived_at"] = date.today()
+            diff["archived_at"] = ProfileSettingsService(self._db).today()
         elif archived is False and current.archived:
             diff["archived_at"] = None
         if "archived_at" in diff:

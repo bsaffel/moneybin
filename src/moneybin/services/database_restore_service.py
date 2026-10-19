@@ -144,7 +144,7 @@ def restore_encrypted_database(
                     candidate_lease.publish(destination)
                 return None
             backup_path.parent.mkdir(parents=True, exist_ok=True)
-            _copy_exclusive(destination, backup_path)
+            _copy_exclusive(destination, backup_path, remove_on_failure=True)
             if _fingerprint(backup_path) != destination_lease.fingerprint:
                 raise ValueError("copy_verification_failed")
             _write_journal(

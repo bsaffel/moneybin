@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess  # noqa: S404  # test executes the installed DuckDB CLI with static arguments
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -2382,6 +2382,35 @@ class TestDbMaintenanceInterrupts:
         assert result.exit_code == 130
         assert "interrupted" in result.output.lower()
         assert "Backup created" not in result.output
+
+    def test_restore_interrupt_during_auto_backup_does_not_claim_saved_backup(
+        self, mocker: Any, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        destination, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
+        _make_settings_mock(destination, mocker)
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
+        original_copy = shutil.copyfileobj
+        original = destination.read_bytes()
+
+        def interrupt_backup(input_file: BinaryIO, output: BinaryIO) -> None:
+            if Path(input_file.name) != destination:
+                original_copy(input_file, output)
+                return
+            output.write(input_file.read(64))
+            output.flush()
+            raise KeyboardInterrupt
+
+        mocker.patch(
+            "moneybin.services.database_restore_service.shutil.copyfileobj",
+            side_effect=interrupt_backup,
+        )
+        result = CliRunner().invoke(app, ["restore", "--from", str(source), "--yes"])
+
+        assert result.exit_code == 130
+        assert "Restore interrupted" in result.output
+        assert "Pre-restore backup saved" not in result.output
+        assert destination.read_bytes() == original
+        assert not list((tmp_path / "backups").glob("*_pre_restore.duckdb"))
 
     def test_restore_interrupt_after_auto_backup_names_saved_backup(
         self, mocker: Any, tmp_path: Path, mock_secret_store: MagicMock

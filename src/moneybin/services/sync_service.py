@@ -610,6 +610,18 @@ class SyncService:
                             account_scopes - reported_scopes
                         )
                     )
+                    # Broker credit cannot substitute for a delivered native account.
+                    source_result.outcomes.extend(
+                        outcome.model_copy(
+                            update={"status": "partial", "error_code": "provider_error"}
+                        )
+                        for outcome in source.outcomes
+                        if outcome.status == "complete"
+                        and outcome.account_id is not None
+                        and isinstance(outcome.native_scope, PlaidItemScope)
+                        and (outcome.account_id, outcome.native_scope.provider_item_id)
+                        not in account_scopes
+                    )
                 references.append(
                     SyncJobSource(
                         source=_SOURCE_RESULT.validate_python(

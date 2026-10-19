@@ -34,6 +34,7 @@ from moneybin.services.account_service import (
     suggest_holder_category,
     suggest_subtype,
 )
+from moneybin.services.profile_settings_service import ProfileSettingsService
 from moneybin.tables import ACCOUNT_SETTINGS
 from tests.moneybin.db_helpers import create_core_tables, create_core_tables_raw
 
@@ -576,7 +577,7 @@ class TestAccountServiceMutators:
         assert result.archived is True
         # include_in_net_worth is untouched — no cascade.
         assert result.include_in_net_worth is True
-        assert result.archived_at == date.today()
+        assert result.archived_at == ProfileSettingsService(test_db).today()
 
     @pytest.mark.unit
     def test_unarchive_clears_archived_at_and_leaves_include_untouched(
@@ -1006,7 +1007,7 @@ class TestSettingsUpdateExtended:
         assert result.include_in_net_worth is True, (
             "Archiving must not cascade include_in_net_worth"
         )
-        assert result.archived_at == date.today()
+        assert result.archived_at == ProfileSettingsService(test_db).today()
 
     @pytest.mark.unit
     def test_set_archived_true_honors_explicit_include_value(

@@ -36,7 +36,7 @@ def restore_files(
     return source, destination, backup
 
 
-@pytest.mark.parametrize("failure_stage", ["copy", "validation"])
+@pytest.mark.parametrize("failure_stage", ["copy", "backup_copy", "validation"])
 @pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
 def test_restore_prejournal_failure_cleans_candidate_and_allows_retry(
     restore_files: tuple[Path, Path, Path],
@@ -50,8 +50,12 @@ def test_restore_prejournal_failure_cleans_candidate_and_allows_retry(
     source, destination, backup = restore_files
     source_bytes, destination_bytes = source.read_bytes(), destination.read_bytes()
     journal = destination.with_name(destination.name + ".restore-promotion.json")
+    original_copy = service.shutil.copyfileobj
 
     def interrupt_copy(input_file: BinaryIO, output: BinaryIO) -> None:
+        if failure_stage == "backup_copy" and Path(input_file.name) != destination:
+            original_copy(input_file, output)
+            return
         output.write(input_file.read(64))
         output.flush()
         raise failure("synthetic_failure")
@@ -64,7 +68,7 @@ def test_restore_prejournal_failure_cleans_candidate_and_allows_retry(
         return Database(path, read_only=read_only, secret_store=secret_store)
 
     with monkeypatch.context() as patcher:
-        if failure_stage == "copy":
+        if failure_stage in {"copy", "backup_copy"}:
             patcher.setattr(service.shutil, "copyfileobj", interrupt_copy)
         else:
             patcher.setattr(service, "Database", interrupt_validation)
@@ -88,6 +92,68 @@ def test_restore_prejournal_failure_cleans_candidate_and_allows_retry(
     assert backup.read_bytes() == destination_bytes
     assert source.read_bytes() == source_bytes
     assert not journal.exists()
+
+
+def test_restore_preserves_preexisting_backup(
+    restore_files: tuple[Path, Path, Path], mock_secret_store: MagicMock
+) -> None:
+    from moneybin.services.database_restore_service import restore_encrypted_database
+
+    source, destination, backup = restore_files
+    source_bytes, destination_bytes = source.read_bytes(), destination.read_bytes()
+    backup.write_bytes(b"other actor")
+
+    with pytest.raises(FileExistsError):
+        restore_encrypted_database(
+            source, destination, secret_store=mock_secret_store, backup_path=backup
+        )
+
+    assert backup.read_bytes() == b"other actor"
+    assert source.read_bytes() == source_bytes
+    assert destination.read_bytes() == destination_bytes
+    assert not list(destination.parent.glob("destination.restore-*.duckdb"))
+    assert not destination.with_name(
+        destination.name + ".restore-promotion.json"
+    ).exists()
+
+
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+def test_restore_preserves_replaced_backup_on_copy_failure(
+    restore_files: tuple[Path, Path, Path],
+    mock_secret_store: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: type[BaseException],
+) -> None:
+    from moneybin.services import database_restore_service as service
+
+    source, destination, backup = restore_files
+    source_bytes, destination_bytes = source.read_bytes(), destination.read_bytes()
+    replacement = backup.with_name("replacement.duckdb")
+    replacement.write_bytes(b"other actor")
+    original_copy = service.shutil.copyfileobj
+
+    def replace_backup(input_file: BinaryIO, output: BinaryIO) -> None:
+        if Path(input_file.name) != destination:
+            original_copy(input_file, output)
+            return
+        output.write(input_file.read(64))
+        output.flush()
+        replacement.replace(backup)
+        raise failure("synthetic_backup_failure")
+
+    monkeypatch.setattr(service.shutil, "copyfileobj", replace_backup)
+    with pytest.raises(failure, match="synthetic_backup_failure"):
+        service.restore_encrypted_database(
+            source, destination, secret_store=mock_secret_store, backup_path=backup
+        )
+
+    assert backup.read_bytes() == b"other actor"
+    assert source.read_bytes() == source_bytes
+    assert destination.read_bytes() == destination_bytes
+    assert not list(destination.parent.glob("destination.restore-*.duckdb"))
+    assert not destination.with_name(
+        destination.name + ".restore-promotion.json"
+    ).exists()
 
 
 @pytest.mark.parametrize("failure_stage", ["write", "flush", "fsync"])

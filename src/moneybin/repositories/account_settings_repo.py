@@ -11,11 +11,13 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from moneybin import error_codes
 from moneybin.database import has_column
 from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_SETTINGS
 from moneybin.temporal import as_utc, format_utc, parse_utc
@@ -257,8 +259,8 @@ class AccountSettingsRepo(BaseRepo):
         undo event it emits, so mutating it here is what lets a later
         undo-of-this-undo (redo) reach :meth:`_insert_row` with the key
         already present, so it restores the real date instead of guessing
-        ``date.today()`` (:meth:`_insert_row`'s fallback remains correct for
-        the case it was written for: a legacy capture reversed before this
+        today's saved reporting date (:meth:`_insert_row`'s fallback remains
+        correct for the case it was written for: a legacy capture reversed before this
         fix shipped, or one where the live row genuinely never got a
         backfilled date).
 
@@ -407,7 +409,7 @@ class AccountSettingsRepo(BaseRepo):
             and "archived_at" not in row
             and self._archived_at_supported()
         ):
-            row["archived_at"] = date.today().isoformat()
+            row["archived_at"] = self._today().isoformat()
         if has_column(self._db, ACCOUNT_SETTINGS, "account_type"):
             row.setdefault("account_type", None)
         live = self._live_columns()
@@ -418,6 +420,10 @@ class AccountSettingsRepo(BaseRepo):
 
     def _now(self) -> datetime:
         return self._db.execute("SELECT NOW()::TIMESTAMPTZ").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+
+    def _today(self) -> date:
+        zone = ZoneInfo(ProfileSettingsRepo(self._db).get_reporting_timezone())
+        return self._now().astimezone(zone).date()
 
     def _live_change_stamps(self, locate: dict[str, Any]) -> dict[str, datetime | None]:
         """The row's current change times, read before a restore overwrites them."""
@@ -588,7 +594,7 @@ class AccountSettingsRepo(BaseRepo):
             before["archived_at"] = value
             locate["archived_at"] = value
             return
-        derived_at = date.today() if before.get("archived") is True else None
+        derived_at = self._today() if before.get("archived") is True else None
         self._db.execute(
             f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
             f"SET archived_at = ? WHERE {where}",
