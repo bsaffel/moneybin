@@ -471,6 +471,62 @@ def test_identical_set_repairs_owned_active_partial_registration(
     assert adapter.job.revision != old.revision
 
 
+def test_identical_set_refuses_live_cached_timer_after_both_files_are_deleted(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.errors import UserError
+    from moneybin.services.sync_schedule_native import SystemdScheduleAdapter
+
+    service, memory, _ = schedule
+    memory.mechanism = "systemd"
+    service.set("09:00")
+    assert memory.job is not None
+    original = memory.job
+    metadata = service.state_path.read_bytes()
+
+    def native_query(args: list[str], **kwargs: Any) -> Mock:
+        if args[2] == "is-enabled":
+            return Mock(returncode=1, stdout="disabled\n", stderr="")
+        assert args[2] == "is-active"
+        return Mock(returncode=0, stdout="", stderr="")
+
+    command = Mock(side_effect=native_query)
+    adapter = SystemdScheduleAdapter(user_home=service.home, command=command)
+    service.adapter = adapter
+    monkeypatch.setattr(
+        adapter,
+        "_unit_states",
+        Mock(
+            return_value=[
+                {
+                    "LoadState": "loaded",
+                    "ActiveState": "active",
+                    "FragmentPath": str(adapter.timer_path(original)),
+                    "DropInPaths": "",
+                    "NeedDaemonReload": "no",
+                },
+                {
+                    "LoadState": "loaded",
+                    "ActiveState": "inactive",
+                    "MainPID": "0",
+                    "FragmentPath": str(adapter.service_path(original)),
+                    "DropInPaths": "",
+                    "NeedDaemonReload": "no",
+                },
+            ]
+        ),
+    )
+    assert not any(path.exists() for path in adapter.render(original))
+    with pytest.raises(UserError, match="retained metadata"):
+        service.set("09:00")
+    assert service.state_path.read_bytes() == metadata
+    assert service.show().state == "partial"
+    assert all(
+        call.args[0][2] in {"is-active", "is-enabled"}
+        for call in command.call_args_list
+    )
+
+
 @pytest.mark.parametrize("text", ["{", '{"version":999}', "{}"])
 def test_malformed_or_unknown_metadata_refused(
     schedule: ScheduleFixture, text: str

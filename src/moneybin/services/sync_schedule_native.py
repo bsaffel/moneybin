@@ -550,7 +550,7 @@ class SystemdScheduleAdapter:
             owned,
             active and session,
             running,
-            any(present)
+            (any(present) or active or running)
             and (not all(present) or not registered or (session and not active)),
         )
 

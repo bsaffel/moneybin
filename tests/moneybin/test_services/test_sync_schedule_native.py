@@ -148,6 +148,46 @@ def test_linux_registered_timer_stays_owned_in_inactive_session(tmp_path: Path) 
     assert status.owned and not status.partial and not status.active
 
 
+@pytest.mark.parametrize("live_unit", ["timer", "service"])
+def test_linux_missing_both_files_with_live_cached_unit_is_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, live_unit: str
+) -> None:
+    manager = RemovalManager(tmp_path)
+    states = [
+        {
+            "LoadState": "loaded",
+            "ActiveState": "active" if suffix == live_unit else "inactive",
+            "FragmentPath": str(path),
+            "DropInPaths": "",
+            # Classification must not depend on the manager noticing file deletion.
+            "NeedDaemonReload": "no",
+            **(
+                {"MainPID": "123" if live_unit == "service" else "0"}
+                if suffix == "service"
+                else {}
+            ),
+        }
+        for suffix, path in (
+            ("timer", manager.adapter.timer_path(manager.job)),
+            ("service", manager.adapter.service_path(manager.job)),
+        )
+    ]
+    monkeypatch.setattr(manager.adapter, "_unit_states", Mock(return_value=states))
+    status = manager.adapter.inspect(manager.job)
+    assert status.present and status.owned
+    assert status.partial
+    assert not any(path.exists() for path in manager.files)
+
+
+def test_linux_missing_files_and_absent_manager_units_remain_absent(
+    tmp_path: Path,
+) -> None:
+    manager = RemovalManager(tmp_path)
+    status = manager.adapter.inspect(manager.job)
+    assert not status.present and not status.partial
+    assert status.owned and not status.active and not status.running
+
+
 def test_linux_remove_recovers_install_failure_before_any_native_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
