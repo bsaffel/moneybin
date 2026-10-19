@@ -300,7 +300,6 @@ class SyncScheduleService:
                 ):
                     self._operation("set", "unchanged")
                     return self._result(previous)
-                self.adapter.remove(old)
             definition = ScheduleDefinition(
                 home=str(self.home),
                 profile=self.profile,
@@ -312,11 +311,18 @@ class SyncScheduleService:
                 installed_at=self.now(),
                 launcher=launcher,
             )
-            # Unknown jobs are never adopted, including collisions with no metadata.
-            if not self.adapter.inspect(definition).owned:
-                raise schedule_error("Refusing to replace a job that is not owned.")
             state = _ScheduleState(definition=definition)
+            # A failed removal may leave files bound to the previous revision.
+            cleanup_definition = (
+                previous.definition if previous is not None else definition
+            )
             try:
+                if previous is not None:
+                    self.adapter.remove(previous.definition)
+                cleanup_definition = definition
+                # Never adopt unknown jobs, including collisions without metadata.
+                if not self.adapter.inspect(definition).owned:
+                    raise schedule_error("Refusing to replace a job that is not owned.")
                 self._write(state)
                 self.adapter.install(definition)
                 status = self.adapter.inspect(definition)
@@ -326,7 +332,7 @@ class SyncScheduleService:
                 # Retain metadata even when repair fails, so show/remove can explain
                 # the actual partial state and never adopt the leftover definition.
                 try:
-                    self.adapter.remove(definition)
+                    self.adapter.remove(cleanup_definition)
                     if previous is not None:
                         self._write(previous)
                         self.adapter.install(previous.definition)

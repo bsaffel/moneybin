@@ -292,6 +292,127 @@ def test_activation_failure_restores_previous_definition(
         json.loads(service.state_path.read_text())["definition"]["revision"]
         == previous.revision
     )
+    assert adapter.job is None
+    assert service.show().state == "partial"
+
+
+@pytest.mark.parametrize("failure", ["os", "runtime", "user"])
+def test_replacement_inspection_failure_restores_previous_native_schedule(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from moneybin.errors import UserError
+
+    service, adapter, _ = schedule
+    service.set("09:00")
+    previous = adapter.job
+    assert previous is not None
+    original_inspect = adapter.inspect
+    failed = False
+
+    def inspect(job: ScheduleDefinition) -> NativeStatus:
+        nonlocal failed
+        if job.revision != previous.revision and not failed:
+            failed = True
+            assert adapter.job is None
+            raise {
+                "os": OSError("synthetic inspection failure"),
+                "runtime": RuntimeError("synthetic inspection failure"),
+                "user": UserError(
+                    "Synthetic inspection failure", code="sync_schedule_error"
+                ),
+            }[failure]
+        return original_inspect(job)
+
+    monkeypatch.setattr(adapter, "inspect", inspect)
+    with pytest.raises((OSError, RuntimeError, UserError)) as caught:
+        service.set("10:00")
+    assert adapter.job == previous
+    assert service.show().state == "installed"
+    assert isinstance(caught.value, UserError)
+    assert (
+        json.loads(service.state_path.read_text())["definition"]["revision"]
+        == previous.revision
+    )
+
+
+@pytest.mark.parametrize("remainder", ["absent", "partial"])
+def test_replacement_partial_remove_failure_restores_using_old_binding(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch, remainder: str
+) -> None:
+    from moneybin.errors import UserError
+
+    service, adapter, _ = schedule
+    service.set("09:00")
+    previous = adapter.job
+    assert previous is not None
+    original_remove = adapter.remove
+    removals: list[ScheduleDefinition] = []
+
+    def remove(job: ScheduleDefinition) -> None:
+        removals.append(job)
+        if len(removals) == 1:
+            if remainder == "absent":
+                adapter.job = None
+            adapter.partial = True
+            raise OSError("synthetic failure after native removal began")
+        assert job.revision == previous.revision
+        original_remove(job)
+
+    monkeypatch.setattr(adapter, "remove", remove)
+    with pytest.raises((OSError, UserError)):
+        service.set("10:00")
+    assert adapter.job == previous
+    assert service.show().state == "installed"
+    assert len(removals) == 2
+
+
+def test_replacement_definition_failure_does_not_remove_previous_schedule(
+    schedule: ScheduleFixture,
+) -> None:
+    service, adapter, clock = schedule
+    service.set("09:00")
+    previous = adapter.job
+    clock.side_effect = RuntimeError("synthetic clock failure")
+    with pytest.raises(RuntimeError):
+        service.set("10:00")
+    assert adapter.job == previous
+
+
+def test_replacement_ownership_collision_preserves_external_definition(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.errors import UserError
+
+    service, adapter, _ = schedule
+    service.set("09:00")
+    previous = adapter.job
+    assert previous is not None
+    external = previous.model_copy(update={"revision": "c" * 32})
+    original_inspect, original_remove = adapter.inspect, adapter.remove
+
+    def inspect(job: ScheduleDefinition) -> NativeStatus:
+        if adapter.job is None and job.revision != previous.revision:
+            adapter.job = external
+        return original_inspect(job)
+
+    def remove(job: ScheduleDefinition) -> None:
+        if not original_inspect(job).owned:
+            raise UserError("Synthetic ownership refusal", code="sync_schedule_error")
+        original_remove(job)
+
+    monkeypatch.setattr(adapter, "inspect", inspect)
+    monkeypatch.setattr(adapter, "remove", remove)
+    install = Mock(wraps=adapter.install)
+    monkeypatch.setattr(adapter, "install", install)
+    with pytest.raises(UserError):
+        service.set("10:00")
+    assert adapter.job == external
+    install.assert_not_called()
+    assert service.show().state == "partial"
+    assert (
+        json.loads(service.state_path.read_text())["definition"]["revision"]
+        == previous.revision
+    )
 
 
 def test_noop_does_not_touch_database_secrets_or_client(
