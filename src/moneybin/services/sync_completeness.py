@@ -363,12 +363,15 @@ class SyncCompletenessService:
             outcomes: dict[_Scope, list[tuple[datetime, ScopeOutcome]]] = defaultdict(
                 list
             )
+            latest_scopes: set[_Scope] = set()
             histories: list[tuple[SimpleFINSourceResult, SimpleFINHistorySnapshot]] = []
             for receipt in candidates:
                 source = receipt.source
                 for outcome in source.outcomes:
                     scope = self._outcome_scope(source, outcome)
                     outcomes[scope].append((receipt.started_at, outcome))
+                    if receipt.started_at == newest:
+                        latest_scopes.add(scope)
                 for outcome in receipt.local_outcomes:
                     scope = self._outcome_scope(source, outcome)
                     if outcome.account_id is None:
@@ -420,6 +423,10 @@ class SyncCompletenessService:
                     _native_scope(source, account.native_scope, account.account_id)
                     for account in history.accounts
                 }
+                # Older retrievals cannot establish that the newest request
+                # covered every account in the current acknowledged history.
+                for scope in known - latest_scopes:
+                    add("evidence_unavailable", scope)
                 missing = observed_scopes.get(connection, set()) - known
                 for scope in missing:
                     add("history_unknown", scope)

@@ -300,6 +300,94 @@ def test_new_credential_generation_does_not_inherit_old_history(
     assert "history_unknown" in _kinds(_assess(db))
 
 
+@pytest.mark.parametrize("generation", [1, 2])
+@pytest.mark.parametrize("older_coverage", [False, True])
+@pytest.mark.parametrize("latest_coverage", ["omitted", "other-native", "complete"])
+def test_report_requires_latest_retrieval_for_each_history_scope(
+    db: Database, generation: int, older_coverage: bool, latest_coverage: str
+) -> None:
+    old = source()
+    old.history = _history(1)
+    if older_coverage:
+        old.outcomes = [
+            ScopeOutcome(
+                account_id="acct",
+                native_scope=old.history.accounts[0].native_scope,
+                window=old.batches[0].window,
+                status="complete",
+                error_code=None,
+            )
+        ]
+    load(db, old)
+    _bind(db)
+    latest = source(batch=2, day=2)
+    latest.credential_generation = generation
+    confirmed = _history(2)
+    if latest_coverage != "omitted":
+        native_scope = confirmed.accounts[0].native_scope
+        if latest_coverage == "other-native":
+            native_scope = native_scope.model_copy(update={"conn_id": "other-native"})
+        latest.outcomes = [
+            ScopeOutcome(
+                account_id="acct",
+                native_scope=native_scope,
+                window=latest.batches[0].window,
+                status="complete",
+                error_code=None,
+            )
+        ]
+    _confirmed_job(db, latest, job=2, day=2, confirmed_history=confirmed)
+
+    result = _assess(db)
+
+    assert result.complete is (latest_coverage == "complete")
+    if latest_coverage == "complete":
+        assert not result.reasons
+    else:
+        assert _kinds(result) == {"evidence_unavailable"}
+        reason = result.reasons[0]
+        assert reason.affected_account_ids == ()
+        assert reason.affected_account_count == 1
+        assert reason.unresolved_scope_count == 0
+
+
+@pytest.mark.parametrize("policy", ["included", "excluded", "filtered", "unbound"])
+def test_omitted_history_scope_respects_report_account_policy(
+    db: Database, policy: str
+) -> None:
+    old = source(account_changes={"id": "omitted"})
+    load(db, old)
+    if policy != "unbound":
+        _bind(db, "omitted", "omitted-canonical", include=policy != "excluded")
+    latest = source(batch=2, day=2)
+    history = _history(2)
+    history.accounts.append(
+        history.accounts[0].model_copy(update={"account_id": "omitted"})
+    )
+    latest.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=history.accounts[0].native_scope,
+            window=latest.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    _confirmed_job(db, latest, job=2, day=2, confirmed_history=history)
+    _bind(db)
+
+    result = _assess(db, {"canonical"} if policy in {"filtered", "unbound"} else None)
+
+    assert result.complete is (policy in {"excluded", "filtered"})
+    if policy in {"included", "unbound"}:
+        reason = next(r for r in result.reasons if r.kind == "evidence_unavailable")
+        assert reason.affected_account_ids == ()
+        assert reason.affected_account_count == (1 if policy == "included" else 0)
+        assert reason.unresolved_scope_count == (1 if policy == "unbound" else 0)
+    else:
+        assert not result.reasons
+
+
 def test_explicit_account_filter_omits_unrelated_resolved_holds(
     db: Database,
 ) -> None:
@@ -590,6 +678,15 @@ def test_unidentified_account_hold_survives_later_success(
 ) -> None:
     initial = source()
     initial.history = _history(1)
+    initial.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=initial.history.accounts[0].native_scope,
+            window=initial.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
     load(db, initial)
     _bind(db)
     assert _assess(db).complete is True
@@ -630,8 +727,12 @@ def test_unidentified_account_hold_survives_later_success(
     result = _assess(db)
 
     assert result.complete is False
-    assert _kinds(result) == {"invalid_observation"}
-    reason = result.reasons[0]
+    assert _kinds(result) == (
+        {"invalid_observation", "evidence_unavailable"}
+        if general
+        else {"invalid_observation"}
+    )
+    reason = next(r for r in result.reasons if r.kind == "invalid_observation")
     assert reason.affected_account_ids == ()
     assert reason.affected_account_count == 0
     assert reason.unresolved_scope_count == 1

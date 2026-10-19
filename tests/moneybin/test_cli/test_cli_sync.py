@@ -19,6 +19,7 @@ from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.connectors.sync_models import (
     InstitutionResult,
     LinkResult,
+    PlaidSourceResult,
     PullResult,
     SyncConnectionView,
     SyncDisconnectResult,
@@ -96,6 +97,26 @@ def _fake_pull_result(
                 status="completed",
                 transaction_count=10,
             )
+        ],
+        source_results=[
+            PlaidSourceResult.model_validate({
+                "provider": "plaid",
+                "connection_id": "22222222-2222-4222-8222-222222222222",
+                "credential_generation": 1,
+                "outcomes": [
+                    {
+                        "account_id": account_id,
+                        "native_scope": {
+                            "kind": "plaid_item",
+                            "provider_item_id": "item_chase",
+                        },
+                        "window": None,
+                        "status": "complete",
+                        "error_code": None,
+                    }
+                    for account_id in ("account-1", "account-2")
+                ],
+            })
         ],
         transforms_applied=transforms_applied,
         transforms_duration_seconds=0.05 if transforms_applied else None,
