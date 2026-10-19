@@ -6,13 +6,16 @@ need to INSERT test data directly require concrete tables, so we define
 minimal CREATE TABLE statements here.
 """
 
+from collections.abc import Callable, Collection
 from datetime import datetime
 
 import duckdb
+import pytest
 import sqlglot
 from sqlglot import exp
 
 from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.tables import TableRef
 
 _MODEL_FRESHNESS_DDL = (
     "meta.model_freshness (model_name VARCHAR, last_changed_at TIMESTAMP, "
@@ -871,3 +874,23 @@ def install_prep_view(db: Database, name: str) -> None:
     db.execute(
         f"CREATE OR REPLACE VIEW prep.{name} AS {query.sql(dialect='duckdb')}"  # shipped model name from a test, not user input
     )
+
+
+def spy_restate(
+    monkeypatch: pytest.MonkeyPatch, remaining: Callable[[], int]
+) -> list[tuple[tuple[TableRef, ...], str, int]]:
+    """Replace ``restate_after_write`` with a recorder.
+
+    Each call records its inputs, its ``committed_change``, and ``remaining()``
+    taken at that moment, so a test can show the restate ran after the
+    writer's delete committed.
+    """
+    calls: list[tuple[tuple[TableRef, ...], str, int]] = []
+
+    def spy(
+        _db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        calls.append((tuple(inputs), committed_change, remaining()))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", spy)
+    return calls

@@ -43,7 +43,7 @@ until tests run:
 `tests/moneybin/matching/test_int_matched_model.py`, and
 `tests/moneybin/test_services/test_doctor_service.py`. A data-layer diff
 touches shared primitives, so the covering run — `make test`,
-`make test-integration`, and `make test-scenarios` — is the draft PR's CI, not a
+`make test-integration`, and `make test-scenarios` — is the PR's CI, not a
 local run (AGENTS.md → "Pre-commit gate"). Read every shard before calling the
 work done, scenarios included: the `FCT_TRANSACTIONS_SCHEMA` snapshot is
 asserted only in the scenario tier.

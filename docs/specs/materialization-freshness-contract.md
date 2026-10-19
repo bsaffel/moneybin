@@ -186,8 +186,10 @@ def restate_after_write(
 ```
 
 - Keeps only inputs that restate: a read-through or unclassified `app.*` table
-  is dropped, so a caller that wrote a mixed set may pass all of it. Inputs
-  outside `app` always restate.
+  is dropped, so a caller that wrote a mixed set may pass all of it. A table
+  `external_models.yaml` does not declare (`raw.gsheet_seeds`, `raw.pdf_seeds`)
+  cannot be a restate root, and naming it would fail the plan, so it is
+  dropped too.
 - Returns without work when the warehouse has never been built.
 - Restates the named tables through `TransformService.restate_models`. SQLMesh
   accepts an external model as a restate root and restates every downstream
@@ -221,6 +223,8 @@ currency settings only, is removed; its callers use this module.
 | `app.exchange_rate_overrides`, `raw.exchange_rates` | `CurrencyService.set_override`, `delete_override`, `_store`; the refresh rates step |
 | `app.profile_settings` | `ProfileSettingsService.set_setting` |
 | `app.account_links` and the purged `raw.plaid_*` rows | `SyncService.purge_confirmed` |
+| the purged `raw.tabular_*` rows | `GSheetConnectionService.purge_confirmed` (a seed connection's `raw.gsheet_seeds` is not a declared external model, so that purge restates nothing) |
+| the reverted batch's `raw.*` rows (`REVERT_TABLES`) and the `app.security_links` it reverses | `ImportService.revert_confirmed` |
 | `raw.manual_transactions` | `TransactionService.create_manual_batch`, after its category step commits |
 
 An account merge moves links, decisions, lot selections and settings in one
@@ -232,7 +236,9 @@ does on request.
 
 Writes that touch only pending decisions — the account-link backfill, a
 proposed pair, a standalone reject — restate nothing, because no model reads a
-pending decision. The behavioural guard confirms each write it covers.
+pending decision. A purge or revert that deleted no row and reversed no link
+restates nothing either, for the same reason. The behavioural guard confirms
+each write it covers.
 
 An import or sync run with `refresh=False`, `import confirm`, and MCP
 `gsheet_pull` write raw rows together with the links and settings that describe
