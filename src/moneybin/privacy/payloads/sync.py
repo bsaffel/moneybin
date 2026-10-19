@@ -329,3 +329,27 @@ class SyncSchedulePlaceholderPayload:
 
     action: Annotated[str, DataClass.TXN_TYPE]
     status: Annotated[str, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class SyncScheduleAttemptPayload:
+    """Latest bounded scheduler outcome, with no financial receipt."""
+
+    state: Annotated[str, DataClass.TXN_TYPE]
+    started_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    ended_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    exit_status: Annotated[int | None, DataClass.AGGREGATE]
+    recovery_code: Annotated[str | None, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class SyncSchedulePayload:
+    """Operational metadata for CLI-only desktop scheduling."""
+
+    state: Annotated[str, DataClass.TXN_TYPE]
+    mechanism: Annotated[str, DataClass.TXN_TYPE]
+    time: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    timezone: Annotated[str, DataClass.TXN_TYPE]
+    nominal_next_run: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    diagnostic_location: Annotated[str, DataClass.RECORD_ID]
+    latest_attempt: SyncScheduleAttemptPayload | None

@@ -278,12 +278,12 @@ def test_invoking_a_stub_counts_it_against_that_command() -> None:
     """
     from moneybin.cli.main import app
 
-    before = _count("moneybin_cli_stub_invoked_total", "sync_schedule_show")
+    before = _count("moneybin_cli_stub_invoked_total", "sync_key_rotate")
 
-    result = runner.invoke(app, ["sync", "schedule", "show"])
+    result = runner.invoke(app, ["sync", "key", "rotate"])
 
     assert result.exit_code == 0, result.output
-    assert _count("moneybin_cli_stub_invoked_total", "sync_schedule_show") == before + 1
+    assert _count("moneybin_cli_stub_invoked_total", "sync_key_rotate") == before + 1
 
 
 @pytest.mark.parametrize("interactive", [False, True])

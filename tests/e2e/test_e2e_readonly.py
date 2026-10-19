@@ -36,6 +36,35 @@ _runner = CliRunner()
 class TestNoDBCommands:
     """Commands that run without an initialized database."""
 
+    @pytest.mark.parametrize("command", ["show", "remove", "set"])
+    def test_schedule_metadata_without_profile_or_database(
+        self, tmp_path: Path, command: str
+    ) -> None:
+        args = [
+            "--home",
+            str(tmp_path),
+            "--profile",
+            "deleted",
+            "sync",
+            "schedule",
+            command,
+        ]
+        if command == "set":
+            args.extend(["--time", "09:00"])
+        args.extend(["--output", "json"])
+        result = run_cli(
+            *args, env={"MONEYBIN_HOME": str(tmp_path), "MONEYBIN_PROFILE": "deleted"}
+        )
+        payload = json.loads(result.stdout)
+        if command == "set":
+            assert result.exit_code == 1
+            assert payload["error"]["code"] == "sync_schedule_error"
+        else:
+            result.assert_success()
+            assert payload["data"]["state"] == "absent"
+        assert "Welcome to MoneyBin" not in result.output
+        assert not (tmp_path / "profiles").exists()
+
     def test_profile_list(self, e2e_env: dict[str, str]) -> None:
         result = run_cli("profile", "list", env=e2e_env)
         result.assert_success()
@@ -222,9 +251,6 @@ class TestStubCommands:
         "cmd",
         [
             ["sync", "key", "rotate"],
-            ["sync", "schedule", "set"],
-            ["sync", "schedule", "show"],
-            ["sync", "schedule", "remove"],
             ["budget", "set", "Food", "500"],
             ["budget", "delete", "Food"],
         ],

@@ -24,7 +24,7 @@ from moneybin.logging.config import setup_logging
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["setup_observability", "flush_metrics"]
+__all__ = ["setup_observability", "flush_metrics", "finish_cli_metrics"]
 
 _atexit_registered = False
 
@@ -120,3 +120,14 @@ def flush_metrics() -> None:
             flush_to_duckdb(db)
     except Exception:  # best-effort shutdown flush; DB may be unavailable
         logger.debug("Metrics flush on exit failed", exc_info=True)
+
+
+def finish_cli_metrics(*, persist: bool = True) -> None:
+    """Finish a guarded CLI session before its credential policy is restored."""
+    import atexit
+
+    global _atexit_registered
+    atexit.unregister(flush_metrics)
+    _atexit_registered = False
+    if persist:
+        flush_metrics()

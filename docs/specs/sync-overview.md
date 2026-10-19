@@ -1,7 +1,7 @@
 # Sync — Overview
 
 > Last updated: 2026-10-18 — Phase 2 scheduling design uses desktop-session OS jobs and one missed-run catch-up attempt
-> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) has a draft implementation contract below; its commands remain unimplemented. Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
+> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 desktop-session scheduling follows the approved contract below; local implementation is under verification and native lifecycle acceptance remains pending (MB-291). Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
 > Replaces: `plaid-integration.md` (removed in #28) and `sync-client-integration.md` (moved to `archived/`)
@@ -345,7 +345,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 
 ### Schedule management
 
-**Design status: draft, awaiting written-design review.** The following is the
+**Design status: approved; implementation in progress (MB-291).** The following is the
 Phase 2 contract, not a description of shipped commands. It replaces this
 spec's earlier Linux cron proposal. Scheduling remains CLI-only.
 
@@ -500,6 +500,55 @@ failures. Logout or removal terminates the owned process tree through the OS;
 it does not undo already committed sync work. Subsequent work uses existing
 transaction, refresh, and recovery behavior.
 
+Scheduled credentials support the selected stock macOS Keychain or Linux
+Secret Service backend only. Refuse custom backends, chains, unsupported
+persisted selectors, and third-party discovery plugins before they can evaluate
+their access policy. Preserve the selected store's collection, scheme,
+application attributes, and existing credential addresses; do not substitute a
+backend or migrate credentials. Ordinary manual commands retain their existing
+authentication behavior.
+
+On macOS, disable process keychain interaction with the public Security
+framework API, restoring its previous state on exit. This deprecated API is
+required by the existing file-keychain backend; data-protection-keychain query
+flags do not govern that backend. Before each operation, conservatively require
+the default and every search-list file keychain to report unlocked, including
+unrelated listed stores. An unknown status refuses access. Check again after
+mutations; read the addressed item before deletion, because native deletion can
+otherwise succeed against a locked keychain. These checks cannot make OS lock
+state atomic: a lock racing an already-authorized operation can leave a partial
+mutation and failed receipt. Never unlock or show UI, and never treat an observed
+failure as success. Existing mixed-token publication protection remains in force.
+
+On Linux, use SecretStorage's public existing-collection and item operations
+over a guarded Jeepney connection. Refuse Unlock, Prompt, CreateCollection,
+interactive authorization flags, unknown outgoing methods, and prompt waits
+before transmission. Close each operation's connection even on refusal. This
+assumes a compliant Secret Service daemon; no guarantee is made for a daemon
+that displays UI contrary to the protocol. Missing collections fail rather than
+being created or replaced. An initially absent token publication marker may be
+created inside an existing unlocked collection.
+
+The fresh internal `sync pull --scheduled` child activates this policy before
+opening the database or constructing its sync service, clears the process key
+cache at both policy boundaries, and retains the policy through token rotation,
+readback, cleanup, and metrics persistence. Remove its atexit metrics hook before
+leaving the policy; failed policy setup discards that hook without database
+access. Recover unavailable credentials in a manual command, then let the next
+daily attempt run; scheduled execution never adds a fallback or retry.
+
+The child also carries the claimed profile ID and revision. Validate these
+against owned schedule metadata and the existing profile before constructing
+the client, after client construction before opening the database, and after
+database construction before yielding the sync service. Pass the expected ID
+explicitly through the existing client factory; never resolve or create another
+ID in that path. A delayed child cannot adopt a replacement same-name profile,
+including a replacement during client construction. These checks do not provide
+an atomic lock against arbitrary external filesystem replacement after a
+connection is opened, or revoke already-open OS resources. The client remains
+bound to its original broker identity; remove the schedule before profile
+deletion, as required above.
+
 Do not redirect raw CLI receipts or raw stderr into scheduler log files or the
 system journal. Keep diagnostics in MoneyBin's existing sanitized daily logs
 and expose the bounded attempt summary through `show`. The earlier Phase 2
@@ -551,6 +600,14 @@ Native behavior references: [launchd timed jobs](https://developer.apple.com/lib
 [launchd session lifecycle](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html),
 [systemd timers](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html),
 and [graphical-session.target](https://www.freedesktop.org/software/systemd/man/latest/systemd.special.html#graphical-session.target).
+
+**Current native inspection boundary.** macOS ownership verification compares
+the complete argument blocks from both `launchctl list` and `launchctl print`,
+the registered origin path, and the owned plist bytes. These raw text formats
+are compatibility-bound: an unknown rendering refuses ownership rather than
+adopting a same-label job. Comparing both argument renderings prevents quoted
+or newline delimiters in one rendering from impersonating another argument.
+This does not establish untested macOS versions or desktop lifecycle behavior.
 
 ### Non-interactive parity
 
@@ -604,8 +661,9 @@ Schwab (connected 2026-03-20, via plaid)
 
 ```
 
-Schedule receipts will be captured from the implementation; the draft command
-and outcome contract is in [Schedule management](#schedule-management).
+Schedule receipts report the native mechanism, state, daily local time,
+nominal next run, sanitized diagnostic location, and latest attempt summary.
+The command and outcome contract is in [Schedule management](#schedule-management).
 
 ---
 
@@ -1034,7 +1092,7 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 - One coalesced catch-up attempt, using native timers and a macOS login due-check
 - Existing sanitized diagnostics plus a bounded latest-attempt summary
 - Profile-bound lifecycle management (idempotent set, verified show, clean remove)
-- Draft implementation contract: [Schedule management](#schedule-management)
+- Approved implementation contract, in progress: [Schedule management](#schedule-management)
 
 ### Phase 3: E2E encryption
 

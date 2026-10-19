@@ -112,6 +112,8 @@ dependencies = [
     "starlette>=1.8.0",
     # Secret management and key derivation
     "keyring>=25.7.0",
+    "SecretStorage>=3.5.0; sys_platform == 'linux'",
+    "jeepney>=0.9.0; sys_platform == 'linux'",
     "argon2-cffi>=25.1.0",
     "python-multipart>=0.0.32",  # CVE-2026-42561/53538/53539/53540 — fixed in 0.0.31
     "lxml>=6.1.3",

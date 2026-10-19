@@ -1,0 +1,542 @@
+"""Owned desktop-session jobs; no shell, scheduler daemon, or credential access."""
+
+import os
+import plistlib
+import re
+import shutil
+import stat
+import subprocess  # noqa: S404  # native tools with explicit argv and no shell
+import sys
+import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from importlib.metadata import version
+from pathlib import Path
+from typing import Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+
+from moneybin.config import canonical_checkout_root, running_checkout_root
+from moneybin.errors import UserError
+
+_SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+_Command = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def schedule_error(message: str) -> UserError:
+    """Build a bounded scheduling error without persisting OS exception text."""
+    return UserError(
+        message,
+        code="sync_schedule_error",
+        hint="Inspect 'moneybin sync schedule show'; remove the owned schedule "
+        "before repairing or recreating it.",
+    )
+
+
+def clean_environment() -> dict[str, str]:
+    """Keep session connectivity, excluding configuration and environment secrets."""
+    allowed = {
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "TZ",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+    }
+    env = {k: v for k, v in os.environ.items() if k in allowed or k.startswith("LC_")}
+    env["PATH"] = _SAFE_PATH
+    return env
+
+
+def resolve_schedule_launcher() -> tuple[str, ...]:
+    """Use MCP's canonical-checkout or version-pinned installed launch shape."""
+    uv = shutil.which("uv")
+    if uv is None:
+        raise schedule_error("An absolute uv executable is required for scheduling.")
+    executable = Path(uv).resolve()
+    root = running_checkout_root()
+    if root is not None:
+        root = canonical_checkout_root(root).resolve()
+        paths = (executable, root)
+        args = (
+            str(executable),
+            "run",
+            "--offline",
+            "--no-sync",
+            "--directory",
+            str(root),
+            "moneybin",
+        )
+    else:
+        paths = (executable, Path(sys.executable).resolve())
+        args = (
+            str(executable),
+            "tool",
+            "run",
+            "--offline",
+            "--from",
+            f"moneybin=={version('moneybin')}",
+            "moneybin",
+        )
+    temporary_roots = {
+        Path("/tmp").resolve(),  # noqa: S108  # rejection boundary, never a write target
+        Path("/var/tmp").resolve(),  # noqa: S108  # rejection boundary, never a write target
+        Path(tempfile.gettempdir()).resolve(),
+    }
+    if any(
+        not p.exists() or any(p.is_relative_to(t) for t in temporary_roots)
+        for p in paths
+    ):
+        raise schedule_error("Scheduling requires a durable installation or checkout.")
+    return args
+
+
+class ScheduleDefinition(BaseModel):
+    """Complete binding of one native definition to a persisted revision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    home: str
+    profile: str
+    profile_id: str = Field(pattern=r"^[a-f0-9]{12}$")
+    job_id: str = Field(pattern=r"^com\.moneybin\.sync\.[a-f0-9]{24}$")
+    revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    mechanism: Literal["launchd", "systemd"]
+    installed_at: AwareDatetime
+    launcher: tuple[str, ...] = Field(min_length=1, max_length=16)
+
+    @field_validator("home")
+    @classmethod
+    def absolute_home(cls, value: str) -> str:
+        """Reject relative or unrepresentable homes in persisted definitions."""
+        if not Path(value).is_absolute() or "\x00" in value:
+            raise ValueError("home must be absolute")
+        return value
+
+
+@dataclass(frozen=True)
+class NativeStatus:
+    """OS registration, ownership, and process facts for one owned job."""
+
+    present: bool
+    owned: bool
+    active: bool
+    running: bool
+    partial: bool = False
+
+
+def atomic_write(path: Path, content: bytes) -> None:
+    """Replace owner-only content and sync its directory before returning."""
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _matches(path: Path, contents: bytes) -> bool:
+    if path.is_symlink():
+        return False
+    info = path.stat()
+    return (
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.getuid()
+        and not info.st_mode & 0o022
+        and path.read_bytes() == contents
+    )
+
+
+def _runner_args(job: ScheduleDefinition, user_home: Path) -> list[str]:
+    # env -i strips the user manager's environment before uv or MoneyBin starts.
+    return [
+        "/usr/bin/env",
+        "-i",
+        f"HOME={user_home}",
+        f"PATH={_SAFE_PATH}",
+        *job.launcher,
+        "--home",
+        job.home,
+        "--profile",
+        job.profile,
+        "sync",
+        "schedule",
+        "_run",
+        "--revision",
+        job.revision,
+    ]
+
+
+def _launchd_binding_matches(
+    job: ScheduleDefinition,
+    user_home: Path,
+    path: Path,
+    listing: str,
+    printed: str,
+) -> bool:
+    """Fail closed when either native rendering cannot prove the complete argv."""
+    arguments = _runner_args(job, user_home)
+    listed_start, listed_end = '\t"ProgramArguments" = (\n', "\t);\n"
+    printed_start, printed_end = "\targuments = {\n", "\t}\n"
+    expected_list = (
+        listed_start + "".join(f'\t\t"{arg}";\n' for arg in arguments) + listed_end
+    )
+    expected_print = (
+        printed_start + "".join(f"\t\t{arg}\n" for arg in arguments) + printed_end
+    )
+
+    def complete_block(text: str, start: str, end: str) -> str | None:
+        if text.count(start) != 1:
+            return None
+        offset = text.index(start)
+        stop = text.find(end, offset + len(start))
+        return None if stop < 0 else text[offset : stop + len(end)]
+
+    # launchctl does not escape these strings. One rendering alone admits
+    # delimiter-shaped argv spoofing; the two different separators must agree.
+    # `print` is explicitly not a stable API: new formats are an ownership
+    # refusal, never permission to modify an unverified live job.
+    return (
+        complete_block(listing, listed_start, listed_end) == expected_list
+        and complete_block(printed, printed_start, printed_end) == expected_print
+        and listing.count(f'\t"Label" = "{job.job_id}";\n') == 1
+        and listing.count('\t"Program" = "/usr/bin/env";\n') == 1
+        and printed.count("\tpath = ") == 1
+        and f"\tpath = {path}\n" in printed
+    )
+
+
+class LaunchdScheduleAdapter:
+    """Manage only a bound Aqua LaunchAgent in the current user's GUI domain."""
+
+    mechanism: Literal["launchd"] = "launchd"
+
+    def __init__(
+        self, *, user_home: Path | None = None, command: _Command = subprocess.run
+    ) -> None:
+        """Target the current user GUI domain and per-user LaunchAgent folder."""
+        self.user_home = user_home or Path.home()
+        self.command = command
+        self.domain = f"gui/{os.getuid()}"
+
+    def _call(self, args: list[str], *, check: bool = True):
+        try:
+            result = self.command(
+                args,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=clean_environment(),
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise schedule_error(
+                "The native scheduler could not be contacted."
+            ) from exc
+        if check and result.returncode:
+            raise schedule_error(
+                "launchd refused the schedule operation; metadata "
+                "was retained for inspection and removal."
+            )
+        return result
+
+    def validate_session(self) -> None:
+        """Refuse installation outside a graphical login session."""
+        if self._call(["/bin/launchctl", "print", self.domain], check=False).returncode:
+            raise schedule_error(
+                "Scheduling requires an active graphical login session."
+            )
+
+    def path(self, job: ScheduleDefinition) -> Path:
+        """Return the single owned LaunchAgent path."""
+        return self.user_home / "Library/LaunchAgents" / f"{job.job_id}.plist"
+
+    def render(self, job: ScheduleDefinition) -> dict[Path, bytes]:
+        """Serialize the literal runner argument array into a LaunchAgent plist."""
+        hour, minute = map(int, job.time.split(":"))
+        payload = {
+            "Label": job.job_id,
+            "ProgramArguments": _runner_args(job, self.user_home),
+            "LimitLoadToSessionType": "Aqua",
+            "RunAtLoad": True,
+            "StartCalendarInterval": {"Hour": hour, "Minute": minute},
+            "AbandonProcessGroup": False,
+            "StandardInPath": "/dev/null",
+            "StandardOutPath": "/dev/null",
+            "StandardErrorPath": "/dev/null",
+        }
+        return {self.path(job): plistlib.dumps(payload)}
+
+    def inspect(self, job: ScheduleDefinition) -> NativeStatus:
+        """Check the complete file and registration without adopting another job."""
+        path = self.path(job)
+        exists = path.exists() or path.is_symlink()
+        owned = not exists or _matches(path, self.render(job)[path])
+        loaded = self._call(
+            ["/bin/launchctl", "print", f"{self.domain}/{job.job_id}"], check=False
+        )
+        session = not self._call(
+            ["/bin/launchctl", "print", self.domain], check=False
+        ).returncode
+        # The PID comes from legacy list; binding proof requires both complete
+        # literal renderings, because their raw string formats are ambiguous alone.
+        listing = self._call(["/bin/launchctl", "list", job.job_id], check=False)
+        if loaded.returncode == 0:
+            owned = (
+                owned
+                and listing.returncode == 0
+                and _launchd_binding_matches(
+                    job,
+                    self.user_home,
+                    path,
+                    listing.stdout,
+                    loaded.stdout,
+                )
+            )
+        running = listing.returncode == 0 and bool(
+            re.search(r'"PID"\s*=\s*[1-9]\d*;', listing.stdout)
+        )
+        return NativeStatus(
+            present=exists or loaded.returncode == 0,
+            owned=owned and not (not exists and loaded.returncode == 0),
+            active=session and loaded.returncode == 0,
+            running=running,
+            partial=exists != (loaded.returncode == 0) and session,
+        )
+
+    def install(self, job: ScheduleDefinition) -> None:
+        """Validate and register one owned definition in the GUI domain."""
+        self.validate_session()
+        status = self.inspect(job)
+        if not status.owned:
+            raise schedule_error("Refusing to replace a job that is not owned.")
+        path, content = next(iter(self.render(job).items()))
+        atomic_write(path, content)
+        self._call(["/usr/bin/plutil", "-lint", str(path)])
+        self._call(["/bin/launchctl", "enable", f"{self.domain}/{job.job_id}"])
+        self._call(["/bin/launchctl", "bootstrap", self.domain, str(path)])
+        if not self.inspect(job).active:
+            raise schedule_error("The installed launchd job could not be verified.")
+
+    def remove(self, job: ScheduleDefinition) -> None:
+        """Disable, stop the owned process group, and remove its definition."""
+        status = self.inspect(job)
+        if not status.owned:
+            raise schedule_error("Refusing to remove a job that is not owned.")
+        if status.active:
+            target = f"{self.domain}/{job.job_id}"
+            self._call(["/bin/launchctl", "disable", target])
+            self._call(["/bin/launchctl", "bootout", target])
+            if (
+                self._call(["/bin/launchctl", "print", target], check=False).returncode
+                == 0
+            ):
+                raise schedule_error("The owned launchd process did not stop.")
+        self.path(job).unlink(missing_ok=True)
+
+
+def _unit_quote(argument: str) -> str:
+    # systemd.syntax C escaping, plus ExecStart specifier/environment escaping.
+    escaped = (
+        argument
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace("%", "%%")
+        .replace("$", "$$")
+    )
+    return f'"{escaped}"'
+
+
+class SystemdScheduleAdapter:
+    """Manage one user timer and service tied to graphical-session.target."""
+
+    mechanism: Literal["systemd"] = "systemd"
+
+    def __init__(
+        self, *, user_home: Path | None = None, command: _Command = subprocess.run
+    ) -> None:
+        """Target the current user's systemd manager and unit directory."""
+        self.user_home = user_home or Path.home()
+        self.command = command
+
+    def _call(self, args: list[str], *, check: bool = True):
+        try:
+            result = self.command(
+                ["/usr/bin/systemctl", "--user", *args],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=clean_environment(),
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise schedule_error("The systemd user manager is unavailable.") from exc
+        if check and result.returncode:
+            raise schedule_error(
+                "systemd refused the schedule operation; metadata "
+                "was retained for inspection and removal."
+            )
+        return result
+
+    def validate_session(self) -> None:
+        """Require a desktop that manages graphical-session.target."""
+        if self._call(
+            ["is-active", "--quiet", "graphical-session.target"], check=False
+        ).returncode:
+            raise schedule_error(
+                "This desktop has no active systemd graphical-session "
+                "target; scheduling is unsupported in this session."
+            )
+
+    def service_path(self, job: ScheduleDefinition) -> Path:
+        """Return the single owned service definition path."""
+        return self.user_home / ".config/systemd/user" / f"{job.job_id}.service"
+
+    def timer_path(self, job: ScheduleDefinition) -> Path:
+        """Return the matching owned daily timer path."""
+        return self.service_path(job).with_suffix(".timer")
+
+    def render(self, job: ScheduleDefinition) -> dict[Path, bytes]:
+        """Render session-bound units with native argument escaping."""
+        unit = (
+            "[Unit]\nDescription=MoneyBin scheduled sync\n"
+            "Requisite=graphical-session.target\n"
+            "After=graphical-session.target\nPartOf=graphical-session.target\n"
+        )
+        arguments = list(map(_unit_quote, _runner_args(job, self.user_home)))
+        # %t is the native user-runtime directory, resolved anew each session;
+        # only these fixed specifiers expand, never percent signs from user paths.
+        arguments[4:4] = [
+            '"XDG_RUNTIME_DIR=%t"',
+            '"DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus"',
+        ]
+        args = " ".join(arguments)
+        service = (
+            unit + "[Service]\nType=oneshot\nExecStart=" + args + "\n"
+            "KillMode=control-group\nRestart=no\nTimeoutStartSec=infinity\n"
+            "StandardInput=null\nStandardOutput=null\nStandardError=null\n"
+        )
+        # The default Before=timers.target cycles through basic.target back
+        # to graphical-session.target. Keep explicit shutdown ordering instead.
+        timer = (
+            unit + "DefaultDependencies=no\nConflicts=shutdown.target\n"
+            "Before=shutdown.target\n"
+            f"[Timer]\nOnCalendar=*-*-* {job.time}:00\n"
+            "Persistent=true\nWakeSystem=false\n"
+            "[Install]\nWantedBy=graphical-session.target\n"
+        )
+        return {
+            self.service_path(job): service.encode(),
+            self.timer_path(job): timer.encode(),
+        }
+
+    def inspect(self, job: ScheduleDefinition) -> NativeStatus:
+        """Verify both files, loaded paths, drop-ins, and live session state."""
+        files = self.render(job)
+        present = [p.exists() or p.is_symlink() for p in files]
+        owned = all(
+            not exists or _matches(path, files[path])
+            for path, exists in zip(files, present, strict=True)
+        )
+        states: list[dict[str, str]] = []
+        for suffix in ("timer", "service"):
+            result = self._call(
+                [
+                    "show",
+                    f"{job.job_id}.{suffix}",
+                    "--property=LoadState,ActiveState,MainPID,FragmentPath,"
+                    "DropInPaths,NeedDaemonReload",
+                ],
+                check=False,
+            )
+            values = dict(
+                line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+            )
+            path = self.timer_path(job) if suffix == "timer" else self.service_path(job)
+            if values.get("DropInPaths") or values.get("NeedDaemonReload") == "yes":
+                owned = False
+            if values.get("FragmentPath") and values["FragmentPath"] != str(path):
+                owned = False
+            states.append(values)
+        session = not self._call(
+            ["is-active", "--quiet", "graphical-session.target"], check=False
+        ).returncode
+        active = states[0].get("ActiveState") == "active"
+        running = states[1].get("ActiveState") in {"active", "activating"}
+        return NativeStatus(
+            any(present) or active or running,
+            owned,
+            active and session,
+            running,
+            any(present) and (not all(present) or (session and not active)),
+        )
+
+    def install(self, job: ScheduleDefinition) -> None:
+        """Validate both complete units and activate only the owned timer."""
+        self.validate_session()
+        if not self.inspect(job).owned:
+            raise schedule_error("Refusing to replace a job that is not owned.")
+        for path, content in self.render(job).items():
+            atomic_write(path, content)
+        try:
+            result = self.command(
+                [
+                    "/usr/bin/systemd-analyze",
+                    "--user",
+                    "verify",
+                    str(self.service_path(job)),
+                    str(self.timer_path(job)),
+                ],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                env=clean_environment(),
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise schedule_error(
+                "Native systemd definition validation failed."
+            ) from exc
+        if result.returncode:
+            raise schedule_error("Native systemd definition validation failed.")
+        self._call(["daemon-reload"])
+        self._call(["enable", "--now", f"{job.job_id}.timer"])
+        if not self.inspect(job).active:
+            raise schedule_error("The installed systemd timer could not be verified.")
+
+    def remove(self, job: ScheduleDefinition) -> None:
+        """Disable the timer, stop its process tree, and clear persistent state."""
+        if not self.inspect(job).owned:
+            raise schedule_error("Refusing to remove a job that is not owned.")
+        self._call(["disable", "--now", f"{job.job_id}.timer"])
+        self._call(["stop", f"{job.job_id}.service"])
+        self._call(["clean", "--what=state", f"{job.job_id}.timer"])
+        for path in self.render(job):
+            path.unlink(missing_ok=True)
+        self._call(["daemon-reload"])
+
+
+def native_adapter() -> LaunchdScheduleAdapter | SystemdScheduleAdapter:
+    """Select the supported native desktop mechanism without fallback jobs."""
+    if sys.platform == "darwin":
+        return LaunchdScheduleAdapter()
+    if sys.platform == "linux":
+        return SystemdScheduleAdapter()
+    raise schedule_error("Scheduled sync supports macOS and systemd Linux desktops.")

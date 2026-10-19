@@ -315,9 +315,6 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             budget delete
             budget set
             sync key rotate
-            sync schedule remove
-            sync schedule set
-            sync schedule show
             transactions categorize ml apply
             transactions categorize ml status
             transactions categorize ml train
@@ -392,6 +389,10 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             sync login
             sync logout
             sync pull
+            sync schedule remove
+            sync schedule set
+            sync schedule show
+            sync schedule _run
             synthetic generate
             synthetic reset
             system audit get

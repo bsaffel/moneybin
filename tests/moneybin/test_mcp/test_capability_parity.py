@@ -50,9 +50,6 @@ UNIMPLEMENTED_CLI_INVOCATIONS = {
     "budget delete": ("Food",),
     "budget set": ("Food", "100"),
     "sync key rotate": (),
-    "sync schedule remove": (),
-    "sync schedule set": (),
-    "sync schedule show": (),
     "transactions categorize ml apply": (),
     "transactions categorize ml status": (),
     "transactions categorize ml train": (),
@@ -76,6 +73,7 @@ HIDDEN_COMPATIBILITY_ALIASES = {
     "sync connect": "sync link",
     "sync connect-status": "sync link-status",
 }
+INTERNAL_CLI_ENTRY_POINTS = {"sync schedule _run"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,8 +227,8 @@ def test_unimplemented_cli_exclusions_execute_as_explicit_stubs(
     assert "moneybin --help" in result.stderr
 
 
-def test_hidden_cli_paths_are_aliases_or_unimplemented_stubs() -> None:
-    """Only two things are hidden: compatibility aliases and whole-command stubs.
+def test_hidden_cli_paths_are_aliases_stubs_or_internal_entries() -> None:
+    """Hidden executable entries are aliases, stubs, or bound native callbacks.
 
     Stubs are hidden per cli-output-coherence req 31 so ``--help`` stops
     advertising what the CLI cannot deliver. They stay registered and
@@ -244,11 +242,18 @@ def test_hidden_cli_paths_are_aliases_or_unimplemented_stubs() -> None:
         set(HIDDEN_COMPATIBILITY_ALIASES)
         | UNIMPLEMENTED_CLI_PATHS
         | UNIMPLEMENTED_EXIT_ONE_CLI_PATHS
+        | INTERNAL_CLI_ENTRY_POINTS
     )
     assert set(HIDDEN_COMPATIBILITY_ALIASES) <= mapped
     for alias, canonical in HIDDEN_COMPATIBILITY_ALIASES.items():
         assert commands[alias].hidden
         assert canonical in commands
+
+
+def test_internal_schedule_entry_requires_explicit_revision() -> None:
+    result = CliRunner().invoke(app, ["sync", "schedule", "_run"])
+    assert result.exit_code == 2
+    assert "--revision" in result.output
 
 
 def test_hidden_sync_aliases_execute_the_canonical_callback(
