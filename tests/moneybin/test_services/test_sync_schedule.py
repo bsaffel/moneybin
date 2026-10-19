@@ -37,7 +37,8 @@ class MemoryAdapter:
 
         return NativeStatus(
             present=self.job is not None,
-            owned=self.job is None or self.job == job,
+            owned=self.job is None
+            or self.job.model_dump(mode="json") == job.model_dump(mode="json"),
             active=self.active and self.job is not None,
             running=self.running,
             partial=self.partial,
@@ -431,6 +432,61 @@ def test_dst_rollback_does_not_repeat_daily_occurrence(
     assert service.run() == 0
     spawn.assert_called_once()
     assert service.show().nominal_next_run == "2026-11-02T01:30:00-05:00"
+
+
+def test_dst_rollback_login_catches_up_elapsed_first_fold(
+    schedule: ScheduleFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    service, _, clock = schedule
+    zone = ZoneInfo("America/New_York")
+    clock.return_value = datetime(2026, 10, 31, 8, tzinfo=zone)
+    service.set("01:30")
+    clock.return_value = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    spawn = Mock(return_value=Mock(wait=Mock(return_value=0)))
+    monkeypatch.setattr("moneybin.services.sync_schedule.subprocess.Popen", spawn)
+    assert service.run() == 0
+    spawn.assert_called_once()
+    assert json.loads(service.state_path.read_text())["last_claimed_occurrence"] == (
+        "2026-11-01"
+    )
+    clock.return_value = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=1)
+    assert service.run() == 0
+    spawn.assert_called_once()
+
+
+def test_dst_rollback_nominal_next_run_is_a_future_instant(
+    schedule: ScheduleFixture,
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    service, _, clock = schedule
+    zone = ZoneInfo("America/New_York")
+    clock.return_value = datetime(2026, 10, 31, 8, tzinfo=zone)
+    service.set("01:30")
+    clock.return_value = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    assert service.show().nominal_next_run == "2026-11-02T01:30:00-05:00"
+
+
+@pytest.mark.parametrize("fold, expected_runs", [(0, 1), (1, 0)])
+def test_dst_rollback_install_boundary_uses_elapsed_instants(
+    schedule: ScheduleFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    fold: int,
+    expected_runs: int,
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    service, _, clock = schedule
+    zone = ZoneInfo("America/New_York")
+    clock.return_value = datetime(2026, 11, 1, 1, 10, tzinfo=zone, fold=fold)
+    service.set("01:30")
+    clock.return_value = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    spawn = Mock(return_value=Mock(wait=Mock(return_value=0)))
+    monkeypatch.setattr("moneybin.services.sync_schedule.subprocess.Popen", spawn)
+    assert service.run() == 0
+    assert spawn.call_count == expected_runs
 
 
 def test_linux_native_timer_owns_catchup_not_local_due_date(

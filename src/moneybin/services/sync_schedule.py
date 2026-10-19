@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
@@ -102,7 +102,7 @@ def _latest_occurrence(now: datetime, daily_time: str) -> datetime:
     day = now.date()
     while True:
         candidate = _occurrence(day, daily_time, now)
-        if candidate is not None and candidate <= now:
+        if candidate is not None and candidate.astimezone(UTC) <= now.astimezone(UTC):
             return candidate
         day -= timedelta(days=1)
 
@@ -237,7 +237,7 @@ class SyncScheduleService:
             outcome = "installed"
         day = now.date()
         candidate = _occurrence(day, job.time, now)
-        while candidate is None or candidate <= now:
+        while candidate is None or candidate.astimezone(UTC) <= now.astimezone(UTC):
             day += timedelta(days=1)
             candidate = _occurrence(day, job.time, now)
         return ScheduleResult(
@@ -400,7 +400,7 @@ class SyncScheduleService:
                 occurrence = None
                 if job.mechanism == "launchd":
                     due = _latest_occurrence(now, job.time)
-                    if due <= job.installed_at or (
+                    if due.astimezone(UTC) <= job.installed_at.astimezone(UTC) or (
                         state.last_claimed_occurrence is not None
                         and due.date() <= state.last_claimed_occurrence
                     ):
