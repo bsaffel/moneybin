@@ -58,6 +58,13 @@ calendar bounds to UTC and filter instants with `[start, end)`. DST days may
 have 23 or 25 hours. Business-DATE reports filter the source date directly.
 CLI, MCP and SQL-backed reports share the policy.
 
+The `calendar_bounds` helper requires an unambiguous, existing local midnight
+at both endpoints. It rejects midnight gaps, repeated midnights and skipped
+calendar dates; it does not choose an offset or shift a boundary. Current
+reporting paths do not call this helper. A caller requiring those boundaries
+must first define the calendar-selection policy separately from strict legacy
+timestamp interpretation.
+
 ## Incompatible profiles and offline maintenance
 
 Normal opens inspect stored types and the temporal contract before schema

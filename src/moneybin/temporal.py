@@ -49,7 +49,7 @@ def interpret_legacy_time(
 def calendar_bounds(
     start: date, end: date, zone: ZoneInfo
 ) -> tuple[datetime, datetime]:
-    """Convert the local calendar interval [start, end) to strict UTC bounds."""
+    """Convert [start, end) to UTC; reject missing or ambiguous local midnight."""
     if end < start:
         raise ValueError("Calendar interval end must not precede start")
     return (

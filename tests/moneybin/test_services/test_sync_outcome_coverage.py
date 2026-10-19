@@ -1,5 +1,8 @@
 """Recovery evaluates retrieval against acknowledged native account history."""
 
+import json
+from copy import deepcopy
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -7,6 +10,7 @@ import pytest
 from moneybin.connectors.sync_models import (
     SimpleFINSourceResult,
     SyncAckV2Response,
+    SyncEnvelopeV2,
     SyncJobDetails,
     SyncJobSource,
 )
@@ -18,6 +22,7 @@ from tests.moneybin.connectors.test_sync_pull_completeness import (
 )
 from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.test_services.test_simplefin_sync_service import (
+    JOB,
     NOW,
     _client,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
     _envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
@@ -97,3 +102,63 @@ def test_recovery_checks_newly_acknowledged_native_account_scopes(
     stored_source = stored.details.result.source_results[0]
     assert isinstance(stored_source, SimpleFINSourceResult)
     assert stored_source.history is None
+
+
+@pytest.mark.parametrize(
+    "coverage", ["all", "none", "subset", "duplicate", "wrong_item", "partial"]
+)
+def test_plaid_completeness_requires_every_payload_account_scope(
+    db: Database, coverage: str
+) -> None:
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    envelope = json.loads(fixture.read_text())
+    envelope["job_id"] = str(JOB)
+    source = envelope["sources"][0]
+    payload = source["batches"][0]["payload"]
+    payload["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    second_account = deepcopy(payload["accounts"][0])
+    second_account["account_id"] = "plaid-account-2"
+    payload["accounts"].append(second_account)
+    second_outcome = deepcopy(source["outcomes"][0])
+    second_outcome["account_id"] = "plaid-account-2"
+    source["outcomes"].append(second_outcome)
+    if coverage == "none":
+        source["outcomes"] = []
+    elif coverage == "subset":
+        source["outcomes"] = source["outcomes"][:1]
+    elif coverage == "duplicate":
+        source["outcomes"][1] = deepcopy(source["outcomes"][0])
+    elif coverage == "wrong_item":
+        source["outcomes"][1]["native_scope"]["provider_item_id"] = "other-item"
+    elif coverage == "partial":
+        source["outcomes"][1]["status"] = "partial"
+        source["outcomes"][1]["error_code"] = "provider_error"
+    data = SyncEnvelopeV2.model_validate(envelope)
+    original_outcomes = deepcopy(data.sources[0].outcomes)
+    client = _client(data)
+    service = _service(db, client)
+
+    result = service.pull(refresh=False)
+
+    assert result.complete is (coverage == "all")
+    assert result.ingestion_state == "committed"
+    assert result.ack_state == "confirmed"
+    assert result.accounts_loaded == 2
+    assert result.transactions_loaded == 1
+    stored = SyncJobStateRepo(db).get(str(JOB), client.consumer_id)
+    assert stored is not None
+    assert stored.details.sources[0].source.outcomes == original_outcomes
+    assert stored.details.acknowledgement is not None
+    assert stored.details.acknowledgement.results[0].outcomes == original_outcomes
+    assert data.model_dump(mode="json", exclude_unset=True) == envelope
+
+    recovered = service.recover(str(JOB), refresh=False, local_only=True)
+
+    assert recovered.complete is (coverage == "all")
+    assert recovered.source_results[0].outcomes == result.source_results[0].outcomes

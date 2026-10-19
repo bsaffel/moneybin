@@ -30,10 +30,12 @@ from moneybin.connectors.sync_models import (
     LinkInitiateResponse,
     LinkResult,
     NativeScope,
+    PlaidItemScope,
     PlaidSource,
     PlaidSyncDataResponse,
     ProviderSourceResult,
     PullResult,
+    ScopeOutcome,
     SimpleFINHistorySnapshot,
     SimpleFINSource,
     SimpleFINSourceResult,
@@ -538,11 +540,12 @@ class SyncService:
                     result.balances_loaded += loaded.balances
                     source_result.outcomes = loaded.outcomes
                 else:
+                    account_scopes: set[tuple[str, str]] = set()
                     for batch_index, batch in enumerate(source.batches):
                         native = plaid_data[source_index, batch_index]
-                        item_ids.update(
-                            self.loader.build_account_to_item_map(native).values()
-                        )
+                        account_items = self.loader.build_account_to_item_map(native)
+                        item_ids.update(account_items.values())
+                        account_scopes.update(account_items.items())
                         item_ids.update(
                             inst.provider_item_id
                             for inst in native.metadata.institutions
@@ -587,6 +590,26 @@ class SyncService:
                             )
                             for inst in native.metadata.institutions
                         )
+                    reported_scopes = {
+                        (outcome.account_id, outcome.native_scope.provider_item_id)
+                        for outcome in source.outcomes
+                        if outcome.account_id is not None
+                        and isinstance(outcome.native_scope, PlaidItemScope)
+                    }
+                    source_result.outcomes.extend(
+                        ScopeOutcome(
+                            account_id=account_id,
+                            native_scope=PlaidItemScope(
+                                kind="plaid_item", provider_item_id=item_id
+                            ),
+                            window=None,
+                            status="partial",
+                            error_code="provider_error",
+                        )
+                        for account_id, item_id in sorted(
+                            account_scopes - reported_scopes
+                        )
+                    )
                 references.append(
                     SyncJobSource(
                         source=_SOURCE_RESULT.validate_python(

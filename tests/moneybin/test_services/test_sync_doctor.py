@@ -3,7 +3,7 @@
 import json
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -17,7 +17,8 @@ from moneybin.connectors.sync_errors import SyncAPIError
 from moneybin.database import Database
 from moneybin.metrics.registry import NET_WORTH_STALE_BALANCE_ACCOUNTS
 from moneybin.repositories.account_links_repo import AccountLinksRepo
-from moneybin.services import doctor_service
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.services import doctor_service, profile_settings_service
 from moneybin.services.doctor_service import DoctorService
 from moneybin.utils.user_config import get_or_create_profile_id
 from tests.moneybin.db_helpers import create_core_tables
@@ -167,6 +168,45 @@ def test_stale_provider_balance_despite_fresh_fetch(
     assert db.execute("SELECT balance FROM core.fct_balances_daily").fetchone() == (
         Decimal("100.25"),
     )
+
+
+@pytest.mark.parametrize(
+    ("zone", "hour", "utc_age", "status"),
+    [("America/New_York", 0, 31, "pass"), ("Asia/Tokyo", 23, 30, "warn")],
+)
+def test_balance_age_uses_saved_reporting_calendar(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    zone: str,
+    hour: int,
+    utc_age: int,
+    status: str,
+) -> None:
+    create_core_tables(db)
+    ProfileSettingsRepo(db).set_reporting_timezone(zone, actor="test")
+    utc_day = db.execute("SELECT CURRENT_DATE").fetchone()
+    assert utc_day is not None
+    now = datetime.combine(utc_day[0], time(hour, 30), tzinfo=UTC)
+
+    def frozen_now(_tz: tzinfo | None = None) -> datetime:
+        return now
+
+    # Freeze the clock only; the real saved-calendar conversion still runs.
+    monkeypatch.setattr(profile_settings_service, "datetime", MagicMock(now=frozen_now))
+    db.execute(
+        """INSERT INTO core.fct_balances_daily
+        (account_id, balance_date, balance, is_observed, in_net_worth,
+         observation_source)
+        VALUES ('canonical', ?, 100, TRUE, TRUE, 'ofx')""",
+        [utc_day[0] - timedelta(days=utc_age)],
+    )
+
+    result = _check(db, monkeypatch, "net_worth_stale_balance")
+
+    assert result.status == status
+    if status == "warn":
+        assert result.detail is not None
+        assert "1 included accounts" in result.detail
 
 
 @pytest.mark.parametrize(

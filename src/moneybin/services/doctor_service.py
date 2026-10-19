@@ -759,10 +759,10 @@ class DoctorService:
                 JOIN counted AS k ON k.account_id = d.account_id
                 WHERE d.is_observed
                 GROUP BY d.account_id
-                HAVING CURRENT_DATE - MAX(d.balance_date) > ?
+                HAVING ?::DATE - MAX(d.balance_date) > ?
                 ORDER BY d.account_id
-                """,  # trusted TableRefs; threshold bound
-                [threshold],
+                """,  # trusted TableRefs; reporting date and threshold bound
+                [ProfileSettingsService(self._db).today(), threshold],
             ).fetchall()
         except Exception:
             return InvariantResult(
