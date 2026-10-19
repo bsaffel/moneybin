@@ -177,6 +177,11 @@ def test_missing_delivery_cannot_clear_prior_validation_hold(
             "start": "2026-08-01T00:00:00Z",
             "end": "2026-09-01T00:00:00Z",
         })
+        missing.outcomes.append(
+            first.outcomes[0].model_copy(
+                update={"window": missing.batches[0].window}, deep=True
+            )
+        )
     _confirmed_job(db, missing, job=2, day=2, confirmed_history=_history(2))
 
     assert "invalid_observation" in _kinds(_assess(db))
@@ -428,18 +433,15 @@ def test_report_requires_latest_retrieval_for_each_history_scope(
     if latest_coverage == "complete":
         assert not result.reasons
     else:
-        expected = {"evidence_unavailable"}
-        if latest_coverage == "other-native":
-            expected.add("retrieval_partial")
-            missing = next(
-                reason
-                for reason in result.reasons
-                if reason.kind == "retrieval_partial"
-            )
-            assert missing.affected_account_ids == ()
-            assert missing.affected_account_count == 0
-            assert missing.unresolved_scope_count == 1
-        assert _kinds(result) == expected
+        assert _kinds(result) == {"evidence_unavailable", "retrieval_partial"}
+        missing = next(
+            reason for reason in result.reasons if reason.kind == "retrieval_partial"
+        )
+        assert missing.affected_account_ids == ()
+        assert missing.affected_account_count == 1
+        assert missing.unresolved_scope_count == (
+            1 if latest_coverage == "other-native" else 0
+        )
         reason = next(
             reason for reason in result.reasons if reason.kind == "evidence_unavailable"
         )
@@ -825,7 +827,7 @@ def test_unidentified_account_hold_survives_later_success(
 
     assert result.complete is False
     assert _kinds(result) == (
-        {"invalid_observation", "evidence_unavailable"}
+        {"invalid_observation", "evidence_unavailable", "retrieval_partial"}
         if general
         else {"invalid_observation"}
     )

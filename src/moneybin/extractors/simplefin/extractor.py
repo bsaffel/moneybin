@@ -249,7 +249,10 @@ class SimpleFINExtractor:
         balances: list[dict[str, Any]] = []
         responses: list[dict[str, Any]] = []
         seen_batches: dict[UUID, str] = {}
-        delivered_scopes: set[tuple[str, str, datetime, datetime]] = set()
+        delivered_scopes: dict[
+            tuple[str, str, datetime, datetime],
+            tuple[ProviderBatch, SimpleFINV1OrgScope | SimpleFINV2ConnectionScope],
+        ] = {}
         for batch in source.batches:
             digest = _revision({
                 "connection_id": str(source.connection_id),
@@ -287,11 +290,12 @@ class SimpleFINExtractor:
             })
             records = [_record(item) for item in cast(list[object], native_accounts)]
             identified = [self._account_identity(source, item) for item in records]
-            delivered_scopes.update(
-                (item[0], item[1], window.start, window.end)
-                for item in identified
-                if item is not None
-            )
+            for item in identified:
+                if item is not None:
+                    delivered_scopes[(item[0], item[1], window.start, window.end)] = (
+                        batch,
+                        item[3],
+                    )
             counts = Counter(
                 (item[0], item[1]) for item in identified if item is not None
             )
@@ -461,9 +465,10 @@ class SimpleFINExtractor:
                     if error:
                         outcomes.append(self._outcome(batch, account_id, scope, error))
         # Retrieval credit requires the native account in the same requested window.
+        reported_scopes: set[tuple[str, str, datetime, datetime]] = set()
         for outcome in source.outcomes:
             scope = outcome.native_scope
-            if outcome.status != "complete" or outcome.account_id is None:
+            if outcome.account_id is None:
                 continue
             if not isinstance(scope, (SimpleFINV1OrgScope, SimpleFINV2ConnectionScope)):
                 continue
@@ -475,17 +480,17 @@ class SimpleFINExtractor:
                 else scope.model_dump(by_alias=True),
             )
             window = cast(UTCWindow, outcome.window)
-            if (
-                origin,
-                outcome.account_id,
-                window.start,
-                window.end,
-            ) not in delivered_scopes:
+            key = (origin, outcome.account_id, window.start, window.end)
+            reported_scopes.add(key)
+            if outcome.status == "complete" and key not in delivered_scopes:
                 outcomes.append(
                     outcome.model_copy(
                         update={"status": "partial", "error_code": "provider_error"}
                     )
                 )
+        for key, (batch, scope) in delivered_scopes.items():
+            if key not in reported_scopes:
+                outcomes.append(self._outcome(batch, key[1], scope, "provider_error"))
         receipt = {
             "job_id": str(job_id),
             "connection_id": str(source.connection_id),

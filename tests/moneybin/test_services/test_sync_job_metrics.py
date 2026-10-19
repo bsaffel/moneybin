@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from moneybin.connectors.sync_models import ScopeOutcome, SimpleFINV2ConnectionScope
 from moneybin.database import Database
 from moneybin.services import sync_service
 from tests.moneybin.test_services.test_simplefin_sync_service import (
@@ -21,7 +22,21 @@ def test_durable_provider_metrics_keep_retrieval_failure_distinct(
     monkeypatch.setattr(sync_service, "SYNC_PULL_OUTCOMES_TOTAL", outcomes)
     monkeypatch.setattr(sync_service, "SYNC_PULL_TRANSACTIONS_LOADED", transactions)
     monkeypatch.setattr(sync_service, "SYNC_PULL_DURATION_SECONDS", duration)
-    result = _service(db, _client(_envelope(status=status))).pull(refresh=False)
+    data = _envelope(status=status)
+    if status == "completed":
+        source = data.sources[0]
+        source.outcomes = [
+            ScopeOutcome(
+                account_id="acct",
+                native_scope=SimpleFINV2ConnectionScope(
+                    kind="simplefin_v2_connection", conn_id="native-connection"
+                ),
+                window=source.batches[0].window,
+                status="complete",
+                error_code=None,
+            )
+        ]
+    result = _service(db, _client(data)).pull(refresh=False)
     outcomes.labels.assert_called_once_with(
         provider="simplefin", status="success" if status == "completed" else "failed"
     )

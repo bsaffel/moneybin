@@ -643,7 +643,18 @@ def test_source_offset_evidence_keeps_existing_batch_and_receipt_digests(
             "status": "deferred",
             "error_code": "rate_limited",
             "retry_at": "2026-09-20T21:00:00-04:00",
-        }
+        },
+        {
+            "account_id": "acct",
+            "native_scope": {
+                "kind": "simplefin_v2_connection",
+                "conn_id": "native-connection",
+            },
+            "window": wire["batches"][0]["window"],
+            "status": "complete",
+            "error_code": None,
+            "retry_at": None,
+        },
     ]
     data = SimpleFINSource.model_validate(wire)
     context = module.SimpleFINJobContext(
