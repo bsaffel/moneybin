@@ -16,6 +16,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
+from moneybin import error_codes
 from moneybin.config import canonical_checkout_root, running_checkout_root
 from moneybin.errors import UserError
 
@@ -27,7 +28,7 @@ def schedule_error(message: str) -> UserError:
     """Build a bounded scheduling error without persisting OS exception text."""
     return UserError(
         message,
-        code="sync_schedule_error",
+        code=error_codes.SYNC_SCHEDULE_ERROR,
         hint="Inspect 'moneybin sync schedule show'; remove the owned schedule "
         "before repairing or recreating it.",
     )

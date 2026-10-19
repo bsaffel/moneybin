@@ -193,6 +193,7 @@ SYNC_ERROR = "sync_error"
 SYNC_INSTITUTION_AMBIGUOUS = "sync_institution_ambiguous"
 SYNC_INSTITUTION_REQUIRED = "sync_institution_required"
 SYNC_LINK_MODE_CONFLICT = "sync_link_mode_conflict"
+SYNC_SCHEDULE_ERROR = "sync_schedule_error"
 SYNC_SERVER_NOT_CONFIGURED = "sync_server_not_configured"
 # Login was asked to save an address while the environment or a dotenv supplies
 # a different one: the saved value would be shadowed on the very next command.
