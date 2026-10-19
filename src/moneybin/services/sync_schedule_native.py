@@ -468,6 +468,30 @@ class SystemdScheduleAdapter:
             )
         return states
 
+    def _registration(self, job: ScheduleDefinition) -> tuple[bool, bool]:
+        """Prove persistent graphical-session registration without adopting links."""
+        timer = self.timer_path(job)
+        link = timer.parent / "graphical-session.target.wants" / timer.name
+        linked = link.exists() or link.is_symlink()
+        if linked and (
+            link.parent.is_symlink()
+            or not link.is_symlink()
+            or link.lstat().st_uid != os.getuid()
+            or link.resolve() != timer.resolve()
+        ):
+            return False, False
+        # Runtime activity survives disable. --full also exposes unrelated
+        # registration that disable would otherwise remove along with ours.
+        result = self._call(["is-enabled", "--full", timer.name], check=False)
+        if result.returncode == 0 and result.stdout == f"enabled\n  {link}\n":
+            return linked, linked
+        if (result.returncode, result.stdout) in {
+            (1, "disabled\n"),
+            (4, "not-found\n"),
+        }:
+            return True, False
+        return False, False
+
     def inspect(self, job: ScheduleDefinition) -> NativeStatus:
         """Verify both files, loaded paths, drop-ins, and live session state."""
         files = self.render(job)
@@ -477,6 +501,8 @@ class SystemdScheduleAdapter:
             for path, exists in zip(files, present, strict=True)
         )
         states = self._unit_states(job)
+        registration_owned, registered = self._registration(job)
+        owned = owned and registration_owned
         for suffix, values in zip(("timer", "service"), states, strict=True):
             path = self.timer_path(job) if suffix == "timer" else self.service_path(job)
             if values.get("DropInPaths") or values.get("NeedDaemonReload") == "yes":
@@ -493,7 +519,8 @@ class SystemdScheduleAdapter:
             owned,
             active and session,
             running,
-            any(present) and (not all(present) or (session and not active)),
+            any(present)
+            and (not all(present) or not registered or (session and not active)),
         )
 
     def install(self, job: ScheduleDefinition) -> None:
@@ -533,6 +560,8 @@ class SystemdScheduleAdapter:
     def remove(self, job: ScheduleDefinition) -> None:
         """Disable the timer, stop its process tree, and clear persistent state."""
         files = self.render(job)
+        if not self._registration(job)[0]:
+            raise schedule_error("Refusing to remove a job that is not owned.")
         missing = {
             path for path in files if not path.exists() and not path.is_symlink()
         }

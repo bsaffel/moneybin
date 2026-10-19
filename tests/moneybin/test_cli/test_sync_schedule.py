@@ -196,6 +196,41 @@ def test_schedule_commands_are_visible(command: str) -> None:
     assert "schedule" in result.output
 
 
+def test_schedule_cli_reports_and_repairs_active_partial_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.cli.commands import sync
+    from moneybin.services.sync_schedule import SyncScheduleService
+    from moneybin.services.sync_schedule_native import NativeStatus
+
+    profile = tmp_path / "profiles/alice"
+    profile.mkdir(parents=True)
+    (profile / "profile_id").write_text("0123456789ab")
+    adapter = Mock(mechanism="systemd")
+    adapter.inspect.return_value = NativeStatus(True, True, True, False)
+    service = SyncScheduleService(
+        home=tmp_path, profile="alice", adapter=adapter, launcher=("/usr/bin/true",)
+    )
+    service.set("09:00")
+    original = adapter.install.call_args.args[0]
+    adapter.inspect.return_value = NativeStatus(True, True, True, False, partial=True)
+    monkeypatch.setattr(sync, "_build_schedule_service", lambda: service)
+    result = runner.invoke(app, ["sync", "schedule", "show", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["state"] == "partial"
+
+    def install(job: object) -> None:
+        adapter.inspect.return_value = NativeStatus(True, True, True, False)
+
+    adapter.install.side_effect = install
+    result = runner.invoke(
+        app, ["sync", "schedule", "set", "--time", "09:00", "--output", "json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["state"] == "installed"
+    assert adapter.install.call_args.args[0].revision != original.revision
+
+
 def test_stale_profile_metadata_commands_need_no_first_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

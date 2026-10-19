@@ -292,7 +292,12 @@ class SyncScheduleService:
                 status = self.adapter.inspect(old)
                 if not status.owned:
                     raise schedule_error("Refusing to change an externally edited job.")
-                if old.time == time and old.launcher == launcher and status.active:
+                if (
+                    old.time == time
+                    and old.launcher == launcher
+                    and status.active
+                    and not status.partial
+                ):
                     self._operation("set", "unchanged")
                     return self._result(previous)
                 self.adapter.remove(old)

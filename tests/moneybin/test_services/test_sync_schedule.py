@@ -26,6 +26,7 @@ class MemoryAdapter:
         self.active = True
         self.fail_install = False
         self.fail_remove = False
+        self.partial = False
 
     def validate_session(self) -> None:
         if not self.active:
@@ -39,12 +40,14 @@ class MemoryAdapter:
             owned=self.job is None or self.job == job,
             active=self.active and self.job is not None,
             running=self.running,
+            partial=self.partial,
         )
 
     def install(self, job: ScheduleDefinition) -> None:
         if self.fail_install:
             raise RuntimeError("activation refused")
         self.job = job
+        self.partial = False
 
     def remove(self, job: ScheduleDefinition) -> None:
         if self.fail_remove:
@@ -114,6 +117,19 @@ def test_atomic_owner_only_state_and_stable_lock(schedule: ScheduleFixture) -> N
     assert adapter.job is not None
     assert adapter.job.revision != first.revision
     assert service.lock_path.stat().st_ino == inode
+
+
+def test_identical_set_repairs_owned_active_partial_registration(
+    schedule: ScheduleFixture,
+) -> None:
+    service, adapter, _ = schedule
+    service.set("09:00")
+    old = adapter.job
+    adapter.partial = True
+    assert service.show().state == "partial"
+    assert service.set("09:00").state == "installed"
+    assert adapter.job is not None and old is not None
+    assert adapter.job.revision != old.revision
 
 
 @pytest.mark.parametrize("text", ["{", '{"version":999}', "{}"])

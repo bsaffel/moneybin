@@ -464,7 +464,12 @@ profile rename support are outside this slice.
 `set` validates the target, launcher, time, and supported session before any
 installation. Serialize changes against runs, stage the complete definition,
 and verify the OS accepted the intended binding before reporting success.
-An identical `set` is a no-op. A changed schedule disables and stops its old
+An identical `set` is a no-op only while the owned registration is complete.
+Linux inspection verifies persistent enablement and the exact owned
+`graphical-session.target.wants` link; an active but disabled timer is partial.
+Runtime-only or unrelated registration refuses modification. An owned missing
+registration can be repaired by setting the same time again.
+A changed schedule disables and stops its old
 owned process tree before activating a new revision. Completion writes must
 match their original revision so an older process cannot overwrite new state.
 Refuse modification of an unrecognized or

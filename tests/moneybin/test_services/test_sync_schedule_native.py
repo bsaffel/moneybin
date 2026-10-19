@@ -31,6 +31,7 @@ class RemovalManager:
         self.fail_clean = False
         self.omit_service_pid = False
         self.commands: list[list[str]] = []
+        self.registration = "disabled"
 
     def run(self, args: list[str], **kwargs: Any) -> Mock:
         self.commands.append(args)
@@ -59,6 +60,20 @@ class RemovalManager:
                 f"NeedDaemonReload={'yes' if loaded and not path.exists() else 'no'}\n"
             )
             return Mock(returncode=0, stdout=output, stderr="")
+        if operation == "is-enabled":
+            link = path.parent / "graphical-session.target.wants" / path.name
+            if self.registration == "other-target":
+                link = path.parent / "default.target.wants" / path.name
+            state = "enabled-runtime" if self.registration == "runtime" else "enabled"
+            return Mock(
+                returncode=0 if self.registration != "disabled" else 1,
+                stdout=(
+                    f"{state}\n  {link}\n"
+                    if self.registration != "disabled"
+                    else "disabled\n"
+                ),
+                stderr="",
+            )
         if operation == "daemon-reload":
             if self.fail_final_reload and not any(path.exists() for path in self.files):
                 self.fail_final_reload = False
@@ -77,6 +92,60 @@ class RemovalManager:
                 )
                 self.persistent = False
         return Mock(returncode=0, stdout="", stderr="")
+
+
+@pytest.mark.parametrize(
+    "registration",
+    ["disabled", "missing-link", "wrong-target", "other-target", "runtime"],
+)
+def test_linux_active_timer_requires_owned_persistent_graphical_registration(
+    tmp_path: Path, registration: str
+) -> None:
+    manager = RemovalManager(tmp_path)
+    for path, content in manager.files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    manager.active = True
+    timer = manager.adapter.timer_path(manager.job)
+    link = timer.parent / "graphical-session.target.wants" / timer.name
+    if registration != "disabled":
+        manager.registration = (
+            registration if registration in {"other-target", "runtime"} else "enabled"
+        )
+    if registration == "wrong-target":
+        link.parent.mkdir()
+        link.symlink_to(timer.parent / "unrelated.timer")
+    status = manager.adapter.inspect(manager.job)
+    assert status.partial
+    assert status.owned is (registration == "disabled")
+    if not status.owned:
+        from moneybin.errors import UserError
+
+        with pytest.raises(UserError):
+            manager.adapter.remove(manager.job)
+        assert all(path.exists() for path in manager.files)
+        assert not any("disable" in args for args in manager.commands)
+
+
+def test_linux_registered_timer_stays_owned_in_inactive_session(tmp_path: Path) -> None:
+    manager = RemovalManager(tmp_path)
+    for path, content in manager.files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    manager.registration = "enabled"
+    timer = manager.adapter.timer_path(manager.job)
+    link = timer.parent / "graphical-session.target.wants" / timer.name
+    link.parent.mkdir()
+    link.symlink_to(timer)
+
+    def inactive(args: list[str], **kwargs: Any) -> Mock:
+        if "is-active" in args:
+            return Mock(returncode=3, stdout="inactive", stderr="")
+        return manager.run(args, **kwargs)
+
+    manager.adapter.command = inactive
+    status = manager.adapter.inspect(manager.job)
+    assert status.owned and not status.partial and not status.active
 
 
 def test_linux_remove_recovers_install_failure_before_any_native_file(
@@ -349,6 +418,8 @@ def test_linux_remove_cleans_persistent_timestamp_before_unlink(tmp_path: Path) 
 
     def run(args: list[str], **kwargs: object) -> Mock:
         commands.append(args)
+        if "is-enabled" in args:
+            return Mock(returncode=1, stdout="disabled\n", stderr="")
         if "show" in args:
             return Mock(
                 returncode=0, stdout="ActiveState=inactive\nMainPID=0\n", stderr=""
