@@ -1017,8 +1017,8 @@
     ],
     "exemption": {
       "surface": "mcp",
-      "category": "operator-territory",
-      "reason": "Desktop-session OS job lifecycle remains CLI-only; the hidden runner is a revision-bound native callback, not an MCP capability."
+      "category": "admission-pending",
+      "reason": "sync-overview.md Phase 2 keeps scheduling CLI-only until its bounded MCP capability is separately admitted under mcp-tool-surface-scaling.md; the admission record is outstanding. The hidden runner remains an internal revision-bound native callback."
     }
   },
   {

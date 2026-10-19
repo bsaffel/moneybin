@@ -78,7 +78,7 @@ is added.
 | Category-source-mapping curation | none — `admission-pending` | `categories mappings pending`, `categories mappings set` | Same distinct unmapped imported-vocabulary terms (grouped by term, not by transaction) with suggestions, and the same map-to-existing-or-new-category-or-ignore write, with its immediate re-categorization, through `CategorizationService.resolve_source_term` |
 | Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels`, `import formats *` | Same import log, raw rows, confirmation state, labels, and audited saved-format lifecycle |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect` | `sync login/link/status/pull/disconnect [--purge]/logout` | Same authenticated, linked, pulled, disconnected, purged, or logged-out state |
-| Desktop schedule (in progress) | CLI-only operator capability | `sync schedule set/show/remove` | Owned native job lifecycle and bounded latest-attempt outcome; the hidden revision-bound runner is an internal native callback |
+| Desktop schedule (in progress) | none — `admission-pending` | `sync schedule set/show/remove` | Owned native job lifecycle and bounded latest-attempt outcome; the hidden revision-bound runner is an internal native callback |
 | Google Sheets | `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | `gsheet *` | Same connection and pulled source state |
 | Privacy | `privacy`, `privacy_consent_set` | `privacy status/log/grant/revoke/revoke-all` | Same effective grants and privacy log |
 | Refresh | `refresh_run` | `refresh`, match/identity commands, `transform apply` | Same selected step outcomes and proposal state |
