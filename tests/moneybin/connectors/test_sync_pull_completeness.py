@@ -10,6 +10,7 @@ from moneybin.connectors.sync_models import (
     PullResult,
     SimpleFINSourceResult,
     SimpleFINV1OrgScope,
+    UTCWindow,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sync_v2"
@@ -125,3 +126,97 @@ def test_pull_incomplete_without_public_history_projection() -> None:
     result.sources = []
 
     assert not result.complete
+
+
+@pytest.mark.parametrize("protocol", ["v1", "v2"])
+@pytest.mark.parametrize(
+    ("start", "end", "complete"),
+    [
+        ("2020-01-01", "2020-02-01", False),
+        ("2026-09-02", "2026-10-01", True),
+        ("2026-09-01", "2026-09-30", False),
+        ("2026-09-01", "2026-10-01", True),
+        ("2020-01-01", "2026-10-01", True),
+    ],
+)
+def test_pull_requires_acknowledged_forward_coverage_for_each_account(
+    protocol: str, start: str, end: str, complete: bool
+) -> None:
+    result = _completed_pull(protocol)
+    source = result.source_results[0]
+    assert isinstance(source, SimpleFINSourceResult)
+    assert source.history is not None
+    public_history = result.sources[0].history
+    assert public_history is not None
+    interval = UTCWindow.model_validate({
+        "start": f"{start}T00:00:00Z",
+        "end": f"{end}T00:00:00Z",
+    })
+    source.history.accounts[0].acknowledged_intervals = [interval]
+    public_history.accounts[0].acknowledged_intervals = [interval.model_copy()]
+
+    assert result.complete is complete
+
+
+@pytest.mark.parametrize("protocol", ["v1", "v2"])
+def test_pull_accepts_incidental_older_windows_outside_account_credit(
+    protocol: str,
+) -> None:
+    result = _completed_pull(protocol)
+    source = result.source_results[0]
+    additional = source.outcomes[0].model_copy(deep=True)
+    additional.window = UTCWindow.model_validate({
+        "start": "2026-08-01T00:00:00Z",
+        "end": "2026-09-01T00:00:00Z",
+    })
+    source.outcomes.append(additional)
+
+    assert result.complete
+
+
+@pytest.mark.parametrize("protocol", ["v1", "v2"])
+def test_pull_uses_latest_complete_window_for_each_native_scope(protocol: str) -> None:
+    result = _completed_pull(protocol)
+    source = result.source_results[0]
+    assert isinstance(source, SimpleFINSourceResult)
+    assert source.history is not None
+    public_history = result.sources[0].history
+    assert public_history is not None
+    later = source.outcomes[0].model_copy(deep=True)
+    source.outcomes.append(later)
+    source.outcomes[0].window = UTCWindow.model_validate({
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-09-10T00:00:00Z",
+    })
+    interval = UTCWindow.model_validate({
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-09-20T00:00:00Z",
+    })
+    source.history.accounts[0].acknowledged_intervals = [interval]
+    public_history.accounts[0].acknowledged_intervals = [interval.model_copy()]
+
+    assert not result.complete
+
+
+@pytest.mark.parametrize("protocol", ["v1", "v2"])
+def test_historical_pull_uses_its_requested_window_instead_of_today(
+    protocol: str,
+) -> None:
+    result = _completed_pull(protocol)
+    source = result.source_results[0]
+    assert isinstance(source, SimpleFINSourceResult)
+    assert source.history is not None
+    public_history = result.sources[0].history
+    assert public_history is not None
+    historical = UTCWindow.model_validate({
+        "start": "2020-01-01T00:00:00Z",
+        "end": "2020-02-01T00:00:00Z",
+    })
+    for outcome in source.outcomes:
+        outcome.window = historical.model_copy()
+    for account in source.history.accounts:
+        account.acknowledged_intervals = [historical.model_copy()]
+    for account in public_history.accounts:
+        account.acknowledged_intervals = [historical.model_copy()]
+
+    assert result.complete

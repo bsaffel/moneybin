@@ -21,6 +21,7 @@ from moneybin.connectors.sync_models import (
     SyncAckV2Response,
     SyncJobDetails,
     SyncJobSource,
+    UTCWindow,
 )
 from moneybin.database import Database
 from moneybin.repositories.sync_job_state_repo import SyncJobStateRepo
@@ -244,6 +245,47 @@ def test_history_observation_order_is_independent_of_arrival(db: Database) -> No
     _confirmed_job(db, older, job=1, day=1, confirmed_history=_history(1, pending=True))
     _bind(db)
     assert "history_pending" not in _kinds(_assess(db))
+
+
+@pytest.mark.parametrize(
+    ("end", "complete"),
+    [("2020-02-01", False), ("2026-09-19", False), ("2026-09-20", True)],
+)
+def test_report_requires_acknowledged_forward_coverage(
+    db: Database, end: str, complete: bool
+) -> None:
+    data = source()
+    data.history = _history(1, pending=True)
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=data.history.accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    confirmed = _history(2)
+    confirmed.accounts[0].acknowledged_intervals = [
+        UTCWindow.model_validate({
+            "start": "2020-01-01T00:00:00Z",
+            "end": f"{end}T00:00:00Z",
+        })
+    ]
+    _confirmed_job(db, data, job=1, day=1, confirmed_history=confirmed)
+    _bind(db)
+
+    result = _assess(db)
+
+    assert result.complete is complete
+    assert ("history_pending" in _kinds(result)) is (not complete)
+    row = db.execute(
+        "SELECT source_metadata FROM raw.simplefin_sync_receipts"
+    ).fetchone()
+    assert row is not None
+    assert json.loads(row[0])["history"]["accounts"][0]["history_target"] == (
+        "2026-07-01"
+    )
 
 
 def test_new_credential_generation_does_not_inherit_old_history(
@@ -567,6 +609,12 @@ def test_unidentified_account_hold_survives_later_success(
             update={"start": window.end, "end": window.end + timedelta(days=1)}
         )
         later.batches[0].window = window
+        account_history = later.history.accounts[0]
+        account_history.acknowledged_intervals = [
+            account_history.acknowledged_intervals[0].model_copy(
+                update={"end": window.end}
+            )
+        ]
     general = later_scope == "covering-general"
     later.outcomes = [
         ScopeOutcome(

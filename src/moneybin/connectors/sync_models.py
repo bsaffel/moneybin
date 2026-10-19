@@ -523,6 +523,10 @@ class SimpleFINAccountHistory(_ContractModel):
     acknowledged_intervals: list[UTCWindow] = Field(max_length=2)
     history_target: date | None
 
+    def has_acknowledged_through(self, end: datetime) -> bool:
+        """Forward credit need not include incidental windows for other accounts."""
+        return any(interval.end >= end for interval in self.acknowledged_intervals)
+
     @model_validator(mode="after")
     def _validate_intervals(self) -> Self:
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -893,19 +897,31 @@ class SimpleFINSourceResult(_ContractModel):
                 account_id=account.account_id,
                 native_scope=account.native_scope,
                 name="",
-            ).identity
+            ).identity: account
             for account in self.history.accounts
         }
-        observed = {
-            SyncAccountScope(
+        observed: set[tuple[str, ...]] = set()
+        for outcome in self.outcomes:
+            if (
+                outcome.status != "complete"
+                or outcome.account_id is None
+                or outcome.native_scope is None
+            ):
+                continue
+            identity = SyncAccountScope(
                 account_id=outcome.account_id,
                 native_scope=outcome.native_scope,
                 name="",
             ).identity
-            for outcome in self.outcomes
-            if outcome.account_id is not None and outcome.native_scope is not None
-        }
-        return expected <= observed
+            account = expected.get(identity)
+            if (
+                account is None
+                or outcome.window is None
+                or not account.has_acknowledged_through(outcome.window.end)
+            ):
+                return False
+            observed.add(identity)
+        return expected.keys() <= observed
 
 
 ProviderSourceResult = Annotated[

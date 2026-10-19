@@ -435,6 +435,13 @@ class SyncCompletenessService:
                         add("history_unknown", scope)
                     elif len(account.acknowledged_intervals) > 1:
                         add("history_gap", scope)
+                    elif any(
+                        outcome.status == "complete"
+                        and outcome.window is not None
+                        and not account.has_acknowledged_through(outcome.window.end)
+                        for _, outcome in outcomes.get(scope, [])
+                    ):
+                        add("history_pending", scope)
 
     def _general_failure_resolved(
         self,
