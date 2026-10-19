@@ -66,11 +66,16 @@ def _sync_directory(path: Path) -> None:
 
 def _write_journal(path: Path, payload: dict[str, object]) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as output:
-        json.dump(payload, output)
-        output.flush()
-        os.fsync(output.fileno())
-    _sync_directory(path.parent)
+    identity = os.fstat(fd)
+    try:
+        with os.fdopen(fd, "w") as output:
+            json.dump(payload, output)
+            output.flush()
+            os.fsync(output.fileno())
+        _sync_directory(path.parent)
+    except BaseException:
+        _unlink_owned(path, identity)
+        raise
 
 
 def restore_encrypted_database(

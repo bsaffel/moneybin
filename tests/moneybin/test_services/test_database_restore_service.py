@@ -3,7 +3,7 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import BinaryIO
+from typing import IO, Any, BinaryIO, TextIO
 from unittest.mock import MagicMock
 
 import pytest
@@ -83,6 +83,105 @@ def test_restore_prejournal_failure_cleans_candidate_and_allows_retry(
     assert backup.read_bytes() == destination_bytes
     assert source.read_bytes() == source_bytes
     assert not journal.exists()
+
+
+@pytest.mark.parametrize("failure_stage", ["write", "flush", "fsync"])
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+def test_restore_journal_failure_cleans_owned_files_and_allows_retry(
+    restore_files: tuple[Path, Path, Path],
+    mock_secret_store: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+    failure: type[BaseException],
+) -> None:
+    from moneybin.services import database_restore_service as service
+
+    source, destination, backup = restore_files
+    source_bytes, destination_bytes = source.read_bytes(), destination.read_bytes()
+    journal = destination.with_name(destination.name + ".restore-promotion.json")
+    original_fdopen, original_fsync = os.fdopen, os.fsync
+
+    def failing_fdopen(fd: int, mode: str) -> IO[Any] | MagicMock:
+        stream = original_fdopen(fd, mode)
+        if mode != "w":
+            return stream
+        output = MagicMock(wraps=stream)
+        output.__enter__.return_value = output
+        output.__exit__.side_effect = stream.__exit__
+
+        def interrupt_write(text: str) -> None:
+            stream.write(text)
+            raise failure("synthetic_journal_failure")
+
+        if failure_stage == "write":
+            output.write.side_effect = interrupt_write
+        elif failure_stage == "flush":
+            output.flush.side_effect = failure("synthetic_journal_failure")
+        return output
+
+    def failing_fsync(fd: int) -> None:
+        if journal.exists() and os.fstat(fd).st_ino == journal.stat().st_ino:
+            raise failure("synthetic_journal_failure")
+        original_fsync(fd)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(service.os, "fdopen", failing_fdopen)
+        if failure_stage == "fsync":
+            patcher.setattr(service.os, "fsync", failing_fsync)
+        with pytest.raises(failure, match="synthetic_journal_failure"):
+            service.restore_encrypted_database(
+                source, destination, secret_store=mock_secret_store, backup_path=backup
+            )
+
+    assert source.read_bytes() == source_bytes
+    assert destination.read_bytes() == destination_bytes
+    assert backup.read_bytes() == destination_bytes
+    assert not journal.exists()
+    assert not list(destination.parent.glob("destination.restore-*.duckdb"))
+    retry_backup = backup.with_name("retry-original.duckdb")
+    assert (
+        service.restore_encrypted_database(
+            source,
+            destination,
+            secret_store=mock_secret_store,
+            backup_path=retry_backup,
+        )
+        == retry_backup
+    )
+    assert destination.read_bytes() == source_bytes
+    assert retry_backup.read_bytes() == destination_bytes
+    assert backup.read_bytes() == destination_bytes
+    assert not journal.exists()
+
+
+def test_write_journal_preserves_preexisting_journal(tmp_path: Path) -> None:
+    from moneybin.services.database_restore_service import _write_journal  # pyright: ignore[reportPrivateUsage]  # exercise exclusive journal ownership
+
+    journal = tmp_path / "restore-promotion.json"
+    journal.write_bytes(b"existing recovery evidence")
+    with pytest.raises(FileExistsError):
+        _write_journal(journal, {})
+    assert journal.read_bytes() == b"existing recovery evidence"
+
+
+def test_write_journal_preserves_replacement_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.services import database_restore_service as service
+
+    journal = tmp_path / "restore-promotion.json"
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"replacement recovery evidence")
+
+    def replace_journal(payload: dict[str, object], output: TextIO) -> None:
+        output.write("{")
+        replacement.replace(journal)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(service.json, "dump", replace_journal)
+    with pytest.raises(KeyboardInterrupt):
+        service._write_journal(journal, {})  # pyright: ignore[reportPrivateUsage]  # exercise interrupted journal ownership
+    assert journal.read_bytes() == b"replacement recovery evidence"
 
 
 def test_restore_preserves_preexisting_candidate(
