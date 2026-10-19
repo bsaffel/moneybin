@@ -486,6 +486,13 @@ unregistering fails, retain enough metadata to retry and report that failure.
 On Linux, remove the native timer's persistent timestamp as well. A surviving
 invocation must revalidate ownership before attempting work.
 
+If native definitions are missing after failed installation or removal, require
+known inactive manager state, matching loaded paths, no drop-ins, and stopped
+service PID evidence. Reload stale inactive cache and prove missing units absent
+before restoring only their exact owned definitions for native timestamp cleanup.
+Never activate them. Stop/clean before unlinking; retain definitions and metadata
+when recovery or cleanup fails. Unknown native evidence refuses recovery.
+
 `show` compares owned configuration with live OS state and distinguishes
 absent, installed, inactive-session, running, stale, and partially installed
 jobs. Report the mechanism, local time zone, nominal next run when known, latest
@@ -554,6 +561,9 @@ system journal. Keep diagnostics in MoneyBin's existing sanitized daily logs
 and expose the bounded attempt summary through `show`. The earlier Phase 2
 size-limited-log promise is not implemented by the current daily file handler;
 this slice does not claim global log retention or introduce a second logger.
+Validate the child binding before resolving profile presentation settings, then
+explicitly initialize the existing profile logging pipeline. Initialization
+refusals must discard the metrics shutdown hook without DB or credential access.
 
 #### Components and observability
 

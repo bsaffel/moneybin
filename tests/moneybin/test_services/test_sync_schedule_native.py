@@ -3,6 +3,7 @@
 import plistlib
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +11,147 @@ import pytest
 from moneybin.services.sync_schedule_native import ScheduleDefinition
 
 pytestmark = pytest.mark.unit
+
+
+class RemovalManager:
+    """Model native missing-unit failures and cached definitions without jobs."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        """Start with absent native units and a synthetic persistent timestamp."""
+        from moneybin.services.sync_schedule_native import SystemdScheduleAdapter
+
+        self.adapter = SystemdScheduleAdapter(user_home=tmp_path, command=self.run)
+        self.job = make_job(tmp_path).model_copy(update={"mechanism": "systemd"})
+        self.files = self.adapter.render(self.job)
+        self.loaded: set[str] = set()
+        self.active = False
+        self.external = False
+        self.persistent = True
+        self.fail_final_reload = False
+        self.fail_clean = False
+        self.omit_service_pid = False
+        self.commands: list[list[str]] = []
+
+    def run(self, args: list[str], **kwargs: Any) -> Mock:
+        self.commands.append(args)
+        operation = args[2] if args[0].endswith("systemctl") else "verify"
+        suffix = "timer" if any(arg.endswith(".timer") for arg in args) else "service"
+        path = (
+            self.adapter.timer_path(self.job)
+            if suffix == "timer"
+            else self.adapter.service_path(self.job)
+        )
+        if operation == "show":
+            loaded = suffix in self.loaded or path.exists()
+            fragment = (
+                str(path.parent / "external.service") if self.external else str(path)
+            )
+            pid = (
+                f"MainPID={123 if self.active else 0}\n"
+                if suffix == "service" and not self.omit_service_pid
+                else ""
+            )
+            output = (
+                f"LoadState={'loaded' if loaded else 'not-found'}\n"
+                f"ActiveState={'active' if self.active else 'inactive'}\n"
+                f"{pid}"
+                f"FragmentPath={fragment if loaded else ''}\nDropInPaths=\n"
+                f"NeedDaemonReload={'yes' if loaded and not path.exists() else 'no'}\n"
+            )
+            return Mock(returncode=0, stdout=output, stderr="")
+        if operation == "daemon-reload":
+            if self.fail_final_reload and not any(path.exists() for path in self.files):
+                self.fail_final_reload = False
+                return Mock(returncode=1, stdout="", stderr="synthetic reload failure")
+            self.loaded = {path.suffix[1:] for path in self.files if path.exists()}
+        if operation in {"disable", "stop", "clean"}:
+            if suffix not in self.loaded and not path.exists():
+                return Mock(returncode=5, stdout="", stderr="Unit not loaded")
+            if operation == "clean":
+                if self.fail_clean:
+                    return Mock(
+                        returncode=1, stdout="", stderr="synthetic clean failure"
+                    )
+                assert all(
+                    path.read_bytes() == content for path, content in self.files.items()
+                )
+                self.persistent = False
+        return Mock(returncode=0, stdout="", stderr="")
+
+
+def test_linux_remove_recovers_install_failure_before_any_native_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = RemovalManager(tmp_path)
+    with monkeypatch.context() as context:
+        context.setattr(
+            "moneybin.services.sync_schedule_native.atomic_write",
+            Mock(side_effect=OSError("synthetic write failure")),
+        )
+        with pytest.raises(OSError):
+            manager.adapter.install(manager.job)
+    manager.adapter.remove(manager.job)
+    assert not manager.persistent
+    assert not any(path.exists() for path in manager.files)
+    assert not any(
+        "enable" in args or "start" in args or "restart" in args
+        for args in manager.commands
+    )
+
+
+def test_linux_remove_retry_after_unlink_then_reload_failure(tmp_path: Path) -> None:
+    from moneybin.errors import UserError
+
+    manager = RemovalManager(tmp_path)
+    for path, content in manager.files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    manager.loaded = {"timer", "service"}
+    manager.fail_final_reload = True
+    with pytest.raises(UserError):
+        manager.adapter.remove(manager.job)
+    assert not any(path.exists() for path in manager.files)
+    manager.adapter.remove(manager.job)
+    assert not manager.persistent
+    assert not any(path.exists() for path in manager.files)
+
+
+@pytest.mark.parametrize("unsafe", ["active", "external", "missing_service_pid"])
+def test_linux_absent_file_recovery_refuses_unsafe_loaded_units(
+    tmp_path: Path, unsafe: str
+) -> None:
+    from moneybin.errors import UserError
+
+    manager = RemovalManager(tmp_path)
+    manager.loaded = {"timer", "service"}
+    manager.active = unsafe == "active"
+    manager.external = unsafe == "external"
+    manager.omit_service_pid = unsafe == "missing_service_pid"
+    with pytest.raises(UserError):
+        manager.adapter.remove(manager.job)
+    assert manager.persistent
+    assert not any(path.exists() for path in manager.files)
+    assert not any(
+        "disable" in args or "stop" in args or "clean" in args
+        for args in manager.commands
+    )
+
+
+def test_linux_failed_recovery_cleanup_retains_exact_definitions(
+    tmp_path: Path,
+) -> None:
+    from moneybin.errors import UserError
+
+    manager = RemovalManager(tmp_path)
+    manager.fail_clean = True
+    with pytest.raises(UserError):
+        manager.adapter.remove(manager.job)
+    assert manager.persistent
+    assert all(
+        path.exists() and path.read_bytes() == content
+        for path, content in manager.files.items()
+    )
 
 
 def make_job(tmp_path: Path) -> ScheduleDefinition:

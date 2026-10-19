@@ -951,6 +951,17 @@ def _scheduled_pull_access(
 
     entered = False
     try:
+        if profile_id is not None or revision is not None:
+            from moneybin.cli.utils import get_verbose_flag
+            from moneybin.config import get_current_profile
+            from moneybin.observability import setup_observability
+
+            _validate_scheduled_pull_binding(profile_id, revision)
+            setup_observability(
+                stream="cli",
+                verbose=get_verbose_flag(),
+                profile=get_current_profile(auto_resolve=False),
+            )
         with scheduled_secret_access():
             entered = True
             try:
@@ -1010,12 +1021,20 @@ def sync_pull(
     ),
 ) -> None:
     """Pull data from connected institutions."""
-    terminal = get_terminal_policy()
+    if scheduled:
+        from moneybin.config import CLISettings
+
+        # Before binding validation even presentation must avoid lazy resolution.
+        terminal = get_terminal_policy(settings=CLISettings())
+    else:
+        terminal = get_terminal_policy()
     try:
         with handle_cli_errors():
             with _scheduled_pull_access(
                 scheduled, scheduled_profile_id, scheduled_revision
             ):
+                if scheduled:
+                    terminal = get_terminal_policy()
                 service_context = (
                     _build_sync_service(
                         scheduled_profile_id=scheduled_profile_id,

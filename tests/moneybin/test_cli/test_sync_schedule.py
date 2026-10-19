@@ -1,6 +1,7 @@
 """Schedule CLI receipts and real pull completion boundary."""
 
 import json
+import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -15,6 +16,175 @@ from moneybin.connectors.sync_models import PullResult
 
 pytestmark = pytest.mark.unit
 runner = CliRunner()
+
+
+def test_bound_scheduled_failure_reaches_real_configured_sanitized_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.cli.commands import sync
+    from moneybin.config import clear_settings_cache, set_current_profile
+    from moneybin.errors import UserError
+    from moneybin.services.sync_schedule import SyncScheduleService
+    from moneybin.services.sync_schedule_native import NativeStatus
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    profile = tmp_path / "profiles/alice"
+    profile.mkdir(parents=True)
+    (profile / "profile_id").write_text("0123456789ab")
+    log_path = tmp_path / "custom-logs/moneybin.log"
+    (profile / "config.yaml").write_text(
+        f"logging:\n  log_to_file: true\n  log_file_path: {log_path}\n"
+    )
+    set_current_profile("alice")
+    clear_settings_cache()
+    logging_at_binding: list[bool] = []
+
+    def inspect(job: object) -> NativeStatus:
+        logging_at_binding.append(bool(list(log_path.parent.glob("cli_*.log"))))
+        return NativeStatus(True, True, True, False)
+
+    adapter = Mock(mechanism="launchd", inspect=Mock(side_effect=inspect))
+    service = SyncScheduleService(
+        home=tmp_path, profile="alice", adapter=adapter, launcher=("/usr/bin/true",)
+    )
+    service.set("09:00")
+    logging_at_binding.clear()
+    job = adapter.install.call_args.args[0]
+    monkeypatch.setattr(
+        "moneybin.services.sync_schedule_native.native_adapter", lambda: adapter
+    )
+
+    @contextmanager
+    def guard() -> Generator[None, None, None]:
+        yield
+
+    monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", guard)
+
+    def client(*, profile_id: str) -> None:
+        assert profile_id == "0123456789ab"
+        logging.getLogger("moneybin.scheduled.regression").error(
+            "scheduled diagnostic account 123456789"
+        )
+        raise UserError("Synthetic scheduled failure", code="sync_error")
+
+    monkeypatch.setattr(sync, "_build_sync_client", client)
+    db = Mock(side_effect=AssertionError("failure must not open DB"))
+    monkeypatch.setattr("moneybin.database.get_database", db)
+    monkeypatch.setattr("moneybin.database.database_was_written", lambda: False)
+    root = logging.getLogger()
+    old_handlers, old_level = list(root.handlers), root.level
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "--profile",
+                "alice",
+                "sync",
+                "pull",
+                "--scheduled",
+                "--scheduled-profile-id",
+                "0123456789ab",
+                "--scheduled-revision",
+                job.revision,
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 1, result.output
+        assert logging_at_binding and logging_at_binding[0] is False
+        logs = list(log_path.parent.glob("cli_*.log"))
+        assert len(logs) == 1
+        content = logs[0].read_text()
+        assert "scheduled diagnostic account" in content
+        assert "123456789" not in content
+        assert "****...6789" in content
+        db.assert_not_called()
+    finally:
+        for handler in root.handlers:
+            if handler not in old_handlers:
+                handler.close()
+        root.handlers = old_handlers
+        root.setLevel(old_level)
+
+
+@pytest.mark.parametrize("failure", ["missing", "replacement", "logging"])
+def test_scheduled_initialization_failure_discards_metrics_before_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    import moneybin.observability as observability
+    from moneybin.config import clear_settings_cache, set_current_profile
+    from moneybin.services.sync_schedule import SyncScheduleService
+    from moneybin.services.sync_schedule_native import NativeStatus
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    profile = tmp_path / "profiles/alice"
+    profile.mkdir(parents=True)
+    identity = profile / "profile_id"
+    identity.write_text("0123456789ab")
+    set_current_profile("alice")
+    clear_settings_cache()
+    adapter = Mock(
+        mechanism="launchd",
+        inspect=Mock(return_value=NativeStatus(True, True, True, False)),
+    )
+    service = SyncScheduleService(
+        home=tmp_path, profile="alice", adapter=adapter, launcher=("/usr/bin/true",)
+    )
+    service.set("09:00")
+    job = adapter.install.call_args.args[0]
+    if failure == "replacement":
+        identity.write_text("abcdef012345")
+    elif failure == "missing":
+        identity.unlink()
+        profile.rmdir()
+    monkeypatch.setattr(
+        "moneybin.services.sync_schedule_native.native_adapter", lambda: adapter
+    )
+    resolver = Mock(
+        side_effect=AssertionError("invalid binding invoked profile resolver")
+    )
+    secret = Mock(
+        side_effect=AssertionError("invalid binding entered credential scope")
+    )
+    monkeypatch.setattr("moneybin.cli.main.resolve_profile", resolver)
+    monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", secret)
+    db = Mock(
+        side_effect=AssertionError("initialization failure must not flush DB metrics")
+    )
+    monkeypatch.setattr("moneybin.database.get_database", db)
+    monkeypatch.setattr("moneybin.database.database_was_written", lambda: True)
+    if failure == "logging":
+        monkeypatch.setattr(
+            observability,
+            "setup_observability",
+            Mock(side_effect=OSError("synthetic logging setup failure")),
+        )
+    result = runner.invoke(
+        app,
+        [
+            "--profile",
+            "alice",
+            "sync",
+            "pull",
+            "--scheduled",
+            "--scheduled-profile-id",
+            "0123456789ab",
+            "--scheduled-revision",
+            job.revision,
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    resolver.assert_not_called()
+    secret.assert_not_called()
+    db.assert_not_called()
+    assert not observability._atexit_registered  # pyright: ignore[reportPrivateUsage]  # prove real shutdown hook was discarded
+    assert not (profile / "logs").exists()
+    assert profile.exists() is (failure != "missing")
 
 
 @pytest.mark.parametrize("command", ["set", "show", "remove"])
@@ -82,6 +252,7 @@ def test_schedule_diagnostics_follow_persisted_logging_path(
     assert json.loads(result.stdout)["data"]["diagnostic_location"] == str(
         log_path.parent
     )
+    assert not log_path.parent.exists()
 
 
 def test_schedule_text_json_have_same_operational_result(

@@ -446,6 +446,28 @@ class SystemdScheduleAdapter:
             self.timer_path(job): timer.encode(),
         }
 
+    def _unit_states(self, job: ScheduleDefinition) -> list[dict[str, str]]:
+        states: list[dict[str, str]] = []
+        for suffix in ("timer", "service"):
+            result = self._call(
+                [
+                    "show",
+                    "--all",
+                    f"{job.job_id}.{suffix}",
+                    "--property=LoadState,ActiveState,MainPID,FragmentPath,"
+                    "DropInPaths,NeedDaemonReload",
+                ],
+                check=False,
+            )
+            states.append(
+                dict(
+                    line.split("=", 1)
+                    for line in result.stdout.splitlines()
+                    if "=" in line
+                )
+            )
+        return states
+
     def inspect(self, job: ScheduleDefinition) -> NativeStatus:
         """Verify both files, loaded paths, drop-ins, and live session state."""
         files = self.render(job)
@@ -454,26 +476,13 @@ class SystemdScheduleAdapter:
             not exists or _matches(path, files[path])
             for path, exists in zip(files, present, strict=True)
         )
-        states: list[dict[str, str]] = []
-        for suffix in ("timer", "service"):
-            result = self._call(
-                [
-                    "show",
-                    f"{job.job_id}.{suffix}",
-                    "--property=LoadState,ActiveState,MainPID,FragmentPath,"
-                    "DropInPaths,NeedDaemonReload",
-                ],
-                check=False,
-            )
-            values = dict(
-                line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
-            )
+        states = self._unit_states(job)
+        for suffix, values in zip(("timer", "service"), states, strict=True):
             path = self.timer_path(job) if suffix == "timer" else self.service_path(job)
             if values.get("DropInPaths") or values.get("NeedDaemonReload") == "yes":
                 owned = False
             if values.get("FragmentPath") and values["FragmentPath"] != str(path):
                 owned = False
-            states.append(values)
         session = not self._call(
             ["is-active", "--quiet", "graphical-session.target"], check=False
         ).returncode
@@ -523,6 +532,12 @@ class SystemdScheduleAdapter:
 
     def remove(self, job: ScheduleDefinition) -> None:
         """Disable the timer, stop its process tree, and clear persistent state."""
+        files = self.render(job)
+        missing = {
+            path for path in files if not path.exists() and not path.is_symlink()
+        }
+        if missing:
+            self._restore_for_cleanup(job, files, missing)
         if not self.inspect(job).owned:
             raise schedule_error("Refusing to remove a job that is not owned.")
         self._call(["disable", "--now", f"{job.job_id}.timer"])
@@ -531,6 +546,50 @@ class SystemdScheduleAdapter:
         for path in self.render(job):
             path.unlink(missing_ok=True)
         self._call(["daemon-reload"])
+
+    def _restore_for_cleanup(
+        self,
+        job: ScheduleDefinition,
+        files: dict[Path, bytes],
+        missing: set[Path],
+    ) -> None:
+        # clean needs a loaded timer; recreating its exact inactive definition
+        # avoids guessing the native persistent timestamp's filesystem location.
+        if any(
+            path not in missing and not _matches(path, content)
+            for path, content in files.items()
+        ):
+            raise schedule_error("Refusing recovery of edited native definitions.")
+        paths = (self.timer_path(job), self.service_path(job))
+
+        def validate(*, after_reload: bool = False) -> None:
+            for path, state in zip(paths, self._unit_states(job), strict=True):
+                load = state.get("LoadState")
+                if (
+                    load not in {"loaded", "not-found"}
+                    or state.get("ActiveState") not in {"inactive", "failed"}
+                    or (path.suffix == ".service" and state.get("MainPID") != "0")
+                    or state.get("DropInPaths") != ""
+                    or state.get("FragmentPath")
+                    != (str(path) if load == "loaded" else "")
+                    or (after_reload and path in missing and load != "not-found")
+                ):
+                    raise schedule_error(
+                        "Cannot prove absent native definitions are inactive and owned."
+                    )
+
+        validate()
+        # Evict stale inactive manager cache after an earlier unlink/reload failure.
+        self._call(["daemon-reload"])
+        validate(after_reload=True)
+        for path in missing:
+            atomic_write(path, files[path])
+        self._call(["daemon-reload"])
+        status = self.inspect(job)
+        if not status.owned or status.active or status.running:
+            raise schedule_error(
+                "Recovered native cleanup definitions could not be verified."
+            )
 
 
 def native_adapter() -> LaunchdScheduleAdapter | SystemdScheduleAdapter:
