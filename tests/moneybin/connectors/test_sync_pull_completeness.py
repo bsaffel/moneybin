@@ -138,6 +138,8 @@ def test_pull_incomplete_without_public_history_projection() -> None:
         ("2026-09-01", "2026-09-30", False),
         ("2026-09-01", "2026-10-01", True),
         ("2020-01-01", "2026-10-01", True),
+        ("2026-10-01", "2026-10-02", False),
+        ("2026-10-02", "2026-10-03", False),
     ],
 )
 def test_pull_requires_acknowledged_forward_coverage_for_each_account(
@@ -173,6 +175,27 @@ def test_pull_accepts_incidental_older_windows_outside_account_credit(
     source.outcomes.append(additional)
 
     assert result.complete
+
+
+@pytest.mark.parametrize("protocol", ["v1", "v2"])
+def test_pull_rejects_history_gap_at_retrieval_frontier(protocol: str) -> None:
+    result = _completed_pull(protocol)
+    source = result.source_results[0]
+    assert isinstance(source, SimpleFINSourceResult)
+    assert source.history is not None
+    public_history = result.sources[0].history
+    assert public_history is not None
+    intervals = [
+        UTCWindow.model_validate({"start": start, "end": end})
+        for start, end in [
+            ("2026-09-01T00:00:00Z", "2026-09-30T00:00:00Z"),
+            ("2026-10-02T00:00:00Z", "2026-10-03T00:00:00Z"),
+        ]
+    ]
+    source.history.accounts[0].acknowledged_intervals = intervals
+    public_history.accounts[0].acknowledged_intervals = intervals
+
+    assert not result.complete
 
 
 @pytest.mark.parametrize("protocol", ["v1", "v2"])

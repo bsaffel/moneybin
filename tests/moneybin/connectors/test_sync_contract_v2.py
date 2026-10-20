@@ -212,6 +212,53 @@ def test_v2_rejects_nonterminal_status(status: str) -> None:
         _validate_envelope(original)
 
 
+@pytest.mark.parametrize("name", ["plaid", "simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("error_code", "provider_error"), ("retry_at", "2026-10-02T00:00:00Z")],
+)
+def test_v2_rejects_contradictory_complete_outcome(
+    name: str, field: str, value: str
+) -> None:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    original["sources"][0]["outcomes"][0][field] = value
+
+    with pytest.raises(ValidationError, match="Complete outcome"):
+        _validate_envelope(original)
+
+
+@pytest.mark.parametrize("name", ["plaid", "simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize("status", ["partial", "failed", "deferred"])
+def test_v2_preserves_incomplete_outcome_error_and_retry(
+    name: str, status: str
+) -> None:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    outcome = original["sources"][0]["outcomes"][0]
+    outcome.update(
+        status=status, error_code="provider_error", retry_at="2026-10-02T00:00:00Z"
+    )
+
+    validated = _validate_envelope(original).sources[0].outcomes[0]
+
+    assert validated.status == status
+    assert validated.error_code == "provider_error"
+    assert validated.retry_at == datetime(2026, 10, 2, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("name", ["plaid", "simplefin_v1", "simplefin_v2"])
+def test_v2_preserves_complete_no_account_outcome(name: str) -> None:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    outcome = original["sources"][0]["outcomes"][0]
+    outcome.update(account_id=None, native_scope=None)
+
+    validated = _validate_envelope(original).sources[0].outcomes[0]
+
+    assert validated.status == "complete"
+    assert validated.account_id is None
+    assert validated.error_code is None
+    assert validated.retry_at is None
+
+
 def test_v2_rejects_nonpositive_credential_generation() -> None:
     original = json.loads((FIXTURES / "simplefin_v2.json").read_text())
     original["sources"][0]["credential_generation"] = 0

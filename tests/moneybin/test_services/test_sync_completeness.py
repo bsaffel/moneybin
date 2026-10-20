@@ -337,11 +337,18 @@ def test_history_observation_order_is_independent_of_arrival(db: Database) -> No
 
 
 @pytest.mark.parametrize(
-    ("end", "complete"),
-    [("2020-02-01", False), ("2026-09-19", False), ("2026-09-20", True)],
+    ("start", "end", "complete"),
+    [
+        ("2020-01-01", "2020-02-01", False),
+        ("2020-01-01", "2026-09-19", False),
+        ("2020-01-01", "2026-09-20", True),
+        ("2026-09-19", "2026-09-20", True),
+        ("2026-09-20", "2026-09-21", False),
+        ("2026-09-21", "2026-09-22", False),
+    ],
 )
 def test_report_requires_acknowledged_forward_coverage(
-    db: Database, end: str, complete: bool
+    db: Database, start: str, end: str, complete: bool
 ) -> None:
     data = source()
     data.history = _history(1, pending=True)
@@ -357,7 +364,7 @@ def test_report_requires_acknowledged_forward_coverage(
     confirmed = _history(2)
     confirmed.accounts[0].acknowledged_intervals = [
         UTCWindow.model_validate({
-            "start": "2020-01-01T00:00:00Z",
+            "start": f"{start}T00:00:00Z",
             "end": f"{end}T00:00:00Z",
         })
     ]
@@ -375,6 +382,73 @@ def test_report_requires_acknowledged_forward_coverage(
     assert json.loads(row[0])["history"]["accounts"][0]["history_target"] == (
         "2026-07-01"
     )
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_report_accepts_incidental_older_windows_outside_account_credit(
+    db: Database, historical: bool
+) -> None:
+    data = source()
+    history = _history(1)
+    window = data.batches[0].window
+    assert window is not None
+    if historical:
+        window = UTCWindow.model_validate({
+            "start": "2020-01-01T00:00:00Z",
+            "end": "2020-02-01T00:00:00Z",
+        })
+        data.batches[0].window = window
+        history.accounts[0].acknowledged_intervals = [window]
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=history.accounts[0].native_scope,
+            window=window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    incidental = data.batches[0].model_copy(deep=True)
+    incidental.batch_id = UUID(int=2)
+    incidental.window = UTCWindow(
+        start=window.start - timedelta(days=1), end=window.start
+    )
+    data.batches.append(incidental)
+    data.outcomes.append(
+        data.outcomes[0].model_copy(update={"window": incidental.window})
+    )
+    _confirmed_job(db, data, job=1, day=1, confirmed_history=history)
+    _bind(db)
+
+    assert _assess(db).complete
+
+
+def test_report_rejects_history_gap_at_retrieval_frontier(db: Database) -> None:
+    data = source()
+    history = _history(1)
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=history.accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    history.accounts[0].acknowledged_intervals = [
+        UTCWindow.model_validate({"start": start, "end": end})
+        for start, end in [
+            ("2026-09-01T00:00:00Z", "2026-09-19T00:00:00Z"),
+            ("2026-09-21T00:00:00Z", "2026-09-22T00:00:00Z"),
+        ]
+    ]
+    _confirmed_job(db, data, job=1, day=1, confirmed_history=history)
+    _bind(db)
+
+    result = _assess(db)
+
+    assert not result.complete
+    assert "history_gap" in _kinds(result)
 
 
 def test_new_credential_generation_does_not_inherit_old_history(

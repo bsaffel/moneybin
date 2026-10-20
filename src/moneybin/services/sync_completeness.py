@@ -440,17 +440,24 @@ class SyncCompletenessService:
                     scope = _native_scope(
                         source, account.native_scope, account.account_id
                     )
+                    retrieval_end = max(
+                        (
+                            outcome.window.end
+                            for _, outcome in outcomes.get(scope, [])
+                            if outcome.status == "complete"
+                            and outcome.window is not None
+                        ),
+                        default=None,
+                    )
                     if account.history_target is not None:
                         add("history_pending", scope)
                     if not account.acknowledged_intervals:
                         add("history_unknown", scope)
                     elif len(account.acknowledged_intervals) > 1:
                         add("history_gap", scope)
-                    elif any(
-                        outcome.status == "complete"
-                        and outcome.window is not None
-                        and not account.has_acknowledged_through(outcome.window.end)
-                        for _, outcome in outcomes.get(scope, [])
+                    elif (
+                        retrieval_end is not None
+                        and not account.has_acknowledged_through(retrieval_end)
                     ):
                         add("history_pending", scope)
 

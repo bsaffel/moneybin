@@ -217,6 +217,7 @@ must agree with the source provider and protocol. This prevents repeated native
 account IDs in different institutions from sharing an outcome or checkpoint.
 `complete` means the requested retrieval succeeded without a known scope error;
 it does not certify that the institution supplies all historical activity.
+A complete outcome must carry neither an error code nor a retry time.
 Omitted accounts and unscoped errors prevent an all-accounts completeness claim.
 
 Rename the client's Plaid-shaped `SyncAccount`, `SyncTransaction`, `SyncBalance`,
@@ -259,6 +260,11 @@ pause can create a third island: retain the primary interval and requested
 history target, replace only the disconnected recovery credit with the latest
 acknowledged island, and re-fetch the uncredited middle days. Raw observations
 remain available, but this conservative reset can spend extra requests.
+
+Acknowledgement credit for a completed retrieval must start before that
+retrieval's exclusive end and reach or exceed it. A later disconnected interval
+cannot certify the earlier retrieval. Credit need not contain the full requested
+window, because another account's incidental older data may precede its credit.
 
 Normal use is one pull per day. Persist a rolling request budget per grant,
 never exceeding 24 account-data requests in 24 hours; retries and backfill count.

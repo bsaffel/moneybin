@@ -490,6 +490,14 @@ class ScopeOutcome(_ContractModel):
     error_code: str | None
     retry_at: AwareDatetime | None = None
 
+    @model_validator(mode="after")
+    def _validate_complete_evidence(self) -> Self:
+        if self.status == "complete" and (
+            self.error_code is not None or self.retry_at is not None
+        ):
+            raise ValueError("Complete outcome cannot carry error or retry evidence")
+        return self
+
 
 class PlaidSource(_ContractModel):
     """Plaid source with its existing provider-native wire values."""
@@ -524,8 +532,11 @@ class SimpleFINAccountHistory(_ContractModel):
     history_target: date | None
 
     def has_acknowledged_through(self, end: datetime) -> bool:
-        """Forward credit need not include incidental windows for other accounts."""
-        return any(interval.end >= end for interval in self.acknowledged_intervals)
+        """Acknowledged credit must overlap the account's retrieval frontier."""
+        return any(
+            interval.start < end <= interval.end
+            for interval in self.acknowledged_intervals
+        )
 
     @model_validator(mode="after")
     def _validate_intervals(self) -> Self:
@@ -902,7 +913,7 @@ class SimpleFINSourceResult(_ContractModel):
             ).identity: account
             for account in self.history.accounts
         }
-        observed: set[tuple[str, ...]] = set()
+        retrieval_ends: dict[tuple[str, ...], datetime] = {}
         for outcome in self.outcomes:
             if (
                 outcome.status != "complete"
@@ -915,15 +926,16 @@ class SimpleFINSourceResult(_ContractModel):
                 native_scope=outcome.native_scope,
                 name="",
             ).identity
-            account = expected.get(identity)
-            if (
-                account is None
-                or outcome.window is None
-                or not account.has_acknowledged_through(outcome.window.end)
-            ):
+            if identity not in expected or outcome.window is None:
                 return False
-            observed.add(identity)
-        return expected.keys() <= observed
+            retrieval_ends[identity] = max(
+                retrieval_ends.get(identity, outcome.window.end), outcome.window.end
+            )
+        # Older incidental windows need not fall within this account's credit.
+        return expected.keys() <= retrieval_ends.keys() and all(
+            expected[identity].has_acknowledged_through(end)
+            for identity, end in retrieval_ends.items()
+        )
 
 
 ProviderSourceResult = Annotated[
