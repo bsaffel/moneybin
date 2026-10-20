@@ -19,6 +19,30 @@ from tests.moneybin.test_services.test_simplefin_sync_service import (
 )  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixtures
 
 
+@pytest.mark.parametrize("provider", ["plaid", "simplefin", None])
+def test_empty_sources_preserve_failure_metrics(
+    db: Database, monkeypatch: pytest.MonkeyPatch, provider: str | None
+) -> None:
+    outcomes, transactions, duration = MagicMock(), MagicMock(), MagicMock()
+    monkeypatch.setattr(sync_service, "SYNC_PULL_OUTCOMES_TOTAL", outcomes)
+    monkeypatch.setattr(sync_service, "SYNC_PULL_TRANSACTIONS_LOADED", transactions)
+    monkeypatch.setattr(sync_service, "SYNC_PULL_DURATION_SECONDS", duration)
+    data = _envelope()
+    data.sources = []
+
+    result = _service(db, _client(data)).pull(provider=provider, refresh=False)
+
+    label = provider or "all"
+    assert not result.complete
+    outcomes.labels.assert_called_once_with(provider=label, status="failed")
+    outcomes.labels.return_value.inc.assert_called_once_with()
+    transactions.labels.assert_called_once_with(provider=label)
+    transactions.labels.return_value.inc.assert_called_once_with(0)
+    duration.labels.assert_called_once_with(provider=label)
+    duration.labels.return_value.observe.assert_called_once()
+    assert duration.labels.return_value.observe.call_args.args[0] >= 0
+
+
 @pytest.mark.parametrize(
     ("evidence", "expected"),
     [("empty", "failed"), ("mixed", "failed"), ("explicit-no-accounts", "success")],

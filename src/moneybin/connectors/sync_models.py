@@ -572,7 +572,11 @@ class SimpleFINHistorySnapshot(_ContractModel):
         if self.observed_at > datetime.now(UTC) + _MAX_BROKER_CLOCK_SKEW:
             raise ValueError("History observation time exceeds allowed clock skew")
         keys = [
-            (account.native_scope.model_dump_json(), account.account_id)
+            SyncAccountScope(
+                account_id=account.account_id,
+                native_scope=account.native_scope,
+                name="",
+            ).identity
             for account in self.accounts
         ]
         if len(keys) != len(set(keys)):

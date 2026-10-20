@@ -1,6 +1,7 @@
 """The version-2 broker contract preserves native provider data."""
 
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -525,6 +526,94 @@ def _simplefin_envelope_with_history(name: str) -> dict[str, Any]:
         ],
     }
     return original
+
+
+@pytest.mark.parametrize(
+    ("identity_field", "metadata_field"),
+    [
+        ("id", "domain"),
+        ("id", "name"),
+        ("id", "url"),
+        ("domain", "name"),
+        ("domain", "url"),
+        ("name", "url"),
+    ],
+)
+def test_simplefin_history_rejects_duplicate_canonical_identity(
+    identity_field: str, metadata_field: str
+) -> None:
+    original = _simplefin_envelope_with_history("simplefin_v1")
+    source = original["sources"][0]
+    account = source["history"]["accounts"][0]
+    org = account["native_scope"]["org"]
+    org.update(domain="synthetic.invalid", url="https://synthetic.invalid")
+    if identity_field != "id":
+        org["id"] = None
+    if identity_field == "name":
+        org["domain"] = None
+    credited = deepcopy(account)
+    credited["native_scope"]["org"][metadata_field] = "changed-metadata"
+    account["acknowledged_intervals"] = []
+    account["history_target"] = "2026-01-01"
+    source["history"]["accounts"] = [account, credited]
+    source["outcomes"] = [source["outcomes"][0]]
+
+    with pytest.raises(ValidationError, match="unique scoped accounts"):
+        _validate_envelope(original)
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+def test_simplefin_history_rejects_identical_scoped_accounts(name: str) -> None:
+    original = _simplefin_envelope_with_history(name)
+    accounts = original["sources"][0]["history"]["accounts"]
+    accounts.append(deepcopy(accounts[0]))
+
+    with pytest.raises(ValidationError, match="unique scoped accounts"):
+        _validate_envelope(original)
+
+
+@pytest.mark.parametrize(
+    ("name", "identity_field"),
+    [
+        ("simplefin_v1", "account_id"),
+        ("simplefin_v1", "sfin-url"),
+        ("simplefin_v1", "id"),
+        ("simplefin_v1", "domain"),
+        ("simplefin_v1", "name"),
+        ("simplefin_v2", "account_id"),
+        ("simplefin_v2", "conn_id"),
+    ],
+)
+def test_simplefin_history_preserves_distinct_canonical_identities(
+    name: str, identity_field: str
+) -> None:
+    original = _simplefin_envelope_with_history(name)
+    source = original["sources"][0]
+    account = source["history"]["accounts"][0]
+    if name == "simplefin_v1":
+        org = account["native_scope"]["org"]
+        org["domain"] = "synthetic.invalid"
+        if identity_field in {"domain", "name"}:
+            org["id"] = None
+        if identity_field == "name":
+            org["domain"] = None
+    distinct = deepcopy(account)
+    if identity_field == "account_id":
+        distinct["account_id"] = "distinct-account"
+    elif name == "simplefin_v1":
+        distinct["native_scope"]["org"][identity_field] = "distinct-identity"
+    else:
+        distinct["native_scope"]["conn_id"] = "distinct-connection"
+    source["history"]["accounts"] = [account, distinct]
+
+    envelope = _validate_envelope(original)
+
+    assert (
+        envelope.sources[0].history.model_dump(
+            mode="json", by_alias=True, exclude_unset=True
+        )
+        == source["history"]
+    )
 
 
 @pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])

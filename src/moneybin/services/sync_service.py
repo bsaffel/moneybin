@@ -472,8 +472,9 @@ class SyncService:
         )
         job_id = str(trigger.job_id)
         data = self.client.get_data(job_id)
-        counts.clear()
-        counts.update({source.provider: 0 for source in data.sources})
+        if data.sources:
+            counts.clear()
+            counts.update({source.provider: 0 for source in data.sources})
         context = self.client.get_status(job_id)
         if (
             str(context.job_id) != job_id
