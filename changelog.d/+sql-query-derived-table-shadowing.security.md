@@ -1,0 +1,1 @@
+`sql_query` now masks a protected value that a correlated subquery reads through a source named after a catalog table. That covers a `VALUES`, `UNNEST`, `LATERAL`, or derived-table `UNPIVOT` source, and an aliased CTE. Before this fix the value came back unmasked at tier LOW.

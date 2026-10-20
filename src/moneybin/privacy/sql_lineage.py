@@ -386,9 +386,23 @@ def _scope_source_names(tree: exp.Expr) -> frozenset[str]:
     Deliberately whole-query rather than per-scope: a name bound anywhere is at
     worst declined here and answered by ``_conservative_floor``, so a too-wide
     set over-redacts, while a too-narrow one under-redacts.
+
+    Every ``exp.DerivedTable`` kind binds a name, not just ``CTE`` and
+    ``Subquery``: ``VALUES``, ``UNNEST`` and ``LATERAL`` (the ``UDTF`` family)
+    too. So does a ``PIVOT``/``UNPIVOT`` alias over a derived table; one over a
+    base table is left out, since ``qualify`` names it after that table and its
+    columns do resolve against the catalog. The projection path also refuses
+    these through ``_source_scope_of``; the scope-free paths
+    (``resolve_placeholder_classes``, ``resolve_projection_sources``) have only
+    this set, and before it held the ``UDTF`` kinds they answered such a name
+    from the same-named catalog table.
     """
-    names = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
-    names |= {sub.alias for sub in tree.find_all(exp.Subquery)}
+    names = {node.alias_or_name for node in tree.find_all(exp.DerivedTable)}
+    names |= {
+        pivot.alias
+        for pivot in tree.find_all(exp.Pivot)
+        if not isinstance(pivot.parent, exp.Table)
+    }
     return frozenset(n for n in names if n)
 
 
@@ -1127,7 +1141,15 @@ def _source_scope_of(col: exp.Column, scope: Scope | None) -> Scope | None:
     if scope is None:
         return None
     if col.table:
-        source = scope.sources.get(col.table)
+        # A correlated reference names a source of an ENCLOSING scope, so walk
+        # outward as SQL does: stopping at the column's own scope sent
+        # ``(SELECT dim_accounts.x)`` over ``FROM c AS dim_accounts`` to the
+        # same-named catalog table, returning a CRITICAL value at tier LOW.
+        source = None
+        enclosing: Scope | None = scope
+        while enclosing is not None and source is None:
+            source = enclosing.sources.get(col.table)
+            enclosing = enclosing.parent
     else:
         # Unqualified column in a single-source SELECT: SQL semantics leave no
         # ambiguity about where it came from. Not a convenience — the build-time

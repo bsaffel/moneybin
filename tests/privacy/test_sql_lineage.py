@@ -837,6 +837,34 @@ def test_cte_aliased_to_a_catalog_table_name_never_resolves_to_it(
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(VALUES (a.routing_number)) AS dim_accounts(account_type)",
+        "UNNEST([a.routing_number]) AS dim_accounts(account_type)",
+        "LATERAL (SELECT a.routing_number AS account_type) AS dim_accounts",
+    ],
+    ids=["values", "unnest", "lateral"],
+)
+def test_correlated_derived_table_named_after_catalog_table_never_resolves_to_it(
+    source: str, populated_db: Database
+) -> None:
+    """Every derived-table kind shadows, not only the CTE and the subquery.
+
+    Read from a correlated subquery, the inner scope has no source of that name.
+    ``_source_scope_of`` used to stop there, and ``shadowed`` held no
+    ``VALUES`` / ``UNNEST`` / ``LATERAL`` alias, so ``dim_accounts.account_type``
+    resolved to ``core.dim_accounts`` as TXN_TYPE/LOW. Either fix alone closes
+    this projection path; the placeholder-path twin below isolates ``shadowed``.
+    """
+    sql = f"SELECT (SELECT dim_accounts.account_type) AS v FROM core.dim_accounts a, {source}"  # noqa: S608  # test input string, not executing SQL
+
+    out = _classes(sql, populated_db)
+
+    assert out["v"] is DataClass.UNRESOLVED
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
 def test_shadowing_cte_resolves_by_semantics_not_by_the_depth_guard(
     populated_db: Database,
 ) -> None:
@@ -2221,6 +2249,37 @@ def test_a_placeholder_fails_closed_when_two_tables_bind_its_alias(
     )
 
     assert resolve_placeholder_classes(tree, snapshot) == {"tag": FAIL_CLOSED_CLASS}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(VALUES ('x')) AS dim_accounts(account_type)",
+        "UNNEST(['x']) AS dim_accounts(account_type)",
+        "LATERAL (SELECT 'x' AS account_type) AS dim_accounts",
+    ],
+    ids=["values", "unnest", "lateral"],
+)
+def test_a_placeholder_on_a_derived_table_column_never_takes_a_catalog_class(
+    source: str, populated_db: Database
+) -> None:
+    """The placeholder path has no scopes, so the shadowed set alone guards it.
+
+    ``resolve_placeholder_classes`` keys every comparison through one tree-wide
+    ``_column_key`` call, and ``dim_accounts.account_type`` here names the
+    derived table, not ``core.dim_accounts``. Before ``VALUES`` / ``UNNEST`` /
+    ``LATERAL`` aliases were collected, the bare-name catalog scan answered
+    TXN_TYPE (LOW) — the tier at which a bound value is spliced in as a literal.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = expand_star(
+        parse_cached(
+            f"SELECT 1 AS one FROM {source} WHERE dim_accounts.account_type = $kind"  # noqa: S608  # test input string, not executing SQL
+        ),
+        snapshot,
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {"kind": FAIL_CLOSED_CLASS}
 
 
 def test_projection_sources_withhold_an_upstream_two_tables_bind(
