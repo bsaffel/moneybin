@@ -487,6 +487,15 @@ identity steps. Unknown or pending acknowledgement remains visible during
 offline repair. A terminal unavailable job cannot regain acknowledgement or
 missing retrieval through this repair path; a new exact-connection pull is an
 explicit separate action. Already committed ingestion remains intact.
+
+New Plaid ingestion retains a digest of each complete native batch in the
+protected job record. Redelivery must match that evidence before any provider
+writes or transaction removals. Changed batches are refused; identical
+redeliveries preserve existing delivery counts and replay behavior. Older job
+records without digests remain available for retained local and acknowledgement
+recovery, but cannot authorize an unverifiable redelivery. The client never
+backfills trusted evidence from the redelivery it is checking.
+
 Status includes `recovery_jobs` from this profile's persisted operational state,
 with job UUIDs, bounded phase facts and the existing same-job recovery actions.
 Older unfinished jobs remain discoverable after restart, even if a newer job
@@ -610,6 +619,11 @@ the existing registry lacks coverage. No per-account, per-user, token, host or
 connection labels. Broker metrics cover upstream operations; client metrics
 cover durable ingestion and refresh, so a transform failure is distinguishable
 from a fetch failure.
+
+The pull-outcome counter reports provider success only for a completed job with
+nonempty, complete outcome evidence for every included source of that provider.
+An empty result cannot count as success; an explicit complete no-account outcome
+can. This retrieval counter does not certify acknowledgement or local refresh.
 
 Client counters are `moneybin_sync_ingestion_outcomes_total` (committed/failed),
 `moneybin_sync_refresh_outcomes_total` (complete/failed), and

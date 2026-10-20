@@ -970,6 +970,8 @@ class SyncJobSource(BaseModel):
     source: ProviderSourceResult
     batch_ids: list[UUID]
     plaid_item_ids: list[str] = Field(default_factory=list)
+    # Historic jobs remain recoverable without trusting an unverifiable redelivery.
+    batch_digests: dict[UUID, str] = Field(default_factory=dict)
 
 
 class SyncJobDetails(BaseModel):

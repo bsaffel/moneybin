@@ -1,5 +1,6 @@
 """Crash and terminal acknowledgement recovery never requires held provider data."""
 
+import json
 from copy import deepcopy
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -14,10 +15,55 @@ from moneybin.repositories.sync_job_state_repo import SyncJobStateRepo
 from tests.moneybin.test_services.test_simplefin_sync_service import (
     JOB,
     NOW,
+    _cash_plaid_envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
     _client,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
     _envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
     _service,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
 )  # pyright: ignore[reportPrivateUsage]  # shared synthetic fixtures
+
+
+@pytest.mark.parametrize("local_only", [False, True])
+def test_legacy_plaid_job_can_recover_but_cannot_trust_redelivery(
+    db: Database, local_only: bool
+) -> None:
+    client = _client(_cash_plaid_envelope())
+    client.ack.side_effect = OSError("synthetic lost response")
+    service = _service(db, client)
+    service.pull(refresh=False)
+    row = db.execute("SELECT job_details FROM app.sync_job_state").fetchone()
+    assert row is not None
+    legacy = json.loads(row[0])
+    for source in legacy["sources"]:
+        source.pop("batch_digests", None)
+    legacy["result"]["setup_state"] = "pending"
+    db.execute(
+        "UPDATE app.sync_job_state SET job_details = ?, setup_state = 'pending'",
+        [json.dumps(legacy)],
+    )
+    client.ack.side_effect = None
+    client.reset_mock()
+    client.get_data.side_effect = AssertionError("recovery cannot download")
+    client.trigger_sync.side_effect = AssertionError("recovery cannot trigger")
+    recovered = service.recover(str(JOB), refresh=False, local_only=local_only)
+    assert recovered.ack_state == ("unknown" if local_only else "confirmed")
+    assert recovered.ingestion_state == "committed"
+    assert recovered.setup_state == "complete"
+    client.get_data.assert_not_called()
+    client.trigger_sync.assert_not_called()
+    if local_only:
+        client.get_status.assert_not_called()
+        client.ack.assert_not_called()
+    else:
+        client.get_status.assert_called_once_with(str(JOB))
+        client.ack.assert_called_once_with(str(JOB))
+    before = db.execute("SELECT job_details FROM app.sync_job_state").fetchone()
+    client.get_data.side_effect = None
+    client.trigger_sync.side_effect = None
+    client.reset_mock()
+    with pytest.raises(SyncAPIError, match="immutable Plaid batch"):
+        service.pull(refresh=False)
+    client.ack.assert_not_called()
+    assert db.execute("SELECT job_details FROM app.sync_job_state").fetchone() == before
 
 
 def test_crash_after_broker_ack_recovers_via_status_after_reopen(

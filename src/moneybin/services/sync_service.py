@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
+from hashlib import sha256
 from uuid import UUID
 
 import duckdb
@@ -392,11 +393,16 @@ class SyncService:
                     for source in result.source_results
                     if source.provider == name
                 ]
-                outcomes = [
-                    outcome for source in sources for outcome in source.outcomes
-                ]
-                complete = result.job_status == "completed" and all(
-                    outcome.status == "complete" for outcome in outcomes
+                complete = (
+                    result.job_status == "completed"
+                    and bool(sources)
+                    and all(
+                        source.outcomes
+                        and all(
+                            outcome.status == "complete" for outcome in source.outcomes
+                        )
+                        for source in sources
+                    )
                 )
                 SYNC_PULL_OUTCOMES_TOTAL.labels(
                     provider=name, status="success" if complete else "failed"
@@ -495,6 +501,7 @@ class SyncService:
         # Validate provider payload shapes before any mutations; never expose Pydantic input dumps.
         plaid_data: dict[tuple[int, int], PlaidSyncDataResponse] = {}
         plaid_batch_ids: set[UUID] = set()
+        plaid_batch_digests: dict[UUID, str] = {}
         try:
             for source_index, source in enumerate(data.sources):
                 if isinstance(source, PlaidSource):
@@ -510,6 +517,20 @@ class SyncService:
                             raise SyncAPIError(
                                 "Sync provider job metadata does not match the accepted result"
                             )
+                        plaid_batch_digests[batch.batch_id] = sha256(
+                            json.dumps(
+                                {
+                                    "job_id": job_id,
+                                    "connection_id": str(source.connection_id),
+                                    "credential_generation": source.credential_generation,
+                                    "batch": batch.model_dump(mode="json"),
+                                },
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                ensure_ascii=False,
+                                allow_nan=False,
+                            ).encode()
+                        ).hexdigest()
                         plaid_data[source_index, batch_index] = native
         except ValidationError:
             raise SyncAPIError("Sync provider payload validation failed") from None
@@ -528,7 +549,19 @@ class SyncService:
             progress(ProgressEvent("Loading synced data"))
         receipt_writes = 0
         repo = SyncJobStateRepo(self.db)
-        new_job = repo.get(job_id, self.consumer_id) is None
+        previous = repo.get(job_id, self.consumer_id)
+        new_job = previous is None
+        if previous is not None:
+            retained_digests = {
+                batch_id: source.batch_digests.get(batch_id)
+                for source in previous.details.sources
+                if source.source.provider == "plaid"
+                for batch_id in source.batch_ids
+            }
+            if retained_digests != plaid_batch_digests:
+                raise SyncAPIError(
+                    "Conflicting or unverifiable immutable Plaid batch evidence"
+                )
         observations = MetricObservations()
         previous_observations = self.loader.observations
         self.loader.observations = observations
@@ -639,6 +672,12 @@ class SyncService:
                         ),
                         batch_ids=[batch.batch_id for batch in source.batches],
                         plaid_item_ids=sorted(item_ids),
+                        batch_digests={
+                            batch.batch_id: plaid_batch_digests[batch.batch_id]
+                            for batch in source.batches
+                        }
+                        if isinstance(source, PlaidSource)
+                        else {},
                     )
                 )
             if not receipt_writes and not any(

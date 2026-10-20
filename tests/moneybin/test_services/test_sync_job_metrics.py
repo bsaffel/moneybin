@@ -1,10 +1,15 @@
 """Existing sync counters reflect durable writes and retrieval completeness."""
 
 from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 
-from moneybin.connectors.sync_models import ScopeOutcome, SimpleFINV2ConnectionScope
+from moneybin.connectors.sync_models import (
+    PlaidSource,
+    ScopeOutcome,
+    SimpleFINV2ConnectionScope,
+)
 from moneybin.database import Database
 from moneybin.services import sync_service
 from tests.moneybin.test_services.test_simplefin_sync_service import (
@@ -12,6 +17,43 @@ from tests.moneybin.test_services.test_simplefin_sync_service import (
     _envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
     _service,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
 )  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixtures
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [("empty", "failed"), ("mixed", "failed"), ("explicit-no-accounts", "success")],
+)
+def test_provider_success_requires_outcomes_for_every_source(
+    db: Database, monkeypatch: pytest.MonkeyPatch, evidence: str, expected: str
+) -> None:
+    counter = MagicMock()
+    monkeypatch.setattr(sync_service, "SYNC_PULL_OUTCOMES_TOTAL", counter)
+    data = _envelope()
+    source = PlaidSource(
+        provider="plaid",
+        connection_id=UUID(int=401),
+        credential_generation=1,
+        batches=[],
+        outcomes=[],
+    )
+    data.sources = [source]
+    if evidence != "empty":
+        complete = source.model_copy(deep=True)
+        complete.connection_id = UUID(int=402)
+        complete.outcomes = [
+            ScopeOutcome(
+                account_id=None,
+                native_scope=None,
+                window=None,
+                status="complete",
+                error_code=None,
+            )
+        ]
+        data.sources = (
+            [complete] if evidence == "explicit-no-accounts" else [source, complete]
+        )
+    _service(db, _client(data)).pull(refresh=False)
+    counter.labels.assert_called_once_with(provider="plaid", status=expected)
 
 
 @pytest.mark.parametrize("status", ["completed", "partial", "failed"])

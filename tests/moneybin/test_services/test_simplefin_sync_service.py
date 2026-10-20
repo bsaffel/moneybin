@@ -80,6 +80,74 @@ def _service(db: Database, client: MagicMock) -> SyncService:
     return SyncService(client=client, db=db, loader=PlaidExtractor(db))
 
 
+def _cash_plaid_envelope() -> SyncEnvelopeV2:
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    data = json.loads(fixture.read_text())
+    data["job_id"] = str(JOB)
+    payload = data["sources"][0]["batches"][0]["payload"]
+    payload["metadata"]["job_id"] = str(JOB)
+    payload["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    return SyncEnvelopeV2.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "changed", ["amount", "account", "balance", "removal", "unknown", "fetched_at"]
+)
+def test_changed_plaid_redelivery_refused_before_any_provider_mutation(
+    db: Database, changed: str
+) -> None:
+    data = _cash_plaid_envelope()
+    data.sources.insert(0, _envelope().sources[0])
+    client = _client(data)
+    service = _service(db, client)
+    service.pull(refresh=False)
+    before = db.execute("SELECT job_details FROM app.sync_job_state").fetchone()
+    incoming = data.model_dump(mode="json")
+    batch = incoming["sources"][1]["batches"][0]
+    payload = batch["payload"]
+    if changed == "amount":
+        payload["transactions"][0]["amount"] = "99.99"
+    elif changed == "account":
+        payload["accounts"][0]["name"] = "Changed Checking"
+    elif changed == "balance":
+        payload["balances"][0]["current_balance"] = "999.99"
+    elif changed == "removal":
+        payload["removed_transactions"] = [{"transaction_id": "plaid-transaction-1"}]
+    elif changed == "unknown":
+        payload["future_native_field"] = "changed"
+    else:
+        batch["fetched_at"] = "2026-09-30T12:01:00Z"
+    client.get_data.return_value = SyncEnvelopeV2.model_validate(incoming)
+    client.reset_mock()
+    with (
+        patch.object(
+            SimpleFINExtractor, "load", wraps=SimpleFINExtractor(db).load
+        ) as simplefin_load,
+        patch.object(service.loader, "load", wraps=service.loader.load) as plaid_load,
+        patch.object(
+            service.loader,
+            "handle_removed_transactions",
+            wraps=service.loader.handle_removed_transactions,
+        ) as remove,
+        pytest.raises(sync_service.SyncAPIError, match="immutable Plaid batch"),
+    ):
+        service.pull(refresh=False)
+    simplefin_load.assert_not_called()
+    plaid_load.assert_not_called()
+    remove.assert_not_called()
+    client.ack.assert_not_called()
+    assert db.execute("SELECT amount FROM raw.plaid_transactions").fetchone() == (
+        Decimal("12.34"),
+    )
+    assert db.execute("SELECT job_details FROM app.sync_job_state").fetchone() == before
+
+
 def test_ack_only_after_durable_job(db: Database) -> None:
     """A separate database connection sees Raw and recovery identity before ack."""
     client = _client(_envelope())

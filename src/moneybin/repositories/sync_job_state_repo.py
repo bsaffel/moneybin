@@ -55,6 +55,18 @@ class SyncJobStateRepo:
             if existing.details.sources != details.sources:
                 raise ValueError("Conflicting immutable sync job source evidence")
             return
+        for source in details.sources:
+            if source.source.provider == "plaid" and (
+                set(source.batch_digests) != set(source.batch_ids)
+                or any(
+                    len(digest) != 64
+                    or any(character not in "0123456789abcdef" for character in digest)
+                    for digest in source.batch_digests.values()
+                )
+            ):
+                raise ValueError(
+                    "New sync job requires complete Plaid batch digest evidence"
+                )
         result = details.result
         self.db.execute(
             f"""INSERT INTO {SYNC_JOB_STATE.full_name}
@@ -75,6 +87,8 @@ class SyncJobStateRepo:
         previous = self.get(str(state.job_id), state.consumer_id)
         if previous is None:
             raise ValueError("Sync job was not durably ingested")
+        if previous.details.sources != state.details.sources:
+            raise ValueError("Conflicting immutable sync job source evidence")
         if previous.details.result.ack_state == "confirmed":
             state.details.result.ack_state = "confirmed"
             state.details.result.ack_error_code = None
