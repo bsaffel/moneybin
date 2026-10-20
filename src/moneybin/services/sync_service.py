@@ -572,10 +572,12 @@ class SyncService:
                 zip(data.sources, expected, strict=True)
             ):
                 item_ids: set[str] = set()
+                batch_ids = [batch.batch_id for batch in source.batches]
                 if isinstance(source, SimpleFINSource):
                     loaded = SimpleFINExtractor(self.db).load(
                         source, job_id=data.job_id, job_context=job_context
                     )
+                    batch_ids = loaded.batch_ids
                     receipt_writes += 1
                     result.accounts_loaded += loaded.accounts
                     result.transactions_loaded += loaded.transactions
@@ -670,7 +672,7 @@ class SyncService:
                         source=_SOURCE_RESULT.validate_python(
                             source.model_dump(exclude={"batches"})
                         ),
-                        batch_ids=[batch.batch_id for batch in source.batches],
+                        batch_ids=batch_ids,
                         plaid_item_ids=sorted(item_ids),
                         batch_digests={
                             batch.batch_id: plaid_batch_digests[batch.batch_id]

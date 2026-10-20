@@ -227,6 +227,103 @@ def test_ack_failure_redelivery_is_safe(db: Database) -> None:
     ).fetchone() == (1,)
 
 
+def _duplicate_simplefin_envelope(protocol: str) -> SyncEnvelopeV2:
+    fixture = (
+        Path(__file__).parents[1]
+        / f"connectors/fixtures/sync_v2/simplefin_{protocol}.json"
+    )
+    raw = json.loads(fixture.read_text())
+    raw["job_id"] = str(JOB)
+    batches = raw["sources"][0]["batches"]
+    batches.append(deepcopy(batches[0]))
+    return SyncEnvelopeV2.model_validate(raw)
+
+
+@pytest.mark.parametrize("protocol,transactions", [("v1", 2), ("v2", 1)])
+@pytest.mark.parametrize("fail_setup", [False, True])
+def test_duplicate_simplefin_batches_preserve_setup_and_local_recovery(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+    transactions: int,
+    fail_setup: bool,
+) -> None:
+    data = _duplicate_simplefin_envelope(protocol)
+    client = _client(data)
+    service = _service(db, client)
+    with monkeypatch.context() as setup_failure:
+        if fail_setup:
+            setup_failure.setattr(
+                sync_service.AccountResolver,
+                "resolve",
+                MagicMock(side_effect=ValueError("synthetic setup failure")),
+            )
+        first = service.pull(refresh=False)
+    assert first.ingestion_state == "committed"
+    assert first.ack_state == "confirmed"
+    assert first.transactions_loaded == transactions
+    assert first.setup_state == ("failed" if fail_setup else "complete")
+    receipt = db.execute("SELECT * FROM raw.simplefin_sync_receipts").fetchall()
+    responses = db.execute("SELECT * FROM raw.simplefin_responses").fetchall()
+    if fail_setup:
+        client.reset_mock()
+        for method in ("trigger_sync", "get_data", "get_status", "ack"):
+            getattr(client, method).side_effect = AssertionError(
+                "local recovery cannot contact the broker"
+            )
+        recovered = _service(db, client).recover(
+            str(JOB), refresh=False, local_only=True
+        )
+        assert recovered.setup_state == "complete"
+        assert recovered.transactions_loaded == transactions
+    else:
+        replay = service.pull(refresh=False)
+        assert replay.setup_state == "complete"
+        assert replay.transactions_loaded == 0
+    assert db.execute(
+        "SELECT count(*) FROM app.account_links WHERE source_type = 'simplefin'"
+    ).fetchone() == (2,)
+    assert db.execute("SELECT count(*) FROM raw.simplefin_transactions").fetchone() == (
+        transactions,
+    )
+    assert db.execute("SELECT * FROM raw.simplefin_sync_receipts").fetchall() == receipt
+    assert db.execute("SELECT * FROM raw.simplefin_responses").fetchall() == responses
+    assert len(receipt) == len(responses) == 1
+
+
+@pytest.mark.parametrize("protocol", ["v1", "v2"])
+@pytest.mark.parametrize("redelivery", [False, True])
+def test_duplicate_simplefin_batch_changed_content_refused_atomically(
+    db: Database, protocol: str, redelivery: bool
+) -> None:
+    data = _duplicate_simplefin_envelope(protocol)
+    client = _client(data)
+    service = _service(db, client)
+    if redelivery:
+        service.pull(refresh=False)
+    tables = (
+        "raw.simplefin_responses",
+        "raw.simplefin_sync_receipts",
+        "raw.simplefin_accounts",
+        "raw.simplefin_transactions",
+        "raw.simplefin_balances",
+        "app.sync_job_state",
+    )
+    before = [
+        db.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608  # fixed test table names
+        for table in tables
+    ]
+    data.sources[0].batches[1].payload["changed_native_field"] = "conflict"
+    client.reset_mock()
+    with pytest.raises(ValueError, match="Conflicting immutable SimpleFIN batch"):
+        service.pull(refresh=False)
+    assert [
+        db.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608  # fixed test table names
+        for table in tables
+    ] == before
+    client.ack.assert_not_called()
+
+
 def test_refresh_failure_retries_locally(
     db: Database,
     monkeypatch: pytest.MonkeyPatch,
