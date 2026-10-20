@@ -115,6 +115,7 @@ def test_plaid_completeness_requires_every_payload_account_scope(
     envelope["job_id"] = str(JOB)
     source = envelope["sources"][0]
     payload = source["batches"][0]["payload"]
+    payload["metadata"]["job_id"] = str(JOB)
     payload["metadata"]["institutions"] = [
         {
             "provider_item_id": "plaid-item-1",
@@ -173,6 +174,7 @@ def test_plaid_completeness_requires_delivered_native_accounts(
     envelope["job_id"] = str(JOB)
     source = envelope["sources"][0]
     payload = source["batches"][0]["payload"]
+    payload["metadata"]["job_id"] = str(JOB)
     payload["metadata"]["institutions"] = [
         {
             "provider_item_id": "plaid-item-1",
@@ -252,6 +254,7 @@ def test_zero_transaction_pull_requires_retrieval_evidence(
     envelope["job_id"] = str(JOB)
     source = envelope["sources"][0]
     payload = source["batches"][0]["payload"]
+    payload["metadata"]["job_id"] = str(JOB)
     payload["metadata"]["institutions"] = [
         {
             "provider_item_id": "plaid-item-1",

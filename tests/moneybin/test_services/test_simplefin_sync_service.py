@@ -277,6 +277,74 @@ def test_future_job_metadata_refused_before_mutation(db: Database, field: str) -
 
 
 @pytest.mark.parametrize("across_sources", [False, True])
+def test_plaid_outer_job_mismatch_refused_before_any_ingestion(
+    db: Database, across_sources: bool
+) -> None:
+    """Every native batch must belong to the job before any provider writes."""
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    original = json.loads(fixture.read_text())
+    original["job_id"] = str(JOB)
+    first = original["sources"][0]
+    first["batches"][0]["payload"]["metadata"]["job_id"] = str(JOB)
+    first["batches"][0]["payload"]["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    second = deepcopy(first)
+    second["connection_id"] = str(UUID(int=302))
+    second["batches"][0]["batch_id"] = str(UUID(int=303))
+    second["batches"][0]["payload"]["metadata"]["job_id"] = str(UUID(int=801))
+    if across_sources:
+        original["sources"].append(second)
+    else:
+        first["batches"].extend(second["batches"])
+    original["sources"].insert(0, source().model_dump(mode="json"))
+    data = SyncEnvelopeV2.model_validate(original)
+    client = _client(data)
+    service = _service(db, client)
+    with (
+        patch.object(service.loader, "load", wraps=service.loader.load) as plaid_load,
+        patch.object(
+            service.loader,
+            "handle_removed_transactions",
+            wraps=service.loader.handle_removed_transactions,
+        ) as remove,
+        patch.object(
+            SimpleFINExtractor,
+            "load",
+            autospec=True,
+            side_effect=SimpleFINExtractor.load,
+        ) as simplefin_load,
+        patch.object(db, "begin", wraps=db.begin) as begin,
+    ):
+        with pytest.raises(sync_service.SyncAPIError, match="[Jj]ob"):
+            service.pull(refresh=False)
+        plaid_load.assert_not_called()
+        simplefin_load.assert_not_called()
+        remove.assert_not_called()
+        begin.assert_not_called()
+    for table in (
+        "raw.plaid_transactions",
+        "raw.plaid_accounts",
+        "raw.plaid_balances",
+        "raw.plaid_investment_transaction_receipts",
+        "raw.plaid_investment_holdings_snapshots",
+        "raw.simplefin_sync_receipts",
+        "raw.simplefin_responses",
+        "raw.simplefin_accounts",
+        "raw.simplefin_transactions",
+        "raw.simplefin_balances",
+        "app.sync_job_state",
+    ):
+        assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names
+    client.ack.assert_not_called()
+    assert data.model_dump(mode="json", exclude_unset=True) == original
+
+
+@pytest.mark.parametrize("across_sources", [False, True])
 def test_distinct_plaid_batch_ids_preserve_each_payload(
     db: Database, across_sources: bool
 ) -> None:
@@ -285,6 +353,7 @@ def test_distinct_plaid_batch_ids_preserve_each_payload(
     original["job_id"] = str(JOB)
     first = original["sources"][0]
     first["outcomes"] = []
+    first["batches"][0]["payload"]["metadata"]["job_id"] = str(JOB)
     first["batches"][0]["payload"]["metadata"]["institutions"] = [
         {
             "provider_item_id": "plaid-item-1",
@@ -305,7 +374,9 @@ def test_distinct_plaid_batch_ids_preserve_each_payload(
         first["batches"].extend(second["batches"])
     data = SyncEnvelopeV2.model_validate(original)
 
-    result = _service(db, _client(data)).pull(refresh=False)
+    client = _client(data)
+    service = _service(db, client)
+    result = service.pull(refresh=False)
 
     assert result.transactions_loaded == 2
     assert db.execute(
@@ -325,6 +396,13 @@ def test_distinct_plaid_batch_ids_preserve_each_payload(
         ),
     ]
     assert data.model_dump(mode="json", exclude_unset=True) == original
+    replay = service.pull(refresh=False)
+    # Cash delivery counts include upserts; replay must not add durable rows.
+    assert replay.transactions_loaded == 2
+    assert replay.ingestion_state == "committed"
+    assert replay.ack_state == "confirmed"
+    assert db.execute("SELECT count(*) FROM raw.plaid_transactions").fetchone() == (2,)
+    assert db.execute("SELECT count(*) FROM app.sync_job_state").fetchone() == (1,)
 
 
 @pytest.mark.parametrize("across_sources", [False, True])
@@ -336,6 +414,7 @@ def test_duplicate_plaid_batch_ids_refused_before_any_ingestion(
     original = json.loads(fixture.read_text())
     original["job_id"] = str(JOB)
     first = original["sources"][0]
+    first["batches"][0]["payload"]["metadata"]["job_id"] = str(JOB)
     first["batches"][0]["payload"]["metadata"]["institutions"] = [
         {
             "provider_item_id": "plaid-item-1",
@@ -391,6 +470,7 @@ def test_same_batch_id_across_providers_preserves_each_payload(db: Database) -> 
     fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
     original = json.loads(fixture.read_text())
     original["job_id"] = str(JOB)
+    original["sources"][0]["batches"][0]["payload"]["metadata"]["job_id"] = str(JOB)
     original["sources"][0]["batches"][0]["payload"]["metadata"]["institutions"] = [
         {
             "provider_item_id": "plaid-item-1",
@@ -429,6 +509,7 @@ def test_mixed_provider_late_failure_rolls_back_plaid_receipts_and_deletes(
     """A late SimpleFIN write failure cannot commit earlier Plaid investments."""
     data = _envelope()
     native = _plaid()
+    native.metadata.job_id = str(JOB)
     native.removed_transactions = ["previous"]
     db.execute(
         "INSERT INTO raw.plaid_transactions (transaction_id, account_id, amount, transaction_date, source_file, source_origin) VALUES ('previous', 'account', 1, DATE '2026-09-01', 'prior', 'prior')"

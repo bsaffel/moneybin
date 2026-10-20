@@ -380,8 +380,14 @@ Columns:
 ### SQLMesh model: `core.dim_holdings` (VIEW, derived)
 
 Current positions — the sum of open lots per (account, security). No date dimension;
-it is the "now" snapshot, rebuilt on every run. Daily-valued history
+it is the "now" snapshot, queried through a view. Daily-valued history
 (`core.fct_holdings_daily`) is Pillar C.
+
+For current valuation, “today” is the profile's saved reporting date. The view
+reads it at query time for newest-price eligibility, valuation status and price
+age; a date after that reporting date is ineligible even if UTC has reached it.
+Source price dates are preserved. Feed retrieval independently uses completed
+UTC days, as specified in `investments-price-feeds.md`.
 
 ```
 Columns:

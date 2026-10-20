@@ -58,6 +58,14 @@ calendar bounds to UTC and filter instants with `[start, end)`. DST days may
 have 23 or 25 hours. Business-DATE reports filter the source date directly.
 CLI, MCP and SQL-backed reports share the policy.
 
+Current holdings valuation uses the saved reporting date for price eligibility,
+`valued` versus `carried_forward`, and `days_since_observed`. The holdings view
+reads the saved timezone at query time, so local midnight and timezone changes
+take effect without rebuilding dated price observations. Provider price dates,
+user mark dates and trade dates remain unchanged. Price-feed retrieval still
+uses completed UTC days; that extraction cutoff does not define reporting
+“today”.
+
 The `calendar_bounds` helper requires an unambiguous, existing local midnight
 at both endpoints. It rejects midnight gaps, repeated midnights and skipped
 calendar dates; it does not choose an offset or shift a boundary. Current

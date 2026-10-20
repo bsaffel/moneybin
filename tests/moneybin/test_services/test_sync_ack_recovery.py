@@ -204,6 +204,8 @@ def test_mixed_replay_returns_delivery_counts_without_rewriting_ingestion_eviden
     from tests.moneybin.test_services.test_simplefin_sync_service import _plaid  # pyright: ignore[reportPrivateUsage]  # synthetic investment fixture
 
     data = _envelope()
+    native = _plaid()
+    native.metadata.job_id = str(JOB)
     data.sources.append(
         PlaidSource.model_validate({
             "provider": "plaid",
@@ -215,7 +217,7 @@ def test_mixed_replay_returns_delivery_counts_without_rewriting_ingestion_eviden
                     "batch_id": str(UUID(int=301)),
                     "fetched_at": NOW,
                     "window": None,
-                    "payload": _plaid().model_dump(mode="json"),
+                    "payload": native.model_dump(mode="json"),
                 }
             ],
         })

@@ -505,9 +505,12 @@ class SyncService:
                                 "Sync job contains duplicate Plaid batch IDs"
                             )
                         plaid_batch_ids.add(batch.batch_id)
-                        plaid_data[source_index, batch_index] = (
-                            PlaidSyncDataResponse.model_validate(batch.payload)
-                        )
+                        native = PlaidSyncDataResponse.model_validate(batch.payload)
+                        if native.metadata.job_id != job_id:
+                            raise SyncAPIError(
+                                "Sync provider job metadata does not match the accepted result"
+                            )
+                        plaid_data[source_index, batch_index] = native
         except ValidationError:
             raise SyncAPIError("Sync provider payload validation failed") from None
         result = PullResult(

@@ -60,6 +60,8 @@ def _set_v2_job(client: MagicMock, native: PlaidSyncDataResponse) -> None:
     """Serve the native Plaid fixture through one accepted broker v2 job."""
     client.consumer_id = "test-consumer"
     job_id = uuid5(NAMESPACE_URL, f"sync-freshness-job:{native.metadata.job_id}")
+    payload = native.model_dump(mode="json")
+    payload["metadata"]["job_id"] = str(job_id)
     source = {
         "provider": "plaid",
         "connection_id": uuid5(NAMESPACE_URL, "sync-freshness-connection"),
@@ -69,7 +71,7 @@ def _set_v2_job(client: MagicMock, native: PlaidSyncDataResponse) -> None:
                 "batch_id": uuid5(NAMESPACE_URL, "sync-freshness-batch"),
                 "fetched_at": datetime(2026, 4, 8, tzinfo=UTC),
                 "window": None,
-                "payload": native.model_dump(mode="json"),
+                "payload": payload,
             }
         ],
         "outcomes": [

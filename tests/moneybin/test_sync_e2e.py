@@ -38,6 +38,8 @@ def test_full_sync_pipeline_to_core(db: Database) -> None:
     client = MagicMock()
     client.consumer_id = "test-consumer"
     job_id = uuid5(NAMESPACE_URL, f"sync-job:{sync_data.metadata.job_id}")
+    payload = sync_data.model_dump(mode="json")
+    payload["metadata"]["job_id"] = str(job_id)
     source = {
         "provider": "plaid",
         "connection_id": uuid5(NAMESPACE_URL, "sync-connection:e2e"),
@@ -47,7 +49,7 @@ def test_full_sync_pipeline_to_core(db: Database) -> None:
                 "batch_id": uuid5(NAMESPACE_URL, "sync-batch:e2e"),
                 "fetched_at": datetime(2026, 4, 8, tzinfo=UTC),
                 "window": None,
-                "payload": sync_data.model_dump(mode="json"),
+                "payload": payload,
             }
         ],
         "outcomes": [
