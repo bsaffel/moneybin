@@ -1243,6 +1243,39 @@ def test_an_unpivot_value_column_never_borrows_a_catalog_class(
     assert _ROUTING_NUMBER not in str(result.records)
 
 
+_MISBOUND_QUALIFIERS = {
+    # A subquery scope's ``sources`` lists every visible CTE; the walk must stop
+    # at the FROM that reads the name, not at an unread CTE of that name.
+    "unread-cte-over-outer-table": (
+        "WITH d AS (SELECT 'x' AS routing_number) "
+        "SELECT (SELECT d.routing_number FROM (SELECT 1) z) AS v "
+        "FROM core.dim_accounts AS d"
+    ),
+    # A column-list alias renames by position.
+    "renamed-catalog-table": (
+        "SELECT d.account_type FROM core.dim_accounts "
+        "AS d(account_id, account_type, routing_number)"
+    ),
+    "renamed-cte-reference": (
+        "WITH t AS (SELECT routing_number, account_type FROM core.dim_accounts) "
+        "SELECT u.account_type FROM t AS u(account_type, x)"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "sql", list(_MISBOUND_QUALIFIERS.values()), ids=list(_MISBOUND_QUALIFIERS)
+)
+def test_a_qualifier_is_classified_by_what_its_from_actually_binds(
+    sql: str, populated_db: Database
+) -> None:
+    """Each shape classified the routing number by the wrong column, at LOW."""
+    _seed_account(populated_db)
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.tier is Tier.CRITICAL
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
 @pytest.mark.parametrize(
     "from_clause",
     ["c AS dim_accounts", "core.dim_accounts a, c AS dim_accounts"],

@@ -25,6 +25,7 @@ from moneybin.privacy.sql_lineage import (
     _combined_class,  # pyright: ignore[reportPrivateUsage]
     _conservative_floor,  # pyright: ignore[reportPrivateUsage]
     _scope_input_max,  # pyright: ignore[reportPrivateUsage]
+    _scope_source_names,  # pyright: ignore[reportPrivateUsage]
     _table_scope_max,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
     expand_star,
@@ -354,24 +355,23 @@ def test_unresolvable_projection_falls_back_to_max_input_tier(
     snap = get_current_schema_snapshot(populated_db)
     tree = lin.expand_star(lin.parse_cached(sql), snap)
 
-    real = lin._column_key  # pyright: ignore[reportPrivateUsage]
+    real = lin._catalog_key  # pyright: ignore[reportPrivateUsage]
 
     def flaky(
         col: object,
+        scope: object,
         alias_map: object,
         snapshot: object,
-        shadowed: object = frozenset(),
+        shadowed: object,
     ) -> object:
-        # _column_key(col, alias_map, snapshot, shadowed) — fail only for
-        # 'credit_limit'. ``shadowed`` defaults so the call sites that omit it
-        # (collect_input_columns) keep working through the patch.
+        # The projection path's catalog lookup — fail only for 'credit_limit'.
         from sqlglot import exp as _exp
 
         if isinstance(col, _exp.Column) and col.name == "credit_limit":
             return None
-        return real(col, alias_map, snapshot, shadowed)  # type: ignore[arg-type]
+        return real(col, scope, alias_map, snapshot, shadowed)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(lin, "_column_key", flaky)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(lin, "_catalog_key", flaky)  # pyright: ignore[reportPrivateUsage]
 
     out = lin.resolve_output_classes(tree, snap, sql)
     # routing_number still resolves to CRITICAL; credit_limit falls back to max
@@ -2253,6 +2253,9 @@ _NON_CATALOG_DIM_ACCOUNTS_SOURCES = {
         "core.dim_accounts UNPIVOT (account_type FOR n IN "
         "(routing_number, account_type)) AS dim_accounts"
     ),
+    "renamed-catalog-table": (
+        "core.dim_accounts AS dim_accounts(routing_number_alias, account_type)"
+    ),
 }
 
 
@@ -2297,6 +2300,47 @@ def test_a_placeholder_on_a_catalog_table_still_takes_its_class(
     )
 
     assert resolve_placeholder_classes(tree, snapshot) == {"kind": DataClass.TXN_TYPE}
+
+
+def test_an_alias_reused_in_another_scope_resolves_to_its_own_table(
+    populated_db: Database,
+) -> None:
+    """The class comes from the binder, not the last-write-wins alias map.
+
+    ``t`` is ``app.account_links`` where ``t.ref_value`` is read; the map ended
+    on the inner ``app.merchant_links`` and answered RECORD_ID (LOW) for an
+    ACCOUNT_IDENTIFIER.
+    """
+    out = _classes(
+        "SELECT t.ref_value FROM app.account_links t "
+        "WHERE EXISTS (SELECT 1 FROM app.merchant_links t)",
+        populated_db,
+    )
+
+    assert out == {"ref_value": DataClass.ACCOUNT_IDENTIFIER}
+
+
+def test_a_pivot_beside_a_catalog_table_leaves_that_table_resolvable(
+    populated_db: Database,
+) -> None:
+    """The benign twin of the pivot rule: only the pivoted source declines."""
+    out = _classes(
+        "SELECT d.account_type FROM core.dim_accounts d, "
+        "core.dim_accounts UNPIVOT (x FOR n IN (routing_number)) u",
+        populated_db,
+    )
+
+    assert out == {"account_type": DataClass.TXN_TYPE}
+
+
+def test_a_cte_reference_is_recognized_whatever_its_case() -> None:
+    """DuckDB matches identifiers without regard to case; the shadowed set must too."""
+    tree = parse_cached(
+        "WITH C AS (SELECT routing_number AS account_id FROM core.dim_accounts) "
+        "SELECT dim_accounts.account_id FROM c AS dim_accounts"
+    )
+
+    assert "dim_accounts" in _scope_source_names(tree)
 
 
 def test_projection_sources_name_no_upstream_for_an_aliased_cte(
