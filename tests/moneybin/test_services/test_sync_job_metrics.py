@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 
 from moneybin.connectors.sync_models import (
+    PlaidItemScope,
     PlaidSource,
     ScopeOutcome,
     SimpleFINV2ConnectionScope,
@@ -67,7 +68,9 @@ def test_provider_success_requires_outcomes_for_every_source(
         complete.outcomes = [
             ScopeOutcome(
                 account_id=None,
-                native_scope=None,
+                native_scope=PlaidItemScope(
+                    kind="plaid_item", provider_item_id="plaid-item-1"
+                ),
                 window=None,
                 status="complete",
                 error_code=None,

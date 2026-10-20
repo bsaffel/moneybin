@@ -514,6 +514,8 @@ class PlaidSource(_ContractModel):
             raise ValueError("Plaid results require a null window")
         for outcome in self.outcomes:
             scope = outcome.native_scope
+            if outcome.status == "complete" and not isinstance(scope, PlaidItemScope):
+                raise ValueError("Complete Plaid outcome requires Plaid item scope")
             if scope is None and outcome.account_id is not None:
                 raise ValueError("Account outcome requires native scope")
             if scope is not None and not isinstance(scope, PlaidItemScope):
@@ -887,6 +889,11 @@ class PlaidSourceResult(_ContractModel):
     connection_id: UUID
     credential_generation: int = Field(gt=0)
     outcomes: list[ScopeOutcome]
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> Self:
+        PlaidSource.model_validate({**self.model_dump(), "batches": []})
+        return self
 
 
 class SimpleFINSourceResult(_ContractModel):

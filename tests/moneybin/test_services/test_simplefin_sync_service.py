@@ -96,6 +96,31 @@ def _cash_plaid_envelope() -> SyncEnvelopeV2:
     return SyncEnvelopeV2.model_validate(data)
 
 
+def test_plaid_complete_no_account_without_item_refused_before_ingestion(
+    db: Database,
+) -> None:
+    data = _cash_plaid_envelope()
+    source = data.sources[0]
+    source.batches = []
+    source.outcomes[0].account_id = None
+    source.outcomes[0].native_scope = None
+    data.sources.insert(0, _envelope().sources[0])
+    client = _client(data)
+
+    with pytest.raises(ValidationError, match="Plaid item scope"):
+        _service(db, client).pull(refresh=False)
+
+    for table in (
+        "raw.simplefin_sync_receipts",
+        "raw.simplefin_accounts",
+        "raw.simplefin_transactions",
+        "raw.plaid_transactions",
+        "app.sync_job_state",
+    ):
+        assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names
+    client.ack.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "changed", ["amount", "account", "balance", "removal", "unknown", "fetched_at"]
 )

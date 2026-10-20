@@ -250,7 +250,9 @@ def test_v2_preserves_incomplete_outcome_error_and_retry(
 def test_v2_preserves_complete_no_account_outcome(name: str) -> None:
     original = json.loads((FIXTURES / f"{name}.json").read_text())
     outcome = original["sources"][0]["outcomes"][0]
-    outcome.update(account_id=None, native_scope=None)
+    outcome["account_id"] = None
+    if name != "plaid":
+        outcome["native_scope"] = None
 
     validated = _validate_envelope(original).sources[0].outcomes[0]
 
@@ -258,6 +260,48 @@ def test_v2_preserves_complete_no_account_outcome(name: str) -> None:
     assert validated.account_id is None
     assert validated.error_code is None
     assert validated.retry_at is None
+    assert validated.model_dump(mode="json")["native_scope"] == outcome["native_scope"]
+
+
+@pytest.mark.parametrize("boundary", ["envelope", "retained"])
+def test_plaid_complete_no_account_requires_item_scope(boundary: str) -> None:
+    original = json.loads((FIXTURES / "plaid.json").read_text())
+    source = original["sources"][0]
+    source["batches"] = []
+    source["outcomes"][0].update(account_id=None, native_scope=None)
+
+    with pytest.raises(ValidationError, match="Plaid item scope"):
+        if boundary == "envelope":
+            _validate_envelope(original)
+        else:
+            sync_models.PlaidSourceResult.model_validate({
+                key: value for key, value in source.items() if key != "batches"
+            })
+
+
+@pytest.mark.parametrize("boundary", ["envelope", "retained"])
+@pytest.mark.parametrize("status", ["partial", "failed"])
+def test_plaid_unscoped_error_outcome_is_preserved(boundary: str, status: str) -> None:
+    original = json.loads((FIXTURES / "plaid.json").read_text())
+    source = original["sources"][0]
+    source["batches"] = []
+    source["outcomes"][0].update(
+        account_id=None, native_scope=None, status=status, error_code="provider_error"
+    )
+
+    validated = (
+        _validate_envelope(original).sources[0]
+        if boundary == "envelope"
+        else sync_models.PlaidSourceResult.model_validate({
+            key: value for key, value in source.items() if key != "batches"
+        })
+    )
+
+    outcome = validated.outcomes[0]
+    assert outcome.status == status
+    assert outcome.account_id is None
+    assert outcome.native_scope is None
+    assert outcome.error_code == "provider_error"
 
 
 def test_v2_rejects_nonpositive_credential_generation() -> None:
