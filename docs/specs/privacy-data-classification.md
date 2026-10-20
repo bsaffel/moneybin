@@ -383,6 +383,7 @@ The `sql_query` MCP tool accepts arbitrary read-only SQL, so its output columns 
 | Literal-only (`'hi'`, `1`) | `AGGREGATE` (LOW) |
 | `COLUMNS('regex')`, `COLUMNS(c -> …)` | Conservative fallback — sqlglot models the argument, never the columns DuckDB expands it to |
 | `*` that survived `qualify()` (a `PIVOT` / `UNPIVOT` / `SUMMARIZE` source) | Conservative fallback — the output columns are computed at execution time and are not in the catalog |
+| Any column whose binding scope reads a `PIVOT` / `UNPIVOT` | Conservative fallback — a generated column can answer to a catalog name while holding any arm (see "A qualifier resolves against the catalog only where a catalog table binds it") |
 | Whole-row pseudo-column (`SELECT dim_accounts FROM core.dim_accounts`), `UNNEST` of one | Conservative fallback — the projection names no column but returns all of them |
 | Unresolvable | Conservative fallback (see below) |
 
@@ -463,6 +464,14 @@ Three further properties bound what shipped:
 - **A condition slot must lie between.** A bare `SELECT last_four IS NULL` keeps its class: the `Is` node *is* the projection, so nothing separates the test from the output. That is a deliberately conservative edge, not a claim that the bit differs.
 
 The opaque-node veto still outranks this rule, as it does the counting aggregate: `COLUMNS(…)` inside a condition takes the conservative fallback, because it distributes into sibling projections lineage never named.
+
+### A qualifier resolves against the catalog only where a catalog table binds it
+
+A column such as `dim_accounts.account_id` takes a catalog class only when the `FROM` that binds `dim_accounts` binds it to a real catalog table. Anything else that binds the name shadows the same-named table, as SQL itself does: a CTE, a subquery, `VALUES`, `UNNEST`, `LATERAL`, a table function, a table reference to a CTE (`FROM c AS dim_accounts`), and any `PIVOT` / `UNPIVOT`. A pivot never lends its source table's classes, because DuckDB generates its output columns and the author names them: `UNPIVOT (account_id FOR n IN (routing_number, account_id))` produces an `account_id` column holding the routing number.
+
+The binding scope is found by walking outward from the column, so a correlated subquery is judged by the `FROM` it actually reads. Every shape above, read through a correlated subquery, returned the routing number at tier LOW before the rule was stated this way. The cause was an enumerated list of shadowing syntaxes that each new form slipped past. The paths without a scope tree — placeholder classes and projection provenance — apply the same rule across the whole query: a name passes only when every binder of it is a catalog table. A missed binding syntax therefore over-masks instead of leaking.
+
+The cost is over-masking. Every column of a query that reads a pivot takes the conservative fallback, including a pass-through column the pivot does not touch.
 
 ### Conservative fallback
 

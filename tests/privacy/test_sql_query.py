@@ -1200,6 +1200,49 @@ def test_correlated_unpivot_alias_named_after_catalog_table_is_masked(
     assert _ROUTING_NUMBER not in str(result.records)
 
 
+_UNPIVOT_OVER_BASE_TABLE = {
+    "unaliased": (
+        "SELECT account_id FROM core.dim_accounts "
+        "UNPIVOT (account_id FOR n IN (routing_number, account_id))"
+    ),
+    "aliased": (
+        "SELECT dim_accounts.account_id AS v, n FROM core.dim_accounts "
+        "UNPIVOT (account_id FOR n IN (routing_number, account_id)) AS dim_accounts"
+    ),
+    "aliased-as-other-table": (
+        "SELECT fct_transactions.category AS v FROM core.dim_accounts "
+        "UNPIVOT (category FOR n IN (routing_number)) AS fct_transactions"
+    ),
+    "correlated": (
+        "SELECT (SELECT fct_transactions.category) AS v FROM core.dim_accounts "
+        "UNPIVOT (category FOR n IN (routing_number)) AS fct_transactions"
+    ),
+    "correlated-in-list": (
+        "SELECT (SELECT dim_accounts.account_type) AS v FROM core.dim_accounts "
+        "UNPIVOT (account_type FOR n IN (routing_number, account_type)) "
+        "AS dim_accounts"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "sql", list(_UNPIVOT_OVER_BASE_TABLE.values()), ids=list(_UNPIVOT_OVER_BASE_TABLE)
+)
+def test_an_unpivot_value_column_never_borrows_a_catalog_class(
+    sql: str, populated_db: Database
+) -> None:
+    """An UNPIVOT's value column is generated; its name is the author's to pick.
+
+    Listing ``account_id`` among the arms frees that name, and an alias can name
+    any table. Either way the generated column answered to a catalog column —
+    RECORD_ID, CATEGORY, TXN_TYPE, all LOW — while holding the routing number.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.tier is Tier.CRITICAL
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
 @pytest.mark.parametrize(
     "from_clause",
     ["c AS dim_accounts", "core.dim_accounts a, c AS dim_accounts"],
