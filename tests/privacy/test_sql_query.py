@@ -1147,6 +1147,172 @@ def test_shadowing_cte_does_not_return_routing_number_in_the_clear(
     assert _ROUTING_NUMBER not in str(result.records)
 
 
+# Every derived-table kind that is not a CTE or a subquery, each binding the
+# name ``dim_accounts`` to a correlated routing number. ``account_id`` is the
+# column the catalog would answer for: RECORD_ID, LOW, printed in the clear.
+_CORRELATED_DERIVED_TABLE_SOURCES = {
+    "values": "(VALUES (a.routing_number)) AS dim_accounts(account_id)",
+    "unnest": "UNNEST([a.routing_number]) AS dim_accounts(account_id)",
+    "lateral": "LATERAL (SELECT a.routing_number AS account_id) AS dim_accounts",
+}
+
+
+@pytest.mark.parametrize(
+    "source",
+    list(_CORRELATED_DERIVED_TABLE_SOURCES.values()),
+    ids=list(_CORRELATED_DERIVED_TABLE_SOURCES),
+)
+def test_correlated_derived_table_named_after_catalog_table_is_masked(
+    source: str, populated_db: Database
+) -> None:
+    """A non-CTE derived table shadows a same-named catalog table too.
+
+    Only CTE and subquery aliases entered the shadowed set, so a name bound by
+    ``VALUES``, ``UNNEST`` or ``LATERAL`` and read from a correlated subquery
+    resolved against ``core.dim_accounts`` instead: the routing number came
+    back verbatim at tier LOW, classified ``record_id``.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        f"SELECT (SELECT dim_accounts.account_id) AS v FROM core.dim_accounts a, {source}",  # noqa: S608  # parametrized test input, not user input
+        max_rows=100,
+    )
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["v"] == "*****"
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+def test_correlated_unpivot_alias_named_after_catalog_table_is_masked(
+    populated_db: Database,
+) -> None:
+    """An UNPIVOT alias over a derived table shadows the catalog table it names."""
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT (SELECT dim_accounts.account_id) AS v "
+        "FROM (SELECT routing_number AS x FROM core.dim_accounts) "
+        "UNPIVOT (account_id FOR n IN (x)) AS dim_accounts",
+        max_rows=100,
+    )
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["v"] == "*****"
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+_UNPIVOT_OVER_BASE_TABLE = {
+    "unaliased": (
+        "SELECT account_id FROM core.dim_accounts "
+        "UNPIVOT (account_id FOR n IN (routing_number, account_id))"
+    ),
+    "aliased": (
+        "SELECT dim_accounts.account_id AS v, n FROM core.dim_accounts "
+        "UNPIVOT (account_id FOR n IN (routing_number, account_id)) AS dim_accounts"
+    ),
+    "aliased-as-other-table": (
+        "SELECT fct_transactions.category AS v FROM core.dim_accounts "
+        "UNPIVOT (category FOR n IN (routing_number)) AS fct_transactions"
+    ),
+    "correlated": (
+        "SELECT (SELECT fct_transactions.category) AS v FROM core.dim_accounts "
+        "UNPIVOT (category FOR n IN (routing_number)) AS fct_transactions"
+    ),
+    "correlated-in-list": (
+        "SELECT (SELECT dim_accounts.account_type) AS v FROM core.dim_accounts "
+        "UNPIVOT (account_type FOR n IN (routing_number, account_type)) "
+        "AS dim_accounts"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "sql", list(_UNPIVOT_OVER_BASE_TABLE.values()), ids=list(_UNPIVOT_OVER_BASE_TABLE)
+)
+def test_an_unpivot_value_column_never_borrows_a_catalog_class(
+    sql: str, populated_db: Database
+) -> None:
+    """An UNPIVOT's value column is generated; its name is the author's to pick.
+
+    Listing ``account_id`` among the arms frees that name, and an alias can name
+    any table. Either way the generated column answered to a catalog column —
+    RECORD_ID, CATEGORY, TXN_TYPE, all LOW — while holding the routing number.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.tier is Tier.CRITICAL
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+_MISBOUND_QUALIFIERS = {
+    # A subquery scope's ``sources`` lists every visible CTE; the walk must stop
+    # at the FROM that reads the name, not at an unread CTE of that name.
+    "unread-cte-over-outer-table": (
+        "WITH d AS (SELECT 'x' AS routing_number) "
+        "SELECT (SELECT d.routing_number FROM (SELECT 1) z) AS v "
+        "FROM core.dim_accounts AS d"
+    ),
+    # A column-list alias renames by position.
+    "renamed-catalog-table": (
+        "SELECT d.account_type FROM core.dim_accounts "
+        "AS d(account_id, account_type, routing_number)"
+    ),
+    "renamed-cte-reference": (
+        "WITH t AS (SELECT routing_number, account_type FROM core.dim_accounts) "
+        "SELECT u.account_type FROM t AS u(account_type, x)"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "sql", list(_MISBOUND_QUALIFIERS.values()), ids=list(_MISBOUND_QUALIFIERS)
+)
+def test_a_qualifier_is_classified_by_what_its_from_actually_binds(
+    sql: str, populated_db: Database
+) -> None:
+    """Each shape classified the routing number by the wrong column, at LOW."""
+    _seed_account(populated_db)
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.tier is Tier.CRITICAL
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+@pytest.mark.parametrize(
+    "from_clause",
+    ["c AS dim_accounts", "core.dim_accounts a, c AS dim_accounts"],
+    ids=["alias-only", "beside-catalog-table"],
+)
+def test_correlated_read_of_an_aliased_cte_is_masked(
+    from_clause: str, populated_db: Database
+) -> None:
+    """A correlated reference resolves through the ENCLOSING scope's sources.
+
+    ``FROM c AS dim_accounts`` binds the name in the outer scope; the inner
+    ``(SELECT dim_accounts.account_id)`` has no source of its own, and looking
+    only there sent the reference to ``core.dim_accounts`` — LOW, in the clear.
+    """
+    _seed_account(populated_db)
+    cte = "WITH c AS (SELECT routing_number AS account_id FROM core.dim_accounts)"
+    sql = f"{cte} SELECT (SELECT dim_accounts.account_id) AS v FROM {from_clause}"  # noqa: S608  # parametrized test input, not user input
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["v"] == "*****"
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+def test_derived_table_with_its_own_name_leaves_catalog_columns_readable(
+    populated_db: Database,
+) -> None:
+    """Shadowing refuses only the colliding name, never the catalog table beside it."""
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT a.account_id FROM core.dim_accounts a, (VALUES (7)) AS v(n)",
+        max_rows=100,
+    )
+    assert result.tier is Tier.LOW
+    assert result.records[0]["account_id"] == "ACC000123456789"
+
+
 def test_except_query_is_classified_and_masked(populated_db: Database) -> None:
     """``EXCEPT`` returns rows, so it must be masked like any other data query.
 
