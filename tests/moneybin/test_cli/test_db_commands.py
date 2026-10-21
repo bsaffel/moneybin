@@ -84,8 +84,9 @@ class TestDuckDBCLIInitialization:
     def test_init_script_sets_utc_before_database_use(self, tmp_path: Path) -> None:
         """Standalone CLI reads and naive instant writes use the warehouse clock."""
         duckdb_path = shutil.which("duckdb")
-        if duckdb_path is None:
-            pytest.skip("DuckDB CLI is not installed")
+        assert duckdb_path is not None, (
+            "DuckDB CLI is required for this integration test"
+        )
         script_path = db_commands._create_init_script(  # pyright: ignore[reportPrivateUsage]  # exercise the generated CLI setup
             tmp_path / "test.duckdb"
         )
@@ -94,7 +95,10 @@ class TestDuckDBCLIInitialization:
         try:
             # Exercise startup with the preinstalled extension; never install in tests.
             script = script_path.read_text().replace("INSTALL httpfs;\n", "")
-            script_path.write_text("SET GLOBAL TimeZone = 'Asia/Tokyo';\n" + script)
+            script_path.write_text(
+                "SET autoinstall_known_extensions = false;\n"
+                "SET GLOBAL TimeZone = 'Asia/Tokyo';\n" + script
+            )
             result = subprocess.run(  # noqa: S603  # installed CLI with synthetic database and static query
                 [
                     duckdb_path,
@@ -110,7 +114,7 @@ class TestDuckDBCLIInitialization:
                     "TIMESTAMPTZ '2026-10-19 16:00:00+00'::DATE::VARCHAR AS day "
                     "FROM clock;",
                 ],
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
                 env=environment,
@@ -118,6 +122,7 @@ class TestDuckDBCLIInitialization:
         finally:
             script_path.unlink(missing_ok=True)
 
+        assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == [
             {"zone": "UTC", "writes_utc": True, "day": "2026-10-19"}
         ]

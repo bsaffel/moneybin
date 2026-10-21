@@ -497,10 +497,16 @@ explicit separate action. Already committed ingestion remains intact.
 New Plaid ingestion retains a digest of each complete native batch in the
 protected job record. Redelivery must match that evidence before any provider
 writes or transaction removals. Changed batches are refused; identical
-redeliveries preserve existing delivery counts and replay behavior. Older job
+redeliveries resume retained operational phases without repeating Plaid writes
+or removals, so an older job cannot overwrite newer data. The retry reports zero
+newly loaded rows while retaining the original job's ingestion evidence. Older job
 records without digests remain available for retained local and acknowledgement
 recovery, but cannot authorize an unverifiable redelivery. The client never
 backfills trusted evidence from the redelivery it is checking.
+
+Every delivered Plaid security must name an item reported in that same native
+batch. A different batch's item scope cannot authorize those security or price
+writes; mismatches are refused before any ingestion or acknowledgement.
 
 Status includes `recovery_jobs` from this profile's persisted operational state,
 with job UUIDs, bounded phase facts and the existing same-job recovery actions.

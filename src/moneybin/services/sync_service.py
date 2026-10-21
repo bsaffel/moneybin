@@ -518,6 +518,17 @@ class SyncService:
                             raise SyncAPIError(
                                 "Sync provider job metadata does not match the accepted result"
                             )
+                        reported_items = {
+                            inst.provider_item_id
+                            for inst in native.metadata.institutions
+                        }
+                        if any(
+                            security.provider_item_id not in reported_items
+                            for security in native.securities
+                        ):
+                            raise SyncAPIError(
+                                "Sync security item scope is not reported by its batch"
+                            )
                         plaid_batch_digests[batch.batch_id] = sha256(
                             json.dumps(
                                 {
@@ -596,6 +607,9 @@ class SyncService:
                             inst.provider_item_id
                             for inst in native.metadata.institutions
                         )
+                        # Reapplying an older committed job would overwrite newer Raw.
+                        if not new_job:
+                            continue
                         result.transactions_removed += (
                             self.loader.handle_removed_transactions(
                                 native.removed_transactions

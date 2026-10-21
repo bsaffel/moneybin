@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
@@ -171,6 +171,149 @@ def test_changed_plaid_redelivery_refused_before_any_provider_mutation(
         Decimal("12.34"),
     )
     assert db.execute("SELECT job_details FROM app.sync_job_state").fetchone() == before
+
+
+@pytest.mark.parametrize("ack_pending", [False, True])
+def test_unchanged_plaid_redelivery_preserves_newer_job_and_resumes_phases(
+    db: Database, monkeypatch: pytest.MonkeyPatch, ack_pending: bool
+) -> None:
+    data = _cash_plaid_envelope()
+    payload = cast(dict[str, Any], data.sources[0].batches[0].payload)
+    payload["transactions"].append({
+        **payload["transactions"][0],
+        "transaction_id": "removed-by-newer-job",
+    })
+    payload["removed_transactions"] = ["restored-by-newer-job"]
+    client = _client(data)
+    service = _service(db, client)
+    if ack_pending:
+        client.ack.side_effect = OSError("synthetic lost acknowledgement")
+    first = service.pull(refresh=False)
+    assert first.ack_state == ("unknown" if ack_pending else "confirmed")
+    assert first.refresh_state == "deferred"
+
+    newer = data.model_copy(deep=True)
+    newer.job_id = UUID(int=801)
+    batch = newer.sources[0].batches[0]
+    batch.batch_id = UUID(int=802)
+    newer_payload = cast(dict[str, Any], batch.payload)
+    newer_payload["metadata"]["job_id"] = str(newer.job_id)
+    newer_payload["accounts"][0]["name"] = "Updated Checking"
+    newer_payload["balances"][0]["current_balance"] = "250.00"
+    newer_payload["transactions"] = [
+        {**payload["transactions"][0], "amount": "99.99"},
+        {**payload["transactions"][0], "transaction_id": "restored-by-newer-job"},
+    ]
+    newer_payload["removed_transactions"] = ["removed-by-newer-job"]
+    newer_client = _client(newer)
+    newer_client.trigger_sync.return_value.job_id = str(newer.job_id)
+    newer_client.get_status.return_value.job_id = newer.job_id
+    newer_client.ack.return_value.job_id = newer.job_id
+    _service(db, newer_client).pull(refresh=False)
+
+    queries = (
+        "SELECT account_id, name FROM raw.plaid_accounts ORDER BY account_id",
+        "SELECT account_id, current_balance FROM raw.plaid_balances ORDER BY account_id",
+        "SELECT transaction_id, amount FROM raw.plaid_transactions ORDER BY transaction_id",
+    )
+    expected = [
+        [("plaid-account-1", "Updated Checking")],
+        [("plaid-account-1", Decimal("250.00"))],
+        [
+            ("plaid-transaction-1", Decimal("99.99")),
+            ("restored-by-newer-job", Decimal("12.34")),
+        ],
+    ]
+    assert [db.execute(query).fetchall() for query in queries] == expected
+    client.ack.side_effect = None
+    client.reset_mock()
+    refreshed = MagicMock(
+        return_value=RefreshResult(applied=True, duration_seconds=0.1)
+    )
+    monkeypatch.setattr(sync_service, "_refresh", refreshed)
+
+    replay = service.pull(refresh=True)
+
+    assert [db.execute(query).fetchall() for query in queries] == expected
+    assert replay.transactions_loaded == 0
+    assert replay.transactions_removed == 0
+    assert replay.accounts_loaded == 0
+    assert replay.balances_loaded == 0
+    assert replay.ingestion_state == "committed"
+    assert replay.ack_state == "confirmed"
+    assert replay.setup_state == "complete"
+    assert replay.refresh_state == "complete"
+    assert client.ack.call_count == int(ack_pending)
+    refreshed.assert_called_once()
+
+
+def test_plaid_redelivery_still_requires_immutable_source_evidence(
+    db: Database,
+) -> None:
+    data = _cash_plaid_envelope()
+    _service(db, _client(data)).pull(refresh=False)
+    before = db.execute("SELECT job_details FROM app.sync_job_state").fetchone()
+    changed = data.model_copy(deep=True)
+    changed.sources[0].outcomes[0].status = "partial"
+    changed.sources[0].outcomes[0].error_code = "provider_error"
+    client = _client(changed)
+
+    with pytest.raises(ValueError, match="immutable sync job source evidence"):
+        _service(db, client).pull(refresh=False)
+
+    assert db.execute("SELECT job_details FROM app.sync_job_state").fetchone() == before
+    client.ack.assert_not_called()
+
+
+@pytest.mark.parametrize("scope", ["reported", "unreported", "other_batch"])
+def test_plaid_security_requires_its_own_batch_item_scope(
+    db: Database, scope: str
+) -> None:
+    data = _cash_plaid_envelope()
+    batch = data.sources[0].batches[0]
+    security = _plaid().securities[0].model_dump(mode="json")
+    security["provider_item_id"] = (
+        "plaid-item-1" if scope == "reported" else "plaid-item-2"
+    )
+    batch.payload["securities"] = [security]
+    if scope == "other_batch":
+        other = batch.model_copy(deep=True)
+        other.batch_id = UUID(int=803)
+        other_payload = cast(dict[str, Any], other.payload)
+        other_payload["metadata"]["institutions"][0]["provider_item_id"] = (
+            "plaid-item-2"
+        )
+        data.sources[0].batches.append(other)
+    data.sources.insert(0, _envelope().sources[0])
+    client = _client(data)
+    service = _service(db, client)
+
+    if scope == "reported":
+        result = service.pull(refresh=False)
+        assert result.securities_loaded == 1
+        assert result.security_prices_loaded == 1
+        assert db.execute(
+            "SELECT security_id, source_origin FROM raw.plaid_securities"
+        ).fetchall() == [("sec_aapl", "plaid-item-1")]
+        assert result.ack_state == "confirmed"
+        return
+
+    with pytest.raises(sync_service.SyncAPIError, match="security.*item scope"):
+        service.pull(refresh=False)
+
+    for table in (
+        "raw.simplefin_sync_receipts",
+        "raw.simplefin_accounts",
+        "raw.simplefin_transactions",
+        "raw.plaid_accounts",
+        "raw.plaid_transactions",
+        "raw.plaid_balances",
+        "raw.plaid_securities",
+        "raw.security_prices",
+        "app.sync_job_state",
+    ):
+        assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names
+    client.ack.assert_not_called()
 
 
 def test_ack_only_after_durable_job(db: Database) -> None:
@@ -587,8 +730,7 @@ def test_distinct_plaid_batch_ids_preserve_each_payload(
     ]
     assert data.model_dump(mode="json", exclude_unset=True) == original
     replay = service.pull(refresh=False)
-    # Cash delivery counts include upserts; replay must not add durable rows.
-    assert replay.transactions_loaded == 2
+    assert replay.transactions_loaded == 0
     assert replay.ingestion_state == "committed"
     assert replay.ack_state == "confirmed"
     assert db.execute("SELECT count(*) FROM raw.plaid_transactions").fetchone() == (2,)
