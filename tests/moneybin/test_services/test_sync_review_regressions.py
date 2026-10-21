@@ -13,6 +13,7 @@ from moneybin.cli.commands import sync as cli_sync
 from moneybin.cli.main import app
 from moneybin.connectors.sync_models import ScopeOutcome, SyncDisconnectResult
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.mcp.tools import sync as mcp_sync
 from tests.moneybin.test_services.test_simplefin_sync_service import (
     _client,  # pyright: ignore[reportPrivateUsage]  # shared broker boundary
@@ -33,6 +34,11 @@ async def test_disconnect_masks_native_labels_without_changing_confirmation_iden
     grant = _grant()
     grant.accounts[0].name = name
     native_accounts = [account.model_dump(mode="json") for account in grant.accounts]
+    renamed = grant.model_copy(deep=True)
+    renamed.accounts[0].name += " changed"
+    renamed.accounts.reverse()
+    changed = grant.model_copy(deep=True)
+    changed.accounts[0].account_id += "-changed"
     disconnected = SyncDisconnectResult(
         **grant.model_dump(), remote_revocation="user_action_required"
     )
@@ -50,9 +56,12 @@ async def test_disconnect_masks_native_labels_without_changing_confirmation_iden
         body = (await mcp_sync.sync_disconnect(connection_id=CONNECTION)).to_dict()
         rendered = json.dumps(body) + confirmation.call_args.kwargs["message"]
         binding = confirmation.call_args.kwargs["binding"]
-        assert binding.arguments["accounts"] == [
-            account.model_dump(mode="json", by_alias=True) for account in grant.accounts
+        assert binding.arguments["account_identities"] == [
+            list(identity)
+            for identity in sorted({account.identity for account in grant.accounts})
         ]
+        assert binding == mcp_sync._sync_disconnect_binding(renamed)  # pyright: ignore[reportPrivateUsage]  # display changes preserve confirmation identity
+        assert binding != mcp_sync._sync_disconnect_binding(changed)  # pyright: ignore[reportPrivateUsage]  # native identity changes invalidate confirmation
     else:
         if surface == "cli-text":
             policy = cli_sync.get_terminal_policy
@@ -75,9 +84,8 @@ async def test_disconnect_masks_native_labels_without_changing_confirmation_iden
             rendered = response.output + " ".join(prompts)
             verify = service.disconnect_confirmed.call_args.kwargs["verify"]
             verify(grant)
-            changed = grant.model_copy(deep=True)
-            changed.accounts[0].name += " changed"
-            with pytest.raises(Exception, match="changed"):
+            verify(renamed)
+            with pytest.raises(UserError, match="changed"):
                 verify(changed)
         else:
             response = CliRunner().invoke(
