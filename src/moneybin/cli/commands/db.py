@@ -172,6 +172,7 @@ def _create_init_script(db_path: Path) -> Path:
     fd, script_path = tempfile.mkstemp(suffix=".sql", prefix="moneybin_init_")
     try:
         with os.fdopen(fd, "w") as f:
+            f.write("SET GLOBAL TimeZone = 'UTC';\n")
             # DuckDB CLI 1.5.3+ no longer auto-installs httpfs on LOAD; the
             # explicit INSTALL is required for first run on a fresh CLI cache.
             # Subsequent runs are no-ops.

@@ -20,6 +20,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import duckdb
@@ -654,7 +655,10 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     redacted = redact_records(records, col_classes, consent=None)
 
     return SqlQueryResult(
-        records=redacted,
+        records=[
+            {column: _format_wall_times(value) for column, value in record.items()}
+            for record in redacted
+        ],
         columns=columns,
         # The per-RESULT-column map, not lineage's raw output. Lineage keys its
         # answer by sqlglot projection name, which for the opaque constructs
@@ -668,6 +672,23 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         total_count=max_rows + 1 if truncated else len(records),
         truncated=truncated,
     )
+
+
+def _format_wall_times(value: Any) -> Any:
+    """Keep computed SQL wall times out of strict instant presentation paths."""
+    if isinstance(value, datetime) and value.utcoffset() is None:
+        # DuckDB also returns TIMESTAMPTZ infinities as naive min/max sentinels;
+        # retain their existing strict refusal instead of inventing finite times.
+        if value in (datetime.min, datetime.max):
+            return value
+        return value.isoformat(timespec="microseconds")
+    if isinstance(value, list):
+        return [_format_wall_times(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_format_wall_times(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _format_wall_times(item) for key, item in value.items()}
+    return value
 
 
 def _fetch_metadata(

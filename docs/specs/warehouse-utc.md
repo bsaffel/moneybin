@@ -21,8 +21,17 @@ Schemas, writers, transformations and consumers migrate together. Changing
 only the connection timezone cannot repair historical values or naive Python
 writers. Normalize an explicit offset with `astimezone(UTC)`. Interpret an
 offset-free value only with an established source timezone or protocol default.
-Unknown wall times fail validation. Preserve original provider payloads and
-historical audit JSON.
+Unknown wall times cannot become maintained instants. Preserve original provider
+payloads and historical audit JSON.
+
+Ad-hoc SQL can compute timezone-free `TIMESTAMP` values, such as
+`date_trunc('month', DATE '2026-10-21')`. After privacy redaction, the shared
+SQL boundary formats these as offset-free ISO text with six fractional digits
+(`2026-10-01T00:00:00.000000`), including nested lists and structs. CLI human
+output and CLI/MCP JSON preserve that clock value without timezone conversion.
+Aware instants retain the strict UTC contract and business dates remain dates;
+generic instant validators do not accept unknown wall times.
+Driver infinity sentinels retain their existing output refusal.
 
 ## Source meaning
 
@@ -66,6 +75,9 @@ user mark dates and trade dates remain unchanged. Price-feed retrieval still
 uses completed UTC days; that extraction cutoff does not define reporting
 “today”.
 
+Security-price key retirement and handover days also use the saved reporting
+timezone; source price dates remain unchanged.
+
 The `calendar_bounds` helper requires an unambiguous, existing local midnight
 at both endpoints. It rejects midnight gaps, repeated midnights and skipped
 calendar dates; it does not choose an offset or shift a boundary. Current
@@ -79,6 +91,7 @@ Normal opens inspect stored types and the temporal contract before schema
 initialization, automatic migrations or transformations. Read-only opens and
 initialization shortcuts cannot bypass this gate. Managed connections,
 including SQLMesh cursors, select UTC before configuration sealing.
+Standalone `db shell`, `db ui` and `db query` sessions also initialize UTC.
 
 The installed application has no UTC inspection, preparation, conversion or
 conversion-recovery commands, no conversion migration and no opener bypass.

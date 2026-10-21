@@ -80,6 +80,48 @@ def _make_settings_mock_for_hint(db_path: Path, mocker: Any) -> MagicMock:
 class TestDuckDBCLIInitialization:
     """Tests for DuckDB CLI encryption setup."""
 
+    @pytest.mark.integration
+    def test_init_script_sets_utc_before_database_use(self, tmp_path: Path) -> None:
+        """Standalone CLI reads and naive instant writes use the warehouse clock."""
+        duckdb_path = shutil.which("duckdb")
+        if duckdb_path is None:
+            pytest.skip("DuckDB CLI is not installed")
+        script_path = db_commands._create_init_script(  # pyright: ignore[reportPrivateUsage]  # exercise the generated CLI setup
+            tmp_path / "test.duckdb"
+        )
+        environment = os.environ.copy()
+        environment["MONEYBIN_DATABASE__ENCRYPTION_KEY"] = "synthetic-cli-key"
+        try:
+            # Exercise startup with the preinstalled extension; never install in tests.
+            script = script_path.read_text().replace("INSTALL httpfs;\n", "")
+            script_path.write_text("SET GLOBAL TimeZone = 'Asia/Tokyo';\n" + script)
+            result = subprocess.run(  # noqa: S603  # installed CLI with synthetic database and static query
+                [
+                    duckdb_path,
+                    "-json",
+                    "-init",
+                    str(script_path),
+                    "-c",
+                    "CREATE TABLE clock (instant TIMESTAMPTZ); "
+                    "INSERT INTO clock VALUES (TIMESTAMP '2026-10-20 00:30:00'); "
+                    "SELECT current_setting('TimeZone') AS zone, "
+                    "epoch(instant) = epoch(TIMESTAMPTZ '2026-10-20 00:30:00+00') "
+                    "AS writes_utc, "
+                    "TIMESTAMPTZ '2026-10-19 16:00:00+00'::DATE::VARCHAR AS day "
+                    "FROM clock;",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        finally:
+            script_path.unlink(missing_ok=True)
+
+        assert json.loads(result.stdout) == [
+            {"zone": "UTC", "writes_utc": True, "day": "2026-10-19"}
+        ]
+
     def test_init_script_uses_duckdb_environment_lookup(self, tmp_path: Path) -> None:
         """The init script must not persist the encryption key it uses."""
         script_path = db_commands._create_init_script(  # pyright: ignore[reportPrivateUsage]  # unit test covers init script content

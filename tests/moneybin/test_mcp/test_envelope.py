@@ -608,6 +608,7 @@ def test_utc_output_matches_dict_json_and_exports(instant: str, expected: str) -
     assert normalize_tabular_cell(value) == expected
 
 
+@pytest.mark.integration
 async def test_utc_audit_import_rows_share_public_wire_contract(mcp_db: object) -> None:
     """Real warehouse rows reach public dict and JSON with identical UTC strings."""
     from moneybin.database import get_database
