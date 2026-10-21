@@ -1,6 +1,6 @@
 """Returned jobs must remain within the user's requested retrieval scope."""
 
-from types import SimpleNamespace
+from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import patch
 from uuid import UUID
@@ -8,8 +8,9 @@ from uuid import UUID
 import pytest
 
 from moneybin.connectors.sync_errors import SyncAPIError
-from moneybin.connectors.sync_models import PlaidItemScope
+from moneybin.connectors.sync_models import ConnectedInstitution, PlaidItemScope
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.simplefin.extractor import SimpleFINExtractor
 from tests.moneybin.test_services.test_simplefin_sync_service import (
     _cash_plaid_envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
@@ -17,6 +18,23 @@ from tests.moneybin.test_services.test_simplefin_sync_service import (
     _envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
     _service,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
 )
+
+
+def _connection(
+    identifier: str,
+    *,
+    provider: str = "plaid",
+    item_id: str | None = "plaid-item-1",
+    name: str = "Synthetic Bank",
+) -> ConnectedInstitution:
+    return ConnectedInstitution(
+        id=identifier,
+        provider=provider,
+        provider_item_id=item_id,
+        institution_name=name,
+        status="active",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
 
 
 @pytest.mark.parametrize(
@@ -87,8 +105,9 @@ def test_pull_refuses_sources_outside_requested_scope_before_writes(
         data.sources.append(_envelope().sources[0])
     client = _client(data)
     client.list_institutions.return_value = [
-        SimpleNamespace(
-            id=str(UUID(int=999)), institution_name="Selected Synthetic Bank"
+        _connection(
+            selectors.get("connection_id", str(UUID(int=999))),
+            name="Selected Synthetic Bank",
         )
     ]
     service = _service(db, client)
@@ -132,9 +151,7 @@ def test_pull_accepts_matching_requested_scope(db: Database, selector: str) -> N
     data = _cash_plaid_envelope()
     client = _client(data)
     client.list_institutions.return_value = [
-        SimpleNamespace(
-            id=str(data.sources[0].connection_id), institution_name="Synthetic Bank"
-        )
+        _connection(str(data.sources[0].connection_id))
     ]
     value = {
         "connection_id": str(data.sources[0].connection_id),
@@ -155,6 +172,155 @@ def test_pull_accepts_matching_requested_scope(db: Database, selector: str) -> N
     assert result.transactions_loaded == 1
     assert result.ack_state == "confirmed"
     assert result.complete
+
+
+@pytest.mark.parametrize("selector", ["connection_id", "institution"])
+@pytest.mark.parametrize(
+    "mismatch", ["nested_item", "payload_only", "outcome", "provider"]
+)
+def test_exact_connection_refuses_different_native_scope_before_writes(
+    db: Database, selector: str, mismatch: str
+) -> None:
+    data = _cash_plaid_envelope()
+    connection_id = str(data.sources[0].connection_id)
+    if mismatch == "provider":
+        data.sources = _envelope().sources
+        data.sources[0].connection_id = UUID(connection_id)
+    else:
+        if mismatch != "payload_only":
+            data.sources[0].outcomes[0].native_scope = PlaidItemScope(
+                kind="plaid_item", provider_item_id="other-item"
+            )
+        if mismatch in {"nested_item", "payload_only"}:
+            payload = data.sources[0].batches[0].payload
+            metadata = cast(dict[str, object], payload["metadata"])
+            metadata["institutions"] = [
+                {
+                    "provider_item_id": "other-item",
+                    "institution_name": "Synthetic Bank",
+                    "status": "completed",
+                    "transactions_window_start": "2026-09-01",
+                }
+            ]
+            payload["removed_transactions"] = [{"transaction_id": "prior-other"}]
+            payload["securities"] = [
+                {"security_id": "other-security", "provider_item_id": "other-item"}
+            ]
+            payload["investment_transactions"] = [
+                {
+                    "investment_transaction_id": "other-trade",
+                    "account_id": "plaid-account-1",
+                    "provider_item_id": "other-item",
+                    "date": "2026-09-10",
+                    "amount": "12.34",
+                }
+            ]
+            payload["investment_holdings"] = [
+                {
+                    "account_id": "plaid-account-1",
+                    "provider_item_id": "other-item",
+                    "security_id": "other-security",
+                }
+            ]
+    db.execute(
+        """
+        INSERT INTO raw.plaid_transactions
+            (transaction_id, account_id, amount, transaction_date,
+             source_file, source_origin)
+        VALUES ('prior-other', 'other-account', 1, DATE '2026-09-01',
+                'prior', 'other-item')
+        """
+    )
+    client = _client(data)
+    client.list_institutions.return_value = [_connection(connection_id)]
+    service = _service(db, client)
+    with (
+        patch.object(
+            SimpleFINExtractor, "load", wraps=SimpleFINExtractor(db).load
+        ) as simplefin_load,
+        patch.object(service.loader, "load", wraps=service.loader.load) as plaid_load,
+        patch.object(
+            service.loader,
+            "handle_removed_transactions",
+            wraps=service.loader.handle_removed_transactions,
+        ) as remove,
+        pytest.raises(SyncAPIError, match="requested"),
+    ):
+        service.pull(
+            connection_id=connection_id if selector == "connection_id" else None,
+            institution="Synthetic Bank" if selector == "institution" else None,
+            refresh=False,
+        )
+
+    simplefin_load.assert_not_called()
+    plaid_load.assert_not_called()
+    remove.assert_not_called()
+    client.ack.assert_not_called()
+    assert db.execute(
+        "SELECT transaction_id, source_origin FROM raw.plaid_transactions"
+    ).fetchall() == [("prior-other", "other-item")]
+    for table in ("raw.simplefin_responses", "app.sync_job_state"):
+        assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names
+
+
+@pytest.mark.parametrize("problem", ["missing", "provider", "item"])
+def test_unbound_exact_connection_refused_before_trigger(
+    db: Database, problem: str
+) -> None:
+    data = _cash_plaid_envelope()
+    connection_id = str(data.sources[0].connection_id)
+    client = _client(data)
+    client.list_institutions.return_value = (
+        []
+        if problem == "missing"
+        else [
+            _connection(
+                connection_id,
+                item_id=None if problem == "item" else "plaid-item-1",
+            )
+        ]
+    )
+    error = SyncAPIError if problem == "item" else UserError
+    with pytest.raises(error):
+        _service(db, client).pull(
+            connection_id=connection_id,
+            provider="simplefin" if problem == "provider" else None,
+            refresh=False,
+        )
+    client.trigger_sync.assert_not_called()
+    client.ack.assert_not_called()
+    assert db.execute("SELECT count(*) FROM app.sync_job_state").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("selector", ["connection_id", "institution"])
+def test_exact_simplefin_connection_accepts_its_provider(
+    db: Database, selector: str
+) -> None:
+    data = _envelope()
+    connection_id = str(data.sources[0].connection_id)
+    client = _client(data)
+    client.list_institutions.return_value = [
+        _connection(connection_id, provider="simplefin", item_id=None)
+    ]
+
+    result = _service(db, client).pull(
+        connection_id=connection_id if selector == "connection_id" else None,
+        institution="Synthetic Bank" if selector == "institution" else None,
+        refresh=False,
+    )
+
+    assert result.transactions_loaded == 1
+    assert result.ack_state == "confirmed"
+    assert db.execute("SELECT count(*) FROM raw.simplefin_transactions").fetchone() == (
+        1,
+    )
+    client.trigger_sync.assert_called_once_with(
+        provider_item_id=None,
+        reset_cursor=False,
+        provider=None,
+        connection_id=connection_id,
+        history_start=None,
+    )
 
 
 @pytest.mark.parametrize("native_record", [False, True])

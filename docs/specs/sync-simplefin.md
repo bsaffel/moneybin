@@ -476,7 +476,9 @@ returns candidate opaque IDs instead of choosing the first match.
 Before ingestion or acknowledgement, returned sources must match every requested
 provider, connection and legacy Plaid item selector, including an institution
 resolved to an exact connection. Agreement between data and status alone does
-not authorize a different selected scope. Unqualified pulls still admit mixed
+not authorize a different selected scope. Resolve an exact connection before
+triggering retrieval and bind returned provider and nested Plaid item evidence
+to that selected connection. Unqualified pulls still admit mixed
 supported providers; empty results remain incomplete. Plaid transaction removals
 are limited to the native items reported by their batch; nonempty removals
 without item metadata are refused before ingestion or acknowledgement.

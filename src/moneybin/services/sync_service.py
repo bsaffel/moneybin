@@ -454,13 +454,31 @@ class SyncService:
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
         _validate_history_start(history_start)
+        selected_connection = None
         if institution is not None:
-            matched = self._find_institution(institution)
-            if matched is None:
+            selected_connection = self._find_institution(institution)
+        elif connection_id is not None:
+            selected_connection = self._find_connection(connection_id)
+        expected_provider = provider
+        expected_item_id = provider_item_id
+        if institution is not None or connection_id is not None:
+            if selected_connection is None:
                 raise UserError(
                     "Connection not found", code=error_codes.MUTATION_NOT_FOUND
                 )
-            connection_id = matched.id
+            if provider is not None and provider != selected_connection.provider:
+                raise UserError(
+                    "Provider does not match the selected connection",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            connection_id = selected_connection.id
+            expected_provider = selected_connection.provider
+            if selected_connection.provider == "plaid":
+                if not selected_connection.provider_item_id:
+                    raise SyncAPIError(
+                        "Selected Plaid connection lacks native item scope"
+                    )
+                expected_item_id = selected_connection.provider_item_id
         if progress is not None:
             progress(ProgressEvent("Syncing institutions"))
         trigger = self.client.trigger_sync(
@@ -503,14 +521,14 @@ class SyncService:
             if (
                 connection_id is not None
                 and source.connection_id != UUID(connection_id)
-                or provider is not None
-                and source.provider != provider
-                or provider_item_id is not None
+                or expected_provider is not None
+                and source.provider != expected_provider
+                or expected_item_id is not None
                 and (
                     not isinstance(source, PlaidSource)
                     or any(
                         isinstance(outcome.native_scope, PlaidItemScope)
-                        and outcome.native_scope.provider_item_id != provider_item_id
+                        and outcome.native_scope.provider_item_id != expected_item_id
                         for outcome in source.outcomes
                     )
                 )
@@ -543,8 +561,8 @@ class SyncService:
                             raise SyncAPIError(
                                 "Sync transaction removals require reported item scope"
                             )
-                        if provider_item_id is not None and any(
-                            row.provider_item_id != provider_item_id
+                        if expected_item_id is not None and any(
+                            row.provider_item_id != expected_item_id
                             for row in (
                                 *native.metadata.institutions,
                                 *native.securities,
