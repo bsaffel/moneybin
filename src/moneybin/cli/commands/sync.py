@@ -379,16 +379,18 @@ def sync_link(
                     connections = service.list_connections()
                     error_state = [c for c in connections if c.status == "error"]
                     if len(error_state) == 1:
-                        target = error_state[0].institution_name
+                        selected = error_state[0]
+                        target = selected.institution_name or selected.id
                         if yes:
-                            institution = target
+                            connection_id = selected.id
+                            provider = selected.provider
                         elif (
                             output == OutputFormat.JSON
                             or not get_terminal_policy().interactive
                         ):
                             message = (
                                 "A connected institution needs re-authentication. "
-                                f"Pass --institution {target} with --yes to re-authenticate, "
+                                f"Pass --connection-id {selected.id} with --yes to re-authenticate, "
                                 "or pass --institution <new-bank-name> to add a different "
                                 "institution."
                             )
@@ -405,7 +407,9 @@ def sync_link(
                                 typer.echo(message, err=True)
                             raise typer.Exit(2)
                         elif not typer.confirm(
-                            f"Re-authenticate {target}?", default=True
+                            f"Re-authenticate {terminal_safe_text(target)} "
+                            f"(connection_id={selected.id})?",
+                            default=True,
                         ):
                             _emit_sync_receipt(
                                 "Link cancelled",
@@ -416,7 +420,8 @@ def sync_link(
                             )
                             raise typer.Exit(0)
                         else:
-                            institution = target
+                            connection_id = selected.id
+                            provider = selected.provider
                     elif len(error_state) > 1:
                         message = (
                             "Multiple institutions need re-authentication. "
@@ -840,10 +845,14 @@ def sync_disconnect(
                 # `institution` now resolves to — it may have been removed or
                 # relinked while the prompt was open.
                 def verify(live: ConnectedInstitution) -> None:
-                    if (live.id, live.credential_generation, live.accounts) != (
+                    if (
+                        live.id,
+                        live.credential_generation,
+                        {account.identity for account in live.accounts},
+                    ) != (
                         plan.id,
                         plan.credential_generation,
-                        plan.accounts,
+                        {account.identity for account in plan.accounts},
                     ):
                         raise UserError(
                             "Connection changed after confirmation; inspect status and confirm again",

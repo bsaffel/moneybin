@@ -537,9 +537,11 @@ def _sync_disconnect_binding(connection: ConnectedInstitution) -> ConfirmationBi
             "provider": connection.provider,
             "status": connection.status,
             "credential_generation": connection.credential_generation,
-            "accounts": [
-                account.model_dump(mode="json", by_alias=True)
-                for account in connection.accounts
+            "account_identities": [
+                list(identity)
+                for identity in sorted({
+                    account.identity for account in connection.accounts
+                })
             ],
         },
         resolved_ids=(connection.id, connection.provider_item_id or connection.id),

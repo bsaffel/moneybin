@@ -629,9 +629,9 @@ class TestPlaidRemovalStrandsCuration:
             _CURATION_TABLES, [anchor_id]
         )
 
-        removed = PlaidExtractor(pipeline_db).handle_removed_transactions([
-            "plaid_anchor"
-        ])
+        removed = PlaidExtractor(pipeline_db).handle_removed_transactions(
+            ["plaid_anchor"], provider_item_ids={_ORIGIN}
+        )
 
         assert removed == 1
         assert _live_ids(pipeline_db) == {twin_id}
@@ -972,7 +972,9 @@ class TestHealingRunsWhenTheMatcherFails:
             side_a=("plaid", "plaid_anchor"),
             side_b=("plaid", "plaid_twin"),
         )
-        PlaidExtractor(pipeline_db).handle_removed_transactions(["plaid_anchor"])
+        PlaidExtractor(pipeline_db).handle_removed_transactions(
+            ["plaid_anchor"], provider_item_ids={_ORIGIN}
+        )
         assert _curation_ids(pipeline_db)["transaction_categories"] == [anchor_id]
 
         def _explode(*_args: object, **_kwargs: object) -> None:

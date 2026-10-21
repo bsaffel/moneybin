@@ -996,8 +996,10 @@ class PlaidExtractor:
                 "reconciliation under both fee conventions"
             )
 
-    def handle_removed_transactions(self, removed_ids: list[str]) -> int:
-        """Delete transactions Plaid has removed; return the rowcount actually deleted.
+    def handle_removed_transactions(
+        self, removed_ids: list[str], *, provider_item_ids: set[str]
+    ) -> int:
+        """Delete removed transactions within the batch's reported Plaid items.
 
         Stale IDs (already removed in a prior sync, or never landed locally) don't
         inflate the count — the return value flows into `PullResult.transactions_removed`
@@ -1006,18 +1008,26 @@ class PlaidExtractor:
         """
         if not removed_ids:
             return 0
+        if not provider_item_ids:
+            raise ValueError("Plaid transaction removals require item scope")
         placeholders = ", ".join("?" for _ in removed_ids)
+        item_placeholders = ", ".join("?" for _ in provider_item_ids)
+        parameters = [*removed_ids, *sorted(provider_item_ids)]
         # Pre-count to report the rows DELETE will actually affect. DuckDB doesn't
         # surface affected-row counts through this connection API, so a separate
         # COUNT(*) is the simplest accurate signal; the two statements share the
         # write lock for the duration of the call.
         count_row = self.db.execute(
-            f"SELECT COUNT(*) FROM {PLAID_TRANSACTIONS.full_name} WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
-            removed_ids,
+            f"""SELECT COUNT(*) FROM {PLAID_TRANSACTIONS.full_name}
+                WHERE transaction_id IN ({placeholders})
+                AND source_origin IN ({item_placeholders})""",  # noqa: S608  # placeholders are ?, values parameterized
+            parameters,
         ).fetchone()
         deleted = int(count_row[0]) if count_row else 0
         self.db.execute(
-            f"DELETE FROM {PLAID_TRANSACTIONS.full_name} WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
-            removed_ids,
+            f"""DELETE FROM {PLAID_TRANSACTIONS.full_name}
+                WHERE transaction_id IN ({placeholders})
+                AND source_origin IN ({item_placeholders})""",  # noqa: S608  # placeholders are ?, values parameterized
+            parameters,
         )
         return deleted

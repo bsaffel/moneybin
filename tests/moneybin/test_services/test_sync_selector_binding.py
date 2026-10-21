@@ -1,6 +1,7 @@
 """Returned jobs must remain within the user's requested retrieval scope."""
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 from uuid import UUID
 
@@ -154,3 +155,73 @@ def test_pull_accepts_matching_requested_scope(db: Database, selector: str) -> N
     assert result.transactions_loaded == 1
     assert result.ack_state == "confirmed"
     assert result.complete
+
+
+@pytest.mark.parametrize("native_record", [False, True])
+def test_exact_item_removal_preserves_another_items_transaction(
+    db: Database, native_record: bool
+) -> None:
+    data = _cash_plaid_envelope()
+    data.sources[0].batches[0].payload["removed_transactions"] = [
+        {"transaction_id": "other-item-transaction"}
+        if native_record
+        else "other-item-transaction"
+    ]
+    db.execute(
+        """
+        INSERT INTO raw.plaid_transactions
+            (transaction_id, account_id, amount, transaction_date,
+             source_file, source_origin)
+        VALUES ('other-item-transaction', 'other-account', 1,
+                DATE '2026-09-01', 'prior', 'other-item')
+        """
+    )
+
+    result = _service(db, _client(data)).pull(
+        provider_item_id="plaid-item-1", refresh=False
+    )
+
+    assert result.transactions_removed == 0
+    assert result.ack_state == "confirmed"
+    assert db.execute(
+        """
+        SELECT transaction_id, source_origin FROM raw.plaid_transactions
+        ORDER BY transaction_id
+        """
+    ).fetchall() == [
+        ("other-item-transaction", "other-item"),
+        ("plaid-transaction-1", "plaid-item-1"),
+    ]
+
+
+def test_pull_refuses_unscoped_removals_before_any_ingestion(db: Database) -> None:
+    data = _cash_plaid_envelope()
+    batch = data.sources[0].batches[0].model_copy(deep=True)
+    batch.batch_id = UUID(int=998)
+    cast(dict[str, object], batch.payload["metadata"])["institutions"] = []
+    for field in ("accounts", "transactions", "balances"):
+        batch.payload[field] = []
+    batch.payload["removed_transactions"] = ["unknown-transaction"]
+    data.sources[0].batches.append(batch)
+    data.sources.insert(0, _envelope().sources[0])
+    client = _client(data)
+    service = _service(db, client)
+
+    with (
+        patch.object(
+            SimpleFINExtractor, "load", wraps=SimpleFINExtractor(db).load
+        ) as simplefin_load,
+        patch.object(service.loader, "load", wraps=service.loader.load) as plaid_load,
+        pytest.raises(SyncAPIError, match="removal.*scope"),
+    ):
+        service.pull(refresh=False)
+
+    simplefin_load.assert_not_called()
+    plaid_load.assert_not_called()
+    client.ack.assert_not_called()
+    for table in (
+        "raw.simplefin_responses",
+        "raw.plaid_transactions",
+        "app.sync_job_state",
+    ):
+        assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names

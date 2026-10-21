@@ -539,6 +539,10 @@ class SyncService:
                             inst.provider_item_id
                             for inst in native.metadata.institutions
                         }
+                        if native.removed_transactions and not reported_items:
+                            raise SyncAPIError(
+                                "Sync transaction removals require reported item scope"
+                            )
                         if provider_item_id is not None and any(
                             row.provider_item_id != provider_item_id
                             for row in (
@@ -641,7 +645,11 @@ class SyncService:
                             continue
                         result.transactions_removed += (
                             self.loader.handle_removed_transactions(
-                                native.removed_transactions
+                                native.removed_transactions,
+                                provider_item_ids={
+                                    inst.provider_item_id
+                                    for inst in native.metadata.institutions
+                                },
                             )
                         )
                         loaded_plaid = self.loader.load(

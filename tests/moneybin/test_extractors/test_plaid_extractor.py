@@ -289,7 +289,9 @@ def test_handle_removed_transactions(
     assert before is not None
     assert before[0] == 1
 
-    deleted = loader.handle_removed_transactions(["txn_001", "nonexistent_id"])
+    deleted = loader.handle_removed_transactions(
+        ["txn_001", "nonexistent_id"], provider_item_ids={"item_chase_abc"}
+    )
     # Method reports the actual rowcount deleted: txn_001 was present, the
     # nonexistent ID was a no-op, so deleted == 1, not len(removed_ids) == 2.
     assert deleted == 1
@@ -303,7 +305,42 @@ def test_handle_removed_transactions(
 
 def test_handle_removed_transactions_empty_list_is_noop(db: Database) -> None:
     loader = PlaidExtractor(db)
-    assert loader.handle_removed_transactions([]) == 0
+    assert loader.handle_removed_transactions([], provider_item_ids=set()) == 0
+
+
+def test_removed_transactions_are_scoped_to_reported_items(
+    db: Database, sync_data: PlaidSyncDataResponse
+) -> None:
+    loader = PlaidExtractor(db)
+    loader.load(sync_data, job_id=sync_data.metadata.job_id)
+    db.execute(
+        """
+        INSERT INTO raw.plaid_transactions
+            (transaction_id, account_id, amount, transaction_date,
+             source_file, source_origin)
+        VALUES ('txn_001', 'other-account', 1, DATE '2026-09-01',
+                'prior', 'other-item')
+        """
+    )
+
+    deleted = loader.handle_removed_transactions(
+        ["txn_001", "nonexistent_id"], provider_item_ids={"item_chase_abc"}
+    )
+
+    assert deleted == 1
+    assert db.execute(
+        """
+        SELECT source_origin FROM raw.plaid_transactions
+        WHERE transaction_id = 'txn_001'
+        """
+    ).fetchall() == [("other-item",)]
+
+
+def test_removed_transactions_require_item_scope(db: Database) -> None:
+    with pytest.raises(ValueError, match="scope"):
+        PlaidExtractor(db).handle_removed_transactions(
+            ["transaction"], provider_item_ids=set()
+        )
 
 
 def test_loader_writes_balance_currency(

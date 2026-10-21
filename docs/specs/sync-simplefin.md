@@ -477,7 +477,9 @@ Before ingestion or acknowledgement, returned sources must match every requested
 provider, connection and legacy Plaid item selector, including an institution
 resolved to an exact connection. Agreement between data and status alone does
 not authorize a different selected scope. Unqualified pulls still admit mixed
-supported providers; empty results remain incomplete.
+supported providers; empty results remain incomplete. Plaid transaction removals
+are limited to the native items reported by their batch; nonempty removals
+without item metadata are refused before ingestion or acknowledgement.
 
 CLI: `sync link --provider simplefin`, `sync pull --connection-id <id>`, existing
 `sync status`, and `sync disconnect --connection-id <id>`. MCP extends the existing

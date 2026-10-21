@@ -75,10 +75,9 @@ RemovedTransactionId = Annotated[str, BeforeValidator(_removed_transaction_id)]
 moneybin-sync widened this field from a bare id to a full record while the
 client kept ``list[str]``, so every pull for an institution with removals
 aborted at validation before anything was written — only institutions that
-happened to have no removals still synced. Only the id is needed downstream:
-it goes straight to ``handle_removed_transactions`` as a SQL parameter. A bare
-string still validates, so the client can outlive a server that predates the
-widening.
+happened to have no removals still synced. Downstream removal combines this id
+with the batch's reported Plaid item scope. A bare string still validates, so
+the client can outlive a server that predates the widening.
 """
 
 
