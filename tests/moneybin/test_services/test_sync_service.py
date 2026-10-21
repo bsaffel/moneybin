@@ -355,9 +355,10 @@ def test_pull_ack_failure_does_not_fail_the_pull(
 def test_pull_with_institution_resolves_to_connection_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
+    connection_id = str(mock_client.get_data.return_value.sources[0].connection_id)
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
-            id="u1",
+            id=connection_id,
             provider_item_id="item_chase_abc",
             provider="plaid",
             institution_name="Chase",
@@ -371,7 +372,7 @@ def test_pull_with_institution_resolves_to_connection_id(
         provider_item_id=None,
         reset_cursor=False,
         provider=None,
-        connection_id="u1",
+        connection_id=connection_id,
         history_start=None,
     )
 
@@ -391,10 +392,10 @@ def test_pull_with_provider_item_id_skips_resolution(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
-    service.pull(provider_item_id="item_direct")
+    service.pull(provider_item_id="item_chase_abc")
     mock_client.list_institutions.assert_not_called()
     mock_client.trigger_sync.assert_called_once_with(
-        provider_item_id="item_direct",
+        provider_item_id="item_chase_abc",
         reset_cursor=False,
         provider=None,
         connection_id=None,

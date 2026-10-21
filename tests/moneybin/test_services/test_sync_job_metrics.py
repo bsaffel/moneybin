@@ -14,6 +14,7 @@ from moneybin.connectors.sync_models import (
 from moneybin.database import Database
 from moneybin.services import sync_service
 from tests.moneybin.test_services.test_simplefin_sync_service import (
+    _cash_plaid_envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
     _client,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
     _envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
     _service,  # pyright: ignore[reportPrivateUsage]  # shared synthetic job fixture
@@ -65,6 +66,11 @@ def test_provider_success_requires_outcomes_for_every_source(
     if evidence != "empty":
         complete = source.model_copy(deep=True)
         complete.connection_id = UUID(int=402)
+        batch = _cash_plaid_envelope().sources[0].batches[0]
+        batch.payload["accounts"] = []
+        batch.payload["transactions"] = []
+        batch.payload["balances"] = []
+        complete.batches = [batch]
         complete.outcomes = [
             ScopeOutcome(
                 account_id=None,

@@ -251,8 +251,6 @@ def test_v2_preserves_complete_no_account_outcome(name: str) -> None:
     original = json.loads((FIXTURES / f"{name}.json").read_text())
     outcome = original["sources"][0]["outcomes"][0]
     outcome["account_id"] = None
-    if name != "plaid":
-        outcome["native_scope"] = None
 
     validated = _validate_envelope(original).sources[0].outcomes[0]
 
@@ -260,7 +258,56 @@ def test_v2_preserves_complete_no_account_outcome(name: str) -> None:
     assert validated.account_id is None
     assert validated.error_code is None
     assert validated.retry_at is None
-    assert validated.model_dump(mode="json")["native_scope"] == outcome["native_scope"]
+    assert (
+        validated.model_dump(mode="json", exclude_unset=True)["native_scope"]
+        == outcome["native_scope"]
+    )
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize("boundary", ["envelope", "retained"])
+def test_simplefin_complete_no_account_requires_native_scope(
+    name: str, boundary: str
+) -> None:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    source = original["sources"][0]
+    source["batches"] = []
+    source["outcomes"][0].update(account_id=None, native_scope=None)
+
+    with pytest.raises(ValidationError, match="Complete SimpleFIN outcome"):
+        if boundary == "envelope":
+            _validate_envelope(original)
+        else:
+            sync_models.SimpleFINSourceResult.model_validate({
+                key: value for key, value in source.items() if key != "batches"
+            })
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize("boundary", ["envelope", "retained"])
+@pytest.mark.parametrize("status", ["partial", "failed", "deferred"])
+def test_simplefin_unscoped_error_outcome_is_preserved(
+    name: str, boundary: str, status: str
+) -> None:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    source = original["sources"][0]
+    source["batches"] = []
+    source["outcomes"][0].update(
+        account_id=None, native_scope=None, status=status, error_code="provider_error"
+    )
+    validated = (
+        _validate_envelope(original).sources[0]
+        if boundary == "envelope"
+        else sync_models.SimpleFINSourceResult.model_validate({
+            key: value for key, value in source.items() if key != "batches"
+        })
+    )
+
+    outcome = validated.outcomes[0]
+    assert outcome.status == status
+    assert outcome.account_id is None
+    assert outcome.native_scope is None
+    assert outcome.error_code == "provider_error"
 
 
 @pytest.mark.parametrize("boundary", ["envelope", "retained"])

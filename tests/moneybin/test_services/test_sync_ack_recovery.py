@@ -9,7 +9,11 @@ from uuid import UUID
 import pytest
 
 from moneybin.connectors.sync_errors import SyncAPIError
-from moneybin.connectors.sync_models import ScopeOutcome, SimpleFINSource
+from moneybin.connectors.sync_models import (
+    ScopeOutcome,
+    SimpleFINSource,
+    SimpleFINV2ConnectionScope,
+)
 from moneybin.database import Database
 from moneybin.repositories.sync_job_state_repo import SyncJobStateRepo
 from tests.moneybin.test_services.test_simplefin_sync_service import (
@@ -168,7 +172,9 @@ def test_changed_ack_outcomes_remain_unknown(
     native.outcomes = [
         ScopeOutcome(
             account_id=None,
-            native_scope=None,
+            native_scope=SimpleFINV2ConnectionScope(
+                kind="simplefin_v2_connection", conn_id="native-connection"
+            ),
             window=native.batches[0].window,
             status="complete",
             error_code=None,

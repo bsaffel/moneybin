@@ -499,6 +499,23 @@ class SyncService:
             raise SyncAPIError(
                 "Sync source metadata does not match the accepted result"
             )
+        for source in data.sources:
+            if (
+                connection_id is not None
+                and source.connection_id != UUID(connection_id)
+                or provider is not None
+                and source.provider != provider
+                or provider_item_id is not None
+                and (
+                    not isinstance(source, PlaidSource)
+                    or any(
+                        isinstance(outcome.native_scope, PlaidItemScope)
+                        and outcome.native_scope.provider_item_id != provider_item_id
+                        for outcome in source.outcomes
+                    )
+                )
+            ):
+                raise SyncAPIError("Sync source is outside the requested scope")
         # Validate provider payload shapes before any mutations; never expose Pydantic input dumps.
         plaid_data: dict[tuple[int, int], PlaidSyncDataResponse] = {}
         plaid_batch_ids: set[UUID] = set()
@@ -522,6 +539,18 @@ class SyncService:
                             inst.provider_item_id
                             for inst in native.metadata.institutions
                         }
+                        if provider_item_id is not None and any(
+                            row.provider_item_id != provider_item_id
+                            for row in (
+                                *native.metadata.institutions,
+                                *native.securities,
+                                *native.investment_transactions,
+                                *native.investment_holdings,
+                            )
+                        ):
+                            raise SyncAPIError(
+                                "Sync provider item is outside the requested scope"
+                            )
                         if any(
                             security.provider_item_id not in reported_items
                             for security in native.securities
@@ -670,17 +699,23 @@ class SyncService:
                             account_scopes - reported_scopes
                         )
                     )
-                    # Broker credit cannot substitute for a delivered native account.
+                    # Broker credit cannot substitute for a delivered native scope.
                     source_result.outcomes.extend(
                         outcome.model_copy(
                             update={"status": "partial", "error_code": "provider_error"}
                         )
                         for outcome in source.outcomes
                         if outcome.status == "complete"
-                        and outcome.account_id is not None
                         and isinstance(outcome.native_scope, PlaidItemScope)
-                        and (outcome.account_id, outcome.native_scope.provider_item_id)
-                        not in account_scopes
+                        and (
+                            outcome.native_scope.provider_item_id not in item_ids
+                            if outcome.account_id is None
+                            else (
+                                outcome.account_id,
+                                outcome.native_scope.provider_item_id,
+                            )
+                            not in account_scopes
+                        )
                     )
                 references.append(
                     SyncJobSource(

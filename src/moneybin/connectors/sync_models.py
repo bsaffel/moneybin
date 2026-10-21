@@ -618,6 +618,8 @@ class SimpleFINSource(_ContractModel):
             raise ValueError("SimpleFIN history scope does not match protocol")
         for outcome in self.outcomes:
             scope = outcome.native_scope
+            if outcome.status == "complete" and not isinstance(scope, scope_type):
+                raise ValueError("Complete SimpleFIN outcome requires native scope")
             if scope is None and outcome.account_id is not None:
                 raise ValueError("Account outcome requires native scope")
             if scope is not None and not isinstance(scope, scope_type):

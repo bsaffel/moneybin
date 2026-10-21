@@ -212,13 +212,17 @@ Each outcome identifies its connection/account scope, required nullable window,
 Its native scope is tagged: a v1 organization record (including optional `id`),
 a v2 `conn_id`, or a Plaid item ID, separate from the native account ID and the
 broker connection UUID. Account-scoped SimpleFIN outcomes require that native
-scope; unscoped errors carry neither native scope nor account ID. The scope tag
+scope; complete outcomes also require native scope when no accounts exist.
+Unscoped errors carry neither native scope nor account ID. The scope tag
 must agree with the source provider and protocol. This prevents repeated native
 account IDs in different institutions from sharing an outcome or checkpoint.
 `complete` means the requested retrieval succeeded without a known scope error;
 it does not certify that the institution supplies all historical activity.
 A complete outcome must carry neither an error code nor a retry time.
 Omitted accounts and unscoped errors prevent an all-accounts completeness claim.
+Complete accountless Plaid outcomes must match an item delivered in native batch
+metadata. Unmatched claims retain their original broker evidence but gain a local
+partial outcome; they cannot establish retrieval completeness.
 
 Rename the client's Plaid-shaped `SyncAccount`, `SyncTransaction`, `SyncBalance`,
 and `SyncDataResponse` internals to explicit Plaid names. Shared job, connection,
@@ -469,6 +473,12 @@ never ask the user or model to invent it. Default new links remain Plaid; unqual
 version-2 pulls cover supported connected grants. An ambiguous institution name
 returns candidate opaque IDs instead of choosing the first match.
 
+Before ingestion or acknowledgement, returned sources must match every requested
+provider, connection and legacy Plaid item selector, including an institution
+resolved to an exact connection. Agreement between data and status alone does
+not authorize a different selected scope. Unqualified pulls still admit mixed
+supported providers; empty results remain incomplete.
+
 CLI: `sync link --provider simplefin`, `sync pull --connection-id <id>`, existing
 `sync status`, and `sync disconnect --connection-id <id>`. MCP extends the existing
 tools with the equivalent selectors; no additional registered tool. Validate
@@ -635,7 +645,8 @@ from a fetch failure.
 The pull-outcome counter reports provider success only for a completed job with
 nonempty, complete outcome evidence for every included source of that provider.
 An empty result cannot count as success; an explicit complete no-account outcome
-can. This retrieval counter does not certify acknowledgement or local refresh.
+with native scope can. This retrieval counter does not certify acknowledgement
+or local refresh.
 
 Client counters are `moneybin_sync_ingestion_outcomes_total` (committed/failed),
 `moneybin_sync_refresh_outcomes_total` (complete/failed), and

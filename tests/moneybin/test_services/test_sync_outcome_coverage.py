@@ -290,3 +290,59 @@ def test_zero_transaction_pull_requires_retrieval_evidence(
     recovered = service.recover(str(JOB), refresh=False, local_only=True)
 
     assert recovered.complete is (evidence in {"account", "item"})
+
+
+@pytest.mark.parametrize("delivery", ["matching", "wrong_item", "no_batches"])
+def test_accountless_plaid_completion_requires_delivered_item_scope(
+    db: Database, delivery: str
+) -> None:
+    fixture = Path(__file__).parents[1] / "connectors/fixtures/sync_v2/plaid.json"
+    envelope = json.loads(fixture.read_text())
+    envelope["job_id"] = str(JOB)
+    source = envelope["sources"][0]
+    payload = source["batches"][0]["payload"]
+    payload["metadata"]["job_id"] = str(JOB)
+    payload["metadata"]["institutions"] = [
+        {
+            "provider_item_id": "plaid-item-1",
+            "institution_name": "Synthetic Bank",
+            "status": "completed",
+        }
+    ]
+    payload["accounts"] = []
+    payload["transactions"] = []
+    payload["balances"] = []
+    source["outcomes"][0]["account_id"] = None
+    if delivery == "wrong_item":
+        source["outcomes"][0]["native_scope"]["provider_item_id"] = "other-item"
+    elif delivery == "no_batches":
+        source["batches"] = []
+    data = SyncEnvelopeV2.model_validate(envelope)
+    original_outcomes = deepcopy(data.sources[0].outcomes)
+    client = _client(data)
+    service = _service(db, client)
+
+    result = service.pull(refresh=False)
+
+    assert result.complete is (delivery == "matching")
+    assert result.ingestion_state == "committed"
+    assert result.ack_state == "confirmed"
+    assert result.transactions_loaded == 0
+    stored = SyncJobStateRepo(db).get(str(JOB), client.consumer_id)
+    assert stored is not None
+    assert stored.details.sources[0].source.outcomes == original_outcomes
+    assert stored.details.acknowledgement is not None
+    assert stored.details.acknowledgement.results[0].outcomes == original_outcomes
+    assert data.model_dump(mode="json", exclude_unset=True) == envelope
+    if delivery != "matching":
+        assert result.source_results[0].outcomes == [
+            *original_outcomes,
+            original_outcomes[0].model_copy(
+                update={"status": "partial", "error_code": "provider_error"}
+            ),
+        ]
+
+    recovered = service.recover(str(JOB), refresh=False, local_only=True)
+
+    assert recovered.complete is (delivery == "matching")
+    assert recovered.source_results[0].outcomes == result.source_results[0].outcomes
