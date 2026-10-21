@@ -686,8 +686,10 @@ The mediated `DELETE /connections/{connection_id}` request requires the confirme
 positive `credential_generation` and `accounts` catalog in its JSON body.
 The broker checks generation and the native account identity set under its
 existing publication/connection locks before changing custody or jobs. Display
-labels and ordering do not change that set. A changed confirmation returns a
-fixed 409 refusal; the client requires reinspection and reconfirmation without
+labels, ordering and duplicate catalog entries do not change that set. CLI and
+MCP purge confirmations use the same distinct native identities while retaining
+their exact credential generation, row counts, account links and proposal scope.
+A changed confirmation returns a fixed 409 refusal; the client requires reinspection and reconfirmation without
 automatically retrying. A missing precondition is invalid (422). The response
 identifies the removed generation and its actual account catalog, which the
 client validates before projecting labels. These native fields stay inside

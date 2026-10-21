@@ -639,9 +639,9 @@ def _sync_purge_binding(plan: SyncPurgePlan) -> ConfirmationBinding:
                 if connection is None
                 else [
                     list(identity)
-                    for identity in sorted(
+                    for identity in sorted({
                         account.identity for account in connection.accounts
-                    )
+                    })
                 ]
             ),
             "table_counts": [[name, int(count)] for name, count in plan.table_counts],

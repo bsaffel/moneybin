@@ -1095,6 +1095,98 @@ async def test_sync_purge_refuses_changed_grant_scope(
 
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.sync._build_sync_service")
+@pytest.mark.parametrize(
+    "change",
+    [
+        "duplicate_added",
+        "duplicate_removed",
+        "labels_order",
+        "account_id",
+        "native_scope",
+        "generation",
+    ],
+)
+async def test_sync_purge_confirmation_uses_native_identity_set(
+    mock_build: MagicMock, change: str
+) -> None:
+    from dataclasses import replace
+
+    from moneybin.connectors.sync_models import SyncAccountScope
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    plan = _purge_plan()
+    assert plan.connection is not None
+    first = SyncAccountScope.model_validate({
+        "account_id": "acct_a",
+        "name": "Checking",
+        "native_scope": {"kind": "plaid_item", "provider_item_id": "item_a"},
+    })
+    second = first.model_copy(update={"account_id": "acct_b"})
+    preview_accounts = [first, second]
+    live_accounts = [second.model_copy(update={"name": "Renamed"}), first]
+    if change == "duplicate_removed":
+        preview_accounts.append(first.model_copy(update={"name": "Duplicate label"}))
+    elif change == "duplicate_added":
+        live_accounts.append(first.model_copy(update={"name": "Duplicate label"}))
+    elif change == "account_id":
+        live_accounts[1] = first.model_copy(update={"account_id": "acct_changed"})
+    elif change == "native_scope":
+        live_accounts[1] = SyncAccountScope.model_validate({
+            **first.model_dump(),
+            "native_scope": {"kind": "plaid_item", "provider_item_id": "item_changed"},
+        })
+    plan = replace(
+        plan,
+        connection=plan.connection.model_copy(update={"accounts": preview_accounts}),
+    )
+    assert plan.connection is not None
+    live = replace(
+        plan,
+        connection=plan.connection.model_copy(
+            update={
+                "accounts": live_accounts,
+                "credential_generation": (
+                    2
+                    if change == "generation"
+                    else plan.connection.credential_generation
+                ),
+            }
+        ),
+    )
+    applied: list[SyncPurgePlan] = []
+    service = MagicMock()
+    service.plan_purge.return_value = plan
+
+    def purge_confirmed(**kwargs: object) -> SyncPurgePlan:
+        kwargs["verify"](live)  # type: ignore[operator]  # exercise the real MCP confirmation grant
+        applied.append(live)
+        return live
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    preview = await sync_disconnect(provider_item_id="item_a", state="absent")
+    assert preview.error is not None
+    assert preview.error.code == "mutation_confirmation_required"
+    assert preview.error.details is not None
+    assert applied == []
+    result = await sync_disconnect(
+        provider_item_id="item_a",
+        state="absent",
+        confirmation_token=str(preview.error.details["confirmation_token"]),
+    )
+    if change in {"account_id", "native_scope", "generation"}:
+        assert result.error is not None
+        assert result.error.code == "mutation_confirmation_mismatch"
+        assert applied == []
+    else:
+        assert result.error is None
+        assert result.data.purged is True
+        assert applied == [live]
+    service.disconnect_confirmed.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
 async def test_sync_purge_reports_actual_broker_outcome(mock_build: MagicMock) -> None:
     from dataclasses import replace
 

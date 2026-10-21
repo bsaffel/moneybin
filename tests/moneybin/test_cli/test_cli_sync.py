@@ -1339,6 +1339,109 @@ def test_sync_disconnect_purge_ignores_connection_metadata_that_moved(
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=True)
+@pytest.mark.parametrize(
+    "change",
+    [
+        "duplicate_added",
+        "duplicate_removed",
+        "labels_order",
+        "account_id",
+        "native_scope",
+        "generation",
+    ],
+)
+def test_sync_purge_confirmation_uses_native_identity_set(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    from dataclasses import replace
+
+    from moneybin.cli.commands.sync import sync_disconnect
+    from moneybin.connectors.sync_models import SyncAccountScope
+
+    for stream in ("stdin", "stdout", "stderr"):
+        monkeypatch.setattr(f"moneybin.cli.utils.sys.{stream}.isatty", lambda: True)
+    plan = _purge_plan()
+    assert plan.connection is not None
+    first = SyncAccountScope.model_validate({
+        "account_id": "acct_a",
+        "name": "Checking",
+        "native_scope": {"kind": "plaid_item", "provider_item_id": "item_a"},
+    })
+    second = first.model_copy(update={"account_id": "acct_b"})
+    preview_accounts = [first, second]
+    live_accounts = [second.model_copy(update={"name": "Renamed"}), first]
+    if change == "duplicate_removed":
+        preview_accounts.append(first.model_copy(update={"name": "Duplicate label"}))
+    elif change == "duplicate_added":
+        live_accounts.append(first.model_copy(update={"name": "Duplicate label"}))
+    elif change == "account_id":
+        live_accounts[1] = first.model_copy(update={"account_id": "acct_changed"})
+    elif change == "native_scope":
+        live_accounts[1] = SyncAccountScope.model_validate({
+            **first.model_dump(),
+            "native_scope": {"kind": "plaid_item", "provider_item_id": "item_changed"},
+        })
+    plan = replace(
+        plan,
+        connection=plan.connection.model_copy(update={"accounts": preview_accounts}),
+    )
+    assert plan.connection is not None
+    live = replace(
+        plan,
+        connection=plan.connection.model_copy(
+            update={
+                "accounts": live_accounts,
+                "credential_generation": (
+                    2
+                    if change == "generation"
+                    else plan.connection.credential_generation
+                ),
+            }
+        ),
+    )
+    applied: list[SyncPurgePlan] = []
+    service = MagicMock()
+    service.plan_purge.return_value = plan
+
+    def purge_confirmed(**kwargs: object) -> SyncPurgePlan:
+        kwargs["verify"](live)  # type: ignore[operator]  # exercise the real CLI confirmation callback
+        applied.append(live)
+        return live
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    if change in {"account_id", "native_scope", "generation"}:
+        with pytest.raises(typer.Exit) as raised:
+            sync_disconnect(
+                institution=None,
+                provider_item_id="item_a",
+                connection_id=None,
+                purge=True,
+                yes=False,
+                output=OutputFormat.TEXT,
+            )
+        assert raised.value.exit_code == 1
+        assert applied == []
+    else:
+        sync_disconnect(
+            institution=None,
+            provider_item_id="item_a",
+            connection_id=None,
+            purge=True,
+            yes=False,
+            output=OutputFormat.TEXT,
+        )
+        assert applied == [live]
+    mock_confirm.assert_called_once()
+    service.disconnect.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_disconnect_json_carries_provider_item_id(mock_build: MagicMock) -> None:
     """`--output json --yes` must carry provider_item_id, not just institution."""
     service = MagicMock()

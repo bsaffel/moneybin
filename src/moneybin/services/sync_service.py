@@ -196,7 +196,7 @@ class SyncPurgePlan:
             ()
             if self.connection is None
             else tuple(
-                sorted(account.identity for account in self.connection.accounts)
+                sorted({account.identity for account in self.connection.accounts})
             ),
             self.table_counts,
             self.account_link_ids,
