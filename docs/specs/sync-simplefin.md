@@ -522,6 +522,12 @@ Every delivered Plaid security must name an item reported in that same native
 batch. A different batch's item scope cannot authorize those security or price
 writes; mismatches are refused before any ingestion or acknowledgement.
 
+New Plaid ingestion refuses batches with overlapping reported item scopes across
+the job before any mutation. The broker aggregates provider pages into one
+batch per item; fetch timestamps do not establish an ordering for competing
+snapshots and cursor changes. Disjoint item batches remain valid. Identical,
+digest-verified redelivery still resumes without repeating provider writes.
+
 Status includes `recovery_jobs` from this profile's persisted operational state,
 with job UUIDs, bounded phase facts and the existing same-job recovery actions.
 Older unfinished jobs remain discoverable after restart, even if a newer job

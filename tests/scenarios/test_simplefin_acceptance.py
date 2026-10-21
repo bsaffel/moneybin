@@ -177,6 +177,17 @@ def test_shared_link_pull_correction_local_recovery_report_and_disconnect(
             provider="simplefin",
             connection_id=None,
         )
+        client.list_institutions.return_value = [
+            ConnectedInstitution(
+                id=connection,
+                provider=source.provider,
+                provider_item_id=None,
+                status="active",
+                created_at=now,
+                credential_generation=source.credential_generation,
+                protocol_version=source.protocol_version,
+            )
+        ]
         first = service.pull(connection_id=connection, refresh=False)
         assert first.ingestion_state == "committed"
         assert first.job_status == "partial" and first.ack_state == "confirmed"

@@ -538,6 +538,8 @@ class SyncService:
         plaid_data: dict[tuple[int, int], PlaidSyncDataResponse] = {}
         plaid_batch_ids: set[UUID] = set()
         plaid_batch_digests: dict[UUID, str] = {}
+        plaid_item_ids: set[str] = set()
+        plaid_item_overlap = False
         try:
             for source_index, source in enumerate(data.sources):
                 if isinstance(source, PlaidSource):
@@ -557,6 +559,9 @@ class SyncService:
                             inst.provider_item_id
                             for inst in native.metadata.institutions
                         }
+                        if plaid_item_ids & reported_items:
+                            plaid_item_overlap = True
+                        plaid_item_ids.update(reported_items)
                         if native.removed_transactions and not reported_items:
                             raise SyncAPIError(
                                 "Sync transaction removals require reported item scope"
@@ -625,6 +630,8 @@ class SyncService:
                 raise SyncAPIError(
                     "Conflicting or unverifiable immutable Plaid batch evidence"
                 )
+        elif plaid_item_overlap:
+            raise SyncAPIError("Sync job contains overlapping Plaid item batches")
         observations = MetricObservations()
         previous_observations = self.loader.observations
         self.loader.observations = observations

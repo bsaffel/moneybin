@@ -200,6 +200,10 @@ def test_plaid_completeness_requires_delivered_native_accounts(
         second_batch = deepcopy(source["batches"][0])
         second_batch["batch_id"] = str(UUID(int=901))
         second_batch["payload"]["accounts"] = [second_account]
+        second_batch["payload"]["metadata"]["institutions"][0]["provider_item_id"] = (
+            "plaid-item-2"
+        )
+        second_outcome["native_scope"]["provider_item_id"] = "plaid-item-2"
         source["batches"].append(second_batch)
         payload["accounts"] = payload["accounts"][:1]
     data = SyncEnvelopeV2.model_validate(envelope)
