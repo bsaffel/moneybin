@@ -666,7 +666,8 @@ The pull-outcome counter reports provider success only for a completed job with
 nonempty, complete outcome evidence for every included source of that provider.
 An empty result cannot count as success; an explicit complete no-account outcome
 with native scope can. This retrieval counter does not certify acknowledgement
-or local refresh.
+or local refresh. Empty results and transport failures use the resolved selector's
+provider for pull metrics; an unqualified pull retains the `all` fallback.
 
 Client counters are `moneybin_sync_ingestion_outcomes_total` (committed/failed),
 `moneybin_sync_refresh_outcomes_total` (complete/failed), and
@@ -686,9 +687,11 @@ The mediated `DELETE /connections/{connection_id}` request requires the confirme
 positive `credential_generation` and `accounts` catalog in its JSON body.
 The broker checks generation and the native account identity set under its
 existing publication/connection locks before changing custody or jobs. Display
-labels, ordering and duplicate catalog entries do not change that set. CLI and
-MCP purge confirmations use the same distinct native identities while retaining
-their exact credential generation, row counts, account links and proposal scope.
+labels, ordering and duplicate catalog entries do not change that set. The MCP
+disconnect confirmation counts distinct native identities in its affected-account
+scope. CLI and MCP purge confirmations use the same distinct native identities
+while retaining their exact credential generation, row counts, account links and
+proposal scope.
 A changed confirmation returns a fixed 409 refusal; the client requires reinspection and reconfirmation without
 automatically retrying. A missing precondition is invalid (422). The response
 identifies the removed generation and its actual account catalog, which the

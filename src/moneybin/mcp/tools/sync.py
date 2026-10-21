@@ -529,6 +529,7 @@ def _sync_disconnect_binding(connection: ConnectedInstitution) -> ConfirmationBi
     item id, and it is what actually changes if the live connection set
     shifts between plan and confirm (see ``ConfirmationGrant.verify``).
     """
+    account_identities = sorted({account.identity for account in connection.accounts})
     return ConfirmationBinding(
         arguments={
             "mode": "institution",
@@ -537,19 +538,14 @@ def _sync_disconnect_binding(connection: ConnectedInstitution) -> ConfirmationBi
             "provider": connection.provider,
             "status": connection.status,
             "credential_generation": connection.credential_generation,
-            "account_identities": [
-                list(identity)
-                for identity in sorted({
-                    account.identity for account in connection.accounts
-                })
-            ],
+            "account_identities": [list(identity) for identity in account_identities],
         },
         resolved_ids=(connection.id, connection.provider_item_id or connection.id),
         actor="mcp",
         profile=get_settings().profile,
         authorization_context="local-profile",
         operation_kind="sync_disconnect_institution",
-        blast_radius={"institutions": 1, "accounts": len(connection.accounts)},
+        blast_radius={"institutions": 1, "accounts": len(account_identities)},
     )
 
 

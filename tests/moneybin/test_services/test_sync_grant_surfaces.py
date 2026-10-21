@@ -19,6 +19,7 @@ from moneybin.connectors.sync_models import (
     LinkResult,
     SyncAccountScope,
     SyncConnectionView,
+    SyncDisconnectResponse,
     SyncDisconnectResult,
 )
 from moneybin.database import Database
@@ -187,6 +188,76 @@ def test_mcp_disconnect_confirmation_uses_native_identity_set(change: str) -> No
     before = mcp_sync._sync_disconnect_binding(grant)  # pyright: ignore[reportPrivateUsage]  # confirmation contract regression
     after = mcp_sync._sync_disconnect_binding(live)  # pyright: ignore[reportPrivateUsage]  # confirmation contract regression
     assert (before == after) is (change in {"order", "labels"})
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "duplicate_added",
+        "duplicate_removed",
+        "account_added",
+        "account_removed",
+        "scope",
+        "generation",
+    ],
+)
+async def test_mcp_disconnect_token_binds_distinct_native_accounts(
+    db: Database, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    from tests.moneybin.test_services.test_simplefin_sync_service import (
+        _client,  # pyright: ignore[reportPrivateUsage]  # synthetic broker boundary
+        _envelope,  # pyright: ignore[reportPrivateUsage]  # synthetic broker boundary
+        _service,  # pyright: ignore[reportPrivateUsage]  # real sync service
+    )
+
+    preview = _grant()
+    live = preview.model_copy(deep=True)
+    if change == "duplicate_added":
+        live.accounts.append(live.accounts[0].model_copy(deep=True))
+    elif change == "duplicate_removed":
+        preview.accounts.append(preview.accounts[0].model_copy(deep=True))
+    elif change == "account_added":
+        live.accounts.append(
+            live.accounts[0].model_copy(update={"account_id": "new-native-account"})
+        )
+    elif change == "account_removed":
+        live.accounts.pop()
+    elif change == "scope":
+        live.accounts[0] = SyncAccountScope.model_validate({
+            **live.accounts[0].model_dump(),
+            "native_scope": {"kind": "simplefin_v2_connection", "conn_id": "other"},
+        })
+    else:
+        live.credential_generation += 1
+    client = _client(_envelope())
+    client.list_institutions.side_effect = [[preview], [live]]
+    client.disconnect.return_value = SyncDisconnectResponse(
+        connection_id=UUID(CONNECTION),
+        credential_generation=live.credential_generation,
+        remote_revocation="user_action_required",
+        accounts=live.accounts,
+    )
+    service = _service(db, client)
+    monkeypatch.setattr(mcp_sync, "_build_sync_service", lambda: nullcontext(service))
+
+    required = await mcp_sync.sync_disconnect(connection_id=CONNECTION)
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+    token = str(required.error.details["confirmation_token"])
+    response = await mcp_sync.sync_disconnect(
+        connection_id=CONNECTION, confirmation_token=token
+    )
+
+    if change in {"duplicate_added", "duplicate_removed"}:
+        assert response.error is None, response.to_dict()
+        assert response.data.status == "disconnected"
+        client.disconnect.assert_called_once_with(
+            CONNECTION, credential_generation=2, accounts=live.accounts
+        )
+    else:
+        assert response.error is not None
+        assert response.error.code == "mutation_confirmation_mismatch"
+        client.disconnect.assert_not_called()
 
 
 @pytest.mark.parametrize(

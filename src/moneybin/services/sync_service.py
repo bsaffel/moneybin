@@ -479,6 +479,12 @@ class SyncService:
                         "Selected Plaid connection lacks native item scope"
                     )
                 expected_item_id = selected_connection.provider_item_id
+        metric_provider = expected_provider or (
+            "plaid" if provider_item_id is not None else None
+        )
+        if metric_provider is not None and metric_provider in {"plaid", "simplefin"}:
+            counts.clear()
+            counts[metric_provider] = 0
         if progress is not None:
             progress(ProgressEvent("Syncing institutions"))
         trigger = self.client.trigger_sync(
