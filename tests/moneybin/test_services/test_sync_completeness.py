@@ -889,7 +889,7 @@ def test_unidentified_account_hold_survives_later_success(
     later.outcomes = [
         ScopeOutcome(
             account_id=None if general else "acct",
-            native_scope=None if general else later.history.accounts[0].native_scope,
+            native_scope=later.history.accounts[0].native_scope,
             window=window,
             status="complete",
             error_code=None,
