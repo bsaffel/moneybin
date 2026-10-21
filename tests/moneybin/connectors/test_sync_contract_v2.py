@@ -2,16 +2,19 @@
 
 import json
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
 import moneybin.connectors.sync_models as sync_models
-from moneybin.extractors.simplefin.extractor import SimpleFINJobContext
+from moneybin.extractors.simplefin.extractor import (
+    SimpleFINExtractor,
+    SimpleFINJobContext,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sync_v2"
 _CREDENTIAL_KEYS = {"access_url", "access_token", "setup_token", "secret"}
@@ -595,6 +598,110 @@ def test_simplefin_requires_requested_window(name: str, collection: str) -> None
     original["sources"][0][collection][0]["window"] = None
     with pytest.raises(ValidationError):
         _validate_envelope(original)
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize("boundary", ["batch", "outcome", "retained"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("start", "2026-09-01T12:00:00Z"),
+        ("end", "2026-09-30T00:00:00.000001Z"),
+        ("end", "2026-10-02T00:00:00Z"),
+    ],
+)
+def test_simplefin_rejects_incomplete_day_window(
+    name: str, boundary: str, field: str, value: str
+) -> None:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    source = original["sources"][0]
+    collection = "batches" if boundary == "batch" else "outcomes"
+    source[collection][0]["window"][field] = value
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        with pytest.raises(ValidationError, match="SimpleFIN.*window"):
+            if boundary == "retained":
+                sync_models.SimpleFINSourceResult.model_validate({
+                    key: value for key, value in source.items() if key != "batches"
+                })
+            else:
+                _validate_envelope(original)
+
+
+@pytest.mark.parametrize("name", ["simplefin_v1", "simplefin_v2"])
+@pytest.mark.parametrize("end", ["2026-10-01T00:00:00Z", "2001-01-01T00:00:00Z"])
+def test_simplefin_complete_day_window_preserves_historical_replay(
+    name: str, end: str
+) -> None:
+    original = json.loads((FIXTURES / f"{name}.json").read_text())
+    source = original["sources"][0]
+    start = datetime.fromisoformat(end) - timedelta(days=30)
+    window = {"start": start.isoformat().replace("+00:00", "Z"), "end": end}
+    for item in [*source["batches"], *source["outcomes"]]:
+        item["window"] = window.copy()
+    for batch in source["batches"]:
+        batch["fetched_at"] = end
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        envelope = _validate_envelope(original)
+        retained = sync_models.SimpleFINSourceResult.model_validate({
+            key: value for key, value in source.items() if key != "batches"
+        })
+        clock.now.return_value = datetime(2027, 1, 1, tzinfo=UTC)
+        restored = sync_models.SyncEnvelopeV2.model_validate_json(
+            envelope.model_dump_json(exclude_unset=True)
+        )
+        restored_retained = sync_models.SimpleFINSourceResult.model_validate_json(
+            retained.model_dump_json()
+        )
+
+    assert json.loads(restored.model_dump_json(exclude_unset=True)) == original
+    assert restored_retained == retained
+
+
+@pytest.mark.parametrize("collection", ["batches", "outcomes"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("start", "2026-09-01T12:00:00Z"), ("end", "2026-10-02T00:00:00Z")],
+)
+def test_simplefin_incomplete_day_window_refused_before_ingestion(
+    collection: str, field: str, value: str
+) -> None:
+    original = json.loads((FIXTURES / "simplefin_v2.json").read_text())
+    database = MagicMock()
+    database.execute.side_effect = AssertionError("Invalid window reached database")
+
+    with patch.object(sync_models, "datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        envelope = sync_models.SyncEnvelopeV2.model_validate(original)
+        source = cast(sync_models.SimpleFINSource, envelope.sources[0])
+        item = source.batches[0] if collection == "batches" else source.outcomes[0]
+        assert item.window is not None
+        setattr(item.window, field, datetime.fromisoformat(value))
+        context = SimpleFINJobContext(
+            status="completed",
+            started_at=datetime(2026, 10, 1, 11, tzinfo=UTC),
+            completed_at=datetime(2026, 10, 1, 12, tzinfo=UTC),
+        )
+
+        with pytest.raises(ValidationError, match="SimpleFIN.*window"):
+            SimpleFINExtractor(database).load(
+                source, job_id=envelope.job_id, job_context=context
+            )
+
+    assert database.mock_calls == []
+
+
+def test_shared_utc_window_preserves_arbitrary_instant_boundaries() -> None:
+    window = sync_models.UTCWindow(
+        start=datetime(2099, 1, 1, 12, tzinfo=UTC),
+        end=datetime(2099, 1, 2, microsecond=1, tzinfo=UTC),
+    )
+
+    assert window.start.hour == 12
+    assert window.end.microsecond == 1
 
 
 def _simplefin_envelope_with_history(name: str) -> dict[str, Any]:

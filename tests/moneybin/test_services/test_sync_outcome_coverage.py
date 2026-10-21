@@ -3,11 +3,14 @@
 import json
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
 
 from moneybin.connectors.sync_models import (
+    PlaidItemScope,
+    ScopeOutcome,
     SimpleFINSourceResult,
     SyncAckV2Response,
     SyncEnvelopeV2,
@@ -17,6 +20,7 @@ from moneybin.connectors.sync_models import (
 from moneybin.database import Database
 from moneybin.extractors.simplefin.identity import source_origin
 from moneybin.repositories.sync_job_state_repo import SyncJobStateRepo
+from moneybin.services import sync_service
 from tests.moneybin.connectors.test_sync_pull_completeness import (
     _completed_pull,  # pyright: ignore[reportPrivateUsage]  # shared synthetic receipt
 )
@@ -24,10 +28,88 @@ from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.test_services.test_simplefin_sync_service import (
     JOB,
     NOW,
+    _cash_plaid_envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
     _client,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
     _envelope,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
     _service,  # pyright: ignore[reportPrivateUsage]  # shared synthetic broker
 )
+
+
+@pytest.mark.parametrize(
+    "coverage", ["missing", "unscoped", "complete", "partial", "failed", "deferred"]
+)
+def test_metadata_only_plaid_item_requires_local_outcome_coverage(
+    db: Database, monkeypatch: pytest.MonkeyPatch, coverage: str
+) -> None:
+    envelope = _cash_plaid_envelope().model_dump(mode="json")
+    source = envelope["sources"][0]
+    populated = source["batches"][0]
+    populated["payload"]["metadata"]["institutions"][0]["provider_item_id"] = (
+        "plaid-item-2"
+    )
+    source["outcomes"][0]["native_scope"]["provider_item_id"] = "plaid-item-2"
+    empty = deepcopy(populated)
+    empty["batch_id"] = str(UUID(int=902))
+    empty["payload"]["metadata"]["institutions"][0]["provider_item_id"] = "plaid-item-1"
+    for field in ("accounts", "transactions", "balances"):
+        empty["payload"][field] = []
+    source["batches"].insert(0, empty)
+    if coverage != "missing":
+        source["outcomes"].append({
+            "account_id": None,
+            "native_scope": None
+            if coverage == "unscoped"
+            else {"kind": "plaid_item", "provider_item_id": "plaid-item-1"},
+            "window": None,
+            "status": "partial" if coverage == "unscoped" else coverage,
+            "error_code": None if coverage == "complete" else "provider_error",
+        })
+    data = SyncEnvelopeV2.model_validate(envelope)
+    original = data.model_dump(mode="json")
+    original_outcomes = deepcopy(data.sources[0].outcomes)
+    counter = MagicMock()
+    monkeypatch.setattr(sync_service, "SYNC_PULL_OUTCOMES_TOTAL", counter)
+    client = _client(data)
+    service = _service(db, client)
+
+    result = service.pull(refresh=False)
+
+    local_outcomes = result.source_results[0].outcomes[len(original_outcomes) :]
+    assert local_outcomes == (
+        [
+            ScopeOutcome(
+                account_id=None,
+                native_scope=PlaidItemScope(
+                    kind="plaid_item", provider_item_id="plaid-item-1"
+                ),
+                window=None,
+                status="partial",
+                error_code="provider_error",
+            )
+        ]
+        if coverage in {"missing", "unscoped"}
+        else []
+    )
+    assert result.complete is (coverage == "complete")
+    assert result.ack_state == "confirmed"
+    assert result.accounts_loaded == result.transactions_loaded == 1
+    assert db.execute(
+        "SELECT transaction_id, source_origin FROM raw.plaid_transactions"
+    ).fetchall() == [("plaid-transaction-1", "plaid-item-2")]
+    counter.labels.assert_called_once_with(
+        provider="plaid", status="success" if coverage == "complete" else "failed"
+    )
+    stored = SyncJobStateRepo(db).get(str(JOB), client.consumer_id)
+    assert stored is not None
+    assert stored.details.sources[0].source.outcomes == original_outcomes
+    assert stored.details.acknowledgement is not None
+    assert stored.details.acknowledgement.results[0].outcomes == original_outcomes
+    assert data.model_dump(mode="json") == original
+
+    recovered = service.recover(str(JOB), refresh=False, local_only=True)
+
+    assert recovered.complete is (coverage == "complete")
+    assert recovered.source_results[0].outcomes == result.source_results[0].outcomes
 
 
 @pytest.mark.parametrize("missing_outcome", [False, True])
@@ -339,12 +421,25 @@ def test_accountless_plaid_completion_requires_delivered_item_scope(
     assert stored.details.acknowledgement.results[0].outcomes == original_outcomes
     assert data.model_dump(mode="json", exclude_unset=True) == envelope
     if delivery != "matching":
-        assert result.source_results[0].outcomes == [
-            *original_outcomes,
+        expected = list(original_outcomes)
+        if delivery == "wrong_item":
+            expected.append(
+                ScopeOutcome(
+                    account_id=None,
+                    native_scope=PlaidItemScope(
+                        kind="plaid_item", provider_item_id="plaid-item-1"
+                    ),
+                    window=None,
+                    status="partial",
+                    error_code="provider_error",
+                )
+            )
+        expected.append(
             original_outcomes[0].model_copy(
                 update={"status": "partial", "error_code": "provider_error"}
-            ),
-        ]
+            )
+        )
+        assert result.source_results[0].outcomes == expected
 
     recovered = service.recover(str(JOB), refresh=False, local_only=True)
 

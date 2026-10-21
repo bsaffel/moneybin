@@ -732,6 +732,23 @@ class SyncService:
                             account_scopes - reported_scopes
                         )
                     )
+                    covered_item_ids = {
+                        outcome.native_scope.provider_item_id
+                        for outcome in source_result.outcomes
+                        if isinstance(outcome.native_scope, PlaidItemScope)
+                    }
+                    source_result.outcomes.extend(
+                        ScopeOutcome(
+                            account_id=None,
+                            native_scope=PlaidItemScope(
+                                kind="plaid_item", provider_item_id=item_id
+                            ),
+                            window=None,
+                            status="partial",
+                            error_code="provider_error",
+                        )
+                        for item_id in sorted(item_ids - covered_item_ids)
+                    )
                     # Broker credit cannot substitute for a delivered native scope.
                     source_result.outcomes.extend(
                         outcome.model_copy(

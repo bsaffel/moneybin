@@ -200,7 +200,9 @@ account classification, categorization, or cross-source matching runs in the
 broker. Credentials and HTTP transport metadata never enter payloads.
 
 The source validates `window` on every batch and outcome: SimpleFIN requires a
-requested UTC interval; Plaid requires explicit null because cursor cash data,
+requested interval bounded by UTC midnights, with its exclusive end no later than
+the current UTC midnight. This also applies to retained outcomes. Plaid requires
+explicit null because cursor cash data,
 date-based investment transactions, and snapshots share its native payload.
 Null means no single requested interval and supplies no history-coverage evidence.
 Plaid investment metadata and its independent `investments_synced_through` cursor
@@ -222,7 +224,10 @@ A complete outcome must carry neither an error code nor a retry time.
 Omitted accounts and unscoped errors prevent an all-accounts completeness claim.
 Complete accountless Plaid outcomes must match an item delivered in native batch
 metadata. Unmatched claims retain their original broker evidence but gain a local
-partial outcome; they cannot establish retrieval completeness.
+partial outcome; they cannot establish retrieval completeness. Every delivered
+Plaid item also needs an outcome, including items with no accounts. Missing item
+coverage adds a local partial outcome while preserving usable data and original
+broker receipts; an existing account-level partial already covers its item.
 
 Rename the client's Plaid-shaped `SyncAccount`, `SyncTransaction`, `SyncBalance`,
 and `SyncDataResponse` internals to explicit Plaid names. Shared job, connection,

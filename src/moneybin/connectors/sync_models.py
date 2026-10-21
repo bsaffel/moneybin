@@ -598,8 +598,19 @@ class SimpleFINSource(_ContractModel):
 
     @model_validator(mode="after")
     def _validate_outcome_scopes(self) -> Self:
-        if any(item.window is None for item in [*self.batches, *self.outcomes]):
-            raise ValueError("SimpleFIN results require a requested window")
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        for item in [*self.batches, *self.outcomes]:
+            window = item.window
+            if window is None:
+                raise ValueError("SimpleFIN results require a requested window")
+            if any(
+                (point.hour, point.minute, point.second, point.microsecond)
+                != (0, 0, 0, 0)
+                for point in (window.start, window.end)
+            ):
+                raise ValueError("SimpleFIN windows require complete UTC days")
+            if window.end > today:
+                raise ValueError("SimpleFIN windows cannot extend beyond today")
         scope_type = (
             SimpleFINV1OrgScope
             if self.protocol_version == "1.0.7"
