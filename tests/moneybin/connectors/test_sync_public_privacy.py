@@ -1,6 +1,7 @@
 """Sync account displays and provider diagnostics retain existing privacy rules."""
 
 import json
+from typing import cast
 from unittest.mock import MagicMock
 
 import httpx
@@ -18,6 +19,12 @@ from tests.moneybin.connectors import test_sync_client_v2 as synthetic_client
 
 client = synthetic_client.client
 PRIVATE = "private-987654 https://credential.invalid/secret?token=synthetic"
+
+
+@pytest.fixture
+def client_after_database(db: Database, request: pytest.FixtureRequest) -> SyncClient:
+    """Open the database before the client fixture isolates HOME."""
+    return cast(SyncClient, request.getfixturevalue("client"))
 
 
 @pytest.mark.parametrize(
@@ -197,7 +204,7 @@ def test_malformed_connection_listing_does_not_expose_native_input(
 @pytest.mark.parametrize("surface", ["cli", "mcp"])
 @respx.mock
 async def test_malformed_link_initiation_is_safe_on_public_surfaces_and_logs(
-    client: SyncClient,
+    client_after_database: SyncClient,
     db: Database,
     surface: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -213,6 +220,7 @@ async def test_malformed_link_initiation_is_safe_on_public_surfaces_and_logs(
     from moneybin.mcp.tools import sync as mcp_sync
     from moneybin.services.sync_service import SyncService
 
+    client = client_after_database
     respx.post("https://test.api/sync/link/initiate").respond(
         200,
         json={

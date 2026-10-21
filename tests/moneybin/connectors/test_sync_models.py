@@ -63,6 +63,66 @@ def test_link_status_pending() -> None:
     assert resp.provider_item_id is None
 
 
+@pytest.mark.parametrize("provider", ["plaid", "simplefin"])
+@pytest.mark.parametrize("selector", ["missing", None, "", " \t\n", "wrong_provider"])
+def test_linked_status_requires_provider_selector(
+    provider: str, selector: str | None
+) -> None:
+    payload: dict[str, object] = {
+        "session_id": "synthetic",
+        "status": "linked",
+        "provider": provider,
+        "expiration": "2026-10-01T12:00:00Z",
+    }
+    field = "connection_id" if provider == "simplefin" else "provider_item_id"
+    if selector == "wrong_provider":
+        other = "provider_item_id" if provider == "simplefin" else "connection_id"
+        payload[other] = "synthetic-other-selector"
+    elif selector != "missing":
+        payload[field] = selector
+
+    with pytest.raises(ValidationError, match=field):
+        LinkStatusResponse.model_validate(payload)
+
+
+@pytest.mark.parametrize("provider", [None, "plaid", "simplefin"])
+def test_linked_status_preserves_provider_selector(provider: str | None) -> None:
+    field = "connection_id" if provider == "simplefin" else "provider_item_id"
+    identifier = "  synthetic-selector  "
+    payload: dict[str, object] = {
+        "session_id": "synthetic",
+        "status": "linked",
+        field: identifier,
+        "expiration": "2026-10-01T12:00:00Z",
+    }
+    if provider is not None:
+        payload["provider"] = provider
+
+    result = LinkStatusResponse.model_validate(payload)
+
+    assert result.provider == (provider or "plaid")
+    assert getattr(result, field) == identifier
+
+
+@pytest.mark.parametrize("provider", ["plaid", "simplefin"])
+@pytest.mark.parametrize(
+    "status", ["pending", "claiming", "failed", "claim_outcome_unknown"]
+)
+def test_unlinked_status_does_not_require_provider_selector(
+    provider: str, status: str
+) -> None:
+    result = LinkStatusResponse.model_validate({
+        "session_id": "synthetic",
+        "status": status,
+        "provider": provider,
+        "expiration": "2026-10-01T12:00:00Z",
+    })
+
+    assert result.status == status
+    assert result.connection_id is None
+    assert result.provider_item_id is None
+
+
 def test_sync_transaction_preserves_decimal() -> None:
     txn = PlaidSyncTransaction(
         transaction_id="txn_001",

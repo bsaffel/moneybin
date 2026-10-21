@@ -9,11 +9,12 @@ from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+import httpx
 import pytest
 import yaml
 
 from moneybin import error_codes
-from moneybin.connectors.sync_client import SyncAPIError
+from moneybin.connectors.sync_client import SyncAPIError, SyncClient
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
     LinkInitiateResponse,
@@ -31,6 +32,7 @@ from moneybin.errors import UserError
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.metrics.registry import SYNC_DISCONNECT_OUTCOMES
 from moneybin.orchestration.refresh import RefreshResult
+from moneybin.secrets import SecretStore
 from moneybin.services import sync_service
 from moneybin.services.sync_service import SyncService
 from moneybin.tables import ACCOUNT_LINKS, SECURITY_PRICES
@@ -643,6 +645,92 @@ def test_link_new_institution_auto_pulls(
         connection_id=None,
         history_start=None,
     )
+
+
+@pytest.mark.parametrize("provider", ["plaid", "simplefin"])
+@pytest.mark.parametrize("selector", [None, " \t\n"])
+def test_link_rejects_missing_terminal_selector_before_auto_pull(
+    db: Database,
+    loader: PlaidExtractor,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    selector: str | None,
+) -> None:
+    client = SyncClient(
+        server_url="https://synthetic.invalid", secret_store=MagicMock(spec=SecretStore)
+    )
+    field = "connection_id" if provider == "simplefin" else "provider_item_id"
+    monkeypatch.setattr(
+        client,
+        "_authed_request",
+        MagicMock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "session_id": "synthetic",
+                    "status": "linked",
+                    "provider": provider,
+                    field: selector,
+                    "institution_name": "private-synthetic-institution",
+                    "expiration": "2026-10-01T12:00:00Z",
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(client, "_sleep", MagicMock())
+    service = SyncService(client=client, db=db, loader=loader)
+    monkeypatch.setattr(
+        service,
+        "initiate_link",
+        MagicMock(
+            return_value=LinkInitiateResponse(
+                session_id="synthetic",
+                link_url="https://synthetic.invalid/link",
+                link_type="widget_flow",
+                expiration=datetime(2026, 10, 1, tzinfo=UTC),
+            )
+        ),
+    )
+    pull = MagicMock(return_value=None)
+    monkeypatch.setattr(service, "pull", pull)
+
+    with pytest.raises(SyncAPIError, match="Invalid link status from broker") as raised:
+        service.link(provider=provider)
+
+    pull.assert_not_called()
+    assert "private-synthetic-institution" not in str(raised.value)
+    assert raised.value.__suppress_context__
+
+
+def test_link_simplefin_auto_pull_uses_completed_connection(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_client.initiate_link.return_value = LinkInitiateResponse(
+        session_id="synthetic",
+        link_url="https://synthetic.invalid/link",
+        link_type="widget_flow",
+        expiration=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    connection_id = "00000000-0000-4000-8000-000000000123"
+    mock_client.poll_link_status.return_value = LinkStatusResponse(
+        session_id="synthetic",
+        status="linked",
+        provider="simplefin",
+        connection_id=connection_id,
+        expiration=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    pull = MagicMock(return_value=None)
+    monkeypatch.setattr(service, "pull", pull)
+
+    result = service.link(provider="simplefin")
+
+    pull.assert_called_once_with(provider="simplefin", connection_id=connection_id)
+    assert result.status == "linked"
+    assert result.connection_id == connection_id
 
 
 def test_link_no_pull_returns_without_pull_result(

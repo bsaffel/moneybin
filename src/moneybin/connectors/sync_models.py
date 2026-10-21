@@ -160,6 +160,17 @@ class LinkStatusResponse(BaseModel):
     error: str | None = None
     expiration: UTCInstant
 
+    @model_validator(mode="after")
+    def require_linked_selector(self) -> Self:
+        """Prevent a completed link from authorizing an unqualified follow-up pull."""
+        if self.status == "linked":
+            if self.provider == "simplefin":
+                if not self.connection_id or not self.connection_id.strip():
+                    raise ValueError("Linked SimpleFIN status requires connection_id")
+            elif not self.provider_item_id or not self.provider_item_id.strip():
+                raise ValueError("Linked Plaid status requires provider_item_id")
+        return self
+
 
 class SyncTriggerResponse(BaseModel):
     """Response from POST /sync/trigger (synchronous)."""

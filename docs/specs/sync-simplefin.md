@@ -190,6 +190,11 @@ Broker envelope version and SimpleFIN protocol version are independent.
 | `GET /institutions` | Include broker connection UUID and underlying scope identity; show grouped health without implying each institution has a separate credential |
 | `DELETE /connections/{connection_id}` | Disconnect the whole credential grant; report local disconnection separately from upstream revocation |
 
+A terminal `linked` status requires a nonblank provider-specific selector:
+`connection_id` for SimpleFIN or `provider_item_id` for Plaid. The client rejects
+malformed linked responses before automatic retrieval; absent selectors never
+mean pull every connection. Non-linked statuses may omit these identifiers.
+
 Version 2 returns `job_id`, `contract_version`, terminal `status`, and `sources`.
 Each source contains `provider`, `connection_id`, `credential_generation`,
 `protocol_version` where applicable, and `batches` plus `outcomes`.
