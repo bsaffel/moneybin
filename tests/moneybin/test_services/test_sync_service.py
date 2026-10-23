@@ -1274,6 +1274,7 @@ class TestPullAutoRefreshes:
                 transactions_loaded=0,
                 balances_loaded=0,
                 security_prices_loaded=3,
+                rows_written=3,
             )
 
         monkeypatch.setattr(loader, "load", fake_load)

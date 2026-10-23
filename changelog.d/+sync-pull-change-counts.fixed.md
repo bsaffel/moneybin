@@ -1,0 +1,1 @@
+`sync pull` now reports only what changed: re-sent accounts, balances, and securities no longer count as loaded, and holdings count positions added, removed, or revalued since the previous snapshot, so a repeat pull with nothing new reports no changes.
