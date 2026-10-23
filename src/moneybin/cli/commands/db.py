@@ -1282,11 +1282,44 @@ def db_key_import(
     raise typer.Exit(1)
 
 
-@key_app.command("verify", hidden=True)
-def db_key_verify() -> None:
-    """Verify the encryption key matches the database (not yet implemented)."""
-    _not_implemented("encryption key verification")
-    raise typer.Exit(1)
+@key_app.command("verify")
+def db_key_verify(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # only result and required recovery output
+) -> None:
+    """Verify the effective credential can open the existing database read-only."""
+    from moneybin.cli.utils import handle_cli_errors, resolve_profile
+    from moneybin.config import get_settings, register_profile_resolver
+    from moneybin.database import verify_database_key
+    from moneybin.secrets import SecretStore
+
+    with handle_cli_errors(cli_actor="db_key_verify"):
+        # Recovery must not trigger the lazy resolver's first-run wizard.
+        register_profile_resolver(None)
+        resolve_profile(read_only=True)
+        settings = get_settings()
+        verify_database_key(
+            settings.database.path, secret_store=SecretStore(profile=settings.profile)
+        )
+        envelope = build_envelope(
+            data={"verified": True, "profile": settings.profile}, sensitivity="low"
+        )
+        if output == OutputFormat.JSON:
+            render_or_json(envelope, output, cli_actor="db_key_verify")
+            return
+        policy = get_terminal_policy()
+        emit_human_result(
+            build_summary(
+                [
+                    ("Profile", settings.profile),
+                    ("Access", "Verified (read-only open)"),
+                ],
+                title="Key verification",
+                terminal=policy,
+            ),
+            policy=policy,
+            finite_read=False,
+        )
 
 
 def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
