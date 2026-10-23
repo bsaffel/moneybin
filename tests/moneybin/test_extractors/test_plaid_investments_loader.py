@@ -936,6 +936,19 @@ def test_a_revalued_lot_counts_as_a_lot_change_only(
     assert result.holdings_loaded == 0
 
 
+def test_reordered_lots_count_as_no_change(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A lot's array position is not its identity."""
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings[0].tax_lots.reverse()
+
+    result = _load(db, payload, job_id="job-inv-2")
+
+    assert result.holding_lots_loaded == 0
+
+
 def test_a_revalued_position_counts_as_one_change(
     db: Database, sync_data: SyncDataResponse
 ) -> None:

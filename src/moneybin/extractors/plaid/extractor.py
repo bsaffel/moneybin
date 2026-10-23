@@ -905,7 +905,10 @@ class PlaidExtractor:
             PLAID_INVESTMENT_HOLDING_LOTS,
             df_lots,
             reported_items,
-            grain=("account_id", "security_id", "lot_index"),
+            grain=("account_id", "security_id"),
+            # The provider's array position, not lot identity: a reordered
+            # list must not read as changed lots.
+            ignored=frozenset({"lot_index"}),
         )
         if holdings:
             self.db.ingest_dataframe(
@@ -934,8 +937,13 @@ class PlaidExtractor:
         reported_items: set[str],
         *,
         grain: tuple[str, ...],
+        ignored: frozenset[str] = frozenset(),
     ) -> int:
-        """Grain keys added, removed, or changed since each item's previous snapshot.
+        """Rows added, removed, or changed since each item's previous snapshot.
+
+        Rows are compared as a multiset within each grain key, so a key's
+        change count is the larger of its added and removed rows: a revalued
+        row counts once, not as one removal plus one addition.
 
         Snapshot-level columns (the date and the item's rolling transactions
         window) are excluded: they move with the calendar, not the position.
@@ -945,8 +953,10 @@ class PlaidExtractor:
         """
         if not reported_items:
             return 0
-        ignored = _LOAD_METADATA | {"holdings_date", "transactions_window_start"}
-        cols = _quoted_columns(df, ignored)
+        cols = _quoted_columns(
+            df,
+            _LOAD_METADATA | {"holdings_date", "transactions_window_start"} | ignored,
+        )
         keys = ", ".join([*grain, "source_origin"])
         with self.db.registered_dataframe(df) as view:
             row = self.db.execute(
@@ -966,11 +976,21 @@ class PlaidExtractor:
                     FROM {table.full_name}
                     JOIN previous_snapshot USING (source_origin, source_file)
                 ), differing AS (
-                    (SELECT * FROM current_rows EXCEPT SELECT * FROM previous_rows)
+                    SELECT {keys}, 1 AS added, 0 AS removed FROM (
+                        SELECT * FROM current_rows
+                        EXCEPT ALL SELECT * FROM previous_rows
+                    )
                     UNION ALL
-                    (SELECT * FROM previous_rows EXCEPT SELECT * FROM current_rows)
+                    SELECT {keys}, 0 AS added, 1 AS removed FROM (
+                        SELECT * FROM previous_rows
+                        EXCEPT ALL SELECT * FROM current_rows
+                    )
+                ), per_key AS (
+                    SELECT SUM(added) AS added, SUM(removed) AS removed
+                    FROM differing
+                    GROUP BY {keys}
                 )
-                SELECT COUNT(*) FROM (SELECT DISTINCT {keys} FROM differing)
+                SELECT COALESCE(SUM(GREATEST(added, removed)), 0) FROM per_key
                 """,  # noqa: S608  # TableRef constants, quoted schema columns, literal grain keys; origins parameterized
                 [sorted(reported_items)],
             ).fetchone()
