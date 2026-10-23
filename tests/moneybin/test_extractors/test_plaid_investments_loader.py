@@ -922,6 +922,20 @@ def test_a_revised_investment_transaction_counts_as_one_change(
     assert result.investment_transactions_loaded == 1
 
 
+def test_a_transaction_reverted_to_an_earlier_version_counts_as_a_change(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """The revert stores no new revision but changes which version is current."""
+    _load(db, sync_data, job_id="job-inv-1")
+    revised = sync_data.model_copy(deep=True)
+    revised.investment_transactions[0].transaction_name = "BUY AAPL (corrected)"
+    _load(db, revised, job_id="job-inv-2")
+
+    result = _load(db, sync_data, job_id="job-inv-3")
+
+    assert result.investment_transactions_loaded == 1
+
+
 def test_a_revalued_lot_counts_as_a_lot_change_only(
     db: Database, sync_data: SyncDataResponse
 ) -> None:

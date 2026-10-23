@@ -819,9 +819,10 @@ class PlaidExtractor:
         ).with_columns(pl.Series("observation_version", versions))
         self.db.begin()
         try:
-            # Keyed on observation_version, so only a new or revised transaction
-            # writes a revision; every re-sent one still writes a receipt.
-            changed = self.db.ingest_dataframe(
+            # Before the receipts land: a revert to an earlier version writes no
+            # new revision but still changes which version is current.
+            changed = self._count_changed_from_latest_receipt(receipts)
+            self.db.ingest_dataframe(
                 PLAID_INVESTMENT_TRANSACTIONS.full_name,
                 revisions,
                 on_conflict="ignore",
@@ -843,6 +844,31 @@ class PlaidExtractor:
             f"({changed} new or changed)"
         )
         return changed, written
+
+    def _count_changed_from_latest_receipt(self, receipts: pl.DataFrame) -> int:
+        """Transactions whose version differs from their latest receipt, or have none.
+
+        The latest-receipt ordering mirrors
+        prep.stg_plaid__investment_transactions.current_receipts.
+        """
+        with self.db.registered_dataframe(receipts) as view:
+            row = self.db.execute(
+                f"""
+                WITH latest AS (
+                    SELECT investment_transaction_id, source_origin, observation_version
+                    FROM {PLAID_INVESTMENT_TRANSACTION_RECEIPTS.full_name}
+                    QUALIFY ROW_NUMBER() OVER (
+                        PARTITION BY investment_transaction_id, source_origin
+                        ORDER BY extracted_at DESC, ingestion_sequence DESC
+                    ) = 1
+                )
+                SELECT COUNT(*)
+                FROM {view} AS incoming
+                LEFT JOIN latest USING (investment_transaction_id, source_origin)
+                WHERE latest.observation_version IS DISTINCT FROM incoming.observation_version
+                """  # noqa: S608  # TableRef constant and generated view name; no user input
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def _load_investment_holdings(
         self,
