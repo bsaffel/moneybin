@@ -903,9 +903,37 @@ def test_an_unchanged_repull_counts_no_changes_but_still_writes(
 
     assert result.accounts_loaded == 0
     assert result.securities_loaded == 0
+    assert result.investment_transactions_loaded == 0
     assert result.holdings_loaded == 0
+    assert result.holding_lots_loaded == 0
     assert result.security_prices_loaded == 0
     assert result.rows_written == 16
+
+
+def test_a_revised_investment_transaction_counts_as_one_change(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_transactions[0].transaction_name = "BUY AAPL (corrected)"
+
+    result = _load(db, payload, job_id="job-inv-2")
+
+    assert result.investment_transactions_loaded == 1
+
+
+def test_a_revalued_lot_counts_as_a_lot_change_only(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A lot's value lives on the lot row, not the position row."""
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings[0].tax_lots[0].current_value = Decimal("1300.00")
+
+    result = _load(db, payload, job_id="job-inv-2")
+
+    assert result.holding_lots_loaded == 1
+    assert result.holdings_loaded == 0
 
 
 def test_a_revalued_position_counts_as_one_change(
@@ -931,6 +959,7 @@ def test_a_sold_off_broker_counts_every_exited_position(
     result = _load(db, payload, job_id="job-liquidated")
 
     assert result.holdings_loaded == 3
+    assert result.holding_lots_loaded == 2
 
 
 def test_a_position_is_compared_only_with_its_items_newest_snapshot(

@@ -24,6 +24,7 @@ import stat
 import sys
 import threading
 import time
+import uuid
 import warnings
 from collections.abc import Callable, Generator, Mapping
 from contextlib import ExitStack, contextmanager
@@ -1139,8 +1140,9 @@ class Database:
         """Expose a Polars (or Arrow-compatible) DataFrame as a temporary view.
 
         Yields the view name to interpolate into SQL; the view is dropped on exit.
+        The name is unique per call so a nested registration cannot shadow it.
         """
-        view = "_ingest_tmp"
+        view = f"_df_{uuid.uuid4().hex[:12]}"
         self.conn.register(view, df.to_arrow())
         try:
             yield view
