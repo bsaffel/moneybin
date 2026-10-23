@@ -34,7 +34,7 @@ class _WhenCounted(ProgressColumn):
     """
 
     def __init__(self, column: ProgressColumn) -> None:
-        super().__init__()
+        super().__init__(table_column=column.get_table_column())
         self._column = column
 
     def render(self, task: Task) -> RenderableType:

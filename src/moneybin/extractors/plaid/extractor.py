@@ -116,6 +116,11 @@ class LoadResult:
     accounts_loaded: int
     transactions_loaded: int
     balances_loaded: int
+    # Every raw row written, changed or not. Downstream models read the load
+    # metadata (extracted_at, the newest snapshot's as_of), so a refresh gate
+    # keys on this rather than on the content-change counts. Required: a
+    # missing value would read as "nothing written" and skip the refresh.
+    rows_written: int
     securities_loaded: int = 0
     investment_transactions_loaded: int = 0
     holdings_loaded: int = 0
@@ -125,10 +130,6 @@ class LoadResult:
     # broker's pull it is the ONLY one — so callers gating refresh on "did
     # anything change" must be able to see it.
     holdings_snapshots_loaded: int = 0
-    # Every raw row written, changed or not. Downstream models read the load
-    # metadata (extracted_at, the newest snapshot's as_of), so a refresh gate
-    # keys on this rather than on the content-change counts above.
-    rows_written: int = 0
 
 
 # Columns that advance on every write without the source reporting anything new.

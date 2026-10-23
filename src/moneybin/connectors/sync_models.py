@@ -382,7 +382,12 @@ class ConnectedInstitution(BaseModel):
 
 
 class PullResult(BaseModel):
-    """Return value from SyncService.pull()."""
+    """Return value from SyncService.pull().
+
+    The account, balance, security, investment-transaction, holding, and lot
+    ``*_loaded`` counts are rows new or changed by this pull, not rows the
+    server re-sent: a same-day repeat pull with nothing new reports 0 for each.
+    """
 
     job_id: str
     transactions_loaded: int
