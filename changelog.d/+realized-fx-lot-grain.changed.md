@@ -1,0 +1,1 @@
+`core:realized_fx` now keeps only per-lot monetary amounts, so wide, JSON, and MCP report reads cannot repeat whole-conversion leg totals across multiple lot rows. Those totals remain available in `core.bridge_currency_conversions`.

@@ -44,6 +44,7 @@ from moneybin.crypto_constants import ENCRYPTION_KEY_BYTES, KEY_NAME, SALT_NAME
 from moneybin.progress import ProgressEvent
 from moneybin.protocol.envelope import build_envelope
 
+from .migrate import app as migrate_app
 from .stubs import _not_implemented
 
 app = typer.Typer(help="Database management commands", no_args_is_help=True)
@@ -52,6 +53,7 @@ key_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(key_app, name="key")
+app.add_typer(migrate_app, name="migrate", help="Database migration management")
 logger = logging.getLogger(__name__)
 
 _DB_INFO_TABLE_LIMIT = 20

@@ -82,3 +82,40 @@ def test_account_links_service_does_not_eagerly_load_import_service() -> None:
         "moneybin.services.import_service. Defer it into the method that "
         "needs it (see propose_pair)."
     )
+
+
+def test_root_help_does_not_import_command_modules() -> None:
+    """``moneybin --help`` lists every command without importing any of them.
+
+    Command groups load lazily (``_MoneyBinRoot.lazy_commands``); an eager
+    ``from .commands import x`` in ``cli/main.py`` would put every service graph
+    back on the cold path, which no heavy-dependency check above would notice.
+    """
+    snippet = (
+        "import sys\n"
+        "from typer.testing import CliRunner\n"
+        "from moneybin.cli.main import app\n"
+        "assert CliRunner().invoke(app, ['--help']).exit_code == 0\n"
+        "loaded = sorted(m for m in sys.modules\n"
+        "    if m.startswith('moneybin.cli.commands.'))\n"
+        "print('LOADED:' + ','.join(loaded))\n"
+    )
+    result = subprocess.run(  # noqa: S603  # controlled snippet, not user input
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    loaded = result.stdout.strip().removeprefix("LOADED:")
+    assert not loaded, f"`moneybin --help` imported command modules: {loaded}."
+
+
+def test_lazy_commands_match_help_sections() -> None:
+    """Every lazy root command has a help entry; only hidden ones may lack one."""
+    from moneybin.cli.main import _MoneyBinRoot  # pyright: ignore[reportPrivateUsage]  # the registry under test
+    from moneybin.cli.navigation import HELP_SECTIONS
+
+    documented = {name for commands in HELP_SECTIONS.values() for name in commands}
+    lazy = _MoneyBinRoot.lazy_commands
+    hidden = {name for name, spec in lazy.items() if spec.hidden}
+    assert set(lazy) - hidden == documented
