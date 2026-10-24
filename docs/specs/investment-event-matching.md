@@ -496,6 +496,10 @@ A↔B↔C does not independently reject A↔B, A↔C, or B↔C. Changed exact re
 canonical dependencies, normalized evidence, or algorithm version change the
 induced fingerprint and may be reviewed again. Audit undo of the rejection
 removes the constraint and stales affected pending Proposals.
+That removal has no supported inverse in slice 3: audit history and detail
+report its operation as not undoable, including when it contains other reversed
+decisions, and offer no action to undo it again. Reapplying an exclusion requires
+replanning and reviewing a current Proposal rather than restoring old evidence.
 
 Acceptance rereads the latest inputs, reconstructs that connected candidate
 component, recomputes both fingerprints, and reruns its global assignment in the

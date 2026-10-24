@@ -1,5 +1,5 @@
 {
-  "sha256": "957da13492af2c70540be6e49703dfb1e70787d89ed7a53564f960b31c30b28d",
+  "sha256": "6a43ceaba4e140b7a5c6d59095cda6bef7065ea4d7f31061d7b11b132b4af9fc",
   "tool_count": 50,
   "tools": [
     {
@@ -3904,7 +3904,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Undo one complete audited operation by operation_id. The inverse mutation is itself audited and undoable; dependency conflicts return the blocking operation IDs.",
+        "description": "Undo one complete audited operation by operation_id. The inverse mutation is itself audited; redo is offered only when supported. Dependency conflicts return the blocking operation IDs.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3920,12 +3920,12 @@
         "name": "system_audit_undo",
         "title": "System Audit Undo"
       },
-      "description_bytes": 161,
+      "description_bytes": 185,
       "input_schema_bytes": 122,
       "name": "system_audit_undo",
       "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 508
+      "total_bytes": 532
     },
     {
       "annotation_bytes": 90,
@@ -5557,5 +5557,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 67518
+  "total_bytes": 67542
 }

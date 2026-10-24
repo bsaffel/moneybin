@@ -723,7 +723,7 @@ Access: read-only, idempotent. Sensitivity: up to `high`.
 
 ### system_audit_undo
 
-Undo one complete audited operation by operation_id. The inverse mutation is itself audited and undoable; dependency conflicts return the blocking operation IDs.
+Undo one complete audited operation by operation_id. The inverse mutation is itself audited; redo is offered only when supported. Dependency conflicts return the blocking operation IDs.
 
 Access: write, idempotent. Sensitivity: at least `low`.
 

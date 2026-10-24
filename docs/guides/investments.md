@@ -324,6 +324,8 @@ Reject a complete Proposal with
 relationship stays excluded after replanning, including unchanged supersets.
 `moneybin system audit undo <operation-id>` removes that exclusion and invalidates
 affected pending evidence so the next run can plan again.
+That undo cannot itself be undone. To reject the relationship again, rerun
+matching and review the current Proposal.
 
 An AI client submits `reviews_decide(decisions=[{"kind":"investment_match",
 "decision_id":"<review-id>","decision":"reject"}])`. Every batch containing an

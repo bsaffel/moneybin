@@ -1,7 +1,7 @@
 """Transactional review-only investment planning and durable inspection."""
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Literal
@@ -29,6 +29,15 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def supports_investment_rejection_undo(actions: Iterable[str]) -> bool:
+    """Only rejection operations and their dependent staleness have an inverse."""
+    selected = set(actions)
+    return "investment_match.reject" in selected and selected <= {
+        "investment_match.reject",
+        "investment_match.stale",
+    }
 
 
 def record_committed_investment_decisions(
@@ -352,10 +361,7 @@ class InvestmentMatchingService:
         rejections = [
             event for event in events if event.action == "investment_match.reject"
         ]
-        if not rejections or any(
-            event.action not in {"investment_match.reject", "investment_match.stale"}
-            for event in events
-        ):
+        if not supports_investment_rejection_undo(event.action for event in events):
             raise UserError(
                 "Only investment rejection operations have an available undo path.",
                 code=error_codes.RECOVERY_NO_PATH,
