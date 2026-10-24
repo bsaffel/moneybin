@@ -61,6 +61,12 @@ pre-v1 type replacement, machine formatting and explicit legacy conversion.
 | `core.dim_merchants` | VIEW | `user_merchants.updated_at` — never `NULL` (all rows are user/system-created). |
 | `core.fct_balances` | VIEW | The contributing observation's freshness column: `loaded_at` from OFX/tabular/Plaid/SimpleFIN staging sources, `updated_at` from `app.balance_assertions` (mutable; refreshed by `BalanceService.assert_balance` on conflict so edited assertions advance freshness). SimpleFIN rows additionally fold `account_base.account_type_changed_at` and `account_base.account_subtype_changed_at` with `GREATEST`, because classification controls balance eligibility. |
 
+Daily balance source selection compares observation receipt timestamps
+(`loaded_at`, or `updated_at` for user assertions). SimpleFIN classification
+changes advance public row freshness but do not make an older observation win
+a same-day source tie. The daily model reads the selected SimpleFIN staging
+observation's receipt timestamp independently of that classification freshness.
+
 ### Semantics for consumers
 
 - A row's `updated_at` advances if and only if a real input to that row changed (raw data reloaded, user edit, override toggled). It does *not* advance just because SQLMesh re-applied with no input change. This is the desired property — it lets consumers cheaply ask "what changed since timestamp X?" without false positives from idempotent reruns.

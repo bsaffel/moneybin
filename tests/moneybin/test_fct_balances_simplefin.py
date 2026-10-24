@@ -151,3 +151,75 @@ def test_historical_report_retains_malformed_balance_correction(db: Database) ->
         corrected.to_envelope().to_dict()["summary"]["sync_completeness"]["complete"]
         is True
     )
+
+
+@pytest.mark.parametrize("other_source", ["ofx", "plaid"])
+def test_classification_change_preserves_newer_balance_observation(
+    db: Database, other_source: str
+) -> None:
+    """Editing eligibility advances freshness without creating financial evidence."""
+    from moneybin.services.account_service import AccountService
+    from moneybin.services.transform_service import TransformService
+
+    load(db, source())
+    bind_account(db)
+    if other_source == "ofx":
+        db.execute("""INSERT INTO raw.ofx_balances
+            (account_id, statement_end_date, statement_end_source_date, ledger_balance,
+             ledger_balance_date, ledger_balance_source_date, currency_code,
+             source_type, source_origin, source_file, extracted_at, loaded_at)
+            VALUES ('canonical', '2026-09-20'::TIMESTAMPTZ, '2026-09-20'::DATE,
+                    250.00, '2026-09-20'::TIMESTAMPTZ, '2026-09-20'::DATE,
+                    'USD', 'ofx', 'synthetic-bank', 'synthetic-statement',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""")
+    else:
+        db.execute("""INSERT INTO raw.plaid_accounts
+            (account_id, account_type, account_subtype, source_file, source_type,
+             source_origin, extracted_at, loaded_at)
+            VALUES ('canonical', 'depository', 'checking', 'synthetic-sync',
+                    'plaid', 'synthetic-item', CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP)""")
+        db.execute("""INSERT INTO raw.plaid_balances
+            (account_id, balance_date, current_balance, iso_currency_code,
+             source_file, source_type, source_origin, extracted_at, loaded_at)
+            VALUES ('canonical', '2026-09-20'::DATE, 250.00, 'USD',
+                    'synthetic-sync', 'plaid', 'synthetic-item', CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP)""")
+    materialize(db)
+    before = db.execute("""SELECT updated_at FROM core.fct_balances
+        WHERE account_id='canonical' AND source_type='simplefin'""").fetchone()
+    assert before is not None
+    assert db.execute("""SELECT balance, observation_source
+        FROM core.fct_balances_daily
+        WHERE account_id='canonical' AND balance_date='2026-09-20'""").fetchone() == (
+        Decimal("250.00"),
+        other_source,
+    )
+
+    AccountService(db).settings_update(
+        "canonical", actor="cli", account_subtype="savings"
+    )
+
+    after = db.execute("""SELECT updated_at FROM core.fct_balances
+        WHERE account_id='canonical' AND source_type='simplefin'""").fetchone()
+    assert after is not None
+    assert after[0] > before[0]
+    assert db.execute("""SELECT balance, observation_source
+        FROM core.fct_balances_daily
+        WHERE account_id='canonical' AND balance_date='2026-09-20'""").fetchone() == (
+        Decimal("250.00"),
+        other_source,
+    )
+
+    TransformService(db).restate_models(["core.fct_balances_daily"])
+    assert (
+        db.execute("""SELECT updated_at FROM core.fct_balances
+        WHERE account_id='canonical' AND source_type='simplefin'""").fetchone()
+        == after
+    )
+    assert db.execute("""SELECT balance, observation_source
+        FROM core.fct_balances_daily
+        WHERE account_id='canonical' AND balance_date='2026-09-20'""").fetchone() == (
+        Decimal("250.00"),
+        other_source,
+    )

@@ -100,8 +100,9 @@ def _to_currency(value: object) -> str | None:
 def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
     """Reduce multiple observations for one account to one winner per date.
 
-    Winner per balance_date: highest source precedence, then freshest updated_at,
-    then source_type ascending as a final key. The updated_at + source_type keys
+    Winner per balance_date: highest source precedence, then freshest observation,
+    then source_type ascending as a final key. Here updated_at is the observation
+    timestamp, excluding classification edits. The updated_at + source_type keys
     make the ofx/plaid/simplefin precedence tie deterministic — all are institution
     snapshots at the same tier, so without a tiebreak the winner would depend on
     pandas' (unstable) sort order.
@@ -360,6 +361,7 @@ def _build_spine_rows(
     # ensures SQLMesh materialises every input before this model executes.
     depends_on={
         "core.fct_balances",
+        "prep.stg_simplefin__balances",
         "core.fct_transactions",
         "core.fct_investment_transactions",
         "core.dim_holdings_broker_reported",
@@ -408,16 +410,27 @@ def execute(
     # sqlmesh__core.core__fct_balances__<hash>) for the current plan execution.
     # Plain "core.fct_balances" only exists after promotion, not during backfill.
     fct_balances_table = context.resolve_table("core.fct_balances")
+    simplefin_balances_table = context.resolve_table("prep.stg_simplefin__balances")
     fct_transactions_table = context.resolve_table("core.fct_transactions")
     investment_table = context.resolve_table("core.fct_investment_transactions")
     broker_table = context.resolve_table("core.dim_holdings_broker_reported")
     accounts_table = context.resolve_table("prep.int_accounts__merged")
 
+    # SimpleFIN staging has one selected observation per account/date. Its receipt
+    # time orders evidence; core.updated_at also advances for classification edits.
     obs: pd.DataFrame = context.fetchdf(
         f"""
-        SELECT account_id, balance_date, balance, source_type, updated_at, currency_code
-        FROM {fct_balances_table}
-        ORDER BY account_id, balance_date
+        SELECT b.account_id, b.balance_date, b.balance, b.source_type,
+            CASE WHEN b.source_type = 'simplefin' THEN sf.loaded_at
+                 ELSE b.updated_at END AS updated_at,
+            b.currency_code
+        FROM {fct_balances_table} AS b
+        LEFT JOIN {simplefin_balances_table} AS sf
+            ON b.source_type = 'simplefin'
+            AND sf.account_id = b.account_id
+            AND sf.balance_date = b.balance_date
+            AND sf.source_file = b.source_ref
+        ORDER BY b.account_id, b.balance_date
         """  # noqa: S608  # table name from context.resolve_table(), not user input
     )
     # Grouped by currency_code as well as account/date: fct_transactions resolves

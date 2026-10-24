@@ -288,6 +288,14 @@ def _source_name(source: TableRef | None) -> str | None:
     return None if source is None else source.full_name
 
 
+def format_export_datetime(value: datetime) -> str:
+    """Preserve SQL wall times while canonicalizing aware export instants."""
+    if value.utcoffset() is None and value not in (datetime.min, datetime.max):
+        return value.isoformat(timespec="microseconds")
+    # DuckDB infinity sentinels are naive min/max; keep their strict refusal.
+    return format_utc(value)
+
+
 def _json_safe(value: object) -> object:
     """Encode native cells deterministically without changing prepared rows."""
     if value is None or isinstance(value, (bool, int, float, str)):
@@ -295,7 +303,7 @@ def _json_safe(value: object) -> object:
     if isinstance(value, Decimal):
         return {"$decimal": str(value)}
     if isinstance(value, datetime):
-        return {"$datetime": format_utc(value)}
+        return {"$datetime": format_export_datetime(value)}
     if isinstance(value, date):
         return {"$date": value.isoformat()}
     if isinstance(value, time):
@@ -306,7 +314,12 @@ def _json_safe(value: object) -> object:
         return str(value)
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        return {str(key): _json_safe(item) for key, item in mapping.items()}
+        return {
+            (
+                format_export_datetime(key) if isinstance(key, datetime) else str(key)
+            ): _json_safe(item)
+            for key, item in mapping.items()
+        }
     if isinstance(value, (list, tuple)):
         sequence = cast(list[object] | tuple[object, ...], value)
         return [_json_safe(item) for item in sequence]

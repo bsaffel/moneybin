@@ -31,6 +31,9 @@ SQL boundary formats these as offset-free ISO text with six fractional digits
 output and CLI/MCP JSON preserve that clock value without timezone conversion.
 Aware instants retain the strict UTC contract and business dates remain dates;
 generic instant validators do not accept unknown wall times.
+Report export checksums and text renderers preserve the same wall-time values;
+typed export formats retain timezone-free timestamp types when redaction
+preserves the native column type.
 Driver infinity sentinels retain their existing output refusal.
 
 ## Source meaning
