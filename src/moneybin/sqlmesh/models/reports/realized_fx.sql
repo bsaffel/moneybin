@@ -38,8 +38,6 @@ SELECT
   c.executed_rate, /* Actual received units per sent unit */
   g.valuation_rate, /* Rate used for Home-currency proceeds */
   GREATEST(g.updated_at, l.updated_at, c.updated_at, a.updated_at) AS updated_at, /* Latest contributing input timestamp */
-  c.from_amount, /* Positive magnitude actually sent in from_currency for the whole conversion; repeats on every lot row from the same disposal, so it is not additive at this row's grain — sum disposed_amount instead */
-  c.to_amount, /* Positive magnitude actually received in to_currency for the whole conversion; repeats on every lot row from the same disposal, so it is not additive at this row's grain */
   g.disposed_amount, /* Positive amount of Currency disposed */
   g.proceeds, /* Home-currency disposal proceeds */
   g.cost_basis, /* Home-currency basis of the disposed Currency */

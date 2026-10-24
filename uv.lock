@@ -1868,7 +1868,6 @@ dependencies = [
     { name = "openpyxl" },
     { name = "pdfplumber" },
     { name = "pillow" },
-    { name = "plaid-python" },
     { name = "polars" },
     { name = "prometheus-client" },
     { name = "prompt-toolkit" },
@@ -1917,10 +1916,6 @@ dev = [
     { name = "sqlmesh", extra = ["lsp"] },
     { name = "towncrier" },
 ]
-server = [
-    { name = "fastapi" },
-    { name = "uvicorn" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -1944,7 +1939,6 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pdfplumber", specifier = ">=0.11.10" },
     { name = "pillow", specifier = ">=13.0.0" },
-    { name = "plaid-python", specifier = ">=46.0.0" },
     { name = "polars", specifier = ">=2.0.0" },
     { name = "prometheus-client", specifier = ">=0.26.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
@@ -1992,10 +1986,6 @@ dev = [
     { name = "ruff", specifier = ">=0.17.0" },
     { name = "sqlmesh", extras = ["lsp"], specifier = ">=0.236.3" },
     { name = "towncrier", specifier = ">=26.9.0,<27" },
-]
-server = [
-    { name = "fastapi", specifier = ">=0.141.1" },
-    { name = "uvicorn", specifier = ">=0.53.0" },
 ]
 
 [[package]]
@@ -2088,15 +2078,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/24/bf/d1bda4f6168e0b2e9e5958945e01910052158313224ada5ce1fb2e1113b8/nodeenv-1.10.0.tar.gz", hash = "sha256:996c191ad80897d076bdfba80a41994c2b47c68e224c542b48feba42ba00f8bb", size = 55611, upload-time = "2025-12-20T14:08:54.006Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/b2/d0896bdcdc8d28a7fc5717c305f1a861c26e18c05047949fb371034d98bd/nodeenv-1.10.0-py2.py3-none-any.whl", hash = "sha256:5bb13e3eed2923615535339b3c620e76779af4cb4c6a90deccc9e36b274d3827", size = 23438, upload-time = "2025-12-20T14:08:52.782Z" },
-]
-
-[[package]]
-name = "nulltype"
-version = "2.3.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/2f/ce/92289851364b7f816a839c8064aac06c01f3a3ecf33ab04adf9d0a0ab66a/nulltype-2.3.1.zip", hash = "sha256:64aa3cb2ab5e904d1b37175b9b922bea268c13f9ce32e3d373313150ab5ef272", size = 20119, upload-time = "2018-06-03T22:01:01.45Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/0f/47dde1a3cceac9858da0bfb92d2279bf5f993ed075b72983e92efc297db3/nulltype-2.3.1-py2.py3-none-any.whl", hash = "sha256:16ae565745118e37e0558441f5821c76351d8c3a789640b5bca277cf65b2271b", size = 11054, upload-time = "2018-06-03T22:01:04.03Z" },
 ]
 
 [[package]]
@@ -2480,17 +2461,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/5e/2a/63b574101850e7f7b
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/d0/d04f1d1e064ac901439699ee097f58688caadea42498ec9c4b4ad2ef84ab/pip_requirements_parser-32.0.1-py3-none-any.whl", hash = "sha256:4659bc2a667783e7a15d190f6fccf8b2486685b6dba4c19c3876314769c57526", size = 35648, upload-time = "2022-12-21T15:25:21.046Z" },
 ]
-
-[[package]]
-name = "plaid-python"
-version = "46.0.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "nulltype" },
-    { name = "python-dateutil" },
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/da/f5/aba2f7da7c6750e9faa4dc6a64172672a748a41959481e2eb7854c578d19/plaid_python-46.0.0.tar.gz", hash = "sha256:f1b06c1a653f0378caf50a4077d61de36074b2560d473a8c7cc1697a580910e7", size = 1365135, upload-time = "2026-10-19T22:03:21.332Z" }
 
 [[package]]
 name = "platformdirs"

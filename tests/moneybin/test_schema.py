@@ -80,7 +80,7 @@ def test_comment_plan_cache_reparses_when_content_changes_with_same_mtime(
 def test_reopen_reuses_schema_comment_plans(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> None:
-    """A second writable open re-applies comments without reparsing schema DDL."""
+    """Writable opens apply comments from shipped plans without parsing schema DDL."""
     db_path = tmp_path / "moneybin.duckdb"
     schema._COMMENT_PLAN_CACHE.clear()  # pyright: ignore[reportPrivateUsage]  # cache internals under test
 
@@ -96,8 +96,9 @@ def test_reopen_reuses_schema_comment_plans(
             read_only=False,
         )
         db.close()
+        # Shipped plans cover every core DDL file, so a fresh open parses none.
         first_open_count = derive.call_count
-        assert first_open_count == len(schema._all_schema_files())  # pyright: ignore[reportPrivateUsage]  # source list under test
+        assert first_open_count == 0
         db = Database(
             db_path,
             secret_store=mock_secret_store,
