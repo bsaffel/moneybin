@@ -12,7 +12,7 @@ curating the bridge, not applying it.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 import pytest
 
@@ -1715,14 +1715,20 @@ def _audit_count(db: Database, action: str) -> int:
     return int(row[0]) if row else 0
 
 
-def _source_target(**fields: Any) -> SourceCategoryStateTarget:
+def _source_target(
+    state: Literal["present", "ignored", "absent"] = "present",
+    *,
+    source_origin: str = "chase_credit",
+    source_category_code: str = "Coffee Shops",
+    **fields: Any,
+) -> SourceCategoryStateTarget:
     """A source-category target for the shared term, overridable per test."""
-    return SourceCategoryStateTarget(**{
-        "state": "present",
-        "source_origin": "chase_credit",
-        "source_category_code": "Coffee Shops",
+    return SourceCategoryStateTarget(
+        state=state,
+        source_origin=source_origin,
+        source_category_code=source_category_code,
         **fields,
-    })
+    )
 
 
 class TestRemoveSourceTerm:

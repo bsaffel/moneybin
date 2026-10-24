@@ -531,14 +531,15 @@ def register_taxonomy_coarse_writes(mcp: FastMCP) -> None:
         mcp,
         taxonomy_set_coarse,
         "taxonomy_set",
-        "Atomically declare categories present, inactive, or absent, merchant "
-        "mappings present or absent, and imported category terms "
-        "(kind='source_category', from reviews(kind='source_categories')) "
-        "mapped to a category (present), ignored, or absent. A term's category "
-        "may be one the same batch creates. A changed term re-categorizes its "
-        "transactions at once; results report categorized and recategorized. "
-        "Terms are stored in app.category_source_map; every write is audited and "
-        "undone with system_audit_undo(operation_id). "
+        "Atomically declare category, merchant, and imported category-term "
+        "target states. Categories are present, inactive, or absent; merchant "
+        "mappings present or absent; imported terms (kind='source_category', "
+        "listed by reviews(kind='source_categories')) present, mapped to a "
+        "category that may be one the same batch creates, ignored, or absent. "
+        "A changed term re-categorizes its transactions at once; results report "
+        "categorized and recategorized. Terms are stored in "
+        "app.category_source_map; every write is audited and undone with "
+        "system_audit_undo(operation_id=...). "
         "The tool advertises maximum destructive risk and confirms only batches "
         "containing a resolved hard delete.",
         privacy_actor="taxonomy_set",

@@ -1109,7 +1109,7 @@ ADR-016 and the archived MCP catalog. Current sibling mappings are:
 | `transactions categorize pending` | `reviews(kind="categorization", status="pending")` |
 | `categories list`, `merchants list` | `taxonomy(view=...)` |
 | `categories mappings pending` | `reviews(kind="source_categories", status="pending")` |
-| `categories mappings set/remove` | `taxonomy_set(items=[{"kind": "source_category", ...}])` |
+| `categories mappings set/remove` | `taxonomy_set(items=[...])` with `kind="source_category"` items |
 | `transactions matches run` | `refresh_run(steps=["match"])` |
 | `investments matches run` | `refresh_run`, with `steps` set to `investment_match` after M1J.7 slice 2 |
 | `transform apply` | `refresh_run(steps=["transform"])` |

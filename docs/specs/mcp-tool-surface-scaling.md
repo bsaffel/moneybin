@@ -426,12 +426,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic current
 [`standard.json`](../../tests/fixtures/mcp_surface/standard.json) snapshot
-contains 50 tools, 66,545 bytes of serialized metadata, zero advertised output schemas,
+contains 50 tools, 68,521 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`025f864689d5f66b7315cb3e758600742dc49009a36a21efc052845d4575f9aa`.
+`ebc2ed1f5015f82846b5c753c9ce39d1238ea557f9710a00ba7003b03acd9ab8`.
 The frozen baseline is 90,839 bytes with SHA-256
 `b789459f13f3e7e5caa476ca7d4d1e2fa4f19f9b107bc93f2edbceeeb2abe7a7`.
-The delta is -24,294 bytes (-26.7%). The deterministic estimate is 16,637
+The delta is -22,318 bytes (-24.6%). The deterministic estimate is 17,131
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
@@ -464,6 +464,30 @@ calls, rather than on an unmeasured claim that it scores better.
 `accounts_links_run` was admitted on exactly that basis: it appears in neither
 capture, and the merge it proposes was previously unreachable from MCP for a
 duplicate no signal finds (#450).
+
+### Extension record: imported category-term curation
+
+Capability `taxonomy.source-categories.curate` reached MCP without a new tool,
+closing its `admission-pending` exemption:
+
+1. **Capability and intent.** Map, ignore, or remove a category term that an
+   imported file carries.
+2. **Closest tools.** `reviews` for the inbox and `taxonomy_set` for the write.
+3. **Why no new identity.** The inbox is a review queue with pending and
+   history, so it is a `reviews` kind. A mapping is a target state of the same
+   taxonomy, audit, and recovery contract as a category or merchant item, so
+   it is a `taxonomy_set` item kind. Creating a category and mapping a term to
+   it in one batch needs the two in one tool.
+4. **Contract differences.** None that need another identity. `absent` on a
+   mapped term is a hard delete and confirms like a merchant `absent`; the
+   sensitivity tier is `low`.
+5. **Byte delta.** +1,976 bytes on an unchanged 50-tool count: `reviews`
+   +220 (987 → 1,207) and `taxonomy_set` +1,756 (3,676 → 5,432).
+6. **Evaluation.** Deferred, with the reason in "Evaluation coverage for
+   admitted tools" above. The map-the-label versus create-a-category pair
+   can be written but not scored until a current-registry capture exists.
+7. **Budget and closure.** The registry stays at 50 tools, and the CLI
+   curation outcomes are now reachable from MCP.
 
 ### Historical evidence location
 

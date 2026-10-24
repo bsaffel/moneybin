@@ -410,7 +410,7 @@ surfaces gain removal.
   hard delete `taxonomy_set` confirms, the same as removing a merchant
   mapping. Mapping, re-mapping, and ignoring are not confirmed: they withdraw
   only `provider_native` rows the sweep recomputes, and
-  `system_audit_undo(operation_id)` reverses the batch's audited writes.
+  `system_audit_undo(operation_id=...)` reverses the batch's audited writes.
 
 ## Reverse-lookup contract
 
