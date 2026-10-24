@@ -101,7 +101,7 @@ _STUB_VIEWS = (
          NULL, 'Wallet', 'EUR', 'USD', 'EUR', 'USD', 'linked_two_row',
          'conversion', 'fifo', 'actual', 'manual', 'e2e', 'manual', 'e2e',
          'complete', NULL, current_date, current_date, current_date, 1.2, 1.2,
-         current_timestamp, 45.0, 55.0, 45.0, 55.0, 50.0, 0.0, 5.0)
+         current_timestamp, 45.0, 55.0, 50.0, 0.0, 5.0)
     ) AS t(realized_fx_gain_id, conversion_id, currency_lot_id, account_id,
            transfer_pair_id, from_transaction_id, to_transaction_id,
            from_source_transaction_id, to_source_transaction_id,
@@ -111,8 +111,8 @@ _STUB_VIEWS = (
            cost_basis_method, valuation_source_type, from_source_type,
            from_source_origin, to_source_type, to_source_origin, coverage_status,
            coverage_reason, acquisition_date, disposal_date, valuation_rate_date,
-           executed_rate, valuation_rate, updated_at, from_amount, to_amount,
-           disposed_amount, proceeds, cost_basis, fee_amount, gain_loss)
+           executed_rate, valuation_rate, updated_at, disposed_amount, proceeds,
+           cost_basis, fee_amount, gain_loss)
     """,
     """
     CREATE OR REPLACE VIEW reports.net_worth AS SELECT * FROM (VALUES

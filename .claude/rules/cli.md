@@ -85,6 +85,7 @@ When a command modifies multiple persistent stores in sequence (e.g., file move 
 ## Command Group Registration
 
 - **Root discovery**: `navigation.py` owns the top-level help sections, descriptions, and short-menu selection. Keep commands alphabetical within each section. Bare `moneybin` shows the short menu and exits successfully before runtime setup; `moneybin --help` shows every visible command in the same sections and order.
+- **Lazy registration**: A root command is declared in `_MoneyBinRoot.lazy_commands` (`cli/main.py`) as `LazyCommand(module, attr)` — never `app.add_typer(...)` or `app.command(...)` on the root, and never an import of its module in `main.py`. `RootGroup` imports the module the first time the command is resolved. A new root command also needs its `HELP_SECTIONS` entry (a hidden one excepted). A sub-group of another group is still attached with `add_typer` inside its parent module.
 - **Subgroups**: Set `no_args_is_help=True` so bare group invocation shows help. The root alone uses `invoke_without_command=True` with an early `ctx.invoked_subcommand is None` return; never print its menu or initialize runtime on a help path. Leaves with required arguments still report usage errors.
 
 ## Cold-Start Hygiene
@@ -112,6 +113,8 @@ Every E2E test, every shell autocomplete, and every CLI invocation pays the full
   ```
 
   Should produce no output for `fastmcp`, `sqlmesh`, or `polars`.
+
+- **First-party modules count too.** Command groups import lazily (see "Lazy registration"), because each one drags in its service graph and `moneybin --help` needs none of it. Don't import a `moneybin.cli.commands.*` module from `cli/main.py` or `cli/navigation.py`. `tests/moneybin/test_cli/test_cold_start.py` fails if `--help` loads any.
 
 ## Leaf Commands vs Sub-Groups
 
