@@ -149,6 +149,66 @@ async def test_source_category_round_trip_from_review_to_removal() -> None:
     assert (await reviews_coarse(kind="source_categories")).data.rows == []
 
 
+async def test_source_category_history_pages_more_than_one_curated_term() -> None:
+    """History orders by the term, so several curated terms read back together."""
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.reviews import reviews_coarse
+
+    _import_coffee_term()
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO prep.int_transactions__matched VALUES "
+            "('t2', 't2', 'csv', 'chase_credit', 'Groceries', NULL)"
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, "
+            "transaction_date) VALUES ('t2', -9.00, '2026-01-02')"
+        )
+    mapped = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(kind="category", state="present", category="Coffee"),
+            SourceCategoryStateRequest(
+                **_COFFEE_TERM, state="present", category="Coffee"
+            ),
+            SourceCategoryStateRequest(
+                kind="source_category",
+                state="ignored",
+                source_origin="chase_credit",
+                source_category_code="Groceries",
+            ),
+        ]
+    )
+    assert mapped.error is None
+
+    history = await reviews_coarse(kind="source_categories", status="history")
+
+    assert history.error is None
+    assert [row.details.source_category_code for row in history.data.rows] == [
+        "Coffee Shops",
+        "Groceries",
+    ]
+
+
+async def test_source_category_binding_names_the_resolved_destination() -> None:
+    """A by-name mapping binds the category id it resolved, not only the name."""
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.taxonomy import (
+        _taxonomy_binding,  # pyright: ignore[reportPrivateUsage]
+        _to_taxonomy_target,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    _import_coffee_term()
+    request = SourceCategoryStateRequest(
+        **_COFFEE_TERM, state="present", category="Coffee"
+    )
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+        category_id = service.create_category("Coffee", actor="test")
+        plan = service.plan_taxonomy_targets([_to_taxonomy_target(request)])
+
+    assert category_id in _taxonomy_binding([request], plan).resolved_ids
+
+
 @pytest.mark.parametrize(
     "fields",
     [

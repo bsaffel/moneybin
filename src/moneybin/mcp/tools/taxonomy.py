@@ -398,6 +398,10 @@ def _taxonomy_binding(
             request.merchant_id
             if isinstance(request, MerchantStateRequest)
             else request.category_id,
+            # A by-name mapping's destination: it must not re-resolve unseen.
+            planned.source_term.category_id
+            if planned.source_term is not None
+            else None,
         ):
             if value is not None and value not in resolved_ids:
                 resolved_ids.append(value)

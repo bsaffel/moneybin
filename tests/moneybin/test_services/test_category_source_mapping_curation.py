@@ -1911,6 +1911,53 @@ class TestSourceCategoryTaxonomyTargets:
         assert exc_info.value.code == error_codes.TAXONOMY_CATEGORY_NOT_FOUND
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("by", ["id", "name"])
+    def test_category_the_batch_activates_takes_the_mapping(
+        self, db: Database, by: str
+    ) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+        category_id = service.create_category("Coffee", actor="test")
+        service.toggle_category(category_id, is_active=False, actor="test")
+        reference: dict[str, Any] = (
+            {"category_id": category_id} if by == "id" else {"category": "Coffee"}
+        )
+
+        _, mapped = service.apply_taxonomy_targets(
+            [
+                CategoryStateTarget(state="present", category="Coffee"),
+                _source_target(**reference),
+            ],
+            actor="test",
+        )
+
+        assert mapped.source_mapping is not None
+        assert mapped.source_mapping.category_id == category_id
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("by", ["id", "name"])
+    def test_category_the_batch_deactivates_is_refused(
+        self, db: Database, by: str
+    ) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+        category_id = service.create_category("Coffee", actor="test")
+        reference: dict[str, Any] = (
+            {"category_id": category_id} if by == "id" else {"category": "Coffee"}
+        )
+
+        with pytest.raises(UserError) as exc_info:
+            service.plan_taxonomy_targets([
+                CategoryStateTarget(state="inactive", category_id=category_id),
+                _source_target(**reference),
+            ])
+
+        assert exc_info.value.code == error_codes.TAXONOMY_CATEGORY_NOT_FOUND
+        assert "inactive" in str(exc_info.value)
+
+    @pytest.mark.unit
     def test_states_plan_create_update_noop_and_delete(self, db: Database) -> None:
         refresh_views(db)
         _seed_active_category(db, "cat-a", "Category A")

@@ -2190,11 +2190,23 @@ class MatchApplier:
             and target.state == "absent"
             and target.category_id in category_by_id
         }
-        removed_category_ids = {
-            target.category_id
-            for target in targets
-            if isinstance(target, CategoryStateTarget) and target.state == "absent"
-        }
+        # Each existing category's state once the batch applies, by id.
+        batch_category_states: dict[str, str] = {}
+        for target in targets:
+            if not isinstance(target, CategoryStateTarget):
+                continue
+            if target.category_id is not None:
+                batch_category_states[target.category_id] = target.state
+                continue
+            named = category_candidates_by_name.get(
+                (
+                    _normalized_taxonomy_text(target.category),
+                    _normalized_taxonomy_text(target.subcategory),
+                ),
+                [],
+            )
+            if len(named) == 1:
+                batch_category_states[str(named[0][0])] = target.state
         merchant_by_id = {str(row[0]): row for row in merchant_rows}
         merchant_candidates_by_target: dict[
             tuple[str | None, object, str | None, str | None, str | None],
@@ -2355,8 +2367,7 @@ class MatchApplier:
                         category_by_id=category_by_id,
                         category_candidates_by_name=category_candidates_by_name,
                         planned_categories=planned_categories,
-                        removed_category_ids=removed_category_ids,
-                        removed_category_keys=removed_category_keys,
+                        batch_category_states=batch_category_states,
                     )
                 )
                 continue
@@ -2504,8 +2515,7 @@ class MatchApplier:
             tuple[str | None, str | None], list[tuple[object, ...]]
         ],
         planned_categories: set[tuple[str | None, str | None]],
-        removed_category_ids: set[str | None],
-        removed_category_keys: set[tuple[str | None, str | None]],
+        batch_category_states: dict[str, str],
     ) -> TaxonomyTargetPlanItem:
         """Validate one imported term's target state and resolve its category.
 
@@ -2545,7 +2555,10 @@ class MatchApplier:
         if target.state == "present":
             if target.category_id is not None:
                 row = category_by_id.get(target.category_id)
-                if target.category_id in removed_category_ids or row is None:
+                if (
+                    row is None
+                    or batch_category_states.get(target.category_id) == "absent"
+                ):
                     raise UserError(
                         f"Category {target.category_id} not found",
                         code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
@@ -2556,11 +2569,7 @@ class MatchApplier:
                     _normalized_taxonomy_text(target.category),
                     _normalized_taxonomy_text(target.subcategory),
                 )
-                matches = (
-                    []
-                    if key in removed_category_keys
-                    else category_candidates_by_name.get(key, [])
-                )
+                matches = category_candidates_by_name.get(key, [])
                 if len(matches) > 1:
                     raise UserError(
                         "Source category mapping matches more than one existing "
@@ -2573,6 +2582,11 @@ class MatchApplier:
                         },
                     )
                 row = matches[0] if matches else None
+                if (
+                    row is not None
+                    and batch_category_states.get(str(row[0])) == "absent"
+                ):
+                    row = None
                 if row is None and key not in planned_categories:
                     raise UserError(
                         "Source category mapping references a category that was "
@@ -2583,9 +2597,12 @@ class MatchApplier:
                 category_key = key
             else:
                 category_id = str(row[0])
-                # The batch may activate it; otherwise an inactive category
-                # takes no new categorizations and is refused, as in set.
-                if not bool(row[5]) and key not in planned_categories:
+                # Judge the category as the batch leaves it: an inactive
+                # category takes no new categorizations, as in set.
+                final_state = batch_category_states.get(
+                    category_id, "present" if bool(row[5]) else "inactive"
+                )
+                if final_state != "present":
                     raise UserError(
                         f"Category {category_id} is inactive; "
                         "activate it or map the term to an active category",

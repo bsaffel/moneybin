@@ -954,6 +954,9 @@ def _review_key_contract(
     status: ReviewStatus,
 ) -> tuple[tuple[type[object], ...], tuple[SortDirection, ...]]:
     """Return the typed immutable ordering contract for one review queue."""
+    if kind == "source_categories":
+        # The term itself, in both statuses: the pending count is mutable.
+        return ((str, str, str, str), ("asc", "asc", "asc", "asc"))
     if kind == "investment_matches":
         return ((str, str), ("desc", "asc"))
     if status == "history" or kind == "categorization":
@@ -966,9 +969,6 @@ def _review_key_contract(
         return ((str, str), ("asc", "asc"))
     if kind == "account_links":
         return ((str, str), ("asc", "asc"))
-    if kind == "source_categories":
-        # The term itself: the pending count is mutable, so it cannot order.
-        return ((str, str, str, str), ("asc", "asc", "asc", "asc"))
     return ((str, str, str), ("asc", "asc", "asc"))
 
 
