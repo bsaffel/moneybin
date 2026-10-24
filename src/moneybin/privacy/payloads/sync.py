@@ -15,7 +15,6 @@ Tier derivation summary:
   - ``SyncLinkStatusPayload``         → Tier.MEDIUM (error = DESCRIPTION)
   - ``SyncDisconnectPayload``         → Tier.LOW (INSTITUTION + TXN_TYPE +
                                         RECORD_ID only)
-  - ``SyncSchedulePlaceholderPayload``→ Tier.LOW (stub; not-implemented payloads)
 """
 
 from __future__ import annotations
@@ -314,24 +313,6 @@ SyncDisconnectCoarsePayload = Annotated[
     SyncInstitutionDisconnectView | SyncLogoutView,
     Field(discriminator="kind"),
 ]
-
-
-# ---------------------------------------------------------------------------
-# sync_schedule_* — stub / not-implemented placeholder payload
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class SyncSchedulePlaceholderPayload:
-    """Placeholder payload for stub sync_schedule_* tools.
-
-    These tools are not yet implemented (return not_implemented_envelope).
-    The payload keeps the annotation footprint minimal and Tier.LOW so the
-    middleware applies the least-restrictive gate to the stub response.
-    """
-
-    action: Annotated[str, DataClass.TXN_TYPE]
-    status: Annotated[str, DataClass.TXN_TYPE]
 
 
 @dataclass(frozen=True, slots=True)
