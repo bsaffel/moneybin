@@ -425,9 +425,9 @@ stays unmapped until a mapping says it means MoneyBin's `Groceries`, and
 
 - **One predicate for "uncategorized".** With the fallback gone, a non-NULL
   `category` always has an `app.transaction_categories` row behind it.
-  `transactions list --uncategorized` and the MCP `transactions_get`
-  `uncategorized_only` flag move from `categorized_by IS NULL` onto the
-  queue's own `is_categorizable AND category IS NULL`. The listing, the
+  `transactions list --uncategorized` moves from `categorized_by IS NULL`
+  onto the queue's own `is_categorizable AND category IS NULL`, through
+  `TransactionService.get(uncategorized_only=...)`. The listing, the
   queue, and every coverage figure now count the same rows, which closes the
   split MB-155 left in place. The flag also stops listing transfer legs and
   rows on archived or unresolved accounts, which the queue never offered.
