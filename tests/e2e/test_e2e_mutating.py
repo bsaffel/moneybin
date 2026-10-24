@@ -1759,6 +1759,18 @@ class TestCategoriesMappingsMutating:
         data = json.loads(ignored.stdout)["data"]
         assert (data["action"], data["category_id"]) == ("ignored", None)
 
+        # Ignoring withdraws what the mapping categorized and keeps the term known.
+        assert data["recategorized"] == term["transaction_count"]
+        assert data["categorized"] == 0
+        still_pending = run_cli(
+            "categories", "mappings", "pending", "--output", "json", env=env
+        )
+        still_pending.assert_success()
+        assert (term["category"], term["subcategory"]) not in [
+            (t["category"], t["subcategory"])
+            for t in json.loads(still_pending.stdout)["data"]["terms"]
+        ]
+
         removed = run_cli(
             "categories",
             "mappings",
@@ -1781,17 +1793,6 @@ class TestCategoriesMappingsMutating:
         assert term["category"] in {
             t["category"] for t in json.loads(reopened.stdout)["data"]["terms"]
         }
-        # Ignoring withdraws what the mapping categorized and keeps the term known.
-        assert data["recategorized"] == term["transaction_count"]
-        assert data["categorized"] == 0
-        still_pending = run_cli(
-            "categories", "mappings", "pending", "--output", "json", env=env
-        )
-        still_pending.assert_success()
-        assert (term["category"], term["subcategory"]) not in [
-            (t["category"], t["subcategory"])
-            for t in json.loads(still_pending.stdout)["data"]["terms"]
-        ]
 
     def test_categories_mappings_set_unknown_term_is_refused(
         self, _mutating_profile_template: Path, tmp_path: Path

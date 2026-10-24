@@ -648,6 +648,7 @@ class ReviewsSecurityLinksView(BaseModel):
     rows: list[SecurityLinkReviewRow]
 
 
+@row_set(NO_ROW_SET)
 class SourceCategoryPendingDetails(BaseModel):
     """One imported category term with no mapping yet.
 

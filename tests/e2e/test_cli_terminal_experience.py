@@ -167,7 +167,7 @@ def test_registration_inventory_keeps_generated_reports_aliases_and_no_assets_le
     """An accidental registration change must not evade the hand-written help list."""
     leaves = set(_leaves(get_command(app)))
 
-    assert len(leaves) == 210
+    assert len(leaves) == 211
     assert ("assets",) not in leaves
     assert {
         ("sync", "connect"),
