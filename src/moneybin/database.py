@@ -1298,6 +1298,20 @@ class Database:
         self.close()
 
 
+def verify_database_key(db_path: Path, *, secret_store: SecretStore) -> None:
+    """Verify current credential access without initializing or upgrading the file."""
+    try:
+        # The factory may escalate read-only opens into schema upgrades.
+        with Database(db_path, read_only=True, secret_store=secret_store):
+            pass
+    except duckdb.Error as e:
+        raise OSError(
+            "Could not verify the encryption key against the database. "
+            "The credential may not match, or the database may be unreadable "
+            "or corrupt."
+        ) from e
+
+
 def invalidate_encryption_key_cache() -> None:
     """Clear the in-process encryption key cache.
 
