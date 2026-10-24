@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Annotated, Literal, Self, cast
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import (
@@ -62,23 +62,18 @@ accounts merges their ledgers silently.
 """
 
 
-def _removed_transaction_id(value: object) -> object:
-    """A removed transaction arrives as a provider-native record, not an id."""
-    if isinstance(value, dict):
-        return cast(dict[str, object], value).get("transaction_id")
-    return value
+class PlaidRemovedTransaction(BaseModel):
+    """Provider removal identity, retaining account scope when supplied."""
 
+    transaction_id: str
+    account_id: str | None = None
 
-RemovedTransactionId = Annotated[str, BeforeValidator(_removed_transaction_id)]
-"""One removed transaction's id, read from the provider-native record.
-
-moneybin-sync widened this field from a bare id to a full record while the
-client kept ``list[str]``, so every pull for an institution with removals
-aborted at validation before anything was written — only institutions that
-happened to have no removals still synced. Downstream removal combines this id
-with the batch's reported Plaid item scope. A bare string still validates, so
-the client can outlive a server that predates the widening.
-"""
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_id(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {"transaction_id": value}
+        return value
 
 
 CurrencyCode = BlankToNone
@@ -396,7 +391,7 @@ class PlaidSyncDataResponse(BaseModel):
     accounts: list[PlaidSyncAccount]
     transactions: list[PlaidSyncTransaction]
     balances: list[PlaidSyncBalance]
-    removed_transactions: list[RemovedTransactionId]
+    removed_transactions: list[PlaidRemovedTransaction]
     securities: list[SyncSecurity] = Field(default_factory=list)
     investment_transactions: list[SyncInvestmentTransaction] = Field(
         default_factory=list

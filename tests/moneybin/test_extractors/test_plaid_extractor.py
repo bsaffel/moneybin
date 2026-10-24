@@ -358,6 +358,57 @@ def test_removed_transactions_require_item_scope(db: Database) -> None:
         )
 
 
+@pytest.mark.parametrize("account_id", ["acc_chase_check", "unknown-account"])
+def test_removed_transactions_match_account_within_item(
+    db: Database, sync_data: PlaidSyncDataResponse, account_id: str
+) -> None:
+    loader = PlaidExtractor(db)
+    loader.load(sync_data, job_id=sync_data.metadata.job_id)
+    db.execute(
+        """
+        INSERT INTO raw.plaid_transactions
+            (transaction_id, account_id, amount, transaction_date,
+             source_file, source_origin)
+        VALUES ('unrelated-transaction', 'other-account', 1, DATE '2026-09-01',
+                'prior', 'item_chase_abc'),
+               ('txn_001', 'acc_chase_check', 1, DATE '2026-09-01',
+                'prior', 'other-item')
+        """
+    )
+    payload = sync_data.model_dump()
+    removal = {"transaction_id": "txn_001", "account_id": account_id}
+    payload["removed_transactions"] = [removal, removal]
+    removals = PlaidSyncDataResponse.model_validate(payload).removed_transactions
+
+    deleted = loader.handle_removed_transactions(
+        removals, provider_item_ids={"item_chase_abc"}
+    )
+
+    assert deleted == (1 if account_id == "acc_chase_check" else 0)
+    expected = [
+        ("txn_001", "acc_chase_check", "other-item"),
+        ("unrelated-transaction", "other-account", "item_chase_abc"),
+    ]
+    if account_id == "unknown-account":
+        expected.insert(0, ("txn_001", "acc_chase_check", "item_chase_abc"))
+    assert (
+        db.execute(
+            """
+        SELECT transaction_id, account_id, source_origin FROM raw.plaid_transactions
+        WHERE transaction_id IN ('txn_001', 'unrelated-transaction')
+        ORDER BY transaction_id, source_origin
+        """
+        ).fetchall()
+        == expected
+    )
+    assert (
+        loader.handle_removed_transactions(
+            removals, provider_item_ids={"item_chase_abc"}
+        )
+        == 0
+    )
+
+
 def test_loader_writes_balance_currency(
     db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
