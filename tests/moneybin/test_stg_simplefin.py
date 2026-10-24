@@ -655,3 +655,100 @@ def test_subtype_removal_and_restoration_rebuilds_materialized_money(
     assert db.execute("SELECT count(*) FROM raw.simplefin_transactions").fetchone() == (
         1,
     )
+
+
+@pytest.mark.parametrize("preferred_source", ["ofx", "simplefin"])
+def test_classification_refresh_advances_mixed_source_transaction_freshness(
+    db: Database, preferred_source: str
+) -> None:
+    """A retained SimpleFIN link carries freshness when its member is filtered out."""
+    from moneybin.config import MatchingSettings
+    from moneybin.matching.priority import seed_source_priority
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+    from moneybin.services.account_service import AccountService
+    from moneybin.services.transform_service import TransformService
+
+    load(db, source())
+    bind_account(db)
+    for account_id in ("canonical", "ofx-only"):
+        db.execute(
+            """INSERT INTO raw.ofx_accounts
+                (account_id, account_type, source_file, source_origin, extracted_at)
+                VALUES (?, 'CHECKING', 'synthetic.ofx', 'synthetic-bank',
+                    TIMESTAMPTZ '2026-09-21 00:00:00+00')""",
+            [account_id],
+        )
+        db.execute(
+            """INSERT INTO raw.ofx_transactions
+                (source_transaction_id, account_id, transaction_type, date_posted,
+                 date_posted_source_date, amount, payee, source_file, source_origin,
+                 currency_code, loaded_at, extracted_at)
+                VALUES (?, ?, 'DEBIT', TIMESTAMPTZ '2026-09-20 00:00:00+00',
+                    DATE '2026-09-20', -12.30, 'Synthetic purchase', 'synthetic.ofx',
+                    'synthetic-bank', 'USD', TIMESTAMPTZ '2026-09-01 00:00:00+00',
+                    TIMESTAMPTZ '2026-09-21 00:00:00+00')""",
+            [f"ofx-{account_id}", account_id],
+        )
+    db.execute("""INSERT INTO app.account_settings
+        (account_id, account_type, account_subtype, currency_code)
+        VALUES ('ofx-only', 'depository', 'checking', 'USD')""")
+    reference = db.execute("""SELECT transaction_reference, source_origin
+        FROM raw.simplefin_transactions""").fetchone()
+    assert reference is not None
+    # Accepted user decisions are inputs to the real staging/merge/fact models.
+    MatchDecisionsRepo(db).insert(
+        match_id="mixed-source-classification",
+        source_transaction_id_a="ofx-canonical",
+        source_type_a="ofx",
+        source_origin_a="synthetic-bank",
+        source_transaction_id_b=reference[0],
+        source_type_b="simplefin",
+        source_origin_b=reference[1],
+        account_id="canonical",
+        confidence_score=1.0,
+        match_signals={},
+        match_status="accepted",
+        decided_by="user",
+        actor="cli",
+    )
+    priorities = [
+        preferred_source,
+        *(
+            source_type
+            for source_type in MatchingSettings().source_priority
+            if source_type != preferred_source
+        ),
+    ]
+    seed_source_priority(db, MatchingSettings(source_priority=priorities))
+    materialize(db)
+
+    def fact(account_id: str) -> tuple[object, ...]:
+        row = db.execute(
+            """SELECT transaction_id, source_type, source_count, updated_at
+                FROM core.fct_transactions WHERE account_id = ?""",
+            [account_id],
+        ).fetchone()
+        assert row is not None
+        return row
+
+    before = fact("canonical")
+    control = fact("ofx-only")
+    assert before[1:3] == (preferred_source, 2)
+    accounts = AccountService(db)
+    # A newer missing delivery retains the prior observation and source link.
+    missing = source(batch=2, day=2, account_changes={"transactions": []})
+    load(db, missing, job=2)
+    settings, _ = accounts.settings_update(
+        "canonical", actor="cli", account_subtype="brokerage"
+    )
+    after = fact("canonical")
+    assert after[:3] == (before[0], "ofx", 1)
+    assert settings.account_subtype_changed_at is not None
+    assert after[3] == settings.account_subtype_changed_at
+    assert after[3] != before[3]
+    # Classification is irrelevant to a transaction without a SimpleFIN source link.
+    accounts.settings_update("ofx-only", actor="cli", account_subtype="brokerage")
+    assert fact("ofx-only") == control
+    assert TransformService(db).apply().applied
+    assert fact("canonical") == after
+    assert fact("ofx-only") == control

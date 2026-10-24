@@ -75,9 +75,18 @@ WITH notes_agg AS (
     CASE WHEN t.currency_code IS NULL THEN a.updated_at END AS inherited_currency_latest,
     a.archived_changed_at, /* Moves is_categorizable for every row of the account, so every row folds it into updated_at. */
     CASE
-      WHEN t.canonical_source_type = 'simplefin'
+      WHEN EXISTS(
+        SELECT
+          1
+        FROM app.account_links AS links
+        WHERE
+          links.account_id = t.account_id
+          AND links.source_type = 'simplefin'
+          AND links.ref_kind = 'source_native'
+          AND links.status = 'accepted'
+      )
       THEN GREATEST(account_base.account_type_changed_at, account_base.account_subtype_changed_at)
-    END AS classification_latest,
+    END AS classification_latest, /* Retained links survive SimpleFIN eligibility holds and a change of canonical source in mixed groups. */
     t.canonical_source_type AS source_type,
     t.source_count,
     t.match_confidence,
