@@ -7,20 +7,39 @@ import sys
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
     Progress,
+    ProgressColumn,
     SpinnerColumn,
+    Task,
     TaskID,
     TextColumn,
 )
+from rich.text import Text
 
 from moneybin.cli.terminal import TerminalPolicy
 from moneybin.progress import ProgressEvent
 
 logger = logging.getLogger(__name__)
+
+
+class _WhenCounted(ProgressColumn):
+    """Render the wrapped column only for a task with a known total.
+
+    Without a total, Rich draws a pulsing bar and ``0/?`` — a count that
+    reads like progress toward an unknown number of things.
+    """
+
+    def __init__(self, column: ProgressColumn) -> None:
+        super().__init__(table_column=column.get_table_column())
+        self._column = column
+
+    def render(self, task: Task) -> RenderableType:
+        """Delegate to the wrapped column, or render nothing when uncounted."""
+        return self._column.render(task) if task.total is not None else Text("")
 
 
 @contextmanager
@@ -37,8 +56,8 @@ def operation_progress(
             progress = Progress(
                 SpinnerColumn(),
                 TextColumn("{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
+                _WhenCounted(BarColumn()),
+                _WhenCounted(MofNCompleteColumn()),
                 console=Console(file=sys.stderr, no_color=not policy.color),
                 transient=True,
             )

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Never
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, derive_cli_actor, emit_json_error
 from moneybin.config import set_current_profile
 from moneybin.errors import UserError, classify_user_error
@@ -600,7 +601,7 @@ def get_terminal_policy(
     )
 
 
-def resolve_profile() -> None:
+def resolve_profile(*, read_only: bool = False) -> None:
     """Resolve the active profile and finish CLI setup.
 
     Invoked lazily via the resolver registered with ``config.py`` the first
@@ -612,8 +613,10 @@ def resolve_profile() -> None:
     Skipping this work in ``main_callback`` keeps the parent inert so
     leaf-level usage errors (``moneybin logs`` with no stream) and ``--help``
     surface cleanly without spinning up the wizard, log files, or profile
-    directories.
+    directories. ``read_only`` refuses first-run initialization.
     """
+    from moneybin.config import clear_current_profile
+
     profile_name = _flags.profile
     source: str | None = None
     if profile_name is not None:
@@ -627,10 +630,20 @@ def resolve_profile() -> None:
         # it makes first. Reading it here is what lets the banner name the
         # source that actually resolved instead of listing both (req 19).
         configured = get_default_profile()
-        try:
-            profile_name = ensure_default_profile()
-        except KeyboardInterrupt:
-            raise typer.Abort() from None
+        if read_only:
+            if configured is None:
+                clear_current_profile()
+                raise UserError(
+                    "No profile selected. Pass --profile or configure an existing "
+                    "default profile before verifying its key.",
+                    code=error_codes.INFRA_SETUP_REQUIRED,
+                )
+            profile_name = configured
+        else:
+            try:
+                profile_name = ensure_default_profile()
+            except KeyboardInterrupt:
+                raise typer.Abort() from None
         source = "config.yaml" if configured else "the first-run wizard"
 
     try:
@@ -644,6 +657,14 @@ def resolve_profile() -> None:
     normalized = normalize_profile_name(profile_name)
     profile_dir = get_base_dir() / "profiles" / normalized
     if not profile_dir.exists():
+        if read_only:
+            # JSON audit logs must not create a profile that does not exist.
+            clear_current_profile()
+            raise UserError(
+                f"Profile '{normalized}' does not exist. "
+                "Run 'moneybin profile list' to see available profiles.",
+                code=error_codes.INFRA_SETUP_REQUIRED,
+            )
         logger.error(format_cli_failure(f"Profile '{normalized}' does not exist"))
         # Recovery remains visible even when normal CLI diagnostics are hidden.
         typer.echo("Run 'moneybin profile list' to see available profiles", err=True)

@@ -313,7 +313,7 @@ On extractor failure (single-file path), the same envelope shape is emitted with
 }
 ```
 
-The investments fields default to `0` for a non-investment account. `PullResult` also carries `opening_bootstrap_rows`, `investment_source_overlap_accounts` (accounts with both manual and Plaid investment rows — lots and gains double-count until one source is chosen per account), and `security_resolution` / `security_resolution_error` (the `app.security_links` resolution sweep run after load), omitted above for brevity.
+The investments fields default to `0` for a non-investment account. `accounts_loaded`, `balances_loaded`, `securities_loaded`, and `investment_transactions_loaded` count rows that are new or whose content changed; `holdings_loaded` and `holding_lots_loaded` count positions and lots added, removed, or revalued since that institution's previous snapshot. Pulling again with nothing new upstream reports `0` for each. A pull on a later day can still count changes when nothing was bought or sold: each day adds a new balance date per account, and market prices revalue positions. `PullResult` also carries `opening_bootstrap_rows`, `investment_source_overlap_accounts` (accounts with both manual and Plaid investment rows — lots and gains double-count until one source is chosen per account), and `security_resolution` / `security_resolution_error` (the `app.security_links` resolution sweep run after load), omitted above for brevity.
 
 Every `sync` command that emits JSON goes through the same `render_or_json` path as `import files`, so the shape above is the `data` block of the envelope, not a bare payload.
 

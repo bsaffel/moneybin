@@ -122,9 +122,9 @@ def _render_sync_pull_receipt(
             f"{result.transactions_removed:,} stale transactions",
         ))
     for count, label in (
-        (result.securities_loaded, "new securities"),
+        (result.securities_loaded, "securities new or updated"),
         (result.investment_transactions_loaded, "investment transactions"),
-        (result.holdings_loaded, "holdings snapshots"),
+        (result.holdings_loaded, "holdings added, removed, or revalued"),
         (result.security_prices_loaded, "new price closes"),
     ):
         if count:

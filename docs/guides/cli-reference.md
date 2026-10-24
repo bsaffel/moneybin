@@ -11,7 +11,7 @@ MoneyBin's CLI covers everything its MCP server does. Read commands return text 
 
 This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
 
-**Nine commands are stubs hidden from `--help`**, so the CLI never advertises what it cannot do: `budget set`/`delete`, `sync key rotate`, `transactions categorize ml train`/`status`/`apply`, and `db key export`/`import`/`verify`. Each stays invocable, so a script that already calls one keeps working; the first six exit `0` and the three `db key` names exit `1`.
+**Eight commands are stubs hidden from `--help`**, so the CLI never advertises what it cannot do: `budget set`/`delete`, `sync key rotate`, `transactions categorize ml train`/`status`/`apply`, and `db key export`/`import`. Each stays invocable, so a script that already calls one keeps working; the first six exit `0` and the two `db key` names exit `1`.
 
 ## Standard flags
 
@@ -606,7 +606,8 @@ loads it back from the keychain. `db backup` writes a timestamped encrypted
 backup and `db restore --from <backup-path>` (or `--latest`) restores one. `db
 ps` lists the processes holding the database file and `db kill` ends them. `db
 key show` prints the key to stderr and `db key rotate` re-encrypts under a new
-one; `db key export`, `import`, and `verify` are stubs hidden from `--help`.
+one. `db key verify` checks the effective credential against the existing
+database without changing it; `db key export` and `import` remain hidden stubs.
 `db migrate apply` runs pending schema migrations (`--dry-run` previews) and
 `db migrate status` lists applied and pending ones. Commands:
 [`reference/cli/db.md`](../reference/cli/db.md).
