@@ -22,15 +22,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           # The event payload's labels are a snapshot taken when the event
-          # fired. Dependabot labels a PR a second or two after opening it, so
-          # the `opened` run saw no skip-changelog label and failed while the
-          # `labeled` runs passed, and every Actions bump still showed a red
-          # check (#671, #672). Read the labels as they are now instead. That
-          # narrows the window rather than closing it: a label applied after
-          # this lookup still fails this run, and the `labeled` event's re-run
-          # is the one that passes.
+          # fired; read them as they are now. Dependabot PRs never depend on a
+          # label: they are classified from their diff below.
           if ! LABELS="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.labels[].name')"; then
             echo "Could not read the labels of PR #${PR_NUMBER}, so skip-changelog and release-preparation cannot be evaluated. Re-run this job." >&2
             exit 1
@@ -57,6 +53,12 @@ jobs:
             exit 1
           fi
           BASE_SHA="$(git rev-parse HEAD^1)"
+          # Label-based exemption left Dependabot PRs red on open (#671, #713).
+          # Its author and diff are fixed when the PR opens; decide from those.
+          DEPENDENCY_UPDATE="$(uv run --locked python scripts/check_changelog_exemption.py --author "$PR_AUTHOR" --base "$BASE_SHA" --head HEAD)"
+          if [ "$DEPENDENCY_UPDATE" = "true" ]; then
+            SKIP_CHANGELOG=true
+          fi
           if [ "$RELEASE_PREPARATION" != "true" ]; then
             if ! git diff --quiet "$BASE_SHA...HEAD" -- CHANGELOG.md; then
               echo 'CHANGELOG.md is assembled only in a release-preparation PR. Add a changelog.d fragment instead.'

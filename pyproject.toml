@@ -61,10 +61,10 @@ dependencies = [
     "polars>=2.0.0",
     "pyarrow>=25.0.1",
     # API integrations
-    "plaid-python>=44.0.0",
+    "plaid-python>=46.0.0",
     "ofxparse>=0.21",
     "requests>=2.34.2",
-    "python-dotenv>=1.2.3",
+    "python-dotenv>=1.2.4",
     # Google Sheets connector (gsheet domain)
     "google-api-python-client>=2.200.0",
     "google-auth>=2.58.0",
@@ -80,7 +80,7 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     "pyyaml>=6.0.3",
     # Modern CLI framework.
-    "typer>=0.27.2",
+    "typer>=0.27.3",
     "tzdata==2026.4",
     "tzlocal==5.4.4",
     # Imported directly by the terminal renderers and progress display.

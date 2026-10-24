@@ -242,9 +242,9 @@ check it before writing a new spec. Milestone status lives in
   [`docs/licensing.md`](docs/licensing.md).
 - **Commits land as authored.** No mandatory squash. Keep the history
   readable.
-- **Dependabot.** Grouped PRs weekly; a human reviews and merges. Its GitHub
-  Actions bumps carry a standing changelog exemption; its Python bumps need a
-  fragment or a reasoned `skip-changelog` like any other PR. See
+- **Dependabot.** Grouped PRs weekly; a human reviews and merges. Its
+  dependency updates carry a standing changelog exemption, recognized from the
+  PR's diff, and release preparation records them once per release. See
   [`changelog.d/README.md`](changelog.d/README.md).
 
 ## What we don't do

@@ -222,6 +222,12 @@ moneybin accounts balance assert <account_id> <date> <amount> [--notes "reason"]
 ```
 - Inserts or updates a row in `app.balance_assertions`
 - Validates `account_id` exists in `dim_accounts`
+- New assertions and unchanged balance/notes write without a prompt. Replacing
+  an existing balance or notes previews the account, date, previous value and
+  replacement, then requires interactive confirmation. `--yes` skips the
+  question, preserving validation. Without an interactive terminal, replacements
+  require `--yes`. The write verifies the exact prior assertion again after
+  confirmation, before changing it.
 
 ```
 moneybin accounts balance list [--account ACCOUNT_ID] [--output json|table]
@@ -232,7 +238,10 @@ moneybin accounts balance list [--account ACCOUNT_ID] [--output json|table]
 moneybin accounts balance assertion-delete <account_id> <date> [--yes]
 ```
 - Removes a manual assertion
-- `--yes` for non-interactive confirmation
+- Existing assertions preview their balance and notes before interactive
+  confirmation; `--yes` skips the question. Missing assertions remain a no-op
+  without a prompt. Non-interactive deletion of an existing assertion requires
+  `--yes`; confirmed deletion verifies the exact prior assertion before writing.
 
 ### `accounts balance reconcile` command
 

@@ -165,7 +165,7 @@ Security-critical parameters (crypto cost factors, key lengths, salt sizes) defi
 ## Security
 
 - **Encryption at rest**: AES-256-GCM on all DuckDB databases. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
-- **No PII or financial data in logs.** The permitted list is `privacy-data-protection.md` §"What CAN appear" — record counts, entity ids, masked identifiers, category labels and institution names, status codes and operation names, and file paths (never file contents). Nothing outside it. One exception: an account label already reduced to its masked form (`****1098`) may appear in a refusal message, because a caller who passed several keys cannot otherwise tell which one was rejected. That mask is digit-pattern based, so it fires only on keys carrying five or more digits — a shorter key reaches the refusal, and the log, verbatim. The same shortfall is accepted on two other surfaces — the account label a person authored, which becomes a display name, and the masked `account_id` in `currency_integrity`'s duplicate-overlap remediation — and `.claude/rules/identifiers.md` → "Account identifiers" carries all three entries with the bound on what each can disclose. Treat that list as closed: a fourth surface is a decision to take, not one to infer from these three.
+- **No PII or financial data in logs.** The permitted list is `privacy-data-protection.md` §"What CAN appear" — record counts, entity ids, masked identifiers, category labels and institution names, status codes and operation names, and file paths (never file contents). Nothing outside it. One exception: a masked account label (`****1234`) in a refusal message — and masking does not make every key safe. The bound and its closed three-surface list live in `.claude/rules/identifiers.md` → "Account identifiers".
 - **Public text is stricter than logs.** Branch names, PR and issue titles and bodies, review comments, and commit messages pass through no sanitizer and are effectively permanent. The log list above does *not* transfer: it permits institution names and masked identifiers, which are exactly what must never identify a real holding in public. See `.claude/rules/branching.md` → "Branch names, PR and issue text, and comments are a public surface".
 - **Parameterized SQL** with `?` placeholders. See `.claude/rules/security.md` for full standards.
 
@@ -179,7 +179,8 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 |------|--------|
 | `security.md` | SQL injection, input validation, XSS, PII, exception wrapping |
 | `database.md` | DuckDB patterns, SQL conventions, schema, column comments |
-| `mcp.md` | Tool taxonomy, response envelope, sensitivity tiers, services |
+| `mcp.md` | Tool taxonomy, response envelope, sensitivity tiers |
+| `services.md` | Service-layer data access, error messages, entity resolution, destructive confirmation |
 | `cli.md` | Typer patterns, error handling, command registration, icons |
 | `testing.md` | Pytest patterns, fixtures, mocking strategy, DB test helpers |
 | `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources |
@@ -190,11 +191,4 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 | `surface-design.md` | Cross-surface operation-shape taxonomy, verb vocabulary, audience layering — loads when touching mcp/cli/services code or the moneybin-mcp/cli/capabilities + mcp-architecture specs |
 | `column-ordering.md` | Column order on every dataset surface: dbt data-type order in `prep`/`core`, grain-first in `reports`, statement order inside the measure block, the SQL projection as the one source consumers read — loads when touching SQLMesh models, report specs, or exports |
 
-### Always loaded (workflow rules)
-
-| Rule | Covers |
-|------|--------|
-| `design-principles.md` | Durable path selection: one-way-door classifier, public-contract trigger list, the agent protocol, coherence rule. Depth — post-launch contract evolution, the milestone addressing scheme (`M{phase}{letter}.{n}` — append, don't reinvent), what it does NOT mean, the ADR bar: `.claude/references/design-principles-depth.md` |
-| `branching.md` | Branch prefix → PR label mapping, commit message style, account PII in public branch, PR, and issue text |
-| `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
-| `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |
+Unscoped rules (`design-principles.md`, `branching.md`, `sandboxing.md`, `agent-experience.md`) load every session.

@@ -220,7 +220,7 @@ Usage: `moneybin accounts balance assert [OPTIONS] {account_id} {assertion_date}
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--notes` | text |  |  |
-| `--yes, -y` | flag |  |  |
+| `--yes, -y` | flag |  | Skip confirmation when replacing an existing assertion |
 
 ## moneybin accounts balance list
 
@@ -254,7 +254,7 @@ Usage: `moneybin accounts balance assertion-delete [OPTIONS] {account_id} {asser
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--yes, -y` | flag |  |  |
+| `--yes, -y` | flag |  | Skip confirmation when deleting an existing assertion |
 
 ## moneybin accounts balance reconcile
 
