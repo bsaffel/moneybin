@@ -18,6 +18,7 @@ from moneybin.connectors.gsheet.adapters.base import (
 )
 from moneybin.connectors.gsheet.connection_service import ConnectResult
 from moneybin.connectors.gsheet.pull_service import PullResult
+from moneybin.database import Database
 from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.payloads.gsheet import GsheetConnectionsPayload
 
@@ -973,6 +974,30 @@ def test_gsheet_list_text_output(mock_build: MagicMock) -> None:
         assert result.exit_code == 0, result.output
         assert "conn_abc123" in result.stdout
         assert "My Budget" in result.stdout
+
+
+@pytest.mark.parametrize("command", ["list", "status"])
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_human_instants_use_saved_calendar(
+    mock_build: MagicMock, command: str, db: Database
+) -> None:
+    from contextlib import nullcontext
+
+    db.execute(
+        "UPDATE app.profile_settings SET reporting_timezone = 'America/New_York'"
+    )
+    connection = replace(
+        _make_connection(), last_success_at="2025-11-02T05:30:00.123456Z"
+    )
+    service = MagicMock()
+    service.list_connections.return_value = [connection]
+    mock_build.return_value.__enter__.return_value = service
+    with patch("moneybin.database.get_database", return_value=nullcontext(db)):
+        result = runner.invoke(app, ["gsheet", command, "--no-pager"])
+    assert result.exit_code == 0, result.output
+    assert "2025-11-02 01:30:00.123456-04:00 [America/New_York]" in " ".join(
+        result.stdout.split()
+    )
 
 
 @pytest.mark.unit

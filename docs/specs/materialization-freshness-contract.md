@@ -119,11 +119,12 @@ such table: its display fields read through and everything else restates.
 | `app.match_decisions` | `RESTATES` |
 | `app.seed_source_priority` | `RESTATES` (seeded from config before every apply) |
 | `app.account_links`, `app.account_link_decisions` | `RESTATES` |
-| `app.account_settings` | `READ_THROUGH`: `display_name`, `official_name`, `last_four`, `account_subtype`, `holder_category`, `credit_limit`, `updated_at`. Every other column `RESTATES` |
+| `app.account_settings` | `READ_THROUGH`: `display_name`, `official_name`, `last_four`, `holder_category`, `credit_limit`, `updated_at`. Every other column `RESTATES` |
 | `app.balance_assertions` | `RESTATES` |
 | `app.securities`, `app.security_links`, `app.security_price_overrides` | `RESTATES` |
 | `app.lot_selections` | `RESTATES` (newly declared as an external model) |
 | `app.exchange_rate_overrides`, `app.profile_settings` | `RESTATES` |
+| `app.utc_upgrade_provenance` | `RESTATES` (fresh bootstrap precedes model builds; offline changes require rebuilding dependent materializations) |
 | `app.audit_log` | `TARGET_SCOPED` |
 | `app.transaction_categories`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` | `READ_THROUGH` |
 | `app.user_categories`, `app.category_overrides`, `app.user_merchants`, `app.category_source_map` | `READ_THROUGH` |
@@ -159,11 +160,21 @@ sources (including the raw `account_label`, `last_four_derived` and
 `official_name` the display ladder needs), plus the restating settings resolved
 onto it: `currency_code` (the override, else the source's), `archived`,
 `include_in_net_worth`, `archived_at`, `default_cost_basis_method`,
-`investment_source_type`, and the four change stamps. Its `updated_at` is
-`GREATEST(loaded_at, <the four change stamps>)`.
+`investment_source_type`, effective `account_type` and `account_subtype`, and
+six change stamps. Type retains `account_type_override` and
+`source_account_type` provenance. Its `updated_at` is
+`GREATEST(loaded_at, <the six change stamps>)`.
+
+Classification affects SimpleFIN transaction and balance eligibility, so type
+and subtype edits both restate from `app.account_settings`. The aware UTC
+`account_type_changed_at` and `account_subtype_changed_at` stamps advance on
+actual edits, clears, merge moves and undo. A repeated value keeps its stamp;
+a display-only rename remains read-through. SimpleFIN eligibility joins the
+materialized base rather than the display dimension, without a reverse
+dependency from account staging onto financial staging.
 
 `core.dim_accounts` keeps its columns, order and comments. It selects the base
-and joins the display ladder, `official_name`, `last_four`, `account_subtype`,
+and joins the display ladder, `official_name`, `last_four`,
 `holder_category` and `credit_limit` from `app.account_settings`. Its
 `updated_at` is `GREATEST(base.updated_at, settings.updated_at)`.
 
@@ -256,12 +267,17 @@ breaks the converse: the timestamp moves at write time and the row does not
 move until the next refresh, so a consumer polling `updated_at > :cursor` sees a
 change that has not happened yet.
 
-- `AccountService.settings_update` stamps `currency_code_changed_at` and
-  `default_cost_basis_method_changed_at` on a real change; repeating the current
+- `AccountService.settings_update` stamps `currency_code_changed_at`,
+  `default_cost_basis_method_changed_at`, `account_type_changed_at` and
+  `account_subtype_changed_at` on a real change; repeating the current
   value is a no-op for the field. A merge stamps the fields it moves, and an
   undo advances them through the settings repo's existing `_CHANGE_STAMPS`
-  mechanism. V075 backfills both from `updated_at`, the value the models folded
-  before, so nothing rewinds.
+  mechanism. V075 backfills the currency and cost-basis stamps from `updated_at`,
+  the value the models folded before, so nothing rewinds. Pending V077 appends
+  the type override and the
+  two aware UTC classification stamps after published V075; historical
+  migrations V001–V075 retain their published definitions. Fresh UTC bootstrap
+  already declares all these instants as `TIMESTAMPTZ`.
 - `FULL` models fold `prep.int_accounts__merged.updated_at` where they folded
   `core.dim_accounts.updated_at`, the merge's `loaded_at` plus the account
   base's stamps where they folded `core.fct_transactions.updated_at`, and

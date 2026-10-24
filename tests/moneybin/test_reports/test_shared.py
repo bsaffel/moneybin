@@ -26,7 +26,7 @@ def test_default_window_year_boundary(now: datetime, expected: tuple[str, str]) 
     # datetime the mock returns.
     with patch("moneybin.reports.definitions._shared.datetime") as mock_dt:
         mock_dt.now.return_value = now
-        assert default_window(12) == expected
+        assert default_window(12, reporting_timezone="UTC") == expected
 
 
 _CLI = ("reports", "test-report")
@@ -36,7 +36,7 @@ def test_resolve_window_defaults_both_bounds() -> None:
     with patch("moneybin.reports.definitions._shared.datetime") as mock_dt:
         mock_dt.now.return_value = datetime(2026, 6, 15, tzinfo=UTC)
         from_month, to_month, period, hint = resolve_window(
-            None, None, report_id="core:test", cli=_CLI
+            None, None, report_id="core:test", cli=_CLI, reporting_timezone="UTC"
         )
     assert (from_month, to_month) == ("2025-07", "2026-06")
     assert period == "2025-07 to 2026-06"
@@ -46,7 +46,7 @@ def test_resolve_window_defaults_both_bounds() -> None:
 
 def test_resolve_window_passes_through_explicit_bounds() -> None:
     from_month, to_month, period, hint = resolve_window(
-        "2024-01", "2024-12", report_id="core:test", cli=_CLI
+        "2024-01", "2024-12", report_id="core:test", cli=_CLI, reporting_timezone="UTC"
     )
     assert (from_month, to_month) == ("2024-01", "2024-12")
     assert period == "2024-01 to 2024-12"
@@ -57,7 +57,7 @@ def test_resolve_window_one_sided_from_only_reports_period() -> None:
     # A single bound still filters; the envelope's period must signal that a
     # temporal filter was applied (was silently None for one-sided windows).
     from_month, to_month, period, hint = resolve_window(
-        "2024-03", None, report_id="core:test", cli=_CLI
+        "2024-03", None, report_id="core:test", cli=_CLI, reporting_timezone="UTC"
     )
     assert (from_month, to_month) == ("2024-03", None)
     assert period == "from 2024-03"
@@ -66,7 +66,7 @@ def test_resolve_window_one_sided_from_only_reports_period() -> None:
 
 def test_resolve_window_one_sided_to_only_reports_period() -> None:
     from_month, to_month, period, hint = resolve_window(
-        None, "2024-09", report_id="core:test", cli=_CLI
+        None, "2024-09", report_id="core:test", cli=_CLI, reporting_timezone="UTC"
     )
     assert (from_month, to_month) == (None, "2024-09")
     assert period == "through 2024-09"
@@ -77,9 +77,20 @@ def test_resolve_window_rejects_malformed_from_month() -> None:
     # "2024-1" (no leading zero) would slip past substr() and silently produce
     # wrong lexicographic window bounds — reject it instead.
     with pytest.raises(ValueError, match="YYYY-MM"):
-        resolve_window("2024-1", None, report_id="core:test", cli=_CLI)
+        resolve_window(
+            "2024-1", None, report_id="core:test", cli=_CLI, reporting_timezone="UTC"
+        )
 
 
 def test_resolve_window_rejects_malformed_to_month() -> None:
     with pytest.raises(ValueError, match="YYYY-MM"):
-        resolve_window(None, "2024/12", report_id="core:test", cli=_CLI)
+        resolve_window(
+            None, "2024/12", report_id="core:test", cli=_CLI, reporting_timezone="UTC"
+        )
+
+
+def test_report_calendar_uses_persisted_zone_at_month_boundary() -> None:
+    assert default_window(
+        reporting_timezone="America/New_York",
+        now=datetime(2026, 3, 1, 0, 30, tzinfo=UTC),
+    ) == ("2025-03", "2026-02")

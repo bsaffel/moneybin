@@ -142,7 +142,7 @@ def test_serialize_for_audit_handles_datetime_decimal_and_none() -> None:
     assert out == {
         "id": "x",
         "amount": "52.30",
-        "created_at": "2026-05-22T12:00:00+00:00",
+        "created_at": "2026-05-22T12:00:00.000000Z",
         "as_of": "2026-05-22",
         "active": True,
         "note": None,

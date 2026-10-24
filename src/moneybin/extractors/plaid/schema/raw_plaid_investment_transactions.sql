@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     account_id VARCHAR NOT NULL,                -- Plaid account_id; foreign key to raw.plaid_accounts
     security_id VARCHAR,                        -- Plaid security_id; NULL for cash-only events (deposit, withdrawal, account fee)
     transaction_date DATE NOT NULL,             -- Plaid date; POSTING date ("typically the settlement date" per Plaid docs) — NOT the trade date; staging derives trade_date
-    transaction_datetime TIMESTAMP,             -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
+    transaction_datetime TIMESTAMPTZ,             -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
     transaction_name VARCHAR,                   -- Plaid name; broker's description of the event
     quantity DECIMAL(28, 10),                   -- Plaid quantity; already signed per ledger convention (+ acquire, − dispose)
     amount DECIMAL(18, 2) NOT NULL,             -- Plaid amount (required field → NOT NULL faithful); CAUTION: positive = cash out (opposite of ledger); staging flips sign and maps basis-unknown transfers (amount 0) to a NULL ledger amount

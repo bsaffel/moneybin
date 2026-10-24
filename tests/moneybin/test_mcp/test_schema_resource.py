@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -48,6 +49,9 @@ def test_resource_schema_returns_valid_json(schema_catalog_db: Database) -> None
     assert isinstance(data["tables"], list)
     assert "conventions" in data
     assert "beyond_the_interface" in data
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", data["generated_at"]
+    )
 
 
 def test_resource_schema_contains_core_interface_tables(

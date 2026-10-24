@@ -11,6 +11,7 @@ import duckdb
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.tables import SEED_PRICE_SOURCE_MAP
 from tests.moneybin.price_model_helpers import ref_kind_mapping as _ref_kind_mapping
 
@@ -656,6 +657,55 @@ def test_a_recycled_key_does_not_claim_the_previous_owners_history(
         ("mb21_recycled_old_security", "2026-07-10"),
         ("mb21_recycled_new_security", "2026-07-20"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("zone", "retired_at"),
+    [
+        ("Asia/Tokyo", "2026-10-19 15:30:00+00"),
+        ("America/Los_Angeles", "2026-10-21 06:30:00+00"),
+    ],
+)
+def test_handover_uses_saved_reporting_calendar(
+    security_price_cases: Database, zone: str, retired_at: str
+) -> None:
+    """Retirement on local October 20 assigns each unchanged price date once."""
+    db = security_price_cases
+    ProfileSettingsRepo(db).set_reporting_timezone(zone, actor="test")
+    for day in ("2026-10-19", "2026-10-20", "2026-10-21"):
+        _insert_price(
+            db, key="calendar_key", close="10", origin="calendar", price_date=day
+        )
+    _accept_link(
+        db,
+        key="calendar_key",
+        canonical_id="old_owner",
+        link_id="calendar_old",
+        decided_on="2026-10-01",
+    )
+    db.execute(
+        """
+        UPDATE app.security_links SET status = 'reversed', reversed_by = 'auto',
+            reversed_at = ?::TIMESTAMPTZ WHERE link_id = 'calendar_old'
+        """,
+        [retired_at],
+    )
+    _accept_link(
+        db,
+        key="calendar_key",
+        canonical_id="new_owner",
+        link_id="calendar_new",
+        decided_on="2026-10-22",
+    )
+
+    expected = [
+        ("old_owner", "2026-10-19"),
+        ("new_owner", "2026-10-20"),
+        ("new_owner", "2026-10-21"),
+    ]
+    assert _owners(db, "calendar") == expected
+    db.execute("SET TimeZone = 'Pacific/Honolulu'")
+    assert _owners(db, "calendar") == expected
 
 
 def test_a_key_retired_twice_resolves_each_interval_once(

@@ -63,34 +63,52 @@ class TestProfileCreate:
     def test_create_success(self, mock_cls: MagicMock) -> None:
         """Non-TTY default: init_inbox=False (safe for scripts)."""
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.create.return_value = Path("/fake/profiles/alice")
         result = runner.invoke(app, ["create", "alice"])
         assert result.exit_code == 0
-        mock_svc.create.assert_called_once_with("alice", init_inbox=False)
+        mock_svc.create.assert_called_once_with(
+            "alice", init_inbox=False, reporting_timezone="UTC"
+        )
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_with_init_inbox_flag(self, mock_cls: MagicMock) -> None:
         """--init-inbox forwards init_inbox=True to the service."""
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.create.return_value = Path("/fake/profiles/alice")
         result = runner.invoke(app, ["create", "alice", "--init-inbox"])
         assert result.exit_code == 0
-        mock_svc.create.assert_called_once_with("alice", init_inbox=True)
+        mock_svc.create.assert_called_once_with(
+            "alice", init_inbox=True, reporting_timezone="UTC"
+        )
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_with_no_init_inbox_flag(self, mock_cls: MagicMock) -> None:
         """--no-init-inbox forwards init_inbox=False explicitly."""
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.create.return_value = Path("/fake/profiles/alice")
         result = runner.invoke(app, ["create", "alice", "--no-init-inbox"])
         assert result.exit_code == 0
-        mock_svc.create.assert_called_once_with("alice", init_inbox=False)
+        mock_svc.create.assert_called_once_with(
+            "alice", init_inbox=False, reporting_timezone="UTC"
+        )
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_duplicate_fails(self, mock_cls: MagicMock) -> None:
         from moneybin.services.profile_service import ProfileExistsError
 
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.create.side_effect = ProfileExistsError("exists")
         result = runner.invoke(app, ["create", "alice"])
         assert result.exit_code == 1
@@ -107,6 +125,9 @@ class TestProfileCreate:
         happened to their data.
         """
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.exists.return_value = True  # bare, unregistered directory
         mock_svc.create.return_value = Path("/fake/profiles/alice")
 
@@ -122,6 +143,9 @@ class TestProfileCreate:
         self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.exists.return_value = False
         mock_svc.create.return_value = Path("/fake/profiles/alice")
 
@@ -142,6 +166,9 @@ class TestProfileCreate:
         would be exactly backwards.
         """
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.exists.return_value = True  # bare directory...
         mock_svc.has_database.return_value = False  # ...with nothing in it
         mock_svc.create.return_value = Path("/fake/profiles/alice")
@@ -158,6 +185,9 @@ class TestProfileCreate:
         self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.exists.return_value = True
         mock_svc.has_database.return_value = True
         mock_svc.create.return_value = Path("/fake/profiles/alice")
@@ -172,6 +202,9 @@ class TestProfileCreate:
     def test_create_activates_the_new_profile(self, mock_cls: MagicMock) -> None:
         """The next command runs against the profile just created, not the old one."""
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.exists.return_value = False
         mock_svc.list.return_value = []
         mock_svc.create.return_value = Path("/fake/profiles/alice")
@@ -189,6 +222,9 @@ class TestProfileCreate:
     ) -> None:
         mock_svc = mock_cls.return_value
         mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
+        mock_svc.exists.return_value = False
         mock_svc.list.return_value = [{"name": "demo", "active": True, "path": "/f"}]
         mock_svc.create.return_value = Path("/fake/profiles/alice")
 
@@ -203,6 +239,9 @@ class TestProfileCreate:
     ) -> None:
         """A read-only user config must not read as a failed create."""
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.exists.return_value = False
         mock_svc.list.return_value = [{"name": "demo", "active": True, "path": "/f"}]
         mock_svc.create.return_value = Path("/fake/profiles/alice")
@@ -224,6 +263,9 @@ class TestProfileCreate:
         from moneybin.services.profile_service import ProfileExistsError
 
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.create.side_effect = ProfileExistsError("exists")
 
         result = runner.invoke(app, ["create", "alice"])
@@ -237,6 +279,9 @@ class TestProfileCreate:
     ) -> None:
         """Not a hardcoded ~/Documents path: MONEYBIN_IMPORT___INBOX_ROOT moves it."""
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.exists.return_value = False
         mock_svc.list.return_value = []
         mock_svc.create.return_value = Path("/fake/profiles/alice")
@@ -267,6 +312,9 @@ class TestProfileList:
         self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.list.return_value = [
             {"name": "alice", "active": True, "path": "/fake"},
             {"name": "bob", "active": False, "path": "/fake"},
@@ -281,6 +329,9 @@ class TestProfileList:
         self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.list.return_value = []
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["list"])
@@ -292,6 +343,9 @@ class TestProfileList:
         self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.list.return_value = [
             {"name": "alice", "active": True, "path": "/fake"},
             {"name": "bob", "active": False, "path": "/fake"},
@@ -308,6 +362,9 @@ class TestProfileSwitch:
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_switch_success(self, mock_cls: MagicMock) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         result = runner.invoke(app, ["switch", "bob"])
         assert result.exit_code == 0
         mock_svc.switch.assert_called_once_with("bob")
@@ -317,6 +374,9 @@ class TestProfileSwitch:
         from moneybin.services.profile_service import ProfileNotFoundError
 
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.switch.side_effect = ProfileNotFoundError("not found")
         result = runner.invoke(app, ["switch", "ghost"])
         assert result.exit_code == 1
@@ -330,6 +390,9 @@ class TestProfileDelete:
         self, mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         monkeypatch.setattr(
             "moneybin.cli.commands.profile.get_terminal_policy", _interactive_policy
         )
@@ -340,6 +403,9 @@ class TestProfileDelete:
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_delete_with_yes_flag(self, mock_cls: MagicMock) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         result = runner.invoke(app, ["delete", "alice", "--yes"])
         assert result.exit_code == 0
         mock_svc.delete.assert_called_once_with("alice")
@@ -349,6 +415,9 @@ class TestProfileDelete:
         self, mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         monkeypatch.setattr(
             "moneybin.cli.commands.profile.get_terminal_policy", _interactive_policy
         )
@@ -361,6 +430,9 @@ class TestProfileDelete:
         from moneybin.services.profile_service import ProfileNotFoundError
 
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.delete.side_effect = ProfileNotFoundError("not found")
         result = runner.invoke(app, ["delete", "ghost", "--yes"])
         assert result.exit_code == 1
@@ -390,6 +462,9 @@ class TestProfileShow:
         self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.show.return_value = {
             "name": "alice",
             "active": True,
@@ -408,6 +483,9 @@ class TestProfileShow:
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_show_named_profile(self, mock_cls: MagicMock) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.show.return_value = {
             "name": "bob",
             "active": False,
@@ -433,6 +511,9 @@ class TestProfileShow:
         from moneybin.services.profile_service import ProfileNotFoundError
 
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.show.side_effect = ProfileNotFoundError("not found")
         with caplog.at_level(logging.ERROR, logger="moneybin.cli.utils"):
             result = runner.invoke(app, ["show", "ghost"])
@@ -445,6 +526,9 @@ class TestProfileShow:
         self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.show.return_value = {
             "name": "alice",
             "active": True,
@@ -465,6 +549,9 @@ class TestProfileSet:
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_set_value(self, mock_cls: MagicMock) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.list.return_value = [{"name": "alice", "active": True, "path": "/f"}]
         result = runner.invoke(app, ["set", "logging.level", "DEBUG"])
         assert result.exit_code == 0
@@ -475,6 +562,9 @@ class TestProfileSet:
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_set_with_explicit_profile(self, mock_cls: MagicMock) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         result = runner.invoke(
             app, ["set", "logging.level", "DEBUG", "--profile", "bob"]
         )
@@ -484,6 +574,9 @@ class TestProfileSet:
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_set_invalid_key_fails(self, mock_cls: MagicMock) -> None:
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.list.return_value = [{"name": "alice", "active": True, "path": "/f"}]
         mock_svc.set.side_effect = ValueError("Key must be section.field")
         result = runner.invoke(app, ["set", "badkey", "value"])
@@ -494,9 +587,44 @@ class TestProfileSet:
         from moneybin.services.profile_service import ProfileNotFoundError
 
         mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.has_database.return_value = False
+        mock_svc.reporting_timezone.return_value = "UTC"
         mock_svc.list.return_value = []
         mock_svc.set.side_effect = ProfileNotFoundError("not found")
         result = runner.invoke(
             app, ["set", "logging.level", "DEBUG", "--profile", "ghost"]
         )
         assert result.exit_code == 1
+
+
+@patch("moneybin.cli.commands.profile.ProfileService")
+def test_interactive_creation_suggests_machine_iana_timezone(
+    mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = mock_cls.return_value
+    service.exists.return_value = False
+    service.has_database.return_value = False
+    service.list.return_value = []
+    service.create.return_value = Path("/fake/profiles/alice")
+    service.reporting_timezone.return_value = "America/New_York"
+    monkeypatch.setattr(
+        "moneybin.cli.commands.profile.get_terminal_policy", _interactive_policy
+    )
+    monkeypatch.setattr("tzlocal.get_localzone_name", lambda: "America/New_York")
+    result = runner.invoke(app, ["create", "alice", "--no-init-inbox"], input="\n")
+    assert result.exit_code == 0, result.output
+    service.create.assert_called_once_with(
+        "alice", init_inbox=False, reporting_timezone="America/New_York"
+    )
+    assert "Reporting timezone" in result.stdout and "America/New_York" in result.stdout
+
+
+def test_timezone_discovery_failure_offers_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    from moneybin.services.profile_settings_service import suggest_reporting_timezone
+
+    def unavailable() -> str:
+        raise ValueError("No IANA key")
+
+    monkeypatch.setattr("tzlocal.get_localzone_name", unavailable)
+    assert suggest_reporting_timezone() == "UTC"

@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS app.rule_conflicts (
     conflict_id VARCHAR PRIMARY KEY, -- Content hash over the conflict's identity ('conf_' + 16 hex of the existing rule, its updated_at, the matcher digest, and the proposed category) so re-detecting the same conflict updates one row
     matcher_digest VARCHAR NOT NULL, -- SHA-256 over the canonical matcher key (pattern, match type, amount bounds, account) shared by both rules; see canonical_matcher_key
     existing_rule_id VARCHAR NOT NULL, -- The active app.categorization_rules row that already owns this matcher
-    existing_rule_updated_at TIMESTAMP NOT NULL, -- The existing rule's updated_at when the conflict was detected; a mismatch against live state means the conflict is stale
+    existing_rule_updated_at TIMESTAMPTZ NOT NULL, -- The existing rule's updated_at when the conflict was detected; a mismatch against live state means the conflict is stale
     existing_name VARCHAR NOT NULL, -- The existing rule's label, so review can name it without a second read
     existing_category VARCHAR NOT NULL, -- Category the existing rule assigns
     existing_subcategory VARCHAR, -- Subcategory the existing rule assigns; NULL when it assigns none
@@ -21,6 +21,6 @@ CREATE TABLE IF NOT EXISTS app.rule_conflicts (
     status VARCHAR NOT NULL DEFAULT 'pending', -- pending until decided; resolved once the user replaced, reprioritized, or cancelled it
     resolution VARCHAR, -- The decision taken: replace, reprioritize, or cancel; NULL while pending
     resolved_rule_id VARCHAR, -- Rule the resolution activated; NULL for cancel and while pending
-    detected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When rule creation refused the proposal and recorded this conflict
-    resolved_at TIMESTAMP -- When the user decided; NULL while pending
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When rule creation refused the proposal and recorded this conflict
+    resolved_at TIMESTAMPTZ -- When the user decided; NULL while pending
 );

@@ -172,6 +172,7 @@ def _create_init_script(db_path: Path) -> Path:
     fd, script_path = tempfile.mkstemp(suffix=".sql", prefix="moneybin_init_")
     try:
         with os.fdopen(fd, "w") as f:
+            f.write("SET GLOBAL TimeZone = 'UTC';\n")
             # DuckDB CLI 1.5.3+ no longer auto-installs httpfs on LOAD; the
             # explicit INSTALL is required for first run on a fresh CLI cache.
             # Subsequent runs are no-ops.
@@ -229,6 +230,7 @@ def db_init(
 
     settings = get_settings()
     db_path = database or settings.database.path
+    existing_database = db_path.exists()
 
     if db_path.exists() and not yes:
         _require_interactive_prompt(
@@ -274,6 +276,11 @@ def db_init(
             )
         raise typer.Exit(1) from e
     typer.echo(f"Encrypted database created: {db_path}")
+    typer.echo(
+        "Existing reporting timezone preserved"
+        if existing_database
+        else "Reporting timezone: UTC"
+    )
     # Record the mode in the profile's config.yaml, which `profile show` and
     # `db info` report. A --database file elsewhere has no profile config to
     # describe it, and an unregistered profile has no config.yaml yet — writing
@@ -744,22 +751,55 @@ def db_restore(
         help="Path to backup file to restore from",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    recover: bool = typer.Option(
+        False,
+        "--recover",
+        help="Reconcile a completed interrupted restore using retained recovery evidence",
+    ),
     latest: bool = typer.Option(
         False,
         "--latest",
         help="Auto-select the most recent backup (non-interactive)",
     ),
 ) -> None:
-    """Restore database from a backup file."""
+    """Restore database from a backup file.
+
+    Before validation, stop other processes and close connections using either
+    the source or destination database. Keep them closed through replacement
+    and any recovery. This offline prerequisite means no other database users,
+    not merely no network connection.
+    """
     from datetime import datetime
 
     from moneybin.config import get_settings
-    from moneybin.database import Database, DatabaseKeyError
+    from moneybin.database import DatabaseKeyError
     from moneybin.secrets import SecretStore
+
+    if recover and (from_path is not None or latest):
+        raise typer.BadParameter("--recover cannot be combined with --from or --latest")
+    if from_path is not None and latest:
+        raise typer.BadParameter("--from cannot be combined with --latest")
 
     settings = get_settings()
     db_path = settings.database.path
     backup_dir = settings.database.backup_path or db_path.parent / "backups"
+
+    if recover:
+        from moneybin.services.database_restore_service import recover_restore
+
+        try:
+            recover_restore(db_path)
+        except KeyboardInterrupt:
+            typer.echo("Restore recovery interrupted; recovery evidence was retained.")
+            raise typer.Exit(130) from None
+        except Exception:
+            typer.echo(
+                "Restore recovery refused; retained recovery evidence must match "
+                "the destination and original backup."
+            )
+            raise typer.Exit(1) from None
+        typer.echo("Restore recovery verified; retained original backup preserved.")
+        return
 
     if from_path is None:
         if not backup_dir.exists():
@@ -808,86 +848,44 @@ def db_restore(
 
     store = SecretStore()
 
-    # Auto-backup current database
-    auto_backup: Path | None = None
-    replacement_started = False
-    database_replaced = False
+    from moneybin.services.database_restore_service import restore_encrypted_database
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+    auto_backup = backup_dir / f"moneybin_{timestamp}_pre_restore.duckdb"
     try:
-        with operation_progress(get_terminal_policy()) as report:
-            if db_path.exists():
-                backup_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-                auto_backup = backup_dir / f"moneybin_{timestamp}_pre_restore.duckdb"
-                report(ProgressEvent("Saving pre-restore backup"))
-                shutil.copy2(str(db_path), str(auto_backup))
-
-            replacement_started = True
-            report(ProgressEvent("Replacing database from backup"))
-            shutil.copy2(str(selected_path), str(db_path))
-            database_replaced = True
-            if sys.platform != "win32":
-                try:
-                    db_path.chmod(0o600)
-                except OSError:
-                    pass
-
-            report(ProgressEvent("Validating restored database"))
-            with Database(db_path, secret_store=store, read_only=True):
-                pass
-        typer.echo(f"Database restored from {selected_path.name}")
+        restore_encrypted_database(
+            selected_path,
+            db_path,
+            secret_store=store,
+            backup_path=auto_backup,
+        )
     except KeyboardInterrupt:
-        saved_state = (
-            f"Pre-restore backup saved at {auto_backup}. "
-            if auto_backup is not None and auto_backup.exists()
-            else "No pre-restore backup was confirmed. "
+        if auto_backup.exists():
+            typer.echo(f"Pre-restore backup saved at {auto_backup}.")
+        typer.echo(
+            "Restore interrupted. The original or verified replacement remains at "
+            "the database path; retained recovery files must be reconciled before retrying."
         )
-        replacement_state = (
-            "Database replacement completed before interruption. "
-            if database_replaced
-            else (
-                "Database replacement may be incomplete. "
-                if replacement_started
-                else "Database replacement did not begin. "
-            )
-        )
-        typer.echo(f"Restore interrupted. {saved_state}{replacement_state}")
         raise typer.Exit(130) from None
     except DatabaseKeyError:
-        saved_state = (
-            f"Pre-restore backup saved at {auto_backup}. "
-            if auto_backup is not None
-            else "No pre-restore backup was needed because no database existed. "
-        )
         typer.echo(
-            f"Database was replaced from {selected_path}. {saved_state}"
-            "Validation could not open it with the current key; it may predate a key "
-            f"rotation. Set {store.env_var_name(KEY_NAME)} to the original key and "
-            "run 'moneybin db key rotate' to re-encrypt."
+            "Restore refused before replacement: the backup requires its original encryption key."
         )
         raise typer.Exit(1) from None
-    except (
-        Exception
-    ):  # duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
-        saved_state = (
-            f"Pre-restore backup saved at {auto_backup}. "
-            if auto_backup is not None
-            else "No pre-restore backup was needed because no database existed. "
-        )
-        if database_replaced:
+    except Exception as exc:
+        from moneybin.temporal_contract import UTCUpgradeRequiredError
+
+        if isinstance(exc, UTCUpgradeRequiredError):
             typer.echo(
-                f"Database was replaced from {selected_path}. {saved_state}"
-                "Validation could not open it; the backup may be corrupted."
-            )
-        elif replacement_started:
-            typer.echo(
-                f"Restore failed. {saved_state}Database replacement may be incomplete; "
-                "validation did not run."
+                "Restore refused before replacement: incompatible old backups require "
+                "a fresh profile or separately arranged offline maintenance."
             )
         else:
             typer.echo(
-                f"Restore failed. {saved_state}Database replacement did not begin."
+                "Restore did not complete. Original/recovery files were retained; inspect the backup and any promotion record before retrying."
             )
         raise typer.Exit(1) from None
+    typer.echo(f"Database restored from {selected_path.name}")
 
 
 @app.command("lock")

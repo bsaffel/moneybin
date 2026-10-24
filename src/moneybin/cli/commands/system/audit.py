@@ -25,6 +25,7 @@ from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
+from moneybin.orchestration.account_mutations import undo_operation
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.audit_service import AuditEvent
 from moneybin.services.undo_service import OperationDetail
@@ -291,7 +292,8 @@ def system_audit_undo(
                 typer.echo("Undo cancelled. No changes were made.")
                 return
         with get_database(read_only=False) as db:
-            result = UndoService(db).undo(
+            result = undo_operation(
+                db,
                 operation_id,
                 actor="cli",
                 expected_audit_ids=expected_audit_ids,

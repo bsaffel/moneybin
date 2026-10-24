@@ -12,8 +12,8 @@ from moneybin.connectors.sync_models import (
     InstitutionResult,
     LinkInitiateResponse,
     LinkStatusResponse,
-    SyncDataResponse,
-    SyncTransaction,
+    PlaidSyncDataResponse,
+    PlaidSyncTransaction,
     SyncTriggerResponse,
 )
 
@@ -63,8 +63,68 @@ def test_link_status_pending() -> None:
     assert resp.provider_item_id is None
 
 
+@pytest.mark.parametrize("provider", ["plaid", "simplefin"])
+@pytest.mark.parametrize("selector", ["missing", None, "", " \t\n", "wrong_provider"])
+def test_linked_status_requires_provider_selector(
+    provider: str, selector: str | None
+) -> None:
+    payload: dict[str, object] = {
+        "session_id": "synthetic",
+        "status": "linked",
+        "provider": provider,
+        "expiration": "2026-10-01T12:00:00Z",
+    }
+    field = "connection_id" if provider == "simplefin" else "provider_item_id"
+    if selector == "wrong_provider":
+        other = "provider_item_id" if provider == "simplefin" else "connection_id"
+        payload[other] = "synthetic-other-selector"
+    elif selector != "missing":
+        payload[field] = selector
+
+    with pytest.raises(ValidationError, match=field):
+        LinkStatusResponse.model_validate(payload)
+
+
+@pytest.mark.parametrize("provider", [None, "plaid", "simplefin"])
+def test_linked_status_preserves_provider_selector(provider: str | None) -> None:
+    field = "connection_id" if provider == "simplefin" else "provider_item_id"
+    identifier = "  synthetic-selector  "
+    payload: dict[str, object] = {
+        "session_id": "synthetic",
+        "status": "linked",
+        field: identifier,
+        "expiration": "2026-10-01T12:00:00Z",
+    }
+    if provider is not None:
+        payload["provider"] = provider
+
+    result = LinkStatusResponse.model_validate(payload)
+
+    assert result.provider == (provider or "plaid")
+    assert getattr(result, field) == identifier
+
+
+@pytest.mark.parametrize("provider", ["plaid", "simplefin"])
+@pytest.mark.parametrize(
+    "status", ["pending", "claiming", "failed", "claim_outcome_unknown"]
+)
+def test_unlinked_status_does_not_require_provider_selector(
+    provider: str, status: str
+) -> None:
+    result = LinkStatusResponse.model_validate({
+        "session_id": "synthetic",
+        "status": status,
+        "provider": provider,
+        "expiration": "2026-10-01T12:00:00Z",
+    })
+
+    assert result.status == status
+    assert result.connection_id is None
+    assert result.provider_item_id is None
+
+
 def test_sync_transaction_preserves_decimal() -> None:
-    txn = SyncTransaction(
+    txn = PlaidSyncTransaction(
         transaction_id="txn_001",
         account_id="acc_001",
         transaction_date=date(2026, 4, 7),
@@ -77,7 +137,7 @@ def test_sync_transaction_preserves_decimal() -> None:
 
 
 def test_sync_transaction_parses_extended_plaid_fields() -> None:
-    txn = SyncTransaction.model_validate({
+    txn = PlaidSyncTransaction.model_validate({
         "transaction_id": "txn_001",
         "account_id": "acc_001",
         "transaction_date": "2026-06-13",
@@ -106,7 +166,7 @@ def test_sync_transaction_parses_extended_plaid_fields() -> None:
 def test_sync_transaction_extended_fields_default_none() -> None:
     # A broker that predates the capture change omits the extended fields; they
     # must default to None rather than failing validation.
-    txn = SyncTransaction(
+    txn = PlaidSyncTransaction(
         transaction_id="t",
         account_id="a",
         transaction_date=date(2026, 6, 13),
@@ -164,7 +224,7 @@ def test_sync_data_response_parses_full_payload() -> None:
             ],
         },
     }
-    parsed = SyncDataResponse.model_validate(payload)
+    parsed = PlaidSyncDataResponse.model_validate(payload)
     assert len(parsed.transactions) == 1
     assert parsed.transactions[0].amount == Decimal("42.50")
     assert parsed.removed_transactions == ["txn_old"]
@@ -218,7 +278,7 @@ def test_removed_transactions_accepts_provider_native_records() -> None:
         },
     }
 
-    parsed = SyncDataResponse.model_validate(payload)
+    parsed = PlaidSyncDataResponse.model_validate(payload)
 
     assert parsed.removed_transactions == ["txn_old"]
 
@@ -244,4 +304,4 @@ def test_removed_transactions_missing_transaction_id_rejects_the_batch() -> None
     }
 
     with pytest.raises(ValidationError):
-        SyncDataResponse.model_validate(payload)
+        PlaidSyncDataResponse.model_validate(payload)

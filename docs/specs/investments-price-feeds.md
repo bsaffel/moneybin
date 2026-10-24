@@ -150,7 +150,7 @@ delete is the whole-partition one a purging sync disconnect performs.
 | `source_origin` | VARCHAR | which connection produced it; `''` for single-tenant feeds |
 | `close` | DECIMAL(28,10) | price of one unit |
 | `price_basis` | VARCHAR | `raw`, `split_adjusted`, `split_and_dividend_adjusted` |
-| `fetched_at` | TIMESTAMP | when the row was observed |
+| `fetched_at` | TIMESTAMPTZ | when the row was observed |
 
 Primary key
 `(source, source_origin, provider_security_key, price_date, quote_currency)`.
@@ -206,7 +206,7 @@ User marks. Written through a `SecurityPriceRepo` per Invariant 10.
 | `quote_currency` | VARCHAR | ISO 4217 |
 | `close` | DECIMAL(28,10) | the user's price |
 | `note` | VARCHAR | why the user set it |
-| `created_at` | TIMESTAMP | |
+| `created_at` | TIMESTAMPTZ | |
 
 Primary key `(security_id, price_date, quote_currency)`. No provider write
 touches this table.
@@ -597,8 +597,8 @@ winner     = first row ordered by
 grain `(security_id, price_date, quote_currency)` — one row per observation date
 — so it resolves competition *within* a date and its ORDER BY therefore leads
 with `source_rank`. The `price_date DESC` half is the as-of pick *across* dates,
-and it belongs to the consumer: `core.dim_holdings` today
-(`price_date <= CURRENT_DATE` ordered `price_date DESC`), `core.fct_holdings_daily`
+and it belongs to the consumer: `core.dim_holdings` on the saved reporting date
+(`price_date <= reporting_today` ordered `price_date DESC`), `core.fct_holdings_daily`
 per spine date in C.3. Reading the pseudocode as one query is what makes the
 first-available floor below look necessary.
 
@@ -798,7 +798,7 @@ The predicate is taken over the very set it filters, so every row satisfies it b
 the definition of `MIN`. The failure it was meant to prevent — "a position held in
 2018 is valued from a 2024 listing price" — requires resolution to reach *forward*
 in time, and bounded lookback already forbids that: `core.dim_holdings` takes
-`price_date <= CURRENT_DATE` ordered `price_date DESC`, so a 2024 row is not a
+`price_date <= reporting_today` ordered `price_date DESC`, so a 2024 row is not a
 candidate for an earlier date at all. A security that listed in 2024 has no row
 on or before any 2018 date, which resolves to `unpriced` — the correct answer —
 without a floor.
@@ -815,6 +815,13 @@ manual valuation for feedless securities.
 ---
 
 ## Staleness and valuation status
+
+For `core.dim_holdings`, the valuation date is today's date in the profile's
+saved `reporting_timezone`, read at query time. The same date bounds price
+eligibility, determines same-day status, and measures calendar-day age. Changing
+the saved timezone can therefore change the eligible price and valuation near
+midnight. Database sessions and instants remain UTC; source business dates are
+not converted. Historical valuations retain their requested as-of date.
 
 Every valued row carries `valuation_status`:
 
@@ -1031,9 +1038,13 @@ keeps `price_date` meaning "value at the end of this date" for crypto exactly as
 it does for every equity close in the table; labelling it by its own date would
 blend a Friday equity close with Thursday-end crypto inside one portfolio total
 and report that row's staleness as zero days. Two costs are accepted
-deliberately: today's crypto is never priced, and a stored row disagrees by one
-day with CoinGecko's own `/history?date=D` page, which labels the same snapshot
-`D`.
+deliberately: the current UTC day's crypto close is never priced, and a stored
+row disagrees by one day with CoinGecko's own `/history?date=D` page, which labels
+the same snapshot `D`.
+
+A completed UTC close can still be dated “today” in a reporting timezone west
+of UTC. It then correctly reports `valued` with age zero; the stored close date
+and the UTC extraction cutoff have not changed.
 
 **Granularity varies with window width, so the adapter pins the boundary point.**
 `days=200` returned points spaced 86,400,000 ms at exact midnight UTC; `days=5`
@@ -1063,7 +1074,8 @@ day while the position is open. Fetching every security ever seen across its ful
 history exhausts provider rate limits on every sync and stores data no report
 reads.
 
-**A refresh never requests today.** `raw.security_prices` is append-only with
+**A refresh never requests the current UTC day.** `raw.security_prices` is
+append-only with
 `on_conflict="ignore"` and `price_date` in its primary key, so the first writer
 owns a date permanently — a midday pull storing an in-progress close makes the
 evening pull carrying the settled close a silent no-op, and that date's valuation

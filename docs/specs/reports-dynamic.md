@@ -126,7 +126,7 @@ number that lands.
 | `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: {from, to, reason}}` — `from` is the derived class the downgrade was approved against (R4) |
 | `class_fingerprint` | `VARCHAR NOT NULL` | Drift key over the derivation inputs (R4) |
 | `is_active` | `BOOLEAN NOT NULL DEFAULT true` | False = archived; hidden from the default catalog |
-| `created_at` / `updated_at` | `TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP` | House convention |
+| `created_at` / `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP` | [Warehouse UTC](warehouse-utc.md); explanation freshness uses canonical machine timestamps and the saved calendar in human output. |
 
 Under [Invariant 10](app-integrity-invariant.md), all mutation routes through
 `UserReportsRepo(BaseRepo)` in `src/moneybin/repositories/` — `create`, `set`,

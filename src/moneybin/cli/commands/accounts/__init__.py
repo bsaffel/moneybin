@@ -43,6 +43,7 @@ from moneybin.cli.utils import (
     generated_cli_command as generated_cli_command,
 )
 from moneybin.database import get_database
+from moneybin.orchestration.account_mutations import update_account_settings
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
@@ -299,6 +300,11 @@ def accounts_set(
     last_four: str | None = typer.Option(
         None, "--last-four", help="Last 4 digits of account number"
     ),
+    account_type: str | None = typer.Option(
+        None,
+        "--type",
+        help="Canonical type override: depository, credit, loan, investment, other",
+    ),
     subtype: str | None = typer.Option(
         None,
         "--subtype",
@@ -344,6 +350,7 @@ def accounts_set(
     clear_official_name: bool = typer.Option(False, "--clear-official-name"),
     clear_last_four: bool = typer.Option(False, "--clear-last-four"),
     clear_subtype: bool = typer.Option(False, "--clear-subtype"),
+    clear_type: bool = typer.Option(False, "--clear-type"),
     clear_holder_category: bool = typer.Option(False, "--clear-holder-category"),
     clear_currency: bool = typer.Option(False, "--clear-currency"),
     clear_credit_limit: bool = typer.Option(False, "--clear-credit-limit"),
@@ -363,7 +370,7 @@ def accounts_set(
 ) -> None:
     """Update account settings (structural + behavioral fields).
 
-    Structural: --official-name, --last-four, --subtype, --holder-category,
+    Structural: --official-name, --last-four, --type, --subtype, --holder-category,
     --currency, --credit-limit, --default-cost-basis-method,
     --investment-source-type (each clearable via --clear-FIELD).
     --default-cost-basis-method must be one of fifo, hifo, specific, average
@@ -391,6 +398,7 @@ def accounts_set(
     _add("official_name", official_name, clear_official_name)
     _add("last_four", last_four, clear_last_four)
     _add("account_subtype", subtype, clear_subtype)
+    _add("account_type", account_type, clear_type)
     _add("holder_category", holder_category, clear_holder_category)
     _add("currency_code", currency, clear_currency)
     _add("display_name", display_name, clear_display_name)
@@ -444,7 +452,8 @@ def accounts_set(
                 Decimal(credit_limit) if credit_limit is not None else None,
                 clear_credit_limit,
             )
-            _, warnings = AccountService(db).settings_update(
+            _, warnings = update_account_settings(
+                db,
                 account_id,
                 actor="cli",
                 **diff,  # type: ignore[arg-type]  # dynamic settings_update kwargs

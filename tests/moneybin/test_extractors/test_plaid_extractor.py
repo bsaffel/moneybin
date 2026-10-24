@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -9,21 +10,30 @@ from pathlib import Path
 import pytest
 import yaml
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.plaid import PlaidExtractor
 
 FIXTURE = Path(__file__).parent / "fixtures" / "plaid_sync_response.yaml"
 
 
+@pytest.fixture(params=["UTC", "America/New_York", "Asia/Tokyo"])
+def host_zone(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TZ", request.param)
+    time.tzset()
+    yield request.param
+    monkeypatch.undo()
+    time.tzset()
+
+
 @pytest.fixture
-def sync_data() -> SyncDataResponse:
+def sync_data() -> PlaidSyncDataResponse:
     with FIXTURE.open() as f:
         payload = yaml.safe_load(f)
-    return SyncDataResponse.model_validate(payload)
+    return PlaidSyncDataResponse.model_validate(payload)
 
 
-def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> None:
+def test_loader_writes_accounts(db: Database, sync_data: PlaidSyncDataResponse) -> None:
     loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
     assert result.accounts_loaded == 2
@@ -46,7 +56,7 @@ def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> No
 
 
 def test_reloading_unchanged_accounts_and_balances_counts_no_changes(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A later job re-sending the same accounts and balances changes nothing."""
     loader = PlaidExtractor(db)
@@ -61,11 +71,11 @@ def test_reloading_unchanged_accounts_and_balances_counts_no_changes(
 
 
 def test_loader_writes_persistent_account_id_and_name(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """Both columns must reach raw, or the wire model's copy dies at the loader.
 
-    ``_ACCOUNTS_SCHEMA`` selects which keys of ``SyncAccount.model_dump()``
+    ``_ACCOUNTS_SCHEMA`` selects which keys of ``PlaidSyncAccount.model_dump()``
     become columns, so declaring the fields on the model is only half the path
     — an unlisted key is dropped again here, just as silently. ``raw`` is where
     a later backfill would have to read them from, and nothing upstream retains
@@ -87,7 +97,7 @@ def test_loader_writes_persistent_account_id_and_name(
 
 
 def test_loader_writes_transactions_preserving_plaid_sign(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
@@ -110,7 +120,7 @@ def test_loader_writes_transactions_preserving_plaid_sign(
 
 
 def test_loader_writes_extended_plaid_fields(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
@@ -143,7 +153,7 @@ def test_loader_writes_extended_plaid_fields(
 
 
 def test_loader_upserts_on_same_transaction_id_and_source_origin(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
@@ -168,7 +178,7 @@ def test_loader_upserts_on_same_transaction_id_and_source_origin(
 
 
 def test_loader_pending_to_posted_transition(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A pending transaction in sync 1, posted (pending=false) in sync 2 → single row, pending=false."""
     loader = PlaidExtractor(db)
@@ -190,7 +200,7 @@ def test_loader_pending_to_posted_transition(
     assert rows[0][0] is False
 
 
-def test_loader_writes_balances(db: Database, sync_data: SyncDataResponse) -> None:
+def test_loader_writes_balances(db: Database, sync_data: PlaidSyncDataResponse) -> None:
     loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
     assert result.balances_loaded == 2
@@ -206,11 +216,11 @@ def test_loader_writes_balances(db: Database, sync_data: SyncDataResponse) -> No
 
 
 def test_loader_writes_the_balance_fields_the_client_used_to_drop(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """All three must reach raw, or the wire model's copy dies one layer later.
 
-    ``_BALANCES_SCHEMA`` selects which keys of ``SyncBalance.model_dump()``
+    ``_BALANCES_SCHEMA`` selects which keys of ``PlaidSyncBalance.model_dump()``
     become columns, and Polars silently ignores a dict key the schema omits — so
     declaring the fields on the model is only half the path, exactly as it was
     for ``persistent_account_id`` above. ``raw`` is where a backfill would read
@@ -224,15 +234,7 @@ def test_loader_writes_the_balance_fields_the_client_used_to_drop(
     worth is covered by ``test_fct_balances_plaid.py``; this test covers only
     whether the column survives the loader.
 
-    ``last_updated_datetime`` is compared to a naive UTC wall clock, the
-    convention its two siblings already use
-    (``raw.plaid_investment_transactions.transaction_datetime`` and
-    ``raw.plaid_investment_holding_lots.original_purchase_datetime``). That the
-    convention actually holds on a machine outside UTC is a separate question
-    from whether the column survives the loader, and
-    ``test_balance_as_of_time_lands_as_a_utc_wall_clock_in_a_non_utc_session``
-    owns it — this assertion cannot tell the two conventions apart, because they
-    agree wherever the session zone is UTC.
+    Provider timestamps retain their absolute instants.
     """
     payload = sync_data.model_copy(deep=True)
     payload.balances = [
@@ -257,28 +259,17 @@ def test_loader_writes_the_balance_fields_the_client_used_to_drop(
         FROM raw.plaid_balances WHERE account_id = 'acc_chase_check'
         """
     ).fetchone()
-    assert row == (Decimal("5000.00"), Decimal("250.00"), datetime(2026, 4, 8, 12, 0))
+    assert row == (
+        Decimal("5000.00"),
+        Decimal("250.00"),
+        datetime(2026, 4, 8, 12, 0, tzinfo=UTC),
+    )
 
 
-def test_balance_as_of_time_lands_as_a_utc_wall_clock_in_a_non_utc_session(
-    db: Database, sync_data: SyncDataResponse
+def test_balance_as_of_time_preserves_instant_in_a_non_utc_session(
+    db: Database, sync_data: PlaidSyncDataResponse, host_zone: str
 ) -> None:
-    """A provider wire datetime stores the UTC wall clock, whatever the zone.
-
-    ``raw.plaid_balances.last_updated_datetime`` is a naive TIMESTAMP, and
-    DuckDB rebases a tz-AWARE value into the session zone on insert. The two
-    other Plaid wire datetimes dodge that by declaring a *naive* Polars dtype
-    and passing the value through ``_utc_naive`` first, so the column holds a
-    UTC wall clock on every machine — see ``test_plaid_investments_loader.py``
-    ``::test_event_timestamps_land_as_utc_wall_clocks_in_a_non_utc_session``.
-    Declaring this one tz-aware instead stores the *writing* machine's local
-    clock, which puts two conventions in one database and would date any later
-    ``::DATE`` derivation a day early west of UTC.
-
-    The session zone is pinned because the defect is invisible under UTC: both
-    conventions store the same wall clock there, so an unpinned assertion would
-    pass on a UTC runner with the bug still in place.
-    """
+    """The offset changes display, never the stored provider instant."""
     db.execute("SET TimeZone = 'America/Los_Angeles'")
     instant = datetime(2026, 3, 10, 1, 30, tzinfo=UTC)  # 2026-03-09 18:30 in LA
     payload = sync_data.model_copy(deep=True)
@@ -298,10 +289,12 @@ def test_balance_as_of_time_lands_as_a_utc_wall_clock_in_a_non_utc_session(
         FROM raw.plaid_balances WHERE account_id = 'acc_chase_check'
         """
     ).fetchone()
-    assert row == (datetime(2026, 3, 10, 1, 30),)
+    assert row == (instant,)
 
 
-def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) -> None:
+def test_handle_removed_transactions(
+    db: Database, sync_data: PlaidSyncDataResponse
+) -> None:
     loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
 
@@ -311,7 +304,9 @@ def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) 
     assert before is not None
     assert before[0] == 1
 
-    deleted = loader.handle_removed_transactions(["txn_001", "nonexistent_id"])
+    deleted = loader.handle_removed_transactions(
+        ["txn_001", "nonexistent_id"], provider_item_ids={"item_chase_abc"}
+    )
     # Method reports the actual rowcount deleted: txn_001 was present, the
     # nonexistent ID was a no-op, so deleted == 1, not len(removed_ids) == 2.
     assert deleted == 1
@@ -325,11 +320,46 @@ def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) 
 
 def test_handle_removed_transactions_empty_list_is_noop(db: Database) -> None:
     loader = PlaidExtractor(db)
-    assert loader.handle_removed_transactions([]) == 0
+    assert loader.handle_removed_transactions([], provider_item_ids=set()) == 0
+
+
+def test_removed_transactions_are_scoped_to_reported_items(
+    db: Database, sync_data: PlaidSyncDataResponse
+) -> None:
+    loader = PlaidExtractor(db)
+    loader.load(sync_data, job_id=sync_data.metadata.job_id)
+    db.execute(
+        """
+        INSERT INTO raw.plaid_transactions
+            (transaction_id, account_id, amount, transaction_date,
+             source_file, source_origin)
+        VALUES ('txn_001', 'other-account', 1, DATE '2026-09-01',
+                'prior', 'other-item')
+        """
+    )
+
+    deleted = loader.handle_removed_transactions(
+        ["txn_001", "nonexistent_id"], provider_item_ids={"item_chase_abc"}
+    )
+
+    assert deleted == 1
+    assert db.execute(
+        """
+        SELECT source_origin FROM raw.plaid_transactions
+        WHERE transaction_id = 'txn_001'
+        """
+    ).fetchall() == [("other-item",)]
+
+
+def test_removed_transactions_require_item_scope(db: Database) -> None:
+    with pytest.raises(ValueError, match="scope"):
+        PlaidExtractor(db).handle_removed_transactions(
+            ["transaction"], provider_item_ids=set()
+        )
 
 
 def test_loader_writes_balance_currency(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     payload = sync_data.model_copy(deep=True)
     payload.balances = [
@@ -359,7 +389,7 @@ def test_loader_writes_balance_currency(
 @pytest.mark.integration
 @pytest.mark.slow
 def test_loader_writes_balance_unofficial_currency(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A balance with only unofficial_currency_code must still land non-NULL.
 

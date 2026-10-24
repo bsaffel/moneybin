@@ -31,10 +31,13 @@ _UPDATED = (
 @pytest.fixture()
 def pre_v075_db(db: Database) -> Database:
     """app.account_settings without the V075 columns, holding three rows."""
-    for column in _NEW_COLUMNS:
-        db.execute(
-            f"ALTER TABLE app.account_settings DROP COLUMN {column}"
-        )  # test fixture, hardcoded column name
+    # Explicit historical catalog; V075 never promised a UTC schema conversion.
+    db.execute("DROP TABLE app.account_settings CASCADE")
+    db.execute("""CREATE TABLE app.account_settings (
+        account_id VARCHAR PRIMARY KEY, display_name VARCHAR,
+        currency_code VARCHAR, default_cost_basis_method VARCHAR,
+        updated_at TIMESTAMP
+    )""")
     insert_rows(
         db,
         "app",
@@ -91,16 +94,11 @@ def test_v075_replay_keeps_existing_stamps(pre_v075_db: Database) -> None:
 
 @pytest.mark.fresh_db
 def test_v075_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
-    """An upgraded table has the same ordered schema as a fresh install."""
+    """Historical V075 preserves already-aware bootstrap columns and their order."""
     fresh_schema = [
         (row[1], row[2])
         for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
     ]
-    for column in _NEW_COLUMNS:
-        db.execute(
-            f"ALTER TABLE app.account_settings DROP COLUMN {column}"
-        )  # test fixture, hardcoded column name
-
     run_migration(db, migrate)
 
     upgraded_schema = [
@@ -108,3 +106,5 @@ def test_v075_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
         for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
     ]
     assert upgraded_schema == fresh_schema
+    stamps = {name: kind for name, kind in upgraded_schema if name in _NEW_COLUMNS}
+    assert stamps == dict.fromkeys(_NEW_COLUMNS, "TIMESTAMP WITH TIME ZONE")

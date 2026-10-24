@@ -18,7 +18,6 @@ currency that spends them lands with the reports surface.
 from __future__ import annotations
 
 import logging
-from datetime import date
 
 import typer
 
@@ -90,19 +89,22 @@ def fx_rate(
     # Parsed before the connection so a typo costs no database open, and so it
     # exits 2 (usage) rather than 1 (the command ran and failed).
     requested = (
-        parse_cli_date(rate_date, "RATE_DATE") if rate_date else date.today()
+        parse_cli_date(rate_date, "RATE_DATE") if rate_date else None
     )  # a calendar date, not an instant
     with handle_cli_errors(cli_actor="fx_rate", payload_type=FxRatePayload):
         # polars is not cold-start cheap
         from moneybin.services.currency_service import (
             build_currency_service,
         )
+        from moneybin.services.profile_settings_service import ProfileSettingsService
 
         # Not read_only: resolving a rate nothing has cached yet fetches it and
         # writes it to raw.exchange_rates, which is the "seed" half of this
         # command. A read-only connection would fail on the first question
         # asked about any new pair.
         with get_database(read_only=False) as db:
+            if requested is None:
+                requested = ProfileSettingsService(db).today()
             service = build_currency_service(db, actor="fx_rate")
             resolved = service.resolve_rate(from_currency, to_currency, requested)
 

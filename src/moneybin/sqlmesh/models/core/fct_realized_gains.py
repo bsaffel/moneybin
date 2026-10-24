@@ -56,7 +56,7 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
         "basis_incomplete": "BOOLEAN",
         "acquisition_date": "DATE",
         "disposal_date": "DATE",
-        "updated_at": "TIMESTAMP",
+        "updated_at": "TIMESTAMPTZ",
     },
     column_descriptions={
         "realized_gain_id": "Content hash of (disposal txn id, lot_id)",
@@ -141,7 +141,7 @@ def execute(
         pa.field("basis_incomplete", pa.bool_()),
         pa.field("acquisition_date", pa.date32()),
         pa.field("disposal_date", pa.date32()),
-        pa.field("updated_at", pa.timestamp("us")),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
     ])
     yield pa.Table.from_pylist(rows, schema=schema).to_pandas(  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list
         types_mapper=pd.ArrowDtype

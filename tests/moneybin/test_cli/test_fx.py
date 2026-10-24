@@ -26,10 +26,12 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.cli.commands.fx import app
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+from moneybin.database import Database
 from moneybin.services.currency_service import (
     RateUnavailableError,
     ResolvedRate,
 )
+from moneybin.services.profile_settings_service import ProfileSettingsService
 
 runner = CliRunner()
 
@@ -144,14 +146,15 @@ class TestFxRate:
     @patch("moneybin.cli.commands.fx.get_database")
     @_patched_resolve(_resolved())
     def test_rate_defaults_to_today_when_no_date_is_given(
-        self, resolve: MagicMock, _db: MagicMock
+        self, resolve: MagicMock, _db: MagicMock, db: Database
     ) -> None:
         """The common question is "what is it worth now", not "on some date"."""
+        _db.return_value.__enter__.return_value = db
         result = runner.invoke(app, ["rate", "USD", "EUR"])
 
         assert result.exit_code == 0
         assert (
-            resolve.call_args.args[2] == date.today()
+            resolve.call_args.args[2] == ProfileSettingsService(db).today()
         )  # a calendar date, not an instant
 
     @patch("moneybin.cli.commands.fx.get_database")

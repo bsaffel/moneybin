@@ -99,7 +99,17 @@ WITH RECURSIVE active_matches AS (
     u.source_account_key,
     u.source_transaction_id,
     u.loaded_at,
-    CASE u.source_type WHEN 'ofx' THEN 0 WHEN 'plaid' THEN 0 WHEN 'manual' THEN 1 ELSE 2 END AS stability_rank
+    CASE u.source_type
+      WHEN 'ofx'
+      THEN 0
+      WHEN 'plaid'
+      THEN 0
+      WHEN 'simplefin'
+      THEN 0
+      WHEN 'manual'
+      THEN 1
+      ELSE 2
+    END AS stability_rank
   FROM match_groups AS mg
   JOIN prep.int_transactions__unioned AS u
     ON u.source_type = mg.source_type
@@ -108,7 +118,7 @@ WITH RECURSIVE active_matches AS (
 ), group_anchor AS (
   /* Anchor = argmin over members of (stability_rank, loaded_at, source_type,
      source_origin, source_account_key, source_transaction_id). Native ids
-     (ofx/plaid, rank 0) outrank minted (manual, rank 1) outrank content-hashed
+     (ofx/plaid/simplefin, rank 0) outrank minted (manual, rank 1) outrank content-hashed
      (csv/tabular/gsheet, rank 2); loaded_at then prefers the earliest-seen
      member. The trailing identity columns make the order total/deterministic. */
   SELECT

@@ -1,5 +1,5 @@
 {
-  "sha256": "fb3ffda8f8fd7cd002c3867ce2c6b7fcf4000c99c433bf06c5812c3105f628ea",
+  "sha256": "025f864689d5f66b7315cb3e758600742dc49009a36a21efc052845d4575f9aa",
   "tool_count": 50,
   "tools": [
     {
@@ -406,7 +406,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average), investment_source_type (manual/plaid picks which investment history feeds the account's ledger; nothing is deleted, clearing it uses both), include_in_net_worth, is_archived. Invalid values raise mutation_invalid_input. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Omitted fields are unchanged; name a text field in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving excludes the account from net worth entirely, history included; include_in_net_worth=False excludes it regardless of archived status. Writes app.account_settings; revert by calling again with prior values. Amounts are in the currency named by `summary.display_currency`.",
+        "description": "Update account settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type: depository/credit/loan/investment/other; subtype unchanged; clear restores source evidence. Noncanonical account_subtype/holder_category values warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid types/methods raise mutation_invalid_input. investment_source_type: manual/plaid selects ledger history; clear uses both; evidence is retained. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not date-scoped. include_in_net_worth=False excludes active accounts too. Audited app.account_settings writes; restore values or use system_audit_undo. Amounts use summary.display_currency.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -414,6 +414,17 @@
               "type": "string"
             },
             "account_subtype": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "account_type": {
               "anyOf": [
                 {
                   "type": "string"
@@ -561,12 +572,12 @@
         "name": "accounts_set",
         "title": "Accounts Set"
       },
-      "description_bytes": 898,
-      "input_schema_bytes": 1118,
+      "description_bytes": 862,
+      "input_schema_bytes": 1194,
       "name": "accounts_set",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 2231
+      "total_bytes": 2271
     },
     {
       "annotation_bytes": 90,
@@ -2656,7 +2667,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Read the active profile's name and managed settings, including its home currency and declared display-currency targets. The home currency is null until the user chooses one; MoneyBin never assumes USD.",
+        "description": "Read the active profile's name and managed settings. Settings include home currency, display-currency targets, and reporting timezone. Home currency is null until the user chooses one; MoneyBin never assumes USD.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {},
@@ -2665,12 +2676,12 @@
         "name": "profile",
         "title": "Profile"
       },
-      "description_bytes": 201,
+      "description_bytes": 212,
       "input_schema_bytes": 62,
       "name": "profile",
       "other_bytes": 77,
       "output_schema_bytes": 0,
-      "total_bytes": 476
+      "total_bytes": 487
     },
     {
       "annotation_bytes": 90,
@@ -2688,7 +2699,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Set the profile's home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing and does not restate accounting. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
+        "description": "Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing directly. Changes restate dependent accounting after commit. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2718,6 +2729,18 @@
               ],
               "default": null,
               "description": "ISO 4217 code, three uppercase letters (USD, EUR, GBP)."
+            },
+            "reporting_timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "IANA calendar for reports and human instant display."
             }
           },
           "type": "object"
@@ -2725,12 +2748,12 @@
         "name": "profile_set",
         "title": "Profile Set"
       },
-      "description_bytes": 267,
-      "input_schema_bytes": 383,
+      "description_bytes": 332,
+      "input_schema_bytes": 534,
       "name": "profile_set",
       "other_bytes": 85,
       "output_schema_bytes": 0,
-      "total_bytes": 872
+      "total_bytes": 1088
     },
     {
       "annotation_bytes": 90,
@@ -3312,7 +3335,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>). core/app/reports declare a class for every column. raw and prep declare 33 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes \u2014 a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
+        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>). core/app/reports declare a class for every column. raw and prep declare 58 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes \u2014 a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3393,11 +3416,22 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection \u2014 required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution. state='absent' also deletes the item's locally pulled raw rows (raw.plaid_* and its prices), reverses its account links, and withdraws merge proposals only its accounts describe; by provider_item_id it also reaches an item the server no longer lists. Confirmed destructive write; run refresh_run afterwards.",
+        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge. ",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "connection_id": {
               "anyOf": [
                 {
                   "type": "string"
@@ -3452,12 +3486,12 @@
         "name": "sync_disconnect",
         "title": "Sync Disconnect"
       },
-      "description_bytes": 701,
-      "input_schema_bytes": 463,
+      "description_bytes": 844,
+      "input_schema_bytes": 540,
       "name": "sync_disconnect",
       "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 1387
+      "total_bytes": 1604
     },
     {
       "annotation_bytes": 90,
@@ -3477,6 +3511,17 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "institution": {
               "anyOf": [
                 {
@@ -3496,6 +3541,21 @@
               ],
               "type": "string"
             },
+            "provider": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "plaid",
+                    "simplefin"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "server_url": {
               "anyOf": [
                 {
@@ -3514,11 +3574,11 @@
         "title": "Sync Link"
       },
       "description_bytes": 587,
-      "input_schema_bytes": 290,
+      "input_schema_bytes": 468,
       "name": "sync_link",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 1086
+      "total_bytes": 1264
     },
     {
       "annotation_bytes": 90,
@@ -3538,6 +3598,32 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "force": {
+              "default": false,
+              "type": "boolean"
+            },
+            "history_start": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "institution": {
               "anyOf": [
                 {
@@ -3548,6 +3634,40 @@
                 }
               ],
               "default": null
+            },
+            "job_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "local_only": {
+              "default": false,
+              "type": "boolean"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "plaid",
+                    "simplefin"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "refresh": {
+              "default": true,
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -3556,11 +3676,11 @@
         "title": "Sync Pull"
       },
       "description_bytes": 221,
-      "input_schema_bytes": 136,
+      "input_schema_bytes": 596,
       "name": "sync_pull",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 566
+      "total_bytes": 1026
     },
     {
       "annotation_bytes": 89,
@@ -5360,5 +5480,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 65423
+  "total_bytes": 66545
 }

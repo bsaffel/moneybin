@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS raw.exchange_rates (
     rate DECIMAL(18, 8) NOT NULL              -- Multiply a from_currency amount by this to get to_currency; (18,8) is the exchange-rate precision in database.md
         CHECK (rate > 0),                     -- A zero or negative rate is never a real quote, and this table is append-only, so a bad row could never be corrected in place
     source_type VARCHAR NOT NULL,             -- Provider only: 'frankfurter' | ...; never 'override', which is a different table. Named source_type to match the canonical provenance column across layers (database.md)
-    loaded_at TIMESTAMP                       -- When this record was inserted locally; the feeds serve no publication timestamp of their own
+    loaded_at TIMESTAMPTZ                       -- When this record was inserted locally; the feeds serve no publication timestamp of their own
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (from_currency, to_currency, rate_date, source_type)
 );

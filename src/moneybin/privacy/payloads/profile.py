@@ -29,6 +29,7 @@ class ProfilePayload:
     """
 
     name: Annotated[str, DataClass.RECORD_ID]
+    reporting_timezone: Annotated[str, DataClass.RECORD_ID]
     home_currency: Annotated[str | None, DataClass.CURRENCY]
     display_currency_targets: Annotated[tuple[str, ...], DataClass.CURRENCY]
 
@@ -37,6 +38,7 @@ class ProfilePayload:
 class ProfileSetPayload:
     """Effective profile settings after one ``profile_set`` mutation."""
 
+    reporting_timezone: Annotated[str, DataClass.RECORD_ID]
     home_currency: Annotated[str | None, DataClass.CURRENCY]
     display_currency_targets: Annotated[tuple[str, ...], DataClass.CURRENCY]
     # The tool's description promises reversal via system_audit_undo; without

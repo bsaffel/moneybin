@@ -93,9 +93,10 @@ def _insert_ofx_row(
         """
         INSERT INTO raw.ofx_transactions (
             source_transaction_id, account_id, transaction_type, date_posted,
+            date_posted_source_date,
             amount, payee, memo, check_number, source_file, extracted_at,
             loaded_at, source_type, source_origin, currency_code, fitid_repaired
-        ) VALUES (?, ?, 'DEBIT', TIMESTAMP '2026-01-15 00:00:00', ?, ?, ?, NULL,
+        ) VALUES (?, ?, 'DEBIT', TIMESTAMP '2026-01-15 00:00:00', DATE '2026-01-15', ?, ?, ?, NULL,
                   ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ofx', ?, 'USD', ?)
         """,  # test input, not user data
         [
@@ -294,9 +295,10 @@ def test_same_id_in_two_files_keeps_only_the_latest_load(db: Database) -> None:
         """
         INSERT INTO raw.ofx_transactions (
             source_transaction_id, account_id, transaction_type, date_posted,
+            date_posted_source_date,
             amount, payee, memo, check_number, source_file, extracted_at,
             loaded_at, source_type, source_origin, currency_code
-        ) VALUES ('X', 'ACC1', 'DEBIT', TIMESTAMP '2026-01-15 00:00:00',
+        ) VALUES ('X', 'ACC1', 'DEBIT', TIMESTAMP '2026-01-15 00:00:00', DATE '2026-01-15',
                   -13.12, 'POSTED', NULL, NULL, 'new.qfx', CURRENT_TIMESTAMP,
                   CURRENT_TIMESTAMP + INTERVAL 1 HOUR, 'ofx', 'chase', 'USD')
         """  # test input, not user data

@@ -10,6 +10,7 @@ inherit identical behavior structurally.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, date, datetime
 
 import duckdb
 import pytest
@@ -24,6 +25,7 @@ from moneybin.privacy.sql_query import (
     validate_read_only_query,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.protocol.envelope import build_envelope
 
 # Every remote URL scheme the read-only validator must reject. Kept in lockstep
 # with the filesystems the connection seal disables (`_DISABLED_FILESYSTEMS` in
@@ -40,6 +42,130 @@ _REMOTE_URL_SCHEMES = [
     "r2://bucket/x.parquet",
     "hf://datasets/user/repo/x.csv",
 ]
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("date_trunc('month', DATE '2026-10-21')", "2026-10-01T00:00:00.000000"),
+        ("TIMESTAMP '2026-10-01 12:34:56.123456'", "2026-10-01T12:34:56.123456"),
+        (
+            "TIMESTAMPTZ '2026-11-01 06:30:00+00' AT TIME ZONE 'America/New_York'",
+            "2026-11-01T01:30:00.000000",
+        ),
+    ],
+)
+def test_sql_wall_time_preserves_computed_clock(
+    populated_db: Database, expression: str, expected: str
+) -> None:
+    result = execute_sql_query(
+        populated_db,
+        f"SELECT {expression} AS wall_time",  # fixed test expressions
+        max_rows=10,
+    )
+    assert result.records == [{"wall_time": expected}]
+
+
+def test_sql_wall_time_nested_values_preserve_instants_dates_and_text(
+    populated_db: Database,
+) -> None:
+    result = execute_sql_query(
+        populated_db,
+        """
+        SELECT [{'wall_time': TIMESTAMP '2026-10-01 00:00:00',
+                 'instant': TIMESTAMPTZ '2026-10-01 00:30:00+02',
+                 'day': DATE '2026-10-01',
+                 'text': '2026-10-01 00:00:00',
+                 'missing': NULL}] AS nested
+        """,
+        max_rows=10,
+    )
+    assert result.records == [
+        {
+            "nested": [
+                {
+                    "wall_time": "2026-10-01T00:00:00.000000",
+                    "instant": datetime(2026, 9, 30, 22, 30, tzinfo=UTC),
+                    "day": date(2026, 10, 1),
+                    "text": "2026-10-01 00:00:00",
+                    "missing": None,
+                }
+            ]
+        }
+    ]
+
+
+def test_sql_wall_time_keeps_critical_column_masked(populated_db: Database) -> None:
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        """
+        SELECT routing_number,
+               TIMESTAMP '2026-10-01 00:00:00' AS wall_time
+        FROM core.dim_accounts
+        """,
+        max_rows=10,
+    )
+    assert result.records == [
+        {
+            "routing_number": "*****",
+            "wall_time": "2026-10-01T00:00:00.000000",
+        }
+    ]
+    assert result.tier is Tier.CRITICAL
+
+
+def test_sql_wall_time_unnamed_struct_preserves_tuple_and_json(
+    populated_db: Database,
+) -> None:
+    result = execute_sql_query(
+        populated_db,
+        """
+        SELECT row(TIMESTAMP '2026-10-01 12:34:56',
+                   TIMESTAMPTZ '2026-10-01 00:30:00+02',
+                   DATE '2026-10-01') AS unnamed
+        """,
+        max_rows=10,
+    )
+    assert result.records == [
+        {
+            "unnamed": (
+                "2026-10-01T12:34:56.000000",
+                datetime(2026, 9, 30, 22, 30, tzinfo=UTC),
+                date(2026, 10, 1),
+            )
+        }
+    ]
+    assert build_envelope(data=result.records).to_dict()["data"] == [
+        {
+            "unnamed": [
+                "2026-10-01T12:34:56.000000",
+                "2026-09-30T22:30:00.000000Z",
+                "2026-10-01",
+            ]
+        }
+    ]
+
+
+@pytest.mark.parametrize("infinity", ["infinity", "-infinity"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_sql_wall_time_does_not_reinterpret_infinite_instants(
+    populated_db: Database, infinity: str, nested: bool
+) -> None:
+    expression = f"TIMESTAMPTZ '{infinity}'"
+    if nested:
+        expression = f"[{{'instant': {expression}}}]"
+    result = execute_sql_query(
+        populated_db,
+        f"SELECT {expression} AS instant",  # fixed test expressions
+        max_rows=10,
+    )
+    sentinel = datetime.max if infinity == "infinity" else datetime.min
+    assert result.records == [
+        {"instant": [{"instant": sentinel}] if nested else sentinel}
+    ]
+    with pytest.raises(ValueError, match="explicit UTC offset"):
+        build_envelope(data=result.records).to_json()
 
 
 @pytest.mark.parametrize("url", _REMOTE_URL_SCHEMES)

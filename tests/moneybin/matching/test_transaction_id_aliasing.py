@@ -17,9 +17,10 @@ shipped model derives rather than ones the test invents.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Generator
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -1468,3 +1469,72 @@ class TestBulkFallbackSharesOneReversedEdgeScan:
             "Expected exactly 1 reversed-edge scan for 2 stale ids in one "
             f"batch, got {len(audit_scan_calls)}"
         )
+
+
+@pytest.mark.unit
+def test_alias_forwarded_undo_uses_temporal_decoder(matched_db: Database) -> None:
+    from tests.moneybin.test_repositories.test_undo_event import legacy_note_policy
+
+    _insert_source_row(
+        matched_db,
+        source_transaction_id="csv_1234",
+        source_type="tabular",
+        source_file="export.csv",
+    )
+    old_id = _canonical_id("tabular", "csv_1234")
+    TransactionNotesRepo(matched_db).add(
+        transaction_id=old_id,
+        note_id="legacy-note",
+        text="historical",
+        actor="cli",
+    )
+    _insert_source_row(
+        matched_db,
+        source_transaction_id="ofx_5678",
+        source_type="ofx",
+        source_file="statement.qfx",
+    )
+    _seed_pending_dedup(matched_db, match_id="match0000009")
+    service = MatchingService(matched_db)
+    service.set_status("match0000009", status="accepted", actor="cli")
+    legacy_note_policy(matched_db)
+    moves = matched_db.execute(
+        "SELECT audit_id, before_value, after_value FROM app.audit_log "
+        "WHERE target_table = 'transaction_notes' AND parent_audit_id IS NOT NULL"
+    ).fetchall()
+    assert moves
+    for audit_id, before, after in moves:
+        images = [
+            json.loads(value) if value is not None else None
+            for value in (before, after)
+        ]
+        for image in images:
+            if image is not None:
+                image["created_at"] = "2024-07-01T12:00:00"
+        matched_db.execute(
+            "UPDATE app.audit_log SET before_value = ?, after_value = ?, "
+            "occurred_at = ? WHERE audit_id = ?",
+            [
+                *[json.dumps(image) if image is not None else None for image in images],
+                datetime(2025, 1, 1, tzinfo=UTC),
+                audit_id,
+            ],
+        )
+    evidence = matched_db.execute(
+        "SELECT audit_id, before_value, after_value FROM app.audit_log "
+        "WHERE target_table = 'transaction_notes' AND parent_audit_id IS NOT NULL "
+        "ORDER BY audit_id"
+    ).fetchall()
+    service.undo("match0000009", actor="cli")
+    assert matched_db.execute(
+        "SELECT transaction_id, created_at FROM app.transaction_notes "
+        "WHERE note_id = 'legacy-note'"
+    ).fetchone() == (old_id, datetime(2024, 7, 1, 16, tzinfo=UTC))
+    assert (
+        matched_db.execute(
+            "SELECT audit_id, before_value, after_value FROM app.audit_log "
+            "WHERE target_table = 'transaction_notes' AND parent_audit_id IS NOT NULL "
+            "ORDER BY audit_id"
+        ).fetchall()
+        == evidence
+    )

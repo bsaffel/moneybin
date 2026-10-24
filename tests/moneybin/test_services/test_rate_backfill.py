@@ -781,6 +781,7 @@ def test_declared_target_stores_the_provider_pair_a_report_names_as_evidence(
                 "amount": Decimal("10.00"),
             }
         ],
+        today=_TODAY,
         classes={
             "txn_date": DataClass.TXN_DATE,
             "currency_code": DataClass.CURRENCY,

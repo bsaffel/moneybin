@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS app.transaction_splits (
     category_id    VARCHAR,                                      -- Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows
     note           VARCHAR,                                      -- Optional per-split note
     ord            INTEGER NOT NULL DEFAULT 0,                   -- Display order; ties broken by split_id
-    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the split was added
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the split was added
     created_by     VARCHAR NOT NULL                              -- 'cli' or 'mcp'
 );
 CREATE INDEX IF NOT EXISTS idx_transaction_splits_txn ON app.transaction_splits(transaction_id);

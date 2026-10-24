@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.account_resolver import AccountResolver
@@ -55,7 +55,7 @@ def test_merchant_entity_id_reaches_merged_not_core() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         # Load Plaid data — the fixture already carries merchant_entity_id.
-        sync_data = SyncDataResponse.model_validate(
+        sync_data = PlaidSyncDataResponse.model_validate(
             yaml.safe_load(_FIXTURE.read_text())
         )
         loader = PlaidExtractor(db)

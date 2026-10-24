@@ -323,9 +323,9 @@ def test_review_position_rejects_an_inversion_spelled_in_two_iso_forms() -> None
 
     cursor = encode_keyset_cursor(
         namespace="reviews",
-        scope={"kind": "matches", "status": "history"},
-        snapshot=("2025-06-01T01:00:00", "dec-a"),
-        after=("2025-06-01 02:00:00", "dec-b"),
+        scope={"kind": "matches", "status": "history", "temporal_contract": 2},
+        snapshot=("2025-06-01T01:00:00Z", "dec-a"),
+        after=("2025-06-01 02:00:00+00:00", "dec-b"),
         total=2,
     )
 
@@ -343,7 +343,7 @@ def test_review_position_keeps_the_empty_timestamp_a_page_can_mint() -> None:
 
     cursor = encode_keyset_cursor(
         namespace="reviews",
-        scope={"kind": "matches", "status": "history"},
+        scope={"kind": "matches", "status": "history", "temporal_contract": 2},
         snapshot=("", "dec-a"),
         after=("", "dec-b"),
         total=2,
@@ -388,57 +388,52 @@ def test_balance_position_rejects_an_inversion_spelled_in_two_iso_forms() -> Non
     assert caught.value.code == "account_balance_cursor_invalid"
 
 
-def test_canonical_iso_timestamp_refuses_an_offset_bearing_value() -> None:
-    """An offset makes the string sort by wall clock rather than by instant.
-
-    `2025-06-01T09:00:00+09:00` is the earlier instant than a naive
-    `2025-06-01 05:00:00`, but sorts after it as text — the same contradiction
-    canonicalizing exists to remove, so the value is refused rather than
-    converted. Every timestamp these walks order is naive.
-    """
+def test_canonical_iso_timestamp_normalizes_offsets_and_refuses_naive() -> None:
+    """Strict awareness and one UTC spelling make temporal text sortable."""
     from moneybin.protocol.pagination import canonical_iso_timestamp
 
-    assert canonical_iso_timestamp("2025-06-01T05:00:00") == "2025-06-01 05:00:00"
-
-    with pytest.raises(ValueError, match="must be naive"):
+    assert (
         canonical_iso_timestamp("2025-06-01T09:00:00+09:00")
+        == "2025-06-01T00:00:00.000000Z"
+    )
+    with pytest.raises(ValueError, match="explicit UTC offset"):
+        canonical_iso_timestamp("2025-06-01T05:00:00")
 
 
-def test_audit_bounds_refuse_an_offset_bearing_timestamp() -> None:
-    """The audit walk refuses an aware cursor rather than reinterpreting it."""
+def test_audit_bounds_normalize_an_offset_bearing_timestamp() -> None:
     from moneybin.mcp.tools.system import (
         _audit_bounds,  # pyright: ignore[reportPrivateUsage]
     )
 
     aware = KeysetPosition(
-        snapshot=("2025-06-01T09:00:00+09:00", "audit-a"),
-        after=("2025-06-01T10:00:00+09:00", "audit-b"),
+        snapshot=("2025-06-01T10:00:00+09:00", "audit-a"),
+        after=("2025-06-01T09:00:00+09:00", "audit-b"),
         total=2,
     )
+    assert _audit_bounds(aware) == (
+        ("2025-06-01T01:00:00.000000Z", "audit-a"),
+        ("2025-06-01T00:00:00.000000Z", "audit-b"),
+    )
 
-    with pytest.raises(ValueError, match="invalid audit cursor"):
-        _audit_bounds(aware)
 
-
-def test_import_position_refuses_an_offset_bearing_timestamp() -> None:
-    """The import walk refuses an aware cursor for the same reason."""
-    from moneybin.errors import UserError
+def test_import_position_normalizes_an_offset_bearing_timestamp() -> None:
     from moneybin.mcp.tools.import_tools import (
         _import_status_position,  # pyright: ignore[reportPrivateUsage]
     )
 
     cursor = encode_keyset_cursor(
         namespace="import_status.imports",
-        scope={"import_id": None, "sections": ["imports"]},
-        snapshot=("2025-06-01T09:00:00+09:00", "imp_a", 1),
-        after=("2025-06-01T10:00:00+09:00", "imp_b", 1),
+        scope={"import_id": None, "sections": ["imports"], "temporal_contract": 2},
+        snapshot=("2025-06-01T10:00:00+09:00", "imp_a", 2),
+        after=("2025-06-01T09:00:00+09:00", "imp_b", 2),
         total=2,
     )
-
-    with pytest.raises(UserError) as caught:
-        _import_status_position(cursor, sections=["imports"])
-
-    assert caught.value.code == "import_cursor_invalid"
+    position = _import_status_position(cursor, sections=["imports"])
+    assert position == KeysetPosition(
+        snapshot=("2025-06-01T01:00:00.000000Z", "imp_a", 2),
+        after=("2025-06-01T00:00:00.000000Z", "imp_b", 2),
+        total=2,
+    )
 
 
 def test_canonicalize_keyset_element_fails_closed_on_a_short_key() -> None:
@@ -487,3 +482,99 @@ def test_balance_position_refuses_a_short_forged_key() -> None:
         )
 
     assert caught.value.code == "account_balance_cursor_invalid"
+
+
+def test_temporal_cursor_offset_equivalence_and_ties() -> None:
+    """Equivalent instant keys keep their id tie-breaker across every page."""
+    from types import SimpleNamespace
+
+    from moneybin.mcp.tools.reviews import (
+        _review_page,  # pyright: ignore[reportPrivateUsage]
+        _review_position,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    rows = [
+        SimpleNamespace(created_at="2026-10-01T09:00:00-04:00", decision_id="a"),
+        SimpleNamespace(created_at="2026-10-01T13:00:00.000000Z", decision_id="b"),
+        SimpleNamespace(created_at="2026-10-01T13:00:00.1Z", decision_id="c"),
+    ]
+    position = None
+    seen: list[str] = []
+    while True:
+        page, cursor = _review_page(
+            rows, kind="matches", status="history", limit=1, position=position
+        )
+        seen.extend(row.decision_id for row in page)
+        if cursor is None:
+            break
+        position = _review_position(cursor, kind="matches", status="history")
+        assert position is not None
+        minted = decode_keyset_cursor(
+            cursor,
+            namespace="reviews",
+            scope={"kind": "matches", "status": "history", "temporal_contract": 2},
+        )
+        assert position == minted
+    assert seen == ["c", "a", "b"]
+
+
+@pytest.mark.parametrize("surface", ["audit", "imports", "reviews"])
+def test_legacy_temporal_cursor_requires_restart(surface: str) -> None:
+    """Legacy timestamp scopes cannot silently continue under UTC ordering."""
+    from moneybin.errors import UserError
+    from moneybin.mcp.tools.import_tools import (
+        _import_status_position,  # pyright: ignore[reportPrivateUsage]
+    )
+    from moneybin.mcp.tools.reviews import (
+        _review_position,  # pyright: ignore[reportPrivateUsage]
+    )
+    from moneybin.mcp.tools.system import (
+        _audit_position,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    namespaces = {
+        "audit": ("system_audit", {"view": "events"}),
+        "imports": (
+            "import_status.imports",
+            {"import_id": None, "sections": ["imports"]},
+        ),
+        "reviews": ("reviews", {"kind": "matches", "status": "history"}),
+    }
+    namespace, scope = namespaces[surface]
+    key = (
+        ("2026-10-01 13:00:00", "a", 2)
+        if surface == "imports"
+        else ("2026-10-01 13:00:00", "a")
+    )
+    cursor = encode_keyset_cursor(
+        namespace=namespace, scope=scope, snapshot=key, after=key, total=2
+    )
+    with pytest.raises((ValueError, UserError), match="[Rr]estart"):
+        if surface == "audit":
+            _audit_position(cursor, "events")
+        elif surface == "imports":
+            _import_status_position(cursor, sections=["imports"])
+        else:
+            _review_position(cursor, kind="matches", status="history")
+
+
+@pytest.mark.parametrize(
+    "kind,key", [("categorization", ("2026-10-01", "a")), ("auto_rules", ("a",))]
+)
+def test_noninstant_review_cursor_keeps_legacy_scope(
+    kind: str, key: tuple[str, ...]
+) -> None:
+    from typing import Any, cast
+
+    from moneybin.mcp.tools.reviews import (
+        _review_position,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    cursor = encode_keyset_cursor(
+        namespace="reviews",
+        scope={"kind": kind, "status": "pending"},
+        snapshot=key,
+        after=key,
+        total=2,
+    )
+    assert _review_position(cursor, kind=cast(Any, kind), status="pending") is not None

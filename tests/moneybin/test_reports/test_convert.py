@@ -110,6 +110,7 @@ def test_converts_a_money_column_at_the_rows_own_date(saved_db: Database) -> Non
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -152,6 +153,7 @@ def test_a_home_converted_column_is_priced_exactly_once(saved_db: Database) -> N
         service=service,
         columns=_HOME_BASIS_COLUMNS,
         home_currency="USD",
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -186,6 +188,7 @@ def test_a_home_basis_column_prices_into_a_third_currency(saved_db: Database) ->
         service=service,
         columns=_HOME_BASIS_COLUMNS,
         home_currency="USD",
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -220,6 +223,7 @@ def test_a_home_basis_column_without_a_home_currency_segments(
         to_currency="USD",
         service=service,
         columns=_HOME_BASIS_COLUMNS,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -247,6 +251,7 @@ def test_a_malformed_home_currency_segments_rather_than_guessing(
         service=service,
         columns=_HOME_BASIS_COLUMNS,
         home_currency="Dollars",
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is not None
@@ -281,6 +286,7 @@ def test_an_all_null_home_basis_projection_converts_without_a_home_currency(
         columns=_HOME_BASIS_COLUMNS,
         # No home_currency: the profile has none set, which is the documented
         # nullable state — not a caller omission.
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -306,6 +312,7 @@ def test_converted_rows_report_the_display_currency_not_the_original(
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.records[0]["currency_code"] == "USD"
@@ -327,6 +334,7 @@ def test_a_converted_row_carries_the_rate_that_priced_it(saved_db: Database) -> 
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert len(outcome.applied_rates) == 1
@@ -354,6 +362,7 @@ def test_one_applied_rate_per_currency_and_date_however_many_rows(
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert len(outcome.records) == 3
@@ -379,6 +388,7 @@ def test_a_row_already_in_the_target_names_no_applied_rate(saved_db: Database) -
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency == "USD"
@@ -404,6 +414,7 @@ def test_a_converted_row_records_the_currency_it_started_in(
         semantics=_semantics(),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert [row[ORIGINAL_CURRENCY_COLUMN] for row in outcome.records] == ["EUR", "GBP"]
@@ -422,6 +433,7 @@ def test_a_segmented_report_records_no_original_currency(saved_db: Database) -> 
         semantics=_semantics(),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -438,6 +450,7 @@ def test_rows_already_in_the_target_record_no_original_currency(
         semantics=_semantics(),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert outcome.applied_rates == ()
@@ -462,6 +475,7 @@ def test_a_mixed_report_names_only_the_rate_it_actually_applied(
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert len(outcome.records) == 2
@@ -483,6 +497,7 @@ def test_a_segmented_report_names_no_applied_rate(saved_db: Database) -> None:
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -501,6 +516,7 @@ def test_non_money_columns_are_left_alone(saved_db: Database) -> None:
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.records[0]["txn_count"] == 3
@@ -523,6 +539,7 @@ def test_a_row_already_in_the_target_currency_needs_no_stored_rate(
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -547,6 +564,7 @@ def test_an_uncovered_pair_segments_instead_of_raising(saved_db: Database) -> No
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -567,6 +585,7 @@ def test_one_unconvertible_row_segments_the_whole_result(saved_db: Database) -> 
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -596,6 +615,7 @@ def test_a_non_finite_amount_segments_rather_than_being_priced(
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -623,6 +643,7 @@ def test_a_row_dated_in_a_market_closure_prices_at_the_publication_before_it(
         semantics=_semantics(),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -649,6 +670,7 @@ def _missing_eur_reason(db: Database) -> str:
         semantics=_semantics(),
         to_currency="USD",
         service=CurrencyService(db),
+        today=date(2026, 10, 16),
     )
     assert outcome.degraded_reason is not None
     return outcome.degraded_reason
@@ -749,6 +771,7 @@ def test_the_reason_names_no_date(saved_db: Database) -> None:
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is not None
@@ -766,6 +789,7 @@ def test_a_row_with_no_currency_is_never_guessed(saved_db: Database) -> None:
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -791,6 +815,7 @@ def test_a_malformed_currency_code_segments_rather_than_raising(
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -817,6 +842,7 @@ def test_a_malformed_currency_code_stays_out_of_the_reason(
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is not None
@@ -834,6 +860,7 @@ def test_a_report_that_declares_no_fx_date_segments(saved_db: Database) -> None:
         semantics=_semantics(fx_date=None),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.display_currency is None
@@ -866,6 +893,7 @@ def test_a_report_that_cannot_be_priced_gives_its_own_declared_reason(
         semantics=_semantics(fx_date=None, fx_basis=basis),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason == basis
@@ -885,6 +913,7 @@ def test_a_report_declaring_no_basis_at_all_says_that_much(
         semantics=_semantics(fx_date=None, fx_basis=None),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is not None
@@ -902,6 +931,7 @@ def test_a_report_with_no_money_columns_is_not_degraded(saved_db: Database) -> N
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -928,6 +958,7 @@ def test_a_placeholder_row_holding_no_amount_is_not_degraded(
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -952,6 +983,7 @@ def test_a_report_with_no_rows_names_no_currency(saved_db: Database) -> None:
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -974,6 +1006,7 @@ def test_a_monthly_grain_prices_at_the_month_close(saved_db: Database) -> None:
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -996,6 +1029,7 @@ def test_a_month_that_is_not_a_month_segments(saved_db: Database) -> None:
         semantics=_semantics(),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is not None
@@ -1041,7 +1075,9 @@ def test_a_failed_conversion_keeps_the_currency_the_rows_are_actually_in(
     """
     service = CurrencyService(saved_db)
 
-    converted = convert_execution(_execution(), to_currency="USD", service=service)
+    converted = convert_execution(
+        _execution(), to_currency="USD", service=service, today=date(2026, 10, 16)
+    )
 
     assert converted.degraded_reason is not None
     assert converted.display_currency == "EUR"
@@ -1054,7 +1090,9 @@ def test_a_successful_conversion_reports_the_currency_it_converted_into(
     _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
     service = CurrencyService(saved_db)
 
-    converted = convert_execution(_execution(), to_currency="USD", service=service)
+    converted = convert_execution(
+        _execution(), to_currency="USD", service=service, today=date(2026, 10, 16)
+    )
 
     assert converted.degraded_reason is None
     assert converted.display_currency == "USD"
@@ -1086,6 +1124,7 @@ def test_a_callback_that_drops_rows_corrects_the_reported_total(
         ),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert len(converted.records) == 1
@@ -1117,6 +1156,7 @@ def test_a_callback_that_keeps_every_row_leaves_the_total_alone(
         ),
         to_currency="USD",
         service=service,
+        today=date(2026, 10, 16),
     )
 
     assert len(converted.records) == 2
@@ -1304,7 +1344,9 @@ def test_a_converted_execution_carries_its_rates_onward(saved_db: Database) -> N
     _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
     service = CurrencyService(saved_db)
 
-    converted = convert_execution(_execution(), to_currency="USD", service=service)
+    converted = convert_execution(
+        _execution(), to_currency="USD", service=service, today=date(2026, 10, 16)
+    )
 
     assert converted.display_currency == "USD"
     assert [rate.from_currency for rate in converted.applied_rates] == ["EUR"]
@@ -1328,6 +1370,7 @@ def test_derived_columns_are_restated_only_when_a_conversion_happened(
         _execution(on_converted=_restate),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
     assert seen == []
 
@@ -1336,6 +1379,7 @@ def test_derived_columns_are_restated_only_when_a_conversion_happened(
         _execution(on_converted=_restate),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
     assert seen == ["USD"]
 
@@ -1353,7 +1397,10 @@ def test_a_converted_execution_declares_the_original_currency_column(
     _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
 
     converted = convert_execution(
-        _execution(), to_currency="USD", service=CurrencyService(saved_db)
+        _execution(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert ORIGINAL_CURRENCY_COLUMN in converted.columns
@@ -1373,7 +1420,10 @@ def test_the_original_currency_column_sits_beside_the_currency_it_records(
     _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
 
     converted = convert_execution(
-        _execution(), to_currency="USD", service=CurrencyService(saved_db)
+        _execution(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert converted.columns == [
@@ -1408,7 +1458,10 @@ def test_a_converted_row_serialises_in_the_declared_column_order(
     _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
 
     converted = convert_execution(
-        _execution(), to_currency="USD", service=CurrencyService(saved_db)
+        _execution(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert converted.records
@@ -1421,7 +1474,10 @@ def test_an_unconverted_execution_declares_no_original_currency_column(
 ) -> None:
     """A segmented result keeps exactly the columns its report declared."""
     converted = convert_execution(
-        _execution(), to_currency="USD", service=CurrencyService(saved_db)
+        _execution(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert converted.display_currency == "EUR"
@@ -1465,6 +1521,7 @@ def test_mixed_unit_report_refuses_display_repricing_without_relabelling(
         execution,
         to_currency="GBP",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert converted.records == execution.records
@@ -1498,6 +1555,7 @@ def test_rows_already_in_the_target_are_not_treated_as_a_conversion(
         ),
         to_currency="USD",
         service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
     )
 
     assert converted.display_currency == "USD"
@@ -1783,7 +1841,9 @@ def test_the_cap_drops_the_rate_that_priced_only_a_discarded_row(
         pending_limit=1,
     )
 
-    converted = convert_execution(execution, to_currency="USD", service=service)
+    converted = convert_execution(
+        execution, to_currency="USD", service=service, today=date(2026, 10, 16)
+    )
     assert {rate.from_currency for rate in converted.applied_rates} == {"EUR", "GBP"}
 
     capped = truncate_execution(converted)
@@ -1812,7 +1872,9 @@ def test_a_row_naming_no_original_currency_keeps_every_rate(
         pending_limit=1,
     )
 
-    converted = convert_execution(execution, to_currency="USD", service=service)
+    converted = convert_execution(
+        execution, to_currency="USD", service=service, today=date(2026, 10, 16)
+    )
     converted.records[0][ORIGINAL_CURRENCY_COLUMN] = None
 
     capped = truncate_execution(converted)
@@ -1857,7 +1919,11 @@ def test_the_cap_drops_a_home_rate_that_priced_only_a_discarded_row(
     )
 
     converted = convert_execution(
-        execution, to_currency="USD", service=service, home_currency="GBP"
+        execution,
+        to_currency="USD",
+        service=service,
+        home_currency="GBP",
+        today=date(2026, 10, 16),
     )
     assert {
         (rate.from_currency, rate.requested_date) for rate in converted.applied_rates
@@ -1914,7 +1980,9 @@ def test_the_cap_narrows_when_a_home_basis_column_is_declared_but_unused(
         # No home currency: the profile has none set, and no row needs one.
     )
 
-    converted = convert_execution(execution, to_currency="USD", service=service)
+    converted = convert_execution(
+        execution, to_currency="USD", service=service, today=date(2026, 10, 16)
+    )
     assert converted.degraded_reason is None
     assert {rate.from_currency for rate in converted.applied_rates} == {"EUR", "GBP"}
 
@@ -1948,6 +2016,7 @@ def test_a_null_home_basis_value_does_not_demand_a_home_rate(
         service=service,
         columns=_HOME_BASIS_COLUMNS,
         home_currency="GBP",
+        today=date(2026, 10, 16),
     )
 
     assert outcome.degraded_reason is None
@@ -1955,3 +2024,10 @@ def test_a_null_home_basis_value_does_not_demand_a_home_rate(
     assert outcome.records[0]["amount"] == Decimal("109.00")
     assert outcome.records[0]["amount_home"] is None
     assert {rate.from_currency for rate in outcome.applied_rates} == {"EUR"}
+
+
+def test_month_rate_date_uses_resolved_report_calendar() -> None:
+    from moneybin.reports._framework.convert import _rate_date  # pyright: ignore[reportPrivateUsage]  # shared pricing calendar boundary
+
+    assert _rate_date("2026-03", today=date(2026, 2, 28)) == date(2026, 2, 28)
+    assert _rate_date(date(2026, 3, 1), today=date(2026, 2, 28)) == date(2026, 3, 1)

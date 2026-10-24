@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     fees DECIMAL(18, 2),                                -- Commissions/fees component; folded into cost basis
     currency_code VARCHAR,                              -- Denominating currency as supplied; NULL when the user named none (never fabricated) — core.fct_investment_transactions inherits the account's
     description VARCHAR,                                -- Free-text description
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by VARCHAR NOT NULL,                        -- 'cli' or 'mcp'; future-extensible for multi-user identity
     investment_transaction_id VARCHAR                   -- Predicted gold-key (content hash, per raw.manual_transactions.transaction_id precedent); populated at INSERT
 );

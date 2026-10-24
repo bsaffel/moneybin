@@ -17,8 +17,8 @@ CREATE TABLE IF NOT EXISTS app.merchant_link_decisions (
     decided_by VARCHAR NOT NULL                -- auto | user (decisions are initiated by auto-categorization or user review; system-harvested backfills write bindings to app.merchant_links directly, never a decision row)
         CHECK (decided_by IN ('auto', 'user')),
     match_reason VARCHAR,                      -- short human reason (e.g. signal name)
-    decided_at TIMESTAMP NOT NULL,
-    reversed_at TIMESTAMP,
+    decided_at TIMESTAMPTZ NOT NULL,
+    reversed_at TIMESTAMPTZ,
     reversed_by VARCHAR
         CHECK (reversed_by IS NULL OR reversed_by IN ('auto', 'user')),
     PRIMARY KEY (decision_id)

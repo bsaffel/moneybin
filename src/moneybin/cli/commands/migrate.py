@@ -13,7 +13,12 @@ from moneybin.cli.output import (
     quiet_option,
 )
 from moneybin.cli.progress import operation_progress
-from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.render import (
+    build_rows,
+    build_summary,
+    compose_human_result,
+    format_instant,
+)
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import classify_user_error
@@ -25,6 +30,7 @@ from moneybin.migrations import (
     sqlmesh_state_drift,
 )
 from moneybin.progress import ProgressEvent
+from moneybin.protocol.envelope import serialize_payload
 
 app = typer.Typer(help="Database migration management", no_args_is_help=True)
 
@@ -242,7 +248,7 @@ def migrate_status(
                     "sqlmesh_state_drift": sqlmesh_drift,
                     "versions": versions,
                 }
-                typer.echo(json.dumps(payload, indent=2, default=str))
+                typer.echo(json.dumps(serialize_payload(payload), indent=2))
                 return
 
             pairs: list[tuple[str, object]] = [
@@ -260,6 +266,9 @@ def migrate_status(
                 (f"Version {component}", version)
                 for component, version in sorted(versions.items())
             )
+            from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+            reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
             policy = get_terminal_policy(no_pager=no_pager)
             parts: list[object] = [
                 build_summary(
@@ -280,7 +289,10 @@ def migrate_status(
                         [
                             (
                                 f"V{migration.version:03d}",
-                                str(migration.applied_at),
+                                format_instant(
+                                    migration.applied_at,
+                                    reporting_timezone=reporting_timezone,
+                                ),
                                 (
                                     f"{migration.filename} "
                                     f"({'success' if migration.success else 'failed'})"

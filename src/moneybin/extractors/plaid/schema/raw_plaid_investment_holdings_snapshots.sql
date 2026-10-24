@@ -16,9 +16,9 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
     transactions_window_start DATE NOT NULL,  -- Per-item metadata.transactions_window_start, mirrored from the holdings rows this accounts for. Also stored on raw.plaid_investment_holdings, but that table is EMPTY for exactly the item that reported nothing — so a consumer asking "when did this item's window open" for a liquidated broker has nowhere else to read it. NOT NULL holds because the receipt is written iff the server declared a window.
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
+    extracted_at TIMESTAMPTZ                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
         DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+    loaded_at TIMESTAMPTZ                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
     ingestion_sequence BIGINT NOT NULL DEFAULT nextval('raw.investment_ingestion_sequence'), -- Local first-ingestion ordering, preserved on replay
     PRIMARY KEY (source_origin, source_file)

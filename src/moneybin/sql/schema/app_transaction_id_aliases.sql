@@ -6,6 +6,6 @@
 CREATE TABLE IF NOT EXISTS app.transaction_id_aliases (
     old_transaction_id VARCHAR NOT NULL,       -- the superseded transaction_id (forwards from)
     new_transaction_id VARCHAR NOT NULL,       -- the current canonical transaction_id (forwards to)
-    created_at TIMESTAMP NOT NULL,             -- when this alias was recorded
+    created_at TIMESTAMPTZ NOT NULL,             -- when this alias was recorded
     PRIMARY KEY (old_transaction_id)
 );

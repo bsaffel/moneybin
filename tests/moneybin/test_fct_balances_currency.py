@@ -84,12 +84,22 @@ def _insert_ofx_balance(
     db.execute(
         """
         INSERT INTO raw.ofx_balances
-            (account_id, statement_end_date, ledger_balance, ledger_balance_date,
+            (account_id, statement_end_date, statement_end_source_date,
+             ledger_balance, ledger_balance_date, ledger_balance_source_date,
              source_file, extracted_at, source_type, source_origin, currency_code)
-        VALUES (?, ?::TIMESTAMP, ?::DECIMAL(18, 2), ?::TIMESTAMP, ?,
+        VALUES (?, ?::TIMESTAMP, ?::DATE, ?::DECIMAL(18, 2), ?::TIMESTAMP, ?::DATE, ?,
                 CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
         """,  # test fixture, not executing user SQL
-        [account_id, on_date, balance, on_date, source_file, currency_code],
+        [
+            account_id,
+            on_date,
+            on_date,
+            balance,
+            on_date,
+            on_date,
+            source_file,
+            currency_code,
+        ],
     )
 
 
@@ -106,12 +116,13 @@ def _insert_ofx_transaction_on(
         """
         INSERT INTO raw.ofx_transactions
             (source_transaction_id, account_id, transaction_type, date_posted,
+             date_posted_source_date,
              amount, payee, source_file, extracted_at, source_type,
              source_origin, currency_code)
-        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DECIMAL(18, 2), 'Test Payee',
+        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DATE, ?::DECIMAL(18, 2), 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
         """,  # test fixture, not executing user SQL
-        [txn_id, account_id, on_date, amount, currency_code],
+        [txn_id, account_id, on_date, on_date, amount, currency_code],
     )
 
 

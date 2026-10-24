@@ -134,6 +134,11 @@ Usage: `moneybin db backup [OPTIONS]`
 
 Restore database from a backup file.
 
+Before validation, stop other processes and close connections using either
+the source or destination database. Keep them closed through replacement
+and any recovery. This offline prerequisite means no other database users,
+not merely no network connection.
+
 Usage: `moneybin db restore [OPTIONS]`
 
 **Options**
@@ -142,6 +147,7 @@ Usage: `moneybin db restore [OPTIONS]`
 |---|---|---|---|
 | `--from` | path |  | Path to backup file to restore from |
 | `--yes, -y` | flag |  | Skip confirmation prompt |
+| `--recover` | flag |  | Reconcile a completed interrupted restore using retained recovery evidence |
 | `--latest` | flag |  | Auto-select the most recent backup (non-interactive) |
 
 ## moneybin db lock

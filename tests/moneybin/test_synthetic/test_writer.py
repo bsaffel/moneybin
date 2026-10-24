@@ -76,6 +76,22 @@ def _make_result(
 class TestSyntheticWriter:
     """Test writing generated data to raw tables."""
 
+    def test_ofx_source_dates_preserve_generated_calendar(self, db: Database) -> None:
+        from moneybin.synthetic.writer import SyntheticWriter
+
+        SyntheticWriter(db).write(_make_result())
+        db.execute("SET TimeZone = 'America/Los_Angeles'")
+        assert db.execute(
+            "SELECT date_posted_source_date FROM raw.ofx_transactions"
+        ).fetchone() == (date(2024, 1, 15),)
+        assert (
+            db.execute(
+                "SELECT statement_start_source_date, statement_end_source_date, "
+                "ledger_balance_source_date FROM raw.ofx_balances"
+            ).fetchone()
+            == (date(2023, 12, 31),) * 3
+        )
+
     def test_write_ofx_account(self, db: Database) -> None:
         from moneybin.synthetic.writer import SyntheticWriter
 
@@ -418,3 +434,33 @@ class TestSyntheticWriter:
             "Writer produced Float columns for monetary fields; "
             f"expected pl.Decimal: {float_violations}"
         )
+
+
+@pytest.mark.parametrize("host_zone", ["UTC", "America/New_York", "Asia/Tokyo"])
+def test_synthetic_writer_preserves_utc_instants(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    host_zone: str,
+) -> None:
+    import time
+    from datetime import UTC, datetime
+
+    from moneybin.synthetic.writer import SyntheticWriter
+
+    monkeypatch.setenv("TZ", host_zone)
+    time.tzset()
+    try:
+        before = datetime.now(UTC)
+        SyntheticWriter(db).write(_make_result())
+        row = db.execute(
+            "SELECT extracted_at, loaded_at, date_posted, amount "
+            "FROM raw.ofx_transactions"
+        ).fetchone()
+        assert row is not None
+        assert before <= row[0] <= datetime.now(UTC)
+        assert before <= row[1] <= datetime.now(UTC)
+        assert row[2] == datetime(2024, 1, 15, tzinfo=UTC)
+        assert row[3] == Decimal("-42.50")
+    finally:
+        monkeypatch.undo()
+        time.tzset()

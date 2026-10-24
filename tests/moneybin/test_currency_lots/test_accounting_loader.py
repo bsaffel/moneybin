@@ -7,7 +7,7 @@ import hashlib
 import json
 import typing as t
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pandas as pd
@@ -20,11 +20,11 @@ from moneybin.tables import TableRef
 pytestmark = pytest.mark.unit
 
 D = Decimal
-T1 = datetime(2026, 1, 1, 10)
-T2 = datetime(2026, 2, 1, 10)
-T3 = datetime(2026, 3, 1, 10)
-T4 = datetime(2026, 4, 1, 10)
-T5 = datetime(2026, 5, 1, 10)
+T1 = datetime(2026, 1, 1, 10, tzinfo=UTC)
+T2 = datetime(2026, 2, 1, 10, tzinfo=UTC)
+T3 = datetime(2026, 3, 1, 10, tzinfo=UTC)
+T4 = datetime(2026, 4, 1, 10, tzinfo=UTC)
+T5 = datetime(2026, 5, 1, 10, tzinfo=UTC)
 
 
 def _conversion(**changes: object) -> sqlmesh_loader.CurrencyConversionRow:
@@ -1337,7 +1337,7 @@ def test_transfer_position_watermarks_exclude_unequal_same_currency_decision(
             audit_id, occurred_at, actor, action, target_schema, target_table,
             target_id, before_value, after_value, operation_id
         ) VALUES (
-            'audit-unequal', '2026-03-02 00:00:00'::TIMESTAMP,
+            'audit-unequal', '2026-03-02 00:00:00+00:00'::TIMESTAMPTZ,
             'test', 'match.reverse', 'app', 'match_decisions',
             'unequal-same-currency', ?::JSON, ?::JSON, 'op-unequal'
         )

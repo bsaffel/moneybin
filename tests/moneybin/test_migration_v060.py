@@ -17,6 +17,11 @@ def test_legacy_transactions_and_receipts_preserve_all_values(db: Database) -> N
         "moneybin.sql.migrations.V060__investment_observation_receipts"
     ).migrate
     db.execute("DROP TABLE raw.plaid_investment_transactions")
+    for column in ("extracted_at", "loaded_at"):
+        db.execute(
+            "ALTER TABLE raw.plaid_investment_transaction_receipts "
+            f"ALTER COLUMN {column} TYPE TIMESTAMP"  # closed fixture column list
+        )
     db.execute("""CREATE TABLE raw.plaid_investment_transactions (
         investment_transaction_id VARCHAR NOT NULL, account_id VARCHAR NOT NULL,
         security_id VARCHAR, transaction_date DATE NOT NULL,
@@ -78,6 +83,12 @@ def test_legacy_transactions_and_receipts_preserve_all_values(db: Database) -> N
         row["provider_item_id"] = row.pop("source_origin")
         row.pop("observation_version")
         row.pop("source_type")
+        # These synthetic legacy wall clocks are explicitly known to be UTC.
+        # The current extractor preserves their historical digest representation.
+        if row["transaction_datetime"] is not None:
+            row["transaction_datetime"] = row["transaction_datetime"].replace(
+                tzinfo=UTC
+            )
         transactions.append(SyncInvestmentTransaction.model_validate(row))
     PlaidExtractor(db)._load_investment_transactions(  # pyright: ignore[reportPrivateUsage]
         transactions, "sync_redelivery", datetime.now(UTC), datetime.now(UTC)
@@ -94,6 +105,12 @@ def test_legacy_holdings_receipts_backfill_prior_deterministic_order(
     migrate = importlib.import_module(
         "moneybin.sql.migrations.V060__investment_observation_receipts"
     ).migrate
+    # Reconstruct the historical pre-V060 clock types before replaying V060.
+    for column in ("extracted_at", "loaded_at"):
+        db.execute(
+            "ALTER TABLE raw.plaid_investment_holdings_snapshots "
+            f"ALTER COLUMN {column} TYPE TIMESTAMP"  # closed fixture column list
+        )
     db.execute(
         "ALTER TABLE raw.plaid_investment_holdings_snapshots DROP COLUMN ingestion_sequence"
     )

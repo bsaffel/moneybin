@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS app.budget_rollovers (
     budget_id VARCHAR NOT NULL REFERENCES app.budgets(budget_id),
     month VARCHAR NOT NULL,          -- YYYY-MM
     rollover_amount DECIMAL(18, 2),  -- positive = unspent, negative = overspent
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 ```
 

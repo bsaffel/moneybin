@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS app.ai_consent_grants (
     feature_category VARCHAR NOT NULL, -- AI flow category: mcp-data-sharing, smart-import-parsing, ml-categorization, matching-overview (free string; per-tool granularity deferred)
     backend VARCHAR NOT NULL, -- AI backend this consent applies to (e.g. anthropic, openai, ollama); consent is per (feature_category, backend)
     consent_mode VARCHAR NOT NULL CHECK (consent_mode IN ('persistent', 'one-time')), -- persistent: survives sessions until revoked; one-time: single authorized use
-    granted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the user granted this consent
-    revoked_at TIMESTAMP, -- When revoked; NULL while active. Revoked rows are retained for audit history.
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the user granted this consent
+    revoked_at TIMESTAMPTZ, -- When revoked; NULL while active. Revoked rows are retained for audit history.
     grant_prompt TEXT NOT NULL -- Exact consent text the user saw and agreed to (source of truth for "what did I consent to?"); not surfaced in read payloads
 );

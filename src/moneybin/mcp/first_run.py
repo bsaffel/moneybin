@@ -38,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 _ELICIT_PROMPT = (
     "MoneyBin isn't set up yet. What would you like to name your profile? "
-    "(For example, your first name — it labels your local data store.)"
+    "(For example, your first name — it labels your local data store.) "
+    "New profiles use reporting timezone UTC; change it later with "
+    "profile_set(reporting_timezone='America/New_York'). Existing profiles keep their saved timezone."
 )
 _SETUP_HINT = (
     "Run 'moneybin profile create <name>' in a terminal, then reconnect the MCP server."

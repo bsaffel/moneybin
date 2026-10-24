@@ -512,7 +512,7 @@ def test_display_name_honors_a_user_subtype_override(
 def test_genuinely_null_plaid_type_stays_null(account_type_cases: Database) -> None:
     """A NULL Plaid account_type is distinct from an unmapped one — both stay NULL.
 
-    `SyncAccount.account_type` is `str | None`, so NULL is reachable rather than
+    `PlaidSyncAccount.account_type` is `str | None`, so NULL is reachable rather than
     hypothetical. Defaulting it to any placeholder would let the balance pass
     fct_balances' `NOT account_type IS NULL` guard and book un-negated as an
     asset. Pairs with test_unmapped_plaid_type_resolves_to_null_not_a_default:
@@ -572,3 +572,55 @@ def test_blank_plaid_text_fields_normalize_to_null(
     assert "  " not in row[3] and not row[3].startswith(" "), (
         f"display_name is malformed: {row[3]!r}"
     )
+
+
+@pytest.mark.slow
+def test_type_override_projects_provenance_clear_and_undo(
+    account_type_cases: Database,
+) -> None:
+    from moneybin.services.account_service import CLEAR, AccountService
+    from moneybin.services.mutation_context import operation
+    from moneybin.services.undo_service import UndoService
+
+    db = account_type_cases
+    account_id = _case_id("ofx_checking")
+    service = AccountService(db)
+    with operation() as override_op:
+        service.settings_update(account_id, actor="cli", account_type="credit")
+    assert _dim_type(db, account_id) == ("credit", "checking")
+    for account in (
+        service.get_account(account_id),
+        next(
+            row for row in service.list_accounts().rows if row.account_id == account_id
+        ),
+    ):
+        assert account is not None
+        assert account.account_type == "credit"
+        assert account.account_type_override == "credit"
+        assert account.source_account_type == "depository"
+    with operation() as clear_op:
+        service.settings_update(account_id, actor="cli", account_type=CLEAR)
+    assert _dim_type(db, account_id) == ("depository", "checking")
+    cleared = service.get_account(account_id)
+    assert cleared is not None and cleared.account_type_override is None
+    UndoService(db).undo(clear_op, actor="cli")
+    assert _dim_type(db, account_id) == ("credit", "checking")
+    UndoService(db).undo(override_op, actor="cli")
+    assert _dim_type(db, account_id) == ("depository", "checking")
+    assert db.execute(
+        "SELECT DISTINCT account_type FROM raw.ofx_accounts WHERE account_id = ?",
+        [_case_id("ofx_checking_native")],
+    ).fetchall() == [("CHECKING",)]
+
+
+@pytest.mark.slow
+def test_broad_override_does_not_invent_a_supported_subtype(
+    account_type_cases: Database,
+) -> None:
+    from moneybin.services.account_service import AccountService
+
+    account_id = _case_id("plaid_null")
+    AccountService(account_type_cases).settings_update(
+        account_id, actor="cli", account_type="depository"
+    )
+    assert _dim_type(account_type_cases, account_id) == ("depository", None)

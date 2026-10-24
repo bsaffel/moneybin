@@ -32,14 +32,16 @@ def _insert_ofx_transaction(
         """
         INSERT INTO raw.ofx_transactions
             (source_transaction_id, account_id, transaction_type, date_posted,
+             date_posted_source_date,
              amount, payee, source_file, extracted_at, source_type,
              source_origin, currency_code, to_amount, to_currency)
-        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DECIMAL(18,2), 'Test Payee',
+        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DATE, ?::DECIMAL(18,2), 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?, ?, ?)
         """,  # test fixture, not executing user SQL
         [
             txn_id,
             account_id,
+            transaction_date,
             transaction_date,
             amount,
             currency_code,

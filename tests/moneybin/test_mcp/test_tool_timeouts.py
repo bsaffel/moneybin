@@ -25,6 +25,71 @@ def _ok_envelope() -> ResponseEnvelope[Any]:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("tool_name", ["accounts_set", "system_audit_undo"])
+async def test_account_processing_uses_the_bounded_long_workflow_deadline(
+    monkeypatch: pytest.MonkeyPatch, tool_name: str
+) -> None:
+    from contextlib import nullcontext
+
+    from moneybin.database import Database
+    from moneybin.mcp.tools.accounts import accounts_set
+    from moneybin.mcp.tools.system import system_audit_undo
+    from moneybin.services.account_service import AccountSettings
+    from moneybin.services.undo_service import UndoResult
+
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def database_context(*, read_only: bool) -> nullcontext[Database]:
+        assert read_only is False
+        return nullcontext(MagicMock(spec=Database))
+
+    def finish_workflow(
+        *_args: object, **_kwargs: object
+    ) -> tuple[AccountSettings, list[dict[str, str]]] | UndoResult:
+        started.set()
+        try:
+            assert release.wait(timeout=5.0)
+            if tool_name == "accounts_set":
+                return AccountSettings(account_id="account", account_type="credit"), []
+            return UndoResult("op_undo", "op_original", 1, ["account_settings"])
+        finally:
+            finished.set()
+
+    monkeypatch.setattr("moneybin.database.get_database", database_context)
+    monkeypatch.setattr("moneybin.mcp.tools.accounts.get_database", database_context)
+    call: asyncio.Task[ResponseEnvelope[Any]]
+    if tool_name == "accounts_set":
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.accounts.update_account_settings", finish_workflow
+        )
+        call = asyncio.create_task(
+            accounts_set(account_id="account", account_type="credit")
+        )
+    else:
+        monkeypatch.setattr(
+            "moneybin.orchestration.account_mutations.undo_operation", finish_workflow
+        )
+        call = asyncio.create_task(system_audit_undo("op_original"))
+    try:
+        assert await asyncio.to_thread(started.wait, 5.0)
+        # Hold the workflow past the ordinary cap without waiting 30 seconds.
+        await asyncio.sleep(0.1)
+    finally:
+        release.set()
+    result = await call
+    assert await asyncio.to_thread(finished.wait, 5.0)
+    assert result.error is None
+    data = result.to_dict()["data"]
+    if tool_name == "accounts_set":
+        assert data["account_type"] == "credit"
+    else:
+        assert data["undo_operation_id"] == "op_undo"
+
+
+@pytest.mark.unit
 async def test_sync_tool_under_cap_passes_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

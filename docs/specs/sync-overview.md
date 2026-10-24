@@ -16,9 +16,9 @@ Sync is MoneyBin's framework for pulling financial data from external providers 
 
 Three commitments, in order:
 
-1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The client never knows which aggregator backs a connection — that's a server implementation detail.
+1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The broker owns upstream requests and credentials; the client consumes the negotiated provider-tagged response for provider-native Raw ingestion.
 2. **Provider-specific raw schemas.** Each provider gets its own raw tables that preserve the provider's native data shape. No generic "sync schema" that forces every provider into a least-common-denominator format. The data warehouse layers (prep → core) handle homogenization through staging views and `UNION ALL`.
-3. **Financial-grade security.** E2E encryption is designed into the protocol from day one. v1 ships with TLS + encrypted-at-rest (acceptable baseline). v2 adds full zero-knowledge encryption where the server cannot read financial data, even under subpoena. The `EncryptionBackend` abstraction supports algorithm upgrades (X25519 → hybrid post-quantum) without protocol changes.
+3. **Financial-grade security.** Current broker contracts use JSON over TLS and encryption at rest; the broker can read credentials and financial payloads while processing them. Broker envelope `contract_version=2` adds provider batches and acknowledgement semantics, not E2E encryption. The E2E/`EncryptionBackend` material below remains the unimplemented Phase 3 design; its legacy “v2” labels describe that future encryption phase, not the current broker envelope version.
 
 ## Target users
 
@@ -57,7 +57,7 @@ Server behavior is documented in the moneybin-sync project. The client treats th
 - Staging views and core model integration per provider
 - Provider-specific testing strategies (e.g., Plaid Sandbox)
 
-These live in provider child specs: [`sync-plaid.md`](sync-plaid.md) (first provider), future `sync-simplefin.md`, `sync-mx.md`, etc.
+These live in provider child specs: [`sync-plaid.md`](sync-plaid.md) (first provider), [SimpleFIN](sync-simplefin.md) (in-progress), future `sync-mx.md`, etc.
 
 ---
 
@@ -339,7 +339,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
 | `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
 | `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
-| `moneybin sync disconnect --institution NAME \| --provider-item-id ID [--purge]` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink). Local rows are kept by default. `--purge` previews, then also deletes every row the item pulled (`raw.plaid_*` and its `raw.security_prices` observations, scoped by `source_origin`), reverses the item's accepted `app.account_links`, and rejects pending merge proposals that only its accounts still describe; with `--provider-item-id` it also reaches an item the server no longer lists, which is the orphan a plain disconnect leaves behind (the server still has to answer: the by-item lookup asks it first, and an unreachable server fails the plan before any local row is read). The server call runs first, so a remote failure changes nothing and a local failure before the delete commits leaves a re-runnable orphan, with the error naming the `provider_item_id` to re-run with. Once the delete commits, the purge restates the materialized models the deleted rows feed (a warehouse that was never built has nothing to restate); if that rebuild fails, the purge has still completed and the error names `moneybin refresh` as the next step |
+| `moneybin sync disconnect --institution NAME \| --provider-item-id ID \| --connection-id ID [--purge]` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink). Local rows are kept by default. Purge is supported only for Plaid; SimpleFIN purge is refused before disconnect or local mutation. `--purge` previews, then also deletes every row the item pulled (`raw.plaid_*` and its `raw.security_prices` observations, scoped by `source_origin`), reverses the item's accepted `app.account_links`, and rejects pending merge proposals that only its accounts still describe; with `--provider-item-id` it also reaches an item the server no longer lists, which is the orphan a plain disconnect leaves behind (the server still has to answer: the by-item lookup asks it first, and an unreachable server fails the plan before any local row is read). The server call runs first, so a remote failure changes nothing and a local failure before the delete commits leaves a re-runnable orphan, with the error naming the `provider_item_id` to re-run with. Once the delete commits, purge restates the materialized models the deleted rows feed; a warehouse that was never built has nothing to restate. If the rebuild fails, the purge remains committed and the error names `moneybin refresh` as the recovery step |
 | `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger a server-completed sync, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
 
@@ -429,7 +429,7 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 | `sync_pull` | Trigger a bank data sync, wait for completion, and load results | `institution: str \| None` |
 | `sync_status` | Show connected institutions and health, inspect one link session, or advance one device-login session | `session_id: str \| None` or `auth_session_id: str \| None` (mutually exclusive) |
 | `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`, `server_url: str \| None` (login only); returns session URL or device credentials |
-| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `provider_item_id: str \| None` (mutually exclusive), `mode: "institution" \| "logout"`, `state: "disconnected" \| "absent"` (institution mode only; `absent` purges local rows), `confirmation_token: str \| None` |
+| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `provider_item_id: str \| None`, `connection_id: str \| None` (exactly one selector for institution mode), `mode: "institution" \| "logout"`, `state: "disconnected" \| "absent"` (institution mode only; `absent` purges Plaid local rows; SimpleFIN is refused), `confirmation_token: str \| None` |
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
@@ -454,22 +454,29 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
   `sync_status(auth_session_id=...)`.
 - Disconnecting an institution is a two-call confirmation flow. First call
   `sync_disconnect(mode="institution", institution=<institution>)` (or
-  `provider_item_id=<id>` from `sync_status` to target one exact connection
+  `connection_id=<id>` or `provider_item_id=<id>` from `sync_status` to target
+  one exact connection
   when the institution has more than one, e.g. after a relink); when it
   returns `confirmation_required`, retry the same call with
   `confirmation_token=<token>`. The confirmation message and binding name
-  the exact connection being removed.
+  the exact connection, credential generation, and complete account identity
+  set being removed.
 - `sync_disconnect(mode="institution", state="absent", ...)` is the purging
-  form, the mediated twin of the Google Sheets purge (`state="absent"` on
-  `gsheet_disconnect`) in its confirmation flow. The same two-call flow
-  applies, and the binding carries the per-table row counts,
-  the link ids, and the proposal ids the purge will touch, so a pull that
+  form for Plaid only; SimpleFIN purge is refused before mutation. The same
+  two-call flow applies, and the binding carries the credential generation,
+  complete account identity set, per-table row counts, link ids, and proposal
+  ids the purge will touch, so a pull that
   lands between preview and confirm changes the digest and the confirm is
   refused. The response reports `status="purged"`, `rows_deleted`, and
   `account_links_reversed`; `institution` is `null` when the server no longer
-  listed the item and only its local rows were removed. The server still has
-  to answer for that orphan, because the by-item lookup asks it before any
+  listed the item and only its local rows were removed. Remote revocation is
+  reported from the broker response; orphan-only cleanup has no newly observed
+  revocation result. The server still has to answer for that orphan, because
+  the by-item lookup asks it before any
   local row is read.
+  After the delete commits, purge restates the affected materialized models.
+  Rebuild failure preserves the committed purge and directs `moneybin refresh`;
+  successful purge needs no separate refresh action.
 - Clear profile-scoped credentials with `sync_disconnect(mode="logout")`. Logout
   does not accept `institution`, `confirmation_token`, or `state="absent"`.
 - Provider-specific operations remain abstracted behind the provider-agnostic
@@ -488,6 +495,11 @@ No additional sync-specific read tools are needed. Once data is pulled and trans
 ---
 
 ## E2E encryption design
+
+This is the unimplemented Phase 3 design. Its legacy “v2” labels describe a
+future encryption phase, separate from the current broker envelope
+`contract_version=2`, which uses JSON over TLS and encryption at rest while
+remaining readable by the broker.
 
 ### Threat model
 
@@ -739,10 +751,12 @@ The client's response models in `src/moneybin/connectors/sync_models.py` are nam
 | `SyncTransaction.amount` | positive = expense (Plaid convention). The MoneyBin sign flip lives in `prep.stg_plaid__transactions`, NOT in the extractor or model. |
 | `SyncTransaction.category` | single flat string. We're collapsing Plaid's `personal_finance_category.primary` + `.detailed` somewhere in the server pipeline. |
 | `SyncTransaction.merchant_name` | populated by Plaid's merchant enrichment. SimpleFIN doesn't send this; OFX/MX use different sources. |
-| `SyncTransaction.pending` | meaningful (Plaid models pending → posted transitions). SimpleFIN doesn't surface pending. |
+| `SyncTransaction.pending` | meaningful (Plaid models pending → posted transitions). SimpleFIN also exposes optional pending rows; its approved child contract excludes them from the posted ledger. |
 | `SyncMetadata.institutions[].provider_item_id` | one item per institution per response — matches Plaid's item model. |
 
 The names suggest provider-agnostic; the contents don't.
+
+**SimpleFIN decision.** [M1G.5](sync-simplefin.md) retains the mediated boundary and selects Option B with an explicitly negotiated broker envelope, provider-specific batches, and durable per-scope acknowledgement. The implementation uses explicitly negotiated contract-v2 provider batches, provider-owned Raw ingestion and local completeness evidence; deployment and non-author live acceptance remain separate gates in the child spec.
 
 **Two paths when provider #2 lands.**
 
@@ -870,7 +884,7 @@ Phase 1 of this spec maps to **M1G — Plaid Transactions sync** in [`docs/roadm
 | Provider | Child spec | Status | Notes |
 |---|---|---|---|
 | Plaid | [`sync-plaid.md`](sync-plaid.md) | implemented | First provider. Transactions product shipped; investments is a separate implemented child. Liabilities remains a separate future child. |
-| SimpleFIN | `sync-simplefin.md` | Planned | Alternative aggregator used by Actual Budget. Lower coverage but no per-institution fees. |
+| SimpleFIN | [sync-simplefin.md](sync-simplefin.md) | In-progress | M1G.5: mediated cash/credit sync, pinned protocol versions, bounded history, durable acknowledgement and visible partial coverage; deployment and Early Access live acceptance remain open. |
 | MX | `sync-mx.md` | Planned | Enterprise-grade aggregator. Potential alternative to Plaid for hosted tier. |
 
 Adding a provider requires a child spec, the four artifacts from the

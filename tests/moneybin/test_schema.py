@@ -84,7 +84,11 @@ def test_reopen_reuses_schema_comment_plans(
     db_path = tmp_path / "moneybin.duckdb"
     schema._COMMENT_PLAN_CACHE.clear()  # pyright: ignore[reportPrivateUsage]  # cache internals under test
 
-    with patch.object(schema.sqlglot, "parse", wraps=schema.sqlglot.parse) as parse:
+    with patch.object(
+        schema,
+        "_derive_comment_plan",
+        wraps=schema._derive_comment_plan,  # pyright: ignore[reportPrivateUsage]  # isolate comment parsing from the independently cached UTC inventory
+    ) as derive:
         db = Database(
             db_path,
             secret_store=mock_secret_store,
@@ -92,6 +96,8 @@ def test_reopen_reuses_schema_comment_plans(
             read_only=False,
         )
         db.close()
+        first_open_count = derive.call_count
+        assert first_open_count == len(schema._all_schema_files())  # pyright: ignore[reportPrivateUsage]  # source list under test
         db = Database(
             db_path,
             secret_store=mock_secret_store,
@@ -100,7 +106,7 @@ def test_reopen_reuses_schema_comment_plans(
         )
         db.close()
 
-    assert parse.call_count == len(schema._all_schema_files())  # pyright: ignore[reportPrivateUsage]  # source list under test
+    assert derive.call_count == first_open_count
 
 
 def _provider_classes_by_schema_dir() -> dict[Path, type[Provider]]:

@@ -21,9 +21,13 @@ import logging
 import sys
 import time
 import webbrowser
+from datetime import date
 from pathlib import Path
+from typing import Any, TypeVar, cast
+from uuid import UUID
 
 import httpx
+from pydantic import BaseModel, ValidationError
 
 from moneybin.connectors.sync_errors import (
     SyncAPIError,
@@ -38,9 +42,12 @@ from moneybin.connectors.sync_models import (
     LinkInitiateResponse,
     LinkStatusResponse,
     LoginPollResult,
-    SyncAckResponse,
-    SyncDataResponse,
-    SyncTriggerResponse,
+    SyncAccountScope,
+    SyncAckV2Response,
+    SyncDisconnectResponse,
+    SyncEnvelopeV2,
+    SyncStatusV2Response,
+    SyncTriggerV2Response,
 )
 from moneybin.metrics.registry import SYNC_AUTH_REFRESH_OUTCOMES
 from moneybin.secrets import (
@@ -49,6 +56,8 @@ from moneybin.secrets import (
     SecretStore,
     SecretUnavailableError,
 )
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
@@ -341,16 +350,17 @@ class SyncClient:
                     raise SyncAuthError(
                         "session expired after refresh — run `moneybin sync login`"
                     )
-        except httpx.RequestError as e:
+        except httpx.RequestError:
             # Connection refused, DNS failure, timeout, etc. Wrap so
             # classify_user_error can surface a clean CLI/MCP message instead
             # of a raw httpx traceback.
             raise SyncAPIError(
-                f"sync server unreachable at {self._server_url}: {e}"
-            ) from e
+                "Sync broker could not be reached; retry this operation"
+            ) from None
         if resp.status_code >= 400:
             raise SyncAPIError(
-                f"{method} {path} returned {resp.status_code}: {resp.text[:200]}"
+                f"Sync broker request failed (HTTP {resp.status_code})",
+                status_code=resp.status_code,
             )
         return resp
 
@@ -381,12 +391,56 @@ class SyncClient:
 
     def list_institutions(self) -> list[ConnectedInstitution]:
         """Return all connected institutions for the authenticated user."""
-        resp = self._authed_request("GET", "/institutions")
-        return [ConnectedInstitution.model_validate(item) for item in resp.json()]
+        resp = self._authed_request(
+            "GET",
+            "/institutions",
+            params={"contract_version": "2", "consumer_id": self.consumer_id},
+        )
+        try:
+            return [ConnectedInstitution.model_validate(item) for item in resp.json()]
+        except (ValidationError, ValueError):
+            raise SyncAPIError("Invalid connection listing from broker") from None
 
-    def disconnect(self, connection_id: str) -> None:
-        """Remove a connected institution by its connection ID."""
-        self._authed_request("DELETE", f"/institutions/{connection_id}")
+    def disconnect(
+        self,
+        connection_id: str,
+        *,
+        credential_generation: int,
+        accounts: list[SyncAccountScope],
+    ) -> SyncDisconnectResponse:
+        """Remove precisely the confirmed generation and native account identity set."""
+        try:
+            response = self._authed_request(
+                "DELETE",
+                f"/connections/{connection_id}",
+                params={"consumer_id": self.consumer_id},
+                json_body={
+                    "credential_generation": credential_generation,
+                    "accounts": [
+                        account.model_dump(mode="json", by_alias=True)
+                        for account in accounts
+                    ],
+                },
+            )
+        except SyncAPIError as error:
+            if error.status_code == 409:
+                raise SyncAPIError(
+                    "Disconnect refused; inspect current sync status and reconfirm this grant",
+                    status_code=409,
+                ) from None
+            raise
+        try:
+            result = SyncDisconnectResponse.model_validate(response.json())
+            if (
+                result.connection_id != UUID(connection_id)
+                or result.credential_generation != credential_generation
+                or {account.identity for account in result.accounts}
+                != {account.identity for account in accounts}
+            ):
+                raise ValueError("Unexpected removed grant")
+            return result
+        except (ValidationError, ValueError):
+            raise SyncAPIError("Invalid disconnect response from broker") from None
 
     # ------------------------------ Link flow ------------------------------
 
@@ -395,16 +449,24 @@ class SyncClient:
         *,
         provider: str = "plaid",
         provider_item_id: str | None = None,
+        connection_id: str | None = None,
         return_to: str | None = None,
     ) -> LinkInitiateResponse:
         """Start a Plaid Link session; returns session_id and hosted link_url."""
         body: dict[str, object] = {"provider": provider}
+        if provider == "simplefin":
+            body["consumer_id"] = self.consumer_id
+            if connection_id is not None:
+                body["connection_id"] = connection_id
         if provider_item_id:
             body["provider_item_id"] = provider_item_id
         if return_to:
             body["return_to"] = return_to
         resp = self._authed_request("POST", "/sync/link/initiate", json_body=body)
-        return LinkInitiateResponse.model_validate(resp.json())
+        try:
+            return LinkInitiateResponse.model_validate(resp.json())
+        except (ValidationError, ValueError):
+            raise SyncAPIError("Invalid link initiation response from broker") from None
 
     def get_link_status(self, session_id: str) -> LinkStatusResponse:
         """Single-shot GET /sync/link/status — returns whatever state the server holds.
@@ -419,7 +481,24 @@ class SyncClient:
             "/sync/link/status",
             params={"session_id": session_id},
         )
-        return LinkStatusResponse.model_validate(resp.json())
+        try:
+            status = LinkStatusResponse.model_validate(resp.json())
+        except (ValidationError, ValueError):
+            raise SyncAPIError("Invalid link status from broker") from None
+        if status.error not in {
+            None,
+            "SESSION_EXPIRED",
+            "EXCHANGE_FAILED",
+            "claim_rejected",
+            "claim_outcome_unknown",
+            "payment_required",
+            "rate_limited",
+            "authorization_revoked",
+        }:
+            status.error = (
+                "Link failed; inspect connection status before starting a new link"
+            )
+        return status
 
     def poll_link_status(self, session_id: str) -> LinkStatusResponse:
         """Poll GET /sync/link/status until status reaches a terminal state.
@@ -430,13 +509,8 @@ class SyncClient:
         deadline = time.time() + _LINK_POLL_DEADLINE
         while time.time() < deadline:
             self._sleep(_LINK_POLL_INTERVAL)
-            resp = self._authed_request(
-                "GET",
-                "/sync/link/status",
-                params={"session_id": session_id},
-            )
-            status = LinkStatusResponse.model_validate(resp.json())
-            if status.status == "linked":
+            status = self.get_link_status(session_id)
+            if status.status in {"linked", "claim_outcome_unknown"}:
                 return status
             if status.status == "failed":
                 raise SyncLinkError(status.error or "link session failed")
@@ -447,48 +521,105 @@ class SyncClient:
 
     # ------------------------------ Sync trigger and data ------------------------------
 
+    @property
+    def consumer_id(self) -> str:
+        """Use the profile's persistent identity without exposing it as a user selector."""
+        from moneybin.config import get_settings
+        from moneybin.utils.user_config import get_or_create_profile_id
+
+        return self._profile_id or get_or_create_profile_id(get_settings().profile_dir)
+
+    def _v2_response(
+        self,
+        response: httpx.Response,
+        model: type[ModelT],
+        *,
+        job_id: str | None = None,
+    ) -> ModelT:
+        try:
+            body = response.json()
+            if not isinstance(body, dict):
+                raise SyncAPIError(
+                    "Sync broker upgrade required for contract version 2"
+                )
+            body = cast(dict[str, Any], body)
+            if body.get("contract_version") != 2:
+                raise SyncAPIError(
+                    "Sync broker upgrade required for contract version 2"
+                )
+            result = model.model_validate(body)
+            if job_id is not None and body.get("job_id") != str(UUID(job_id)):
+                raise SyncAPIError("Sync broker returned mismatched job evidence")
+            return result
+        except (ValidationError, ValueError):
+            raise SyncAPIError("Sync broker returned invalid job evidence") from None
+
     def trigger_sync(
         self,
         *,
         provider_item_id: str | None = None,
         reset_cursor: bool = False,
-    ) -> SyncTriggerResponse:
-        """POST /sync/trigger — synchronous. Blocks until sync completes server-side.
-
-        Uses _LONG_TIMEOUT since multi-institution syncs can take 30-90s.
-        """
-        body: dict[str, object] = {}
-        if provider_item_id:
+        provider: str | None = None,
+        connection_id: str | None = None,
+        history_start: date | None = None,
+    ) -> SyncTriggerV2Response:
+        """Request a bounded v2 job under the internal consumer identity."""
+        body: dict[str, object] = {
+            "contract_version": 2,
+            "consumer_id": self.consumer_id,
+        }
+        if provider_item_id is not None:
             body["provider_item_id"] = provider_item_id
+        if provider is not None:
+            body["provider"] = provider
+        if connection_id is not None:
+            body["connection_id"] = connection_id
+        if history_start is not None:
+            body["history_start"] = history_start.isoformat()
         if reset_cursor:
-            body["reset_cursor"] = True
-        resp = self._authed_request(
-            "POST",
-            "/sync/trigger",
-            json_body=body,
-            timeout=_LONG_TIMEOUT,
+            body["force"] = True
+        return self._v2_response(
+            self._authed_request(
+                "POST",
+                "/sync/trigger",
+                json_body=body,
+                timeout=_LONG_TIMEOUT,
+            ),
+            SyncTriggerV2Response,
         )
-        return SyncTriggerResponse.model_validate(resp.json())
 
-    def get_data(self, job_id: str) -> SyncDataResponse:
-        """GET /sync/data — re-readable until ack or the broker's hold TTL expires.
-
-        Reading does not advance cursors or drop the window; the broker holds the
-        sync's data until POST /sync/ack confirms a durable load (or the TTL lapses).
-        """
-        resp = self._authed_request(
-            "GET",
-            "/sync/data",
-            params={"job_id": job_id},
+    def get_data(self, job_id: str) -> SyncEnvelopeV2:
+        """Read a held v2 envelope without advancing any checkpoint."""
+        return self._v2_response(
+            self._authed_request(
+                "GET",
+                "/sync/data",
+                params={"job_id": job_id, "consumer_id": self.consumer_id},
+            ),
+            SyncEnvelopeV2,
+            job_id=job_id,
         )
-        return SyncDataResponse.model_validate(resp.json())
 
-    def ack(self, job_id: str) -> SyncAckResponse:
-        """POST /sync/ack — confirm durable load so the broker advances cursors.
+    def get_status(self, job_id: str) -> SyncStatusV2Response:
+        """Read durable authenticated metadata, including after held payload expiry."""
+        return self._v2_response(
+            self._authed_request(
+                "GET",
+                "/sync/status",
+                params={"job_id": job_id, "consumer_id": self.consumer_id},
+            ),
+            SyncStatusV2Response,
+            job_id=job_id,
+        )
 
-        Idempotent: a re-ack of an already-acked job is a no-op 200. Until the
-        client acks, the broker holds the sync's advanced cursors and re-serves
-        the data, so a crash before ack yields a loss-free re-pull.
-        """
-        resp = self._authed_request("POST", "/sync/ack", json_body={"job_id": job_id})
-        return SyncAckResponse.model_validate(resp.json())
+    def ack(self, job_id: str) -> SyncAckV2Response:
+        """Acknowledge a durable job and receive its stored post-ack evidence."""
+        return self._v2_response(
+            self._authed_request(
+                "POST",
+                "/sync/ack",
+                json_body={"job_id": job_id, "consumer_id": self.consumer_id},
+            ),
+            SyncAckV2Response,
+            job_id=job_id,
+        )

@@ -11,7 +11,7 @@
 CREATE TABLE IF NOT EXISTS raw.exchange_rate_currencies (
     source_type VARCHAR NOT NULL,             -- Provider whose list this is: 'frankfurter' | ...; matches raw.exchange_rates.source_type
     currency_code VARCHAR NOT NULL,           -- ISO 4217, upper; a currency that provider publishes rates for
-    loaded_at TIMESTAMP                       -- When this list was read from the provider
+    loaded_at TIMESTAMPTZ                       -- When this list was read from the provider
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source_type, currency_code)
 );

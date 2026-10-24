@@ -21,9 +21,9 @@ CREATE TABLE IF NOT EXISTS raw.security_prices (
         CHECK (close > 0),                    -- A zero or negative close is never a real price; the Plaid extractor already drops them, but a direct writer (tiingo/coingecko) must not land one on this append-only table where it could never be corrected
     price_basis VARCHAR NOT NULL              -- Declared by the adapter, never inferred from the data; only 'raw' is eligible to value a holding
         CHECK (price_basis IN ('raw', 'split_adjusted', 'split_and_dividend_adjusted')),
-    extracted_at TIMESTAMP                    -- When the provider served this observation (for Plaid, metadata.synced_at)
+    extracted_at TIMESTAMPTZ                    -- When the provider served this observation (for Plaid, metadata.synced_at)
         DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+    loaded_at TIMESTAMPTZ                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
     -- price_basis is deliberately NOT in the key: every writer declares 'raw', so a second
     -- basis for one observation cannot occur. Settled for C.2 rather than left open — the

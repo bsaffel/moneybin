@@ -1,6 +1,6 @@
 """Tests for V058: capture the Plaid balance fields the client was discarding.
 
-``SyncBalance`` declared six of the nine keys moneybin-sync sends in
+``PlaidSyncBalance`` declared six of the nine keys moneybin-sync sends in
 ``balances[]``, and Pydantic's default ``extra='ignore'`` destroyed the other
 three at validation. Fresh installs get the columns from the schema DDL;
 existing installs get them here. Pure additive (``ADD COLUMN IF NOT EXISTS ...

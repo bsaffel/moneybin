@@ -186,7 +186,7 @@ class TestAssertionsCRUD:
                 verify=refuse,
             )
 
-        assert seen == [(Decimal("100.00"), "2026-02-01 12:34:56")]
+        assert seen == [(Decimal("100.00"), "2026-02-01 12:34:56+00:00")]
         assert svc.list_assertions("acct_a").assertions[0].balance == Decimal("100.00")
         delete_audits = assertion_db.execute(
             """

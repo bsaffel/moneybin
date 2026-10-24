@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from moneybin.cli import pager
@@ -76,6 +77,7 @@ def test_list_pages_one_complete_answer_and_no_pager_prints_the_same_answer(
 ) -> None:
     """A long profile list must page its whole answer, never each row separately."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.list.return_value = [
         _profile(f"profile-{index}", active=index == 0) for index in range(8)
     ]
@@ -106,6 +108,7 @@ def test_list_empty_keeps_scope_and_next_action_when_quiet(
 ) -> None:
     """Quiet suppresses chatter, not the requested empty profile answer."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.list.return_value = []
     monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
 
@@ -122,6 +125,7 @@ def test_list_json_remains_the_existing_profile_envelope(
 ) -> None:
     """Text paging must not alter the profile list's machine-readable contract."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.list.return_value = [_profile("alice", active=True)]
     monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
 
@@ -140,6 +144,7 @@ def test_show_pages_complete_config_and_settings_answer(
 ) -> None:
     """Long profile details retain configuration and managed settings in one pager."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.show.return_value = {
         "name": "alice",
         "active": True,
@@ -180,6 +185,7 @@ def test_show_keeps_a_database_path_wider_than_the_terminal_whole(
     """
     long_path = "/profiles/a-fairly-long-profile-name/moneybin.duckdb"
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.show.return_value = {
         "name": "alice",
         "active": True,
@@ -210,6 +216,7 @@ def test_create_receipt_distinguishes_adoption_and_preserved_database(
 ) -> None:
     """An adopted directory with a database is not reported as a new profile."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.exists.return_value = True
     service.has_database.return_value = True
     service.create.return_value = Path("/profiles/alice")
@@ -229,6 +236,7 @@ def test_switch_and_set_receipts_name_actual_target_without_echoing_input_value(
 ) -> None:
     """Receipts name the selected profile but never reconstruct a setting command."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.show.return_value = {
         "name": "alice",
         "active": True,
@@ -263,6 +271,7 @@ def test_mutation_receipts_use_the_normalized_profile_target(
 ) -> None:
     """A mixed-case input must not make a receipt disagree with the service target."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
     monkeypatch.setattr(
         "moneybin.cli.commands.profile.get_terminal_policy", _policy_factory
@@ -287,6 +296,7 @@ def test_managed_setting_receipt_uses_the_normalized_profile_target(
 ) -> None:
     """Managed settings use the same canonical profile name as config settings."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.show.return_value = {
         "name": "alice-work",
         "active": True,
@@ -335,6 +345,7 @@ def test_create_skips_inbox_prompt_when_terminal_policy_is_not_interactive(
 ) -> None:
     """TTY input alone cannot prompt when the result stream is unusable."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.exists.return_value = False
     service.create.return_value = Path("/profiles/alice")
     policy = replace(_paging_policy(), interactive=False)
@@ -356,7 +367,9 @@ def test_create_skips_inbox_prompt_when_terminal_policy_is_not_interactive(
     result = runner.invoke(app, ["create", "Alice"])
 
     assert result.exit_code == 0, result.output
-    service.create.assert_called_once_with("Alice", init_inbox=False)
+    service.create.assert_called_once_with(
+        "Alice", init_inbox=False, reporting_timezone="UTC"
+    )
 
 
 def test_profile_mutation_receipts_never_open_the_pager(
@@ -364,6 +377,7 @@ def test_profile_mutation_receipts_never_open_the_pager(
 ) -> None:
     """Paging is a read-only affordance even on a tiny terminal."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     service.exists.return_value = False
     service.create.return_value = Path("/profiles/alice")
     monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
@@ -377,7 +391,9 @@ def test_profile_mutation_receipts_never_open_the_pager(
     monkeypatch.setattr(pager, "page_text", pager_called)
 
     results = [
-        runner.invoke(app, ["create", "alice", "--no-init-inbox"]),
+        runner.invoke(
+            app, ["create", "alice", "--no-init-inbox", "--reporting-timezone", "UTC"]
+        ),
         runner.invoke(app, ["switch", "alice"]),
         runner.invoke(app, ["delete", "alice", "--yes"]),
         runner.invoke(app, ["set", "logging.level", "INFO", "--profile", "alice"]),
@@ -402,6 +418,7 @@ def test_invalid_profile_name_refuses_before_switch_or_delete_side_effects(
 ) -> None:
     """Invalid names fail before a confirmation prompt or profile mutation."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
     monkeypatch.setattr(
         "moneybin.cli.commands.profile.get_terminal_policy", _policy_factory
@@ -427,6 +444,7 @@ def test_invalid_profile_name_refuses_before_setting_write(
 ) -> None:
     """Config settings do not create an invalid profile target on normalization failure."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
 
     result = runner.invoke(app, ["set", "logging.level", "INFO", "--profile", "___"])
@@ -442,6 +460,7 @@ def test_delete_noninteractive_without_yes_refuses_before_service_mutation(
 ) -> None:
     """A piped delete cannot turn EOF into an accidental profile removal."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
     policy = _paging_policy()
 
@@ -464,6 +483,7 @@ def test_delete_decline_is_a_truthful_unpaged_receipt(
 ) -> None:
     """Declining an interactive delete remains a successful no-write outcome."""
     service = MagicMock()
+    service.reporting_timezone.return_value = "UTC"
     monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
     monkeypatch.setattr(
         "moneybin.cli.commands.profile.get_terminal_policy", _policy_factory
@@ -474,4 +494,45 @@ def test_delete_decline_is_a_truthful_unpaged_receipt(
     assert result.exit_code == 0, result.output
     assert "Deletion cancelled" in result.stdout
     assert "Profile alice was not deleted." in result.stdout
+    assert "Remote grants remain" in result.stderr
+    assert "Plaid" in result.stderr and "SimpleFIN" in result.stderr
+    assert "SimpleFIN Bridge may require manual revocation" in result.stderr
+    assert "moneybin --profile alice sync status --output json" in result.stderr
+    assert "Use each returned connection's id" in result.stderr
+    assert (
+        "moneybin --profile alice sync disconnect --connection-id <connection-id>"
+        in result.stderr
+    )
+    assert result.stderr.index("Remote grants remain") < result.stderr.index(
+        "Delete profile 'alice'"
+    )
     service.delete.assert_not_called()
+
+
+def test_delete_with_yes_warns_before_removing_local_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping confirmation still warns before credentials and identity disappear."""
+    service = MagicMock()
+
+    def delete(name: str) -> None:
+        typer.echo(f"Removing local identity for {name}", err=True)
+
+    service.delete.side_effect = delete
+    monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
+
+    result = runner.invoke(app, ["delete", "Alice_Work", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Remote grants remain" in result.stderr
+    assert "moneybin --profile alice-work sync status --output json" in result.stderr
+    assert "Use each returned connection's id" in result.stderr
+    assert (
+        "moneybin --profile alice-work sync disconnect --connection-id <connection-id>"
+        in result.stderr
+    )
+    assert result.stderr.index("Remote grants remain") < result.stderr.index(
+        "Removing local identity"
+    )
+    assert "Profile deleted" in result.stdout
+    service.delete.assert_called_once_with("alice-work")

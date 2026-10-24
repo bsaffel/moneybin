@@ -4,7 +4,8 @@ This module tests the OFX extractor with sample QFX data to ensure proper
 parsing, validation, and data extraction into raw table structures.
 """
 
-from datetime import datetime
+import time
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -24,6 +25,15 @@ FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
 
 _IMPORT_ID = "00000000-0000-0000-0000-000000000001"
 _SOURCE_ORIGIN = "test_bank"
+
+
+@pytest.fixture(params=["UTC", "America/New_York", "Asia/Tokyo"])
+def host_zone(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TZ", request.param)
+    time.tzset()
+    yield request.param
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.fixture
@@ -360,8 +370,8 @@ def test_extract_preserves_metadata(
     assert str(sample_ofx_file) in first_tx["source_file"]
 
     # Verify extraction timestamp is recent (within last minute)
-    extracted_at = datetime.fromisoformat(first_tx["extracted_at"])
-    time_diff = datetime.now() - extracted_at
+    extracted_at = first_tx["extracted_at"]
+    time_diff = datetime.now(UTC) - extracted_at
     assert time_diff.total_seconds() < 60
 
 
@@ -708,3 +718,202 @@ class TestOFXAccountTypeDerivation:
         )
 
         assert ofx_account_type(self._account(declared, kind)) == expected
+
+
+@pytest.mark.parametrize(
+    ("source_time", "hour"),
+    [
+        ("20250102120000[-5]", 17),
+        ("20250102120000[-5:EST]", 17),
+        ("20250102120000", 12),
+        ("20250102", 0),
+    ],
+)
+def test_ofx_adapter_preserves_numeric_offset_and_protocol_defaults(
+    sample_ofx_file: Path,
+    source_time: str,
+    hour: int,
+    host_zone: str,
+) -> None:
+    from datetime import UTC
+
+    from moneybin.extractors.ofx.extractor import parse_ofx_content
+
+    source = sample_ofx_file.read_bytes().replace(
+        b"20250102120000", source_time.encode()
+    )
+    parsed = parse_ofx_content(source, source_label="synthetic-offset.ofx")
+    assert parsed.accounts[0].statement.transactions[0].date == datetime(
+        2025, 1, 2, hour, tzinfo=UTC
+    )
+    assert source_time.encode() in source
+
+
+@pytest.mark.parametrize(
+    ("zone", "expected"),
+    [
+        ("+12", "2025-01-02T00:00:00+00:00"),
+        ("-12", "2025-01-03T00:00:00+00:00"),
+        ("+12.00:ZONE", "2025-01-02T00:00:00+00:00"),
+        ("-12.00:ZONE", "2025-01-03T00:00:00+00:00"),
+        ("+5.5", "2025-01-02T06:30:00+00:00"),
+        ("-3.5:NST", "2025-01-02T15:30:00+00:00"),
+        ("0:UTC", "2025-01-02T12:00:00+00:00"),
+    ],
+)
+def test_ofx_adapter_preserves_offset_boundaries_and_fractional_hours(
+    sample_ofx_file: Path, zone: str, expected: str, host_zone: str
+) -> None:
+    from moneybin.extractors.ofx.extractor import parse_ofx_content
+
+    source_time = f"20250102120000[{zone}]".encode()
+    source = sample_ofx_file.read_bytes().replace(b"20250102120000", source_time)
+    parsed = parse_ofx_content(source, source_label="synthetic-offset-boundary.ofx")
+
+    assert parsed.accounts[0].statement.transactions[0].date == datetime.fromisoformat(
+        expected
+    )
+    assert source_time in source
+
+
+def test_ofx_extraction_metadata_and_provider_columns_are_aware(
+    sample_ofx_file: Path,
+    extractor_config: OFXProviderConfig,
+    host_zone: str,
+) -> None:
+    from datetime import UTC
+
+    before = datetime.now(UTC)
+    frames = OFXExtractor(extractor_config).extract_from_file(
+        sample_ofx_file,
+        import_id=_IMPORT_ID,
+        source_origin=_SOURCE_ORIGIN,
+    )
+    for frame in frames.values():
+        assert frame.schema["extracted_at"] == pl.Datetime("us", time_zone="UTC")
+        assert before <= frame["extracted_at"][0] <= datetime.now(UTC)
+    assert frames["transactions"].schema["date_posted"] == pl.Datetime(
+        "us", time_zone="UTC"
+    )
+    assert frames["transactions"]["date_posted"][0] == datetime(
+        2025, 1, 2, 12, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_time", "expected_instant"),
+    [
+        ("20250102003000[+5]", "2025-01-01T19:30:00+00:00"),
+        ("20250102233000[-5:EST]", "2025-01-03T04:30:00+00:00"),
+        ("20250102003000[+5.5:IST]", "2025-01-01T19:00:00+00:00"),
+        ("20250102233000[-3.5]", "2025-01-03T03:00:00+00:00"),
+        ("20250102003000", "2025-01-02T00:30:00+00:00"),
+        ("20250102", "2025-01-02T00:00:00+00:00"),
+    ],
+)
+def test_ofx_source_calendar_dates_survive_utc_normalization(
+    sample_ofx_file: Path,
+    tmp_path: Path,
+    source_time: str,
+    expected_instant: str,
+    host_zone: str,
+) -> None:
+    from moneybin.extractors.ofx.extractor import (
+        incoming_ofx_transactions,
+        parse_ofx_content,
+    )
+
+    source = sample_ofx_file.read_bytes()
+    for original in (b"20250102120000", b"20250101120000", b"20250131120000"):
+        source = source.replace(original, source_time.encode())
+    path = tmp_path / "source-calendar.ofx"
+    path.write_bytes(source)
+    parsed = parse_ofx_content(source, source_label=path.name)
+
+    incoming = incoming_ofx_transactions(parsed)
+    assert incoming["9876543210"][0].transaction_date == date(2025, 1, 2)
+    frames = OFXExtractor().extract_from_file(
+        path, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
+    transaction = frames["transactions"].row(0, named=True)
+    assert transaction["date_posted"] == datetime.fromisoformat(expected_instant)
+    assert transaction["date_posted_source_date"] == date(2025, 1, 2)
+    assert frames["transactions"].schema["date_posted_source_date"] == pl.Date
+    balance = frames["balances"].row(0, named=True)
+    for instant_column, date_column in (
+        ("statement_start_date", "statement_start_source_date"),
+        ("statement_end_date", "statement_end_source_date"),
+        ("ledger_balance_date", "ledger_balance_source_date"),
+    ):
+        assert balance[instant_column] == datetime.fromisoformat(expected_instant)
+        assert balance[date_column] == date(2025, 1, 2)
+        assert frames["balances"].schema[date_column] == pl.Date
+    assert path.read_bytes() == source
+
+
+def test_ofx_source_dates_stay_with_rows_when_fitids_repeat(
+    sample_ofx_file: Path, tmp_path: Path
+) -> None:
+    from moneybin.extractors.ofx.extractor import (
+        incoming_ofx_transactions,
+        parse_ofx_content,
+    )
+
+    source = (
+        sample_ofx_file
+        .read_bytes()
+        .replace(b"20250102120000", b"20250102233000[-5]")
+        .replace(b"20250115120000", b"20250115003000[+5]")
+        .replace(b"TXN002", b"TXN001")
+    )
+    path = tmp_path / "repeated-fitid.ofx"
+    path.write_bytes(source)
+    incoming = incoming_ofx_transactions(
+        parse_ofx_content(source, source_label=path.name)
+    )
+    assert [row.transaction_date for row in incoming["9876543210"]] == [
+        date(2025, 1, 2),
+        date(2025, 1, 15),
+        date(2025, 1, 20),
+    ]
+    frames = OFXExtractor().extract_from_file(
+        path, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
+    rows = frames["transactions"].to_dicts()
+    assert [row["date_posted_source_date"] for row in rows] == [
+        date(2025, 1, 2),
+        date(2025, 1, 15),
+        date(2025, 1, 20),
+    ]
+    assert rows[0]["source_transaction_id"] != rows[1]["source_transaction_id"]
+
+
+@pytest.mark.parametrize(
+    "source_time",
+    [
+        "20250102120000[EST]",
+        "20250102120000[-5.5.5]",
+        "20250102120000[-5:EST",
+        "20250102120000-5:EST]",
+        "20250102120000[-5:EST]trailing",
+        "20250102120000[-5:EST][UTC]",
+        "20250102120000[999]",
+        "20250102120000[-999:ZONE]",
+        "20250102120000[+13:ZONE]",
+        "20250102120000[-13]",
+        "20250102120000[+12.01]",
+        "20250102120000[-12.01:ZONE]",
+    ],
+)
+def test_ofx_adapter_rejects_unrecognized_explicit_zone(
+    sample_ofx_file: Path, source_time: str
+) -> None:
+    from ofxparse import OfxParserException
+
+    from moneybin.extractors.ofx.extractor import parse_ofx_content
+
+    source = sample_ofx_file.read_bytes().replace(
+        b"20250102120000", source_time.encode()
+    )
+    with pytest.raises(OfxParserException, match="timezone"):
+        parse_ofx_content(source, source_label="synthetic-invalid-offset.ofx")

@@ -148,7 +148,7 @@ class SecurityPriceRepo(BaseRepo):
                 f"""
                 INSERT INTO {SECURITY_PRICE_OVERRIDES.full_name}
                     (security_id, price_date, quote_currency, close, note, created_at)
-                VALUES (?, ?, ?, ?, ?, COALESCE(?::TIMESTAMP, NOW()))
+                VALUES (?, ?, ?, ?, ?, COALESCE(?::TIMESTAMPTZ, NOW()))
                 ON CONFLICT (security_id, price_date, quote_currency) DO UPDATE SET
                     close = excluded.close,
                     note = excluded.note,

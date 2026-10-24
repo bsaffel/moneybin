@@ -45,6 +45,9 @@ def _reset_to_pre_v010_state(db: Database) -> None:
             )  # table is hardcoded allowlist, not user input
 
     db.execute(
+        "ALTER TABLE app.category_overrides ALTER COLUMN updated_at TYPE TIMESTAMP"
+    )
+    db.execute(
         "ALTER TABLE app.category_overrides ALTER COLUMN updated_at DROP NOT NULL"
     )
 
@@ -218,7 +221,7 @@ class TestV010Migration:
             "category_overrides",
         ):
             data_type, is_nullable = column_info(db, "app", table, "updated_at")
-            assert data_type == "TIMESTAMP"
+            assert data_type == "TIMESTAMP WITH TIME ZONE"
             assert is_nullable is False
 
 

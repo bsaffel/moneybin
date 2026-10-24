@@ -54,23 +54,26 @@ def _mcp_db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture
              source_type, source_file, extracted_at, loaded_at, updated_at)
         VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
-         'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+         'test.qfx', '2025-01-01T00:00:00Z', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', '5678', 'ofx',
-         'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         'other.qfx', '2025-01-01T00:00:00Z', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     """)
 
     conn.execute("""
         INSERT INTO raw.ofx_balances
             (account_id, statement_start_date, statement_end_date, ledger_balance,
              ledger_balance_date, available_balance, source_file,
-             extracted_at, loaded_at, import_id, source_type)
+             extracted_at, loaded_at, import_id, source_type,
+             statement_start_source_date, statement_end_source_date, ledger_balance_source_date)
         VALUES
         ('ACC001', '2025-06-01', '2025-06-30', 5000.00,
          '2025-06-30', 4800.00, 'test.qfx',
-         '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx'),
+         '2025-01-24T00:00:00Z', CURRENT_TIMESTAMP, NULL, 'ofx',
+         DATE '2025-06-01', DATE '2025-06-30', DATE '2025-06-30'),
         ('ACC002', '2025-06-01', '2025-06-30', 15000.00,
          '2025-06-30', 15000.00, 'other.qfx',
-         '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx')
+         '2025-01-24T00:00:00Z', CURRENT_TIMESTAMP, NULL, 'ofx',
+         DATE '2025-06-01', DATE '2025-06-30', DATE '2025-06-30')
     """)
 
     database.close()

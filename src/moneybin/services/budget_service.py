@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 from typing import Literal
 
@@ -25,6 +24,7 @@ from moneybin.repositories.budgets_repo import BudgetsRepo
 from moneybin.services._validators import validate_category_text
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
+from moneybin.services.profile_settings_service import ProfileSettingsService
 from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ class BudgetService:
             raise UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT) from exc
 
         if start_month is None:
-            start_month = date.today().strftime("%Y-%m")
+            start_month = ProfileSettingsService(self._db).today().strftime("%Y-%m")
 
         # Check for existing budget with overlapping date range. Select its
         # start_month too: an overlap can match a budget whose window opened in a
@@ -169,7 +169,7 @@ class BudgetService:
             BudgetStatusPayload with per-category budget status.
         """
         if month is None:
-            month = date.today().strftime("%Y-%m")
+            month = ProfileSettingsService(self._db).today().strftime("%Y-%m")
 
         sql = f"""
             SELECT
