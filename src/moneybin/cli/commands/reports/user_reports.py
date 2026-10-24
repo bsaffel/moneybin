@@ -34,6 +34,7 @@ from moneybin.cli.render import (
     build_rows,
     build_summary,
     compose_human_result,
+    format_instant,
 )
 from moneybin.cli.utils import (
     format_cli_attention,
@@ -44,6 +45,7 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.temporal import parse_utc
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +215,9 @@ def reports_run(
             money = money_columns(spec)
             numeric = numeric_columns(spec)
             grouped = grouped_columns(spec)
+            from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+            reporting_timezone = None
             percent = percent_columns(spec)
             result = catalog.execute(
                 db,
@@ -222,6 +227,14 @@ def reports_run(
                 display_currency=display_currency,
                 home_currency=profile_home_currency(db),
             )
+            from datetime import datetime
+
+            if output != OutputFormat.JSON and any(
+                isinstance(value, datetime)
+                for row in result.records
+                for value in row.values()
+            ):
+                reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
             # Resolved inside the database scope for the same reason `money` is:
             # a user-tier spec is built from a row, and this is the only scope
             # holding the connection that builds it.
@@ -237,6 +250,7 @@ def reports_run(
         result,
         output,
         cli_actor="reports_run",
+        reporting_timezone=reporting_timezone,
         money=money,
         numeric=numeric,
         grouped=grouped,
@@ -279,6 +293,13 @@ def reports_explain(
             report = catalog.resolve(handle)
             parameters = coerce_report_parameters(report, param)
             explanation = explain_spec(db, report, parameters=parameters)
+            from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+            reporting_timezone = (
+                ProfileSettingsRepo(db).get_reporting_timezone()
+                if output != OutputFormat.JSON and explanation.updated_at is not None
+                else None
+            )
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         policy = get_terminal_policy(no_pager=no_pager)
@@ -290,7 +311,15 @@ def reports_explain(
                     ("Description", explanation.description or "-"),
                     ("Reads", ", ".join(explanation.lineage) or "-"),
                     ("Graduation", explanation.graduation),
-                    ("Updated", explanation.updated_at or "-"),
+                    (
+                        "Updated",
+                        format_instant(
+                            parse_utc(explanation.updated_at),
+                            reporting_timezone=reporting_timezone,
+                        )
+                        if explanation.updated_at is not None
+                        else "-",
+                    ),
                     ("Fingerprint", explanation.class_fingerprint or "-"),
                 ],
                 title="Report explanation",

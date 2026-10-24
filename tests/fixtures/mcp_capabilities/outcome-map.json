@@ -958,7 +958,8 @@
     ],
     "observable_outcomes": [
       "login yields a scoped authenticated session without exposing tokens",
-      "institution link yields the same hosted session ID, URL, and expiry"
+      "institution link yields the same hosted session ID, URL, and expiry",
+      "provider and exact grant selectors retain the broker-hosted link contract; uncertain claims never trigger a pull"
     ],
     "exemption": null
   },
@@ -975,11 +976,14 @@
     "service_methods": [
       "moneybin.connectors.sync_auth.SyncAuthService.status",
       "moneybin.services.sync_service.SyncService.list_connections",
-      "moneybin.connectors.sync_client.SyncClient.get_link_status"
+      "moneybin.connectors.sync_client.SyncClient.get_link_status",
+      "moneybin.services.sync_service.SyncService.recovery_jobs"
     ],
     "observable_outcomes": [
       "auth polling reports pending/authenticated/denied/expired/provider_error idempotently",
-      "connection and link-session status fields match"
+      "connection and link-session status fields match",
+      "safe history retains unknown, pending and acknowledged coverage without native identifiers or global completeness claims",
+      "profile-scoped unfinished job identities and phase-specific recovery actions remain discoverable independently of current remote grants"
     ],
     "exemption": null
   },
@@ -992,10 +996,14 @@
       "sync pull"
     ],
     "service_methods": [
-      "moneybin.services.sync_service.SyncService.pull"
+      "moneybin.services.sync_service.SyncService.pull",
+      "moneybin.services.sync_service.SyncService.recover"
     ],
     "observable_outcomes": [
-      "identical loaded/removed counts, per-institution statuses, raw rows, transform result, and security-resolution result"
+      "identical loaded/removed counts, per-institution statuses, raw rows, transform result, and security-resolution result",
+      "whole-job ingestion is durable before acknowledgement; setup, refresh and bounded local inspection outcomes remain independent",
+      "same-job recovery performs status/ack and retained-evidence local repair without provider retrieval; local_only performs no broker access",
+      "replay delivery counts do not overwrite original durable ingestion evidence"
     ],
     "exemption": null
   },
@@ -1011,10 +1019,11 @@
     "service_methods": [
       "moneybin.services.sync_service.SyncService.disconnect",
       "moneybin.connectors.sync_auth.SyncAuthService.logout",
-      "moneybin.connectors.sync_client.SyncClient.logout"
+      "moneybin.connectors.sync_client.SyncClient.logout",
+      "moneybin.services.sync_service.SyncService.disconnect_confirmed"
     ],
     "observable_outcomes": [
-      "institution mode removes the remote connection while preserving local rows",
+      "exact-grant confirmation binds generation and affected accounts; disconnect preserves local rows and reports remote revocation obligations",
       "logout clears profile-scoped tokens and pending auth sessions and is recoverable by login"
     ],
     "exemption": null

@@ -161,6 +161,7 @@ def assign_components(
     candidates: "list[CandidatePair]",
     *,
     seed_edges: list[tuple[NodeKey, NodeKey]],
+    native_scopes: dict[str, tuple[str, str]] | None = None,
 ) -> "list[CandidatePair]":
     """Greedy spanning-forest assignment via union-find.
 
@@ -180,8 +181,11 @@ def assign_components(
     guard makes exact-key auto-merge pair N true duplicates 1:1 instead of
     collapsing all-to-all and silently deleting a real transaction. Nodes with an
     unknown file (None — e.g. seed-only nodes or unit fixtures) impose no
-    constraint.
+    constraint. SimpleFIN instead constrains native account scope across batches;
+    Raw identity evidence also constrains seed-only nodes absent from candidates.
+    An unresolvable native seed freezes component extension without rewriting it.
     """
+    native_scopes = native_scopes or {}
     uf = UnionFind()
     for a, b in seed_edges:
         uf.union(a, b)
@@ -195,12 +199,32 @@ def assign_components(
         if source_key is not None:
             comp_sources.setdefault(uf.find(node), set()).add(source_key)
 
+    unknown_native_nodes: set[NodeKey] = set()
+
+    def _native_key(node: NodeKey, origin: str | None) -> SourceKey | None:
+        scope = native_scopes.get(node[1])
+        if scope is not None:
+            return ("simplefin", *scope)
+        # An unknown seed cannot safely gain any new member; candidates still
+        # constrain each other within their stated native origin.
+        unknown_native_nodes.add(node)
+        return ("simplefin", origin, "") if origin is not None else None
+
+    for edge in seed_edges:
+        for node in edge:
+            if node[0] == "simplefin":
+                _register(node, _native_key(node, None))
+
     def _source_key_a(pair: "CandidatePair") -> SourceKey | None:
+        if pair.source_type_a == "simplefin":
+            return _native_key(_node_a(pair), pair.source_origin_a)
         if pair.source_file_a is None:
             return None
         return (pair.source_type_a, pair.source_origin_a, pair.source_file_a)
 
     def _source_key_b(pair: "CandidatePair") -> SourceKey | None:
+        if pair.source_type_b == "simplefin":
+            return _native_key(_node_b(pair), pair.source_origin_b)
         if pair.source_file_b is None:
             return None
         return (pair.source_type_b, pair.source_origin_b, pair.source_file_b)
@@ -209,6 +233,12 @@ def assign_components(
         _register(_node_a(pair), _source_key_a(pair))
         _register(_node_b(pair), _source_key_b(pair))
 
+    frozen_roots = {
+        uf.find(node)
+        for edge in seed_edges
+        for node in edge
+        if node in unknown_native_nodes
+    }
     ordered = sorted(
         candidates,
         key=lambda c: (
@@ -222,6 +252,8 @@ def assign_components(
     added: list[CandidatePair] = []
     for pair in ordered:
         root_a, root_b = uf.find(_node_a(pair)), uf.find(_node_b(pair))
+        if root_a in frozen_roots or root_b in frozen_roots:
+            continue
         if root_a == root_b:
             continue  # already connected — redundant edge
         sources_a = comp_sources.get(root_a, set())

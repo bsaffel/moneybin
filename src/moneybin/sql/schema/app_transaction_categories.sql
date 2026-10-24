@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS app.transaction_categories (
     category VARCHAR NOT NULL, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference
     subcategory VARCHAR, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference
     category_id VARCHAR, -- Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows
-    categorized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this categorization was last written
+    categorized_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this categorization was last written
     categorized_by VARCHAR DEFAULT 'ai', -- Assignment METHOD: user | rule | auto_rule | migration | ml | provider_native | ai
     merchant_id VARCHAR, -- Foreign key to core.dim_merchants if this transaction was matched to a known merchant; NULL otherwise
     confidence DECIMAL(3, 2), -- Model confidence score for AI-assigned categories, 0.00-1.00; NULL for rule or user assignments

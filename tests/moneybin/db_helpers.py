@@ -18,8 +18,8 @@ from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.tables import TableRef
 
 _MODEL_FRESHNESS_DDL = (
-    "meta.model_freshness (model_name VARCHAR, last_changed_at TIMESTAMP, "
-    "last_applied_at TIMESTAMP, last_executed_at TIMESTAMP, model_kind VARCHAR)"
+    "meta.model_freshness (model_name VARCHAR, last_changed_at TIMESTAMPTZ, "
+    "last_applied_at TIMESTAMPTZ, last_executed_at TIMESTAMPTZ, model_kind VARCHAR)"
 )
 
 
@@ -35,9 +35,8 @@ def record_sqlmesh_apply(db: Database, when: datetime) -> None:
     the scenario and integration suites, so this keeps only the columns
     ``freshness()`` reads plus enough shape to stay honest about the contract.
 
-    Callers pass a naive ``when`` and get UTC. Pin the session zone to UTC
-    too if the fixture's raw landing literals are naive, so both sides
-    describe the same instants on any machine.
+    Fixture instants use explicit known-UTC offsets so both freshness and
+    raw landing values describe the same instants on any machine.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS meta")
     db.execute(f"CREATE OR REPLACE TABLE {_MODEL_FRESHNESS_DDL}")
@@ -54,8 +53,8 @@ def record_model_execution(
 
     ``record_sqlmesh_apply`` answers "the whole warehouse was refreshed"; this
     answers "this one model was rebuilt at this instant", which is what a
-    per-report staleness check reads. ``when`` is naive UTC, as
-    ``meta.model_freshness`` stores it.
+    per-report staleness check reads. ``when`` is an aware fixture instant,
+    as ``meta.model_freshness`` stores it.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS meta")
     db.execute(f"CREATE TABLE IF NOT EXISTS {_MODEL_FRESHNESS_DDL}")
@@ -76,6 +75,8 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     display_name VARCHAR,
     official_name VARCHAR,
     account_type VARCHAR,
+    account_type_override VARCHAR,
+    source_account_type VARCHAR,
     account_subtype VARCHAR,
     holder_category VARCHAR,
     institution_slug VARCHAR,
@@ -92,11 +93,11 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE,
     archived_at DATE,
-    extracted_at TIMESTAMP,
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    investment_source_type_changed_at TIMESTAMP,
-    archived_changed_at TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    extracted_at TIMESTAMPTZ,
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    investment_source_type_changed_at TIMESTAMPTZ,
+    archived_changed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -147,22 +148,22 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     source_type VARCHAR,
     source_count INTEGER,
     match_confidence DECIMAL(5, 4),
-    source_extracted_at TIMESTAMP,
-    loaded_at TIMESTAMP,
+    source_extracted_at TIMESTAMPTZ,
+    loaded_at TIMESTAMPTZ,
     transaction_year INTEGER,
     transaction_month INTEGER,
     transaction_day INTEGER,
     transaction_day_of_week INTEGER,
     transaction_year_month VARCHAR,
     transaction_year_quarter VARCHAR,
-    notes STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMP)[],
+    notes STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMPTZ)[],
     note_count INTEGER,
     tags VARCHAR[],
     tag_count INTEGER,
     splits STRUCT(split_id VARCHAR, amount DECIMAL(18, 2), category VARCHAR, subcategory VARCHAR, note VARCHAR)[],
     split_count INTEGER,
     has_splits BOOLEAN,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -276,8 +277,8 @@ SELECT CAST(NULL AS VARCHAR) AS category_id,
        CAST(NULL AS VARCHAR) AS class,
        CAST(NULL AS BOOLEAN) AS is_default,
        CAST(NULL AS BOOLEAN) AS is_active,
-       CAST(NULL AS TIMESTAMP) AS created_at,
-       CAST(NULL AS TIMESTAMP) AS updated_at
+       CAST(NULL AS TIMESTAMPTZ) AS created_at,
+       CAST(NULL AS TIMESTAMPTZ) AS updated_at
 WHERE FALSE;
 """
 
@@ -292,8 +293,8 @@ SELECT CAST(NULL AS VARCHAR) AS merchant_id,
        CAST(NULL AS VARCHAR) AS subcategory,
        CAST(NULL AS VARCHAR) AS created_by,
        CAST(NULL AS VARCHAR[]) AS exemplars,
-       CAST(NULL AS TIMESTAMP) AS created_at,
-       CAST(NULL AS TIMESTAMP) AS updated_at
+       CAST(NULL AS TIMESTAMPTZ) AS created_at,
+       CAST(NULL AS TIMESTAMPTZ) AS updated_at
 WHERE FALSE;
 """
 
@@ -361,7 +362,7 @@ CREATE TABLE IF NOT EXISTS core.fct_investment_transactions (
     source_type VARCHAR,
     source_origin VARCHAR,
     description VARCHAR,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -383,7 +384,7 @@ CREATE TABLE IF NOT EXISTS core.fct_investment_lots (
     is_open BOOLEAN,
     source_transaction_id VARCHAR,
     basis_incomplete BOOLEAN,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -406,7 +407,7 @@ CREATE TABLE IF NOT EXISTS core.fct_realized_gains (
     cost_basis_method VARCHAR,
     basis_incomplete BOOLEAN,
     currency_code VARCHAR,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -441,7 +442,7 @@ CREATE TABLE IF NOT EXISTS core.bridge_currency_conversions (
     from_date DATE,
     to_date DATE,
     valuation_rate_date DATE,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -464,7 +465,7 @@ CREATE TABLE IF NOT EXISTS core.fct_currency_lots (
     cost_basis_remaining DECIMAL(18, 2),
     basis_incomplete BOOLEAN,
     acquisition_date DATE,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -489,7 +490,7 @@ CREATE TABLE IF NOT EXISTS core.fct_realized_fx_gains (
     acquisition_date DATE,
     disposal_date DATE,
     valuation_rate_date DATE,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -514,8 +515,8 @@ SELECT CAST(NULL AS VARCHAR) AS account_id,
        CAST(NULL AS DECIMAL(28, 10)) AS provider_reported_quantity,
        CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_cost_basis,
        CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_value,
-       CAST(NULL AS TIMESTAMP) AS provider_reported_as_of,
-       CAST(NULL AS TIMESTAMP) AS updated_at
+       CAST(NULL AS TIMESTAMPTZ) AS provider_reported_as_of,
+       CAST(NULL AS TIMESTAMPTZ) AS updated_at
 WHERE FALSE;
 """
 # NB: quantity/cost_basis/average_cost types above mirror dim_holdings.sql's
@@ -550,7 +551,7 @@ CREATE TABLE IF NOT EXISTS core.fct_security_prices (
     close DECIMAL(28, 10),
     source_type VARCHAR,
     price_basis VARCHAR,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -568,7 +569,7 @@ SELECT CAST(NULL AS VARCHAR) AS from_currency,
        CAST(NULL AS VARCHAR) AS rate_vendor,
        CAST(NULL AS DECIMAL(18, 8)) AS rate,
        CAST(NULL AS DATE) AS rate_date,
-       CAST(NULL AS TIMESTAMP) AS updated_at
+       CAST(NULL AS TIMESTAMPTZ) AS updated_at
 WHERE FALSE;
 """
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -45,9 +45,9 @@ def _make_pdf_format(**kwargs: Any) -> Any:
         "source": "detected",
         "version": 1,
         "times_used": 3,
-        "last_used_at": datetime(2026, 5, 30, 10, 0, 0),
-        "created_at": datetime(2026, 5, 1, 9, 0, 0),
-        "updated_at": datetime(2026, 5, 30, 10, 0, 0),
+        "last_used_at": datetime(2026, 5, 30, 10, 0, 0, tzinfo=UTC),
+        "created_at": datetime(2026, 5, 1, 9, 0, 0, tzinfo=UTC),
+        "updated_at": datetime(2026, 5, 30, 10, 0, 0, tzinfo=UTC),
     }
     defaults.update(kwargs)
     return PdfFormat(**defaults)
@@ -196,7 +196,7 @@ class TestFormatsListPdf:
         assert pdf_row["times_used"] == 3
         # Full timestamp, not the date-only string the text table prints:
         # `import_formats` over MCP has always emitted one.
-        assert pdf_row["last_used_at"] == "2026-05-30T10:00:00"
+        assert pdf_row["last_used_at"] == "2026-05-30T10:00:00.000000Z"
 
     def test_tabular_source_reads_the_same_on_both_surfaces(
         self, runner: CliRunner, mocker: Any, wide_terminal: None

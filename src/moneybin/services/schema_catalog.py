@@ -21,6 +21,7 @@ from moneybin.database import Database, get_database
 from moneybin.errors import UserError
 from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS
 from moneybin.tables import GSHEET_CONNECTIONS, IMPORT_LOG, INTERFACE_TABLES
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,10 @@ EXAMPLES: dict[str, list[Example]] = {
                 SELECT category, currency_code, SUM(amount_absolute) AS total
                 FROM core.fct_transactions
                 WHERE transaction_direction = 'expense'
-                  AND transaction_year_month = STRFTIME(CURRENT_DATE - INTERVAL 1 MONTH, '%Y-%m')
+                  AND transaction_year_month = STRFTIME(timezone(
+                      (SELECT reporting_timezone FROM app.profile_settings WHERE scope = 'profile'),
+                      CURRENT_TIMESTAMP
+                  )::DATE - INTERVAL 1 MONTH, '%Y-%m')
                 GROUP BY category, currency_code
                 ORDER BY ROW_NUMBER() OVER (
                     PARTITION BY currency_code ORDER BY total DESC
@@ -76,7 +80,10 @@ EXAMPLES: dict[str, list[Example]] = {
                        SUM(amount_absolute) AS total_spent
                 FROM core.fct_transactions
                 WHERE transaction_direction = 'expense'
-                  AND transaction_date >= CURRENT_DATE - INTERVAL 12 MONTH
+                  AND transaction_date >= timezone(
+                      (SELECT reporting_timezone FROM app.profile_settings WHERE scope = 'profile'),
+                      CURRENT_TIMESTAMP
+                  )::DATE - INTERVAL 12 MONTH
                 GROUP BY transaction_year_month, currency_code
                 ORDER BY transaction_year_month, currency_code
             """,
@@ -446,7 +453,10 @@ EXAMPLES: dict[str, list[Example]] = {
                     LAST(home_currency_code ORDER BY balance_date) AS home_currency_code,
                     LAST(net_worth ORDER BY balance_date) AS end_of_month_net_worth
                 FROM reports.net_worth
-                WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
+                WHERE balance_date >= timezone(
+                    (SELECT reporting_timezone FROM app.profile_settings WHERE scope = 'profile'),
+                    CURRENT_TIMESTAMP
+                )::DATE - INTERVAL 12 MONTH
                 GROUP BY month
                 ORDER BY month
             """,
@@ -494,7 +504,10 @@ EXAMPLES: dict[str, list[Example]] = {
             sql="""
                 SELECT category, currency_code, SUM(outflow) AS total_outflow
                 FROM reports.cash_flow
-                WHERE year_month >= strftime(current_date - INTERVAL 12 MONTH, '%Y-%m')
+                WHERE year_month >= strftime(timezone(
+                    (SELECT reporting_timezone FROM app.profile_settings WHERE scope = 'profile'),
+                    CURRENT_TIMESTAMP
+                )::DATE - INTERVAL 12 MONTH, '%Y-%m')
                 GROUP BY category, currency_code
                 ORDER BY ROW_NUMBER() OVER (
                     PARTITION BY currency_code ORDER BY total_outflow ASC
@@ -671,7 +684,10 @@ EXAMPLES: dict[str, list[Example]] = {
             sql="""
                 SELECT term, currency_code, SUM(gain_loss) AS total_gain_loss
                 FROM core.fct_realized_gains
-                WHERE YEAR(disposal_date) = YEAR(CURRENT_DATE)
+                WHERE YEAR(disposal_date) = YEAR(timezone(
+                    (SELECT reporting_timezone FROM app.profile_settings WHERE scope = 'profile'),
+                    CURRENT_TIMESTAMP
+                )::DATE)
                 GROUP BY term, currency_code
                 ORDER BY term, currency_code
             """,
@@ -767,7 +783,7 @@ EXAMPLES: dict[str, list[Example]] = {
 _BEYOND_NOTE = (
     "The tables above are the curated query surface. sql_query also reads raw "
     "ingest (raw) and staging (prep) — use them only when the curated tables "
-    "cannot answer the question, and note they carry 33 column declarations "
+    "cannot answer the question, and note they carry 58 column declarations "
     "with every other value masked only when it is a text or integer value "
     "shaped like an SSN or a run of 8 or more digits; a DECIMAL or FLOAT is "
     "not scanned at all. Provenance (meta) and seed data (seeds) are not "
@@ -889,7 +905,7 @@ def _schema_doc(db: Database) -> dict[str, Any]:
 
     return {
         "version": 1,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": format_utc(datetime.now(UTC)),
         "conventions": dict(CONVENTIONS),
         "tables": tables,
         "beyond_the_interface": {

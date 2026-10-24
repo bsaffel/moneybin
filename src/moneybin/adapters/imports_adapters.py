@@ -17,6 +17,7 @@ from moneybin.privacy.payloads.imports import (
     ImportPdfFormatDetail,
     ImportPdfFormatRow,
 )
+from moneybin.temporal import format_utc
 
 if TYPE_CHECKING:
     from collections.abc import Container
@@ -27,14 +28,8 @@ if TYPE_CHECKING:
 
 
 def _iso_timestamp(value: datetime | None) -> str | None:
-    """The stored timestamp in full, or None when the format was never used.
-
-    Full precision, not the date half: the MCP `import_formats` tool has always
-    emitted `last_used_at.isoformat()`, so truncating here to match the CLI
-    table's date-only column would narrow a shipped contract field. The CLI's
-    text branch does its own truncation for display and is unaffected.
-    """
-    return None if value is None else value.isoformat()
+    """Emit the stored instant in canonical UTC, or None when never used."""
+    return None if value is None else format_utc(value)
 
 
 def tabular_format_row(

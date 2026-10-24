@@ -12,7 +12,7 @@ inputs for the selection replay and materialized lot identities for the remap.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -1244,7 +1244,7 @@ def test_a_repointed_price_mark_keeps_its_original_authoring_time(
     claims to have been authored during the merge.
     """
     _mark(db, merge_setup["provisional"])
-    authored = datetime(2026, 1, 15, 9, 30, 0)
+    authored = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
     db.execute(
         "UPDATE app.security_price_overrides SET created_at = ? WHERE security_id = ?",
         [authored, merge_setup["provisional"]],

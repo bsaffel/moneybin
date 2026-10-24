@@ -80,6 +80,13 @@ def _normalize_mutation_profile(name: str) -> str:
 @app.command("create")
 def profile_create(
     name: Annotated[str, typer.Argument(help="Profile name (will be normalized)")],
+    reporting_timezone: Annotated[
+        str | None,
+        typer.Option(
+            "--reporting-timezone",
+            help="IANA reporting timezone; fresh headless profiles use UTC.",
+        ),
+    ] = None,
     init_inbox: Annotated[
         bool | None,
         typer.Option(
@@ -120,9 +127,22 @@ def profile_create(
     # claiming we preserved a database that never existed is just as wrong.
     adopting = svc.exists(name)
     preserving_db = adopting and svc.has_database(name)
+    if reporting_timezone is None and not preserving_db:
+        if get_terminal_policy().interactive:
+            from moneybin.services.profile_settings_service import (
+                suggest_reporting_timezone,
+            )
+
+            reporting_timezone = typer.prompt(
+                "Reporting timezone (IANA)", default=suggest_reporting_timezone()
+            )
+        else:
+            reporting_timezone = "UTC"
     previous = next((str(p["name"]) for p in svc.list() if p["active"]), None)
     try:
-        profile_dir = svc.create(name, init_inbox=init_inbox)
+        profile_dir = svc.create(
+            name, init_inbox=init_inbox, reporting_timezone=reporting_timezone
+        )
     except ProfileExistsError as e:
         logger.error(str(e))
         raise typer.Exit(1) from e
@@ -141,6 +161,7 @@ def profile_create(
         activation_error = e
     marker = "" if activation_error else " (active)"
     pairs = [("Profile", f"{normalized}{marker}"), ("Location", str(profile_dir))]
+    pairs.append(("Reporting timezone", svc.reporting_timezone(normalized)))
     if preserving_db:
         pairs.append(("Database", "Existing database was preserved."))
     disclosures: list[str] = []
@@ -238,6 +259,18 @@ def profile_delete(
     """Delete a profile and all its data (database, logs, config)."""
     normalized = _normalize_mutation_profile(name)
     svc = ProfileService()
+    typer.echo(
+        "Remote grants remain after local profile deletion. Deleting this profile "
+        "removes its local sync identity and credentials. Disconnect linked Plaid "
+        "and SimpleFIN connections before deleting:\n"
+        f"  Inspect: moneybin --profile {normalized} sync status --output json\n"
+        "Use each returned connection's id as <connection-id>:\n"
+        f"  Disconnect each: moneybin --profile {normalized} sync disconnect "
+        "--connection-id <connection-id>\n"
+        "Follow any remaining revocation instructions from disconnect; "
+        "SimpleFIN Bridge may require manual revocation.",
+        err=True,
+    )
     if not yes:
         policy = get_terminal_policy()
         if not policy.interactive:
@@ -308,6 +341,7 @@ def _read_managed_settings(
     with get_database(read_only=True) as db:
         settings = ProfileSettingsService(db).get_settings()
     return {
+        "reporting_timezone": settings.reporting_timezone,
         "home_currency": settings.home_currency,
         "display_currency_targets": settings.display_currency_targets,
     }
@@ -438,7 +472,7 @@ def profile_set(
         typer.Argument(
             help=(
                 "Config key (e.g., logging.level) or managed key "
-                "(home_currency, display_currency_targets)"
+                "(home_currency, display_currency_targets, reporting_timezone)"
             )
         ),
     ],

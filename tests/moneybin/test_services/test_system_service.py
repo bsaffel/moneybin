@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -231,11 +231,11 @@ def test_status_transforms_pending_when_raw_landed_after_the_apply(
     declare_only_models("core.dim_accounts")
     db.execute("SET TimeZone = 'UTC'")
     create_core_tables_raw(db.conn)
-    dim_updated = datetime(2026, 5, 10, 12, 0)
+    dim_updated = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
     _insert_dim_account(db, datetime(2025, 1, 1), dim_updated)
     record_sqlmesh_apply(db, dim_updated)
-    _seed_raw_ofx_account(db, datetime(2026, 5, 13, 18, 24), "import-1")
-    _seed_import_log(db, datetime(2026, 5, 13, 18, 24))
+    _seed_raw_ofx_account(db, datetime(2026, 5, 13, 18, 24, tzinfo=UTC), "import-1")
+    _seed_import_log(db, datetime(2026, 5, 13, 18, 24, tzinfo=UTC))
 
     status = SystemService(db=db).status()
     assert status.transforms_pending is True
@@ -250,12 +250,12 @@ def test_status_transforms_not_pending_after_apply(
     declare_only_models("core.dim_accounts")
     db.execute("SET TimeZone = 'UTC'")
     create_core_tables_raw(db.conn)
-    dim_updated = datetime(2026, 5, 13, 19, 0)
-    landed = datetime(2026, 5, 13, 18, 24)
+    dim_updated = datetime(2026, 5, 13, 19, 0, tzinfo=UTC)
+    landed = datetime(2026, 5, 13, 18, 24, tzinfo=UTC)
     _insert_dim_account(db, landed, dim_updated)
     record_sqlmesh_apply(db, dim_updated)
     _seed_raw_ofx_account(db, landed, "import-1")
-    _seed_import_log(db, datetime(2026, 5, 13, 18, 30))
+    _seed_import_log(db, datetime(2026, 5, 13, 18, 30, tzinfo=UTC))
 
     status = SystemService(db=db).status()
     assert status.transforms_pending is False

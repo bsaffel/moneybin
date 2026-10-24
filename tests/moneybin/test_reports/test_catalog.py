@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import typer
@@ -74,6 +74,7 @@ from moneybin.services.matching_service import (
     MatchingService,
 )
 from moneybin.tables import FCT_TRANSACTIONS, TableRef
+from tests.database_mocks import PROFILE_SETTINGS_SELECT, with_reporting_timezone
 from tests.moneybin.db_helpers import record_model_execution, seed_pending_dedup_pair
 
 _SEMANTICS = ReportSemantics(
@@ -150,7 +151,7 @@ def _db_with_rows(*rows: tuple[object, ...]) -> Database:
     cursor.fetchmany.return_value = list(rows)
     db = MagicMock(spec=Database)
     db.execute.return_value = cursor
-    return cast(Database, db)
+    return cast(Database, with_reporting_timezone(db))
 
 
 def test_catalog_lists_reports_in_full_id_order() -> None:
@@ -378,7 +379,7 @@ def test_sql_parameters_are_rejected_before_query_dispatch(
     details: dict[str, object],
 ) -> None:
     catalog = ReportCatalog((_sql_report(),))
-    db = MagicMock(spec=Database)
+    db = with_reporting_timezone(MagicMock(spec=Database))
 
     with pytest.raises(UserError) as raised:
         catalog.execute(
@@ -391,7 +392,7 @@ def test_sql_parameters_are_rejected_before_query_dispatch(
     assert raised.value.code == code
     assert raised.value.details == details
     assert "sensitive" not in raised.value.message
-    db.execute.assert_not_called()
+    assert db.execute.call_args_list == [call(PROFILE_SETTINGS_SELECT, ["profile"])]
 
 
 def test_legacy_typing_optional_is_validated_like_pep604_union() -> None:
@@ -426,10 +427,10 @@ def test_legacy_typing_optional_is_validated_like_pep604_union() -> None:
     )
 
     assert result.records == [{"value": None}]
-    cast(MagicMock, db.execute).assert_called_once_with(
-        "SELECT ? AS value",
-        [None],
-    )
+    assert cast(MagicMock, db.execute).call_args_list == [
+        call(PROFILE_SETTINGS_SELECT, ["profile"]),
+        call("SELECT ? AS value", [None]),
+    ]
 
 
 def test_sql_report_dispatch_returns_catalog_result_with_defaults() -> None:
@@ -451,10 +452,10 @@ def test_sql_report_dispatch_returns_catalog_result_with_defaults() -> None:
     assert result.records == [{"value": 7}]
     assert result.columns == ["value"]
     assert result.period == "test period"
-    cast(MagicMock, db.execute).assert_called_once_with(
-        "SELECT ? AS value",
-        [7],
-    )
+    assert cast(MagicMock, db.execute).call_args_list == [
+        call(PROFILE_SETTINGS_SELECT, ["profile"]),
+        call("SELECT ? AS value", [7]),
+    ]
 
 
 def test_display_currency_sees_every_row_not_just_the_returned_page() -> None:
@@ -702,7 +703,7 @@ def test_low_mapping_parameter_metadata_retains_frozen_json_shape() -> None:
 def test_negative_limit_is_rejected_before_dispatch() -> None:
     report = _sql_report()
     catalog = ReportCatalog((report,))
-    db = MagicMock(spec=Database)
+    db = with_reporting_timezone(MagicMock(spec=Database))
 
     with pytest.raises(UserError) as raised:
         catalog.execute(
@@ -714,7 +715,7 @@ def test_negative_limit_is_rejected_before_dispatch() -> None:
 
     assert raised.value.code == "report_limit_invalid"
     assert raised.value.details == {"minimum": 0}
-    db.execute.assert_not_called()
+    assert db.execute.call_args_list == [call(PROFILE_SETTINGS_SELECT, ["profile"])]
 
 
 def test_zero_limit_is_valid_and_reports_truncation() -> None:

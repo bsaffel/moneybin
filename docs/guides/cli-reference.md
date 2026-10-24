@@ -224,22 +224,34 @@ scopes the listing to one batch. Commands:
 
 ### `sync`
 
-Pull transactions from external services through the moneybin-sync proxy.
-**`sync login` is required first** — most subcommands fail without a valid JWT.
-The first login needs your server's address: `sync login --server
-https://sync.example.com`, or run `sync login` on a terminal and answer the
-prompt. The address is saved to the active profile once the server answers, so
-later commands need no flag and no environment variable. Logging in with a
-different `--server` switches servers and signs the profile out of the old one.
-`sync link` links a new institution through Plaid Hosted Link or
-re-authenticates a connected one, printing the URL to stderr and opening the
-browser unless told not to; `sync link-status` shows the pending link state.
-`sync pull` fetches new transactions — and, for brokerage and retirement
-accounts, securities, investment transactions, and holdings — then runs the
-refresh pipeline; without `--institution` it pulls every connected institution,
-and `--force` resets the cursor and re-fetches the full history. `sync status`
-shows last-sync timestamps and cursor state per institution. `sync key rotate`
-and the `sync schedule` commands are stubs hidden from `--help`. Commands:
+Pull transactions through the configured moneybin-sync broker. **`sync login`
+is required for broker operations**; `sync pull --job-id <id> --local-only`
+repairs an already committed job's local setup/reports without broker access.
+The first login needs your server's address: use `sync login --server
+https://sync.example.com`, or answer the terminal prompt. The address is saved
+to the active profile only after the server answers. Switching servers signs
+the profile out of the old one; stored credentials are bound to their issuer.
+
+`sync link` uses Plaid Hosted Link by default, while `--provider simplefin`
+opens the broker's SimpleFIN claim flow. Enter setup tokens only on that page.
+`--connection-id` selects one exact grant for linking, pulling or disconnecting;
+SimpleFIN replacement/disconnect can affect every account in that grant.
+`sync link-status` shows pending link state.
+
+`sync pull` ingests provider-native data and runs the refresh pipeline. Select
+`--provider` or `--connection-id` to narrow the request. Plaid retains its
+cursor/investment behavior. SimpleFIN keeps provider-signed amounts, bounded
+UTC windows and explicit partial/deferred outcomes; `--force` repeats its latest
+90-day lookback, while `--history-start YYYY-MM-DD` requests older recovery.
+Neither bypasses provider budgets, and the flags cannot be combined.
+`--no-refresh` defers local processing. `sync status` separates connection
+health, provider freshness, history coverage and local recovery obligations.
+SimpleFIN disconnect requires separate grant revocation in Bridge; imported
+local history is preserved.
+
+The SimpleFIN implementation is in progress for Early Access; deployment and
+non-author live acceptance are separate gates. `sync key rotate` and the
+`sync schedule` commands are stubs hidden from `--help`. Commands:
 [`reference/cli/sync.md`](../reference/cli/sync.md).
 
 **Related guides:** [`data-import.md`](data-import.md), [`data-pipeline.md`](data-pipeline.md).

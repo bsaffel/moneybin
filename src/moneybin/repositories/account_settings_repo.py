@@ -11,10 +11,16 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from moneybin import error_codes
+from moneybin.database import has_column
+from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_SETTINGS
+from moneybin.temporal import as_utc, format_utc, parse_utc
 
 _ACCOUNT_SETTINGS_COLUMNS = (
     "account_id",
@@ -35,6 +41,9 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "currency_code_changed_at",
     "default_cost_basis_method_changed_at",
     "updated_at",
+    "account_type",
+    "account_type_changed_at",
+    "account_subtype_changed_at",
 )
 
 #: Each setting whose change moves rows downstream, the column recording when
@@ -43,6 +52,8 @@ _ACCOUNT_SETTINGS_COLUMNS = (
 _CHANGE_STAMPS: tuple[tuple[str, str, Any], ...] = (
     ("investment_source_type", "investment_source_type_changed_at", None),
     ("archived", "archived_changed_at", False),
+    ("account_type", "account_type_changed_at", None),
+    ("account_subtype", "account_subtype_changed_at", None),
     ("currency_code", "currency_code_changed_at", None),
     ("default_cost_basis_method", "default_cost_basis_method_changed_at", None),
 )
@@ -134,6 +145,9 @@ class AccountSettingsRepo(BaseRepo):
         currency_code_changed_at: datetime | None,
         default_cost_basis_method_changed_at: datetime | None,
         actor: str,
+        account_type: str | None = None,
+        account_type_changed_at: datetime | None = None,
+        account_subtype_changed_at: datetime | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
         context: dict[str, Any] | None = None,
@@ -157,8 +171,20 @@ class AccountSettingsRepo(BaseRepo):
         ``context`` rides the audit row's ``context_json`` (caller-intent the
         full-row snapshot cannot carry).
         """
+        if investment_source_type_changed_at is not None:
+            investment_source_type_changed_at = as_utc(
+                investment_source_type_changed_at
+            )
+        if archived_changed_at is not None:
+            archived_changed_at = as_utc(archived_changed_at)
         with self._transaction(in_outer_txn=in_outer_txn):
             live = self._live_columns()
+            if account_type is not None and "account_type" not in live:
+                raise UserError(
+                    "Account type overrides require a database upgrade.",
+                    code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
+                    hint="Run 'moneybin db migrate apply' before setting account type.",
+                )
             before = self._fetch_row(account_id, live=live)
 
             values_by_column: dict[str, Any] = {
@@ -167,6 +193,17 @@ class AccountSettingsRepo(BaseRepo):
                 "official_name": official_name,
                 "last_four": last_four,
                 "account_subtype": account_subtype,
+                "account_type": account_type,
+                "account_type_changed_at": (
+                    as_utc(account_type_changed_at)
+                    if account_type_changed_at is not None
+                    else None
+                ),
+                "account_subtype_changed_at": (
+                    as_utc(account_subtype_changed_at)
+                    if account_subtype_changed_at is not None
+                    else None
+                ),
                 "holder_category": holder_category,
                 "currency_code": currency_code,
                 "credit_limit": credit_limit,
@@ -222,8 +259,8 @@ class AccountSettingsRepo(BaseRepo):
         undo event it emits, so mutating it here is what lets a later
         undo-of-this-undo (redo) reach :meth:`_insert_row` with the key
         already present, so it restores the real date instead of guessing
-        ``date.today()`` (:meth:`_insert_row`'s fallback remains correct for
-        the case it was written for: a legacy capture reversed before this
+        today's saved reporting date (:meth:`_insert_row`'s fallback remains
+        correct for the case it was written for: a legacy capture reversed before this
         fix shipped, or one where the live row genuinely never got a
         backfilled date).
 
@@ -245,6 +282,11 @@ class AccountSettingsRepo(BaseRepo):
         reset row is returned so the undo's audit row describes it, and ``row``
         gains any change time it predates, so a redo restores over a full image.
         """
+        if "account_type" not in row and has_column(
+            self._db, ACCOUNT_SETTINGS, "account_type"
+        ):
+            live = self._fetch_row(str(row["account_id"]))
+            row["account_type"] = live["account_type"] if live is not None else None
         if (
             row.get("archived") is True
             and "archived_at" not in row
@@ -262,7 +304,7 @@ class AccountSettingsRepo(BaseRepo):
                 else None
             )
         live = self._live_columns()
-        stamps = [(s, c, d) for s, c, d in _CHANGE_STAMPS if c in live]
+        stamps = [(s, c, d) for s, c, d in _CHANGE_STAMPS if c in live and s in live]
         if stamps:
             where, where_params = self._pk_where(row)
             columns = [name for s, c, _ in stamps for name in (s, c)]
@@ -303,6 +345,7 @@ class AccountSettingsRepo(BaseRepo):
             "official_name": None,
             "last_four": None,
             "account_subtype": None,
+            "account_type": None,
             "holder_category": None,
             "currency_code": None,
             "credit_limit": None,
@@ -366,15 +409,21 @@ class AccountSettingsRepo(BaseRepo):
             and "archived_at" not in row
             and self._archived_at_supported()
         ):
-            row["archived_at"] = date.today().isoformat()
+            row["archived_at"] = self._today().isoformat()
+        if has_column(self._db, ACCOUNT_SETTINGS, "account_type"):
+            row.setdefault("account_type", None)
         live = self._live_columns()
         for setting, column, default in _CHANGE_STAMPS:
             if column in live and row.get(setting, default) != default:
-                row[column] = self._now().isoformat()
+                row[column] = format_utc(self._now())
         super()._insert_row(row)
 
     def _now(self) -> datetime:
-        return self._db.execute("SELECT NOW()::TIMESTAMP").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+        return self._db.execute("SELECT NOW()::TIMESTAMPTZ").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+
+    def _today(self) -> date:
+        zone = ZoneInfo(ProfileSettingsRepo(self._db).get_reporting_timezone())
+        return self._now().astimezone(zone).date()
 
     def _live_change_stamps(self, locate: dict[str, Any]) -> dict[str, datetime | None]:
         """The row's current change times, read before a restore overwrites them."""
@@ -416,13 +465,18 @@ class AccountSettingsRepo(BaseRepo):
             if column not in live_stamps:
                 continue
             live_stamp = live_stamps[column]
-            live_iso = None if live_stamp is None else live_stamp.isoformat()
+            live_iso = None if live_stamp is None else format_utc(live_stamp)
             locate.setdefault(column, live_iso)
             if before.get(setting) == locate.get(setting):
                 image = before.get(column)
                 if live_stamp is None or (
                     image is not None
-                    and datetime.fromisoformat(str(image)) >= live_stamp
+                    and (
+                        as_utc(image)
+                        if isinstance(image, datetime)
+                        else parse_utc(str(image))
+                    )
+                    >= as_utc(live_stamp)
                 ):
                     before.setdefault(column, live_iso)
                     continue
@@ -435,7 +489,7 @@ class AccountSettingsRepo(BaseRepo):
                 f"SET {column} = ? WHERE {where}",
                 [kept, *where_params],
             )
-            before[column] = kept.isoformat()
+            before[column] = format_utc(kept)
 
     def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
         """Restore, deriving ``archived_at`` when a legacy capture omits it.
@@ -489,6 +543,14 @@ class AccountSettingsRepo(BaseRepo):
         misleading "not reversible" error. A post-V063 capture always carries
         the key and takes the base-class path unchanged.
         """
+        # Legacy omission preserves the live override; explicit null clears it.
+        if "account_type" not in before and has_column(
+            self._db, ACCOUNT_SETTINGS, "account_type"
+        ):
+            live = self._fetch_row(str(locate["account_id"]))
+            value = live["account_type"] if live is not None else None
+            before["account_type"] = value
+            locate["account_type"] = value
         live_stamps = self._live_change_stamps(locate)
         super()._restore_row(before=before, locate=locate)
         self._stamp_changes(before=before, locate=locate, live_stamps=live_stamps)
@@ -532,7 +594,7 @@ class AccountSettingsRepo(BaseRepo):
             before["archived_at"] = value
             locate["archived_at"] = value
             return
-        derived_at = date.today() if before.get("archived") is True else None
+        derived_at = self._today() if before.get("archived") is True else None
         self._db.execute(
             f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
             f"SET archived_at = ? WHERE {where}",

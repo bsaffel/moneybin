@@ -184,8 +184,8 @@ status           TEXT     NOT NULL,      -- accepted | reversed
 decided_by       TEXT     NOT NULL,      -- auto | user | system
                                          --   ('user' = human OR agent ratification;
                                          --    actor_kind is runtime-only, not a value)
-decided_at       TIMESTAMP NOT NULL,
-reversed_at      TIMESTAMP,
+decided_at       TIMESTAMPTZ NOT NULL,
+reversed_at      TIMESTAMPTZ,
 reversed_by      TEXT
 ```
 
@@ -254,8 +254,8 @@ decided_by             TEXT  NOT NULL,     -- auto | user
 match_reason           TEXT,
 provisional_display_name TEXT,             -- both names as they stood when the decision was made;
 candidate_display_name   TEXT,             --   NULL while pending, when they resolve live
-decided_at             TIMESTAMP NOT NULL,
-reversed_at            TIMESTAMP,
+decided_at             TIMESTAMPTZ NOT NULL,
+reversed_at            TIMESTAMPTZ,
 reversed_by            TEXT
 ```
 

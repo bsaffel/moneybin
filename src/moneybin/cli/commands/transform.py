@@ -229,8 +229,13 @@ def transform_status(
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.transform_service import TransformService
 
+    reporting_timezone: str | None = None
     with handle_cli_errors(), get_database(read_only=True) as db:
         status = TransformService(db).status()
+        if output != OutputFormat.JSON:
+            from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+            reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
 
     if output == OutputFormat.JSON:
         actions: list[str] = []
@@ -245,13 +250,13 @@ def transform_status(
                     "environment": status.environment,
                     "initialized": status.initialized,
                     "last_apply_at": (
-                        status.last_apply_at.isoformat()
+                        status.last_apply_at
                         if status.last_apply_at is not None
                         else None
                     ),
                     "pending": status.pending,
                     "latest_import_at": (
-                        status.latest_import_at.isoformat()
+                        status.latest_import_at
                         if status.latest_import_at is not None
                         else None
                     ),
@@ -275,11 +280,13 @@ def transform_status(
             no_pager=no_pager,
         )
         return
+    from moneybin.cli.render import format_instant
+
     pairs = [
         ("Environment", status.environment),
         (
             "Last apply",
-            status.last_apply_at.strftime("%Y-%m-%d %H:%M:%S")
+            format_instant(status.last_apply_at, reporting_timezone=reporting_timezone)
             if status.last_apply_at
             else "never finalized",
         ),

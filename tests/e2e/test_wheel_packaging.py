@@ -183,3 +183,17 @@ def test_wheel_excludes_build_artifacts(wheel_members: list[str]):
         if _EXCLUDED_DIRS.intersection(Path(name).parts) or name.endswith(".pyc")
     )
     assert not leaked, f"wheel ships build artifacts that must be excluded: {leaked}"
+
+
+@pytest.mark.e2e
+@pytest.mark.slow
+def test_wheel_excludes_one_time_utc_converter(wheel_members: list[str]) -> None:
+    retired = {
+        "moneybin/utc_upgrade.py",
+        "moneybin/services/utc_upgrade_service.py",
+        "moneybin/services/utc_upgrade_lock.py",
+        "moneybin/sql/migrations/V080__normalize_utc_instants.py",
+    }
+    assert not retired.intersection(wheel_members)
+    assert "moneybin/temporal_contract.py" in wheel_members
+    assert "moneybin/services/database_restore_service.py" in wheel_members

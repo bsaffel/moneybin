@@ -8,7 +8,7 @@ and ground_truth table on demand.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -95,7 +95,7 @@ class SyntheticWriter:
             Row counts per table written.
         """
         self._create_synthetic_schema()
-        now = datetime.now()
+        now = datetime.now(UTC)
         counts: dict[str, int] = {}
         account_lookup = {a.name: a for a in result.accounts}
 
@@ -168,15 +168,20 @@ class SyntheticWriter:
         # tabular writer starts its running balance at `opening_balance + first
         # transaction`; dating the anchor a day earlier is what makes one
         # persona field mean one thing on both paths.
-        opening_dt = datetime.combine(result.start_date, time()) - timedelta(days=1)
+        opening_dt = datetime.combine(result.start_date, time(), UTC) - timedelta(
+            days=1
+        )
         for acct in accounts:
             rows.append({
                 "account_id": acct.account_id,
                 "source_origin": acct.institution,
                 "statement_start_date": opening_dt,
                 "statement_end_date": opening_dt,
+                "statement_start_source_date": opening_dt.date(),
+                "statement_end_source_date": opening_dt.date(),
                 "ledger_balance": Decimal(str(round(acct.opening_balance, 2))),
                 "ledger_balance_date": opening_dt,
+                "ledger_balance_source_date": opening_dt.date(),
                 "available_balance": None,
                 "currency_code": acct.currency_code,
                 "source_file": _source_file(result, slugify(acct.name)),
@@ -201,7 +206,8 @@ class SyntheticWriter:
                 "account_id": acct.account_id,
                 "source_origin": acct.institution,
                 "transaction_type": txn.transaction_type,
-                "date_posted": datetime.combine(txn.date, time()),
+                "date_posted": datetime.combine(txn.date, time(), UTC),
+                "date_posted_source_date": txn.date,
                 "amount": Decimal(str(round(txn.amount, 2))),
                 "payee": txn.description,
                 "memo": None,

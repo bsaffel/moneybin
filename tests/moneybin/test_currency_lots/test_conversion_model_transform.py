@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -24,8 +24,8 @@ def test_transform_materializes_exact_single_row_currency_conversion(
             source_type, source_origin
         ) VALUES (
             'acct-eur', 'CHECKING', 'currency-fixture.ofx',
-            '2026-03-15 09:00:00'::TIMESTAMP,
-            '2026-03-15 10:00:00'::TIMESTAMP, 'ofx', 'fixture-bank'
+            '2026-03-15 09:00:00+00:00'::TIMESTAMPTZ,
+            '2026-03-15 10:00:00+00:00'::TIMESTAMPTZ, 'ofx', 'fixture-bank'
         )
         """
     )
@@ -36,15 +36,16 @@ def test_transform_materializes_exact_single_row_currency_conversion(
         INSERT INTO app.account_settings (
             account_id, currency_code, currency_code_changed_at, updated_at
         ) VALUES (
-            'acct-eur', 'EUR', '2026-03-17 15:00:00'::TIMESTAMP,
-            '2026-03-17 15:00:00'::TIMESTAMP
+            'acct-eur', 'EUR', '2026-03-17 15:00:00+00:00'::TIMESTAMPTZ,
+            '2026-03-17 15:00:00+00:00'::TIMESTAMPTZ
         )
         """
     )
     db.execute(
         """
-        INSERT INTO app.profile_settings (home_currency, updated_at)
-        VALUES ('USD', '2026-03-01 09:00:00'::TIMESTAMP)
+        UPDATE app.profile_settings
+        SET home_currency = 'USD', updated_at = TIMESTAMPTZ '2026-03-01 09:00:00+00:00'
+        WHERE scope = 'profile'
         """
     )
     db.execute(
@@ -56,7 +57,7 @@ def test_transform_materializes_exact_single_row_currency_conversion(
         ) VALUES (
             'manual_conversion_1', 'import_conversion_1', 'acct-eur',
             '2026-03-16'::DATE, -80.00, 100.00, 'Currency conversion',
-            NULL, 'USD', '2026-03-16 14:00:00'::TIMESTAMP, 'cli'
+            NULL, 'USD', '2026-03-16 14:00:00+00:00'::TIMESTAMPTZ, 'cli'
         )
         """
     )
@@ -68,7 +69,7 @@ def test_transform_materializes_exact_single_row_currency_conversion(
         ) VALUES (
             'manual_own_currency_1', 'import_conversion_1', 'acct-eur',
             '2026-03-16'::DATE, -10.00, 'Own currency transaction',
-            'GBP', '2026-03-16 13:00:00'::TIMESTAMP, 'cli'
+            'GBP', '2026-03-16 13:00:00+00:00'::TIMESTAMPTZ, 'cli'
         )
         """
     )
@@ -86,7 +87,7 @@ def test_transform_materializes_exact_single_row_currency_conversion(
 
     assert transaction_row == (
         "EUR",
-        datetime(2026, 3, 17, 15, 0, 0),
+        datetime(2026, 3, 17, 15, 0, 0, tzinfo=UTC),
     )
 
     own_currency_row = db.execute(
@@ -99,7 +100,7 @@ def test_transform_materializes_exact_single_row_currency_conversion(
 
     assert own_currency_row == (
         "GBP",
-        datetime(2026, 3, 16, 13, 0, 0),
+        datetime(2026, 3, 16, 13, 0, 0, tzinfo=UTC),
     )
 
     rows = db.execute(
@@ -144,6 +145,6 @@ def test_transform_materializes_exact_single_row_currency_conversion(
             "manual_conversion_1",
             "complete",
             None,
-            datetime(2026, 3, 17, 15, 0, 0),
+            datetime(2026, 3, 17, 15, 0, 0, tzinfo=UTC),
         )
     ]

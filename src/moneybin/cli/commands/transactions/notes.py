@@ -29,6 +29,7 @@ from moneybin.privacy.payloads.transactions import (
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Note
+from moneybin.temporal import parse_utc
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,9 @@ def transactions_notes_list(
     with handle_cli_errors():
         with get_database(read_only=True) as db:
             notes = TransactionService(db).list_notes(transaction_id)
+            from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+            reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -121,10 +125,11 @@ def transactions_notes_list(
             build_rows(
                 ["note id", "created", "author", "note"],
                 [
-                    (note.note_id, note.created_at, note.author, note.text)
+                    (note.note_id, parse_utc(note.created_at), note.author, note.text)
                     for note in notes
                 ],
                 terminal=policy,
+                reporting_timezone=reporting_timezone,
             )
         )
     else:

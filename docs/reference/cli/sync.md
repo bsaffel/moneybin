@@ -56,6 +56,8 @@ Usage: `moneybin sync link [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--institution` | text |  | Re-authenticate this connected institution, or a label for a new one. |
+| `--provider` | text |  | plaid or simplefin |
+| `--connection-id` | text |  | Exact existing connection UUID |
 | `--no-pull` | flag |  | Skip the auto-pull after connecting. |
 | `--no-browser` | flag |  | Print URL only; don't try to open a browser. |
 | `--yes, -y` | flag |  | Skip re-auth confirmation prompt. |
@@ -90,9 +92,10 @@ Usage: `moneybin sync disconnect [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--institution` | text |  | Institution name to disconnect. Ambiguous when it has more than one connection (e.g. after a relink) — use --provider-item-id instead. |
-| `--provider-item-id` | text |  | Exact connection to disconnect, from `moneybin sync status`. Mutually exclusive with --institution. |
-| `--purge` | flag |  | Also delete every locally pulled row of the connection (raw.plaid_* and its broker-carried prices), reverse its account links, and withdraw merge proposals only its accounts describe. Without --purge, local rows are retained. With --provider-item-id, also works for a connection the server no longer lists, though the server still has to answer. Permanent — no revert. |
+| `--institution` | text |  | Institution name to disconnect. Ambiguous when it has more than one connection (e.g. after a relink) — use --connection-id instead. |
+| `--provider-item-id` | text |  | Exact connection to disconnect, from `moneybin sync status`. Mutually exclusive with --institution and --connection-id. |
+| `--connection-id` | text |  | Exact grant UUID from sync status |
+| `--purge` | flag |  | Plaid only: delete every locally pulled row of the connection (raw.plaid_* and its broker-carried prices), reverse its account links, and withdraw merge proposals only its accounts describe. Without --purge, local rows are retained. With --provider-item-id, also works for a connection the server no longer lists, though the server still has to answer. Permanent — no revert. |
 | `--yes, -y` | flag |  | Skip confirmation prompt. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
@@ -107,7 +110,12 @@ Usage: `moneybin sync pull [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--institution` | text |  | Sync specific institution by name. |
-| `--force, -f` | flag |  | Reset cursor and re-fetch full history. |
+| `--provider` | text |  | Select plaid or simplefin. |
+| `--connection-id` | text |  | Select one exact broker connection. |
+| `--history-start` | text |  | Request history from this ISO date. |
+| `--job-id` | text |  | Repair an already ingested job without fetching provider data. |
+| `--local-only` | flag |  | Repair local setup/reports without broker access; requires --job-id. |
+| `--force, -f` | flag |  | Repeat provider retrieval: Plaid cursor reset; SimpleFIN bounded lookback. |
 | `--refresh / --no-refresh` | flag | `true` | Run the post-load refresh pipeline (matching + transforms + categorization) after a successful pull so core.* models (dim_accounts, etc.) reflect the new data before this command returns. Default: on. Pass --no-refresh to defer; transforms dominates pull latency, so high-frequency callers should defer and run refresh on a separate schedule. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |

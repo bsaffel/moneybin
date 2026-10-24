@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS app.tabular_formats (
     multi_account BOOLEAN NOT NULL DEFAULT FALSE, -- Whether this format expects per-row account identification (Tiller, Mint, Monarch)
     source VARCHAR NOT NULL DEFAULT 'detected', -- How this format was created: "detected", "manual", "built-in-override"
     times_used INTEGER NOT NULL DEFAULT 0,      -- Number of successful imports completed using this format
-    last_used_at TIMESTAMP,                     -- Timestamp of the most recent successful import using this format
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this format was first created
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this format was last modified
+    last_used_at TIMESTAMPTZ,                     -- Timestamp of the most recent successful import using this format
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this format was first created
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this format was last modified
 );

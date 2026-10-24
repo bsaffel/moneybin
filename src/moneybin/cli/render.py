@@ -26,6 +26,7 @@ import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import accumulate
@@ -53,6 +54,7 @@ __all__ = [
     "column_view",
     "count_wide_request",
     "format_money",
+    "format_instant",
     "format_percent",
     "render_human_text",
     "render_note",
@@ -521,6 +523,7 @@ def build_rows(
     fit: bool = False,
     optional: Sequence[str] | None = None,
     terminal: TerminalPolicy | None = None,
+    reporting_timezone: str | None = None,
 ) -> RenderableType:
     """Build ``rows`` as a table renderable (requirement 2).
 
@@ -662,19 +665,31 @@ def build_rows(
             raise ValueError(f"placeholder on money column {placeholder.column!r}")
         absent_at = columns.index(placeholder.column)
         absent_as = placeholder.value
-    cells_source: Iterable[tuple[list[RenderableType], bool]] = (
-        _cells(
-            columns,
-            row,
-            declared,
-            absent_at,
-            absent_as,
-            grouped=frozenset(grouped or ()) & declared_numeric,
-            percent=frozenset(percent or ()) & declared_numeric,
-            minus=terminal.minus,
-        )
-        for row in rows
-    )
+
+    def rendered_rows() -> Iterable[tuple[list[RenderableType], bool]]:
+        zone = reporting_timezone
+        for row in rows:
+            if zone is None and any(isinstance(value, datetime) for value in row):
+                from moneybin.database import get_database
+                from moneybin.repositories.profile_settings_repo import (
+                    ProfileSettingsRepo,
+                )
+
+                with get_database(read_only=True) as db:
+                    zone = ProfileSettingsRepo(db).get_reporting_timezone()
+            yield _cells(
+                columns,
+                row,
+                declared,
+                absent_at,
+                absent_as,
+                grouped=frozenset(grouped or ()) & declared_numeric,
+                percent=frozenset(percent or ()) & declared_numeric,
+                minus=terminal.minus,
+                reporting_timezone=zone,
+            )
+
+    cells_source = rendered_rows()
     if fit and optional:
         raise ValueError("fit and optional are exclusive")
     unknown_optional = [name for name in optional or () if name not in columns]
@@ -995,6 +1010,20 @@ def render_note(message: str, *, quiet: bool = False, warn: bool = False) -> Non
     typer.echo(message, err=True)
 
 
+def format_instant(value: datetime, *, reporting_timezone: str | None = None) -> str:
+    """Render a typed instant in the persisted calendar, including offset and zone."""
+    from zoneinfo import ZoneInfo
+
+    from moneybin.temporal import as_utc
+
+    if reporting_timezone is None:
+        raise ValueError(
+            "Human instant rendering requires the persisted reporting timezone"
+        )
+    local = as_utc(value).astimezone(ZoneInfo(reporting_timezone))
+    return f"{local.isoformat(sep=' ')} [{reporting_timezone}]"
+
+
 def _cells(
     columns: Sequence[str],
     row: Sequence[object],
@@ -1005,6 +1034,7 @@ def _cells(
     grouped: Sequence[str] | frozenset[str] = (),
     percent: Sequence[str] | frozenset[str] = (),
     minus: str = MINUS,
+    reporting_timezone: str | None = None,
 ) -> tuple[list[RenderableType], bool]:
     """Render one record's cells, and report whether the declared value was absent.
 
@@ -1048,6 +1078,10 @@ def _cells(
                 # to what the queue contains rather than to how it renders.
                 absent = True
                 cells.append(Text(absent_as))
+            elif isinstance(value, datetime):
+                cells.append(
+                    Text(format_instant(value, reporting_timezone=reporting_timezone))
+                )
             elif name in percent and not isinstance(value, bool):
                 cells.append(Text(format_percent(value, minus=minus)))
             elif (

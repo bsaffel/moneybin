@@ -1,5 +1,6 @@
 """PlaidExtractor investment loading: counts, scoping, snapshots, drift."""
 
+import time
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -8,24 +9,33 @@ import pytest
 import yaml
 from prometheus_client import REGISTRY
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database
 from moneybin.extractors.plaid.extractor import PlaidExtractor
 
 FIXTURE = Path(__file__).parent / "fixtures" / "plaid_investments_sync_response.yaml"
 
 
+@pytest.fixture(params=["UTC", "America/New_York", "Asia/Tokyo"])
+def host_zone(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TZ", request.param)
+    time.tzset()
+    yield request.param
+    monkeypatch.undo()
+    time.tzset()
+
+
 @pytest.fixture
-def sync_data() -> SyncDataResponse:
+def sync_data() -> PlaidSyncDataResponse:
     with FIXTURE.open() as f:
-        return SyncDataResponse.model_validate(yaml.safe_load(f))
+        return PlaidSyncDataResponse.model_validate(yaml.safe_load(f))
 
 
-def _load(db: Database, sync_data: SyncDataResponse, job_id: str = "job-inv-1"):
+def _load(db: Database, sync_data: PlaidSyncDataResponse, job_id: str = "job-inv-1"):
     return PlaidExtractor(db).load(sync_data, job_id=job_id)
 
 
-def test_loads_all_three_arrays(db: Database, sync_data: SyncDataResponse) -> None:
+def test_loads_all_three_arrays(db: Database, sync_data: PlaidSyncDataResponse) -> None:
     result = _load(db, sync_data)
     assert result.securities_loaded == 3
     assert result.investment_transactions_loaded == 4
@@ -34,7 +44,7 @@ def test_loads_all_three_arrays(db: Database, sync_data: SyncDataResponse) -> No
 
 
 def test_investment_transaction_payload_values_preserved_verbatim(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """amount/quantity/price land unaltered — no sign flip, no all-NULL column.
 
@@ -65,7 +75,7 @@ def test_investment_transaction_payload_values_preserved_verbatim(
 
 
 def test_holdings_and_lots_payload_values_preserved(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """cost_basis and lot fields land unaltered — an all-NULL column fails this."""
     _load(db, sync_data)
@@ -108,7 +118,7 @@ def test_holdings_and_lots_payload_values_preserved(
 
 
 def test_same_payload_reload_is_idempotent(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     _load(db, sync_data)
     _load(db, sync_data)
@@ -123,7 +133,7 @@ def test_same_payload_reload_is_idempotent(
 
 
 def test_new_job_reuses_transaction_versions_and_retains_receipts_and_snapshots(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     _load(db, sync_data, job_id="job-inv-1")
     _load(db, sync_data, job_id="job-inv-2")
@@ -148,7 +158,7 @@ def test_new_job_reuses_transaction_versions_and_retains_receipts_and_snapshots(
 
 
 def test_window_start_stamped_per_item(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     _load(db, sync_data)
     rows = db.execute(
@@ -164,7 +174,7 @@ def test_window_start_stamped_per_item(
 
 
 def test_snapshot_receipt_written_per_item(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """One receipt per (item, pull), carrying what that item reported.
 
@@ -185,7 +195,7 @@ def test_snapshot_receipt_written_per_item(
 
 
 def test_snapshot_receipt_written_when_item_reports_zero_holdings(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """The whole point of the receipt: an EMPTY holdings array still records the pull.
 
@@ -216,7 +226,7 @@ def test_snapshot_receipt_written_when_item_reports_zero_holdings(
 
 
 def test_snapshot_receipt_carries_the_items_investments_window(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """The receipt records the window, so an empty snapshot still has one.
 
@@ -245,7 +255,7 @@ def test_snapshot_receipt_carries_the_items_investments_window(
 
 
 def test_snapshot_receipt_not_written_for_a_failed_item(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A failed item did NOT report — a receipt would claim it holds nothing.
 
@@ -267,7 +277,7 @@ def test_snapshot_receipt_not_written_for_a_failed_item(
 
 
 def test_snapshot_receipt_skips_an_item_with_no_investments_window(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """No ``transactions_window_start`` = the server ran no investments flow for the item.
 
@@ -289,7 +299,7 @@ def test_snapshot_receipt_skips_an_item_with_no_investments_window(
 
 
 def test_snapshot_receipt_replay_replaces_and_new_job_retains(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """PK (source_origin, source_file): a replay upserts; a new pull is a new snapshot."""
     _load(db, sync_data, job_id="job-inv-1")
@@ -303,7 +313,7 @@ def test_snapshot_receipt_replay_replaces_and_new_job_retains(
 
 
 def test_colliding_provider_ids_stay_distinct(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """One provider security token, reported by two items, stays two rows.
 
@@ -324,7 +334,9 @@ def test_colliding_provider_ids_stay_distinct(
     assert rows == [("item_1", "acc_1"), ("item_2", "acc_dup")]
 
 
-def test_missing_window_start_raises(db: Database, sync_data: SyncDataResponse) -> None:
+def test_missing_window_start_raises(
+    db: Database, sync_data: PlaidSyncDataResponse
+) -> None:
     broken = sync_data.model_copy(deep=True)
     broken.metadata.institutions[0].transactions_window_start = None
     with pytest.raises(ValueError, match="transactions_window_start"):
@@ -332,7 +344,7 @@ def test_missing_window_start_raises(db: Database, sync_data: SyncDataResponse) 
 
 
 def test_drift_guard_counts_unreconcilable_rows(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     name = "moneybin_investment_amount_drift_rows_total"
     before = REGISTRY.get_sample_value(name) or 0.0
@@ -343,7 +355,7 @@ def test_drift_guard_counts_unreconcilable_rows(
 
 
 def test_large_quantity_price_rounding_does_not_count_as_drift(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """Coarse-precision price rounding at scale must not false-positive as drift.
 
@@ -412,28 +424,14 @@ def test_zero_quantity_buy_reaches_reconciliation_and_counts_drift(
     }
     name = "moneybin_investment_amount_drift_rows_total"
     before = REGISTRY.get_sample_value(name) or 0.0
-    _load(db, SyncDataResponse.model_validate(payload), job_id="j-zero-qty")
+    _load(db, PlaidSyncDataResponse.model_validate(payload), job_id="j-zero-qty")
     assert (REGISTRY.get_sample_value(name) or 0.0) - before == 1.0
 
 
-def test_event_timestamps_land_as_utc_wall_clocks_in_a_non_utc_session(
-    db: Database, sync_data: SyncDataResponse
+def test_event_timestamps_preserve_instants_in_a_non_utc_session(
+    db: Database, sync_data: PlaidSyncDataResponse, host_zone: str
 ) -> None:
-    """A UTC instant must store the UTC wall clock whatever the machine's zone.
-
-    The raw datetime columns are naive TIMESTAMP and staging derives dates
-    from them (`transaction_datetime::DATE` -> trade_date;
-    `original_purchase_datetime::DATE` -> acquisition_date). Hand DuckDB a
-    tz-AWARE value and it rebases the instant into the session zone on
-    insert: in America/Los_Angeles a 2026-03-10T01:30Z trade lands as
-    2026-03-09 18:30, so trade_date comes out a day early -- misdating
-    cost-basis lots, inverting FIFO order between adjacent days, flipping an
-    anniversary sale from long to short, and desyncing trade_date from
-    holdings_date (a UTC date computed in Python).
-
-    Must go through the loader: inserting a naive string straight into raw
-    bypasses the exact coercion under test.
-    """
+    """Aware provider values preserve epochs and explicit UTC business dates."""
     db.execute("SET TimeZone = 'America/Los_Angeles'")
     payload = sync_data.model_copy(deep=True)
     instant = datetime(2026, 3, 10, 1, 30, tzinfo=UTC)  # 2026-03-09 18:30 in LA
@@ -444,25 +442,25 @@ def test_event_timestamps_land_as_utc_wall_clocks_in_a_non_utc_session(
 
     txn = db.execute(
         """
-        SELECT transaction_datetime, transaction_datetime::DATE
+        SELECT transaction_datetime, (transaction_datetime AT TIME ZONE 'UTC')::DATE
         FROM raw.plaid_investment_transactions
         WHERE investment_transaction_id = 'itx_buy_1'
         """
     ).fetchone()
-    assert txn == (datetime(2026, 3, 10, 1, 30), date(2026, 3, 10))
+    assert txn == (instant, date(2026, 3, 10))
 
     lot = db.execute(
         """
-        SELECT original_purchase_datetime, original_purchase_datetime::DATE
+        SELECT original_purchase_datetime, (original_purchase_datetime AT TIME ZONE 'UTC')::DATE
         FROM raw.plaid_investment_holding_lots
         WHERE account_id = 'acc_1' AND security_id = 'sec_aapl' AND lot_index = 0
         """
     ).fetchone()
-    assert lot == (datetime(2026, 3, 10, 1, 30), date(2026, 3, 10))
+    assert lot == (instant, date(2026, 3, 10))
 
 
 def test_holdings_date_is_the_utc_date_of_the_sync_instant(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """holdings_date is the snapshot's UTC calendar date, not an offset-local one.
 
@@ -487,7 +485,7 @@ def test_holdings_date_is_the_utc_date_of_the_sync_instant(
 
 
 def test_investment_transaction_for_an_unknown_account_raises(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """Plaid eventual-consistency drift must fail loudly, as it does for banking.
 
@@ -511,7 +509,7 @@ def test_investment_transaction_for_an_unknown_account_raises(
 
 
 def test_investment_holding_for_an_unknown_account_raises(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """Same orphan drift on the holdings array — orphan core.dim_holdings rows."""
     payload = sync_data.model_copy(deep=True)
@@ -522,7 +520,7 @@ def test_investment_holding_for_an_unknown_account_raises(
 
 
 def test_investment_row_whose_item_disagrees_with_its_account_raises(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """Cross-item drift is orphaning by another route, and it is SILENT in core.
 
@@ -545,7 +543,7 @@ def test_investment_row_whose_item_disagrees_with_its_account_raises(
 
 
 def test_holding_for_an_item_absent_from_metadata_names_the_accounts_real_item(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """An item that never reported is caught as drift, before the window check.
 
@@ -563,7 +561,7 @@ def test_holding_for_an_item_absent_from_metadata_names_the_accounts_real_item(
 
 
 def test_close_price_lands_in_the_price_history(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """The security-level close becomes a durable observation, keyed by Plaid's own id."""
     _load(db, sync_data)
@@ -587,7 +585,7 @@ def test_close_price_lands_in_the_price_history(
 
 
 def test_security_without_a_price_yields_no_row(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A NULL close must not become a NULL-keyed or zero-valued observation.
 
@@ -633,7 +631,7 @@ def test_unofficial_currency_code_is_used_when_iso_is_absent(db: Database) -> No
             "institutions": [],
         },
     }
-    _load(db, SyncDataResponse.model_validate(payload), job_id="j-btc")
+    _load(db, PlaidSyncDataResponse.model_validate(payload), job_id="j-btc")
     row = db.execute(
         "SELECT quote_currency FROM raw.security_prices WHERE provider_security_key = ?",
         ["sec_btc"],
@@ -642,7 +640,7 @@ def test_unofficial_currency_code_is_used_when_iso_is_absent(db: Database) -> No
 
 
 def test_price_history_is_append_only_across_reloads(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A re-sync must neither duplicate an observation nor overwrite the stored one.
 
@@ -667,14 +665,14 @@ def test_price_history_is_append_only_across_reloads(
 
 
 def test_load_result_counts_price_rows(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     result = _load(db, sync_data)
     assert result.security_prices_loaded == 2
 
 
 def test_reload_counts_no_price_rows_and_does_not_advance_the_metric(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """The stalled-feed detector must be able to read zero.
 
@@ -705,7 +703,7 @@ def test_reload_counts_no_price_rows_and_does_not_advance_the_metric(
 
 
 def test_a_partially_new_batch_counts_only_the_new_observation(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """The count is per-row, not all-or-nothing across the batch.
 
@@ -762,7 +760,9 @@ def test_a_quote_that_rounds_away_is_skipped_not_stored_as_zero(
         },
     }
     with caplog.at_level("WARNING"):
-        result = _load(db, SyncDataResponse.model_validate(payload), job_id="j-dust")
+        result = _load(
+            db, PlaidSyncDataResponse.model_validate(payload), job_id="j-dust"
+        )
 
     assert result.security_prices_loaded == 0
     row = db.execute(
@@ -813,7 +813,7 @@ def test_a_blank_iso_currency_falls_through_to_the_unofficial_code(
             "institutions": [],
         },
     }
-    parsed = SyncDataResponse.model_validate(payload)
+    parsed = PlaidSyncDataResponse.model_validate(payload)
     assert parsed.securities[0].iso_currency_code is None, (
         "the blank is normalised at the boundary, so SQL COALESCE on the same "
         "value falls through exactly as Python's `or` does"
@@ -859,7 +859,7 @@ def test_a_whitespace_only_currency_on_both_fields_yields_no_price_row(
             "institutions": [],
         },
     }
-    result = _load(db, SyncDataResponse.model_validate(payload), job_id="j-ws")
+    result = _load(db, PlaidSyncDataResponse.model_validate(payload), job_id="j-ws")
     assert result.security_prices_loaded == 0
     row = db.execute(
         "SELECT COUNT(*) FROM raw.security_prices WHERE provider_security_key = ?",
@@ -880,7 +880,7 @@ def test_empty_arrays_load_cleanly(db: Database) -> None:
             "institutions": [],
         },
     }
-    result = _load(db, SyncDataResponse.model_validate(payload), job_id="j0")
+    result = _load(db, PlaidSyncDataResponse.model_validate(payload), job_id="j0")
     assert result.securities_loaded == 0
     assert result.investment_transactions_loaded == 0
     assert result.holdings_loaded == 0
@@ -888,7 +888,7 @@ def test_empty_arrays_load_cleanly(db: Database) -> None:
 
 
 def test_an_unchanged_repull_counts_no_changes_but_still_writes(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A new job re-sending identical data reports zero changes.
 
@@ -911,7 +911,7 @@ def test_an_unchanged_repull_counts_no_changes_but_still_writes(
 
 
 def test_a_revised_investment_transaction_counts_as_one_change(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     _load(db, sync_data, job_id="job-inv-1")
     payload = sync_data.model_copy(deep=True)
@@ -923,7 +923,7 @@ def test_a_revised_investment_transaction_counts_as_one_change(
 
 
 def test_a_transaction_reverted_to_an_earlier_version_counts_as_a_change(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """The revert stores no new revision but changes which version is current."""
     _load(db, sync_data, job_id="job-inv-1")
@@ -937,7 +937,7 @@ def test_a_transaction_reverted_to_an_earlier_version_counts_as_a_change(
 
 
 def test_a_revalued_lot_counts_as_a_lot_change_only(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A lot's value lives on the lot row, not the position row."""
     _load(db, sync_data, job_id="job-inv-1")
@@ -951,7 +951,7 @@ def test_a_revalued_lot_counts_as_a_lot_change_only(
 
 
 def test_reordered_lots_count_as_no_change(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """A lot's array position is not its identity."""
     _load(db, sync_data, job_id="job-inv-1")
@@ -964,7 +964,7 @@ def test_reordered_lots_count_as_no_change(
 
 
 def test_a_revalued_position_counts_as_one_change(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     _load(db, sync_data, job_id="job-inv-1")
     payload = sync_data.model_copy(deep=True)
@@ -976,7 +976,7 @@ def test_a_revalued_position_counts_as_one_change(
 
 
 def test_a_sold_off_broker_counts_every_exited_position(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """Both items report an empty snapshot: all three prior positions are gone."""
     _load(db, sync_data, job_id="job-inv-1")
@@ -990,7 +990,7 @@ def test_a_sold_off_broker_counts_every_exited_position(
 
 
 def test_a_position_is_compared_only_with_its_items_newest_snapshot(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     """Re-sending the revalued state is no change, though the first snapshot differs."""
     _load(db, sync_data, job_id="job-inv-1")
@@ -1004,7 +1004,7 @@ def test_a_position_is_compared_only_with_its_items_newest_snapshot(
 
 
 def test_a_moved_close_counts_its_security_as_changed(
-    db: Database, sync_data: SyncDataResponse
+    db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:
     _load(db, sync_data, job_id="job-inv-1")
     payload = sync_data.model_copy(deep=True)

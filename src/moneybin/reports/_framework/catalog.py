@@ -406,6 +406,11 @@ class ReportCatalog:
         ``profile_home_currency``) rather than having it read here, so a
         policy default stays the caller's to choose.
         """
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
+        today = datetime.now(UTC).astimezone(ZoneInfo(reporting_timezone)).date()
         target = _conversion_target(display_currency, home_currency)
         spec, execution = self.execute_raw(
             db,
@@ -427,6 +432,7 @@ class ReportCatalog:
                 execution,
                 to_currency=target,
                 service=build_cache_only_currency_service(db),
+                today=today,
                 home_currency=home_currency,
             )
             # A requested currency's fallback is explained and a default's is

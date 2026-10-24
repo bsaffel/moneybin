@@ -6,13 +6,13 @@ CREATE TABLE IF NOT EXISTS app.user_categories (
     description VARCHAR, -- Human-readable description of what transactions belong in this category
     class VARCHAR NOT NULL DEFAULT 'expense' CHECK (class IN ('income', 'expense', 'transfer', 'debt')), -- Accounting class: income | expense | transfer | debt
     is_active BOOLEAN DEFAULT true, -- False to soft-delete a user category without losing existing categorizations
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this category was added
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Latest of all per-row input timestamps contributing to this row's current values. Set on UPDATE by service writes.
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this category was added
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- Latest of all per-row input timestamps contributing to this row's current values. Set on UPDATE by service writes.
 );
 
 /* User overrides on default (seeded) categories — the only mutation users can make to defaults is deactivation */
 CREATE TABLE IF NOT EXISTS app.category_overrides (
     category_id VARCHAR PRIMARY KEY, -- Matches seeds.categories.category_id
     is_active BOOLEAN NOT NULL, -- False to hide a default category from the taxonomy
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Timestamp when this override was last changed
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- Timestamp when this override was last changed
 );

@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS raw.pdf_seeds (
     source_file VARCHAR NOT NULL,  -- Original filename (informational; basename only, no path)
     page INTEGER,                  -- Source page number (informational)
     import_id VARCHAR NOT NULL,    -- Import that wrote this row (FK to app.import_log; reversibility)
-    loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- First observed; does not change on re-import
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- First observed; does not change on re-import
     PRIMARY KEY (alias, row_hash)
 );
 ```
@@ -178,9 +178,9 @@ CREATE TABLE IF NOT EXISTS app.pdf_formats (
     source VARCHAR NOT NULL DEFAULT 'detected', -- detected (bridge-proposed + vetted) | manual
     version INTEGER NOT NULL DEFAULT 1,         -- Bumped on each recipe refresh; prior versions recoverable via app.audit_log (Invariant 11); undo restores a previous version
     times_used INTEGER NOT NULL DEFAULT 0,      -- Successful imports using this format
-    last_used_at TIMESTAMP,                     -- Most recent successful use
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    last_used_at TIMESTAMPTZ,                     -- Most recent successful use
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 ```
 

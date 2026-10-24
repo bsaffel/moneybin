@@ -908,6 +908,24 @@ SYNC_PULL_OUTCOMES_TOTAL = Counter(
     ["provider", "status"],
 )
 
+SYNC_INGESTION_OUTCOMES_TOTAL = Counter(
+    "moneybin_sync_ingestion_outcomes_total",
+    "New durable sync job ingestion outcomes by provider (committed or failed).",
+    ["provider", "status"],
+)
+
+SYNC_REFRESH_OUTCOMES_TOTAL = Counter(
+    "moneybin_sync_refresh_outcomes_total",
+    "Actual local sync refresh attempts by provider (complete or failed).",
+    ["provider", "status"],
+)
+
+SYNC_PARTIAL_SCOPES_TOTAL = Counter(
+    "moneybin_sync_partial_scopes_total",
+    "Incomplete source scopes in newly committed jobs (partial, failed or deferred).",
+    ["provider", "status"],
+)
+
 SYNC_PULL_TRANSACTIONS_LOADED = Counter(
     "moneybin_sync_pull_transactions_loaded_total",
     "Transactions loaded into raw.{provider}_transactions per pull.",
@@ -1370,6 +1388,9 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_sync_institution_errors": "Sync",
     "moneybin_sync_auth_refresh_outcomes": "Sync",
     "moneybin_sync_connect_outcomes": "Sync",
+    "moneybin_sync_ingestion_outcomes": "Sync",
+    "moneybin_sync_refresh_outcomes": "Sync",
+    "moneybin_sync_partial_scopes": "Sync",
     "moneybin_sync_disconnect_outcomes": "Sync",
     "moneybin_sync_purge_rows_deleted": "Sync",
     "moneybin_sync_server_address_outcomes": "Sync",

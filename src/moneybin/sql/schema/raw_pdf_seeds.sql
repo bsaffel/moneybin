@@ -9,6 +9,6 @@ CREATE TABLE IF NOT EXISTS raw.pdf_seeds (
     source_file VARCHAR NOT NULL,  -- Original filename (basename only, no path)
     page INTEGER,                  -- Source page number (informational)
     import_id VARCHAR NOT NULL,    -- Import that wrote this row (FK to app.import_log; reversibility)
-    loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- First observed; does not change on re-import
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- First observed; does not change on re-import
     PRIMARY KEY (alias, row_hash)
 );

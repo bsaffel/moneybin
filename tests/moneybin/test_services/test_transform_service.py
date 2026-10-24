@@ -50,9 +50,7 @@ _INSERT_RAW_PRICE = (
 
 
 def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    # Naive timestamp; mirrors the raw landing columns and
-    # app.import_log.completed_at (all TIMESTAMP).
-    return datetime(year, month, day, hour, minute)
+    return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 @pytest.fixture()
@@ -62,17 +60,13 @@ def freshness_db(db: Database) -> Database:
     The shimmed dim carries ``updated_at`` for the informational
     ``last_apply_at`` field; ``extracted_at`` is retained because
     ``dim_accounts`` really has it, not because freshness reads it. The
-    session TZ is pinned to UTC so the naive literals these tests write
-    into raw landing columns describe the same instants as
-    :func:`record_sqlmesh_apply`'s epoch stamp on any machine, and so naive vs.
-    tz-aware inserts round-trip predictably through the
-    ``updated_at::TIMESTAMP`` cast in
-    :meth:`TransformService._max_dim_accounts_updated_at`.
+    session TZ is pinned to UTC and both instant columns match the aware
+    warehouse schema and :func:`record_sqlmesh_apply`'s epoch stamp.
     """
     db.execute("SET TimeZone = 'UTC'")
     db.execute(
         "CREATE TABLE core.dim_accounts "
-        "(account_id VARCHAR, extracted_at TIMESTAMP, "
+        "(account_id VARCHAR, extracted_at TIMESTAMPTZ, "
         "updated_at TIMESTAMP WITH TIME ZONE)"
     )
     return db
@@ -782,7 +776,6 @@ def test_status_initialized_with_finalized_ts(
     # an explicit UTC tz-aware datetime so the test is host-TZ independent.
     expected_utc = datetime(2026, 5, 13, 18, 24, 0, tzinfo=UTC)
     finalized_ms = int(expected_utc.timestamp() * 1000)
-    expected_naive = expected_utc.replace(tzinfo=None)
 
     fake_env = MagicMock()
     fake_env.finalized_ts = finalized_ms
@@ -803,7 +796,7 @@ def test_status_initialized_with_finalized_ts(
     assert s.environment == "prod"
     assert s.initialized is True
     assert s.last_apply_at is not None
-    assert abs((s.last_apply_at - expected_naive).total_seconds()) < 1.0
+    assert s.last_apply_at == expected_utc
 
 
 def test_plan_no_changes(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:

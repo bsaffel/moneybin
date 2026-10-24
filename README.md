@@ -81,8 +81,9 @@ uv run moneybin mcp install --client claude-desktop
 Restart the client, then ask: *"Which merchants account for most of my spending?"*
 The [MCP setup guide](docs/guides/mcp-clients.md) covers other supported clients.
 
-MoneyBin sends no telemetry. If you connect a cloud AI assistant, its provider
-receives the tool results.
+File imports, CLI, and SQL need no vendor account. Broker-backed sync and Google
+Sheets authorization are opt-in network paths. MoneyBin sends no telemetry. If
+you connect a cloud AI assistant, its provider receives the tool results.
 See [what the AI provider sees](docs/guides/what-the-ai-sees.md) for details.
 
 ## Documentation

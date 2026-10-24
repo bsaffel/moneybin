@@ -94,7 +94,9 @@ WITH bootstrappable AS (
   WHERE
     COALESCE(l.quantity, 0) > 0
     AND (
-      l.original_purchase_datetime < b.window_start
+      (
+        l.original_purchase_datetime AT TIME ZONE 'UTC'
+      )::DATE < b.window_start
       OR (
         l.original_purchase_datetime IS NULL AND NOT l.cost_basis IS NULL
       )
@@ -139,7 +141,9 @@ WITH bootstrappable AS (
         )::DECIMAL(28, 10)
       )::DECIMAL(18, 2)
     END AS basis_amount,
-    COALESCE(original_purchase_datetime::DATE, window_start) AS acquisition_date
+    COALESCE((
+      original_purchase_datetime AT TIME ZONE 'UTC'
+    )::DATE, window_start) AS acquisition_date
   FROM draw_plan
 ), residuals AS (
   /* The sliver the eligible lots cannot cover: shares bought pre-window and sold

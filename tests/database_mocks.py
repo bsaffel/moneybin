@@ -13,6 +13,7 @@ database for a report command needs an answer for that read.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 
@@ -40,3 +41,41 @@ def no_profile_database() -> MagicMock:
     context = MagicMock()
     context.__enter__.return_value = without_a_profile(MagicMock())
     return context
+
+
+PROFILE_SETTINGS_SELECT = (
+    'SELECT "scope", "home_currency", "display_currency_targets", '
+    '"reporting_timezone", "updated_at" FROM app.profile_settings WHERE "scope" = ?'
+)
+
+
+def with_reporting_timezone(db: MagicMock, timezone: str = "UTC") -> MagicMock:
+    """Model a saved reporting calendar without selecting a home currency."""
+    report_cursor = db.execute.return_value
+    profile_cursor = MagicMock()
+    profile_cursor.fetchone.return_value = (
+        "profile",
+        None,
+        [],
+        timezone,
+        datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    home_cursor = MagicMock()
+    home_cursor.fetchone.return_value = (
+        "profile",
+        None,
+        datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    def execute(query: str, parameters: object = None) -> MagicMock:
+        if query == PROFILE_SETTINGS_SELECT and parameters == ["profile"]:
+            return profile_cursor
+        if query == (
+            'SELECT "scope", "home_currency", "updated_at" '
+            'FROM app.profile_settings WHERE "scope" = ?'
+        ) and parameters == ["profile"]:
+            return home_cursor
+        return report_cursor
+
+    db.execute.side_effect = execute
+    return db

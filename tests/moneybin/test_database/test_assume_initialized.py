@@ -46,6 +46,10 @@ def test_assume_initialized_skips_init_schemas(
     )
     try:
         assert calls == []  # init_schemas was NOT called
+        assert db.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)
+        assert db.execute(
+            "SELECT version FROM app.versions WHERE component = 'utc_contract'"
+        ).fetchone() == ("2",)
         # ...and the DB is a usable read-write current-schema DB:
         db.execute(
             "INSERT INTO app.transaction_notes (note_id, transaction_id, text, author)"

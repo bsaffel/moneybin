@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     transaction_type        VARCHAR, -- Optional source-style type code
     check_number            VARCHAR, -- Optional check number
     currency_code           VARCHAR, -- ISO 4217 currency code; NULL when unspecified (never guessed — see multi-currency.md)
-    created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by              VARCHAR NOT NULL -- 'cli' or 'mcp'; future-extensible for multi-user identity
 );
 ```
@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS app.transaction_notes (
     transaction_id  VARCHAR NOT NULL, -- FK to core.fct_transactions
     text            VARCHAR NOT NULL, -- Note body; max 2000 chars (service-layer enforced)
     author          VARCHAR NOT NULL, -- 'cli', 'mcp', 'legacy' (migrated rows), or future user identity
-    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- When the note was added
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- When the note was added
 );
 CREATE INDEX IF NOT EXISTS idx_transaction_notes_txn ON app.transaction_notes(transaction_id);
 ```
@@ -185,7 +185,7 @@ CREATE INDEX IF NOT EXISTS idx_transaction_notes_txn ON app.transaction_notes(tr
 CREATE TABLE IF NOT EXISTS app.transaction_tags (
     transaction_id  VARCHAR NOT NULL, -- FK to core.fct_transactions
     tag             VARCHAR NOT NULL, -- 'namespace:value' or bare 'value'; pattern enforced at service layer
-    applied_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When this tag was applied
+    applied_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When this tag was applied
     applied_by      VARCHAR NOT NULL, -- 'cli', 'mcp', or future user identity
     PRIMARY KEY (transaction_id, tag)
 );
@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS app.transaction_splits (
     category_id     VARCHAR, -- Foreign key to core.dim_categories.category_id (added by PR #174); NULL only for orphaned legacy rows
     note            VARCHAR, -- Optional per-split note
     ord             INTEGER NOT NULL DEFAULT 0, -- Display order; ties broken by split_id
-    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_by      VARCHAR NOT NULL -- 'cli' or 'mcp'
 );
 CREATE INDEX IF NOT EXISTS idx_transaction_splits_txn ON app.transaction_splits(transaction_id);
@@ -216,7 +216,7 @@ CREATE INDEX IF NOT EXISTS idx_transaction_splits_txn ON app.transaction_splits(
 CREATE TABLE IF NOT EXISTS app.imports (
     import_id   VARCHAR PRIMARY KEY, -- FK to app.import_log.import_id; one row per labeled import
     labels      VARCHAR[], -- LIST(VARCHAR); NULL when no labels; same slug pattern as tags
-    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_by  VARCHAR NOT NULL
 );
 ```
@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS app.imports (
 ```sql
 CREATE TABLE IF NOT EXISTS app.audit_log (
     audit_id          VARCHAR PRIMARY KEY, -- Truncated UUID4 (12 hex)
-    occurred_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the event happened
+    occurred_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the event happened
     actor             VARCHAR NOT NULL, -- 'cli', 'mcp', 'auto_rule', 'system', 'ai:<provider>:<model>'
     action            VARCHAR NOT NULL, -- e.g. 'manual.create', 'note.add', 'tag.rename', 'split.add', 'category.set', 'ai.external_call'
     target_schema     VARCHAR, -- e.g. 'app', 'core'
@@ -493,7 +493,7 @@ Convenience wrapper. Equivalent to `system audit list --target-id <txn_id>` but 
 ```
 system audit list [--actor PATTERN] [--action PATTERN]
                   [--target-table NAME] [--target-id ID]
-                  [--from TIMESTAMP] [--to TIMESTAMP]
+                  [--from ISO-INSTANT] [--to ISO-INSTANT]
                   [--limit N] [--output table|json]
 system audit show <audit_id>         Full record incl. before/after JSON
 ```

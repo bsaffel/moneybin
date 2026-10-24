@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
@@ -137,6 +138,7 @@ from moneybin.services.review_decisions_service import (
     ReviewDecisionsService,
 )
 from moneybin.services.security_links_service import SecurityLinksService
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +157,23 @@ _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
 
 def _text(value: object | None) -> str | None:
     """Return a stable textual timestamp/date without inventing one."""
+    if isinstance(value, datetime):
+        return format_utc(value)
     return str(value) if value is not None else None
+
+
+def _review_scope(kind: ReviewQueueKind, status: ReviewStatus) -> dict[str, object]:
+    """Version only queues whose leading key denotes an instant."""
+    scope: dict[str, object] = {"kind": kind, "status": status}
+    if status == "history" or kind in {"rule_conflicts", "investment_matches"}:
+        scope["temporal_contract"] = 2
+    return scope
+
+
+def _instant_text(value: object | None) -> str:
+    """Canonicalize a declared instant key, retaining the missing-value sentinel."""
+    text = _text(value)
+    return canonical_iso_timestamp(text) if text else ""
 
 
 def _review_position(
@@ -172,14 +190,14 @@ def _review_position(
         position = decode_keyset_cursor(
             cursor,
             namespace="reviews",
-            scope={"kind": kind, "status": status},
+            scope=_review_scope(kind, status),
         )
         validate_keyset_shape(position, key_types=types)
         canonical = _canonical_review_position(position, kind=kind, status=status)
         reject_inverted_keyset(canonical, directions)
     except ValueError as exc:
         raise UserError(
-            "Invalid review pagination cursor.",
+            "Invalid review pagination cursor. Restart pagination without a cursor.",
             code=error_codes.REVIEW_CURSOR_INVALID,
         ) from exc
     return canonical
@@ -974,7 +992,7 @@ def _review_ordering(
         )
     if status == "history" or kind == "investment_matches":
         return (
-            (_text(row.created_at) or "", str(row.decision_id)),
+            (_instant_text(row.created_at), str(row.decision_id)),
             directions,
         )
     if kind == "categorization":
@@ -1000,7 +1018,7 @@ def _review_ordering(
         )
     if kind == "rule_conflicts":
         return (
-            (_text(row.created_at) or "", str(row.decision_id)),
+            (_instant_text(row.created_at), str(row.decision_id)),
             directions,
         )
     if kind == "account_links":
@@ -1047,12 +1065,12 @@ def _review_page(
             key_of=lambda row: _review_ordering(kind, status, row)[0],
             directions=directions,
             namespace="reviews",
-            scope={"kind": kind, "status": status},
+            scope=_review_scope(kind, status),
             position=position,
         )
     except InvalidKeysetCursorError as exc:
         raise UserError(
-            "Invalid review pagination cursor.",
+            "Invalid review pagination cursor. Restart pagination without a cursor.",
             code=error_codes.REVIEW_CURSOR_INVALID,
         ) from exc
     return page, next_cursor

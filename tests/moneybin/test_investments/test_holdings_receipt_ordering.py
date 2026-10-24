@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database
 from moneybin.extractors.plaid.extractor import PlaidExtractor
 from tests.moneybin.db_helpers import install_prep_view
@@ -16,7 +16,7 @@ def test_first_snapshot_is_account_scoped_and_stable_when_timestamps_tie(
     fixture = Path(
         "tests/moneybin/test_extractors/fixtures/plaid_investments_sync_response.yaml"
     )
-    payload = SyncDataResponse.model_validate(yaml.safe_load(fixture.read_text()))
+    payload = PlaidSyncDataResponse.model_validate(yaml.safe_load(fixture.read_text()))
     provider = PlaidExtractor(db)
     first = payload.model_copy(deep=True)
     first.investment_holdings = [

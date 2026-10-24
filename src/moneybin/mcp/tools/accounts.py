@@ -50,6 +50,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.orchestration.account_mutations import update_account_settings
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.accounts import (
@@ -216,6 +217,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
     "official_name",
     "last_four",
     "account_subtype",
+    "account_type",
     "holder_category",
     "currency_code",
     "credit_limit",
@@ -225,12 +227,13 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
 })
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, timeout_seconds=180.0)
 def accounts_set(
     account_id: str,
     official_name: str | None = None,
     last_four: str | None = None,
     account_subtype: str | None = None,
+    account_type: str | None = None,
     holder_category: str | None = None,
     currency_code: str | None = None,
     credit_limit: float | None = None,
@@ -249,7 +252,9 @@ def accounts_set(
 
     Structural fields (Plaid-parity metadata):
       ``official_name``, ``last_four``, ``account_subtype``, ``holder_category``,
-      ``currency_code``, ``credit_limit``.
+      ``currency_code``, ``credit_limit``. ``account_type`` overrides the canonical
+      type (depository, credit, loan, investment, other), preserving subtype and
+      source evidence; clear it to restore that evidence.
 
     Behavioral fields:
       ``display_name`` — text override for the account's resolved name.
@@ -266,7 +271,7 @@ def accounts_set(
 
     Pass ``None`` to leave a field unchanged. To explicitly clear a text field
     back to NULL, include its name in ``clear_fields``. Valid clearable names:
-    ``"official_name"``, ``"last_four"``, ``"account_subtype"``,
+    ``"official_name"``, ``"last_four"``, ``"account_subtype"``, ``"account_type"``,
     ``"holder_category"``, ``"currency_code"``, ``"credit_limit"``,
     ``"display_name"``, ``"default_cost_basis_method"``,
     ``"investment_source_type"``. Booleans
@@ -289,6 +294,7 @@ def accounts_set(
         "official_name": official_name,
         "last_four": last_four,
         "account_subtype": account_subtype,
+        "account_type": account_type,
         "holder_category": holder_category,
         "currency_code": currency_code,
         "credit_limit": Decimal(str(credit_limit))
@@ -311,7 +317,8 @@ def accounts_set(
         for field in clear_fields:
             kwargs[field] = CLEAR
     with get_database(read_only=False) as db:
-        settings, warnings = AccountService(db).settings_update(
+        settings, warnings = update_account_settings(
+            db,
             account_id,
             actor="mcp",
             **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
@@ -328,6 +335,7 @@ def accounts_set(
         official_name=d.get("official_name"),  # type: ignore[arg-type]
         last_four=d.get("last_four"),  # type: ignore[arg-type]
         account_subtype=d.get("account_subtype"),  # type: ignore[arg-type]
+        account_type=d.get("account_type"),  # type: ignore[arg-type]
         holder_category=d.get("holder_category"),  # type: ignore[arg-type]
         currency_code=d.get("currency_code"),  # type: ignore[arg-type]
         credit_limit=d.get("credit_limit"),  # type: ignore[arg-type]
@@ -1809,22 +1817,19 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_set,
         "accounts_set",
-        "Partial update of an account's settings. Behavioral fields: "
-        "display_name, default_cost_basis_method (fifo/hifo/specific/average), "
-        "investment_source_type (manual/plaid picks which investment history "
-        "feeds the account's ledger; nothing is deleted, clearing it uses "
-        "both), include_in_net_worth, is_archived. Invalid values raise "
-        "mutation_invalid_input. Structural fields: "
-        "official_name, last_four, account_subtype, holder_category, "
-        "currency_code, credit_limit. Omitted fields are unchanged; name a "
-        "text field in clear_fields to clear it "
-        "(booleans are not clearable). is_archived and include_in_net_worth "
-        "are independent: archiving excludes the account from net worth "
-        "entirely, history included; include_in_net_worth=False excludes it "
-        "regardless of archived status. "
-        "Writes app.account_settings; revert by calling again with prior "
-        "values. "
-        "Amounts are in the currency named by `summary.display_currency`.",
+        "Update account settings. None leaves fields unchanged; clear_fields resets"
+        " nullable fields, never booleans. account_type: "
+        "depository/credit/loan/investment/other; subtype unchanged; clear restores"
+        " source evidence. Noncanonical account_subtype/holder_category values "
+        "warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid "
+        "types/methods raise mutation_invalid_input. investment_source_type: "
+        "manual/plaid selects ledger history; clear uses both; evidence is "
+        "retained. Other fields: display_name, official_name, last_four, "
+        "currency_code, credit_limit. is_archived and include_in_net_worth are "
+        "independent: archiving excludes all net-worth history; archived_at is not "
+        "date-scoped. include_in_net_worth=False excludes active accounts too. "
+        "Audited app.account_settings writes; restore values or use "
+        "system_audit_undo. Amounts use summary.display_currency.",
     )
     register(
         mcp,

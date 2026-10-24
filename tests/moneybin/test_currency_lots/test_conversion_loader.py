@@ -6,7 +6,7 @@ import importlib
 import re
 import typing as t
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pandas as pd
@@ -115,7 +115,7 @@ def _linked(**changes: object) -> dict[str, object]:
         "to_source_type": "plaid",
         "to_source_origin": "source-b",
         "to_source_transaction_id": "native-in",
-        "candidate_updated_at": "2026-03-16 14:00:00",
+        "candidate_updated_at": "2026-03-16T14:00:00+00:00",
     }
     row.update(changes)
     return row
@@ -141,7 +141,7 @@ def _single(**changes: object) -> dict[str, object]:
         "to_source_type": "ofx",
         "to_source_origin": "source-a",
         "to_source_transaction_id": "native-single",
-        "candidate_updated_at": "2026-03-16 14:00:00",
+        "candidate_updated_at": "2026-03-16T14:00:00+00:00",
     }
     row.update(changes)
     return row
@@ -163,7 +163,7 @@ def _missing() -> dict[str, object]:
 
 
 def _profile(
-    currency: str | None = "USD", updated_at: str = "2026-01-01 00:00:00"
+    currency: str | None = "USD", updated_at: str = "2026-01-01T00:00:00+00:00"
 ) -> pd.DataFrame:
     return pd.DataFrame({
         "home_currency": [currency],
@@ -173,8 +173,28 @@ def _profile(
 
 def _profile_audits(*rows: Mapping[str, object]) -> pd.DataFrame:
     return pd.DataFrame(
-        rows,
-        columns=t.cast(t.Any, ("occurred_at", "before_value", "after_value")),
+        [
+            {
+                "audit_id": f"synthetic-{index}",
+                "actor": "test",
+                "action": "profile.set",
+                "operation_id": f"synthetic-op-{index}",
+                **row,
+            }
+            for index, row in enumerate(rows)
+        ],
+        columns=t.cast(
+            t.Any,
+            (
+                "audit_id",
+                "actor",
+                "action",
+                "operation_id",
+                "occurred_at",
+                "before_value",
+                "after_value",
+            ),
+        ),
     )
 
 
@@ -231,7 +251,7 @@ def _context(
     missing: pd.DataFrame | None = None,
     single: pd.DataFrame | None = None,
     home_currency: str | None = "USD",
-    profile_updated_at: str = "2026-01-01 00:00:00",
+    profile_updated_at: str = "2026-01-01T00:00:00+00:00",
     profile_audits: pd.DataFrame | None = None,
     overrides: pd.DataFrame | None = None,
     provider_rates: pd.DataFrame | None = None,
@@ -367,7 +387,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             conversion_source_type VARCHAR,
             conversion_source_origin VARCHAR,
             conversion_source_transaction_id VARCHAR,
-            loaded_at TIMESTAMP
+            loaded_at TIMESTAMPTZ
         )
         """
     )
@@ -376,7 +396,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
         CREATE OR REPLACE TABLE core.fct_transactions (
             transaction_id VARCHAR,
             currency_code VARCHAR,
-            updated_at TIMESTAMP
+            updated_at TIMESTAMPTZ
         )
         """
     )
@@ -397,7 +417,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             'decision-linked', 'native-linked-out', 'manual', 'user',
             'native-linked-in', 'manual', 'user', 'acct-usd', 'acct-eur',
             'transfer', 'accepted', 'user',
-            '2026-03-16 13:00:00'::TIMESTAMP
+            '2026-03-16 13:00:00+00:00'::TIMESTAMPTZ
         )
         """
     )
@@ -406,20 +426,20 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
         INSERT INTO prep.int_transactions__merged VALUES
             ('txn-linked-out', 'acct-usd', '2026-03-16'::DATE, -100.00,
              NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-             '2026-03-16 10:00:00'::TIMESTAMP),
+             '2026-03-16 10:00:00+00:00'::TIMESTAMPTZ),
             ('txn-linked-in', 'acct-eur', '2026-03-16'::DATE, 90.00,
              NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-             '2026-03-16 11:00:00'::TIMESTAMP),
+             '2026-03-16 11:00:00+00:00'::TIMESTAMPTZ),
             ('txn-single', 'acct-eur', '2026-03-17'::DATE, -80.00,
              NULL, '2026-03-17'::DATE, -80.00, NULL, 100.00, 'USD',
              'manual', 'user', 'native-single',
-             '2026-03-17 12:00:00'::TIMESTAMP),
+             '2026-03-17 12:00:00+00:00'::TIMESTAMPTZ),
             ('txn-missing-out', 'acct-eur', '2026-03-18'::DATE, -20.00,
              'EUR', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-             '2026-03-18 12:00:00'::TIMESTAMP),
+             '2026-03-18 12:00:00+00:00'::TIMESTAMPTZ),
             ('txn-missing-in', 'acct-gbp', '2026-03-18'::DATE, 30.00,
              'GBP', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-             '2026-03-18 13:00:00'::TIMESTAMP)
+             '2026-03-18 13:00:00+00:00'::TIMESTAMPTZ)
         """
     )
     db.execute(
@@ -436,31 +456,34 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
         CREATE OR REPLACE TABLE prep.int_accounts__merged (
             account_id VARCHAR,
             currency_code VARCHAR,
-            updated_at TIMESTAMP
+            updated_at TIMESTAMPTZ,
+            account_type_changed_at TIMESTAMPTZ,
+            account_subtype_changed_at TIMESTAMPTZ
         )
         """
     )
     db.execute(
         """
-        INSERT INTO prep.int_accounts__merged VALUES
-            ('acct-usd', 'USD', '2026-03-15 09:00:00'::TIMESTAMP),
-            ('acct-eur', 'EUR', '2026-03-19 09:00:00'::TIMESTAMP)
+        INSERT INTO prep.int_accounts__merged (account_id, currency_code, updated_at) VALUES
+            ('acct-usd', 'USD', '2026-03-15 09:00:00'::TIMESTAMPTZ),
+            ('acct-eur', 'EUR', '2026-03-19 09:00:00'::TIMESTAMPTZ)
         """
     )
     db.execute(
         """
         INSERT INTO core.fct_transactions VALUES
-            ('txn-linked-out', 'USD', '2026-03-18 09:00:00'::TIMESTAMP),
-            ('txn-linked-in', 'EUR', '2026-03-18 10:00:00'::TIMESTAMP),
-            ('txn-single', 'EUR', '2026-03-19 09:00:00'::TIMESTAMP),
-            ('txn-missing-out', 'EUR', '2026-03-18 12:00:00'::TIMESTAMP),
-            ('txn-missing-in', 'GBP', '2026-03-18 13:00:00'::TIMESTAMP)
+            ('txn-linked-out', 'USD', '2026-03-18 09:00:00+00:00'::TIMESTAMPTZ),
+            ('txn-linked-in', 'EUR', '2026-03-18 10:00:00+00:00'::TIMESTAMPTZ),
+            ('txn-single', 'EUR', '2026-03-19 09:00:00+00:00'::TIMESTAMPTZ),
+            ('txn-missing-out', 'EUR', '2026-03-18 12:00:00+00:00'::TIMESTAMPTZ),
+            ('txn-missing-in', 'GBP', '2026-03-18 13:00:00+00:00'::TIMESTAMPTZ)
         """
     )
     db.execute(
         """
-        INSERT INTO app.profile_settings (home_currency, updated_at)
-        VALUES ('USD', '2026-03-01 09:00:00'::TIMESTAMP)
+        UPDATE app.profile_settings
+        SET home_currency = 'USD', updated_at = '2026-03-01 09:00:00+00:00'::TIMESTAMPTZ
+        WHERE scope = 'profile'
         """
     )
 
@@ -477,7 +500,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     assert linked.from_source_transaction_id == "native-linked-out"
     assert linked.coverage_status == "complete"
     # Both legs inherit their Account Currency, so acct-eur's 03-19 stamp leads.
-    assert str(linked.updated_at) == "2026-03-19 09:00:00"
+    assert str(linked.updated_at) == "2026-03-19 09:00:00+00:00"
 
     single = by_shape["single_row"]
     assert (single.from_currency, single.to_currency) == ("EUR", "USD")
@@ -487,13 +510,13 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     )
     assert single.from_source_transaction_id == "native-single"
     assert single.coverage_status == "complete"
-    assert str(single.updated_at) == "2026-03-19 09:00:00"
+    assert str(single.updated_at) == "2026-03-19 09:00:00+00:00"
 
     db.execute(
         """
         UPDATE prep.int_accounts__merged
            SET currency_code = NULL,
-               updated_at = '2026-03-20 09:00:00'::TIMESTAMP
+               updated_at = '2026-03-20 09:00:00+00:00'::TIMESTAMPTZ
          WHERE account_id = 'acct-eur'
         """
     )
@@ -504,13 +527,13 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     }["single_row"]
     assert cleared.from_currency is None
     assert cleared.coverage_reason == "unknown_currency"
-    assert str(cleared.updated_at) == "2026-03-20 09:00:00"
+    assert str(cleared.updated_at) == "2026-03-20 09:00:00+00:00"
 
     db.execute(
         """
         UPDATE core.fct_transactions
            SET currency_code = NULL,
-               updated_at = '2026-03-21 09:00:00'::TIMESTAMP
+               updated_at = '2026-03-21 09:00:00+00:00'::TIMESTAMPTZ
          WHERE transaction_id = 'txn-linked-in'
         """
     )
@@ -523,7 +546,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     assert cleared_linked.coverage_reason == "unknown_currency"
     # The clear happened at the account's 03-20 stamp; the fact's later
     # updated_at is curation freshness, which a materialized row must not fold.
-    assert str(cleared_linked.updated_at) == "2026-03-20 09:00:00"
+    assert str(cleared_linked.updated_at) == "2026-03-20 09:00:00+00:00"
 
     db.execute(
         """
@@ -531,7 +554,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             audit_id, occurred_at, actor, action, target_schema, target_table,
             target_id, operation_id
         ) VALUES (
-            'audit-decision-linked', '2026-03-22 09:00:00'::TIMESTAMP,
+            'audit-decision-linked', '2026-03-22 09:00:00+00:00'::TIMESTAMPTZ,
             'system', 'match.restore', 'app', 'match_decisions',
             'decision-linked', 'op-decision-linked'
         )
@@ -542,7 +565,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
         row.source_shape: row
         for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
     }["linked_two_row"]
-    assert str(restored_linked.updated_at) == "2026-03-22 09:00:00"
+    assert str(restored_linked.updated_at) == "2026-03-22 09:00:00+00:00"
 
     db.execute(
         """
@@ -556,13 +579,13 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
                 'decision-missing-debit', 'native-missing-out', 'manual', 'user',
                 'native-absent-in', 'manual', 'user', 'acct-eur', 'acct-absent',
                 'transfer', 'accepted', 'user',
-                '2026-03-16 14:00:00'::TIMESTAMP
+                '2026-03-16 14:00:00+00:00'::TIMESTAMPTZ
             ),
             (
                 'decision-missing-credit', 'native-absent-out', 'manual', 'user',
                 'native-missing-in', 'manual', 'user', 'acct-absent', 'acct-gbp',
                 'transfer', 'accepted', 'user',
-                '2026-03-16 15:00:00'::TIMESTAMP
+                '2026-03-16 15:00:00+00:00'::TIMESTAMPTZ
             )
         """
     )
@@ -572,7 +595,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             audit_id, occurred_at, actor, action, target_schema, target_table,
             target_id, operation_id
         ) VALUES (
-            'audit-decision-missing-debit', '2026-03-23 09:00:00'::TIMESTAMP,
+            'audit-decision-missing-debit', '2026-03-23 09:00:00+00:00'::TIMESTAMPTZ,
             'system', 'match.restore', 'app', 'match_decisions',
             'decision-missing-debit', 'op-decision-missing-debit'
         )
@@ -605,7 +628,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
         missing_debit.to_currency,
     ) == (None, None, None, None, None)
     assert missing_debit.coverage_reason == "missing_leg"
-    assert str(missing_debit.updated_at) == "2026-03-23 09:00:00"
+    assert str(missing_debit.updated_at) == "2026-03-23 09:00:00+00:00"
 
     missing_credit = next(
         row
@@ -694,11 +717,11 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             ('txn-a-collision', 'acct-eur', '2026-03-24'::DATE, -40.00,
              'EUR', '2026-03-24'::DATE, -40.00, 'EUR', 50.00, 'USD',
              'plaid', 'item-correct', 'native-collision-out',
-             '2026-03-24 09:00:00'::TIMESTAMP),
+             '2026-03-24 09:00:00+00:00'::TIMESTAMPTZ),
             ('txn-z-collision', 'acct-eur', '2026-03-25'::DATE, -99.00,
              'GBP', '2026-03-25'::DATE, -99.00, 'GBP', 120.00, 'USD',
              'plaid', 'item-other', 'native-collision-out',
-             '2026-03-25 09:00:00'::TIMESTAMP)
+             '2026-03-25 09:00:00+00:00'::TIMESTAMPTZ)
         """
     )
     db.execute(
@@ -713,8 +736,8 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     db.execute(
         """
         INSERT INTO core.fct_transactions VALUES
-            ('txn-a-collision', 'EUR', '2026-03-24 09:00:00'::TIMESTAMP),
-            ('txn-z-collision', 'GBP', '2026-03-25 09:00:00'::TIMESTAMP)
+            ('txn-a-collision', 'EUR', '2026-03-24 09:00:00+00:00'::TIMESTAMPTZ),
+            ('txn-z-collision', 'GBP', '2026-03-25 09:00:00+00:00'::TIMESTAMPTZ)
         """
     )
     db.execute(
@@ -728,7 +751,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             'decision-origin-missing', 'native-collision-out', 'plaid',
             'item-correct', 'native-absent-origin-credit', 'plaid', 'item-credit',
             'acct-eur', 'acct-absent', 'transfer', 'accepted', 'user',
-            '2026-03-24 10:00:00'::TIMESTAMP
+            '2026-03-24 10:00:00+00:00'::TIMESTAMPTZ
         )
         """
     )
@@ -753,10 +776,10 @@ def test_home_undo_to_unset_uses_home_audit_freshness() -> None:
         pd.DataFrame(columns=t.cast(t.Any, ["home_currency", "profile_updated_at"])),
         _profile_watermarks({
             "target_id": "profile",
-            "mutation_updated_at": "2026-03-22 09:00:00",
+            "mutation_updated_at": "2026-03-22 09:00:00+00:00",
         }),
         _profile_audits({
-            "occurred_at": "2026-03-22 09:00:00",
+            "occurred_at": "2026-03-22 09:00:00+00:00",
             "before_value": '{"home_currency":"USD"}',
             "after_value": '{"home_currency":null}',
         }),
@@ -767,24 +790,24 @@ def test_home_undo_to_unset_uses_home_audit_freshness() -> None:
     )
 
     assert home_currency is None
-    assert updated_at == datetime(2026, 3, 22, 9)
+    assert updated_at == datetime(2026, 3, 22, 9, tzinfo=UTC)
 
 
 def test_display_target_write_and_undo_keep_home_and_lot_freshness() -> None:
     """Report-target events do not become FX-accounting input changes."""
     profile_audits = _profile_audits(
         {
-            "occurred_at": "2026-03-10 09:00:00",
+            "occurred_at": "2026-03-10 09:00:00+00:00",
             "before_value": '{"home_currency":"EUR"}',
             "after_value": '{"home_currency":"USD"}',
         },
         {
-            "occurred_at": "2026-03-20 09:00:00",
+            "occurred_at": "2026-03-20 09:00:00+00:00",
             "before_value": '{"home_currency":"USD"}',
             "after_value": '{"home_currency":"USD"}',
         },
         {
-            "occurred_at": "2026-03-21 09:00:00",
+            "occurred_at": "2026-03-21 09:00:00+00:00",
             "before_value": '{"home_currency":"USD"}',
             "after_value": '{"home_currency":"USD"}',
         },
@@ -794,17 +817,20 @@ def test_display_target_write_and_undo_keep_home_and_lot_freshness() -> None:
         t.cast(
             t.Any,
             _ProfileFreshnessContext(
-                _profile("USD", "2026-03-21 09:00:00"),
+                _profile("USD", "2026-03-21 09:00:00+00:00"),
                 _profile_watermarks({
                     "target_id": "profile",
-                    "mutation_updated_at": "2026-03-21 09:00:00",
+                    "mutation_updated_at": "2026-03-21 09:00:00+00:00",
                 }),
                 profile_audits,
             ),
         )
     )
 
-    assert (home_currency, home_updated_at) == ("USD", datetime(2026, 3, 10, 9))
+    assert (home_currency, home_updated_at) == (
+        "USD",
+        datetime(2026, 3, 10, 9, tzinfo=UTC),
+    )
 
     rows = _load(
         _context(
@@ -814,25 +840,25 @@ def test_display_target_write_and_undo_keep_home_and_lot_freshness() -> None:
                     to_currency="EUR",
                     from_amount="-100.00",
                     to_amount="80.00",
-                    candidate_updated_at="2026-03-01 09:00:00",
+                    candidate_updated_at="2026-03-01 09:00:00+00:00",
                 )
             ),
-            profile_updated_at="2026-03-20 09:00:00",
+            profile_updated_at="2026-03-20 09:00:00+00:00",
             profile_audits=profile_audits,
         )
     )
 
-    assert rows[0].updated_at == datetime(2026, 3, 10, 9)
+    assert rows[0].updated_at == datetime(2026, 3, 10, 9, tzinfo=UTC)
     accounting = importlib.import_module(
         "moneybin.currency_lots.sqlmesh_loader"
     ).derive_currency_accounting(rows, (), {})
-    assert accounting.lots[0].updated_at == datetime(2026, 3, 10, 9)
+    assert accounting.lots[0].updated_at == datetime(2026, 3, 10, 9, tzinfo=UTC)
 
 
 def test_legacy_home_freshness_survives_target_write_and_undo() -> None:
     """The first target event retains a pre-audit profile's home watermark."""
     module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
-    legacy_updated_at = "2026-03-01 09:00:00"
+    legacy_updated_at = "2026-03-01 09:00:00+00:00"
 
     no_audit_home, no_audit_updated_at = module._load_home_currency(  # pyright: ignore[reportPrivateUsage]
         t.cast(
@@ -848,28 +874,28 @@ def test_legacy_home_freshness_survives_target_write_and_undo() -> None:
         t.cast(
             t.Any,
             _ProfileFreshnessContext(
-                _profile("USD", "2026-03-20 09:00:00"),
+                _profile("USD", "2026-03-20 09:00:00+00:00"),
                 _profile_watermarks({
                     "target_id": "profile",
-                    "mutation_updated_at": "2026-03-21 09:00:00",
+                    "mutation_updated_at": "2026-03-21 09:00:00+00:00",
                 }),
                 _profile_audits(
                     {
-                        "occurred_at": "2026-03-20 09:00:00",
+                        "occurred_at": "2026-03-20 09:00:00+00:00",
                         "before_value": (
-                            '{"home_currency":"USD","updated_at":"2026-03-01 09:00:00"}'
+                            '{"home_currency":"USD","updated_at":"2026-03-01 09:00:00+00:00"}'
                         ),
                         "after_value": (
-                            '{"home_currency":"USD","updated_at":"2026-03-20 09:00:00"}'
+                            '{"home_currency":"USD","updated_at":"2026-03-20 09:00:00+00:00"}'
                         ),
                     },
                     {
-                        "occurred_at": "2026-03-21 09:00:00",
+                        "occurred_at": "2026-03-21 09:00:00+00:00",
                         "before_value": (
-                            '{"home_currency":"USD","updated_at":"2026-03-20 09:00:00"}'
+                            '{"home_currency":"USD","updated_at":"2026-03-20 09:00:00+00:00"}'
                         ),
                         "after_value": (
-                            '{"home_currency":"USD","updated_at":"2026-03-21 09:00:00"}'
+                            '{"home_currency":"USD","updated_at":"2026-03-21 09:00:00+00:00"}'
                         ),
                     },
                 ),
@@ -879,11 +905,11 @@ def test_legacy_home_freshness_survives_target_write_and_undo() -> None:
 
     assert (no_audit_home, no_audit_updated_at) == (
         "USD",
-        datetime(2026, 3, 1, 9),
+        datetime(2026, 3, 1, 9, tzinfo=UTC),
     )
     assert (target_home, target_updated_at) == (
         "USD",
-        datetime(2026, 3, 1, 9),
+        datetime(2026, 3, 1, 9, tzinfo=UTC),
     )
 
 
@@ -1069,7 +1095,7 @@ def test_single_row_without_received_amount_is_incomplete_shape() -> None:
                     to_currency="EUR",
                     from_source_transaction_id="native-acquire",
                     to_source_transaction_id="native-acquire",
-                    candidate_updated_at="2026-03-15 14:00:00",
+                    candidate_updated_at="2026-03-15 14:00:00+00:00",
                 ),
                 _single(
                     from_transaction_id="txn-dispose",
@@ -1119,7 +1145,7 @@ def test_single_row_unknown_received_currency_preserves_known_disposal(
                     to_currency="EUR",
                     from_source_transaction_id="native-acquire",
                     to_source_transaction_id="native-acquire",
-                    candidate_updated_at="2026-03-15 14:00:00",
+                    candidate_updated_at="2026-03-15 14:00:00+00:00",
                 ),
                 _single(
                     from_transaction_id="txn-dispose",
@@ -1173,7 +1199,7 @@ def test_exact_date_override_outranks_provider_cache() -> None:
         "to_currency": "USD",
         "rate_date": "2026-03-16",
         "rate": "1.25000000",
-        "rate_updated_at": "2026-03-16 16:00:00",
+        "rate_updated_at": "2026-03-16 16:00:00+00:00",
     }
     provider = {
         "from_currency": "GBP",
@@ -1181,7 +1207,7 @@ def test_exact_date_override_outranks_provider_cache() -> None:
         "rate_date": "2026-03-16",
         "rate": "1.20000000",
         "source_type": "frankfurter",
-        "loaded_at": "2026-03-16 15:00:00",
+        "loaded_at": "2026-03-16 15:00:00+00:00",
     }
 
     row = _load(
@@ -1211,7 +1237,7 @@ def test_weekend_uses_only_the_certain_friday_cache_row() -> None:
         "rate_date": "2026-03-13",
         "rate": "1.20000000",
         "source_type": "frankfurter",
-        "loaded_at": "2026-03-13 15:00:00",
+        "loaded_at": "2026-03-13 15:00:00+00:00",
     }
     row = _load(
         _context(
@@ -1240,7 +1266,7 @@ def test_missing_weekday_rate_never_substitutes_an_earlier_day() -> None:
         "rate_date": "2026-03-16",
         "rate": "1.20000000",
         "source_type": "frankfurter",
-        "loaded_at": "2026-03-16 15:00:00",
+        "loaded_at": "2026-03-16 15:00:00+00:00",
     }
     row = _load(
         _context(
@@ -1268,7 +1294,7 @@ def test_foreign_to_foreign_uses_received_currency_rate_and_its_provenance() -> 
         "rate_date": "2026-03-16",
         "rate": "1.234567895",
         "source_type": "provider-b",
-        "loaded_at": "2026-03-16 15:00:00",
+        "loaded_at": "2026-03-16 15:00:00+00:00",
     }
     wrong_sent_rate = {
         "from_currency": "EUR",
@@ -1276,7 +1302,7 @@ def test_foreign_to_foreign_uses_received_currency_rate_and_its_provenance() -> 
         "rate_date": "2026-03-16",
         "rate": "9.00000000",
         "source_type": "provider-a",
-        "loaded_at": "2026-03-16 15:00:00",
+        "loaded_at": "2026-03-16 15:00:00+00:00",
     }
     row = _load(
         _context(
@@ -1304,7 +1330,7 @@ def test_newest_provider_row_then_source_type_is_deterministic() -> None:
             "rate_date": "2026-03-16",
             "rate": "1.10000000",
             "source_type": "old-provider",
-            "loaded_at": "2026-03-16 14:00:00",
+            "loaded_at": "2026-03-16 14:00:00+00:00",
         },
         {
             "from_currency": "GBP",
@@ -1312,7 +1338,7 @@ def test_newest_provider_row_then_source_type_is_deterministic() -> None:
             "rate_date": "2026-03-16",
             "rate": "1.30000000",
             "source_type": "z-provider",
-            "loaded_at": "2026-03-16 15:00:00",
+            "loaded_at": "2026-03-16 15:00:00+00:00",
         },
         {
             "from_currency": "GBP",
@@ -1320,7 +1346,7 @@ def test_newest_provider_row_then_source_type_is_deterministic() -> None:
             "rate_date": "2026-03-16",
             "rate": "1.20000000",
             "source_type": "a-provider",
-            "loaded_at": "2026-03-16 15:00:00",
+            "loaded_at": "2026-03-16 15:00:00+00:00",
         },
     ]
     row = _load(
@@ -1338,3 +1364,218 @@ def test_newest_provider_row_then_source_type_is_deterministic() -> None:
 
 def test_amount_and_date_proximity_without_accepted_evidence_produces_no_row() -> None:
     assert _load(_context()) == []
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_provider_rate_ranking_accepts_null_and_aware_timestamps(reverse: bool) -> None:
+    rows = [
+        {
+            "from_currency": "GBP",
+            "to_currency": "USD",
+            "rate_date": "2026-03-16",
+            "rate": rate,
+            "source_type": source,
+            "loaded_at": stamp,
+        }
+        for rate, source, stamp in [
+            ("1.10000000", "null-provider", None),
+            ("1.30000000", "z-provider", "2026-03-16T15:00:00+00:00"),
+            ("1.20000000", "a-provider", "2026-03-16T11:00:00-04:00"),
+        ]
+    ]
+    row = _load(
+        _context(
+            single=_frame(
+                _single(from_currency="EUR", to_currency="GBP", to_amount="10.00")
+            ),
+            provider_rates=_provider_rates(
+                *(list(reversed(rows)) if reverse else rows)
+            ),
+        )
+    )[0]
+    assert row.home_value == Decimal("12.00")
+    assert row.valuation_source_type == "a-provider"
+
+
+@pytest.mark.parametrize("value", [datetime(2025, 7, 1, 1, 30), "2025-07-01T01:30:00"])
+def test_warehouse_timestamp_parser_refuses_naive_values(value: object) -> None:
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    with pytest.raises(ValueError, match="offset"):
+        module._opt_timestamp(value)  # pyright: ignore[reportPrivateUsage]  # strict warehouse boundary
+
+
+def test_warehouse_timestamp_parser_normalizes_offsets_and_null() -> None:
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    parsed = module._opt_timestamp("2025-07-01T01:30:00.123456-04:00")  # pyright: ignore[reportPrivateUsage]
+    assert parsed == datetime(2025, 7, 1, 5, 30, 0, 123456, tzinfo=UTC)
+    assert parsed.tzinfo is UTC
+    assert module._opt_timestamp(None) is None  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("provenance", ["supported", "missing", "ambiguous"])
+def test_fx_home_freshness_decodes_preserved_legacy_audit_with_provenance(
+    db: Database, provenance: str
+) -> None:
+    from pydantic import TypeAdapter
+
+    from moneybin.temporal_contract import LegacyTimeRule
+
+    original = '{ "home_currency": "USD", "updated_at": "2025-07-01 01:30:00.123456" }'
+    db.execute("UPDATE app.profile_settings SET home_currency = 'USD'")
+    db.execute(
+        "INSERT INTO app.audit_log (audit_id, occurred_at, actor, action, target_schema, "
+        "target_table, target_id, before_value, after_value, operation_id) VALUES "
+        "('synthetic-home', TIMESTAMPTZ '2025-10-01 00:00:00+00', 'test', "
+        "'profile.display_currency_targets', 'app', 'profile_settings', 'profile', ?, ?, 'synthetic-op')",
+        [original, '{"home_currency":"USD"}'],
+    )
+    rules = tuple(
+        LegacyTimeRule(
+            schema="app",
+            table="profile_settings",
+            column="updated_at",
+            writer_era="local-naive",
+            zone=zone,
+            recorded_from=datetime(2025, 1, 1, tzinfo=UTC),
+            recorded_until=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        for zone in (
+            ["America/New_York"]
+            if provenance == "supported"
+            else ["America/New_York", "Asia/Tokyo"]
+        )
+    )
+    if provenance == "missing":
+        db.execute("DELETE FROM app.utc_upgrade_provenance")
+    else:
+        db.execute(
+            "UPDATE app.utc_upgrade_provenance SET rules = ? WHERE contract_version = 2",
+            [TypeAdapter(tuple[LegacyTimeRule, ...]).dump_json(rules).decode()],
+        )
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    if provenance == "supported":
+        assert module._load_home_currency(t.cast(t.Any, _DatabaseContext(db))) == (
+            "USD",
+            datetime(2025, 7, 1, 5, 30, 0, 123456, tzinfo=UTC),
+        )  # pyright: ignore[reportPrivateUsage]
+    else:
+        with pytest.raises(ValueError, match="provenance"):
+            module._load_home_currency(t.cast(t.Any, _DatabaseContext(db)))  # pyright: ignore[reportPrivateUsage]
+    assert db.execute(
+        "SELECT before_value::VARCHAR FROM app.audit_log WHERE audit_id = 'synthetic-home'"
+    ).fetchone() == (original,)
+
+
+@pytest.mark.parametrize("path", ["linked", "missing", "same_currency"])
+def test_simplefin_classification_advances_explicit_currency_transfer_freshness(
+    db: Database, path: str
+) -> None:
+    """Classifier edits reach derived money even with explicit captured currency."""
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    db.execute("""UPDATE app.profile_settings SET home_currency = 'USD',
+        updated_at = TIMESTAMPTZ '2026-03-01 09:00:00+00' WHERE scope = 'profile'
+    """)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("""CREATE OR REPLACE TABLE core.bridge_transfers (
+        transfer_id VARCHAR, debit_transaction_id VARCHAR, credit_transaction_id VARCHAR
+    )""")
+    db.execute("""CREATE OR REPLACE TABLE prep.int_transactions__matched (
+        transaction_id VARCHAR, source_transaction_id VARCHAR, source_type VARCHAR,
+        source_origin VARCHAR, account_id VARCHAR
+    )""")
+    db.execute("""CREATE OR REPLACE TABLE prep.int_transactions__merged (
+        transaction_id VARCHAR, account_id VARCHAR, transaction_date DATE,
+        amount DECIMAL(18, 2), currency_code VARCHAR,
+        conversion_from_date DATE, conversion_from_amount DECIMAL(18, 2),
+        conversion_from_currency VARCHAR, to_amount DECIMAL(18, 2),
+        to_currency VARCHAR, conversion_source_type VARCHAR,
+        conversion_source_origin VARCHAR, conversion_source_transaction_id VARCHAR,
+        loaded_at TIMESTAMPTZ
+    )""")
+    db.execute("""CREATE OR REPLACE TABLE core.fct_transactions (
+        transaction_id VARCHAR, account_id VARCHAR, transaction_date DATE,
+        amount DECIMAL(18, 2), currency_code VARCHAR,
+        loaded_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
+    )""")
+    db.execute("""CREATE OR REPLACE VIEW prep.int_accounts__merged AS
+        SELECT account_id, currency_code, account_type_changed_at,
+            account_subtype_changed_at,
+            GREATEST(TIMESTAMPTZ '2026-03-16 09:00:00+00',
+                account_type_changed_at, account_subtype_changed_at) AS updated_at
+        FROM app.account_settings
+    """)
+    debit_currency = "EUR" if path == "same_currency" else "USD"
+    credit_amount = Decimal("100.00") if path == "same_currency" else Decimal("90.00")
+    db.execute(
+        """INSERT INTO app.account_settings
+        (account_id, currency_code, updated_at) VALUES
+        ('acct-a', ?, TIMESTAMPTZ '2026-03-16 09:00:00+00'),
+        ('acct-b', 'EUR', TIMESTAMPTZ '2026-03-16 09:00:00+00')
+    """,
+        [debit_currency],
+    )
+    db.execute("""INSERT INTO app.match_decisions (
+        match_id, source_transaction_id_a, source_type_a, source_origin_a,
+        source_transaction_id_b, source_type_b, source_origin_b,
+        account_id, account_id_b, match_type, match_status, decided_by, decided_at
+    ) VALUES ('classification-transfer', 'native-a', 'simplefin', 'origin-a',
+        'native-b', 'simplefin', 'origin-b', 'acct-a', 'acct-b',
+        'transfer', 'accepted', 'user', TIMESTAMPTZ '2026-03-16 09:00:00+00')
+    """)
+    for transaction_id, account_id, amount, currency in [
+        ("txn-a", "acct-a", Decimal("-100.00"), debit_currency),
+        ("txn-b", "acct-b", credit_amount, "EUR"),
+    ]:
+        native = "native-a" if account_id == "acct-a" else "native-b"
+        origin = "origin-a" if account_id == "acct-a" else "origin-b"
+        db.execute(
+            "INSERT INTO prep.int_transactions__matched VALUES (?, ?, 'simplefin', ?, ?)",
+            [transaction_id, native, origin, account_id],
+        )
+        if path == "missing" and account_id == "acct-a":
+            continue
+        db.execute(
+            """INSERT INTO prep.int_transactions__merged
+            (transaction_id, account_id, transaction_date, amount, currency_code, loaded_at)
+            VALUES (?, ?, DATE '2026-03-16', ?, ?, TIMESTAMPTZ '2026-03-16 09:00:00+00')
+        """,
+            [transaction_id, account_id, amount, currency],
+        )
+        db.execute(
+            """INSERT INTO core.fct_transactions VALUES
+            (?, ?, DATE '2026-03-16', ?, ?, TIMESTAMPTZ '2026-03-16 09:00:00+00',
+                TIMESTAMPTZ '2026-04-01 09:00:00+00')
+        """,
+            [transaction_id, account_id, amount, currency],
+        )
+    if path != "missing":
+        db.execute(
+            "INSERT INTO core.bridge_transfers VALUES ('classification-transfer', 'txn-a', 'txn-b')"
+        )
+
+    def loaded_stamp() -> datetime | None:
+        context = t.cast(t.Any, _DatabaseContext(db))
+        if path == "same_currency":
+            rows = module._load_same_currency_transfers(
+                context, home_currency="USD", home_updated_at=None
+            )
+        else:
+            rows = module.load_conversion_rows(context)
+        assert len(rows) == 1
+        return rows[0].updated_at
+
+    assert loaded_stamp() == datetime(2026, 3, 16, 9, tzinfo=UTC)
+    for column, day in [
+        ("account_subtype_changed_at", 20),
+        ("account_type_changed_at", 21),
+    ]:
+        stamp = datetime(2026, 3, day, 9, tzinfo=UTC)
+        db.execute(
+            f"UPDATE app.account_settings SET {column} = ? WHERE account_id = 'acct-a'",  # noqa: S608  # literal test column names
+            [stamp],
+        )
+        assert loaded_stamp() == stamp
+    db.execute("""UPDATE app.account_settings SET display_name = 'Renamed',
+        updated_at = TIMESTAMPTZ '2026-04-01 09:00:00+00' WHERE account_id = 'acct-a'
+    """)
+    assert loaded_stamp() == datetime(2026, 3, 21, 9, tzinfo=UTC)

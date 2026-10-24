@@ -20,9 +20,9 @@ CREATE TABLE IF NOT EXISTS app.import_log (
     date_format VARCHAR,                        -- Date format string used for parsing
     sign_convention VARCHAR,                    -- Sign convention applied: negative_is_expense, negative_is_income, split_debit_credit
     balance_validated BOOLEAN,                  -- Whether running balance validation passed (NULL if no balance column)
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the import batch began
-    completed_at TIMESTAMP,                     -- When the import batch finished (NULL if still running or failed)
-    reverted_at TIMESTAMP,                      -- When the import was reverted (NULL if not reverted)
+    started_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- When the import batch began
+    completed_at TIMESTAMPTZ,                     -- When the import batch finished (NULL if still running or failed)
+    reverted_at TIMESTAMPTZ,                      -- When the import was reverted (NULL if not reverted)
     -- Appended last so a fresh install and a V046-upgraded database agree on ordinal position.
     file_sha256 VARCHAR                         -- SHA-256 over the source file bytes; identifies the same document across renames and moves. NULL for batches imported before this column existed
 );

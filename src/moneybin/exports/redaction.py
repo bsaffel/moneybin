@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
+from typing import cast
 
 from moneybin.exports.models import RedactionMode
 from moneybin.exports.snapshot import (
@@ -10,6 +12,7 @@ from moneybin.exports.snapshot import (
     PreparedExport,
     PreparedTable,
     build_data_dictionary,
+    format_export_datetime,
     prepared_table_checksum,
 )
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
@@ -64,11 +67,34 @@ def _stringify_floored_columns(
         return records
     return [
         {
-            k: (str(v) if k in floored_columns and v is not None else v)
+            k: (
+                str(_format_floored_datetimes(v))
+                if k in floored_columns and v is not None
+                else v
+            )
             for k, v in record.items()
         }
         for record in records
     ]
+
+
+def _format_floored_datetimes(value: object) -> object:
+    """Format datetime leaves after privacy, preserving existing container repr."""
+    if isinstance(value, datetime):
+        return format_export_datetime(value)
+    if isinstance(value, dict):
+        mapping = cast(dict[object, object], value)
+        return {
+            (
+                format_export_datetime(key) if isinstance(key, datetime) else key
+            ): _format_floored_datetimes(item)
+            for key, item in mapping.items()
+        }
+    if isinstance(value, (list, tuple)):
+        sequence = cast(list[object] | tuple[object, ...], value)
+        formatted = [_format_floored_datetimes(item) for item in sequence]
+        return tuple(formatted) if isinstance(value, tuple) else formatted
+    return value
 
 
 def apply_export_redaction(

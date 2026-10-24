@@ -29,6 +29,9 @@ EXCEL_TXN_ID = "xls_eeee55556666ffff"
 @pytest.fixture()
 def v017_db(db: Database) -> Database:
     """Three realistic raw.tabular_transactions rows from different sources."""
+    db.execute(
+        "ALTER TABLE raw.tabular_transactions DROP COLUMN deleted_from_source_at"
+    )
     rows = [
         (
             CSV_TXN_ID,

@@ -1,5 +1,5 @@
 ---
-description: "Durable path selection: heuristics for one-way-door decisions, public-contract triggers, coherence rule"
+description: "Durable path selection: one-way doors, public contracts, coherence, UTC instants and business dates"
 ---
 
 # Design Principles: Durable Path Selection
@@ -136,6 +136,39 @@ the removal plan or tracking issue gated to a milestone.
 This is NOT a license to gold-plate. "Elegant" and "architecturally
 pure" are not goals — they are post-hoc descriptions of code that is
 coherent and durable.
+
+## Time: UTC instants, business dates
+
+Apply this contract when changing timestamp schemas, ingestion, Python/SQL
+clocks, migrations, freshness, audit replay, pagination, exports or reporting:
+
+- **Store instants as `TIMESTAMPTZ`, with UTC database sessions and aware UTC
+  Python datetimes.** Normalize explicit offsets on ingestion; emit UTC with
+  `YYYY-MM-DDTHH:MM:SS.ffffffZ` on machine-facing surfaces. Preserve original
+  source evidence. A naive value needs a documented source timezone/default
+  before conversion; labeling an unknown wall time UTC invents an instant.
+- **Keep business dates as `DATE`.** Posting, statement and valuation dates
+  retain their source meaning. A provider's midnight placeholder does not
+  establish time-of-day precision; do not shift it into another business day
+  through display-timezone conversion.
+- **Convert at reporting and presentation boundaries.** Resolve local calendar
+  periods and grouping in the selected reporting timezone before aggregation;
+  translate interval boundaries to UTC for filtering. The host timezone must
+  not change stored values, freshness comparisons or pagination order.
+- **Migrate the entire maintained timestamp contract as a pre-v1 breaking
+  change.** Update existing columns, writers, transformations and consumers
+  together, including audit replay, cursors and snapshots. Expect fresh profiles
+  after the planned SQL baseline; any required conversion belongs in separately
+  prepared one-time offline maintenance, with explicit data-operation approval.
+  Resolve historical timezone provenance explicitly; breaking-change
+  permission does not justify guessing missing offsets or losing evidence.
+
+The implementation and retained-history boundary are specified in
+[`warehouse-utc.md`](../../docs/specs/warehouse-utc.md). Retained profiles require
+fresh profiles or separately arranged offline maintenance with accepted
+historical provenance; no permanent converter ships. Verify temporal changes
+across UTC and non-UTC zones, DST boundaries, date-only inputs and strict
+provenance-aware replay.
 
 ## Depth
 

@@ -100,6 +100,19 @@ def test_distinct_dates_all_survive() -> None:
     assert set(winners["balance_date"]) == {date(2026, 4, 8), date(2026, 4, 9)}
 
 
+def test_simplefin_snapshot_precedes_tabular_but_not_user_assertion() -> None:
+    d = date(2026, 9, 20)
+    observations = [
+        _obs(d, "25.00", "simplefin", "2026-09-20T06:00:00"),
+        _obs(d, "50.00", "tabular", "2026-09-20T12:00:00"),
+    ]
+    winners = _select_winning_observations(pd.DataFrame(observations))
+    assert winners.loc[0, "balance"] == Decimal("25.00")
+    observations.append(_obs(d, "-100.00", "assertion", "2026-09-20T00:00:00"))
+    winners = _select_winning_observations(pd.DataFrame(observations))
+    assert winners.loc[0, "balance"] == Decimal("-100.00")
+
+
 _build_spine_rows = _mod._build_spine_rows
 _evidence_sql = _mod._evidence_sql
 

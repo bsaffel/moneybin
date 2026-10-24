@@ -23,6 +23,7 @@ from moneybin.cli.render import build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.tables import METRICS
+from moneybin.temporal import format_utc
 from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
@@ -260,7 +261,7 @@ def stats_command(
                             "labels": row[2],
                             "value": row[3],
                             "snapshots": row[4],
-                            "last_recorded": row[5].isoformat() if row[5] else None,
+                            "last_recorded": format_utc(row[5]) if row[5] else None,
                         }
                         for row in rows
                     ]

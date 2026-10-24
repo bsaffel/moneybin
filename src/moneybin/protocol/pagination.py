@@ -16,9 +16,11 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from functools import cmp_to_key
 from typing import Literal, cast
+
+from moneybin.temporal import format_utc, parse_utc
 
 type KeysetScalar = str | int | float | bool | None
 type SortDirection = Literal["asc", "desc"]
@@ -187,19 +189,8 @@ def canonical_iso_date(value: str) -> str:
 
 
 def canonical_iso_timestamp(value: str) -> str:
-    """Return the one space-separated ISO spelling of an instant, or raise.
-
-    Space-separated because that is what ``str()`` on a database timestamp
-    produces, so a cursor this surface minted normalizes to itself unchanged.
-    An offset-bearing value is refused rather than converted: an offset suffix
-    makes the string sort by its wall-clock reading rather than its instant,
-    which is the same defect canonicalizing exists to remove, and every
-    timestamp these walks order is naive.
-    """
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is not None:
-        raise ValueError("keyset cursor timestamp must be naive")
-    return parsed.isoformat(sep=" ")
+    """Return the fixed UTC spelling of a strictly aware instant."""
+    return format_utc(parse_utc(value))
 
 
 def canonicalize_keyset_element(

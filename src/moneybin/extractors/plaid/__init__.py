@@ -1,4 +1,4 @@
-"""Plaid provider — ingests SyncDataResponse payloads into raw.plaid_* tables.
+"""Plaid provider — ingests PlaidSyncDataResponse payloads into raw.plaid_* tables.
 
 ``PlaidExtractor`` is lazy-loaded so that ``moneybin.config`` can pull in
 ``PlaidProviderConfig`` without dragging the extractor's transitive

@@ -25,10 +25,10 @@ import pytest
 
 from moneybin.connectors.sync_models import (
     InstitutionResult,
-    SyncAccount,
-    SyncDataResponse,
+    PlaidSyncAccount,
+    PlaidSyncDataResponse,
+    PlaidSyncTransaction,
     SyncMetadata,
-    SyncTransaction,
 )
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.plaid import PlaidExtractor
@@ -42,7 +42,7 @@ _ACCOUNT_ID = "acc_pfc_e2e_checking"
 _ITEM_ID = "item_pfc_e2e"
 
 
-def _build_sync_data() -> SyncDataResponse:
+def _build_sync_data() -> PlaidSyncDataResponse:
     """Four PFC-coded transactions, hand-picked against the real seed CSV.
 
     Expectations below are derived by reading
@@ -70,9 +70,9 @@ def _build_sync_data() -> SyncDataResponse:
       code appears anywhere in the seed CSV, confidence=VERY_HIGH -> proves
       a missing bridge row (not confidence) is what blocks categorization.
     """
-    return SyncDataResponse(
+    return PlaidSyncDataResponse(
         accounts=[
-            SyncAccount(
+            PlaidSyncAccount(
                 account_id=_ACCOUNT_ID,
                 account_type="depository",
                 account_subtype="checking",
@@ -82,7 +82,7 @@ def _build_sync_data() -> SyncDataResponse:
             )
         ],
         transactions=[
-            SyncTransaction(
+            PlaidSyncTransaction(
                 transaction_id="txn_pfc_detailed",
                 account_id=_ACCOUNT_ID,
                 transaction_date=date(2026, 6, 1),
@@ -93,7 +93,7 @@ def _build_sync_data() -> SyncDataResponse:
                 category_confidence="HIGH",
                 pending=False,
             ),
-            SyncTransaction(
+            PlaidSyncTransaction(
                 transaction_id="txn_pfc_primary_fallback",
                 account_id=_ACCOUNT_ID,
                 transaction_date=date(2026, 6, 2),
@@ -104,7 +104,7 @@ def _build_sync_data() -> SyncDataResponse:
                 category_confidence="MEDIUM",
                 pending=False,
             ),
-            SyncTransaction(
+            PlaidSyncTransaction(
                 transaction_id="txn_pfc_low_confidence",
                 account_id=_ACCOUNT_ID,
                 transaction_date=date(2026, 6, 3),
@@ -115,7 +115,7 @@ def _build_sync_data() -> SyncDataResponse:
                 category_confidence="LOW",
                 pending=False,
             ),
-            SyncTransaction(
+            PlaidSyncTransaction(
                 transaction_id="txn_pfc_unmapped",
                 account_id=_ACCOUNT_ID,
                 transaction_date=date(2026, 6, 4),

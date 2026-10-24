@@ -614,7 +614,7 @@ async def test_review_rows_expose_common_and_typed_fields(mcp_db: object) -> Non
         provisional_account_id="PROV-COMMON",
         candidate_account_id="ACC001",
         status="pending",
-        decided_at="2026-07-18T12:00:00",
+        decided_at="2026-07-18T12:00:00Z",
     )
 
     response = await reviews_coarse(kind="account_links", status="pending")
@@ -625,10 +625,26 @@ async def test_review_rows_expose_common_and_typed_fields(mcp_db: object) -> Non
     assert row.decision_id == "decision-common"
     assert row.kind == "account_links"
     assert row.status == "pending"
-    assert row.created_at == "2026-07-18 12:00:00"
+    assert row.created_at == "2026-07-18T12:00:00.000000Z"
     assert row.summary
     assert row.details.state == "pending"
     assert row.details.candidates[0].decision_id == "decision-common"
+
+
+async def test_account_link_history_keeps_canonical_nested_instant(
+    mcp_db: object,
+) -> None:
+    _insert_account_link_decision(
+        decision_id="synthetic-utc-history",
+        provisional_account_id="synthetic-provisional",
+        candidate_account_id="ACC001",
+        status="rejected",
+        decided_at="2025-11-02T01:30:00.123456-04:00",
+    )
+    response = await reviews_coarse(kind="account_links", status="history")
+    row = response.to_dict()["data"]["rows"][0]
+    assert row["created_at"] == "2025-11-02T05:30:00.123456Z"
+    assert row["details"]["decision"]["decided_at"] == "2025-11-02T05:30:00.123456Z"
 
 
 async def test_review_history_calls_history_not_pending() -> None:
