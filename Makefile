@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios test-perf generate-report-classes generate-docs claude-mcp audit
+.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios test-perf generate-report-classes generate-schema-comment-plans generate-docs claude-mcp audit
 
 # Default target
 .DEFAULT_GOAL := help
@@ -168,6 +168,10 @@ generate-report-classes: venv ## Development: Regenerate the derived reports.* p
 	@echo "$(BLUE)🔐 Regenerating derived report-class module...$(RESET)"
 	@uv run python scripts/generate_derived_report_classes.py
 	@echo "$(BLUE)ℹ️  Commit src/moneybin/reports/definitions/_derived_classes.py to apply$(RESET)"
+
+generate-schema-comment-plans: venv ## Development: Regenerate the precomputed schema comment plans (sql/schema/comment_plans.json); commit the result
+	@echo "$(BLUE)💬 Regenerating schema comment plans...$(RESET)"
+	@uv run python scripts/generate_schema_comment_plans.py
 
 generate-docs: venv ## Development: Regenerate the CLI, MCP tool, and configuration references under docs/reference/; commit the result
 	@echo "$(BLUE)📚 Regenerating docs/reference/ from the command tree, MCP server, and settings...$(RESET)"
