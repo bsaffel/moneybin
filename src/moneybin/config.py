@@ -708,6 +708,7 @@ class MatchingSettings(BaseModel):
             "parquet",
             "feather",
             "pipe",
+            "simplefin",
         ],
         description="Source types in priority order (first = highest priority)",
     )

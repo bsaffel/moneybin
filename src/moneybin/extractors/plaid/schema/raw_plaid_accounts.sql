@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_accounts (
     source_file VARCHAR NOT NULL,       -- Logical identifier: sync_{job_id} (last sync to touch this row)
     source_type VARCHAR NOT NULL DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,     -- provider_item_id; scopes dedup to the institution connection
-    extracted_at TIMESTAMP,             -- From metadata.synced_at
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    extracted_at TIMESTAMPTZ,             -- From metadata.synced_at
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, source_origin)
 );

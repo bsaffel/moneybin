@@ -6,10 +6,10 @@ MODEL (
 SELECT
   COALESCE(links.account_id, b.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   b.account_id AS source_account_key,
-  b.statement_start_date::DATE AS statement_start_date,
-  b.statement_end_date::DATE AS statement_end_date,
+  b.statement_start_source_date AS statement_start_date,
+  b.statement_end_source_date AS statement_end_date,
   b.ledger_balance,
-  b.ledger_balance_date::DATE AS ledger_balance_date,
+  b.ledger_balance_source_date AS ledger_balance_date,
   b.available_balance,
   b.currency_code,
   b.source_file,

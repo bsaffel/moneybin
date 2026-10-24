@@ -1,0 +1,116 @@
+{
+  "job_id": "44444444-4444-4444-8444-444444444444",
+  "contract_version": 2,
+  "status": "completed",
+  "sources": [
+    {
+      "provider": "simplefin",
+      "connection_id": "55555555-5555-4555-8555-555555555555",
+      "credential_generation": 1,
+      "protocol_version": "1.0.7",
+      "batches": [
+        {
+          "batch_id": "66666666-6666-4666-8666-666666666666",
+          "fetched_at": "2026-09-30T12:00:00Z",
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "payload": {
+            "errors": [],
+            "accounts": [
+              {
+                "org": {
+                  "name": "Synthetic Bank",
+                  "sfin-url": "https://example.invalid/simplefin",
+                  "id": "synthetic-bank-a",
+                  "extension": {
+                    "nested": [
+                      "synthetic-value",
+                      {
+                        "future": true
+                      }
+                    ]
+                  }
+                },
+                "id": "v1-account-1",
+                "name": "Synthetic Savings",
+                "currency": "USD",
+                "balance": "100.23",
+                "available-balance": "75.23",
+                "balance-date": 1788998400,
+                "transactions": [
+                  {
+                    "id": "v1-transaction-1",
+                    "posted": 1788998400,
+                    "amount": "-12.340",
+                    "description": "Synthetic purchase",
+                    "pending": false
+                  }
+                ]
+              },
+              {
+                "org": {
+                  "id": "synthetic-bank-b",
+                  "name": "Synthetic Credit Union",
+                  "sfin-url": "https://example.invalid/simplefin"
+                },
+                "id": "v1-account-1",
+                "name": "Synthetic Savings",
+                "currency": "USD",
+                "balance": "100.23",
+                "available-balance": "75.23",
+                "balance-date": 1788998400,
+                "transactions": [
+                  {
+                    "id": "v1-transaction-1",
+                    "posted": 1788998400,
+                    "amount": "-12.340",
+                    "description": "Synthetic purchase",
+                    "pending": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "account_id": "v1-account-1",
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "status": "complete",
+          "error_code": null,
+          "native_scope": {
+            "kind": "simplefin_v1_org",
+            "org": {
+              "name": "Synthetic Bank",
+              "sfin-url": "https://example.invalid/simplefin",
+              "id": "synthetic-bank-a"
+            }
+          }
+        },
+        {
+          "account_id": "v1-account-1",
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "status": "complete",
+          "error_code": null,
+          "native_scope": {
+            "kind": "simplefin_v1_org",
+            "org": {
+              "id": "synthetic-bank-b",
+              "name": "Synthetic Credit Union",
+              "sfin-url": "https://example.invalid/simplefin"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

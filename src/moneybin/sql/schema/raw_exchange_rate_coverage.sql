@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS raw.exchange_rate_coverage (
     start_date DATE NOT NULL,                 -- First date of the span the provider answered for completely
     end_date DATE NOT NULL,                   -- Last date of that span, inclusive
     source_type VARCHAR NOT NULL,             -- Provider that answered; matches raw.exchange_rates.source_type
-    loaded_at TIMESTAMP                       -- When this answer was recorded locally
+    loaded_at TIMESTAMPTZ                       -- When this answer was recorded locally
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (from_currency, to_currency, start_date, end_date, source_type),
     CHECK (start_date <= end_date)

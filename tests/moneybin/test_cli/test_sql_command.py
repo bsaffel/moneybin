@@ -71,6 +71,7 @@ def _patched(  # pyright: ignore[reportUnusedFunction]  # used via @pytest.mark.
         return None
 
     monkeypatch.setattr("moneybin.cli.commands.sql.get_database", _fake_get_database)
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
     monkeypatch.setattr("moneybin.privacy.sensitivity.get_max_rows", lambda: 100)
     # Keep the test hermetic — don't write to a real privacy.log.jsonl.
     monkeypatch.setattr("moneybin.cli.output.write_privacy_event", _noop_event)
@@ -81,6 +82,33 @@ def test_query_help_lists_output_flag() -> None:
     result = runner.invoke(app, ["query", "--help"])
     assert result.exit_code == 0
     assert "--output" in result.output
+
+
+@pytest.mark.usefixtures("_patched")
+@pytest.mark.parametrize("output", ["json", "text"])
+def test_sql_wall_time_cli_output_preserves_clock_and_masking(output: str) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT date_trunc('month', DATE '2026-10-21') AS wall_time, "
+            "routing_number FROM core.dim_accounts",
+            "-o",
+            output,
+        ],
+        env={"COLUMNS": "120"},
+    )
+    assert result.exit_code == 0, result.output
+    assert "2026-10-01T00:00:00.000000" in result.output
+    assert "021000021" not in result.output
+    if output == "json":
+        payload = json.loads(result.output)
+        assert payload["data"] == [
+            {
+                "wall_time": "2026-10-01T00:00:00.000000",
+                "routing_number": "*****",
+            }
+        ]
 
 
 @pytest.mark.usefixtures("_patched")

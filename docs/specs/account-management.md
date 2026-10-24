@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
     archived             BOOLEAN NOT NULL DEFAULT FALSE,           -- Hides account from default list and from reports.net_worth
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE,            -- Whether this account contributes to reports.net_worth (independent toggle, not forced by archiving)
     default_cost_basis_method VARCHAR CHECK (default_cost_basis_method IN ('fifo', 'hifo', 'specific', 'average')), -- Per-account cost-basis default (added by investments-data-model.md); NULL falls back to global FIFO
-    updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last modification time
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last modification time
     archived_at          DATE                                      -- The date the account stopped being part of the position; NULL while active (added by reports-net-worth-sql-surface.md §Prerequisites). Appended last, not beside `archived`, because DuckDB's ALTER TABLE ADD COLUMN always appends
 );
 ```
@@ -106,7 +106,7 @@ choosable without a migration. `investment_source_type_changed_at` records when
 it last changed (a clear and an undo included), so the ledger's `updated_at`
 keeps advancing.
 
-**`archived_changed_at`** — added by V074 and appended last. It records when
+**`archived_changed_at`** — added by V074 after the investment source fields. It records when
 `archived` last changed, an undo included, and never moves backwards.
 `AccountService` stamps it on each archive or unarchive transition, and the
 settings repository advances it when an undo moves `archived`. Archiving moves

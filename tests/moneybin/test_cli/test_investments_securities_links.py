@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -448,7 +449,7 @@ class TestSecurityLinksHistory:
                 "candidate_security_id": "sec001aabbcc",
                 "status": "accepted",
                 "decided_by": "user",
-                "decided_at": "2025-06-01T10:00:00",
+                "decided_at": datetime(2025, 6, 1, 10, 0, tzinfo=UTC),
                 "confidence_score": 0.5,
                 "match_signals": {"signal": "fuzzy_name"},
                 "match_reason": "fuzzy_name",

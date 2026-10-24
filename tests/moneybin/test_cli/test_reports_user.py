@@ -9,6 +9,7 @@ that reach the service.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -102,6 +103,7 @@ def _patch_service(service: MagicMock) -> Any:
     )
 
 
+@contextmanager
 def _patch_database() -> Any:
     """Patch the name the command module bound, not the definition site.
 
@@ -110,10 +112,17 @@ def _patch_database() -> Any:
     real missing profile, which every exit-code assertion here would read as the
     failure it was looking for.
     """
-    return patch(
-        "moneybin.cli.commands.reports.user_reports.get_database",
-        return_value=no_profile_database(),
-    )
+    with (
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch(
+            "moneybin.repositories.profile_settings_repo.ProfileSettingsRepo.get_reporting_timezone",
+            return_value="UTC",
+        ),
+    ):
+        yield
 
 
 def _patch_catalog_database() -> Any:
@@ -1602,7 +1611,7 @@ def _explanation(**overrides: Any) -> ReportExplanation:
         "class_fingerprint": "abc123",
         "drift_detected": False,
         "drift_reason": None,
-        "updated_at": "2026-07-26 00:00:00",
+        "updated_at": "2026-07-26T00:00:00.000000Z",
         "graduation": "eligible",
         "graduation_blockers": (),
     }
@@ -1643,6 +1652,26 @@ def test_explain_binds_parameters_and_renders_the_class_map() -> None:
     # The withheld parameter is named, and its value never printed.
     assert "021000021" not in result.output
     assert "rn" in flat
+
+
+def test_explain_human_freshness_uses_saved_calendar(db: Database) -> None:
+    from contextlib import nullcontext
+
+    db.execute(
+        "UPDATE app.profile_settings SET reporting_timezone = 'America/New_York'"
+    )
+    with (
+        patch.object(user_reports, "get_database", return_value=nullcontext(db)),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(_explanation(updated_at="2025-11-02T05:30:00.123456Z")),
+    ):
+        result = runner.invoke(app, ["reports", "explain", "my_accounts", "--no-pager"])
+    assert result.exit_code == 0, result.output
+    assert "2025-11-02 01:30:00.123456-04:00 [America/New_York]" in result.output
 
 
 def test_explain_help_offers_no_pager() -> None:

@@ -79,7 +79,9 @@ SELECT
        one with a number, and this column feeds reports.* as account_name. */
   ) AS display_name, /* Resolved display label: user override → the source's own account label when it holds a letter and is not the 'Unnamed account' sentinel → institution+subtype-or-type+last4 → institution+last4 → institution+subtype-or-type → institution → subtype-or-type+last4 → subtype-or-type → last4 alone → the literal 'Unnamed account' terminal, so it is never NULL and never an id. The subtype is preferred over the type because 'checking' reads to a human where the canonical 'depository' does not. A last four outranks the category it sits beside at every level: 'checking' is shared by every checking account, while the last four is what tells two of them apart, and it is already published in its own column and printed as confirm evidence. */
   COALESCE(s.official_name, b.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
-  b.account_type, /* Canonical account classification, normalized across all sources via seeds.account_type_map: depository, credit, loan, investment, other. NULL when the source spelling is unrecognized — the finer source distinction is preserved in account_subtype */
+  b.account_type, /* Effective canonical type after user override */
+  b.account_type_override, /* User override; NULL uses source evidence */
+  b.source_account_type, /* Selected source evidence before override */
   COALESCE(s.account_subtype, b.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */
   s.holder_category, /* 'personal' / 'business' / 'joint' */
   b.institution_slug, /* Canonical institution slug used to match accounts across sources; institution_name is for display only and does not slugify back to this */

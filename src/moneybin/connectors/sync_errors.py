@@ -22,3 +22,12 @@ class SyncTimeoutError(SyncError):
 
 class SyncAPIError(SyncError):
     """Generic server error (5xx, unexpected response shape)."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        """Carry bounded transport status separately from safe public text."""
+        super().__init__(message)
+        self.status_code = (
+            status_code
+            if status_code is not None and 400 <= status_code <= 599
+            else None
+        )

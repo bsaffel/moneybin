@@ -269,3 +269,23 @@ class TestSetBudgetCategoryIdResolution:
             "WHERE category = 'NeverDefined'"
         ).fetchone()
         assert row == ("NeverDefined", None)
+
+
+def test_budget_defaults_use_saved_calendar(budget_db: Database) -> None:
+    from datetime import UTC, datetime
+    from unittest.mock import patch
+
+    from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+    ProfileSettingsRepo(budget_db).set_reporting_timezone(
+        "America/New_York", actor="test"
+    )
+    with patch(
+        "moneybin.services.profile_settings_service.datetime", create=True
+    ) as clock:
+        clock.now.return_value = datetime(2026, 3, 1, 0, 30, tzinfo=UTC)
+        service = BudgetService(budget_db)
+        result = service.set_budget("Food & Drink", Decimal("200"), actor="cli")
+        status = service.status()
+    assert result.start_month == "2026-02"
+    assert status.month == "2026-02"

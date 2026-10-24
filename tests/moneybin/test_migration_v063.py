@@ -32,6 +32,9 @@ from moneybin.sql.migrations.V074__add_archived_changed_at import (
 from moneybin.sql.migrations.V075__add_ledger_setting_change_stamps import (
     migrate as migrate_v075,
 )
+from moneybin.sql.migrations.V077__add_account_type_override import (
+    migrate as migrate_v077,
+)
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
 _SETTINGS_COLUMNS = (
@@ -580,21 +583,31 @@ def test_v063_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
         "CREATE TABLE app._pre_v063_account_settings AS "
         "SELECT * EXCLUDE (archived_at, investment_source_type, "
         "investment_source_type_changed_at, archived_changed_at, "
-        "currency_code_changed_at, default_cost_basis_method_changed_at) "
+        "currency_code_changed_at, default_cost_basis_method_changed_at, account_type, "
+        "account_type_changed_at, account_subtype_changed_at) "
         "FROM app.account_settings LIMIT 0"
     )
     db.execute("DROP TABLE app.account_settings CASCADE")  # isolated test database
     db.execute("ALTER TABLE app._pre_v063_account_settings RENAME TO account_settings")
 
     run_migration(db, migrate)
-    # V069, V074 and V075 append after archived_at, so a fresh-order
-    # comparison needs them applied.
+    # Replay later settings appends in migration order.
     run_migration(db, migrate_v069)
     run_migration(db, migrate_v074)
     run_migration(db, migrate_v075)
+    run_migration(db, migrate_v077)
 
     upgraded_schema = [
         (row[1], row[2])
         for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
     ]
-    assert upgraded_schema == fresh_schema
+    historical_stamps = {
+        "investment_source_type_changed_at",
+        "archived_changed_at",
+        "currency_code_changed_at",
+        "default_cost_basis_method_changed_at",
+    }
+    assert upgraded_schema == [
+        (name, "TIMESTAMP" if name in historical_stamps else kind)
+        for name, kind in fresh_schema
+    ]

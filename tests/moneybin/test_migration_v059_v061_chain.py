@@ -52,6 +52,11 @@ def upgrade_runner(pre_v059_db: Database, tmp_path: Path) -> MigrationRunner:
     """Populate the three legacy shapes and discover only the shipped upgrade tail."""
     db = pre_v059_db
     seed_legacy_manual_identity_schema(db)
+    for column in ("extracted_at", "loaded_at"):
+        db.execute(
+            "ALTER TABLE raw.plaid_investment_transaction_receipts "
+            f"ALTER COLUMN {column} TYPE TIMESTAMP"  # closed fixture column list
+        )
     add_account_terminal(db, "a")
     add_account_terminal(db, "b")
     db.execute("""CREATE TABLE raw.legacy_investment_transactions AS
@@ -73,6 +78,12 @@ def upgrade_runner(pre_v059_db: Database, tmp_path: Path) -> MigrationRunner:
                 3.25, 32.50, 10, 0, 'USD', 'buy', 'buy', 'plaid', 'item',
                 'sync_z', TIMESTAMP '2026-01-03 12:00:00',
                 TIMESTAMP '2026-01-03 13:00:00')""")
+    # Reconstruct the historical pre-V060 clock types before replaying V060.
+    for column in ("extracted_at", "loaded_at"):
+        db.execute(
+            "ALTER TABLE raw.plaid_investment_holdings_snapshots "
+            f"ALTER COLUMN {column} TYPE TIMESTAMP"  # closed fixture column list
+        )
     db.execute(
         "ALTER TABLE raw.plaid_investment_holdings_snapshots DROP COLUMN ingestion_sequence"
     )

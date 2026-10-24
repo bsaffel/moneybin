@@ -53,7 +53,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
         "cost_basis_remaining": "DECIMAL(18, 2)",
         "basis_incomplete": "BOOLEAN",
         "acquisition_date": "DATE",
-        "updated_at": "TIMESTAMP",
+        "updated_at": "TIMESTAMPTZ",
     },
     column_descriptions={
         "currency_lot_id": "Stable content hash of the Currency acquisition",
@@ -112,7 +112,7 @@ def execute(
         pa.field("cost_basis_remaining", pa.decimal128(18, 2)),
         pa.field("basis_incomplete", pa.bool_()),
         pa.field("acquisition_date", pa.date32()),
-        pa.field("updated_at", pa.timestamp("us")),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
     ])
     yield pa.Table.from_pylist([asdict(row) for row in rows], schema=schema).to_pandas(  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list
         types_mapper=pd.ArrowDtype

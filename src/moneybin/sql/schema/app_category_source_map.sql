@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS app.category_source_map (
     code_level VARCHAR NOT NULL DEFAULT 'detailed' CHECK (code_level IN ('detailed', 'primary')), -- 'detailed' or 'primary'; detailed wins in reverse lookup
     category_id VARCHAR, -- FK to core.dim_categories.category_id (may be a user category). NULL marks the term as ignored: it is known and categorizes nothing
     source_taxonomy_version VARCHAR, -- Provider taxonomy revision this row was curated against
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the user added this mapping
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last change to this mapping
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the user added this mapping
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last change to this mapping
     PRIMARY KEY (source_type, source_origin, source_category_code, source_subcategory_code)
 );

@@ -198,12 +198,14 @@ def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
     second = service.prepare_bundle(profile="test", redaction_mode="unredacted")
 
     assert [table.name for table in first.tables] == EXPECTED_TABLES
-    assert first.artifact_version == 1
+    assert first.artifact_version == 2
     assert isinstance(first.manifest["export_id"], str)
     assert first.manifest["export_id"]
     assert first.profile == "test"
     assert first.created_at.tzinfo is UTC
-    assert first.manifest["created_at"] == first.created_at.isoformat()
+    assert first.manifest["created_at"] == first.created_at.isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
     assert first.manifest["subject"] == {"kind": "bundle"}
     # Every bundle table reads one fixed catalog relation. `source` is optional
     # only for a query-time report with no single source view; this tier must

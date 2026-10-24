@@ -31,7 +31,7 @@ def test_create_adopts_a_db_init_directory_and_preserves_its_data(
     profile_dir = tmp_path / "profiles" / "alice"
     profile_dir.mkdir(parents=True)
     db_path = profile_dir / "moneybin.duckdb"
-    init_db(db_path, profile="alice")
+    init_db(db_path, profile="alice", reporting_timezone="America/New_York")
 
     # Put a row in it so "the data survived" is a claim about data, not a file size.
     with Database(
@@ -51,7 +51,8 @@ def test_create_adopts_a_db_init_directory_and_preserves_its_data(
 
     # 2. The repair. Before this contract, `create()` refused here and no verb could
     #    finish the profile.
-    svc.create("alice")
+    svc.create("alice", reporting_timezone="Asia/Tokyo")
+    assert svc.reporting_timezone("alice") == "America/New_York"
 
     # 3. Setup is complete...
     assert svc.is_registered("alice") is True
@@ -69,3 +70,71 @@ def test_create_adopts_a_db_init_directory_and_preserves_its_data(
         row = db.execute("SELECT id FROM app.canary").fetchone()
     assert row is not None
     assert row[0] == "do-not-destroy-me"
+
+
+@pytest.mark.integration
+def test_fresh_profile_persists_selected_timezone_before_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    service = ProfileService()
+    service.create("selected", reporting_timezone="America/New_York")
+    assert service.is_registered("selected")
+    assert service.reporting_timezone("selected") == "America/New_York"
+
+
+@pytest.mark.integration
+def test_adoption_refuses_missing_policy_without_changing_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.database import Database, init_db
+    from moneybin.secrets import SecretStore
+    from moneybin.temporal_contract import UTCUpgradeRequiredError
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    path = tmp_path / "profiles" / "legacy" / "moneybin.duckdb"
+    init_db(path, profile="legacy")
+    with Database(
+        path,
+        secret_store=SecretStore(profile="legacy"),
+        read_only=False,
+        no_auto_upgrade=True,
+    ) as db:
+        db.execute("UPDATE app.profile_settings SET reporting_timezone = NULL")
+    before = path.read_bytes()
+    service = ProfileService()
+    with pytest.raises(UTCUpgradeRequiredError):
+        service.create("legacy", reporting_timezone="UTC")
+    assert path.read_bytes() == before
+    assert not service.is_registered("legacy")
+
+
+@pytest.mark.integration
+def test_reporting_policy_survives_real_reopen_under_another_host_timezone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+    from datetime import UTC, datetime
+
+    from moneybin.database import Database, init_db
+    from moneybin.reports.definitions._shared import default_window
+    from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+    from moneybin.secrets import SecretStore
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    path = tmp_path / "profiles" / "traveler" / "moneybin.duckdb"
+    init_db(path, profile="traveler", reporting_timezone="America/New_York")
+    try:
+        monkeypatch.setenv("TZ", "Asia/Tokyo")
+        time.tzset()
+        with Database(
+            path, secret_store=SecretStore(profile="traveler"), read_only=True
+        ) as db:
+            zone = ProfileSettingsRepo(db).get_reporting_timezone()
+            assert zone == "America/New_York"
+            assert default_window(
+                reporting_timezone=zone, now=datetime(2026, 3, 1, 0, 30, tzinfo=UTC)
+            ) == ("2025-03", "2026-02")
+    finally:
+        monkeypatch.undo()
+        time.tzset()

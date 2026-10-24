@@ -852,7 +852,7 @@ def test_null_last_four_mints_cleanly_on_an_empty_book(db: Database) -> None:
 def test_a_blank_last_four_is_quarantined_like_a_missing_one(db: Database) -> None:
     """A blank mask is a missing last four, not a last four that happens to be empty.
 
-    `SyncAccount.mask` declares only a maximum length, so the sync server — opaque
+    `PlaidSyncAccount.mask` declares only a maximum length, so the sync server — opaque
     to this client by design — can legitimately send `""`. It reaches the resolver
     as `SourceAccount.last_four` and answers the last4 rung with exactly the
     silence `None` does, but a gate written against `None` alone reads it as an
@@ -955,7 +955,7 @@ def test_a_blank_last_four_normalizes_to_none_on_the_source_account() -> None:
 def test_a_whitespace_only_last_four_normalizes_like_a_blank_one() -> None:
     """A mask of spaces answers the last4 rung with silence too.
 
-    ``SyncAccount.mask`` declares only a maximum length, so `" "` validates and
+    ``PlaidSyncAccount.mask`` declares only a maximum length, so `" "` validates and
     arrives here truthy and non-None — clearing the quarantine gate that `""`
     cannot. Padding around a real mask is the same defect one step along: it
     would miss the exact-match last4 lookup and mint a second account for a

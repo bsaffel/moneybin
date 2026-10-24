@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess  # noqa: S404  # test executes the installed DuckDB CLI with static arguments
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -79,6 +79,53 @@ def _make_settings_mock_for_hint(db_path: Path, mocker: Any) -> MagicMock:
 
 class TestDuckDBCLIInitialization:
     """Tests for DuckDB CLI encryption setup."""
+
+    @pytest.mark.integration
+    def test_init_script_sets_utc_before_database_use(self, tmp_path: Path) -> None:
+        """Standalone CLI reads and naive instant writes use the warehouse clock."""
+        duckdb_path = shutil.which("duckdb")
+        assert duckdb_path is not None, (
+            "DuckDB CLI is required for this integration test"
+        )
+        script_path = db_commands._create_init_script(  # pyright: ignore[reportPrivateUsage]  # exercise the generated CLI setup
+            tmp_path / "test.duckdb"
+        )
+        environment = os.environ.copy()
+        environment["MONEYBIN_DATABASE__ENCRYPTION_KEY"] = "synthetic-cli-key"
+        try:
+            # Exercise startup with the preinstalled extension; never install in tests.
+            script = script_path.read_text().replace("INSTALL httpfs;\n", "")
+            script_path.write_text(
+                "SET autoinstall_known_extensions = false;\n"
+                "SET GLOBAL TimeZone = 'Asia/Tokyo';\n" + script
+            )
+            result = subprocess.run(  # noqa: S603  # installed CLI with synthetic database and static query
+                [
+                    duckdb_path,
+                    "-json",
+                    "-init",
+                    str(script_path),
+                    "-c",
+                    "CREATE TABLE clock (instant TIMESTAMPTZ); "
+                    "INSERT INTO clock VALUES (TIMESTAMP '2026-10-20 00:30:00'); "
+                    "SELECT current_setting('TimeZone') AS zone, "
+                    "epoch(instant) = epoch(TIMESTAMPTZ '2026-10-20 00:30:00+00') "
+                    "AS writes_utc, "
+                    "TIMESTAMPTZ '2026-10-19 16:00:00+00'::DATE::VARCHAR AS day "
+                    "FROM clock;",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        finally:
+            script_path.unlink(missing_ok=True)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == [
+            {"zone": "UTC", "writes_utc": True, "day": "2026-10-19"}
+        ]
 
     def test_init_script_uses_duckdb_environment_lookup(self, tmp_path: Path) -> None:
         """The init script must not persist the encryption key it uses."""
@@ -812,9 +859,11 @@ class TestDbInitCommand:
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
         mock_db = MagicMock()
         mocker.patch("moneybin.database.Database", return_value=mock_db)
-        # init_db calls materialize_seeds inside the with block; bypass real
-        # SQLMesh + view creation since Database itself is mocked here.
+        # Database is a double; database-backed setup is covered by fresh-init tests.
         mocker.patch("moneybin.seeds.materialize_seeds")
+        mocker.patch(
+            "moneybin.repositories.profile_settings_repo.ProfileSettingsRepo.set_reporting_timezone"
+        )
         return mock_store, mock_db
 
     def test_init_auto_key_stores_key_and_creates_db(
@@ -1857,128 +1906,132 @@ class TestDbInfoCommand:
         assert "--limit" in result.output
 
 
+def _encrypted_restore_fixture(tmp_path: Path, store: MagicMock) -> tuple[Path, Path]:
+    from moneybin.database import Database
+
+    destination, source = tmp_path / "current.duckdb", tmp_path / "backup.duckdb"
+    for path, value in [(destination, "current"), (source, "backup")]:
+        with Database(
+            path, secret_store=store, read_only=False, no_auto_upgrade=True
+        ) as db:
+            db.execute("CREATE TABLE app.restore_probe (payload VARCHAR)")
+            db.execute("INSERT INTO app.restore_probe VALUES (?)", [value])
+    return destination, source
+
+
 class TestDbRestoreCommand:
-    """Tests for 'moneybin db restore'."""
+    """Restore validates encrypted sources before touching the live destination."""
 
     @pytest.fixture
     def runner(self) -> CliRunner:
         return CliRunner()
 
     def test_restore_from_specified_path(
-        self, runner: CliRunner, mocker: Any, tmp_path: Path
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
     ) -> None:
-        """Restore copies the backup file and opens it with the current key."""
-        test_db = tmp_path / "test.duckdb"
-        test_db.write_bytes(b"current")
-        backup = tmp_path / "backup.duckdb"
-        backup.write_bytes(b"backup")
-        _make_settings_mock(test_db, mocker)
-
-        mock_db = MagicMock()
-        mocker.patch("moneybin.database.Database", return_value=mock_db)
-        mocker.patch("moneybin.secrets.SecretStore")
-
-        result = runner.invoke(app, ["restore", "--from", str(backup), "--yes"])
-        assert result.exit_code == 0
-        # Verify the backup content was copied to the database path
-        assert test_db.read_bytes() == b"backup"
+        destination, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
+        _make_settings_mock(destination, mocker)
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
+        original, expected = destination.read_bytes(), source.read_bytes()
+        result = runner.invoke(app, ["restore", "--from", str(source), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert destination.read_bytes() == expected
+        backups = list((tmp_path / "backups").glob("*_pre_restore.duckdb"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == original
 
     def test_restore_fails_when_backup_file_not_found(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
-        """Restore exits 1 when the specified backup file does not exist."""
-        test_db = tmp_path / "test.duckdb"
-        test_db.write_bytes(b"data")
-        _make_settings_mock(test_db, mocker)
-
+        _make_settings_mock(tmp_path / "current.duckdb", mocker)
         result = runner.invoke(
-            app, ["restore", "--from", str(tmp_path / "nonexistent.duckdb"), "--yes"]
+            app, ["restore", "--from", str(tmp_path / "missing.duckdb"), "--yes"]
         )
         assert result.exit_code == 1
 
     def test_restore_fails_when_no_backups_found(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
-        """Restore exits 1 when no backups exist in the backup directory."""
-        test_db = tmp_path / "test.duckdb"
-        _make_settings_mock(test_db, mocker)
-        # backup_path is None → falls back to db_path.parent / "backups", which doesn't exist
-
-        result = runner.invoke(app, ["restore"])
-        assert result.exit_code == 1
+        _make_settings_mock(tmp_path / "current.duckdb", mocker)
+        assert runner.invoke(app, ["restore"]).exit_code == 1
 
     def test_restore_auto_backs_up_current_database(
-        self, runner: CliRunner, mocker: Any, tmp_path: Path
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
     ) -> None:
-        """Restore creates an auto-backup of the current database before overwriting."""
-        test_db = tmp_path / "test.duckdb"
-        test_db.write_bytes(b"current")
-        backup = tmp_path / "backup.duckdb"
-        backup.write_bytes(b"backup")
-        _make_settings_mock(test_db, mocker)
-
-        mock_db = MagicMock()
-        mocker.patch("moneybin.database.Database", return_value=mock_db)
-        mocker.patch("moneybin.secrets.SecretStore")
-
-        result = runner.invoke(app, ["restore", "--from", str(backup), "--yes"])
-        assert result.exit_code == 0
-
-        backup_dir = tmp_path / "backups"
-        pre_restore = list(backup_dir.glob("*_pre_restore.duckdb"))
-        assert len(pre_restore) == 1
+        destination, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
+        _make_settings_mock(destination, mocker)
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
+        original = destination.read_bytes()
+        result = runner.invoke(app, ["restore", "--from", str(source), "--yes"])
+        assert result.exit_code == 0, result.output
+        backups = list((tmp_path / "backups").glob("*_pre_restore.duckdb"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == original
 
     def test_restore_fails_with_wrong_key(
-        self, runner: CliRunner, mocker: Any, tmp_path: Path
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
     ) -> None:
-        """Restore exits 1 when restored database can't be opened with current key."""
-        test_db = tmp_path / "test.duckdb"
-        test_db.write_bytes(b"current")
-        backup = tmp_path / "backup.duckdb"
-        backup.write_bytes(b"backup")
-        _make_settings_mock(test_db, mocker)
-
-        mocker.patch(
-            "moneybin.database.Database",
-            side_effect=Exception("wrong encryption key"),
-        )
-        mocker.patch("moneybin.secrets.SecretStore")
-
-        result = runner.invoke(app, ["restore", "--from", str(backup), "--yes"])
+        destination, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
+        _make_settings_mock(destination, mocker)
+        wrong_store = MagicMock()
+        wrong_store.get_key.return_value = "0" * 64
+        mocker.patch("moneybin.secrets.SecretStore", return_value=wrong_store)
+        original = destination.read_bytes()
+        result = runner.invoke(app, ["restore", "--from", str(source), "--yes"])
         assert result.exit_code == 1
-        assert test_db.read_bytes() == b"backup"
-        assert "Database was replaced" in result.output
-        assert "Pre-restore backup saved" in result.output
+        assert destination.read_bytes() == original
+        assert not (tmp_path / "backups").exists()
+        assert "Database was replaced" not in result.output
 
     def test_restore_copy_failure_does_not_claim_replacement(
-        self, runner: CliRunner, mocker: Any, tmp_path: Path
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
     ) -> None:
-        """A normal replacement-copy error leaves the target state unconfirmed."""
-        db_path = tmp_path / "moneybin.duckdb"
-        db_path.write_bytes(b"current")
-        source = tmp_path / "backup.duckdb"
-        source.write_bytes(b"restore")
-        _make_settings_mock(db_path, mocker)
-        original_copy = shutil.copy2
-        calls = 0
-
-        def fail_replacement(source_path: str, target_path: str) -> str:
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise OSError("synthetic replacement failure")
-            return str(original_copy(source_path, target_path))
-
+        destination, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
+        _make_settings_mock(destination, mocker)
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
         mocker.patch(
-            "moneybin.cli.commands.db.shutil.copy2", side_effect=fail_replacement
+            "moneybin.services.database_restore_lock.SourceLease.promote",
+            side_effect=OSError("synthetic promotion failure"),
         )
-
+        original = destination.read_bytes()
         result = runner.invoke(app, ["restore", "--from", str(source), "--yes"])
-
         assert result.exit_code == 1
-        assert "Pre-restore backup saved" in result.output
-        assert "replacement may be incomplete" in result.output.lower()
+        assert destination.read_bytes() == original
+        backups = list((tmp_path / "backups").glob("*_pre_restore.duckdb"))
+        assert len(backups) == 1 and backups[0].read_bytes() == original
+        assert "retained" in result.output
         assert "Database was replaced" not in result.output
+
+    def test_restore_creates_absent_destination_atomically(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+    ) -> None:
+        _existing, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
+        destination = tmp_path / "new.duckdb"
+        _make_settings_mock(destination, mocker)
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
+        result = runner.invoke(app, ["restore", "--from", str(source), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert destination.read_bytes() == source.read_bytes()
 
 
 class TestDatabaseCommandsIntegration:
@@ -2377,30 +2430,80 @@ class TestDbMaintenanceInterrupts:
         assert "interrupted" in result.output.lower()
         assert "Backup created" not in result.output
 
-    def test_restore_interrupt_after_auto_backup_names_saved_backup(
-        self, mocker: Any, tmp_path: Path
+    def test_restore_interrupt_during_auto_backup_does_not_claim_saved_backup(
+        self, mocker: Any, tmp_path: Path, mock_secret_store: MagicMock
     ) -> None:
-        db_path = tmp_path / "moneybin.duckdb"
-        db_path.write_bytes(b"current")
-        source = tmp_path / "backup.duckdb"
-        source.write_bytes(b"restore")
-        _make_settings_mock(db_path, mocker)
-        original_copy = shutil.copy2
-        calls = 0
+        destination, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
+        _make_settings_mock(destination, mocker)
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
+        original_copy = shutil.copyfileobj
+        original = destination.read_bytes()
 
-        def interrupt_replacement(source_path: str, target_path: str) -> str:
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise KeyboardInterrupt
-            return str(original_copy(source_path, target_path))
+        def interrupt_backup(input_file: BinaryIO, output: BinaryIO) -> None:
+            if Path(input_file.name) != destination:
+                original_copy(input_file, output)
+                return
+            output.write(input_file.read(64))
+            output.flush()
+            raise KeyboardInterrupt
 
         mocker.patch(
-            "moneybin.cli.commands.db.shutil.copy2", side_effect=interrupt_replacement
+            "moneybin.services.database_restore_service.shutil.copyfileobj",
+            side_effect=interrupt_backup,
         )
-
         result = CliRunner().invoke(app, ["restore", "--from", str(source), "--yes"])
 
         assert result.exit_code == 130
+        assert "Restore interrupted" in result.output
+        assert "Pre-restore backup saved" not in result.output
+        assert destination.read_bytes() == original
+        assert not list((tmp_path / "backups").glob("*_pre_restore.duckdb"))
+
+    def test_restore_interrupt_after_auto_backup_names_saved_backup(
+        self, mocker: Any, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        destination, source = _encrypted_restore_fixture(tmp_path, mock_secret_store)
+        _make_settings_mock(destination, mocker)
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
+        promote = mocker.patch(
+            "moneybin.services.database_restore_lock.SourceLease.promote",
+            side_effect=KeyboardInterrupt,
+        )
+        original = destination.read_bytes()
+        result = CliRunner().invoke(app, ["restore", "--from", str(source), "--yes"])
+        import traceback
+
+        errors: list[str] = []
+        error = result.exception
+        while error is not None:
+            errors.extend(traceback.format_exception(error, chain=False))
+            error = error.__context__
+        assert result.exit_code == 130, (
+            result.output,
+            f"promotion calls: {promote.call_count}",
+            "".join(errors),
+        )
         assert "Pre-restore backup saved" in result.output
-        assert "replacement may be incomplete" in result.output.lower()
+        assert destination.read_bytes() == original
+        backups = list((tmp_path / "backups").glob("*_pre_restore.duckdb"))
+        assert len(backups) == 1 and backups[0].read_bytes() == original
+
+
+def test_restore_invalid_source_preserves_destination_before_copy(
+    tmp_path: Path, mocker: Any
+) -> None:
+    destination = tmp_path / "current.duckdb"
+    source = tmp_path / "legacy.duckdb"
+    destination.write_bytes(b"untouched encrypted destination")
+    source.write_bytes(b"wrong-key or legacy backup")
+    _make_settings_mock(destination, mocker)
+    mocker.patch(
+        "moneybin.services.database_restore_service.Database",
+        side_effect=ValueError("UTC upgrade required"),
+    )
+    mocker.patch("moneybin.secrets.SecretStore")
+    original = destination.read_bytes()
+    result = CliRunner().invoke(app, ["restore", "--from", str(source), "--yes"])
+    assert result.exit_code == 1
+    assert destination.read_bytes() == original
+    assert not (tmp_path / "backups").exists()

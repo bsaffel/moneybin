@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Collection
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -527,7 +527,7 @@ class TestUndo:
             "transaction_id": "txn_1",
             "text": "new",
             "author": "cli",
-            "created_at": "2026-05-24 00:00:00",
+            "created_at": "2026-05-24T00:00:00.000000Z",
         }
         db.execute(
             "INSERT INTO app.audit_log "
@@ -658,7 +658,7 @@ class TestUndo:
         assert rows == [("old",)]
 
 
-_SOURCE_SET_AT = datetime(2026, 1, 1, 9, 0, 0)
+_SOURCE_SET_AT = datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC)
 
 
 def _assert_restated_account_settings_once(restate: MagicMock, db: Database) -> None:
@@ -734,8 +734,9 @@ class TestUndoOfInvestmentSourceChoice:
         stamped = json.loads(audit[0])["investment_source_type_changed_at"]
         assert datetime.fromisoformat(stamped) == changed_at
 
+    @pytest.mark.parametrize("account_type", [None, "investment"])
     def test_undo_of_a_source_change_restates_account_settings(
-        self, db: Database, monkeypatch: pytest.MonkeyPatch
+        self, db: Database, monkeypatch: pytest.MonkeyPatch, account_type: str | None
     ) -> None:
         restate = MagicMock()
         monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
@@ -745,6 +746,7 @@ class TestUndoOfInvestmentSourceChoice:
                 db,
                 display_name="Brokerage",
                 investment_source_type="manual",
+                account_type=account_type,
                 investment_source_type_changed_at=_SOURCE_SET_AT,
             )
 
@@ -1307,3 +1309,61 @@ class TestUndoRefreshesPendingGauges:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "investment_source_type_changed_at",
+        "archived_changed_at",
+    ],
+)
+def test_account_settings_rejects_naive_change_stamps_before_mutation(
+    db: Database,
+    column: str,
+) -> None:
+    _settings_set(db, display_name="Original")
+    before = db.execute("SELECT * FROM app.account_settings").fetchall()
+    audit_before = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    with pytest.raises(ValueError, match="explicit UTC offset"):
+        _settings_set(db, display_name="Changed", **{column: datetime(2024, 7, 1, 12)})
+    assert db.execute("SELECT * FROM app.account_settings").fetchall() == before
+    assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == audit_before
+
+
+def test_account_settings_normalizes_aware_change_stamps_without_moving_dates(
+    db: Database,
+) -> None:
+    stamp = datetime(2024, 7, 1, 23, tzinfo=timezone(timedelta(hours=-4)))
+    _settings_set(
+        db,
+        investment_source_type="manual",
+        archived=True,
+        investment_source_type_changed_at=stamp,
+        archived_changed_at=stamp,
+        archived_at=date(2024, 7, 1),
+    )
+    assert db.execute(
+        "SELECT investment_source_type_changed_at, archived_changed_at, archived_at "
+        "FROM app.account_settings"
+    ).fetchone() == (
+        datetime(2024, 7, 2, 3, tzinfo=UTC),
+        datetime(2024, 7, 2, 3, tzinfo=UTC),
+        date(2024, 7, 1),
+    )
+
+
+def test_undo_history_emits_canonical_utc_and_pages_offset_ties(db: Database) -> None:
+    """Operation output and continuation refer to the same absolute instant."""
+    db.execute("SET TimeZone = 'America/New_York'")
+    op = _tag_op(db, "utc")
+    db.execute(
+        "UPDATE app.audit_log SET occurred_at = TIMESTAMPTZ '2026-10-01 09:00:00-04:00' WHERE operation_id = ?",
+        [op],
+    )
+    service = UndoService(db)
+    rows = service.history(snapshot=("2026-10-01T13:00:00Z", op))
+    assert len(rows) == 1
+    assert rows[0].occurred_at == "2026-10-01T13:00:00.000000Z"
+    assert service.history_count(snapshot=("2026-10-01T13:00:00Z", op)) == 1
+    assert service.history(after=("2026-10-01T13:00:00Z", op)) == []

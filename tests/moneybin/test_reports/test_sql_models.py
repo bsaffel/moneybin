@@ -1130,3 +1130,27 @@ def test_balance_drift_names_the_ledger_before_a_currency_mismatch(
         "SELECT computed_balance, drift, status FROM reports.balance_drift"
     ).fetchone()
     assert row == (None, None, "investment-ledger")
+
+
+def test_balance_drift_uses_profile_calendar_at_utc_month_boundary(
+    model_db: Database,
+) -> None:
+    from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+    ProfileSettingsRepo(model_db).set_reporting_timezone(
+        "America/New_York", actor="test"
+    )
+    _install_balance_drift_sources(model_db)
+    model_db.execute(
+        "INSERT INTO app.balance_assertions (account_id, assertion_date, balance) VALUES ('checking', '2026-02-28', 100)"
+    )
+    model_db.execute(
+        "INSERT INTO core.fct_balances_daily VALUES ('checking', '2026-02-28', 100, TRUE, 0, 'USD')"
+    )
+    body = rendered_model_sql(_REPORT_MODELS / "balance_drift.sql")
+    body = body.replace("CURRENT_TIMESTAMP", "TIMESTAMPTZ '2026-03-01 00:30:00+00'")
+    row = model_db.execute(
+        f"SELECT assertion_date, days_since_assertion FROM ({body})"  # noqa: S608  # rendered shipped model SQL, no user input
+    ).fetchone()
+    assert row == (date(2026, 2, 28), 0)
+    assert model_db.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)

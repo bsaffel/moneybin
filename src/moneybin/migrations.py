@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from moneybin.database import Database
 
+
 logger = logging.getLogger(__name__)
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parent / "sql" / "migrations"

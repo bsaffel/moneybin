@@ -59,6 +59,10 @@ def test_notes_add_then_list(runner: CliRunner, db: Database) -> None:
     payload = json.loads(add.stdout)["data"]
     assert payload["text"] == "first"
     assert payload["transaction_id"] == "T1"
+    db.execute(
+        "UPDATE app.transaction_notes SET created_at = "
+        "TIMESTAMPTZ '2025-11-02 01:30:00.123456-04:00'"
+    )
 
     listed = runner.invoke(
         app, ["transactions", "notes", "list", "T1", "--output", "json"]
@@ -67,6 +71,14 @@ def test_notes_add_then_list(runner: CliRunner, db: Database) -> None:
     notes = json.loads(listed.stdout)["data"]["notes"]
     assert len(notes) == 1
     assert notes[0]["text"] == "first"
+    assert notes[0]["created_at"] == "2025-11-02T05:30:00.123456Z"
+
+    db.execute(
+        "UPDATE app.profile_settings SET reporting_timezone = 'America/New_York'"
+    )
+    text = runner.invoke(app, ["transactions", "notes", "list", "T1", "--no-pager"])
+    assert text.exit_code == 0, text.output
+    assert "-04:00" in text.output and "America/New_York" in text.output
 
 
 def test_notes_edit_changes_text(runner: CliRunner, db: Database) -> None:

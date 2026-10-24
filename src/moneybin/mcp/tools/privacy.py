@@ -60,6 +60,7 @@ from moneybin.services.consent_service import (
     ConsentTargetResult,
 )
 from moneybin.services.mutation_context import current_operation_id
+from moneybin.temporal import format_utc
 from moneybin.vocabulary import ConsentFeatureCategory
 
 
@@ -143,7 +144,7 @@ def privacy_status() -> ResponseEnvelope[PrivacyStatusPayload]:
                     feature_category=g.feature_category,
                     backend=g.backend,
                     consent_mode=g.consent_mode.value,
-                    granted_at=str(g.granted_at),
+                    granted_at=format_utc(g.granted_at),
                 )
                 for g in status.active_grants
             ],
@@ -264,7 +265,7 @@ def privacy_coarse(
                     feature_category=grant.feature_category,
                     backend=grant.backend,
                     consent_mode=grant.consent_mode.value,
-                    granted_at=str(grant.granted_at),
+                    granted_at=format_utc(grant.granted_at),
                 )
                 for grant in status.active_grants
             ],

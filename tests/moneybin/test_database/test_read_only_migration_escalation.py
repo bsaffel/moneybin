@@ -129,6 +129,11 @@ def test_read_only_open_applies_a_behind_ladder_and_reads_current_data(
             "SELECT version FROM app.versions WHERE component = 'moneybin'"
         ).fetchone()
 
+        assert db.execute(
+            "SELECT version FROM app.versions WHERE component = 'utc_contract'"
+        ).fetchone() == ("2",)
+        assert db.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)
+
     assert version == (importlib.metadata.version("moneybin"),)
 
 
@@ -277,3 +282,18 @@ def test_concurrent_read_only_opens_serialize_the_upgrade(
     current = importlib.metadata.version("moneybin")
     assert outcomes == {"reader-0": current, "reader-1": current}, outcomes
     assert db_path.with_name(db_path.name + ".write.lock").exists()
+
+
+def test_legacy_read_only_open_never_escalates(
+    configured_db: tuple[Path, MagicMock, MagicMock],
+) -> None:
+    from moneybin.temporal_contract import UTCUpgradeRequiredError
+
+    db_path, _settings, mock_store = configured_db
+    with Database(db_path, read_only=False, secret_store=mock_store) as db:
+        db.execute("DELETE FROM app.versions WHERE component = 'utc_contract'")
+    lock_path = db_path.with_name(db_path.name + ".write.lock")
+    assert not lock_path.exists()
+    with pytest.raises(UTCUpgradeRequiredError):
+        get_database(read_only=True)
+    assert not lock_path.exists()

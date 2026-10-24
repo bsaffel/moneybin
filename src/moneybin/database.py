@@ -205,6 +205,9 @@ def _seal_connection(conn: duckdb.DuckDBPyConnection, *, writable: bool) -> None
             write one. Read-only opens additionally lock the configuration; see
             the "Extension seal" block above for why write opens cannot.
     """
+    # SQLMesh duplicate cursors inherit instance defaults, not session SETs.
+    conn.execute("SET GLOBAL TimeZone='UTC'")
+
     for stmt in _EXTENSION_LOCKDOWN_SQL:
         conn.execute(stmt)
 
@@ -387,6 +390,8 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "account_id",
         "routing_number",
         "account_type",
+        "account_type_override",
+        "source_account_type",
         "institution_name",
         "institution_slug",
         "institution_fid",
@@ -715,6 +720,7 @@ class Database:
                     encryption_key,
                 )
                 self._conn.execute(f"USE {_DATABASE_ALIAS}")
+                self._check_temporal_contract(allow_empty=False)
                 stack.pop_all()
             return
 
@@ -746,6 +752,10 @@ class Database:
                 encryption_key,
             )
             self._conn.execute(f"USE {_DATABASE_ALIAS}")
+            fresh_contract = (
+                self._check_temporal_contract(allow_empty=not assume_initialized)
+                == "empty"
+            )
 
             if is_new and sys.platform != "win32":
                 try:
@@ -902,10 +912,39 @@ class Database:
 
             refresh_views(self)
 
+            if fresh_contract:
+                from moneybin.repositories.profile_settings_repo import (
+                    ProfileSettingsRepo,
+                )
+
+                ProfileSettingsRepo(self).set_reporting_timezone(
+                    "UTC", actor="database.init"
+                )
+                from moneybin.temporal_contract import certify_fresh_temporal_contract
+
+                certify_fresh_temporal_contract(self._conn)
+
             # Construction succeeded — transfer conn ownership to this instance.
             stack.pop_all()
 
         logger.debug(f"Database connection established: {db_path}")
+
+    def _check_temporal_contract(self, *, allow_empty: bool) -> str:
+        """Refuse legacy or incomplete clocks before initialization can write."""
+        from moneybin.temporal_contract import (
+            UTCUpgradeRequiredError,
+            inspect_temporal_contract,
+        )
+
+        contract = inspect_temporal_contract(self.conn)
+        if contract != "utc" and not (allow_empty and contract == "empty"):
+            raise UTCUpgradeRequiredError(
+                "This profile requires UTC compatibility before MoneyBin "
+                "can open it. Create a fresh profile or arrange separate offline "
+                "maintenance with proven historical timezone mappings; "
+                "ordinary migrations cannot safely infer them."
+            )
+        return contract
 
     def _check_permissions(self, db_path: Path) -> None:
         """Warn if database file has overly permissive permissions.
@@ -1001,6 +1040,9 @@ class Database:
             # under-persisted is reported as failure (caller does NOT record it as
             # done and retries on the next open), not cached as a false success.
             ctx.state_sync.get_versions(validate=True)
+            # SQLMesh fetchone commits on its borrowed cursor but leaves its
+            # terminal result open; drain it before the owner can checkpoint.
+            adapter.cursor.fetchall()
             logger.debug("sqlmesh migrate completed and durable state verified")
             return True
         except Exception:  # sqlmesh migration failures are non-fatal
@@ -1094,9 +1136,12 @@ class Database:
             fresh writes and a stalled upstream feed stays invisible.
 
         Raises:
-            ValueError: If on_conflict is not a recognised value.
+            ValueError: If on_conflict is unrecognised or an instant lacks an offset.
         """
+        import pyarrow as pa
         from sqlglot import exp
+
+        from moneybin.temporal import as_utc, parse_utc
 
         if on_conflict not in ("insert", "replace", "upsert", "ignore"):
             raise ValueError(
@@ -1113,7 +1158,42 @@ class Database:
         else:
             safe_ref = exp.to_identifier(table, quoted=True).sql("duckdb")
 
-        with self.registered_dataframe(df) as view:
+        arrow_table = df.to_arrow()
+        schema_name, table_name = parts if len(parts) == 2 else ("main", parts[0])
+        instant_columns = {
+            row[0].casefold()
+            for row in self.conn.execute(
+                "SELECT column_name FROM duckdb_columns() "
+                "WHERE database_name = current_database() "
+                "AND LOWER(schema_name) = LOWER(?) AND LOWER(table_name) = LOWER(?) "
+                "AND data_type = 'TIMESTAMP WITH TIME ZONE'",
+                [schema_name, table_name],
+            ).fetchall()
+        }
+        for index, field in enumerate(arrow_table.schema):
+            if (
+                not pa.types.is_timestamp(field.type)
+                and field.name.casefold() not in instant_columns
+            ):
+                continue
+            column = arrow_table.column(index)
+            if pa.types.is_timestamp(field.type) and field.type.tz is not None:
+                normalized = column.cast(pa.timestamp("us", tz="UTC"))
+            else:
+                # The source adapter must establish provenance before this boundary.
+                normalized = pa.array(
+                    [
+                        None
+                        if value is None
+                        else parse_utc(value)
+                        if isinstance(value, str)
+                        else as_utc(value)
+                        for value in column.to_pylist()
+                    ],
+                    type=pa.timestamp("us", tz="UTC"),
+                )
+            arrow_table = arrow_table.set_column(index, field.name, normalized)
+        with self.registered_dataframe(arrow_table) as view:
             if on_conflict == "replace":
                 result = self.conn.execute(
                     f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
@@ -1137,13 +1217,15 @@ class Database:
 
     @contextmanager
     def registered_dataframe(self, df: Any) -> Generator[str, None, None]:
-        """Expose a Polars (or Arrow-compatible) DataFrame as a temporary view.
+        """Expose a DataFrame or Arrow table as a temporary view.
 
         Yields the view name to interpolate into SQL; the view is dropped on exit.
         The name is unique per call so a nested registration cannot shadow it.
         """
+        import pyarrow as pa
+
         view = f"_df_{uuid.uuid4().hex[:12]}"
-        self.conn.register(view, df.to_arrow())
+        self.conn.register(view, df if isinstance(df, pa.Table) else df.to_arrow())
         try:
             yield view
         finally:
@@ -1972,6 +2054,7 @@ def init_db(
     passphrase: str | None = None,
     secret_store: SecretStore | None = None,
     profile: str | None = None,
+    reporting_timezone: str = "UTC",
     argon2_time_cost: int = ARGON2_TIME_COST,
     argon2_memory_cost: int = ARGON2_MEMORY_COST,
     argon2_parallelism: int = ARGON2_PARALLELISM,
@@ -1994,11 +2077,15 @@ def init_db(
             creates a new one (uses OS keychain by default).
         profile: Profile name used to scope the keychain service when
             ``secret_store`` is None. Ignored if ``secret_store`` is provided.
+        reporting_timezone: IANA calendar for new databases; existing policy is retained.
         argon2_time_cost: Argon2id time cost (only used with passphrase).
         argon2_memory_cost: Argon2id memory cost in KiB (only used with passphrase).
         argon2_parallelism: Argon2id parallelism (only used with passphrase).
         argon2_hash_len: Argon2id hash length in bytes (only used with passphrase).
     """
+    from moneybin.repositories.profile_settings_repo import validate_reporting_timezone
+
+    validate_reporting_timezone(reporting_timezone)
     import secrets as secrets_mod
 
     # init_db is the explicit "create a database" entry point, so it's safe
@@ -2065,6 +2152,14 @@ def init_db(
                 from moneybin.seeds import materialize_seeds
 
                 materialize_seeds(db)
+                if not db_existed:
+                    from moneybin.repositories.profile_settings_repo import (
+                        ProfileSettingsRepo,
+                    )
+
+                    ProfileSettingsRepo(db).set_reporting_timezone(
+                        reporting_timezone, actor="profile.create"
+                    )
         except Exception:
             # Roll back keychain to previous state so the existing DB
             # remains accessible with its original key.
@@ -2152,6 +2247,14 @@ def init_db(
                 from moneybin.seeds import materialize_seeds
 
                 materialize_seeds(db)
+                if not db_existed:
+                    from moneybin.repositories.profile_settings_repo import (
+                        ProfileSettingsRepo,
+                    )
+
+                    ProfileSettingsRepo(db).set_reporting_timezone(
+                        reporting_timezone, actor="profile.create"
+                    )
         except Exception:
             # Roll back the freshly persisted key and any orphan DB file.
             # We only undo persistence we just performed — a pre-existing

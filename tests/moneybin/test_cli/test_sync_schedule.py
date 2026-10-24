@@ -12,10 +12,27 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.connectors.sync_models import PullResult
+from moneybin.connectors.sync_models import PlaidSourceResult, PullResult
 
 pytestmark = pytest.mark.unit
 runner = CliRunner()
+
+
+def _completed_source() -> PlaidSourceResult:
+    return PlaidSourceResult.model_validate({
+        "provider": "plaid",
+        "connection_id": "22222222-2222-4222-8222-222222222222",
+        "credential_generation": 1,
+        "outcomes": [
+            {
+                "account_id": "account-1",
+                "native_scope": {"kind": "plaid_item", "provider_item_id": "item"},
+                "window": None,
+                "status": "complete",
+                "error_code": None,
+            }
+        ],
+    })
 
 
 @pytest.fixture(autouse=True)
@@ -357,6 +374,7 @@ def test_schedule_text_json_have_same_operational_result(
         ("offline", 1),
         ("writer", 1),
         ("refresh", 1),
+        ("partial", 1),
         ("cancelled", 130),
     ],
 )
@@ -381,6 +399,10 @@ def test_existing_pull_completion_is_scheduled_receipt_boundary(
                     balances_loaded=0,
                     transactions_removed=0,
                     institutions=[],
+                    source_results=[_completed_source()],
+                    ack_state="pending" if mode == "partial" else "confirmed",
+                    setup_state="pending" if mode == "partial" else "complete",
+                    refresh_state="complete",
                     transforms_error="Synthetic refresh failure"
                     if mode == "refresh"
                     else None,
@@ -425,6 +447,10 @@ def test_scheduled_pull_guards_service_cleanup_and_metrics(
                         balances_loaded=0,
                         transactions_removed=0,
                         institutions=[],
+                        source_results=[_completed_source()],
+                        ack_state="confirmed",
+                        setup_state="complete",
+                        refresh_state="complete",
                     )
                 )
             )
@@ -527,6 +553,8 @@ def test_scheduled_construction_never_adopts_replacement_identity(
 
     db = Mock(side_effect=database)
     monkeypatch.setattr("moneybin.database.get_database", db)
+    create = Mock(side_effect=AssertionError("scheduled identity must not be created"))
+    monkeypatch.setattr("moneybin.utils.user_config.get_or_create_profile_id", create)
     with (
         pytest.raises(UserError),
         sync._build_sync_service(  # pyright: ignore[reportPrivateUsage]  # exercise construction fence
@@ -537,6 +565,7 @@ def test_scheduled_construction_never_adopts_replacement_identity(
         pytest.fail("a replaced profile reached the sync service")
     assert build.call_count == int(replacement != "before")
     assert db.call_count == int(replacement == "database")
+    create.assert_not_called()
 
 
 def test_existing_client_factory_uses_explicit_identity_without_creation(
@@ -570,18 +599,23 @@ def test_scheduled_child_passes_binding_to_service_construction(
             "scheduled_profile_id": "0123456789ab",
             "scheduled_revision": "1" * 32,
         }
-        yield Mock(
-            pull=Mock(
-                return_value=PullResult(
-                    job_id="synthetic",
-                    transactions_loaded=0,
-                    accounts_loaded=0,
-                    balances_loaded=0,
-                    transactions_removed=0,
-                    institutions=[],
-                )
-            )
+        yield sync_service
+
+    pull = Mock(
+        return_value=PullResult(
+            job_id="synthetic",
+            transactions_loaded=0,
+            accounts_loaded=0,
+            balances_loaded=0,
+            transactions_removed=0,
+            institutions=[],
+            source_results=[_completed_source()],
+            ack_state="confirmed",
+            setup_state="complete",
+            refresh_state="complete",
         )
+    )
+    sync_service = Mock(pull=pull)
 
     monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", guard)
     monkeypatch.setattr("moneybin.observability.finish_cli_metrics", Mock())
@@ -606,6 +640,112 @@ def test_scheduled_child_passes_binding_to_service_construction(
     )
     assert result.exit_code == 0, result.output
     build.assert_called_once()
+    assert pull.call_args.kwargs == {
+        "institution": None,
+        "provider": None,
+        "connection_id": None,
+        "history_start": None,
+        "force": False,
+        "refresh": True,
+        "progress": pull.call_args.kwargs["progress"],
+    }
+
+
+def test_manual_local_only_recovery_does_not_enter_scheduled_secret_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual recovery keeps its local-only path outside scheduled credentials."""
+    scheduled_access = Mock(
+        side_effect=AssertionError("manual recovery entered scheduled secret access")
+    )
+    recover = Mock(
+        return_value=PullResult(
+            job_id="11111111-1111-4111-8111-111111111111",
+            transactions_loaded=0,
+            accounts_loaded=0,
+            balances_loaded=0,
+            transactions_removed=0,
+            institutions=[],
+            source_results=[_completed_source()],
+            ack_state="confirmed",
+            setup_state="complete",
+            refresh_state="complete",
+        )
+    )
+
+    @contextmanager
+    def service(*, local_only: bool = False) -> Generator[Mock, None, None]:
+        assert local_only
+        yield Mock(recover=recover)
+
+    monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", scheduled_access)
+    build = Mock(side_effect=service)
+    monkeypatch.setattr("moneybin.cli.commands.sync._build_sync_service", build)
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "pull",
+            "--job-id",
+            "11111111-1111-4111-8111-111111111111",
+            "--local-only",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    build.assert_called_once_with(local_only=True)
+    scheduled_access.assert_not_called()
+    assert recover.call_args.kwargs == {
+        "local_only": True,
+        "refresh": True,
+        "progress": recover.call_args.kwargs["progress"],
+    }
+    assert recover.call_args.args == ("11111111-1111-4111-8111-111111111111",)
+
+
+def test_scheduled_local_only_recovery_refuses_before_secret_or_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The generated scheduled pull cannot select manual local-only recovery."""
+    scheduled_access = Mock(
+        side_effect=AssertionError("scheduled local-only entered secret access")
+    )
+    service = Mock(side_effect=AssertionError("scheduled local-only built a service"))
+    db = Mock(side_effect=AssertionError("refusal reopened the database for metrics"))
+
+    def finish_metrics(*, persist: bool) -> None:
+        if persist:
+            db()
+
+    finish = Mock(side_effect=finish_metrics)
+    monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", scheduled_access)
+    monkeypatch.setattr("moneybin.cli.commands.sync._build_sync_service", service)
+    monkeypatch.setattr("moneybin.database.get_database", db)
+    monkeypatch.setattr("moneybin.observability.finish_cli_metrics", finish)
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "pull",
+            "--scheduled",
+            "--job-id",
+            "11111111-1111-4111-8111-111111111111",
+            "--local-only",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Scheduled pulls cannot use local-only recovery" in result.output
+    scheduled_access.assert_not_called()
+    service.assert_not_called()
+    finish.assert_called_once_with(persist=False)
+    db.assert_not_called()
 
 
 def test_stale_binding_cannot_reopen_database_for_shutdown_metrics(

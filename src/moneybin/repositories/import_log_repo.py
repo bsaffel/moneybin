@@ -52,6 +52,7 @@ from moneybin.tables import (
     TABULAR_TRANSACTIONS,
     TableRef,
 )
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -412,7 +413,7 @@ class ImportLogRepo:
                     snapshot_import_id=None,
                     has_more=False,
                 )
-            snapshot_started_at = str(head[0])
+            snapshot_started_at = format_utc(head[0])
             snapshot_import_id = str(head[1])
 
         if snapshot_total is None:
@@ -420,8 +421,8 @@ class ImportLogRepo:
                 f"""
                 SELECT COUNT(*)
                 FROM {IMPORT_LOG.full_name}
-                WHERE started_at < CAST(? AS TIMESTAMP)
-                   OR (started_at = CAST(? AS TIMESTAMP) AND import_id <= ?)
+                WHERE started_at < CAST(? AS TIMESTAMPTZ)
+                   OR (started_at = CAST(? AS TIMESTAMPTZ) AND import_id <= ?)
                 """,  # TableRef constant + parameterized keyset bound
                 [snapshot_started_at, snapshot_started_at, snapshot_import_id],
             ).fetchone()
@@ -434,13 +435,13 @@ class ImportLogRepo:
                        detection_confidence, started_at, completed_at
                 FROM {IMPORT_LOG.full_name}
                 WHERE (
-                       started_at < CAST(? AS TIMESTAMP)
-                   OR (started_at = CAST(? AS TIMESTAMP) AND import_id <= ?)
+                       started_at < CAST(? AS TIMESTAMPTZ)
+                   OR (started_at = CAST(? AS TIMESTAMPTZ) AND import_id <= ?)
                 )
                   AND (
-                       CAST(? AS TIMESTAMP) IS NULL
-                    OR started_at < CAST(? AS TIMESTAMP)
-                    OR (started_at = CAST(? AS TIMESTAMP) AND import_id < ?)
+                       CAST(? AS TIMESTAMPTZ) IS NULL
+                    OR started_at < CAST(? AS TIMESTAMPTZ)
+                    OR (started_at = CAST(? AS TIMESTAMPTZ) AND import_id < ?)
                   )
                 ORDER BY started_at DESC, import_id DESC
                 LIMIT ?

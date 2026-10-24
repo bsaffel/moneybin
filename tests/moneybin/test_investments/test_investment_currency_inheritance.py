@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 import typing as t
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -56,7 +56,7 @@ _PLAID_COLUMNS = """
     source_type VARCHAR,
     source_origin VARCHAR,
     description VARCHAR,
-    created_at TIMESTAMP
+    created_at TIMESTAMPTZ
 """
 
 _ACCOUNT_ID = "acct_brokerage_eur"
@@ -86,7 +86,7 @@ def _install_ledger_chain(
     db: Database,
     *,
     account_currency: str | None,
-    account_updated_at: str = "2026-05-10 08:00:00",
+    account_updated_at: str = "2026-05-10 08:00:00+00:00",
 ) -> None:
     """Install the shipped identity and ledger models over hand-made sources."""
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
@@ -101,14 +101,14 @@ def _install_ledger_chain(
         CREATE TABLE prep.int_accounts__merged (
             account_id VARCHAR,
             currency_code VARCHAR,
-            updated_at TIMESTAMP,
+            updated_at TIMESTAMPTZ,
             investment_source_type VARCHAR,
-            investment_source_type_changed_at TIMESTAMP
+            investment_source_type_changed_at TIMESTAMPTZ
         )
     """)
     db.execute(
         "INSERT INTO prep.int_accounts__merged (account_id, currency_code, updated_at) "
-        "VALUES (?, ?, ?::TIMESTAMP)",
+        "VALUES (?, ?, ?::TIMESTAMPTZ)",
         [_ACCOUNT_ID, account_currency, account_updated_at],
     )
     db.execute(  # shipped model body, not user SQL
@@ -129,7 +129,7 @@ def _record_event(
     db: Database,
     *,
     currency_code: str | None,
-    created_at: str = "2026-05-11 09:00:00",
+    created_at: str = "2026-05-11 09:00:00+00:00",
     event_type: str = "buy",
     amount: str = "-100.00",
 ) -> None:
@@ -141,7 +141,7 @@ def _record_event(
              investment_transaction_id, created_at)
         VALUES ('manual_evt_1', 'import_1', ?, 'sec_1', ?, '2026-05-11'::DATE,
                 10::DECIMAL(28,10), ?::DECIMAL(18,2), ?, 'cli', 'inv_evt_1',
-                ?::TIMESTAMP)
+                ?::TIMESTAMPTZ)
         """,  # static test fixture
         [_ACCOUNT_ID, event_type, amount, currency_code, created_at],
     )
@@ -192,28 +192,28 @@ class TestInvestmentEventCurrencyInheritance:
         _install_ledger_chain(
             db,
             account_currency="GBP",
-            account_updated_at="2026-05-10 08:00:00",
+            account_updated_at="2026-05-10 08:00:00+00:00",
         )
         _record_event(
             db,
             currency_code=None,
-            created_at="2026-05-12 09:00:00",
+            created_at="2026-05-12 09:00:00+00:00",
         )
 
         raw = db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
         assert _ledger_currency_and_updated_at(db) == (
             "GBP",
-            datetime(2026, 5, 12, 9),
+            datetime(2026, 5, 12, 9, tzinfo=UTC),
         )
         db.execute(
             """UPDATE prep.int_accounts__merged
-            SET currency_code = 'EUR', updated_at = TIMESTAMP '2026-05-13 10:00:00'
+            SET currency_code = 'EUR', updated_at = TIMESTAMPTZ '2026-05-13 10:00:00'
             WHERE account_id = ?""",
             [_ACCOUNT_ID],
         )
         assert _ledger_currency_and_updated_at(db) == (
             "EUR",
-            datetime(2026, 5, 13, 10),
+            datetime(2026, 5, 13, 10, tzinfo=UTC),
         )
         assert (
             db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
@@ -227,17 +227,17 @@ class TestInvestmentEventCurrencyInheritance:
         _install_ledger_chain(
             db,
             account_currency=None,
-            account_updated_at="2026-05-13 10:00:00",
+            account_updated_at="2026-05-13 10:00:00+00:00",
         )
         _record_event(
             db,
             currency_code=None,
-            created_at="2026-05-12 09:00:00",
+            created_at="2026-05-12 09:00:00+00:00",
         )
 
         assert _ledger_currency_and_updated_at(db) == (
             None,
-            datetime(2026, 5, 13, 10),
+            datetime(2026, 5, 13, 10, tzinfo=UTC),
         )
 
     def test_own_currency_ignores_newer_account_freshness(self, db: Database) -> None:
@@ -245,24 +245,24 @@ class TestInvestmentEventCurrencyInheritance:
         _install_ledger_chain(
             db,
             account_currency="EUR",
-            account_updated_at="2026-05-13 10:00:00",
+            account_updated_at="2026-05-13 10:00:00+00:00",
         )
         _record_event(
             db,
             currency_code="GBP",
-            created_at="2026-05-12 09:00:00",
+            created_at="2026-05-12 09:00:00+00:00",
         )
 
         assert _ledger_currency_and_updated_at(db) == (
             "GBP",
-            datetime(2026, 5, 12, 9),
+            datetime(2026, 5, 12, 9, tzinfo=UTC),
         )
 
     def test_inherited_currency_freshness_reaches_security_sale_lot(
         self, db: Database
     ) -> None:
         """The sale loader preserves Account freshness from the actual fact view."""
-        account_updated_at = datetime(2026, 5, 13, 10)
+        account_updated_at = datetime(2026, 5, 13, 10, tzinfo=UTC)
         _install_ledger_chain(
             db,
             account_currency="EUR",
@@ -271,7 +271,7 @@ class TestInvestmentEventCurrencyInheritance:
         _record_event(
             db,
             currency_code=None,
-            created_at="2026-05-12 09:00:00",
+            created_at="2026-05-12 09:00:00+00:00",
             event_type="sell",
             amount="100.00",
         )
@@ -281,7 +281,7 @@ class TestInvestmentEventCurrencyInheritance:
                 from_currency, to_currency, rate_date, rate, source_type, loaded_at
             ) VALUES (
                 'EUR', 'USD', '2026-05-11'::DATE, 1.20000000,
-                'frankfurter', '2026-05-12 08:00:00'::TIMESTAMP
+                'frankfurter', '2026-05-12 08:00:00'::TIMESTAMPTZ
             )
             """
         )
@@ -290,7 +290,7 @@ class TestInvestmentEventCurrencyInheritance:
         sales = sqlmesh_loader._load_security_sales(  # pyright: ignore[reportPrivateUsage]
             context,
             home_currency="USD",
-            home_updated_at=datetime(2026, 5, 1, 10),
+            home_updated_at=datetime(2026, 5, 1, 10, tzinfo=UTC),
             stored_rate=stored_rate,
         )
 

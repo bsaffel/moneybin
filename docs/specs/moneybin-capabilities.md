@@ -98,9 +98,12 @@ the implementation:
    profile-scoped sessions. Institution disconnects use payload-bound
    confirmation and re-resolve the live connection immediately before the
    remote delete. `sync_disconnect(state="absent")` and
-   `moneybin sync disconnect --purge` reach the same purged state: the
+   `moneybin sync disconnect --purge` reach the same Plaid-only purged state: the
    item's locally pulled rows deleted, its account links reversed, and its
-   orphaned merge proposals withdrawn. The CLI login remains a blocking
+   orphaned merge proposals withdrawn. SimpleFIN purge is refused before any
+   remote or local mutation; ordinary disconnect preserves imported history.
+   Confirmation binds the credential generation and complete account identity
+   set as well as the deletion preview. The CLI login remains a blocking
    wrapper over the same begin/poll client primitives.
 4. `transactions categorize rules apply` now invokes only the rules engine,
    matching its command intent and

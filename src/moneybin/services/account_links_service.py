@@ -96,6 +96,7 @@ MERGED_SETTING_FIELDS = (
     "official_name",
     "last_four",
     "account_subtype",
+    "account_type",
     "holder_category",
     "currency_code",
     "credit_limit",
@@ -112,6 +113,8 @@ _UNMOVED_SETTING_DEFAULTS: dict[str, Any] = {
     "include_in_net_worth": True,
     "investment_source_type_changed_at": None,
     "archived_changed_at": None,
+    "account_type_changed_at": None,
+    "account_subtype_changed_at": None,
     "currency_code_changed_at": None,
     "default_cost_basis_method_changed_at": None,
 }
@@ -120,6 +123,8 @@ _UNMOVED_SETTING_DEFAULTS: dict[str, Any] = {
 #: Moved settings whose change time a merge stamps, as a direct edit would.
 _MERGE_CHANGE_STAMPS = (
     ("investment_source_type", "investment_source_type_changed_at"),
+    ("account_type", "account_type_changed_at"),
+    ("account_subtype", "account_subtype_changed_at"),
     ("currency_code", "currency_code_changed_at"),
     ("default_cost_basis_method", "default_cost_basis_method_changed_at"),
 )
@@ -1142,7 +1147,7 @@ class AccountLinksService:
         # never move (see _UNMOVED_SETTING_DEFAULTS): the survivor's own values
         # ride through. A moved stamped setting takes the change time
         # AccountService.settings_update would give it.
-        now_row = self._db.execute("SELECT NOW()::TIMESTAMP").fetchone()
+        now_row = self._db.execute("SELECT NOW()::TIMESTAMPTZ").fetchone()
         now = now_row[0] if now_row else None
         for field_name, stamp in _MERGE_CHANGE_STAMPS:
             if field_name in plan.moved:
@@ -1153,6 +1158,7 @@ class AccountLinksService:
             official_name=row.get("official_name"),
             last_four=row.get("last_four"),
             account_subtype=row.get("account_subtype"),
+            account_type=row.get("account_type"),
             holder_category=row.get("holder_category"),
             currency_code=row.get("currency_code"),
             credit_limit=row.get("credit_limit"),
@@ -1163,6 +1169,8 @@ class AccountLinksService:
             investment_source_type=row.get("investment_source_type"),
             investment_source_type_changed_at=row["investment_source_type_changed_at"],
             archived_changed_at=row["archived_changed_at"],
+            account_type_changed_at=row["account_type_changed_at"],
+            account_subtype_changed_at=row["account_subtype_changed_at"],
             currency_code_changed_at=row["currency_code_changed_at"],
             default_cost_basis_method_changed_at=row[
                 "default_cost_basis_method_changed_at"

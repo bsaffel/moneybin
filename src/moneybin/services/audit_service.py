@@ -25,6 +25,7 @@ from moneybin.database import Database
 from moneybin.metrics.registry import audit_events_emitted_total
 from moneybin.services.mutation_context import current_operation_id
 from moneybin.tables import AUDIT_LOG
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -288,10 +289,16 @@ class AuditService:
             clauses.append("occurred_at <= ?")
             params.append(to_ts)
         if snapshot is not None:
-            clauses.append("(occurred_at < ? OR (occurred_at = ? AND audit_id <= ?))")
+            clauses.append(
+                "(occurred_at < CAST(? AS TIMESTAMPTZ) OR "
+                "(occurred_at = CAST(? AS TIMESTAMPTZ) AND audit_id <= ?))"
+            )
             params.extend([snapshot[0], snapshot[0], snapshot[1]])
         if after is not None:
-            clauses.append("(occurred_at < ? OR (occurred_at = ? AND audit_id < ?))")
+            clauses.append(
+                "(occurred_at < CAST(? AS TIMESTAMPTZ) OR "
+                "(occurred_at = CAST(? AS TIMESTAMPTZ) AND audit_id < ?))"
+            )
             params.extend([after[0], after[0], after[1]])
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         limit_sql = ""
@@ -322,7 +329,10 @@ class AuditService:
         where = ""
         params: list[str] = []
         if snapshot is not None:
-            where = "WHERE occurred_at < ? OR (occurred_at = ? AND audit_id <= ?)"
+            where = (
+                "WHERE occurred_at < CAST(? AS TIMESTAMPTZ) OR "
+                "(occurred_at = CAST(? AS TIMESTAMPTZ) AND audit_id <= ?)"
+            )
             params.extend([snapshot[0], snapshot[0], snapshot[1]])
         row = self._db.conn.execute(
             f"SELECT COUNT(*) FROM {AUDIT_LOG.full_name} {where}",  # fixed predicate fragment
@@ -405,7 +415,7 @@ class AuditService:
     def _row_to_event(row: tuple[Any, ...]) -> AuditEvent:
         return AuditEvent(
             audit_id=row[0],
-            occurred_at=str(row[1]),
+            occurred_at=format_utc(row[1]),
             actor=row[2],
             action=row[3],
             target_schema=row[4],

@@ -184,7 +184,7 @@ Two columns, appended last because `ALTER TABLE ADD COLUMN` always appends and
 | Column | Type | Meaning |
 |---|---|---|
 | `investment_source_type` | `VARCHAR` | The source type whose investment rows feed this account's ledger; NULL uses every source |
-| `investment_source_type_changed_at` | `TIMESTAMP` | When `investment_source_type` last changed, including a clear and an undo; NULL if it never changed |
+| `investment_source_type_changed_at` | `TIMESTAMPTZ` | When `investment_source_type` last changed, including a clear and an undo; NULL if it never changed |
 
 `investment_source_type_changed_at` is not redundant with `updated_at`. That
 column moves on any settings edit, so folding it into the ledger's watermark

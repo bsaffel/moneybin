@@ -1,0 +1,1 @@
+CLI balance assertion replacement and deletion now preview the existing value and require confirmation, with `--yes` for automation. Manual transaction creation, new balance assertions, unchanged values, and missing deletions continue without a prompt.

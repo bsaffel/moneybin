@@ -92,7 +92,7 @@ MODEL (
 WITH handover AS (
   SELECT
     link.link_id,
-    MAX(prior.reversed_at)::DATE AS owned_from
+    MAX(prior.reversed_at) AS owned_from
   FROM app.security_links AS link
   JOIN app.security_links AS prior
     ON prior.source_type = link.source_type
@@ -125,15 +125,18 @@ JOIN app.security_links AS links
   AND links.ref_kind = src.ref_kind
 LEFT JOIN handover AS h
   ON h.link_id = links.link_id
+JOIN app.profile_settings AS ps
+  ON ps.scope = 'profile'
 WHERE
   (
-    h.owned_from IS NULL OR p.price_date >= h.owned_from
+    h.owned_from /* Retirement instants bound business dates in the saved reporting calendar. */ IS NULL
+    OR p.price_date >= timezone(ps.reporting_timezone, h.owned_from)::DATE
   )
   AND (
     links.status = 'accepted'
     OR (
       links.status = 'reversed'
       AND links.reversed_by = 'auto'
-      AND p.price_date < links.reversed_at::DATE
+      AND p.price_date < timezone(ps.reporting_timezone, links.reversed_at)::DATE
     )
   )

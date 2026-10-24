@@ -27,13 +27,13 @@ All expected values are hand-derived from the input payloads, not observed outpu
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import polars as pl
 import pytest
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
@@ -141,7 +141,8 @@ def _seed_ofx_twin(db: Database, *, account_id: str) -> None:
                 "source_transaction_id": "ofx_dedup_001",
                 "account_id": account_id,
                 "transaction_type": "DEBIT",
-                "date_posted": datetime(2026, 5, 10, tzinfo=UTC).replace(tzinfo=None),
+                "date_posted": datetime(2026, 5, 10, tzinfo=UTC),
+                "date_posted_source_date": date.fromisoformat(_DEDUP_DATE),
                 "amount": _OFX_RAW_AMOUNT,
                 "payee": "SHARED MERCHANT CO",
                 "memo": None,
@@ -171,7 +172,7 @@ def test_entity_id_binds_on_issuing_provider_not_merge_winner() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         # --- Load Plaid, resolve its account → canonical id C ---
-        sync_data = SyncDataResponse.model_validate(_PLAID_PAYLOAD)
+        sync_data = PlaidSyncDataResponse.model_validate(_PLAID_PAYLOAD)
         loader = PlaidExtractor(db)
         loader.load(sync_data, job_id=sync_data.metadata.job_id)
 

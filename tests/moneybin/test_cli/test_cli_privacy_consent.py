@@ -70,12 +70,23 @@ def test_cli_grant_then_status_json(
     _set_backend(monkeypatch)
     result = runner.invoke(app, ["privacy", "grant", "mcp-data-sharing", "--yes"])
     assert result.exit_code == 0, result.output
+    db.execute(
+        "UPDATE app.ai_consent_grants SET granted_at = "
+        "TIMESTAMPTZ '2025-11-02 01:30:00.123456-04:00'"
+    )
     status = runner.invoke(app, ["privacy", "status", "--output", "json"])
     assert status.exit_code == 0, status.output
     body = json.loads(status.stdout)["data"]
     assert body["default_backend"] == "anthropic"
     cats = {g["feature_category"] for g in body["active_grants"]}
     assert "mcp-data-sharing" in cats
+    assert body["active_grants"][0]["granted_at"] == "2025-11-02T05:30:00.123456Z"
+    db.execute(
+        "UPDATE app.profile_settings SET reporting_timezone = 'America/New_York'"
+    )
+    text = runner.invoke(app, ["privacy", "status", "--no-pager"])
+    assert text.exit_code == 0, text.output
+    assert "-04:00" in text.output and "America/New_York" in text.output
 
 
 def test_cli_revoke(
@@ -292,6 +303,9 @@ def test_cli_privacy_grant_cancelled_text_has_no_mutation_or_privacy_event(
         _interactive_policy_factory,
     )
 
+    before_audit = db.execute(
+        "SELECT * FROM app.audit_log ORDER BY audit_id"
+    ).fetchall()
     result = runner.invoke(app, ["privacy", "grant", "mcp-data-sharing"], input="n\n")
 
     assert result.exit_code == 0, result.output
@@ -303,7 +317,10 @@ def test_cli_privacy_grant_cancelled_text_has_no_mutation_or_privacy_event(
         )["data"]["active_grants"]
         == []
     )
-    assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == (0,)
+    assert (
+        db.execute("SELECT * FROM app.audit_log ORDER BY audit_id").fetchall()
+        == before_audit
+    )
 
 
 def test_cli_privacy_grant_noninteractive_text_refusal_has_no_mutation_or_event(
@@ -311,12 +328,18 @@ def test_cli_privacy_grant_noninteractive_text_refusal_has_no_mutation_or_event(
 ) -> None:
     """Redirected text requires --yes rather than treating EOF as approval."""
     _set_backend(monkeypatch)
+    before_audit = db.execute(
+        "SELECT * FROM app.audit_log ORDER BY audit_id"
+    ).fetchall()
 
     result = runner.invoke(app, ["privacy", "grant", "mcp-data-sharing"])
 
     assert result.exit_code == 1, result.output
     assert "--yes" in result.output
-    assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == (0,)
+    assert (
+        db.execute("SELECT * FROM app.audit_log ORDER BY audit_id").fetchall()
+        == before_audit
+    )
     assert read_privacy_events({}, max_rows=20) == []
 
 

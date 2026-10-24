@@ -55,6 +55,7 @@ class TestAccountsBalanceMutationPresentation:
         )
         result_payload = BalanceAssertionPayload(assertion=assertion)
         mock_service = MagicMock(spec=BalanceService)
+        mock_service.get_assertion_snapshot.return_value = None
         mock_service.assert_balance.return_value = result_payload
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
@@ -281,6 +282,7 @@ class TestAccountsBalanceAssert:
             currency_code="USD",
         )
         mock_service = MagicMock(spec=BalanceService)
+        mock_service.get_assertion_snapshot.return_value = None
         mock_service.assert_balance.return_value = BalanceAssertionPayload(
             assertion=assertion
         )
@@ -499,6 +501,7 @@ class TestAccountsBalanceAssertionDelete:
     ) -> None:
         mock_service = MagicMock(spec=BalanceService)
         mock_service.delete_assertion.return_value = False
+        mock_service.get_assertion_snapshot.return_value = None
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(

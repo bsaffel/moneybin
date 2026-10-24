@@ -327,9 +327,14 @@ def _db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture ref
     store = MagicMock()
     store.get_key.return_value = "test-encryption-key-for-unit-tests"
     template_path = tmp_path_factory.mktemp("db_template") / "template.duckdb"
-    Database(
+    with Database(
         template_path, secret_store=store, no_auto_upgrade=True, read_only=False
-    ).close()
+    ) as database:
+        # Schema fixtures start after initialization; keep the saved policy but
+        # exclude only its known bootstrap event from later mutation assertions.
+        database.execute(
+            "DELETE FROM app.audit_log WHERE actor = 'database.init' AND action = 'profile_settings.set' AND target_table = 'profile_settings'"
+        )
     return template_path
 
 

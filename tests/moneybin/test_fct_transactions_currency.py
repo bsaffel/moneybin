@@ -42,9 +42,10 @@ def _insert_ofx_transaction(
         """
         INSERT INTO raw.ofx_transactions
             (source_transaction_id, account_id, transaction_type, date_posted,
+             date_posted_source_date,
              amount, payee, source_file, extracted_at, source_type,
              source_origin, currency_code)
-        VALUES (?, ?, 'DEBIT', '2026-07-01'::TIMESTAMP, -10.00, 'Test Payee',
+        VALUES (?, ?, 'DEBIT', '2026-07-01'::TIMESTAMP, DATE '2026-07-01', -10.00, 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
         """,  # test fixture, not executing user SQL
         [txn_id, account_id, currency_code],
@@ -196,12 +197,24 @@ def test_two_banks_sharing_an_account_key_keep_their_own_currencies(
             """
             INSERT INTO raw.ofx_balances
                 (account_id, statement_start_date, statement_end_date,
+                 statement_start_source_date, statement_end_source_date,
                  ledger_balance, ledger_balance_date, source_file, extracted_at,
-                 source_type, source_origin, currency_code)
-            VALUES ('1001', ?::TIMESTAMP, ?::TIMESTAMP, 100.00, ?::TIMESTAMP,
-                    ?, ?::TIMESTAMP, 'ofx', ?, ?)
+                 source_type, source_origin, currency_code, ledger_balance_source_date)
+            VALUES ('1001', ?::TIMESTAMP, ?::TIMESTAMP, ?::DATE, ?::DATE, 100.00, ?::TIMESTAMP,
+                    ?, ?::TIMESTAMP, 'ofx', ?, ?, ?::DATE)
             """,  # test fixture, not executing user SQL
-            [when, when, when, f"ofx_{origin}", when, origin, currency],
+            [
+                when,
+                when,
+                when,
+                when,
+                when,
+                f"ofx_{origin}",
+                when,
+                origin,
+                currency,
+                when,
+            ],
         )
 
     with sqlmesh_context(db) as ctx:

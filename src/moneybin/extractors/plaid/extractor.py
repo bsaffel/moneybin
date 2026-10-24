@@ -16,23 +16,25 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from itertools import chain
 from pathlib import Path
+from uuid import UUID
 
 import polars as pl
 
 from moneybin.connectors.sync_models import (
     InstitutionResult,
-    SyncAccount,
-    SyncBalance,
-    SyncDataResponse,
+    PlaidSyncAccount,
+    PlaidSyncBalance,
+    PlaidSyncDataResponse,
+    PlaidSyncTransaction,
     SyncHolding,
     SyncInvestmentTransaction,
     SyncSecurity,
-    SyncTransaction,
 )
 from moneybin.database import Database
 from moneybin.extractors._types import ExtractionResult, ProviderSource, SyncResponse
 from moneybin.extractors.plaid.config import PlaidProviderConfig
 from moneybin.investments.observation_versions import observation_version
+from moneybin.metrics.observations import MetricObservations, record_counter
 from moneybin.metrics.registry import (
     INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL,
     PRICE_ROWS_WRITTEN_TOTAL,
@@ -51,34 +53,19 @@ from moneybin.tables import (
     SECURITY_PRICES,
     TableRef,
 )
+from moneybin.temporal import as_utc
 
 logger = logging.getLogger(__name__)
 
 
-def _utc_naive(value: datetime | None) -> datetime | None:
-    """Rebase an instant onto UTC and drop the tzinfo.
-
-    The raw.plaid_* datetime columns are naive ``TIMESTAMP``, and DuckDB
-    rebases a tz-AWARE value into the machine's session zone on insert — so a
-    tz-aware column would store the LOCAL wall clock, and every ``::DATE``
-    staging derives from it (``trade_date``, ``acquisition_date``) would be the
-    local calendar date, off by a day outside UTC. Storing the UTC wall clock
-    makes those casts the UTC calendar date on any machine, and keeps them on
-    the same calendar as ``holdings_date`` (also a UTC date, below) — a
-    mismatch between the two synthesizes phantom opening lots.
-
-    A naive input is taken as already-UTC: the sync server's contract is UTC.
-    """
-    if value is None or value.tzinfo is None:
-        return value
-    return value.astimezone(UTC).replace(tzinfo=None)
+def _utc_instant(value: datetime | None) -> datetime | None:
+    """Normalize a documented provider instant; reject unknown offset-free values."""
+    return as_utc(value) if value is not None else None
 
 
 def _utc_date(value: datetime) -> date:
     """The instant's UTC calendar date — never the machine's or the offset's."""
-    if value.tzinfo is None:
-        return value.date()
-    return value.astimezone(UTC).date()
+    return as_utc(value).date()
 
 
 def _reported_items(
@@ -196,8 +183,7 @@ _BALANCES_SCHEMA = pl.Schema({
     "source_file": pl.Utf8,
     "source_type": pl.Utf8,
     "source_origin": pl.Utf8,
-    # Naive on purpose — see _utc_naive() and _INVESTMENT_TRANSACTIONS_SCHEMA.
-    "last_updated_datetime": pl.Datetime("us"),
+    "last_updated_datetime": pl.Datetime("us", time_zone="UTC"),
     "extracted_at": pl.Datetime(time_zone="UTC"),
     "loaded_at": pl.Datetime(time_zone="UTC"),
 })
@@ -241,10 +227,8 @@ _INVESTMENT_TRANSACTIONS_SCHEMA = pl.Schema({
     "account_id": pl.Utf8,
     "security_id": pl.Utf8,
     "transaction_date": pl.Date,
-    # Naive on purpose — carries a UTC wall clock via _utc_naive(). A tz-aware
-    # dtype here would make DuckDB rebase the instant into the machine's local
-    # zone on insert (the raw column is naive TIMESTAMP), misdating trade_date.
-    "transaction_datetime": pl.Datetime("us"),
+    # Provider instants remain aware; staging derives its UTC business date.
+    "transaction_datetime": pl.Datetime("us", time_zone="UTC"),
     "transaction_name": pl.Utf8,
     "quantity": pl.Decimal(28, 10),
     "amount": pl.Decimal(18, 2),
@@ -298,8 +282,7 @@ _INVESTMENT_HOLDING_LOTS_SCHEMA = pl.Schema({
     "security_id": pl.Utf8,
     "lot_index": pl.Int32,
     "institution_lot_id": pl.Utf8,
-    # Naive on purpose — see _utc_naive() and _INVESTMENT_TRANSACTIONS_SCHEMA.
-    "original_purchase_datetime": pl.Datetime("us"),
+    "original_purchase_datetime": pl.Datetime("us", time_zone="UTC"),
     "quantity": pl.Decimal(28, 10),
     "purchase_price": pl.Decimal(28, 10),
     "cost_basis": pl.Decimal(18, 2),
@@ -329,15 +312,23 @@ class PlaidExtractor:
     source_type = "plaid"
     """Written into source_type column on every row produced by this provider."""
 
-    def __init__(self, db: Database, config: PlaidProviderConfig | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        config: PlaidProviderConfig | None = None,
+        *,
+        observations: MetricObservations | None = None,
+    ) -> None:
         """Initialize with an active Database connection.
 
         Args:
             db: An active Database connection (caller-managed per ADR-010).
             config: Provider configuration; defaults to empty PlaidProviderConfig.
+            observations: Optional outer-transaction metric buffer.
         """
         self.db = db
         self.config = config or PlaidProviderConfig()
+        self.observations = observations
 
     def extract(self, source: ProviderSource) -> ExtractionResult:
         """Provider Protocol entry point.
@@ -360,13 +351,22 @@ class PlaidExtractor:
         schema_dir = Path(__file__).parent / "schema"
         return sorted(schema_dir.glob("raw_plaid_*.sql"))
 
-    def load(self, sync_data: SyncDataResponse, job_id: str) -> LoadResult:
+    def load(
+        self,
+        sync_data: PlaidSyncDataResponse,
+        job_id: str,
+        *,
+        batch_id: UUID | None = None,
+        in_outer_txn: bool = False,
+    ) -> LoadResult:
         """Load accounts, transactions, balances from one sync response.
 
         Returns per-table counts. Does NOT handle removed_transactions —
         call handle_removed_transactions() separately.
         """
-        source_file = f"sync_{job_id}"
+        source_file = (
+            f"sync_{job_id}" if batch_id is None else f"sync_{job_id}_{batch_id}"
+        )
         extracted_at = sync_data.metadata.synced_at
         loaded_at = datetime.now(UTC)
         item_by_account = self.build_account_to_item_map(sync_data)
@@ -405,7 +405,11 @@ class PlaidExtractor:
         )
         investment_transactions_loaded, investment_receipts_written = (
             self._load_investment_transactions(
-                sync_data.investment_transactions, source_file, extracted_at, loaded_at
+                sync_data.investment_transactions,
+                source_file,
+                extracted_at,
+                loaded_at,
+                in_outer_txn=in_outer_txn,
             )
         )
         reported_items = _reported_items(
@@ -479,7 +483,9 @@ class PlaidExtractor:
                     "the opening-lot bootstrap cannot classify lots without it"
                 )
 
-    def build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
+    def build_account_to_item_map(
+        self, sync_data: PlaidSyncDataResponse
+    ) -> dict[str, str]:
         """Map each account_id to its provider_item_id (its ``source_origin``).
 
         Public so the sync service can attribute each account to the same
@@ -576,7 +582,7 @@ class PlaidExtractor:
 
     def _load_accounts(
         self,
-        accounts: list[SyncAccount],
+        accounts: list[PlaidSyncAccount],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,
@@ -600,16 +606,12 @@ class PlaidExtractor:
         )
         changed = self._count_changed(PLAID_ACCOUNTS, df)
         self.db.ingest_dataframe(PLAID_ACCOUNTS.full_name, df, on_conflict="upsert")
-        # Info, not debug: the CLI's per-institution totals go out via
-        # typer.echo, which never reaches the log file — so these row counts
-        # are the only durable record of what a sync loaded. Denylisted from
-        # the console instead, where "Plaid account" misnames a Chase card.
-        logger.info(f"Loaded {len(df)} Plaid accounts ({changed} new or changed)")
+        logger.debug(f"Prepared {len(df)} Plaid accounts ({changed} new or changed)")
         return changed
 
     def _load_transactions(
         self,
-        transactions: list[SyncTransaction],
+        transactions: list[PlaidSyncTransaction],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,
@@ -634,12 +636,12 @@ class PlaidExtractor:
             schema=_TRANSACTIONS_SCHEMA,
         )
         self.db.ingest_dataframe(PLAID_TRANSACTIONS.full_name, df, on_conflict="upsert")
-        logger.info(f"Loaded {len(df)} Plaid transactions")
+        logger.debug(f"Prepared {len(df)} Plaid transactions")
         return len(df)
 
     def _load_balances(
         self,
-        balances: list[SyncBalance],
+        balances: list[PlaidSyncBalance],
         item_by_account: dict[str, str],
         source_file: str,
         extracted_at: datetime,
@@ -651,7 +653,7 @@ class PlaidExtractor:
             [
                 {
                     **bal.model_dump(),
-                    "last_updated_datetime": _utc_naive(bal.last_updated_datetime),
+                    "last_updated_datetime": _utc_instant(bal.last_updated_datetime),
                     "source_file": source_file,
                     "source_type": "plaid",
                     "source_origin": item_by_account[bal.account_id],
@@ -664,8 +666,8 @@ class PlaidExtractor:
         )
         changed = self._count_changed(PLAID_BALANCES, df)
         self.db.ingest_dataframe(PLAID_BALANCES.full_name, df, on_conflict="upsert")
-        logger.info(
-            f"Loaded {len(df)} Plaid balance snapshots ({changed} new or changed)"
+        logger.debug(
+            f"Prepared {len(df)} Plaid balance snapshots ({changed} new or changed)"
         )
         return changed
 
@@ -694,8 +696,14 @@ class PlaidExtractor:
         )
         changed = self._count_changed(PLAID_SECURITIES, df)
         self.db.ingest_dataframe(PLAID_SECURITIES.full_name, df, on_conflict="upsert")
-        SYNC_INVESTMENTS_RECORDS_LOADED.labels(table="plaid_securities").inc(len(df))
-        logger.info(f"Loaded {len(df)} Plaid securities ({changed} new or changed)")
+        record_counter(
+            SYNC_INVESTMENTS_RECORDS_LOADED,
+            labels={"table": "plaid_securities"},
+            amount=len(df),
+            emit_metrics=True,
+            observations=self.observations,
+        )
+        logger.debug(f"Prepared {len(df)} Plaid securities")
         return changed
 
     def _count_changed(self, table: TableRef, df: pl.DataFrame) -> int:
@@ -775,8 +783,14 @@ class PlaidExtractor:
         # advances, so counting the batch would make this counter climb
         # steadily through a fully stalled upstream feed — the one condition it
         # exists to expose.
-        PRICE_ROWS_WRITTEN_TOTAL.labels(source_type="plaid").inc(written)
-        logger.info(f"Loaded {written} security price observations")
+        record_counter(
+            PRICE_ROWS_WRITTEN_TOTAL,
+            labels={"source_type": "plaid"},
+            amount=written,
+            emit_metrics=True,
+            observations=self.observations,
+        )
+        logger.debug(f"Prepared {written} security price observations")
         return written
 
     def _load_investment_transactions(
@@ -785,6 +799,8 @@ class PlaidExtractor:
         source_file: str,
         extracted_at: datetime,
         loaded_at: datetime,
+        *,
+        in_outer_txn: bool = False,
     ) -> tuple[int, int]:
         """Record revisions and receipts; return (new or changed, receipts written)."""
         if not transactions:
@@ -796,7 +812,7 @@ class PlaidExtractor:
             [
                 {
                     **txn.model_dump(exclude={"provider_item_id"}),
-                    "transaction_datetime": _utc_naive(txn.transaction_datetime),
+                    "transaction_datetime": _utc_instant(txn.transaction_datetime),
                     "source_file": source_file,
                     "source_type": "plaid",
                     "source_origin": txn.provider_item_id,
@@ -808,7 +824,14 @@ class PlaidExtractor:
             schema=_INVESTMENT_TRANSACTIONS_SCHEMA,
         )
         revisions = df.drop("source_file", "extracted_at", "loaded_at")
-        versions = [observation_version("plaid", row) for row in revisions.to_dicts()]
+        version_rows = revisions.to_dicts()
+        for row in version_rows:
+            if row["transaction_datetime"] is not None:
+                # Preserve the historical digest representation, not naive storage.
+                row["transaction_datetime"] = as_utc(
+                    row["transaction_datetime"]
+                ).replace(tzinfo=None)
+        versions = [observation_version("plaid", row) for row in version_rows]
         revisions = revisions.with_columns(pl.Series("observation_version", versions))
         receipts = df.select(
             "investment_transaction_id",
@@ -817,7 +840,8 @@ class PlaidExtractor:
             "extracted_at",
             "loaded_at",
         ).with_columns(pl.Series("observation_version", versions))
-        self.db.begin()
+        if not in_outer_txn:
+            self.db.begin()
         try:
             # Before the receipts land: a revert to an earlier version writes no
             # new revision but still changes which version is current.
@@ -832,17 +856,20 @@ class PlaidExtractor:
                 receipts,
                 on_conflict="ignore",
             )
-            self.db.commit()
+            if not in_outer_txn:
+                self.db.commit()
         except BaseException:
-            self.db.rollback()
+            if not in_outer_txn:
+                self.db.rollback()
             raise
-        SYNC_INVESTMENTS_RECORDS_LOADED.labels(
-            table="plaid_investment_transactions"
-        ).inc(written)
-        logger.info(
-            f"Recorded {written} Plaid investment transaction receipts "
-            f"({changed} new or changed)"
+        record_counter(
+            SYNC_INVESTMENTS_RECORDS_LOADED,
+            labels={"table": "plaid_investment_transactions"},
+            amount=written,
+            emit_metrics=True,
+            observations=self.observations,
         )
+        logger.debug(f"Prepared {written} Plaid investment transaction receipts")
         return changed, written
 
     def _count_changed_from_latest_receipt(self, receipts: pl.DataFrame) -> int:
@@ -891,7 +918,7 @@ class PlaidExtractor:
                 # UTC calendar date of the snapshot instant — never the
                 # machine's local date. int_plaid__opening_positions compares
                 # this against trade_date, which SQL derives as a UTC date from
-                # the UTC-wall-clock columns; different calendars there push a
+                # the UTC business-date projections; different calendars there push a
                 # snapshot-day buy outside the in-window net and synthesize a
                 # phantom opening lot.
                 "holdings_date": _utc_date(extracted_at),
@@ -908,7 +935,7 @@ class PlaidExtractor:
                     "security_id": holding.security_id,
                     "lot_index": lot_index,
                     **lot.model_dump(),
-                    "original_purchase_datetime": _utc_naive(
+                    "original_purchase_datetime": _utc_instant(
                         lot.original_purchase_datetime
                     ),
                     "source_file": source_file,
@@ -940,18 +967,26 @@ class PlaidExtractor:
             self.db.ingest_dataframe(
                 PLAID_INVESTMENT_HOLDINGS.full_name, df_holdings, on_conflict="upsert"
             )
-            SYNC_INVESTMENTS_RECORDS_LOADED.labels(
-                table="plaid_investment_holdings"
-            ).inc(len(df_holdings))
+            record_counter(
+                SYNC_INVESTMENTS_RECORDS_LOADED,
+                labels={"table": "plaid_investment_holdings"},
+                amount=len(df_holdings),
+                emit_metrics=True,
+                observations=self.observations,
+            )
         if lot_rows:
             self.db.ingest_dataframe(
                 PLAID_INVESTMENT_HOLDING_LOTS.full_name, df_lots, on_conflict="upsert"
             )
-            SYNC_INVESTMENTS_RECORDS_LOADED.labels(
-                table="plaid_investment_holding_lots"
-            ).inc(len(df_lots))
-        logger.info(
-            f"Loaded {len(df_holdings)} Plaid holdings rows ({changed} positions "
+            record_counter(
+                SYNC_INVESTMENTS_RECORDS_LOADED,
+                labels={"table": "plaid_investment_holding_lots"},
+                amount=len(df_lots),
+                emit_metrics=True,
+                observations=self.observations,
+            )
+        logger.debug(
+            f"Prepared {len(df_holdings)} Plaid holdings rows ({changed} positions "
             f"changed), {len(df_lots)} tax lots ({lots_changed} changed)"
         )
         return changed, lots_changed, len(df_lots)
@@ -1087,10 +1122,14 @@ class PlaidExtractor:
         written = self.db.ingest_dataframe(
             PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name, df, on_conflict="ignore"
         )
-        SYNC_INVESTMENTS_RECORDS_LOADED.labels(
-            table="plaid_investment_holdings_snapshots"
-        ).inc(written)
-        logger.info(f"Recorded {written} Plaid holdings-snapshot receipt(s)")
+        record_counter(
+            SYNC_INVESTMENTS_RECORDS_LOADED,
+            labels={"table": "plaid_investment_holdings_snapshots"},
+            amount=written,
+            emit_metrics=True,
+            observations=self.observations,
+        )
+        logger.debug(f"Prepared {written} Plaid holdings-snapshot receipt(s)")
         return written
 
     def _warn_amount_drift(self, transactions: list[SyncInvestmentTransaction]) -> None:
@@ -1142,8 +1181,10 @@ class PlaidExtractor:
                 "reconciliation under both fee conventions"
             )
 
-    def handle_removed_transactions(self, removed_ids: list[str]) -> int:
-        """Delete transactions Plaid has removed; return the rowcount actually deleted.
+    def handle_removed_transactions(
+        self, removed_ids: list[str], *, provider_item_ids: set[str]
+    ) -> int:
+        """Delete removed transactions within the batch's reported Plaid items.
 
         Stale IDs (already removed in a prior sync, or never landed locally) don't
         inflate the count — the return value flows into `PullResult.transactions_removed`
@@ -1152,18 +1193,26 @@ class PlaidExtractor:
         """
         if not removed_ids:
             return 0
+        if not provider_item_ids:
+            raise ValueError("Plaid transaction removals require item scope")
         placeholders = ", ".join("?" for _ in removed_ids)
+        item_placeholders = ", ".join("?" for _ in provider_item_ids)
+        parameters = [*removed_ids, *sorted(provider_item_ids)]
         # Pre-count to report the rows DELETE will actually affect. DuckDB doesn't
         # surface affected-row counts through this connection API, so a separate
         # COUNT(*) is the simplest accurate signal; the two statements share the
         # write lock for the duration of the call.
         count_row = self.db.execute(
-            f"SELECT COUNT(*) FROM {PLAID_TRANSACTIONS.full_name} WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
-            removed_ids,
+            f"""SELECT COUNT(*) FROM {PLAID_TRANSACTIONS.full_name}
+                WHERE transaction_id IN ({placeholders})
+                AND source_origin IN ({item_placeholders})""",  # noqa: S608  # placeholders are ?, values parameterized
+            parameters,
         ).fetchone()
         deleted = int(count_row[0]) if count_row else 0
         self.db.execute(
-            f"DELETE FROM {PLAID_TRANSACTIONS.full_name} WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?, values parameterized
-            removed_ids,
+            f"""DELETE FROM {PLAID_TRANSACTIONS.full_name}
+                WHERE transaction_id IN ({placeholders})
+                AND source_origin IN ({item_placeholders})""",  # noqa: S608  # placeholders are ?, values parameterized
+            parameters,
         )
         return deleted

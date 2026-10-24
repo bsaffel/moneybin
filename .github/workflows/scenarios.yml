@@ -20,17 +20,10 @@ jobs:
   run-scenarios:
     name: Run Scenarios (shard ${{ matrix.group }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # 4-way pytest-split shard, matching ci.yml's unit and integration
-    # matrices; `--splits` reads strategy.job-total, so it tracks this array.
-    # Balancing uses the CI-recorded `.test_durations` cache rather than test
-    # count, so the shards hold uneven counts by design. Four rather than two
-    # because
-    # runner speed varies about 1.8x on identical work — shard 1 ran the same
-    # 36 items in 320s and then 574s — and a 2-way split left only ~1.9x
-    # headroom under timeout-minutes, thin enough that one slow runner
-    # cancelled a shard mid-suite. Keep nominal per-shard runtime well under
-    # half the ceiling.
+    # Observed progress projects about 12 minutes for classification-heavy shards;
+    # leave setup/reporting headroom without changing individual test timeouts.
+    timeout-minutes: 15
+    # Four duration-balanced shards; strategy.job-total keeps --splits in sync.
     strategy:
       fail-fast: false
       matrix:
@@ -39,7 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -58,6 +51,7 @@ jobs:
           key: ci-test-durations-v1-${{ github.run_id }}
           restore-keys: ci-test-durations-v1-
 
+      # New expensive cases lack cached timings; spread them across shards too.
       - name: Run scenario suite
         env:
           # GitHub Actions runners have no keyring backend; SecretStore
@@ -66,8 +60,9 @@ jobs:
           MONEYBIN_PROFILE__SCENARIO__DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: |
           set -o pipefail
-          uv run pytest tests/ -m "scenarios and not perf" -v \
+          uv run pytest tests/ -m "scenarios and not perf" -vv --dist=load \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
+            --splitting-algorithm=least_duration \
             --json-report --json-report-file=scenarios-${{ matrix.group }}.json \
             --durations=25
 
