@@ -13,12 +13,13 @@ does not replace every encryption contract.
 | [ADR-004](004-e2e-encryption.md) | Supersede its master-password-derived session-key scheme, password-coupled whole-data rotation, and no-recovery policy. | Client custody and encryption before durable broker storage remain principles; a library's appearance in the old proposal does not disqualify its selection by a later contract. |
 | [ADR-005](005-security-tradeoffs.md) | Correct end-to-end wording and blanket protection or deployment-verification claims. | Retain its broker-processing trust boundary: transient provider plaintext followed by encryption for the client. |
 | [ADR-009](009-encryption-key-management.md) | Clarify scope and the limits of a persisted derived key. | Local database key management; its passphrase persistence policy remains an unresolved decision. |
-| Client-owned sync-delivery contract | Do not reopen its selected cryptography or delivery lifecycle. | Its age/X25519 delivery format, encrypted recovery wrapper, and rotation/recovery rules govern bank delivery within that contract's scope. |
+| Client-owned sync encryption (`sync-client-encryption.md`; separately maintained, in-progress specification) | Do not reopen its selected cryptography or delivery lifecycle. | Its age/X25519 delivery format, encrypted recovery wrapper, and rotation/recovery rules govern bank delivery within that design's scope. |
 | Historical sync-overview device enrollment | Replace login-only enrollment as authority to decrypt existing financial history. | The opaque broker API boundary remains; authenticated login is still required but is insufficient to recover decryption authority. |
 
-The sync-delivery contract supports recovering the same recipient key on
-another device. That creates another copy of the secret, not an independently
-revocable cryptographic recipient. Lost-device response requires session
+That specification remains separate work and does not establish shipped
+protections. Its sync-delivery contract supports recovering the same recipient
+key on another device. That creates another copy of the secret, not an
+independently revocable cryptographic recipient. Lost-device response requires session
 revocation and recipient rotation on a clean device. This remains a valid
 delivery boundary; it does not establish the future device-authorization or
 multi-device history-synchronization protocol described here.

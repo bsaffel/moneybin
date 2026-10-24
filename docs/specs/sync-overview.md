@@ -949,7 +949,7 @@ Not designed here. Architectural constraints noted so the current design does no
   child spec, the provider artifacts, and the unresolved response-model and
   extractor-dispatch decision; it is not yet a no-framework-change extension.
 - **Encryption readiness.** The client and server satisfy a reviewed delivery and key-lifecycle contract under ADR-017, with recovery and adversarial evidence. Server availability or key generation alone does not establish readiness.
-- **No plaintext leakage.** Sync payloads are never written to disk in plaintext. In v1, they exist only in process memory during load. In v2, they're decrypted in memory only. The `SanitizedLogFormatter` prevents PII from appearing in logs.
+- **Plaintext handling.** The current baseline receives JSON over TLS and loads it into the encrypted local database. Payload processing may use transient plaintext in memory, but must not persist plaintext payloads to disk or emit unsanitized financial data to logs. Client-owned delivery encryption must meet the same handling requirements; verification must cover its failure paths and logs.
 
 ## Open questions
 
