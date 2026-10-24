@@ -1,4 +1,4 @@
-"""Audited planner-owned pending and stale investment Proposal transitions."""
+"""Audited investment Proposal lifecycle and human rejection transitions."""
 
 import json
 from dataclasses import asdict
@@ -31,7 +31,7 @@ _COLUMNS = (
 
 
 class InvestmentMatchDecisionsRepo(BaseRepo):
-    """Persist immutable review evidence without human-decision methods."""
+    """Keep planner evidence and human decisions in one audited lifecycle."""
 
     repository = "investment_match_decisions"
     table_ref = INVESTMENT_MATCH_DECISIONS
@@ -108,7 +108,12 @@ class InvestmentMatchDecisionsRepo(BaseRepo):
         return proposal_id
 
     def mark_stale(
-        self, proposal_id: str, *, actor: str, in_outer_txn: bool = False
+        self,
+        proposal_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+        parent_audit_id: str | None = None,
     ) -> bool:
         """Invalidate pending evidence without recording a human decision."""
         with self._transaction(in_outer_txn=in_outer_txn):
@@ -128,8 +133,64 @@ class InvestmentMatchDecisionsRepo(BaseRepo):
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(self._fetch_row(proposal_id)),
                 actor=actor,
+                parent_audit_id=parent_audit_id,
             )
         return True
+
+    def reject(
+        self, proposal_id: str, *, actor: str, in_outer_txn: bool = False
+    ) -> AuditEvent:
+        """Record the first human decision without changing its immutable evidence."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._fetch_row(proposal_id)
+            if before is None or before["status"] != "pending":
+                raise UserError(
+                    "Investment Proposal is stale or no longer pending.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            self._db.execute(
+                f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
+                    SET status = 'rejected', actor = ?,
+                        decided_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                    WHERE proposal_id = ?""",  # noqa: S608  # fixed TableRef; bound values
+                [actor, proposal_id],
+            )
+            return self._emit_audit(
+                action="investment_match.reject",
+                target=(*self._audit_target, proposal_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(self._fetch_row(proposal_id)),
+                actor=actor,
+            )
+
+    def undo_rejection(self, event: AuditEvent, *, actor: str) -> AuditEvent:
+        """Remove a negative constraint inside the domain undo transaction."""
+        before = self._fetch_row(str(event.target_id))
+        if (
+            event.action != "investment_match.reject"
+            or before is None
+            or before["status"] != "rejected"
+            or self._serialize_for_audit(before) != event.after_value
+        ):
+            raise UserError(
+                "Investment rejection no longer matches its audit evidence.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        self._db.execute(
+            f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
+                SET status = 'stale', actor = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE proposal_id = ?""",  # noqa: S608  # fixed TableRef; bound values
+            [actor, event.target_id],
+        )
+        return self._emit_audit(
+            action="investment_match.reject.undo",
+            target=(*self._audit_target, event.target_id),
+            before=self._serialize_for_audit(before),
+            after=self._serialize_for_audit(self._fetch_row(str(event.target_id))),
+            actor=actor,
+            is_undo=True,
+            undoes_operation_id=event.operation_id,
+        )
 
     def undo_event(
         self, event: AuditEvent, *, actor: str, in_outer_txn: bool = False

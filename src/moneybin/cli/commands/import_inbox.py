@@ -204,6 +204,8 @@ def inbox_default(
     # reaching the reconciliation, so this is the one it can least afford to
     # swallow — and --output json is the mode an unattended caller actually uses.
     from moneybin.adapters.refresh_adapters import (
+        refresh_investment_hints,
+        refresh_step_actions,
         refresh_steps_fields,
     )
     from moneybin.cli.utils import (
@@ -265,15 +267,24 @@ def inbox_default(
         payload.pop("refresh_steps", None)
         payload.update(refresh_steps_fields(result.refresh_steps))
         render_or_json(
-            build_envelope(data=payload, sensitivity=sensitivity),
+            build_envelope(
+                data=payload,
+                sensitivity=sensitivity,
+                actions=refresh_investment_hints(result.refresh_steps),
+                recovery_actions=refresh_step_actions(
+                    result.refresh_steps,
+                    apply_failed=result.transforms_error is not None,
+                )
+                or None,
+            ),
             output,
             cli_actor="inbox_default",
             classes_returned=classes_returned,
         )
-        return
-    if quiet:
-        return
-    _print_sync_text(result)
+    elif not quiet:
+        _print_sync_text(result)
+    if result.refresh_steps is not None and result.refresh_steps.transform_blocked:
+        raise typer.Exit(1)
 
 
 @app.command("list")

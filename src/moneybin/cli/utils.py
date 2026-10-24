@@ -203,6 +203,14 @@ def warn_refresh_steps(outcome: RefreshStepOutcome | None) -> None:
     """
     if outcome is None:
         return
+    investment = outcome.stage("investment_match")
+    if investment is not None and (investment.error is not None or not investment.ran):
+        from moneybin.adapters.refresh_adapters import refresh_investment_hints
+
+        if investment.error:
+            logger.warning(f"⚠️  Investment matching failed: {investment.error}")
+        for hint in refresh_investment_hints(outcome):
+            logger.warning(f"⚠️  {hint}")
     # Named one at a time rather than looped over `stages`, because the
     # sentences are not interchangeable: each names the remedy for its own step,
     # the rates line has to precede its pair lines below, and the transform

@@ -425,6 +425,7 @@ def test_review_status_json_output(
         "account_links_pending": 0,
         "merchant_links_pending": 0,
         "security_links_pending": 0,
+        "investment_matches_pending": 0,
         "total": 0,
     }
 

@@ -383,7 +383,13 @@ def test_annotation_schema_requires_variant_fields() -> None:
     [
         (
             ReviewDecisionRequest,
-            {"auto_rule", "categorization", "match", "rule_conflict"},
+            {
+                "auto_rule",
+                "categorization",
+                "match",
+                "investment_match",
+                "rule_conflict",
+            },
         ),
         (
             IdentityDecisionRequest,
@@ -923,6 +929,7 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
         "auto_rule": {"kind", "decision_id", "decision"},
         "categorization": {"kind", "decision_id", "decision"},
         "match": {"kind", "decision_id", "decision"},
+        "investment_match": {"kind", "decision_id", "decision"},
         "rule_conflict": {"kind", "decision_id", "decision"},
     }
     assert _rendered_variants(identities.inputSchema, collection="decisions") == {

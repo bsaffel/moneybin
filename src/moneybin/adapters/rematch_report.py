@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from moneybin.matching.reconciliation import RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
 
 if TYPE_CHECKING:
+    from moneybin.errors import RecoveryAction
     from moneybin.orchestration.refresh import RefreshResult
 
 
@@ -68,6 +69,16 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
     """
     if rematch is None:
         return []
+    # refresh_adapters imports the shared retirement wording from this module.
+    from moneybin.adapters.refresh_adapters import refresh_investment_hints
+    from moneybin.orchestration.refresh import step_outcome
+
+    outcome = step_outcome(rematch)
+    match_retry = (
+        "refresh_run(steps=['match'])"
+        if outcome.transform_blocked
+        else "refresh_run(steps=['match','transform'])"
+    )
     actions: list[str] = []
     match = rematch.stage("match")
     if match is None or not match.ran:
@@ -79,7 +90,7 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
         actions.append(
             "The merge's re-match could not run — its matching views were "
             "missing or stale, so the newly co-resident rows were never "
-            "examined. Rerun refresh_run() and check reviews(kind='matches')"
+            f"examined. Rerun {match_retry} and check reviews(kind='matches')"
         )
     if match is not None and match.error is not None:
         # Not "still unproposed": the matcher commits each edge as it goes and
@@ -106,7 +117,7 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
         actions.append(
             f"The merge's re-match stopped partway {committed}; its remaining "
             "counts are incomplete — rerun "
-            "refresh_run(steps=['match','transform']), then check "
+            f"{match_retry}, then check "
             "reviews(kind='matches') and system_audit"
         )
     if rematch.error is not None:
@@ -116,6 +127,12 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
             "The merge's rebuild failed, so the collapse is not reflected in "
             "core yet — retry with refresh_run(steps=['transform'])"
         )
+    if outcome.transform_blocked:
+        actions.append(
+            "The account merge committed, but investment planning prevented its "
+            "rebuild from running, so the collapse is not reflected in core yet."
+        )
+    actions.extend(refresh_investment_hints(outcome))
     # Suppressed on the crash branch, which already named these exact counts
     # and already sent the caller to `reviews(kind='matches')`. Repeating them
     # in a sentence that reads as a finished pass works against the one above
@@ -153,3 +170,15 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
             "that was wrong"
         )
     return actions
+
+
+def rematch_recovery_actions(rematch: RefreshResult | None) -> list[RecoveryAction]:
+    """Use stage classifications for recovery after a committed account merge."""
+    if rematch is None:
+        return []
+    from moneybin.adapters.refresh_adapters import refresh_step_actions
+    from moneybin.orchestration.refresh import step_outcome
+
+    return refresh_step_actions(
+        step_outcome(rematch), apply_failed=rematch.error is not None
+    )

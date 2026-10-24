@@ -62,6 +62,9 @@ class SystemService:
         transactions_count, min_date, max_date = self._query_transactions()
         last_import_at = self._last_import_at()
         from moneybin.services.account_links_service import AccountLinksService
+        from moneybin.services.investment_matching_service import (
+            InvestmentMatchingService,
+        )
         from moneybin.services.merchant_links_service import MerchantLinksService
         from moneybin.services.security_links_service import SecurityLinksService
 
@@ -71,6 +74,7 @@ class SystemService:
             AccountLinksService(self._db),
             MerchantLinksService(self._db),
             SecurityLinksService(self._db),
+            InvestmentMatchingService(self._db),
         ).status()
         freshness = TransformService(self._db).freshness()
         schema_drift = check_core_schema_drift(self._db)

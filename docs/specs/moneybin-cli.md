@@ -231,6 +231,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   error (exit 2). `--confirm-all` with `--type investment-matches` or `--type all` is also a
 |   usage error (exit 2), because silently skipping the mandatory-review queue would make a
 |   partial batch look complete.
+|   Investment rejection is available with audited undo. Investment confirmation validates
+|   the complete observed field-choice set but remains unavailable until Golden materialization.
 |
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]

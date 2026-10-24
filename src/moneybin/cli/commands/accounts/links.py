@@ -20,6 +20,7 @@ from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.render import render_rows
 from moneybin.cli.utils import (
     handle_cli_errors,
+    warn_refresh_steps,
     warn_transfers_retired,
 )
 from moneybin.database import get_database
@@ -200,7 +201,11 @@ def links_set(
     )
     logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
     _report_rematch(rematch)
-    if rematch is not None and rematch.error is not None:
+    from moneybin.orchestration.refresh import step_outcome
+
+    if rematch is not None and (
+        rematch.error is not None or step_outcome(rematch).transform_blocked
+    ):
         # `refresh_command` exits 1 on this identical RefreshResult.error, and
         # cli.md reads 1 as "operation ran and failed". The merge did commit,
         # but core.dim_accounts is kind FULL: until an apply lands it still
@@ -220,8 +225,17 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     # Deferred, and below the guard: matching_service pulls duckdb and the match
     # engine, this module is on the CLI cold-start path (.claude/rules/cli.md),
     # and the reject path reaches here needing none of it.
+    from moneybin.adapters.rematch_report import rematch_recovery_actions
+    from moneybin.orchestration.refresh import step_outcome
     from moneybin.services.matching_service import (
         PENDING_MATCHES_HINT,
+    )
+
+    outcome = step_outcome(rematch)
+    match_retry = (
+        "moneybin refresh --step match"
+        if outcome.transform_blocked
+        else "moneybin refresh"
     )
 
     # The two failures are independent — refresh() attempts the transform step
@@ -238,7 +252,7 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
         logger.warning(
             "⚠️  Re-match after the merge could not run — its matching views "
             "were missing or stale, so the newly co-resident rows were never "
-            "examined; re-run 'moneybin refresh'"
+            f"examined; re-run '{match_retry}'"
         )
     elif match.error is not None:
         # Not "still unproposed": the matcher commits each edge as it goes and
@@ -264,7 +278,7 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
         )
         logger.warning(
             f"⚠️  Re-match after the merge stopped partway {committed}; its "
-            "remaining counts are incomplete — re-run 'moneybin refresh', then "
+            f"remaining counts are incomplete — re-run '{match_retry}', then "
             "check 'moneybin review --type matches' and "
             "'moneybin system audit list'"
         )
@@ -296,6 +310,18 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     warn_transfers_retired(
         rematch.transfers_retired, cause=RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
     )
+    warn_refresh_steps(outcome)
+    if outcome.transform_blocked:
+        logger.warning(
+            "The account merge committed, but investment planning prevented its "
+            "rebuild from running, so the merge is not reflected in your accounts "
+            "or totals yet."
+        )
+        for recovery in rematch_recovery_actions(rematch):
+            if recovery.tool == "refresh_run":
+                for step in recovery.arguments["steps"]:
+                    if step != "match":
+                        logger.warning(f"Re-run 'moneybin refresh --step {step}'.")
     if rematch.error is not None:
         # The counts above are true — match decisions were written — but the
         # SQLMesh apply that follows them is what rebuilds core.dim_accounts,

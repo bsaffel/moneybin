@@ -19,7 +19,6 @@ from fastmcp import FastMCP
 from moneybin import error_codes
 from moneybin.adapters.refresh_adapters import (
     refresh_rate_gap_hints,
-    refresh_step_actions,
 )
 from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.adapters.sync_adapters import (
@@ -138,13 +137,6 @@ def sync_pull(
     return sync_pull_envelope(
         result,
         actions=_pull_actions(result),
-        # `or None` to omit the key when empty, matching `refresh_envelope`:
-        # this envelope's `error` is None, so there is no `error.recovery_actions`
-        # for an empty list to fall through to.
-        recovery_actions=refresh_step_actions(
-            result.refresh_steps, apply_failed=result.transforms_error is not None
-        )
-        or None,
     )
 
 

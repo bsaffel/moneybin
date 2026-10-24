@@ -6027,16 +6027,18 @@ class ImportService:
                 and result.details.get("transactions_extracted", 0) > 0
             )
         ):
-            # Single-file imports preserve the legacy fail-loud contract so
-            # CLI exit codes reflect the broken state. Batch imports use the
-            # soft-fail variant via import_files() instead.
+            # SQLMesh failures keep the legacy exception. Planner blocks retain
+            # their stage and durable import outcome for the CLI's nonzero exit.
             refresh_result = _refresh(self._db)
             # Ahead of the fail-loud raise: the reconciliation runs in the match
             # step and commits there, so a transform apply that dies afterwards
             # leaves the reversal on disk.
             result.transfers_retired = refresh_result.transfers_retired
             result.refresh_steps = _step_outcome(refresh_result)
-            if not refresh_result.applied:
+            if (
+                not refresh_result.applied
+                and not result.refresh_steps.transform_blocked
+            ):
                 # The raise discards `result`, and this exception escapes past
                 # the success path's warning rather than landing in
                 # `_single_file_failure`. So the count travels on the exception
@@ -6047,7 +6049,7 @@ class ImportService:
                     f"SQLMesh transforms failed: {refresh_result.error}",
                     transfers_retired=refresh_result.transfers_retired,
                 )
-            result.core_tables_rebuilt = True
+            result.core_tables_rebuilt = refresh_result.applied
 
         logger.info(f"Import complete: {result.summary()}")
         return result

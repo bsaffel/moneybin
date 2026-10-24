@@ -623,8 +623,10 @@ The slice-2 implementation exposes `investments matches run`, `pending`, and
 planning does not count unchanged pending rows as suppressed. Persisted evidence
 includes competing alternatives, issued field choices, and replacement context.
 Accepted topology is a required explicit planner input until slice 4 supplies
-authoritative active membership. Slice 3 decision requests and recovery behavior,
-and slice 4 acceptance, reversal, bootstrap, and Golden projection remain pending.
+authoritative active membership. Slice 3 adds audited rejection, operation undo,
+shared field-choice validation, prompt-only MCP batch confirmation, committed
+decision metrics, and stage-owned refresh recovery. Slice 4 acceptance,
+reversal, bootstrap, and Golden projection remain pending.
 
 `competing` is not a sixth status. A competing Proposal is stored as `pending`.
 The planner derives `is_competing` from the same constrained connected-component
@@ -1045,6 +1047,10 @@ the SQLMesh-only top-level `error` or the cash `match` stage's own `error`. The
 shared adapter carries the stage and recovery action unchanged through
 `sync_pull`, `import_files`, and `import_inbox_sync`.
 
+A deterministic component-size refusal carries its stable error code internally
+and offers no unchanged retry in either actions or prose. Other failed stages
+retain their own recovery actions; transient planner failures remain retryable.
+
 Privacy classification is inherited rather than declared: `RefreshStageRow`
 already classifies `step` and `ran` as TXN_TYPE, `counts` as AGGREGATE, and
 `error` as DESCRIPTION, so the planner adds no new annotated field and cannot
@@ -1123,6 +1129,11 @@ default projection. If individually within-tolerance defaults for quantity,
 price, amount, or fees combine into an incoherent quantity-price-cash result,
 each participating field with more than one eligible exact source value becomes
 an explicit conflict even though its individual difference is within tolerance.
+An existing accounting-field conflict also exposes the other varying observed
+accounting fields, even when the defaults are coherent, so selecting an alternate
+quantity, amount, or fee can retain its corresponding observed price. Otherwise,
+a below-tolerance default could make that source's coherent combination impossible
+to select.
 Allowed choices are only the observed source values. The planner creates a
 pending Proposal only when at least one complete issued-choice combination
 passes the full-event validation; otherwise it reports an unsupported incoherent

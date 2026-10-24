@@ -19,7 +19,7 @@ from moneybin.cli.utils import (
     warn_transfers_retired,
 )
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
-from moneybin.services.refresh_outcome import StageOutcome, best_effort
+from moneybin.services.refresh_outcome import StageOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,7 @@ def refresh_command(
     """
     from moneybin.adapters.refresh_adapters import (
         refresh_envelope,
+        refresh_step_actions,
     )
     from moneybin.cli.output import render_or_json
     from moneybin.database import get_database
@@ -163,12 +164,7 @@ def refresh_command(
     ):
         result = refresh(db, steps=steps)
     requested = expand_steps(steps)
-    # investment_match is a precondition for apply whenever "transform" is
-    # requested (expand_steps always adds it alongside "transform"); a
-    # blocking crash there skips apply outright and sets `result.error` the
-    # same way an apply failure does (see `refresh()`), so `blocked_transform`
-    # exists only to pick the right message below — the exit-code decisions
-    # further down read `result.error` alone, same as every embedded caller.
+    # Planner failures block a requested apply but stay on their own stage.
     investment_stage = result.stage("investment_match")
     blocked_transform = (
         "transform" in requested
@@ -183,7 +179,7 @@ def refresh_command(
     # cleanly to stdout) so a partial-pipeline failure is never silent. In
     # JSON mode the crash is also in the payload (that step's `stages` entry
     # plus recovery_actions); the stderr warning is the human/operator signal.
-    steps_outcome = step_outcome(result)
+    steps_outcome = step_outcome(result, requested=requested)
     # Sits with the crash warnings, not with the ✅ status line, for the same
     # reason: this is a decision the *user* made being undone, so it survives
     # --quiet and is emitted under --output json too (where the count is also in
@@ -195,19 +191,20 @@ def refresh_command(
     # pair, which no number of refreshes will fill — so it suppresses the ✅
     # without earning the "re-run the failed step" hint below, whose own remedy
     # already rode the warning above.
-    retryable_error = (
-        any(stage.error is not None for stage in best_effort(steps_outcome.stages))
-        or bool(steps_outcome.identity_errors)
-        or bool(steps_outcome.rate_pairs_failed)
-    )
+    retry_steps = [
+        step
+        for action in refresh_step_actions(
+            steps_outcome, apply_failed=result.error is not None
+        )
+        if action.tool == "refresh_run"
+        for step in action.arguments["steps"]
+    ]
     # The rates step is best-effort like the three above, so an unfilled pair
     # suppresses the ✅ for the same reason they do: a success banner printed
     # directly beneath the warning above contradicts it. A discarded rate joins
     # them without joining `retryable_error`: the provider answered, so the same
     # request returns the same unusable value however many times it is re-sent.
-    has_step_error = retryable_error or bool(
-        steps_outcome.rate_pairs_unsupported or steps_outcome.rate_pairs_discarded
-    )
+    has_step_error = steps_outcome.has_failure
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -215,12 +212,12 @@ def refresh_command(
             output,
             cli_actor="refresh_command",
         )
-        if result.error is not None:
+        if result.error is not None or blocked_transform:
             raise typer.Exit(1)
         return
 
     if quiet:
-        if result.error is not None:
+        if result.error is not None or blocked_transform:
             raise typer.Exit(1)
         return
 
@@ -237,9 +234,12 @@ def refresh_command(
     # Suppress the step-retry hint when apply also failed: the apply error is
     # the blocker (reported by ❌ below), so "re-run the failed step" would
     # misdirect the agent before it resolves the blocking failure.
-    if retryable_error and result.error is None:
+    if retry_steps:
+        commands = ", ".join(
+            f"`moneybin refresh --step {step}`" for step in retry_steps
+        )
         logger.info(
-            "💡 Re-run the failed step (e.g. `moneybin refresh --step match`) "
+            f"💡 Re-run the failed step: {commands}, "
             "or run `moneybin system doctor` to diagnose."
         )
 

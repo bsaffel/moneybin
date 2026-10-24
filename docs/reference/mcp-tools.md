@@ -37,7 +37,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`refresh_run`](#refresh_run) | Run the post-load refresh pipeline. | write, idempotent | at least `medium` |
 | [`reports`](#reports) | Browse registered financial reports or run one by stable report ID. | read-only, idempotent | up to `critical` |
 | [`reviews`](#reviews) | Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. | read-only, idempotent | up to `critical` |
-| [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. | write, idempotent | at least `low` |
+| [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, or investment_match review decisions. | write, idempotent | at least `high` |
 | [`sql_query`](#sql_query) | Execute a read-only SQL query against the database. | read-only, idempotent | up to `critical` |
 | [`sql_schema`](#sql_schema) | Return the curated database schema. | read-only, idempotent | up to `critical` |
 | [`sync_disconnect`](#sync_disconnect) | Disconnect one institution or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `low` |
@@ -555,13 +555,13 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### reviews_decide
 
-Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts — reverse either with system_audit_undo. Keep each kind in its own call. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed — an accept that loses that tiebreak reads 'reversed'.
+Accept or reject an atomic batch of transaction, match, or investment_match review decisions. Investment rejection requires human Elicitation for the complete batch; investment acceptance remains unavailable. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts — reverse either with system_audit_undo. Keep auto-rule and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed — an accept that loses that tiebreak reads 'reversed'.
 
-Access: write, idempotent. Sensitivity: at least `low`.
+Access: write, idempotent. Sensitivity: at least `high`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `decisions` | array of one of `categorization`, `match`, `auto_rule`, `rule_conflict` |  | required |
+| `decisions` | array of one of `categorization`, `match`, `investment_match`, `auto_rule`, `rule_conflict` |  | required |
 
 #### Variants of `decisions`
 
@@ -587,6 +587,17 @@ Accept or reject one transaction-match proposal.
 | `kind` | `match` |  | required |
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
+
+##### `investment_match`
+
+Decide one whole investment Proposal with an exact choice set.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `investment_match` |  | required |
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `accept`, `reject` |  | required |
+| `field_choices` | array of object |  | forbidden when `decision` is `reject` |
 
 ##### `auto_rule`
 

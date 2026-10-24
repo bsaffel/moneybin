@@ -33,12 +33,13 @@ Usage: `moneybin transactions review [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--type` | text | `all` | all \| matches \| categorize \| account-links \| merchant-links \| security-links |
+| `--type` | text | `all` | all \| matches \| investment-matches \| categorize \| account-links \| merchant-links \| security-links |
 | `--status` | flag |  | Show queue counts (the default) |
 | `--interactive` | flag |  | Walk the queue item by item (not yet built) |
-| `--confirm` | text |  | Non-interactive: confirm one item by ID |
+| `--confirm` | text, repeatable |  | Confirm exactly one item by ID; repeats are invalid |
 | `--reject` | text |  | Non-interactive: reject one item by ID |
 | `--confirm-all` | flag |  | Non-interactive: confirm all items in scope |
+| `--field-choice` | text, repeatable |  | Investment confirmation: conflict-id=choice-id (repeatable) |
 | `--limit` | int | `50` | Cap items per session |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |

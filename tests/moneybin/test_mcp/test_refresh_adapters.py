@@ -465,24 +465,16 @@ async def test_an_investment_match_error_is_offered_its_own_retry() -> None:
 
 
 @pytest.mark.unit
-async def test_a_blocking_investment_match_crash_is_not_withheld_by_apply_failed() -> (
-    None
-):
-    """Unlike every other step, investment_match earns a retry even when apply_failed.
-
-    Per the orchestration module docstring, a blocking investment_match crash
-    is *why* apply never ran — not a symptom beside an unrelated broken
-    warehouse — so retrying is the actual fix rather than a doomed repeat.
-    `expand_steps` always folds investment_match back in alongside transform,
-    so the retry targets `transform` to re-run both.
-    """
+async def test_a_blocking_investment_match_crash_retries_requested_transform() -> None:
+    """A blocked apply is retried through its prerequisite-aware transform route."""
     actions = refresh_step_actions(
         RefreshStepOutcome(
+            requested_steps=("investment_match", "transform"),
             stages=(
                 StageOutcome(step="investment_match", ran=True, error="ledger boom"),
-            )
+            ),
         ),
-        apply_failed=True,
+        apply_failed=False,
     )
     await assert_recovery_actions_executable(actions)
     assert [action.arguments.get("steps") for action in actions] == [
@@ -503,12 +495,13 @@ async def test_a_match_crash_beside_a_blocked_planner_keeps_its_own_retry() -> N
     """
     actions = refresh_step_actions(
         RefreshStepOutcome(
+            requested_steps=("match", "investment_match", "transform"),
             stages=(
                 _match_stage(error="matcher blew up"),
                 StageOutcome(step="investment_match", ran=True, error="ledger boom"),
-            )
+            ),
         ),
-        apply_failed=True,
+        apply_failed=False,
     )
     await assert_recovery_actions_executable(actions)
     assert [action.arguments.get("steps") for action in actions] == [
@@ -533,7 +526,6 @@ async def test_a_blocked_investment_match_earns_a_transform_retry_through_the_en
         RefreshResult(
             applied=False,
             duration_seconds=None,
-            error="ledger boom",
             stages=(
                 StageOutcome(step="investment_match", ran=True, error="ledger boom"),
             ),
@@ -548,26 +540,19 @@ async def test_a_blocked_investment_match_earns_a_transform_retry_through_the_en
 
 
 @pytest.mark.unit
-def test_apply_failed_hint_names_the_true_blocker_for_investment_match() -> None:
-    """The apply-failed hint must not misdiagnose an investment_match block.
-
-    The P1 pass left `REFRESH_APPLY_FAILED_HINT` reading "SQLMesh apply
-    failed" unconditionally, which is wrong when the actual crash blocked
-    apply from ever starting. The remedy (retry refresh_run) stays identical
-    either way; only the diagnosis clause should change.
-    """
+def test_stage_failure_hint_names_the_true_blocker_for_investment_match() -> None:
+    """A planner block never claims SQLMesh itself failed."""
     env = refresh_envelope(
         RefreshResult(
             applied=False,
             duration_seconds=None,
-            error="ledger boom",
             stages=(
                 StageOutcome(step="investment_match", ran=True, error="ledger boom"),
             ),
         ),
         requested=expand_steps(None),
     )
-    hint = next(a for a in env.actions if "transform plan" in a)
+    hint = next(a for a in env.actions if "Investment matching failed" in a)
     assert hint.startswith(
         "Investment matching failed and blocked the SQLMesh apply from running"
     )
@@ -990,7 +975,7 @@ def test_a_stage_survives_the_pydantic_carrier_it_rides_in() -> None:
     )
 
     assert json.loads(pull.model_dump_json())["refresh_steps"]["stages"] == [
-        {"step": "match", "ran": False, "counts": {}, "error": None}
+        {"step": "match", "ran": False, "counts": {}, "error": None, "error_code": None}
     ]
     # The proxy also guarded against a shared mutable default; `default_factory`
     # is what actually holds that line, so prove it still does.

@@ -23,6 +23,8 @@ def _make_review_service(
     merchant_links_service.count_pending.return_value = merchant_links
     security_links_service = MagicMock()
     security_links_service.count_pending.return_value = security_links
+    investment_service = MagicMock()
+    investment_service.count_pending.return_value = 0
 
     return ReviewService(
         match_service=match_service,
@@ -30,6 +32,7 @@ def _make_review_service(
         account_links_service=links_service,
         merchant_links_service=merchant_links_service,
         security_links_service=security_links_service,
+        investment_matching_service=investment_service,
     )
 
 
@@ -72,6 +75,8 @@ def test_review_status_delegates_to_services() -> None:
     merchant_links_service.count_pending.return_value = 1
     security_links_service = MagicMock()
     security_links_service.count_pending.return_value = 6
+    investment_service = MagicMock()
+    investment_service.count_pending.return_value = 0
 
     svc = ReviewService(
         match_service=match_service,
@@ -79,6 +84,7 @@ def test_review_status_delegates_to_services() -> None:
         account_links_service=links_service,
         merchant_links_service=merchant_links_service,
         security_links_service=security_links_service,
+        investment_matching_service=investment_service,
     )
     svc.status()
 

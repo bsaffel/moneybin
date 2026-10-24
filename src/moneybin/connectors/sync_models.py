@@ -406,9 +406,8 @@ class PullResult(BaseModel):
     # Same reason as the field above, widened: a pull runs the whole cascade,
     # so its matcher, categorizer, identity pass and network rate backfill all
     # act on the user's behalf and can each fail on their own. `transforms_error`
-    # covers only a blocking failure (SQLMesh apply, or an investment_match
-    # crash that kept apply from running), so without this the other four
-    # best-effort steps are silent.
+    # describes SQLMesh apply only; planner failures and all other stage outcomes
+    # travel here, including a planner failure that prevented apply.
     # None means no refresh ran, distinct from one that ran clean.
     refresh_steps: RefreshStepOutcome | None = None
     opening_bootstrap_rows: int = 0

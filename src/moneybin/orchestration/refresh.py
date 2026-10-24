@@ -9,9 +9,8 @@ verb that wraps five source-agnostic steps:
    same transaction observed by multiple loaders collapses to one row.
 2. **SQLMesh apply** — :class:`TransformService` rebuilds derived
    ``core.*`` and ``reports.*`` models from current raw state. This is
-   the step whose crash hard-fails the call (``RefreshResult.error``); so
-   does an ``investment_match`` crash when it blocks apply from running at
-   all (see below). Every other step surfaces crashes without aborting.
+   the step whose crash sets ``RefreshResult.error``. Investment planning
+   can prevent apply from starting, reporting the failure on its own stage.
 3. **Deterministic categorization** — :class:`CategorizationService`
    applies user rules + merchant exemplars to uncategorized rows, with
    source-precedence enforcement so user-manual categories are never
@@ -35,10 +34,9 @@ error strings; identity failures surface only their fixed domain labels in
 is logged at DEBUG and not surfaced. ``investment_match`` is the one
 exception to "best-effort": ``expand_steps`` always adds it alongside
 ``transform``, so its crash is a precondition failure, not a degraded step —
-apply never runs, and the crash sets the top-level ``RefreshResult.error``
-exactly like a SQLMesh apply failure would. A caller that reads only that
-field (every embedded refresh caller does) must not see this as a clean
-skip. Only these two failures set ``RefreshResult.error``.
+apply never runs, and the crash remains on the investment stage. Only SQLMesh
+apply failures set ``RefreshResult.error``; embedded callers retain the
+expanded request to distinguish a blocked transform from an unrequested one.
 
 Invoked by any service whose loaders wrote to ``raw.*``:
 ``ImportService`` (file imports), ``InboxService`` (inbox drain),
@@ -119,10 +117,8 @@ class SelfHealRecord:
 class RefreshResult:
     """Outcome of a :func:`refresh` call.
 
-    ``error`` describes a blocking failure — the SQLMesh apply step, or an
-    ``investment_match`` crash that kept apply from running at all (it is a
-    precondition whenever ``transform`` is requested; see the module
-    docstring). Every other step reports its own crash, its own counts, and
+    ``error`` describes a SQLMesh apply failure. Every other step, including
+    investment planning that blocks apply, reports its own crash, counts, and
     whether it ran at all in its ``stages`` entry, so a caller reads one place
     per step. A missing-view precondition on first load (before SQLMesh apply
     built the views) is NOT a crash: that step's entry has ``ran=False`` and no
@@ -156,6 +152,7 @@ class RefreshResult:
     # returned error-or-None, so a renderer had nothing to print and no way to
     # recover a count short of re-querying for it.
     stages: tuple[StageOutcome, ...] = field(default_factory=tuple)
+    requested_steps: tuple[str, ...] = field(default_factory=tuple)
 
     def stage(self, step: str) -> StageOutcome | None:
         """This result's entry for one step. See :func:`find_stage`."""
@@ -182,7 +179,9 @@ CANONICAL_STEPS: tuple[RefreshStep, ...] = (
 )
 
 
-def step_outcome(result: RefreshResult) -> RefreshStepOutcome:
+def step_outcome(
+    result: RefreshResult, *, requested: frozenset[str] | None = None
+) -> RefreshStepOutcome:
     """Flatten the best-effort step outcomes a caller has to pass on.
 
     Lives here rather than on :class:`RefreshStepOutcome` so that carrier stays
@@ -192,6 +191,11 @@ def step_outcome(result: RefreshResult) -> RefreshStepOutcome:
     rates = result.rate_backfill
     return RefreshStepOutcome(
         stages=result.stages,
+        requested_steps=(
+            tuple(s for s in CANONICAL_STEPS if s in requested)
+            if requested is not None
+            else result.requested_steps
+        ),
         identity_errors=tuple(result.identity_errors),
         rate_pairs_failed=() if rates is None else tuple(rates.pairs_failed),
         rate_pairs_unsupported=() if rates is None else tuple(rates.pairs_unsupported),
@@ -281,6 +285,7 @@ def refresh(
             )
 
     requested = expand_steps(steps)
+    requested_steps = tuple(s for s in CANONICAL_STEPS if s in requested)
     # Appended in canonical order as each step reports. A step the caller never
     # requested contributes nothing, so absence means "not asked for" and a
     # present entry with ran=False means "asked for, declined to run".
@@ -406,18 +411,13 @@ def refresh(
         investment_stage = _run_investment_match_step(db, actor=actor)
         stages.append(investment_stage)
         if investment_stage.error is not None and "transform" in requested:
-            # A blocking precondition failure, not a best-effort one: apply
-            # never runs. Surface it on the top-level `error` — the field
-            # every embedded refresh caller (SyncService.pull, ImportService,
-            # InboxService, ...) already reads — so `applied=False` cannot be
-            # mistaken for raw data landing cleanly with a merely-skipped
-            # transform.
+            # Keep the planner's failure on its stage; SQLMesh was not attempted.
             return RefreshResult(
                 applied=False,
                 duration_seconds=None,
-                error=investment_stage.error,
                 transfers_retired=transfers_retired,
                 stages=tuple(stages),
+                requested_steps=requested_steps,
             )
 
     if "transform" not in requested:
@@ -441,6 +441,7 @@ def refresh(
             rate_backfill=rate_backfill,
             transfers_retired=transfers_retired,
             stages=tuple(stages),
+            requested_steps=requested_steps,
         )
 
     transform_service = TransformService(db)
@@ -466,6 +467,7 @@ def refresh(
             error=apply_result.error,
             transfers_retired=transfers_retired,
             stages=tuple(stages),
+            requested_steps=requested_steps,
         )
 
     if "categorize" in requested:
@@ -494,6 +496,7 @@ def refresh(
                 rate_backfill=rate_backfill,
                 transfers_retired=transfers_retired,
                 stages=tuple(stages),
+                requested_steps=requested_steps,
             )
 
     return RefreshResult(
@@ -503,6 +506,7 @@ def refresh(
         rate_backfill=rate_backfill,
         transfers_retired=transfers_retired,
         stages=tuple(stages),
+        requested_steps=requested_steps,
     )
 
 
@@ -562,10 +566,12 @@ def _run_investment_match_step(db: Database, *, actor: str) -> StageOutcome:
         # actionable message verbatim; anything unclassified falls back to
         # the generic step-failed string rather than leaking DuckDB/financial
         # detail.
+        classified = classify_user_error(exc)
         return StageOutcome(
             step="investment_match",
             ran=True,
             error=_step_error(exc, step="Investment matching"),
+            error_code=None if classified is None else classified.code,
         )
     return StageOutcome(
         step="investment_match",

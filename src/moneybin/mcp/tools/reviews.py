@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -17,7 +18,11 @@ from moneybin.adapters.matching_adapters import (
     match_history_row,
     match_pending_row,
 )
-from moneybin.adapters.rematch_report import rematch_actions, rematch_count
+from moneybin.adapters.rematch_report import (
+    rematch_actions,
+    rematch_count,
+    rematch_recovery_actions,
+)
 from moneybin.config import get_settings
 from moneybin.database import Database, get_database
 from moneybin.errors import (
@@ -59,6 +64,7 @@ from moneybin.privacy.payloads.reviews import (
     CategorizationReviewRow,
     IdentityDecisionOutcome,
     IdentityLinksDecidePayload,
+    InvestmentMatchDetails,
     MatchHistoryDetails,
     MatchPendingDetails,
     MatchReviewRow,
@@ -108,6 +114,7 @@ from moneybin.protocol.pagination import (
 from moneybin.protocol.write_contracts import (
     AutoRuleDecisionRequest,
     IdentityDecisionRequest,
+    InvestmentMatchDecisionRequest,
     OrdinaryReviewDecisionRequest,
     ReviewDecisionRequest,
     RuleConflictDecisionRequest,
@@ -128,7 +135,9 @@ from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
+    OrdinaryDecisionPlanItem,
     ReviewDecisionsService,
+    ordinary_confirmation_state,
 )
 from moneybin.services.security_links_service import SecurityLinksService
 
@@ -1149,9 +1158,10 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
     )
 
 
-@mcp_tool(read_only=False, idempotent=True)
-def reviews_decide_coarse(
+def _apply_review_decisions(
     decisions: list[ReviewDecisionRequest],
+    *,
+    grant: ConfirmationGrant | None = None,
 ) -> ResponseEnvelope[ReviewsDecidePayload]:
     """Accept or reject one atomic ordinary, auto-rule, or conflict batch."""
     operation_id = current_operation_id()
@@ -1263,7 +1273,10 @@ def reviews_decide_coarse(
                 decisions,
             )
             applied = ReviewDecisionsService(db, actor="mcp").apply_ordinary(
-                ordinary_decisions
+                ordinary_decisions,
+                verify=(lambda plan: grant.verify(_review_binding(plan)))
+                if grant is not None
+                else None,
             )
             transfers_retired = applied.transfers_retired
             outcomes = [
@@ -1304,6 +1317,81 @@ def reviews_decide_coarse(
         ),
         actions=actions,
     )
+
+
+def _review_binding(plan: tuple[OrdinaryDecisionPlanItem, ...]) -> ConfirmationBinding:
+    """Bind the complete ordered batch and all revalidated Proposal evidence."""
+    return ConfirmationBinding(
+        arguments={
+            "plan": ordinary_confirmation_state(plan),
+        },
+        resolved_ids=tuple(item.request.decision_id for item in plan),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="reviews_decide",
+        blast_radius={"decisions": len(plan)},
+    )
+
+
+def _preview_investment_batch(
+    decisions: list[ReviewDecisionRequest],
+) -> tuple[OrdinaryDecisionPlanItem, ...]:
+    if any(
+        isinstance(item, (AutoRuleDecisionRequest, RuleConflictDecisionRequest))
+        for item in decisions
+    ):
+        raise UserError(
+            "Auto-rule and rule-conflict decisions require separate atomic batches.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    with get_database(read_only=True) as db:
+        return ReviewDecisionsService(db, actor="mcp").plan_ordinary(
+            cast(list[OrdinaryReviewDecisionRequest], decisions)
+        )
+
+
+def _investment_batch_message(plan: tuple[OrdinaryDecisionPlanItem, ...]) -> str:
+    evidence: list[dict[str, Any]] = []
+    for item in plan:
+        if isinstance(item.request, InvestmentMatchDecisionRequest):
+            details = InvestmentMatchDetails.model_validate(item.before_state)
+            masked = build_classified_envelope(details).data
+            evidence.append({
+                "decision_id": item.request.decision_id,
+                "evidence": masked.model_dump(mode="json"),
+            })
+    return (
+        "Confirm this complete atomic review batch. Rejection excludes the whole "
+        "investment Proposal and every superset with the same exact relationship "
+        "evidence. It changes no Golden ledger values.\n"
+        + json.dumps(
+            {
+                "decisions": [item.request.model_dump(mode="json") for item in plan],
+                "investment_proposals": evidence,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+@mcp_tool(read_only=False, idempotent=True, timeout_seconds=180.0, discloses=Tier.HIGH)
+async def reviews_decide_coarse(
+    decisions: list[ReviewDecisionRequest],
+) -> ResponseEnvelope[ReviewsDecidePayload]:
+    """Decide an atomic batch; investment decisions require a human prompt."""
+    grant: ConfirmationGrant | None = None
+    if any(isinstance(item, InvestmentMatchDecisionRequest) for item in decisions):
+        plan = await asyncio.to_thread(_preview_investment_batch, decisions)
+        grant = await grant_confirmation_or_raise(
+            binding=_review_binding(plan),
+            message=_investment_batch_message(plan),
+            confirmation_token=None,
+            elicitation_only=True,
+            cli_equivalent="moneybin review --type investment-matches --reject <review-id>",
+            cli_note="The CLI command decides one Proposal; review every remaining batch item separately.",
+        )
+    return await asyncio.to_thread(_apply_review_decisions, decisions, grant=grant)
 
 
 def _identity_binding(
@@ -1547,6 +1635,7 @@ async def identity_links_decide_coarse(
             ),
         ),
         actions=actions,
+        recovery_actions=rematch_recovery_actions(rematch) or None,
     )
 
 
@@ -1556,14 +1645,15 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         mcp,
         reviews_decide_coarse,
         "reviews_decide",
-        "Accept or reject an atomic batch of transaction, match, auto-rule, or "
-        "rule-conflict review decisions. Auto-rule decisions use "
+        "Accept or reject an atomic batch of transaction, match, or investment_match "
+        "review decisions. Investment rejection requires human Elicitation for the "
+        "complete batch; investment acceptance remains unavailable. Auto-rule decisions use "
         "kind='auto_rule' and may set allow_broad after inspecting "
         "estimated_match_count; kind='rule_conflict' takes replace (supersede "
         "the existing rule), reprioritize (activate beside it at an explicit "
         "priority), or cancel, writing app.categorization_rules and "
-        "app.rule_conflicts — reverse either with system_audit_undo. Keep each "
-        "kind in its own call. Accepting a match can reverse a transfer the "
+        "app.rule_conflicts — reverse either with system_audit_undo. Keep auto-rule "
+        "and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the "
         "user already accepted, once one component holds both its legs: "
         "`transfers_retired` counts those, and each result's `status` is what "
         "committed — an accept that loses that tiebreak reads 'reversed'.",

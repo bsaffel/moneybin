@@ -238,7 +238,11 @@ def sync_link(
         warn_transfers_retired(pr.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
         # And the same best-effort steps, for the same reason.
         warn_refresh_steps(pr.refresh_steps)
-        if pr.transforms_error or pr.security_resolution_error:
+        if (
+            pr.transforms_error
+            or pr.security_resolution_error
+            or (pr.refresh_steps is not None and pr.refresh_steps.transform_blocked)
+        ):
             raise typer.Exit(1)
 
 
@@ -521,7 +525,11 @@ def sync_pull(
     # scrape text. Mirrors import_cmd.py:406. security_resolution_error joins
     # the same gate — a swallowed resolution failure is exactly as silent a
     # cost-basis corruption as a swallowed transform failure.
-    if result.transforms_error or result.security_resolution_error:
+    if (
+        result.transforms_error
+        or result.security_resolution_error
+        or (result.refresh_steps is not None and result.refresh_steps.transform_blocked)
+    ):
         raise typer.Exit(1)
 
 

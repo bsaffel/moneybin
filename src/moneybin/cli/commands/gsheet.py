@@ -322,6 +322,8 @@ def gsheet_pull(
 ) -> None:
     """Pull a single connection by ID, or every healthy connection."""
     from moneybin.adapters.refresh_adapters import (
+        refresh_investment_hints,
+        refresh_step_actions,
         refresh_steps_fields,
     )
     from moneybin.orchestration.refresh import refresh as run_refresh
@@ -341,11 +343,8 @@ def gsheet_pull(
 
             if refresh:
                 # Skip the "gsheet" step — we just ran the pull directly.
-                # run_refresh soft-fails by returning a RefreshResult with
-                # applied=False + error set, instead of raising. Capture
-                # the error so the CLI can surface a non-zero exit + a
-                # warning line; agents parsing --output json see it on the
-                # envelope too.
+                # SQLMesh errors and stage-owned planner blocks both fail the
+                # command, while retaining their distinct payload fields.
                 # An explicit list is never widened by a later canonical step,
                 # so every stage a pulled row needs is named here. `rates` is
                 # named because a sheet can carry foreign-currency rows: without
@@ -376,6 +375,7 @@ def gsheet_pull(
     # in the text output below.
     failure_statuses = {"auth_expired", "unreachable", "rate_limited", "failed"}
     pull_failed = any(r.status in failure_statuses for r in results)
+    transform_blocked = steps_outcome is not None and steps_outcome.transform_blocked
 
     # Ahead of both output branches, like `moneybin refresh`: a reversal of the
     # user's own decision is not informational output, so it survives --quiet
@@ -391,12 +391,17 @@ def gsheet_pull(
                     refresh_error=refresh_error,
                     transfers_retired=transfers_retired,
                     **refresh_steps_fields(steps_outcome),
+                ),
+                actions=refresh_investment_hints(steps_outcome),
+                recovery_actions=refresh_step_actions(
+                    steps_outcome, apply_failed=refresh_error is not None
                 )
+                or None,
             ),
             output,
             cli_actor="gsheet_pull",
         )
-        if refresh_error is not None or pull_failed:
+        if refresh_error is not None or transform_blocked or pull_failed:
             raise typer.Exit(1)
         return
 
@@ -421,7 +426,7 @@ def gsheet_pull(
             f"❌ Pull completed but refresh pipeline failed: {refresh_error}",
             err=True,
         )
-    if refresh_error is not None or pull_failed:
+    if refresh_error is not None or transform_blocked or pull_failed:
         raise typer.Exit(1)
 
 

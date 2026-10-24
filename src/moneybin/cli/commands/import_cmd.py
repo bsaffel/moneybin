@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING, Any, cast
 import typer
 
 from moneybin import error_codes
-from moneybin.adapters.refresh_adapters import refresh_steps_fields
+from moneybin.adapters.refresh_adapters import (
+    refresh_investment_hints,
+    refresh_step_actions,
+    refresh_steps_fields,
+)
 from moneybin.cli.commands import import_inbox, import_labels
 from moneybin.cli.output import (
     OutputFormat,
@@ -813,7 +817,15 @@ def import_files_command(
         classification = classify(ImportConfirmationPayload)
         batch_sensitivity = classification.sensitivity
         classes_returned = classification.classes_returned
-    envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
+    envelope = build_envelope(
+        data=data,
+        sensitivity=batch_sensitivity,
+        actions=refresh_investment_hints(refresh_steps),
+        recovery_actions=refresh_step_actions(
+            refresh_steps, apply_failed=bool(data.get("transforms_error"))
+        )
+        or None,
+    )
     if batch_result is not None:
         # Same gate the MCP import_files tool applies, from the same function:
         # "every file failed" must read as a failure on both surfaces, or a
@@ -872,7 +884,11 @@ def import_files_command(
     # The envelope's own status covers the other batch-level failure: an
     # all-failed batch. Reading it (rather than re-deriving the condition)
     # keeps the exit code and the reported status from disagreeing.
-    if data.get("transforms_error") or envelope.status == "error":
+    if (
+        data.get("transforms_error")
+        or envelope.status == "error"
+        or (refresh_steps is not None and refresh_steps.transform_blocked)
+    ):
         raise typer.Exit(1)
 
 
@@ -972,9 +988,7 @@ def _batch_payload(
         "files": files_list,
         # Flat, and named as every other surface names them: the import ran a
         # matcher, a categorizer, an identity pass and a network rate backfill,
-        # and `transforms_error` below reports only a blocking failure
-        # (SQLMesh apply, or an investment_match crash that kept apply from
-        # running).
+        # and `transforms_error` below reports only SQLMesh apply failures.
         **refresh_steps_fields(batch.refresh_steps),
     }
     if batch.transforms_error:

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import duckdb
@@ -19,11 +20,12 @@ from moneybin.matching.application import (
     SettableMatchStatus,
     record_committed_match_effects,
 )
-from moneybin.matching.persistence import get_match_decision
+from moneybin.matching.persistence import get_active_dedup_edges, get_match_decision
 from moneybin.protocol.write_contracts import (
     AccountLinkDecisionRequest,
     CategorizationDecisionRequest,
     IdentityDecisionRequest,
+    InvestmentMatchDecisionRequest,
     MatchDecisionRequest,
     MerchantLinkDecisionRequest,
     OrdinaryReviewDecisionRequest,
@@ -32,11 +34,18 @@ from moneybin.protocol.write_contracts import (
 from moneybin.repositories.categorization_decisions_repo import (
     CategorizationDecisionsRepo,
 )
+from moneybin.repositories.investment_match_decisions_repo import (
+    InvestmentMatchDecisionsRepo,
+)
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services._text import build_match_inputs
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
+from moneybin.services.investment_matching_service import (
+    InvestmentMatchingService,
+    record_committed_investment_decisions,
+)
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.security_links_service import SecurityLinksService
 from moneybin.tables import (
@@ -46,8 +55,11 @@ from moneybin.tables import (
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
+    INT_TRANSACTIONS_MATCHED,
+    INT_TRANSACTIONS_UNIONED,
     LOT_SELECTIONS,
     MANUAL_INVESTMENT_TRANSACTIONS,
+    MATCH_DECISIONS,
     MERCHANT_LINK_DECISIONS,
     MERCHANT_LINKS,
     SECURITIES,
@@ -55,6 +67,10 @@ from moneybin.tables import (
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
     TRANSACTION_CATEGORIES,
+    TRANSACTION_ID_ALIASES,
+    TRANSACTION_NOTES,
+    TRANSACTION_SPLITS,
+    TRANSACTION_TAGS,
     USER_MERCHANTS,
 )
 
@@ -72,7 +88,7 @@ _IdentityRequest = (
 class OrdinaryDecisionPlanItem:
     """One fully resolved ordinary review decision."""
 
-    request: CategorizationDecisionRequest | MatchDecisionRequest
+    request: OrdinaryReviewDecisionRequest
     changed: bool
     status: str
     transaction_id: str | None = None
@@ -82,6 +98,8 @@ class OrdinaryDecisionPlanItem:
     merchant_id: str | None = None
     match_text: str | None = None
     merchant_group_key: tuple[str, str, str | None] | None = None
+    before_state: JsonValue = None
+    cash_effect_dependencies: JsonValue = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +192,16 @@ def _json_safe(value: Any) -> JsonValue:
     return str(value)
 
 
+def ordinary_confirmation_state(
+    plan: tuple[OrdinaryDecisionPlanItem, ...],
+) -> JsonValue:
+    """Bind resolved targets and effects as well as the requested decisions."""
+    return _json_safe([
+        {**asdict(item), "request": item.request.model_dump(mode="json")}
+        for item in plan
+    ])
+
+
 def _query_json_rows(
     db: Database,
     sql: str,
@@ -224,7 +252,7 @@ class ReviewDecisionsService:
     def _ordinary_error(
         *,
         index: int,
-        request: CategorizationDecisionRequest | MatchDecisionRequest,
+        request: OrdinaryReviewDecisionRequest,
         code: str,
         reason: str,
     ) -> dict[str, Any]:
@@ -300,6 +328,7 @@ class ReviewDecisionsService:
                 changed=True,
                 status="rejected",
                 transaction_id=transaction_id,
+                before_state=_json_safe({"decision": projected, "transaction": row}),
             )
 
         category_row = self._db.execute(
@@ -368,6 +397,7 @@ class ReviewDecisionsService:
             )
             if request.canonical_merchant_name is not None
             else None,
+            before_state=_json_safe({"decision": projected, "transaction": row}),
         )
 
     def _prepare_match(
@@ -391,7 +421,88 @@ class ReviewDecisionsService:
             request=request,
             changed=True,
             status=target,
+            before_state=_json_safe(row),
         )
+
+    def _prepare_investment(
+        self, request: InvestmentMatchDecisionRequest
+    ) -> OrdinaryDecisionPlanItem:
+        proposal = InvestmentMatchingService(self._db).prepare_decision(
+            request.decision_id,
+            decision=request.decision,
+            field_choices=[choice.model_dump() for choice in request.field_choices],
+        )
+        return OrdinaryDecisionPlanItem(
+            request=request,
+            changed=True,
+            status="rejected",
+            before_state=_json_safe(asdict(proposal)),
+        )
+
+    def _cash_effect_dependencies(self) -> JsonValue:
+        """Bind the inputs of cash reconciliation and alias forwarding."""
+        from moneybin.matching.aliasing import (
+            _relations_exist,  # pyright: ignore[reportPrivateUsage]  # Share forwarding's exact availability gate.
+            _reversed_alias_edges,  # pyright: ignore[reportPrivateUsage]  # Share its audit-derived edge liveness.
+        )
+
+        # Both passes are global, including stranded curation outside this batch.
+        # Narrow this binding only when those passes narrow their mutation scope.
+        state: dict[str, Any] = {
+            "dedup_edges": get_active_dedup_edges(self._db, statuses=("accepted",)),
+            "transfers": _query_json_rows(
+                self._db,
+                f"""SELECT match_id, source_type_a, source_transaction_id_a,
+                           account_id, source_type_b, source_transaction_id_b,
+                           account_id_b, decided_at
+                    FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'transfer' AND match_status = 'accepted'
+                    ORDER BY decided_at, match_id""",  # fixed TableRef
+                [],
+            ),
+            "alias_forwarding_available": _relations_exist(
+                self._db, INT_TRANSACTIONS_MATCHED, INT_TRANSACTIONS_UNIONED
+            ),
+        }
+        if not state["alias_forwarding_available"]:
+            return _json_safe(state)
+        projections = (
+            (
+                INT_TRANSACTIONS_MATCHED,
+                "transaction_id, source_type, source_transaction_id, account_id",
+                "transaction_id, source_type, source_transaction_id, account_id",
+            ),
+            (
+                INT_TRANSACTIONS_UNIONED,
+                "source_type, source_origin, source_account_key, "
+                "source_transaction_id, account_id, pending_transaction_id, loaded_at",
+                "source_type, source_origin, source_account_key, "
+                "source_transaction_id, account_id, pending_transaction_id, loaded_at",
+            ),
+            (
+                TRANSACTION_ID_ALIASES,
+                "old_transaction_id, new_transaction_id",
+                "old_transaction_id",
+            ),
+            (FCT_TRANSACTIONS, "transaction_id", "transaction_id"),
+            (TRANSACTION_CATEGORIES, "*", "transaction_id"),
+            (TRANSACTION_NOTES, "*", "note_id"),
+            (TRANSACTION_TAGS, "*", "transaction_id, tag"),
+            (TRANSACTION_SPLITS, "*", "split_id"),
+        )
+        for table, columns, ordering in projections:
+            state[table.full_name] = (
+                _query_json_rows(
+                    self._db,
+                    f"SELECT {columns} FROM {table.full_name} ORDER BY {ordering}",  # fixed projection allowlist and TableRefs
+                    [],
+                )
+                if _relations_exist(self._db, table)
+                else None
+            )
+        if _relations_exist(self._db, FCT_TRANSACTIONS, TRANSACTION_ID_ALIASES):
+            state["reversed_alias_edges"] = sorted(_reversed_alias_edges(self._db))
+        return _json_safe(state)
 
     def plan_ordinary(
         self,
@@ -423,6 +534,8 @@ class ReviewDecisionsService:
                 item = (
                     self._prepare_categorization(request)
                     if isinstance(request, CategorizationDecisionRequest)
+                    else self._prepare_investment(request)
+                    if isinstance(request, InvestmentMatchDecisionRequest)
                     else self._prepare_match(request)
                 )
             except UserError as exc:
@@ -442,20 +555,39 @@ class ReviewDecisionsService:
                 code=error_codes.MUTATION_INVALID_INPUT,
                 details={"errors": errors},
             )
+        if any(
+            isinstance(item.request, InvestmentMatchDecisionRequest)
+            for item in prepared
+        ):
+            for index, item in enumerate(prepared):
+                if (
+                    isinstance(item.request, MatchDecisionRequest)
+                    and item.status == "accepted"
+                ):
+                    prepared[index] = replace(
+                        item, cash_effect_dependencies=self._cash_effect_dependencies()
+                    )
+                    break
         return tuple(prepared)
 
     def apply_ordinary(
         self,
         decisions: list[OrdinaryReviewDecisionRequest],
+        *,
+        verify: Callable[[tuple[OrdinaryDecisionPlanItem, ...]], None] | None = None,
     ) -> OrdinaryApplyOutcome:
         """Revalidate and atomically apply an ordinary decision batch."""
-        initial = self.plan_ordinary(decisions)
+        started = perf_counter()
+        self.plan_ordinary(decisions)
         created_merchant_ids: list[str] = []
         touched_merchant_ids: list[str] = []
         self._db.begin()
         try:
+            live = self.plan_ordinary(decisions)
+            if verify is not None:
+                verify(live)
             decision_repo = CategorizationDecisionsRepo(self._db)
-            for item in initial:
+            for item in live:
                 if isinstance(item.request, CategorizationDecisionRequest):
                     decision_repo.ensure_pending(
                         cast(str, item.transaction_id),
@@ -463,8 +595,9 @@ class ReviewDecisionsService:
                         expected_decision_id=item.request.decision_id,
                         in_outer_txn=True,
                     )
-            live = self.plan_ordinary(decisions)
             category_service = CategorizationService(self._db)
+            investment_repo = InvestmentMatchDecisionsRepo(self._db)
+            investment_event = None
             match_repo = MatchDecisionsRepo(self._db)
             match_application = MatchDecisionApplication(
                 self._db,
@@ -517,16 +650,32 @@ class ReviewDecisionsService:
                         actor=self._actor,
                         in_outer_txn=True,
                     )
+                elif isinstance(request, InvestmentMatchDecisionRequest):
+                    investment_event = investment_repo.reject(
+                        request.decision_id, actor=self._actor, in_outer_txn=True
+                    )
                 else:
                     match_application.set_status(
                         request.decision_id,
                         status=cast(SettableMatchStatus, item.status),
                     )
+            if investment_event is not None:
+                InvestmentMatchingService(self._db).invalidate_pending(
+                    actor=self._actor, parent_audit_id=investment_event.audit_id
+                )
             effects = match_application.finalize()
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
+        record_committed_investment_decisions(
+            [
+                bool(cast(dict[str, JsonValue], item.before_state)["auto_eligible"])
+                for item in live
+                if isinstance(item.request, InvestmentMatchDecisionRequest)
+            ],
+            duration_seconds=perf_counter() - started,
+        )
         record_committed_match_effects(effects)
         from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting_after_match_effects,
@@ -542,7 +691,7 @@ class ReviewDecisionsService:
         return OrdinaryApplyOutcome(
             items=tuple(
                 item
-                if isinstance(item.request, CategorizationDecisionRequest)
+                if not isinstance(item.request, MatchDecisionRequest)
                 else replace(item, status=statuses[item.request.decision_id])
                 for item in live
             ),

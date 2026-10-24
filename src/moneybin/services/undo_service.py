@@ -30,7 +30,11 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
-from moneybin.services.undo_dispatch import is_registered, repo_for
+from moneybin.services.undo_dispatch import (
+    is_registered,
+    repo_for,
+    undo_investment_operation,
+)
 from moneybin.tables import (
     AUDIT_LOG,
     FCT_INVESTMENT_LOTS,
@@ -286,7 +290,12 @@ class UndoService:
                         ManualInvestmentTransactionsRepo(
                             self._db, audit=self._audit
                         ).validate_legacy_event(event)
+                investment_events = undo_investment_operation(
+                    row_events, self._db, actor=actor
+                )
                 for event in reversed(row_events):
+                    if event.audit_id in investment_events:
+                        continue
                     repo = repo_for(
                         event.target_schema or "",
                         event.target_table or "",

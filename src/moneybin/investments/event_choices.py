@@ -11,6 +11,13 @@ from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.investments.event_assignment import MAX_COMPONENT_STATES
 from moneybin.investments.event_fingerprints import fingerprint
+from moneybin.services.investment_service import (
+    _REINVEST_INCOME_TYPE,  # pyright: ignore[reportPrivateUsage]  # reuse ledger contract
+    _SECURITY_FORBIDDEN,  # pyright: ignore[reportPrivateUsage]  # reuse ledger contract
+    _SECURITY_REQUIRED,  # pyright: ignore[reportPrivateUsage]  # reuse ledger contract
+    TAXONOMY,
+    InvestmentService,
+)
 
 _FIELDS = (
     "trade_date",
@@ -105,6 +112,135 @@ def _coherent(rows: Sequence[Mapping[str, Any]]) -> bool:
     return True
 
 
+def _defaults(
+    by_role: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    defaults: dict[str, dict[str, Any]] = {}
+    for role, rows in sorted(by_role.items()):
+        ordered = sorted(rows, key=_precedence)
+        default = dict(ordered[0])
+        for field in _FIELDS:
+            present = [row for row in ordered if row.get(field) is not None]
+            if field == "trade_date":
+                present.sort(key=lambda row: row["trade_date_basis"] != "explicit")
+                if present:
+                    default["trade_date_basis"] = present[0]["trade_date_basis"]
+            default[field] = present[0][field] if present else None
+        defaults[role] = default
+    return defaults
+
+
+def _validate_selected(rows: Sequence[Mapping[str, Any]]) -> None:
+    """Reuse ledger signs while preserving normalized, non-manual subtypes."""
+    invalid = UserError(
+        "Selected investment fields do not form a valid complete event.",
+        code=error_codes.MUTATION_INVALID_INPUT,
+    )
+    for row in rows:
+        type_ = row["type"]
+        security = row.get("security_id")
+        if (
+            type_ not in TAXONOMY
+            or (type_ in _SECURITY_REQUIRED and security is None)
+            or (type_ in _SECURITY_FORBIDDEN and security is not None)
+            or row.get("trade_date") is None
+            or row.get("account_id") is None
+            or row.get("currency_code") is None
+            or (
+                type_ == "split"
+                and any(
+                    row.get(field) is not None for field in ("price", "amount", "fees")
+                )
+            )
+        ):
+            raise invalid
+        try:
+            InvestmentService._validate_quantity(type_, row.get("quantity"))  # pyright: ignore[reportPrivateUsage]  # reuse ledger signs
+            InvestmentService._validate_amount(type_, row.get("amount"))  # pyright: ignore[reportPrivateUsage]  # reuse ledger signs
+        except UserError:
+            raise invalid from None
+    acquisitions = [row for row in rows if row["type"] == "reinvest"]
+    if acquisitions:
+        incomes = [row for row in rows if row["leg_role"] == "income"]
+        if len(rows) != 2 or len(acquisitions) != 1 or len(incomes) != 1:
+            raise invalid
+        acquisition, income = acquisitions[0], incomes[0]
+        if (
+            acquisition["leg_role"] != "acquisition"
+            or income["type"]
+            != _REINVEST_INCOME_TYPE.get(acquisition.get("subtype") or "")
+            or income.get("amount") is None
+            or abs(income.get("fees") or 0) > _CENT
+            or any(
+                income[field] != acquisition[field]
+                for field in ("account_id", "security_id", "currency_code")
+            )
+        ):
+            raise invalid
+    elif len(rows) != 1:
+        raise invalid
+    if not _coherent(rows):
+        raise invalid
+
+
+def validate_selection(
+    legs: Sequence[Mapping[str, Any]],
+    issued_conflicts: Sequence[Mapping[str, Any]],
+    selections: Sequence[Mapping[str, str]],
+) -> tuple[dict[str, Any], ...]:
+    """Resolve exactly the current issued choices and validate the complete event."""
+    invalid = UserError(
+        "Choose exactly one current issued choice for every investment field conflict.",
+        code=error_codes.MUTATION_INVALID_INPUT,
+    )
+    by_role: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for leg in legs:
+        by_role[leg["leg_role"]].append(leg)
+    proposed = _defaults(by_role)
+    conflicts = {conflict["conflict_id"]: conflict for conflict in issued_conflicts}
+    seen: set[str] = set()
+    for selection in selections:
+        if set(selection) != {"conflict_id", "choice_id"}:
+            raise invalid
+        conflict_id = selection["conflict_id"]
+        if conflict_id in seen or conflict_id not in conflicts:
+            raise invalid
+        seen.add(conflict_id)
+        conflict = conflicts[conflict_id]
+        choice = next(
+            (
+                choice
+                for choice in conflict["choices"]
+                if choice["choice_id"] == selection["choice_id"]
+            ),
+            None,
+        )
+        if choice is None:
+            raise invalid
+        role, field = conflict["leg_role"], conflict["field"]
+        proposed[role][field] = choice["value"]
+        if field == "trade_date":
+            observed = next(
+                row
+                for row in by_role[role]
+                if all(
+                    row[key] == choice[key]
+                    for key in (
+                        "source_type",
+                        "source_origin",
+                        "native_reference",
+                        "observation_version",
+                    )
+                )
+            )
+            proposed[role]["trade_date_basis"] = observed["trade_date_basis"]
+    if seen != conflicts.keys():
+        raise invalid
+    selected = tuple(proposed.values())
+    _validate_selected(selected)
+    return selected
+
+
 def issue_choices(
     legs: Sequence[Mapping[str, Any]],
     *,
@@ -115,24 +251,23 @@ def issue_choices(
     by_role: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for leg in legs:
         by_role[leg["leg_role"]].append(leg)
-    defaults: dict[str, dict[str, Any]] = {}
+    defaults = _defaults(by_role)
     conflicts: set[tuple[str, str]] = set()
     for role, rows in by_role.items():
-        ordered = sorted(rows, key=_precedence)
-        default = dict(ordered[0])
         for field in _FIELDS:
-            present = [row for row in ordered if row.get(field) is not None]
-            if field == "trade_date":
-                present.sort(key=lambda row: row["trade_date_basis"] != "explicit")
-            default[field] = present[0][field] if present else None
+            present = [row for row in rows if row.get(field) is not None]
             if any(
                 _different(field, left, right, date_threshold_days)
                 for left, right in combinations(present, 2)
             ):
                 conflicts.add((role, field))
-        defaults[role] = default
-    if not _coherent(list(defaults.values())):
-        for role, rows in by_role.items():
+    incoherent_defaults = not _coherent(list(defaults.values()))
+    for role, rows in by_role.items():
+        # A coherent default must not hide the observed price needed by an
+        # alternate quantity, amount, or fee choice, even below price tolerance.
+        if incoherent_defaults or any(
+            (role, field) in conflicts for field in _ACCOUNTING_FIELDS
+        ):
             for field in _ACCOUNTING_FIELDS:
                 if (
                     len({row.get(field) for row in rows if row.get(field) is not None})
