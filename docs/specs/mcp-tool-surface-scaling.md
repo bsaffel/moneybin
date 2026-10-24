@@ -309,7 +309,7 @@ the observed-evidence gates below close.
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | Read views; ledger events; security catalog; specific-lot overrides |
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate`, `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules`, `transactions_categorize_rules_set` | Query; manual entries; notes/tags/splits; assisted and deterministic categorization; rule lifecycle |
 | Reviews | `reviews`, `reviews_decide`, `identity_links_decide` | Normalized queue/history, including auto-rule proposals; ordinary and auto-rule decisions; destructive identity merges |
-| Taxonomy | `taxonomy`, `taxonomy_set` | Category and merchant reads; category target-state and merchant mappings |
+| Taxonomy | `taxonomy`, `taxonomy_set` | Category and merchant reads; category target-state, merchant mappings, and imported category-term mappings |
 | Import | `import_files`, `import_preview`, `import_confirm`, `import_status`, `import_revert`, `import_inbox_sync`, `import_labels_set` | Batch/staged ingest, status/formats/inbox, recovery, labels |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect`, `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | Mediated bank sync and user-controlled Google Sheets flows |
 | Privacy | `privacy`, `privacy_consent_set` | Consent/audit status and declarative consent |

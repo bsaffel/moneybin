@@ -134,6 +134,9 @@ from moneybin.services.categorization.applier import (
 from moneybin.services.categorization.applier import (
     MerchantStateTarget as MerchantStateTarget,
 )
+from moneybin.services.categorization.applier import (
+    SourceCategoryStateTarget as SourceCategoryStateTarget,
+)
 from moneybin.services.categorization.assist import (
     AssistBridge,
     RedactedTransaction,
@@ -165,6 +168,7 @@ from moneybin.services.categorization.queries import (
     CategorizationCoverage,
     CategorizationQueries,
     CategorizationStats,
+    SourceTermMappingRow,
     UnmappedSourceTerm,
 )
 from moneybin.tables import (
@@ -573,6 +577,10 @@ class CategorizationService:
         """
         return self._queries.list_unmapped_source_terms(namespace=namespace)
 
+    def list_source_term_mappings(self) -> list[SourceTermMappingRow]:
+        """List curated imported-term mappings, mapped and ignored."""
+        return self._queries.list_source_term_mappings()
+
     def resolve_source_term(
         self,
         *,
@@ -608,30 +616,70 @@ class CategorizationService:
             ignore=ignore,
             actor=actor,
         )
-        held = self._applier.source_term_categorized_ids(mapping)
+        return self._follow_through([mapping])[0]
+
+    def remove_source_term(
+        self,
+        *,
+        source_type: str | None = None,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        actor: str = "system",
+    ) -> SourceTermMapping:
+        """Delete one imported term's mapping so the term returns to pending.
+
+        See :meth:`MatchApplier.remove_source_term`. The categorizations the
+        mapping produced are withdrawn and re-evaluated by the sweep that
+        follows, as a changed mapping's are.
+        """
+        mapping = self._applier.remove_source_term(
+            source_type=source_type,
+            source_origin=source_origin,
+            category=category,
+            subcategory=subcategory,
+            actor=actor,
+        )
+        return self._follow_through([mapping])[0]
+
+    def _follow_through(
+        self, mappings: Sequence[SourceTermMapping]
+    ) -> list[SourceTermMapping]:
+        """Run the sweep after committed mapping writes and count what each gained."""
+        held = [self._applier.source_term_categorized_ids(m) for m in mappings]
         try:
             self.categorize_pending()
         except Exception as exc:
-            # The mapping and its withdrawals are already committed.
+            # The mappings and their withdrawals are already committed.
             logger.error(
                 f"Categorize sweep failed after a mapping commit: {type(exc).__name__}"
             )
+            withdrawn = sum(m.recategorized for m in mappings)
             raise UserError(
                 "The mapping is stored, but the categorize sweep that follows "
-                f"it failed. {mapping.recategorized} earlier categorization(s) "
-                "from this term were withdrawn, and the sweep may have "
+                f"it failed. {withdrawn} earlier categorization(s) from the "
+                "changed term(s) were withdrawn, and the sweep may have "
                 "re-categorized only some of them before it stopped; running "
                 "it again finishes the change.",
                 code=error_codes.REFRESH_CATEGORIZE_FAILED,
                 hint="💡 Run 'moneybin refresh --step categorize' to finish it.",
             ) from exc
-        gained = self._applier.source_term_categorized_ids(mapping) - held
-        return replace(mapping, categorized=len(gained - mapping.withdrawn_ids))
+        return [
+            replace(
+                mapping,
+                categorized=len(
+                    self._applier.source_term_categorized_ids(mapping)
+                    - before
+                    - mapping.withdrawn_ids
+                ),
+            )
+            for mapping, before in zip(mappings, held, strict=True)
+        ]
 
     def plan_taxonomy_targets(
         self, targets: Sequence[TaxonomyStateTarget]
     ) -> TaxonomyTargetPlan:
-        """Preflight category and merchant target states."""
+        """Preflight category, merchant, and source-category target states."""
         return self._applier.plan_taxonomy_targets(targets)
 
     def apply_taxonomy_targets(
@@ -641,12 +689,27 @@ class CategorizationService:
         actor: str,
         verify: Callable[[TaxonomyTargetPlan], None] | None = None,
     ) -> list[TaxonomyTargetResult]:
-        """Apply a taxonomy target-state batch atomically."""
-        return self._applier.apply_taxonomy_targets(
+        """Apply a taxonomy target-state batch atomically.
+
+        A changed source-category target follows through as
+        :meth:`resolve_source_term` does: one sweep runs after the commit,
+        and each such result's ``source_mapping`` carries its counts.
+        """
+        results = self._applier.apply_taxonomy_targets(
             targets,
             actor=actor,
             verify=verify,
         )
+        changed = [r.source_mapping for r in results if r.source_mapping is not None]
+        if not changed:
+            return results
+        swept = iter(self._follow_through(changed))
+        return [
+            replace(result, source_mapping=next(swept))
+            if result.source_mapping is not None
+            else result
+            for result in results
+        ]
 
     def toggle_category(
         self,

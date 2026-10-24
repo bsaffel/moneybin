@@ -24,7 +24,11 @@ from moneybin.repositories.transaction_categories_repo import (
     TransactionCategoriesRepo,
 )
 from moneybin.seeds import refresh_views
-from moneybin.services.categorization import CategorizationService
+from moneybin.services.categorization import (
+    CategorizationService,
+    CategoryStateTarget,
+    SourceCategoryStateTarget,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
@@ -1709,3 +1713,298 @@ def _audit_count(db: Database, action: str) -> int:
         "SELECT COUNT(*) FROM app.audit_log WHERE action = ?", [action]
     ).fetchone()
     return int(row[0]) if row else 0
+
+
+def _source_target(**fields: Any) -> SourceCategoryStateTarget:
+    """A source-category target for the shared term, overridable per test."""
+    return SourceCategoryStateTarget(**{
+        "state": "present",
+        "source_origin": "chase_credit",
+        "source_category_code": "Coffee Shops",
+        **fields,
+    })
+
+
+class TestRemoveSourceTerm:
+    """``remove_source_term`` — the term returns to pending."""
+
+    @pytest.mark.unit
+    def test_removing_a_mapping_withdraws_its_rows_and_reopens_the_term(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1", "t2")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        removed_before = _mapping_outcomes("removed")
+
+        mapping = service.remove_source_term(**_TERM, actor="test")
+
+        assert (mapping.outcome, mapping.category_id) == ("removed", None)
+        assert (mapping.categorized, mapping.recategorized) == (0, 2)
+        assert _categorizations(db) == []
+        assert db.execute(
+            "SELECT COUNT(*) FROM app.category_source_map"
+        ).fetchone() == (0,)
+        assert [t.category for t in service.list_unmapped_source_terms()] == [
+            "Coffee Shops"
+        ]
+        assert _audit_count(db, "category_source_map.delete") == 1
+        assert _mapping_outcomes("removed") == removed_before + 1
+
+    @pytest.mark.unit
+    def test_removing_an_ignored_term_withdraws_nothing(self, db: Database) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, ignore=True, actor="test")
+
+        mapping = service.remove_source_term(**_TERM, actor="test")
+
+        assert mapping.recategorized == 0
+        assert len(service.list_unmapped_source_terms()) == 1
+
+    @pytest.mark.unit
+    def test_removing_an_unmapped_term_is_refused(self, db: Database) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).remove_source_term(**_TERM, actor="test")
+
+        assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_removing_a_plaid_term_is_refused(self, db: Database) -> None:
+        refresh_views(db)
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).remove_source_term(
+                source_type="plaid",
+                source_origin="",
+                category="FOOD_AND_DRINK",
+                subcategory=None,
+                actor="test",
+            )
+
+        assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+
+
+class TestListSourceTermMappings:
+    """The history projection: curated imported terms, never provider rows."""
+
+    @pytest.mark.unit
+    def test_lists_mapped_and_ignored_terms_without_provider_rows(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+        _import_rows(db, "t2", category="Travel")
+        _seed_plaid_pfc(db)
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        service.resolve_source_term(
+            source_origin="chase_credit",
+            category="Travel",
+            subcategory=None,
+            ignore=True,
+            actor="test",
+        )
+
+        rows = service.list_source_term_mappings()
+
+        assert [
+            (r.source_type, r.category, r.category_id, r.mapped_category) for r in rows
+        ] == [
+            ("csv", "Coffee Shops", "cat-a", "Category A"),
+            ("csv", "Travel", None, None),
+        ]
+
+
+class TestSourceCategoryTaxonomyTargets:
+    """``taxonomy_set``'s ``source_category`` items through the service."""
+
+    @pytest.mark.unit
+    def test_present_by_id_maps_and_follows_through(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1", "t2")
+        service = CategorizationService(db)
+
+        (result,) = service.apply_taxonomy_targets(
+            [_source_target(category_id="cat-a")], actor="test"
+        )
+
+        assert (result.kind, result.state, result.changed) == (
+            "source_category",
+            "present",
+            True,
+        )
+        assert result.target_id == "csv:chase_credit:Coffee Shops:"
+        assert result.source_mapping is not None
+        assert (
+            result.source_mapping.categorized,
+            result.source_mapping.recategorized,
+        ) == (
+            2,
+            0,
+        )
+        assert _categorizations(db) == [
+            ("t1", "cat-a", "provider_native"),
+            ("t2", "cat-a", "provider_native"),
+        ]
+
+    @pytest.mark.unit
+    def test_present_by_name_maps_to_a_category_the_batch_creates(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+
+        category, mapped = service.apply_taxonomy_targets(
+            [
+                CategoryStateTarget(state="present", category="Coffee"),
+                _source_target(category="coffee"),
+            ],
+            actor="test",
+        )
+
+        assert category.target_id is not None
+        assert mapped.source_mapping is not None
+        assert mapped.source_mapping.category_id == category.target_id
+        assert _categorizations(db) == [("t1", category.target_id, "provider_native")]
+
+    @pytest.mark.unit
+    def test_name_that_matches_no_category_is_refused(self, db: Database) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).plan_taxonomy_targets([
+                _source_target(category="Nowhere")
+            ])
+
+        assert exc_info.value.code == error_codes.TAXONOMY_CATEGORY_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_category_removed_by_the_same_batch_is_refused(self, db: Database) -> None:
+        refresh_views(db)
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+        category_id = service.create_category("Coffee", actor="test")
+
+        with pytest.raises(UserError) as exc_info:
+            service.plan_taxonomy_targets([
+                CategoryStateTarget(state="absent", category_id=category_id),
+                _source_target(category_id=category_id),
+            ])
+
+        assert exc_info.value.code == error_codes.TAXONOMY_CATEGORY_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_states_plan_create_update_noop_and_delete(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+
+        def action(**fields: Any) -> str:
+            (item,) = service.plan_taxonomy_targets([_source_target(**fields)]).items
+            return item.action
+
+        assert action(category_id="cat-a") == "create"
+        assert action(state="absent") == "noop"
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+        assert action(category_id="cat-a") == "noop"
+        assert action(state="ignored") == "update"
+        assert action(state="absent") == "delete"
+        plan = service.plan_taxonomy_targets([_source_target(state="absent")])
+        assert plan.destructive
+
+    @pytest.mark.unit
+    def test_absent_withdraws_and_reopens_the_term(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+        service.resolve_source_term(**_TERM, category_id="cat-a", actor="test")
+
+        (result,) = service.apply_taxonomy_targets(
+            [_source_target(state="absent")], actor="test"
+        )
+
+        assert result.source_mapping is not None
+        assert result.source_mapping.recategorized == 1
+        assert _categorizations(db) == []
+        assert len(service.list_unmapped_source_terms()) == 1
+
+    @pytest.mark.unit
+    def test_duplicate_term_in_one_batch_is_refused(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).plan_taxonomy_targets([
+                _source_target(category_id="cat-a"),
+                _source_target(state="ignored", source_category_code=" Coffee Shops "),
+            ])
+
+        assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_plaid_term_is_refused(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).plan_taxonomy_targets([
+                _source_target(
+                    source_type="plaid",
+                    source_origin="",
+                    source_category_code="FOOD_AND_DRINK",
+                    category_id="cat-a",
+                )
+            ])
+
+        assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_unknown_term_is_refused(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).plan_taxonomy_targets([
+                _source_target(
+                    source_type="csv",
+                    source_category_code="Never Imported",
+                    category_id="cat-a",
+                )
+            ])
+
+        assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_failed_batch_writes_no_mapping(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_active_category(db, "cat-a", "Category A")
+        _import_rows(db, "t1")
+        service = CategorizationService(db)
+
+        def refuse(plan: object) -> None:
+            raise UserError("stale", code=error_codes.MUTATION_CONFIRMATION_MISMATCH)
+
+        with pytest.raises(UserError):
+            service.apply_taxonomy_targets(
+                [_source_target(category_id="cat-a")], actor="test", verify=refuse
+            )
+
+        assert db.execute(
+            "SELECT COUNT(*) FROM app.category_source_map"
+        ).fetchone() == (0,)
+        assert _categorizations(db) == []

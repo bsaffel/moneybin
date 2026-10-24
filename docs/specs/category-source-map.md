@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-10-07
-> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface, and "Extension: ignoring a term" for the translation to nothing.
+> Last updated: 2026-10-24
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface, "Extension: ignoring a term" for the translation to nothing, and "Extension: MCP surface and removal".
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -259,15 +259,13 @@ refused with `mutation_ambiguous` and the candidate types, never guessed.
 slugs to nothing carries one, and refuses `source_type = 'plaid'`: provider
 vocabularies are not curated through this surface.
 
-PR2 is CLI-only. The MCP surface, decided after PR2 opened, extends two
-existing tools instead of adding one: an unmapped term is a
-`source_categories` kind in `reviews`, and a mapping is a `source_category`
-item in `taxonomy_set`, beside its `category` and `merchant` items. A mapping
-is a translation of a source's label, not a pattern rule. It reads the
-category the source attached rather than the transaction's own text, and it
-writes at `provider_native` rank, so every rule and merchant mapping outranks
-it. That is why it sits with merchant items in `taxonomy_set` and not in
-`transactions_categorize_rules_set`. It ships in a follow-up slice.
+PR2 was CLI-only. The MCP surface extends two existing tools instead of
+adding one; see "Extension: MCP surface and removal" below. A mapping is a
+translation of a source's label, not a pattern rule. It reads the category
+the source attached rather than the transaction's own text, and it writes at
+`provider_native` rank, so every rule and merchant mapping outranks it. That
+is why it sits with merchant items in `taxonomy_set` and not in
+`transactions_categorize_rules_set`.
 
 ## Extension: ignoring a term
 
@@ -358,11 +356,61 @@ the two terms were mapped, where a sweep from scratch would pick the
 higher-priority member. This predates follow-through and is not changed by
 it; it needs two imports of one real transaction from different exporters.
 
-**Not delivered: a CLI path to ignore a provider code.** The engine honours
-an ignored Plaid row, and `CategorySourceMapRepo.upsert` writes one, but
-`set` still refuses `source_type = 'plaid'` (see above). Admitting it is a
-separate decision — ignore-only would leave no CLI way to restore the shipped
-translation — and is expected with the MCP `source_category` item.
+**Not delivered: a path to curate a provider code.** The engine honours an
+ignored Plaid row, and `CategorySourceMapRepo.upsert` writes one, but `set`,
+`remove`, and the MCP `source_category` item all refuse
+`source_type = 'plaid'`. Admitting provider codes needs `code_level`
+(detailed or primary) on the write and term validation against
+`plaid_category` rather than `category`, so it is a separate change.
+
+## Extension: MCP surface and removal
+
+The curation surface reaches MCP through two existing tools, and both
+surfaces gain removal.
+
+- **`reviews(kind="source_categories")`.** `status="pending"` lists the
+  unmapped terms `categories mappings pending` lists, one row per term with
+  `transaction_count` and `suggestions`. `status="history"` lists the curated
+  imported mappings from `app.category_source_map`, provider rows excluded:
+  `target_state` is `present` (with the MoneyBin `category_id`, `category`,
+  and `subcategory`) or `ignored`. Each row's `decision_id` is the mapping's
+  composite audit target, `source_type:source_origin:code:subcode`. Pages
+  order by the term itself, `(source_type, source_origin,
+  source_category_code, source_subcategory_code)`, because the pending count
+  changes while a cursor is live. The term fields are named as
+  `taxonomy_set` takes them, so a row's `details` is the item's term. Both
+  statuses carry the `taxonomy_set` action: a mapped term stays editable.
+- **A `source_category` item in `taxonomy_set`.** The term is `source_type`
+  (optional, derived as `set` derives it), `source_origin`,
+  `source_category_code`, and `source_subcategory_code`. `state="present"`
+  takes exactly one of `category_id` or `category`/`subcategory`. By name, it
+  resolves against existing categories and those the same batch creates, so
+  one batch can create a category and map a term to it. `state="ignored"` and
+  `state="absent"` take no category. The term passes the same checks `set`
+  applies: blank parts, `plaid`, and a term no import carries and no mapping
+  holds are refused. A missing, inactive, or same-batch-removed category is
+  refused with `taxonomy_category_not_found`, so it reads apart from an
+  unknown term's `mutation_not_found`.
+- **`absent` removes the mapping**, through `categories mappings remove` on
+  the CLI. The row is deleted with a `category_source_map.delete` audit, and
+  the `provider_native` categorizations the mapping produced are withdrawn as
+  a changed mapping's are; an ignored term produced none. The term returns to
+  pending. An unmapped term is a no-op in a `taxonomy_set` batch and a
+  `mutation_not_found` refusal from `remove`.
+- **One write path.** `MatchApplier.write_source_term` stores, ignores, or
+  deletes one validated term inside its caller's transaction and withdraws
+  what the previous mapping produced. `set`, `remove`, and the batch all call
+  it. The batch applies source-category items after the categories it creates
+  and before the categories it deletes, inside its one transaction, then runs
+  one `categorize_pending` sweep after the commit. Each changed item's result
+  carries `categorized` and `recategorized`, as the CLI receipt does; other
+  kinds report them as null. A sweep failure raises
+  `refresh_categorize_failed` with the batch already committed, as `set` does.
+- **Confirmation.** `absent` on a mapped term plans a `delete`, which is the
+  hard delete `taxonomy_set` confirms, the same as removing a merchant
+  mapping. Mapping, re-mapping, and ignoring are not confirmed: they withdraw
+  only `provider_native` rows the sweep recomputes, and
+  `system_audit_undo(operation_id)` reverses the batch's audited writes.
 
 ## Reverse-lookup contract
 
@@ -443,8 +491,9 @@ path (rows added / updated / removed) gets counters in
 `src/moneybin/metrics/registry.py`, mirroring existing `app.*` writers — this
 lands with the override writer itself. MB-180 PR2's curation writer records
 `moneybin_category_source_mapping_outcomes_total{outcome}` — `added`,
-`updated`, or `refused` — after its transaction commits; `removed` arrives
-with the MCP slice's `absent` state. Every write also increments the generic
+`updated`, `removed`, or `refused` — after its transaction commits.
+`remove` and a `taxonomy_set` batch record the same outcomes; a refused batch
+records none, since its refusal may come from any item kind. Every write also increments the generic
 `app_mutation_audit_emitted_total{action="category_source_map.upsert"}`. The coverage query
 (source codes with no bridge row) shipped as observability with its first
 consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.md)
@@ -460,8 +509,7 @@ category or merchant target state through `taxonomy_set(items=[...])`; each
 item is discriminated by `kind` and `state`. The seeded provider-code rows
 remain an internal categorization input, not a separate MCP mutation surface.
 User-authored rows for imported vocabulary (MB-180) get no separate surface
-either: the follow-up MCP slice declares them as a `source_category` item in
-the same `taxonomy_set` batch.
+either: they are a `source_category` item in the same `taxonomy_set` batch.
 
 **In scope (this PR / M1V):** the three tables + view + two-tier contract;
 the `class` column on the category dim (available on `core.dim_categories`

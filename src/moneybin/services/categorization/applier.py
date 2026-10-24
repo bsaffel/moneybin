@@ -72,6 +72,7 @@ from moneybin.services._validators import (
 )
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import (
+    PROVIDER_SOURCE_TYPE,
     SOURCE_PRIORITY,
     CategorizationRuleInput,
     InternalMatchType,
@@ -109,9 +110,6 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
-
-# The one provider whose vocabulary is seeded; `set` curates imported terms only.
-_PROVIDER_SOURCE_TYPE = "plaid"
 
 
 def _normalized_taxonomy_text(value: str | None) -> str | None:
@@ -272,7 +270,29 @@ class MerchantStateTarget:
     subcategory: str | None = None
 
 
-TaxonomyStateTarget = CategoryStateTarget | MerchantStateTarget
+@dataclass(frozen=True, slots=True)
+class SourceCategoryStateTarget:
+    """One imported category term's target state.
+
+    The term is ``(source_type, source_origin, source_category_code,
+    source_subcategory_code)``. ``present`` maps it to ``category_id`` or to
+    the category named by ``category``/``subcategory``; ``ignored`` stores it
+    with no category; ``absent`` removes its mapping.
+    """
+
+    state: Literal["present", "ignored", "absent"]
+    source_origin: str
+    source_category_code: str
+    source_type: str | None = None
+    source_subcategory_code: str | None = None
+    category_id: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+
+
+TaxonomyStateTarget = (
+    CategoryStateTarget | MerchantStateTarget | SourceCategoryStateTarget
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,22 +343,42 @@ class CategoryDeletePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceTermPlan:
+    """One source-category target's validated term and resolved category.
+
+    ``category_id`` is ``None`` for ``ignored`` and ``absent``, and for a
+    ``present`` target whose category the same batch creates; that one is
+    found by ``category_key`` once the category exists.
+    """
+
+    source_type: str
+    source_origin: str
+    category: str
+    subcategory: str | None
+    category_id: str | None
+    category_key: tuple[str | None, str | None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TaxonomyTargetPlanItem:
     """One resolved taxonomy target before mutation."""
 
     target: TaxonomyStateTarget
     target_id: str | None
-    action: Literal["create", "activate", "deactivate", "delete", "noop"]
+    action: Literal["create", "update", "activate", "deactivate", "delete", "noop"]
     before_state: dict[str, object] | None
     usage: dict[str, int]
     effective_usage: dict[str, int]
     category_delete: CategoryDeletePlan | None = None
+    source_term: SourceTermPlan | None = None
 
     @property
-    def kind(self) -> Literal["category", "merchant"]:
+    def kind(self) -> Literal["category", "merchant", "source_category"]:
         """The target discriminator."""
         if isinstance(self.target, CategoryStateTarget):
             return "category"
+        if isinstance(self.target, SourceCategoryStateTarget):
+            return "source_category"
         return "merchant"
 
 
@@ -375,22 +415,28 @@ class TaxonomyTargetPlan:
 
 @dataclass(frozen=True, slots=True)
 class TaxonomyTargetResult:
-    """One applied taxonomy target in request order."""
+    """One applied taxonomy target in request order.
 
-    kind: Literal["category", "merchant"]
+    ``source_mapping`` is set for a changed source-category target, so the
+    caller can run and report that term's follow-up sweep.
+    """
+
+    kind: Literal["category", "merchant", "source_category"]
     target_id: str | None
-    state: Literal["present", "inactive", "absent"]
+    state: Literal["present", "inactive", "ignored", "absent"]
     changed: bool
+    source_mapping: SourceTermMapping | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class SourceTermMapping:
     """One imported term as ``app.category_source_map`` stored it, and its target.
 
-    ``category_id`` is ``None`` when the term is ignored. ``withdrawn_ids``
-    are the transactions whose earlier categorization from this term was
-    removed because the mapping changed; ``categorized`` is how many
-    transactions the follow-up sweep newly categorized through it.
+    ``category_id`` is ``None`` when the term is ignored or its mapping was
+    removed; ``outcome`` tells the two apart. ``withdrawn_ids`` are the
+    transactions whose earlier categorization from this term was removed
+    because the mapping changed; ``categorized`` is how many transactions
+    the follow-up sweep newly categorized through it.
     """
 
     source_type: str
@@ -398,6 +444,7 @@ class SourceTermMapping:
     category: str
     subcategory: str | None
     category_id: str | None
+    outcome: Literal["added", "updated", "removed"]
     withdrawn_ids: frozenset[str] = frozenset()
     categorized: int = 0
 
@@ -1502,15 +1549,9 @@ class MatchApplier:
                     code=error_codes.MUTATION_INVALID_INPUT,
                 )
             with self._transaction():
-                if source_type is None:
-                    source_type = self._derive_source_type(
-                        source_origin, category, subcategory
-                    )
-                elif source_type == _PROVIDER_SOURCE_TYPE:
-                    raise UserError(
-                        "Provider category vocabularies are not curated here",
-                        code=error_codes.MUTATION_INVALID_INPUT,
-                    )
+                source_type = self._curatable_source_type(
+                    source_type, source_origin, category, subcategory
+                )
                 if not self._is_known_source_term(
                     source_type, source_origin, category, subcategory
                 ):
@@ -1528,71 +1569,217 @@ class MatchApplier:
                     )
                 else:
                     resolved_category_id = cast(str, category_id)
-                    target = self._db.execute(
-                        f"SELECT is_active FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
-                        [resolved_category_id],
-                    ).fetchone()
-                    if target is None:
-                        raise UserError(
-                            f"Category {resolved_category_id} not found",
-                            code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
-                        )
-                    # set refuses an inactive category as a target, as the
-                    # review-decision writer does.
-                    if not target[0]:
-                        raise UserError(
-                            f"Category {resolved_category_id} is inactive; "
-                            "activate it or map the term to an active category",
-                            code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
-                        )
-                event = self._category_source_map.upsert(
-                    source_type=source_type,
-                    source_origin=source_origin,
-                    category=category,
-                    subcategory=subcategory,
+                    self._require_active_category(resolved_category_id)
+                mapping = self.write_source_term(
+                    source_type,
+                    source_origin,
+                    category,
+                    subcategory,
                     category_id=resolved_category_id,
                     actor=actor,
-                    in_outer_txn=True,
                 )
-                previous_category_id = cast(
-                    "str | None", (event.before_value or {}).get("category_id")
-                )
-                withdrawn_ids: frozenset[str] = frozenset()
-                if (
-                    previous_category_id is not None
-                    and previous_category_id != resolved_category_id
-                ):
-                    withdrawn = self._tx_categories.delete_provider_native(
-                        sorted(
-                            self._source_term_categorized_ids(
-                                source_type,
-                                source_origin,
-                                category,
-                                subcategory,
-                                previous_category_id,
-                            )
-                        ),
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                    withdrawn_ids = frozenset(
-                        str(withdrawal.target_id) for withdrawal in withdrawn
-                    )
         except UserError:
             CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(outcome="refused").inc()
             raise
         # Recorded only after the transaction commits, so a rollback never counts.
-        CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(
-            outcome="added" if event.before_value is None else "updated"
-        ).inc()
+        CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(outcome=mapping.outcome).inc()
+        return mapping
+
+    def remove_source_term(
+        self,
+        *,
+        source_type: str | None = None,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        actor: str,
+    ) -> SourceTermMapping:
+        """Delete one imported term's mapping so the term returns to pending.
+
+        The categorizations the mapping produced are withdrawn in the same
+        transaction, as a changed mapping's are; an ignored mapping produced
+        none. ``source_type`` is derived when omitted and ``plaid`` is
+        refused, exactly as in :meth:`resolve_source_term`.
+
+        Raises:
+            UserError(code=error_codes.MUTATION_INVALID_INPUT): a part of the
+                term is blank, or ``source_type`` is ``plaid``.
+            UserError(code=error_codes.MUTATION_AMBIGUOUS): ``source_type``
+                was omitted and several types carry the term.
+            UserError(code=error_codes.MUTATION_NOT_FOUND): the term has no
+                mapping to remove.
+        """
+        try:
+            source_type, source_origin, category, subcategory = _normalized_source_term(
+                source_type, source_origin, category, subcategory
+            )
+            with self._transaction():
+                source_type = self._curatable_source_type(
+                    source_type, source_origin, category, subcategory
+                )
+                if (
+                    self._source_term_row(
+                        source_type, source_origin, category, subcategory
+                    )
+                    is None
+                ):
+                    raise UserError(
+                        "This term has no mapping to remove",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
+                mapping = self.write_source_term(
+                    source_type,
+                    source_origin,
+                    category,
+                    subcategory,
+                    category_id=None,
+                    remove=True,
+                    actor=actor,
+                )
+        except UserError:
+            CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(outcome="refused").inc()
+            raise
+        CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(outcome=mapping.outcome).inc()
+        return mapping
+
+    def write_source_term(
+        self,
+        source_type: str,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        *,
+        category_id: str | None,
+        remove: bool = False,
+        actor: str,
+    ) -> SourceTermMapping:
+        """Store, ignore, or delete one validated term inside the caller's transaction.
+
+        When the term was mapped to a category and no longer maps to it, the
+        ``provider_native`` categorizations that mapping produced are
+        withdrawn, so the caller's next sweep re-evaluates those rows. The
+        caller has validated the term and its target, and owns the
+        transaction and the outcome metric.
+        """
+        if remove:
+            event = self._category_source_map.delete(
+                source_type=source_type,
+                source_origin=source_origin,
+                source_category_code=category,
+                source_subcategory_code=subcategory or "",
+                actor=actor,
+                in_outer_txn=True,
+            )
+            outcome: Literal["added", "updated", "removed"] = "removed"
+        else:
+            event = self._category_source_map.upsert(
+                source_type=source_type,
+                source_origin=source_origin,
+                category=category,
+                subcategory=subcategory,
+                category_id=category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            outcome = "added" if event.before_value is None else "updated"
+        previous_category_id = cast(
+            "str | None", (event.before_value or {}).get("category_id")
+        )
+        withdrawn_ids: frozenset[str] = frozenset()
+        if previous_category_id is not None and previous_category_id != category_id:
+            withdrawn = self._tx_categories.delete_provider_native(
+                sorted(
+                    self._source_term_categorized_ids(
+                        source_type,
+                        source_origin,
+                        category,
+                        subcategory,
+                        previous_category_id,
+                    )
+                ),
+                actor=actor,
+                in_outer_txn=True,
+            )
+            withdrawn_ids = frozenset(
+                str(withdrawal.target_id) for withdrawal in withdrawn
+            )
         return SourceTermMapping(
             source_type=source_type,
             source_origin=source_origin,
             category=category,
             subcategory=subcategory,
-            category_id=resolved_category_id,
+            category_id=category_id,
+            outcome=outcome,
             withdrawn_ids=withdrawn_ids,
         )
+
+    def _curatable_source_type(
+        self,
+        source_type: str | None,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+    ) -> str:
+        """Derive an omitted source type, and refuse a provider vocabulary."""
+        if source_type is None:
+            return self._derive_source_type(source_origin, category, subcategory)
+        if source_type == PROVIDER_SOURCE_TYPE:
+            raise UserError(
+                "Provider category vocabularies are not curated here",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        return source_type
+
+    def _require_active_category(self, category_id: str) -> None:
+        """Refuse a missing or inactive mapping target.
+
+        An inactive category takes no new categorizations, so it is refused
+        as a target, as the review-decision writer does.
+        """
+        target = self._db.execute(
+            f"SELECT is_active FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
+            [category_id],
+        ).fetchone()
+        if target is None:
+            raise UserError(
+                f"Category {category_id} not found",
+                code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+            )
+        if not target[0]:
+            raise UserError(
+                f"Category {category_id} is inactive; "
+                "activate it or map the term to an active category",
+                code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+            )
+
+    def _source_term_row(
+        self,
+        source_type: str,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+    ) -> dict[str, object] | None:
+        """Return the term's stored mapping row, or ``None`` when it has none.
+
+        A row whose ``category_id`` is ``None`` is an ignored term.
+        """
+        columns = (
+            "source_type",
+            "source_origin",
+            "source_category_code",
+            "source_subcategory_code",
+            "category_id",
+            "updated_at",
+        )
+        row = self._db.execute(
+            f"""
+            SELECT {", ".join(columns)} FROM {CATEGORY_SOURCE_MAP.full_name}
+            WHERE source_type = ? AND source_origin = ?
+                AND source_category_code = ? AND source_subcategory_code = ?
+            """,  # TableRef constant + code-constant column list
+            [source_type, source_origin, category, subcategory or ""],
+        ).fetchone()
+        return dict(zip(columns, row, strict=True)) if row is not None else None
 
     def source_term_categorized_ids(self, mapping: SourceTermMapping) -> set[str]:
         """Transactions categorized through this term's current mapping."""
@@ -1694,7 +1881,7 @@ class MatchApplier:
         except (duckdb.CatalogException, duckdb.BinderException):
             # Nothing imported yet: prep.int_transactions__matched is absent.
             pass
-        candidates = sorted({str(row[0]) for row in rows} - {_PROVIDER_SOURCE_TYPE})
+        candidates = sorted({str(row[0]) for row in rows} - {PROVIDER_SOURCE_TYPE})
         if not candidates:
             raise UserError(
                 "No imported transaction carries this term, and it has "
@@ -2003,6 +2190,11 @@ class MatchApplier:
             and target.state == "absent"
             and target.category_id in category_by_id
         }
+        removed_category_ids = {
+            target.category_id
+            for target in targets
+            if isinstance(target, CategoryStateTarget) and target.state == "absent"
+        }
         merchant_by_id = {str(row[0]): row for row in merchant_rows}
         merchant_candidates_by_target: dict[
             tuple[str | None, object, str | None, str | None, str | None],
@@ -2155,6 +2347,20 @@ class MatchApplier:
                 )
                 continue
 
+            if isinstance(target, SourceCategoryStateTarget):
+                items.append(
+                    self._plan_source_category_target(
+                        target,
+                        seen=seen,
+                        category_by_id=category_by_id,
+                        category_candidates_by_name=category_candidates_by_name,
+                        planned_categories=planned_categories,
+                        removed_category_ids=removed_category_ids,
+                        removed_category_keys=removed_category_keys,
+                    )
+                )
+                continue
+
             match_type = target.match_type or "contains"
             if target.category is not None:
                 category_key = (
@@ -2288,6 +2494,137 @@ class MatchApplier:
             )
         return TaxonomyTargetPlan(items=tuple(items))
 
+    def _plan_source_category_target(
+        self,
+        target: SourceCategoryStateTarget,
+        *,
+        seen: set[tuple[str, object]],
+        category_by_id: dict[str, tuple[object, ...]],
+        category_candidates_by_name: dict[
+            tuple[str | None, str | None], list[tuple[object, ...]]
+        ],
+        planned_categories: set[tuple[str | None, str | None]],
+        removed_category_ids: set[str | None],
+        removed_category_keys: set[tuple[str | None, str | None]],
+    ) -> TaxonomyTargetPlanItem:
+        """Validate one imported term's target state and resolve its category.
+
+        The term passes the same checks as :meth:`resolve_source_term`; the
+        target category resolves by id, or by name against existing
+        categories and those the same batch creates.
+        """
+        source_type, source_origin, category, subcategory = _normalized_source_term(
+            target.source_type,
+            target.source_origin,
+            target.source_category_code,
+            target.source_subcategory_code,
+        )
+        source_type = self._curatable_source_type(
+            source_type, source_origin, category, subcategory
+        )
+        identity: tuple[str, object] = (
+            "source_category",
+            (source_type, source_origin, category, subcategory or ""),
+        )
+        if identity in seen:
+            raise UserError(
+                "A source category term can appear only once in one taxonomy batch.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        seen.add(identity)
+        if target.state != "absent" and not self._is_known_source_term(
+            source_type, source_origin, category, subcategory
+        ):
+            raise UserError(
+                "No imported transaction carries this term, and it has "
+                "no mapping to change",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        category_id: str | None = None
+        category_key: tuple[str | None, str | None] | None = None
+        if target.state == "present":
+            if target.category_id is not None:
+                row = category_by_id.get(target.category_id)
+                if target.category_id in removed_category_ids or row is None:
+                    raise UserError(
+                        f"Category {target.category_id} not found",
+                        code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+                    )
+                key = None
+            else:
+                key = (
+                    _normalized_taxonomy_text(target.category),
+                    _normalized_taxonomy_text(target.subcategory),
+                )
+                matches = (
+                    []
+                    if key in removed_category_keys
+                    else category_candidates_by_name.get(key, [])
+                )
+                if len(matches) > 1:
+                    raise UserError(
+                        "Source category mapping matches more than one existing "
+                        "category.",
+                        code=error_codes.MUTATION_AMBIGUOUS,
+                        details={
+                            "candidate_ids": sorted(
+                                str(candidate[0]) for candidate in matches
+                            )
+                        },
+                    )
+                row = matches[0] if matches else None
+                if row is None and key not in planned_categories:
+                    raise UserError(
+                        "Source category mapping references a category that was "
+                        "not found.",
+                        code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+                    )
+            if row is None:
+                category_key = key
+            else:
+                category_id = str(row[0])
+                # The batch may activate it; otherwise an inactive category
+                # takes no new categorizations and is refused, as in set.
+                if not bool(row[5]) and key not in planned_categories:
+                    raise UserError(
+                        f"Category {category_id} is inactive; "
+                        "activate it or map the term to an active category",
+                        code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+                    )
+        before = self._source_term_row(
+            source_type, source_origin, category, subcategory
+        )
+        current = before["category_id"] if before is not None else None
+        action: Literal["create", "update", "delete", "noop"]
+        if target.state == "absent":
+            action = "delete" if before is not None else "noop"
+        elif before is None:
+            action = "create"
+        elif target.state == "ignored":
+            action = "noop" if current is None else "update"
+        else:
+            action = (
+                "noop" if category_key is None and current == category_id else "update"
+            )
+        return TaxonomyTargetPlanItem(
+            target=target,
+            target_id=CategorySourceMapRepo.target_id(
+                source_type, source_origin, category, subcategory or ""
+            ),
+            action=action,
+            before_state=before,
+            usage={},
+            effective_usage={},
+            source_term=SourceTermPlan(
+                source_type=source_type,
+                source_origin=source_origin,
+                category=category,
+                subcategory=subcategory,
+                category_id=category_id,
+                category_key=category_key,
+            ),
+        )
+
     def apply_taxonomy_targets(
         self,
         targets: Sequence[TaxonomyStateTarget],
@@ -2307,6 +2644,7 @@ class MatchApplier:
                     code=error_codes.MUTATION_NOTHING_TO_DO,
                 )
             target_ids = [item.target_id for item in plan.items]
+            created_category_ids: dict[tuple[str | None, str | None], str] = {}
             for index, item in enumerate(plan.items):
                 target = item.target
                 if item.action == "create" and isinstance(target, CategoryStateTarget):
@@ -2317,6 +2655,12 @@ class MatchApplier:
                         actor=actor,
                         in_outer_txn=True,
                     )
+                    created_category_ids[
+                        (
+                            _normalized_taxonomy_text(target.category),
+                            _normalized_taxonomy_text(target.subcategory),
+                        )
+                    ] = cast(str, target_ids[index])
                 elif item.action in {"activate", "deactivate"}:
                     self.toggle_category(
                         cast(str, item.target_id),
@@ -2348,6 +2692,24 @@ class MatchApplier:
                         actor=actor,
                         in_outer_txn=True,
                     )
+            source_mappings: dict[int, SourceTermMapping] = {}
+            for index, item in enumerate(plan.items):
+                term = item.source_term
+                if term is None or item.action == "noop":
+                    continue
+                source_mappings[index] = self.write_source_term(
+                    term.source_type,
+                    term.source_origin,
+                    term.category,
+                    term.subcategory,
+                    category_id=(
+                        created_category_ids[term.category_key]
+                        if term.category_key is not None
+                        else term.category_id
+                    ),
+                    remove=item.action == "delete",
+                    actor=actor,
+                )
             for item in plan.items:
                 target = item.target
                 if item.action != "delete" or not isinstance(
@@ -2362,12 +2724,18 @@ class MatchApplier:
                     actor=actor,
                 )
             self._db.commit()
+            # Recorded only after the transaction commits, so a rollback never counts.
+            for mapping in source_mappings.values():
+                CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(
+                    outcome=mapping.outcome
+                ).inc()
             return [
                 TaxonomyTargetResult(
                     kind=item.kind,
                     target_id=target_ids[index],
                     state=item.target.state,
                     changed=item.action != "noop",
+                    source_mapping=source_mappings.get(index),
                 )
                 for index, item in enumerate(plan.items)
             ]

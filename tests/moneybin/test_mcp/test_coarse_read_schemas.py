@@ -155,6 +155,7 @@ async def test_live_standard_read_selectors_render_exactly() -> None:
             "account_links",
             "merchant_links",
             "security_links",
+            "source_categories",
         },
         ("reviews", "status"): {"pending", "history"},
         ("taxonomy", "view"): {"categories", "merchants"},

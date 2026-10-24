@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -35,6 +36,7 @@ from moneybin.repositories.categorization_decisions_repo import (
     PENDING_ATTEMPT_PREDICATE,
 )
 from moneybin.services.categorization._shared import (
+    PROVIDER_SOURCE_TYPE,
     did_you_mean,
     plaid_bridge_match_predicate,
     source_category_bridge_match_predicate,
@@ -43,6 +45,7 @@ from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
     CATEGORIZATION_RULES,
+    CATEGORY_SOURCE_MAP,
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
@@ -110,6 +113,25 @@ class UnmappedSourceTerm:
     subcategory: str | None
     transaction_count: int
     suggestions: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTermMappingRow:
+    """One curated imported term: mapped to a category, or ignored.
+
+    ``category``/``subcategory`` are the source's term text;
+    ``mapped_category``/``mapped_subcategory`` name the MoneyBin category it
+    maps to. ``category_id`` is ``None`` when the term is ignored.
+    """
+
+    source_type: str
+    source_origin: str
+    category: str
+    subcategory: str | None
+    category_id: str | None
+    mapped_category: str | None
+    mapped_subcategory: str | None
+    updated_at: datetime
 
 
 class CategorizationQueries:
@@ -239,6 +261,41 @@ class CategorizationQueries:
                 suggestions=did_you_mean(str(category), valid_categories),
             )
             for source_type, source_origin, category, subcategory, transaction_count in rows
+        ]
+
+    def list_source_term_mappings(self) -> list[SourceTermMappingRow]:
+        """List curated imported-term mappings, mapped and ignored.
+
+        Reads ``app.category_source_map`` without its provider rows: those
+        are not curated here. A mapped row carries its MoneyBin category from
+        ``core.dim_categories``; an ignored one carries none. Ordered by the
+        term itself.
+        """
+        rows = self._db.execute(
+            f"""
+            SELECT m.source_type, m.source_origin, m.source_category_code,
+                m.source_subcategory_code, m.category_id, c.category,
+                c.subcategory, m.updated_at
+            FROM {CATEGORY_SOURCE_MAP.full_name} AS m
+            LEFT JOIN {CATEGORIES.full_name} AS c ON c.category_id = m.category_id
+            WHERE m.source_type <> ?
+            ORDER BY m.source_type, m.source_origin, m.source_category_code,
+                m.source_subcategory_code
+            """,  # TableRef constants
+            [PROVIDER_SOURCE_TYPE],
+        ).fetchall()
+        return [
+            SourceTermMappingRow(
+                source_type=str(row[0]),
+                source_origin=str(row[1]),
+                category=str(row[2]),
+                subcategory=str(row[3]) if row[3] else None,
+                category_id=str(row[4]) if row[4] is not None else None,
+                mapped_category=str(row[5]) if row[5] is not None else None,
+                mapped_subcategory=str(row[6]) if row[6] is not None else None,
+                updated_at=row[7],
+            )
+            for row in rows
         ]
 
     def _fct_transactions_exists(self) -> bool:

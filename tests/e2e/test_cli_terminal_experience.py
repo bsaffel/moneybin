@@ -335,6 +335,7 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             accounts set
             categories create
             categories delete
+            categories mappings remove
             categories mappings set
             categories set
             db init

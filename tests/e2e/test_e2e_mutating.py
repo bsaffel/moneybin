@@ -1758,6 +1758,29 @@ class TestCategoriesMappingsMutating:
         ignored.assert_success()
         data = json.loads(ignored.stdout)["data"]
         assert (data["action"], data["category_id"]) == ("ignored", None)
+
+        removed = run_cli(
+            "categories",
+            "mappings",
+            "remove",
+            "--namespace",
+            term["source_origin"],
+            "--category",
+            term["category"],
+            *subcategory,
+            "--output",
+            "json",
+            env=env,
+        )
+        removed.assert_success()
+        assert json.loads(removed.stdout)["data"]["action"] == "removed"
+        reopened = run_cli(
+            "categories", "mappings", "pending", "--output", "json", env=env
+        )
+        reopened.assert_success()
+        assert term["category"] in {
+            t["category"] for t in json.loads(reopened.stdout)["data"]["terms"]
+        }
         # Ignoring withdraws what the mapping categorized and keeps the term known.
         assert data["recategorized"] == term["transaction_count"]
         assert data["categorized"] == 0

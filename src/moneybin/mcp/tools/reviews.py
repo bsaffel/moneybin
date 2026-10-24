@@ -1,4 +1,4 @@
-"""Normalized boundaries across MoneyBin's seven review queues."""
+"""Normalized boundaries across MoneyBin's review queues."""
 
 from __future__ import annotations
 
@@ -79,6 +79,7 @@ from moneybin.privacy.payloads.reviews import (
     ReviewsMerchantLinksView,
     ReviewsRuleConflictsView,
     ReviewsSecurityLinksView,
+    ReviewsSourceCategoriesView,
     ReviewsSummaryView,
     ReviewStatus,
     RuleConflictHistoryDetails,
@@ -89,6 +90,9 @@ from moneybin.privacy.payloads.reviews import (
     SecurityLinkHistoryDetails,
     SecurityLinkPendingDetails,
     SecurityLinkReviewRow,
+    SourceCategoryHistoryDetails,
+    SourceCategoryPendingDetails,
+    SourceCategoryReviewRow,
 )
 from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.privacy.taxonomy import Tier
@@ -113,6 +117,7 @@ from moneybin.protocol.write_contracts import (
     ReviewDecisionRequest,
     RuleConflictDecisionRequest,
 )
+from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.auto_rule_service import AutoRuleService
@@ -144,6 +149,7 @@ _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
     "account_links",
     "merchant_links",
     "security_links",
+    "source_categories",
 )
 
 
@@ -750,6 +756,94 @@ def _security_link_history_rows(
     return result
 
 
+def _source_term_label(
+    source_type: str, source_origin: str, category: str, subcategory: str | None
+) -> str:
+    """Name one imported term the way its source wrote it."""
+    term = f"{category} / {subcategory}" if subcategory else category
+    return f"{source_type}/{source_origin or '-'}: {term}"
+
+
+def _pending_source_category_rows(
+    service: CategorizationService,
+) -> list[SourceCategoryReviewRow]:
+    """Project the unmapped imported terms as one pending queue."""
+    return [
+        SourceCategoryReviewRow(
+            decision_id=CategorySourceMapRepo.target_id(
+                term.source_type,
+                term.source_origin,
+                term.category,
+                term.subcategory or "",
+            ),
+            status="pending",
+            created_at=None,
+            summary=(
+                f"{_source_term_label(term.source_type, term.source_origin, term.category, term.subcategory)}"
+                f" ({term.transaction_count} uncategorized)"
+            ),
+            details=SourceCategoryPendingDetails(
+                source_type=term.source_type,
+                source_origin=term.source_origin,
+                source_category_code=term.category,
+                source_subcategory_code=term.subcategory,
+                transaction_count=term.transaction_count,
+                suggestions=term.suggestions,
+            ),
+        )
+        for term in service.list_unmapped_source_terms()
+    ]
+
+
+def _source_category_history_rows(
+    service: CategorizationService,
+) -> list[SourceCategoryReviewRow]:
+    """Project the curated imported-term mappings, mapped and ignored."""
+    rows: list[SourceCategoryReviewRow] = []
+    for mapping in service.list_source_term_mappings():
+        label = _source_term_label(
+            mapping.source_type,
+            mapping.source_origin,
+            mapping.category,
+            mapping.subcategory,
+        )
+        target = (
+            "ignored"
+            if mapping.category_id is None
+            else (
+                f"{mapping.mapped_category} / {mapping.mapped_subcategory}"
+                if mapping.mapped_subcategory
+                else str(mapping.mapped_category or mapping.category_id)
+            )
+        )
+        rows.append(
+            SourceCategoryReviewRow(
+                decision_id=CategorySourceMapRepo.target_id(
+                    mapping.source_type,
+                    mapping.source_origin,
+                    mapping.category,
+                    mapping.subcategory or "",
+                ),
+                status="history",
+                created_at=_text(mapping.updated_at),
+                summary=f"{label} -> {target}",
+                details=SourceCategoryHistoryDetails(
+                    source_type=mapping.source_type,
+                    source_origin=mapping.source_origin,
+                    source_category_code=mapping.category,
+                    source_subcategory_code=mapping.subcategory,
+                    target_state="ignored"
+                    if mapping.category_id is None
+                    else "present",
+                    category_id=mapping.category_id,
+                    category=mapping.mapped_category,
+                    subcategory=mapping.mapped_subcategory,
+                ),
+            )
+        )
+    return rows
+
+
 def _load_review_view(
     db: Database,
     *,
@@ -811,6 +905,14 @@ def _load_review_view(
             else _merchant_link_history_rows(merchant_service)
         )
         return ReviewsMerchantLinksView(status=status, rows=rows)
+    if kind == "source_categories":
+        source_service = CategorizationService(db)
+        rows = (
+            _pending_source_category_rows(source_service)
+            if status == "pending"
+            else _source_category_history_rows(source_service)
+        )
+        return ReviewsSourceCategoriesView(status=status, rows=rows)
     security_service = SecurityLinksService(db, actor="mcp")
     rows = (
         _pending_security_link_rows(security_service)
@@ -846,6 +948,9 @@ def _review_key_contract(
         return ((str, str), ("asc", "asc"))
     if kind == "account_links":
         return ((str, str), ("asc", "asc"))
+    if kind == "source_categories":
+        # The term itself: the pending count is mutable, so it cannot order.
+        return ((str, str, str, str), ("asc", "asc", "asc", "asc"))
     return ((str, str, str), ("asc", "asc", "asc"))
 
 
@@ -856,6 +961,17 @@ def _review_ordering(
 ) -> tuple[tuple[KeysetScalar, ...], tuple[SortDirection, ...]]:
     """Return one immutable queue key whose directions match display order."""
     _, directions = _review_key_contract(kind, status)
+    if kind == "source_categories":
+        details = row.details
+        return (
+            (
+                str(details.source_type),
+                str(details.source_origin),
+                str(details.source_category_code),
+                str(details.source_subcategory_code or ""),
+            ),
+            directions,
+        )
     if status == "history" or kind == "investment_matches":
         return (
             (_text(row.created_at) or "", str(row.decision_id)),
@@ -995,19 +1111,30 @@ def _review_actions(
     # History is checked first because it applies to every kind: no queue offers
     # a decision over settled rows, so the review-only note would displace the
     # one action that is useful there — the way back to the pending queue.
+    actions: list[str] = []
     if status == "history":
-        actions = [
+        actions.append(
             f"Open the active queue with reviews(kind={kind!r}, status='pending')"
-        ]
-    elif kind == "investment_matches":
-        actions = ["Investment matching is review-only; decisions are not available."]
-    else:
+        )
+    # A curated term stays editable, so its history offers the same write.
+    if kind == "source_categories":
+        actions.append(
+            "Map, ignore, or remove a term with taxonomy_set(items=[{'kind': "
+            "'source_category', 'state': 'present' | 'ignored' | 'absent', ...}]), "
+            "passing the row's source_type, source_origin, source_category_code, "
+            "and source_subcategory_code"
+        )
+    elif status == "pending" and kind == "investment_matches":
+        actions.append(
+            "Investment matching is review-only; decisions are not available."
+        )
+    elif status == "pending":
         decision_tool = (
             "reviews_decide"
             if kind in {"categorization", "auto_rules", "matches", "rule_conflicts"}
             else "identity_links_decide"
         )
-        actions = [f"Use {decision_tool} to decide a row from this queue"]
+        actions.append(f"Use {decision_tool} to decide a row from this queue")
     if next_cursor is not None:
         actions.append(
             f"Continue with reviews(kind={kind!r}, status={status!r}, "
@@ -1043,6 +1170,7 @@ def reviews_coarse(
         "account_links",
         "merchant_links",
         "security_links",
+        "source_categories",
     ] = "summary",
     status: ReviewStatus = "pending",
     limit: Annotated[int, Field(strict=True, ge=1)] = 100,
@@ -1141,7 +1269,10 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
         "with deterministic cursor pagination. kind='rule_conflicts' holds "
         "categorization rules refused because an active rule already matches "
         "the same transactions under a different category; each row names the "
-        "rule deciding today and the category the refused rule wanted.",
+        "rule deciding today and the category the refused rule wanted. "
+        "kind='source_categories' holds category terms imported files carry: "
+        "pending terms have no mapping yet, history holds mapped and ignored "
+        "terms; resolve either with taxonomy_set kind='source_category'.",
         privacy_actor="reviews",
     )
 
