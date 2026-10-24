@@ -338,7 +338,9 @@ class SyncService:
             security_resolution=resolution,
             security_resolution_error=security_resolution_error,
         )
-        # Every durable raw write counts, not just loaded entity rows.
+        # Every durable raw write counts, not just loaded entity rows — and not
+        # the content-change counts the result reports either: a re-sent,
+        # unchanged row still advances the load metadata models read.
         # Removals: a pure-removal sync deletes from raw.plaid_transactions and
         # the deletion must propagate through SQLMesh into core.fct_transactions,
         # or the deleted row stays visible in core.
@@ -360,19 +362,7 @@ class SyncService:
         # its NULL and the cost-basis engine goes on dropping it. Counted by
         # actual writes, not by outcome: a steady-state re-resolve adopts every
         # ref and writes nothing, and must not refresh.
-        rows_changed = (
-            load_result.transactions_loaded
-            + load_result.accounts_loaded
-            + load_result.balances_loaded
-            + removed_count
-            + load_result.securities_loaded
-            + load_result.investment_transactions_loaded
-            + load_result.holdings_loaded
-            + load_result.holding_lots_loaded
-            + load_result.holdings_snapshots_loaded
-            + load_result.security_prices_loaded
-            + resolution_writes
-        )
+        rows_changed = load_result.rows_written + removed_count + resolution_writes
         if refresh and rows_changed > 0:
             if progress is not None:
                 progress(ProgressEvent("Refreshing reports"))
