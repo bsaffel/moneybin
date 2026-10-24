@@ -32,6 +32,8 @@ class RemovalManager:
         self.omit_service_pid = False
         self.commands: list[list[str]] = []
         self.registration = "disabled"
+        self.registration_output: str | None = None
+        self.registration_returncode: int | None = None
 
     def run(self, args: list[str], **kwargs: Any) -> Mock:
         self.commands.append(args)
@@ -66,12 +68,18 @@ class RemovalManager:
                 link = path.parent / "default.target.wants" / path.name
             state = "enabled-runtime" if self.registration == "runtime" else "enabled"
             return Mock(
-                returncode=0 if self.registration != "disabled" else 1,
-                stdout=(
-                    f"{state}\n  {link}\n"
+                returncode=(
+                    self.registration_returncode
+                    if self.registration_returncode is not None
+                    else 0
                     if self.registration != "disabled"
-                    else "disabled\n"
+                    else 1
                 ),
+                stdout=self.registration_output
+                if self.registration_output is not None
+                else f"{state}\n  {link}\n"
+                if self.registration != "disabled"
+                else "disabled\n",
                 stderr="",
             )
         if operation == "daemon-reload":
@@ -146,6 +154,101 @@ def test_linux_registered_timer_stays_owned_in_inactive_session(tmp_path: Path) 
     manager.adapter.command = inactive
     status = manager.adapter.inspect(manager.job)
     assert status.owned and not status.partial and not status.active
+
+
+def _owned_systemd_registration(manager: RemovalManager) -> Path:
+    for path, content in manager.files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    timer = manager.adapter.timer_path(manager.job)
+    link = timer.parent / "graphical-session.target.wants" / timer.name
+    link.parent.mkdir()
+    link.symlink_to(timer)
+    return link
+
+
+@pytest.mark.parametrize("indent", [" ", "  ", "    ", "\t", " \t "])
+def test_linux_registration_accepts_indented_exact_target(
+    tmp_path: Path, indent: str
+) -> None:
+    home = tmp_path / "schedule home"
+    home.mkdir()
+    manager = RemovalManager(home)
+    link = _owned_systemd_registration(manager)
+    manager.registration = "enabled"
+    manager.registration_output = f"enabled\n{indent}{link}\n"
+
+    def inactive(args: list[str], **kwargs: Any) -> Mock:
+        if "is-active" in args:
+            return Mock(returncode=3, stdout="inactive", stderr="")
+        return manager.run(args, **kwargs)
+
+    manager.adapter.command = inactive
+
+    status = manager.adapter.inspect(manager.job)
+
+    assert status.owned and not status.partial
+
+
+@pytest.mark.parametrize(
+    ("output", "returncode"),
+    [
+        ("enabled\n", 0),
+        ("enabled\n  \n", 0),
+        ("enabled\n  {link}\n  {link}\n", 0),
+        ("enabled\n  {link}\n  {other}\n", 0),
+        ("enabled\n  {other}\n", 0),
+        ("enabled\n  {link} \n", 0),
+        ("enabled\nx{link}\n", 0),
+        ("enabled\n  {link}\n", 1),
+        ("enabled-runtime\n  {link}\n", 0),
+        ("enabled\n  {link}", 0),
+    ],
+)
+def test_linux_registration_refuses_nonexact_target_output(
+    tmp_path: Path, output: str, returncode: int
+) -> None:
+    from moneybin.errors import UserError
+
+    manager = RemovalManager(tmp_path)
+    link = _owned_systemd_registration(manager)
+    other = link.parent.parent / "default.target.wants" / link.name
+    manager.registration = "enabled"
+    manager.registration_output = output.format(link=link, other=other)
+    manager.registration_returncode = returncode
+
+    status = manager.adapter.inspect(manager.job)
+
+    assert not status.owned and status.partial
+    with pytest.raises(UserError):
+        manager.adapter.remove(manager.job)
+    assert all(
+        path.exists() and path.read_bytes() == content
+        for path, content in manager.files.items()
+    )
+    assert not any("disable" in args for args in manager.commands)
+
+
+def test_linux_indented_target_refuses_invalid_owned_link(tmp_path: Path) -> None:
+    from moneybin.errors import UserError
+
+    manager = RemovalManager(tmp_path)
+    link = _owned_systemd_registration(manager)
+    link.unlink()
+    link.symlink_to(link.parent / "unrelated.timer")
+    manager.registration = "enabled"
+    manager.registration_output = f"enabled\n {link}\n"
+
+    status = manager.adapter.inspect(manager.job)
+
+    assert not status.owned and status.partial
+    with pytest.raises(UserError):
+        manager.adapter.remove(manager.job)
+    assert all(
+        path.exists() and path.read_bytes() == content
+        for path, content in manager.files.items()
+    )
+    assert not any("disable" in args for args in manager.commands)
 
 
 @pytest.mark.parametrize("live_unit", ["timer", "service"])

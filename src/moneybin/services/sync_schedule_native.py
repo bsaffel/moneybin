@@ -514,7 +514,14 @@ class SystemdScheduleAdapter:
         # Runtime activity survives disable. --full also exposes unrelated
         # registration that disable would otherwise remove along with ours.
         result = self._call(["is-enabled", "--full", timer.name], check=False)
-        if result.returncode == 0 and result.stdout == f"enabled\n  {link}\n":
+        output = result.stdout.splitlines(keepends=True)
+        if (
+            result.returncode == 0
+            and len(output) == 2
+            and output[0] == "enabled\n"
+            and output[1].startswith((" ", "\t"))
+            and output[1].lstrip(" \t") == f"{link}\n"
+        ):
             return linked, linked
         if (result.returncode, result.stdout) in {
             (1, "disabled\n"),
