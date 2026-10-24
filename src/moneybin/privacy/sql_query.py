@@ -509,6 +509,23 @@ def _identifier_detail(exc: Exception) -> str | None:
     return masked or None
 
 
+# DuckDB BinderException heads for a missing column (`Referenced column "x"
+# not found in FROM clause!`, `Table "t" does not have a column named "x"`).
+# Other binder errors (bad LIMIT, GROUP BY position, missing alias) stay on
+# `sql_unknown_table`.
+_MISSING_COLUMN = re.compile(
+    r'^Binder Error: (?:Referenced column ".*?" not found|'
+    r'Table ".*?" does not have a column named)'
+)
+
+
+def _bind_error_code(exc: Exception) -> str:
+    """`sql_unknown_column` for a DuckDB missing-column miss, else `sql_unknown_table`."""
+    if isinstance(exc, duckdb.BinderException) and _MISSING_COLUMN.match(str(exc)):
+        return error_codes.SQL_UNKNOWN_COLUMN
+    return error_codes.SQL_UNKNOWN_TABLE
+
+
 def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryResult:
     """Run a read-only SQL query with full privacy enforcement.
 
@@ -619,12 +636,10 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         )
         raise UserError(
             "Query could not be bound to the schema.",
-            code=error_codes.SQL_UNKNOWN_TABLE,
-            # This code now means "binder or catalog rejection" — broader
-            # than its name: negative LIMIT/OFFSET, an out-of-range GROUP BY
-            # term, a malformed regex, and more, not only a missing table or
-            # column. A rename/split is a public-contract change under
-            # separate review; the code stays as-is for now.
+            code=_bind_error_code(e),
+            # `sql_unknown_table` is still the catch-all for every other binder
+            # or catalog rejection (negative LIMIT/OFFSET, an out-of-range
+            # GROUP BY term, ...); only a missing column gets its own code.
             #
             # SqlSchemaError gets no hint. Its messages are safe today only as
             # a side effect of `_qualified` in sql_lineage.py calling
@@ -690,10 +705,7 @@ def _fetch_metadata(
         )
         raise UserError(
             "Query could not be bound to the schema.",
-            # See execute_sql_query: this code now means "binder or catalog
-            # rejection", broader than its name; a rename is under separate
-            # review.
-            code=error_codes.SQL_UNKNOWN_TABLE,
+            code=_bind_error_code(e),
             hint=_identifier_detail(e),
         ) from e
     except duckdb.Error as e:

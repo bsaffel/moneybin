@@ -257,6 +257,8 @@ SQL_SCHEMA_NOT_ALLOWED = "sql_schema_not_allowed"
 # entry. The caller's recovery differs — reach for DESCRIBE, not a name fix.
 SQL_TABLE_NOT_CURATED = "sql_table_not_curated"
 SQL_UNKNOWN_TABLE = "sql_unknown_table"
+# A column the query names does not exist; the table is fine, so fix the column.
+SQL_UNKNOWN_COLUMN = "sql_unknown_column"
 
 
 # ---------------------------------------------------------------------------

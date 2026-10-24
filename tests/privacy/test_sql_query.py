@@ -885,10 +885,10 @@ def test_unknown_table_error_omits_raw_detail(populated_db: Database) -> None:
     assert ei.value.details is None
 
 
-def test_unknown_column_returns_unknown_table_code_and_names_the_column(
+def test_unknown_column_returns_unknown_column_code_and_names_the_column(
     populated_db: Database,
 ) -> None:
-    """An unknown COLUMN classifies the same as an unknown table and is named.
+    """An unknown COLUMN gets its own code, distinct from an unknown table.
 
     DuckDB raises BinderException here, not CatalogException.
     """
@@ -898,7 +898,7 @@ def test_unknown_column_returns_unknown_table_code_and_names_the_column(
             "SELECT nonexistent_col FROM core.fct_transactions",
             max_rows=10,
         )
-    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
     assert "nonexistent_col" in (ei.value.hint or "")
 
 
@@ -920,7 +920,7 @@ def test_unknown_column_hint_does_not_echo_query_literals(
             "'Dr Smith Cardiology'",
             max_rows=10,
         )
-    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
     assert "Dr Smith Cardiology" not in (ei.value.hint or "")
     assert "LINE" not in (ei.value.hint or "")
 
@@ -1004,7 +1004,7 @@ def test_pivot_near_miss_hint_omits_row_derived_candidate_prefixes(
                 "USING count(*))",
                 max_rows=10,
             )
-    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
     hint = ei.value.hint or ""
     assert "0211" in hint
     for real_prefix in ("0210", "0260", "1210"):
@@ -2444,7 +2444,7 @@ def test_metadata_unknown_column_log_names_the_error_type_not_the_query(
 
     DESCRIBE only binds the inner query, never executes it, so an unknown
     column there raises DuckDB's BinderException — the same exception the data
-    path routes to SQL_UNKNOWN_TABLE. This fixture used to land in the
+    path routes to SQL_UNKNOWN_COLUMN. This fixture used to land in the
     metadata path's generic bucket (SQL_QUERY_ERROR, no detail); it now gets
     the same named-identifier treatment as the data path.
     """
@@ -2456,7 +2456,7 @@ def test_metadata_unknown_column_log_names_the_error_type_not_the_query(
                 f"WHERE display_name = '{_MERCHANT}'",
                 max_rows=10,
             )
-    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
     # The hint is the point of the clause, not a side effect: without these two
     # a regression passing hint=None from _fetch_metadata still passes.
     assert "nope" in (ei.value.hint or "")
@@ -2498,3 +2498,16 @@ def test_metadata_unknown_table_log_names_the_error_type_not_the_query(
     _assert_log_names_the_failure_without_quoting_it(
         caplog, cause, "sql_query metadata unknown table/column"
     )
+
+
+def test_non_column_binder_error_keeps_unknown_table_code(
+    populated_db: Database,
+) -> None:
+    """Only a missing column gets sql_unknown_column; other binder errors don't."""
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT account_id FROM core.dim_accounts LIMIT -1",
+            max_rows=10,
+        )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
