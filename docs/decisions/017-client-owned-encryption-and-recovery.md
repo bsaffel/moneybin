@@ -16,10 +16,13 @@ does not replace every encryption contract.
 | Client-owned sync encryption (`sync-client-encryption.md`; separately maintained, in-progress specification) | Do not reopen its selected cryptography or delivery lifecycle. | Its age/X25519 delivery format, encrypted recovery wrapper, and rotation/recovery rules govern bank delivery within that design's scope. |
 | Historical sync-overview device enrollment | Replace login-only enrollment as authority to decrypt existing financial history. | The opaque broker API boundary remains; authenticated login is still required but is insufficient to recover decryption authority. |
 
-That specification remains separate work and does not establish shipped
-protections. Its sync-delivery contract supports recovering the same recipient
-key on another device. That creates another copy of the secret, not an
-independently revocable cryptographic recipient. Lost-device response requires session
+The specification is maintained at `docs/specs/sync-client-encryption.md` on
+the separate, unpublished `codex/client-owned-sync-encryption` implementation
+branch. It has no public review link yet and is not part of this repository's
+published specification set. These references describe that in-progress design,
+not shipped protections. Its sync-delivery contract supports recovering the
+same recipient key on another device. That creates another copy of the secret,
+not an independently revocable cryptographic recipient. Lost-device response requires session
 revocation and recipient rotation on a clean device. This remains a valid
 delivery boundary; it does not establish the future device-authorization or
 multi-device history-synchronization protocol described here.
