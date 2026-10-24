@@ -1057,3 +1057,76 @@ def test_every_assigned_category_column_declares_uncategorized() -> None:
 
     assert declared == categories
     assert ("spending_trend", "category") in declared
+
+
+@pytest.mark.parametrize(
+    ("runner", "expected_start"),
+    [(cash_flow, "2026-09-01"), (spending_trend, "2025-09-01")],
+)
+def test_transaction_report_declares_evidence_window_including_comparisons(
+    db: Database, runner: Runner, expected_start: str
+) -> None:
+    from datetime import date
+
+    query = runner(db, from_month="2026-09", to_month="2026-09")
+    assert query.sync_scope is not None
+    assert query.sync_scope.transaction_scope
+    assert query.sync_scope.from_date == date.fromisoformat(expected_start)
+    assert query.sync_scope.to_date == date(2026, 9, 30)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_cashflow_known_partial_warns_without_audit_metadata(
+    db: Database, empty: bool
+) -> None:
+    from moneybin.connectors.sync_models import ScopeOutcome
+    from moneybin.reports._framework.catalog import get_report_catalog
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+    from tests.moneybin.test_services.test_sync_completeness import (
+        _bind,  # pyright: ignore[reportPrivateUsage]  # shared synthetic fixture
+        _history,  # pyright: ignore[reportPrivateUsage]  # shared synthetic fixture
+    )
+
+    _install_cash_flow_view(db)
+    data = source()
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=_history(1).accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="partial",
+            error_code="provider_error",
+        )
+    ]
+    load(db, data, status="partial")
+    _bind(db)
+    result = get_report_catalog().execute(
+        db,
+        report_id="core:cash_flow",
+        parameters={
+            "from_month": "2026-09" if empty else "2026-01",
+            "to_month": "2026-09",
+        },
+        limit=100,
+    )
+    assert bool(result.records) is not empty
+    assert "Some transaction data may be incomplete" in (result.degraded_reason or "")
+    assert "retrieval_partial" not in (result.degraded_reason or "")
+    assert "sync_completeness" not in result.to_envelope().to_dict()["summary"]
+
+
+def test_cashflow_without_evidence_has_normal_result_without_warning(
+    db: Database,
+) -> None:
+    from moneybin.reports._framework.catalog import get_report_catalog
+
+    _install_cash_flow_view(db)
+    result = get_report_catalog().execute(
+        db,
+        report_id="core:cash_flow",
+        parameters={"from_month": "2026-01"},
+        limit=100,
+    )
+    assert result.records
+    assert result.degraded_reason is None
+    assert "sync_completeness" not in result.to_envelope().to_dict()["summary"]

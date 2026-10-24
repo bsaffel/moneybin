@@ -182,6 +182,10 @@ CLI: `moneybin reports cash-flow [--from-month MONTH] [--to-month MONTH] [--by a
 MCP: `reports(report_id="core:cash_flow", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 
+Known SimpleFIN transaction incompleteness affecting the selected months adds a
+concise warning and `system doctor` action, including when no result rows remain.
+Absent assessment alone stays quiet; diagnostic details belong in doctor.
+
 ### `reports.spending_trend`
 
 **Shipped:** PR #121 (M2A entry).
@@ -225,6 +229,10 @@ is needed.
 CLI: `moneybin reports spending-trend [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
 MCP: `reports(report_id="core:spending_trend", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
+
+The same bounded warning includes the prior twelve months needed by returned
+comparison columns, even when the selected display emphasizes another comparison.
+It adds no per-row audit fields and does not claim completeness for other sources.
 
 ### `reports.recurring_subscriptions`
 

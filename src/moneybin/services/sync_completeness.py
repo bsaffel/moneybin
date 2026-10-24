@@ -6,7 +6,7 @@ import csv
 from collections import defaultdict
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from functools import cache
 from typing import Any
 from uuid import UUID
@@ -20,6 +20,7 @@ from moneybin.connectors.sync_models import (
     SimpleFINV1OrgScope,
     SimpleFINV2ConnectionScope,
     SyncJobDetails,
+    UTCWindow,
 )
 from moneybin.database import SQLMESH_ROOT, Database, has_column
 from moneybin.extractors.simplefin.identity import source_origin
@@ -100,15 +101,21 @@ class SyncCompletenessService:
         net_worth: bool = True,
         include_archived: bool = False,
         from_date: date | None = None,
+        to_date: date | None = None,
+        transaction_scope: bool = False,
     ) -> None:
         """Use the report's resolved account inclusion policy for local evidence."""
         self.db = db
         self.net_worth = net_worth
         self.include_archived = include_archived
         self.from_date = from_date
+        self.to_date = to_date
+        self.transaction_scope = transaction_scope
+        self.affected_windows: set[str] = set()
 
     def assess(self, *, account_ids: Collection[str] | None = None) -> SyncCompleteness:
         """Assess local sync evidence; missing native identity remains in scope."""
+        self.affected_windows.clear()
         receipts: list[_Receipt] = []
         issues: dict[SyncCompletenessKind, set[_Scope]] = defaultdict(set)
         rows = self.db.execute(
@@ -140,7 +147,8 @@ class SyncCompletenessService:
                     )
                 )
             except ValidationError:
-                issues["evidence_unavailable"].add((str(job_id), ""))
+                if not self.transaction_scope:
+                    issues["evidence_unavailable"].add((str(job_id), ""))
 
         bindings = {
             (str(origin), str(native)): str(canonical)
@@ -157,7 +165,11 @@ class SyncCompletenessService:
             if account_ids is not None and canonical not in account_ids:
                 return False
             setting = settings.get(canonical, {})
-            if self.net_worth and not setting.get("include_in_net_worth", True):
+            if (
+                not self.transaction_scope
+                and self.net_worth
+                and not setting.get("include_in_net_worth", True)
+            ):
                 return False
             if setting.get("archived", False):
                 archived_at = setting.get("archived_at")
@@ -172,9 +184,20 @@ class SyncCompletenessService:
             canonical = bindings.get(scope)
             return canonical is None or included_account(canonical)
 
-        def add(kind: SyncCompletenessKind, scope: _Scope) -> None:
+        def add(kind: SyncCompletenessKind, scope: _Scope) -> bool:
+            if self.transaction_scope and kind in {
+                "history_unknown",
+                "history_pending",
+                "evidence_unavailable",
+                "unresolved_account_type",
+                "unsupported_account_type",
+                "suspected_overlap",
+            }:
+                return False
             if included(scope):
                 issues[kind].add(scope)
+                return True
+            return False
 
         observed_scopes: dict[UUID, set[_Scope]] = defaultdict(set)
         for connection, origin, native, currency, error in observations:
@@ -213,20 +236,38 @@ class SyncCompletenessService:
             (SIMPLEFIN_BALANCES, "source_origin, account_id, balance_at"),
             (SIMPLEFIN_TRANSACTIONS, "transaction_reference"),
         ):
-            for origin, native, error, currency in self.db.execute(
-                f"""SELECT source_origin, account_id, validation_error, currency
+            if self.transaction_scope and table == SIMPLEFIN_BALANCES:
+                continue
+            observation_date = (
+                "posted_at" if table == SIMPLEFIN_TRANSACTIONS else "balance_at"
+            )
+            for origin, native, error, currency, observed_at in self.db.execute(
+                f"""SELECT source_origin, account_id, validation_error, currency, {observation_date}
                     FROM {table.full_name}
                     QUALIFY ROW_NUMBER() OVER (PARTITION BY {partition}
                         ORDER BY fetched_at DESC, batch_id DESC,
                             observation_version DESC) = 1"""  # fixed TableRefs and partition expressions
             ).fetchall():
+                if self.transaction_scope and observed_at is not None:
+                    observed_date = observed_at.astimezone(UTC).date()
+                    if (self.from_date and observed_date < self.from_date) or (
+                        self.to_date and observed_date > self.to_date
+                    ):
+                        continue
                 scope = (str(origin), str(native))
+                affected = False
                 if error == "unsupported_precision":
-                    add("unsupported_precision", scope)
+                    affected = add("unsupported_precision", scope)
                 elif error not in {None, "pending", "nonpositive_posted"}:
-                    add("invalid_observation", scope)
+                    affected = add("invalid_observation", scope)
                 if currency not in _currencies():
-                    add("unsupported_currency", scope)
+                    affected = add("unsupported_currency", scope) or affected
+                if affected:
+                    self.affected_windows.add(
+                        observed_at.astimezone(UTC).isoformat()
+                        if observed_at is not None
+                        else "unknown dates"
+                    )
 
         self._receipt_issues(receipts, add, observed_scopes)
         # Accepted targets can still be legacy native IDs; bindings do not
@@ -255,7 +296,7 @@ class SyncCompletenessService:
                 overlap_ids.update(
                     account for account in pair if included_account(account)
                 )
-        if overlap_ids:
+        if overlap_ids and not self.transaction_scope:
             reasons += (
                 SyncCompletenessReason(
                     kind="suspected_overlap",
@@ -302,7 +343,7 @@ class SyncCompletenessService:
     def _receipt_issues(
         self,
         receipts: list[_Receipt],
-        add: Callable[[SyncCompletenessKind, _Scope], None],
+        add: Callable[[SyncCompletenessKind, _Scope], bool],
         observed_scopes: dict[UUID, set[_Scope]],
     ) -> None:
         generations: dict[UUID, int] = {}
@@ -341,17 +382,25 @@ class SyncCompletenessService:
             for receipt in retained[connection]:
                 for outcome in receipt.local_outcomes:
                     if (
-                        outcome.error_code in _SKIPPED_CHILD_ERRORS
-                        or outcome.error_code == "provider_error"
-                    ) and not self._local_hold_resolved(
-                        receipt, outcome, retained[connection]
+                        (
+                            outcome.error_code in _SKIPPED_CHILD_ERRORS
+                            or outcome.error_code == "provider_error"
+                        )
+                        and self._relevant_window(outcome.window)
+                        and not self._local_hold_resolved(
+                            receipt,
+                            self._intersect_outcome(outcome),
+                            retained[connection],
+                        )
                     ):
-                        add(
+                        affected = add(
                             "retrieval_partial"
                             if outcome.error_code == "provider_error"
                             else "invalid_observation",
                             self._outcome_scope(receipt.source, outcome),
                         )
+                        if affected:
+                            self._record_window(outcome.window)
             for receipt in candidates:
                 # The receipt status belongs to the whole job. Explicit source
                 # outcomes locate its failures; another source may have failed.
@@ -370,11 +419,33 @@ class SyncCompletenessService:
             for receipt in candidates:
                 source = receipt.source
                 for outcome in source.outcomes:
+                    if not self._relevant_window(outcome.window):
+                        continue
                     scope = self._outcome_scope(source, outcome)
+                    if self.transaction_scope and outcome.status in _RETRIEVAL:
+                        relevant = self._intersect_outcome(outcome)
+                        resolved = (
+                            self._general_failure_resolved(
+                                receipt.started_at,
+                                relevant,
+                                candidates,
+                                observed_scopes.get(connection, set()),
+                            )
+                            if scope == general
+                            else self._local_hold_resolved(
+                                receipt,
+                                relevant,
+                                candidates,
+                            )
+                        )
+                        if not resolved and add(_RETRIEVAL[outcome.status], scope):
+                            self._record_window(relevant.window)
                     outcomes[scope].append((receipt.started_at, outcome))
                     if receipt.started_at == newest:
                         latest_scopes.add(scope)
                 for outcome in receipt.local_outcomes:
+                    if not self._relevant_window(outcome.window):
+                        continue
                     scope = self._outcome_scope(source, outcome)
                     if outcome.error_code == "provider_error":
                         outcomes[scope].append((receipt.started_at, outcome))
@@ -399,6 +470,8 @@ class SyncCompletenessService:
                 if history is not None:
                     histories.append((source, history))
             for scope, observations in outcomes.items():
+                if self.transaction_scope:
+                    continue
                 latest = max(stamp for stamp, _ in observations)
                 for stamp, outcome in observations:
                     if stamp == latest and outcome.status in _RETRIEVAL:
@@ -409,7 +482,8 @@ class SyncCompletenessService:
                             observed_scopes.get(connection, set()),
                         ):
                             continue
-                        add(_RETRIEVAL[outcome.status], scope)
+                        if add(_RETRIEVAL[outcome.status], scope):
+                            self._record_window(outcome.window)
             if not histories:
                 for scope in observed_scopes.get(connection) or {general}:
                     add("history_unknown", scope)
@@ -454,12 +528,70 @@ class SyncCompletenessService:
                     if not account.acknowledged_intervals:
                         add("history_unknown", scope)
                     elif len(account.acknowledged_intervals) > 1:
-                        add("history_gap", scope)
+                        intervals = sorted(
+                            account.acknowledged_intervals, key=lambda item: item.start
+                        )
+                        if not self.transaction_scope or any(
+                            self._relevant_interval(left.end, right.start)
+                            for left, right in zip(
+                                intervals, intervals[1:], strict=False
+                            )
+                            if left.end < right.start
+                        ):
+                            if add("history_gap", scope):
+                                for left, right in zip(
+                                    intervals, intervals[1:], strict=False
+                                ):
+                                    if (
+                                        left.end < right.start
+                                        and self._relevant_interval(
+                                            left.end, right.start
+                                        )
+                                    ):
+                                        self._record_window(
+                                            UTCWindow(start=left.end, end=right.start)
+                                        )
                     elif (
                         retrieval_end is not None
                         and not account.has_acknowledged_through(retrieval_end)
                     ):
                         add("history_pending", scope)
+
+    def _intersect_outcome(self, outcome: ScopeOutcome) -> ScopeOutcome:
+        """Only complete repair of the requested failed subinterval clears a warning."""
+        window = outcome.window
+        if not self.transaction_scope or window is None:
+            return outcome
+        start, end = window.start, window.end
+        if self.from_date is not None:
+            start = max(start, datetime.combine(self.from_date, time.min, UTC))
+        if self.to_date is not None and self.to_date < date.max:
+            end = min(
+                end, datetime.combine(self.to_date + timedelta(days=1), time.min, UTC)
+            )
+        return outcome.model_copy(update={"window": UTCWindow(start=start, end=end)})
+
+    def _record_window(self, window: UTCWindow | None) -> None:
+        if window is None:
+            self.affected_windows.add("unknown dates")
+        else:
+            self.affected_windows.add(
+                f"{window.start.isoformat()} to {window.end.isoformat()} (end exclusive)"
+            )
+
+    def _relevant_window(self, window: UTCWindow | None) -> bool:
+        """Unknown dates cannot disprove relevance; known windows are half-open."""
+        return window is None or self._relevant_interval(window.start, window.end)
+
+    def _relevant_interval(self, start: datetime, end: datetime) -> bool:
+        if not self.transaction_scope:
+            return True
+        return not (
+            self.from_date is not None
+            and end <= datetime.combine(self.from_date, time.min, UTC)
+            or self.to_date is not None
+            and start > datetime.combine(self.to_date, time.max, UTC)
+        )
 
     def _general_failure_resolved(
         self,

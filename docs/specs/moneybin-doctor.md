@@ -57,12 +57,15 @@ Each audit returns the offending `transaction_id` (or `debit_transaction_id` for
 settings evidence, including accounts absent from financial projections and
 zero-batch outcomes. Missing history, held observations and pending cross-source
 account-link reviews produce `warn`; no local sync evidence produces `skipped`.
-Detail reports affected-account and unresolved-scope counts for each reason;
+Detail names SimpleFIN and retained affected retrieval dates/windows, and reports
+affected-account and unresolved-scope counts for each reason;
 `affected_ids` stays empty. Accepted bindings can retain legacy native IDs and
 do not prove minted-ID provenance, so these diagnostics withhold all IDs.
 Users resolve the gaps through the account and review surfaces rather than
 direct ID targeting. A pass means no known local gap, not proof of all provider
 history or agreement with a bank statement.
+Cash-flow and spending reports point here when relevant known incompleteness
+affects their totals; the reports do not repeat these diagnostic details.
 
 **`sync_health`** — Reads the configured broker's connection listing using the
 existing profile identity and session. It never creates an identity, launches

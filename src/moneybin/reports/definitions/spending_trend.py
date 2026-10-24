@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from collections.abc import Mapping
+from datetime import date
 
 from moneybin.database import Database
 from moneybin.errors import NextStep
@@ -12,6 +14,7 @@ from moneybin.reports._framework.contract import (
     OutputColumn,
     ReportQuery,
     ReportSemantics,
+    SyncReportScope,
     report,
 )
 from moneybin.reports.definitions._shared import (
@@ -312,4 +315,22 @@ def spending_trend(
     ]
     if hint:
         actions.insert(0, hint)
-    return ReportQuery(sql, params, actions=actions, period=period)
+    start = date.fromisoformat(from_month + "-01") if from_month else None
+    end = date.fromisoformat(to_month + "-01") if to_month else None
+    if end is not None:
+        end = end.replace(day=monthrange(end.year, end.month)[1])
+    # Every row carries YoY values, even when the default display selects MoM.
+    if start is not None:
+        start = start.replace(year=start.year - 1)
+    return ReportQuery(
+        sql,
+        params,
+        actions=actions,
+        period=period,
+        sync_scope=SyncReportScope(
+            net_worth=False,
+            transaction_scope=True,
+            from_date=start,
+            to_date=end,
+        ),
+    )

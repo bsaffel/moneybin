@@ -774,7 +774,29 @@ def execute_catalog_report(
         net_worth=scope.net_worth,
         include_archived=scope.include_archived,
         from_date=from_date,
+        to_date=scope.to_date,
+        transaction_scope=scope.transaction_scope,
     ).assess(account_ids=scope.account_ids)
+    if scope.transaction_scope:
+        if coverage.complete:
+            return execution
+        return replace(
+            execution,
+            degraded_reason="; ".join(
+                filter(
+                    None,
+                    (
+                        execution.degraded_reason,
+                        "Some transaction data may be incomplete. Run system doctor for details.",
+                    ),
+                )
+            ),
+            actions=[
+                *execution.actions,
+                "Run system_status(sections=['doctor']) "
+                "(CLI: 'moneybin system doctor') for details and recovery",
+            ],
+        )
     if not coverage.applicable:
         return execution
     if coverage.complete:

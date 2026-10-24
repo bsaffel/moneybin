@@ -1032,3 +1032,234 @@ def test_general_failure_requires_newer_covering_success(
         assert "retrieval_failed" in kinds
     if recovery == "skipped-child":
         assert "invalid_observation" in kinds
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "warn"),
+    [
+        ("2026-09-01", "2026-09-30", True),
+        ("2026-08-01", "2026-08-31", False),
+        ("2026-09-20", "2026-09-30", False),
+    ],
+)
+def test_transaction_scope_only_warns_for_overlapping_known_failure(
+    db: Database, start: str, end: str, warn: bool
+) -> None:
+    from datetime import date
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    data = source()
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=_history(1).accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="partial",
+            error_code="provider_error",
+        )
+    ]
+    load(db, data, status="partial")
+    _bind(db)
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date.fromisoformat(start),
+        to_date=date.fromisoformat(end),
+    ).assess()
+    assert (not result.complete) is warn
+
+
+@pytest.mark.parametrize(
+    "evidence", ["absent", "unknown-history", "balance-error", "unreadable-receipt"]
+)
+def test_transaction_scope_does_not_warn_for_missing_assessment_or_balance_errors(
+    db: Database, evidence: str
+) -> None:
+    from datetime import date
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    if evidence != "absent":
+        data = source(
+            account_changes={"balance": "100.001"}
+            if evidence == "balance-error"
+            else {}
+        )
+        data.outcomes = [
+            ScopeOutcome(
+                account_id="acct",
+                native_scope=_history(1).accounts[0].native_scope,
+                window=data.batches[0].window,
+                status="complete",
+                error_code=None,
+            )
+        ]
+        load(db, data)
+        _bind(db, account_type=None, include=False)
+        if evidence == "unreadable-receipt":
+            db.execute("UPDATE raw.simplefin_sync_receipts SET source_metadata = '{}' ")
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date(2026, 9, 1),
+        to_date=date(2026, 9, 30),
+    ).assess()
+    assert result.complete
+    assert not result.reasons
+
+
+@pytest.mark.parametrize("archived", [False, True])
+def test_transaction_scope_retains_invalid_transaction_only_in_included_account(
+    db: Database, archived: bool
+) -> None:
+    from datetime import date
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    load(db, source(amount="-1.001"))
+    _bind(db, include=False)
+    db.execute("UPDATE app.account_settings SET archived = ?", [archived])
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date(2026, 9, 1),
+        to_date=date(2026, 9, 30),
+    ).assess()
+    assert ("unsupported_precision" in _kinds(result)) is not archived
+
+
+def test_transaction_scope_ignores_dated_invalid_transaction_outside_window(
+    db: Database,
+) -> None:
+    from datetime import date
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    load(db, source(amount="-1.001"))
+    _bind(db)
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date(2026, 8, 1),
+        to_date=date(2026, 8, 31),
+    ).assess()
+    assert result.complete
+
+
+@pytest.mark.parametrize(("month", "warn"), [(8, False), (9, True), (10, False)])
+def test_transaction_scope_only_warns_for_history_gap_inside_window(
+    db: Database, month: int, warn: bool
+) -> None:
+    from datetime import date
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    data = source()
+    data.history = _history(1)
+    data.history.accounts[0].acknowledged_intervals = [
+        UTCWindow.model_validate({
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-09-05T00:00:00Z",
+        }),
+        UTCWindow.model_validate({
+            "start": "2026-09-10T00:00:00Z",
+            "end": "2026-09-20T00:00:00Z",
+        }),
+    ]
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=data.history.accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    load(db, data)
+    _bind(db)
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date(2026, month, 1),
+        to_date=date(2026, month, 28),
+    ).assess()
+    assert ("history_gap" in _kinds(result)) is warn
+
+
+def test_transaction_scope_keeps_unknown_date_invalid_observation_conservative(
+    db: Database,
+) -> None:
+    from datetime import date
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    data = source(transaction_changes={"posted": "invalid"})
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=_history(1).accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    load(db, data)
+    _bind(db)
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date(2026, 8, 1),
+        to_date=date(2026, 8, 31),
+    ).assess()
+    assert "invalid_observation" in _kinds(result)
+
+
+@pytest.mark.parametrize(("end_day", "warn"), [(19, True), (10, False)])
+def test_transaction_scope_requires_repair_covering_relevant_failed_interval(
+    db: Database, end_day: int, warn: bool
+) -> None:
+    from datetime import date
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    failed = source()
+    scope = _history(1).accounts[0].native_scope
+    failed.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=scope,
+            window=failed.batches[0].window,
+            status="failed",
+            error_code="upstream_unavailable",
+        )
+    ]
+    failed.batches = []
+    load(db, failed, status="failed")
+    repaired = source(batch=2, day=2)
+    repaired.batches[0].window = UTCWindow.model_validate({
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-09-11T00:00:00Z",
+    })
+    repaired.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=scope,
+            window=repaired.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    load(db, repaired, job=2, day=2)
+    _bind(db)
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date(2026, 9, 1),
+        to_date=date(2026, 9, end_day),
+    ).assess()
+    assert ("retrieval_failed" in _kinds(result)) is warn
+    from moneybin.services.doctor_service import DoctorService
+
+    doctor = DoctorService(db)._run_sync_completeness()  # pyright: ignore[reportPrivateUsage]  # verifies diagnostic parity
+    assert "retrieval_failed" in (doctor.detail or "")

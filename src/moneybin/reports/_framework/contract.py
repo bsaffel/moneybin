@@ -123,6 +123,8 @@ class SyncReportScope:
     include_archived: bool = False
     from_date: date | None = None
     latest_date_relation: TableRef | None = None
+    transaction_scope: bool = False
+    to_date: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
