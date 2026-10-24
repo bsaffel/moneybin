@@ -29,6 +29,7 @@ _PKG_ROOT = _REPO_ROOT / "src" / "moneybin"
 # Each entry: a glob the wheel MUST match at least once, and why it exists.
 REQUIRED_WHEEL_CONTENTS = {
     "moneybin/sql/schema/*.sql": "schema DDL — profile create fails without it",
+    "moneybin/sql/schema/comment_plans.json": "precomputed comment plans — fresh opens re-parse DDL without it",
     "moneybin/sql/migrations/*.sql": "SQL migrations — schema upgrades fail",
     "moneybin/sql/migrations/*.py": "Python migrations — most of the ladder is .py",
     "moneybin/sqlmesh/config.py": "SQLMesh project config",

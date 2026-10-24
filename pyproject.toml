@@ -186,6 +186,7 @@ include = ["moneybin*"]
 # runtime resource on disk is missing from it. Add new resource dirs there too.
 moneybin = [
     "sql/schema/*.sql",
+    "sql/schema/comment_plans.json",
     "sql/migrations/*.sql",
     "sql/migrations/*.py",
     "sqlmesh/config.py",
