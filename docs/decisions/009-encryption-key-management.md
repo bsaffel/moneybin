@@ -34,7 +34,7 @@ retrieves the key string that feeds into DuckDB's encryption.
 
 | KDF | Brute-force resistance | Dependencies | Standards |
 |---|---|---|---|
-| **Argon2id** | Memory-hard — resists GPU/ASIC parallelism | `argon2-cffi` (already planned for ADR-004) | RFC 9106, Password Hashing Competition winner (2015) |
+| **Argon2id** | Memory-hard — resists GPU/ASIC parallelism | `argon2-cffi` | RFC 9106, Password Hashing Competition winner (2015) |
 | **PBKDF2-HMAC-SHA256** | CPU-only — vulnerable to GPU parallelism | `hashlib` (stdlib) | NIST SP 800-132 |
 | **scrypt** | Memory-hard | `hashlib` (stdlib, Python 3.6+) | RFC 7914 |
 | **bcrypt** | Moderate (fixed memory) | `bcrypt` | De facto standard for password hashing |
@@ -108,7 +108,7 @@ KDF derives the AES key material.
 
 - Passphrase-derived keys are resistant to GPU brute-force attacks (Argon2id).
 - Auto-key mode has zero daily friction — no passphrase to remember.
-- `argon2-cffi` is already a planned dependency (ADR-004), so no new dependency.
+- Passphrase derivation depends on `argon2-cffi` for the Argon2id implementation.
 - Sync and recovery key derivation must be designed independently under ADR-017.
 - Local database recovery depends on the remaining usable key material; loss of
   the passphrase alone is not equivalent to loss of a persisted derived key.
