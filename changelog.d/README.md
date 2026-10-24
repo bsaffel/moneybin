@@ -26,51 +26,60 @@ substitute for that review. Even exempt PRs validate pending fragment names
 and rendering. Add the label in GitHub if it does not yet exist. The one
 exemption that needs no per-PR reason is the standing one below.
 
-### Standing exemption: Dependabot's GitHub Actions bumps
+### Standing exemption: Dependabot dependency updates
 
-One class of PR is exempt without a per-PR reason. `.github/dependabot.yml`
-applies `skip-changelog` to Dependabot's GitHub Actions bumps when it opens
-them. The reason is recorded once, here: that ecosystem edits only the `uses:`
-version pins in workflow files, which change how CI runs and nothing a MoneyBin
-user can observe. The label lands a moment after the PR opens, so the check
-reads labels from the API when it runs rather than from the event payload,
-which for the `opened` event predates the label.
+One class of PR is exempt without a per-PR reason: a PR opened by
+`dependabot[bot]` whose diff changes only `uv.lock`, workflow files under
+`.github/workflows/`, and the dependency tables of `pyproject.toml`
+(`project.dependencies`, `project.optional-dependencies`, `dependency-groups`).
+`scripts/check_changelog_exemption.py` decides this from the PR's author and
+diff, which are fixed when the PR opens. It never reads a label, because
+Dependabot labels a PR after opening it and the `opened` run would race the
+label. A commit that changes anything else on a Dependabot branch ends the
+exemption.
 
-The exemption waives the fragment and the written reason. It does not waive the
-review: a human still reviews and merges each bump, and removes the label if
-the PR changes anything besides an action version. This is the only automatic
-exemption; adding another means editing this section.
+The reason is recorded once, here: dependency updates are frequent, mechanical,
+and land weekly, and a per-PR fragment would turn each into a manual stop.
+Release preparation records them instead, once per release (step 2 below).
 
-Dependabot's Python bumps get no label. Decide each one, and add a fragment
-when the bump changes behavior or fixes a vulnerability.
+The exemption waives the fragment. It does not waive the review: a human still
+reviews and merges each update. When a bumped package's release notes describe
+a change a MoneyBin user will notice, such as fastmcp 4.1 expiring idle
+streamable-http sessions (#700), add a fragment to the PR anyway. This is the
+only automatic exemption; adding another means editing this section.
 
 ## Prepare a release
 
 1. Update the version in `pyproject.toml` and its lockfile. Preview the matching
    version with `uv run towncrier build --draft --version 0.1.0` (substitute
    the actual version).
-2. Run `uv run towncrier build --yes --version 0.1.0`. Towncrier inserts the
+2. **Record dependency updates.** List the requirement changes since the last
+   release with `git diff <last-tag> -- pyproject.toml`. Add one fragment that
+   names each raised minimum, filed under `security` when any raise fixes a
+   vulnerability and `changed` otherwise, and call out any upstream behavior
+   change a user will notice that no fragment records yet.
+3. Run `uv run towncrier build --yes --version 0.1.0`. Towncrier inserts the
    release after the marker and removes consumed fragments. Review both the
    generated notes and fragment deletions in the release PR.
-3. **First release after adoption:** move the legacy bullets currently under
+4. **First release after adoption:** move the legacy bullets currently under
    `[Unreleased]` into the matching categories of the generated release,
    preserving their text and relative order. This is a manual reconciliation:
    Towncrier does not import those bullets. Keep one heading per category and
    leave the `[Unreleased]` heading, pending-fragment link, and marker above
    the generated release. Preserve all older dated milestone sections.
-4. **Reconcile stale claims.** No ordinary PR may edit `CHANGELOG.md` (the
+5. **Reconcile stale claims.** No ordinary PR may edit `CHANGELOG.md` (the
    rule above), so a fact a bullet states — a count, a column or table name,
    a class — can go stale between releases with nothing catching it: guards
    like `tests/moneybin/test_docs/test_internal_critical_docs.py` bind that
    kind of claim to live code everywhere *except* `CHANGELOG.md`, which they
    exclude for exactly this reason. Release prep is where that drift gets
    corrected instead. Before merging the release PR, re-read every bullet
-   being moved out of `[Unreleased]` (step 3) and every bullet in the newly
+   being moved out of `[Unreleased]` (step 4) and every bullet in the newly
    generated section against current code, and fix wording that a later
    change invalidated — update the fact, keep the bullet's shape and intent.
    This is a correction, not a rewrite: don't relitigate old phrasing that
    is still accurate.
-5. Run `uv run pytest tests/test_documentation_policy.py` and
+6. Run `uv run pytest tests/test_documentation_policy.py` and
    `uv run python scripts/check_release_metadata.py --tag v0.1.0` with the
    actual version. Confirm every pending change is accounted for, then review
    and merge the release PR before creating its version tag.
