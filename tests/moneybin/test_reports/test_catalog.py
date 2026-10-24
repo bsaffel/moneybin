@@ -233,7 +233,7 @@ def test_net_worth_declares_home_currency_code_as_its_own_currency() -> None:
 
 
 def test_realized_fx_declares_every_currency_in_its_mixed_unit_rows() -> None:
-    """The disposed, Home, and conversion-leg units are all explicit."""
+    """The disposed, Home, and conversion-leg currencies are all explicit."""
     report = next(
         item
         for item in get_report_catalog().list()

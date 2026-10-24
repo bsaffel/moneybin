@@ -1,0 +1,1 @@
+`moneybin --help` and shell completion no longer import every command group. Command groups now load the first time they are used, which cuts `--help` from about 0.85 s to about 0.28 s. Command names, flags, arguments and help text are unchanged.

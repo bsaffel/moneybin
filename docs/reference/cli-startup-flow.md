@@ -48,9 +48,9 @@ sequenceDiagram
 
    The launcher script created by `uv`/`pip` is what the shell finds on `PATH`.
 
-2. **Python import.** Python imports `moneybin.cli.main`. The module imports Typer, the config helpers, the observability setup, and every command-group module in [`src/moneybin/cli/commands/`](../../src/moneybin/cli/commands/). Heavy transitive dependencies (`fastmcp`, `sqlmesh`, `polars`) are **not** imported here — they live inside individual command bodies (see "Cold-start hygiene" below).
+2. **Python import.** Python imports `moneybin.cli.main`. The module imports Typer, the config helpers, and the observability setup. Command-group modules in [`src/moneybin/cli/commands/`](../../src/moneybin/cli/commands/) are **not** imported here — the root group imports each one the first time that command is resolved. Heavy transitive dependencies (`fastmcp`, `sqlmesh`, `polars`) are **not** imported here — they live inside individual command bodies (see "Cold-start hygiene" below).
 
-3. **Typer app instantiation.** The root uses `cls=RootGroup`, `no_args_is_help=False`, and `invoke_without_command=True`. Each sub-group is attached via `app.add_typer(...)`; root leaves use `app.command(...)`. `navigation.HELP_SECTIONS` governs root ordering, section headings, and short descriptions. `configure_root_help` sets `short_help` and the help panel without replacing a command's detailed help.
+3. **Typer app instantiation.** The root uses `cls=RootGroup`, `no_args_is_help=False`, and `invoke_without_command=True`. Commands are not attached with `app.add_typer(...)`; they are declared in `_MoneyBinRoot.lazy_commands` (`main.py`) as a module and attribute to import on first use. `navigation.HELP_SECTIONS` governs root ordering, section headings, and short descriptions; `RootGroup` renders root help and completion from those entries alone, so listing every command imports none of them.
 
 4. **Typer argument parsing.** Typer (a thin layer over Click) parses argv, identifies the leaf command, and routes through `main_callback` on the way down.
 

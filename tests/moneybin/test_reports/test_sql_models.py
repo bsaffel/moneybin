@@ -159,16 +159,11 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
     rows = model_db.execute("""
         SELECT conversion_id, currency_lot_id, source_conversion_id,
                source_transfer_id, account_name, currency_code, home_currency,
-               disposed_amount, proceeds, cost_basis, gain_loss,
-               from_amount, to_amount
+               disposed_amount, proceeds, cost_basis, gain_loss
         FROM reports.realized_fx
         ORDER BY currency_lot_id
     """).fetchall()
 
-    # from_amount/to_amount are conversion-level totals (45.00/54.00), not
-    # lot-allocated: they repeat identically on both rows of this two-lot
-    # disposal by design, so a naive SUM() overstates conversion volume by the
-    # number of consumed lots. disposed_amount is the additive per-lot figure.
     assert rows == [
         (
             "dispose",
@@ -182,8 +177,6 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
             Decimal("36.00"),
             Decimal("30.00"),
             Decimal("6.00"),
-            Decimal("45.00"),
-            Decimal("54.00"),
         ),
         (
             "dispose",
@@ -197,10 +190,26 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
             Decimal("18.00"),
             Decimal("16.50"),
             Decimal("1.50"),
-            Decimal("45.00"),
-            Decimal("54.00"),
         ),
     ]
+
+
+def test_realized_fx_exposes_only_lot_grain_amounts(model_db: Database) -> None:
+    """The lot-grain report omits conversion totals that repeat across rows."""
+    _install_realized_fx_sources(model_db)
+    _install_report(model_db, "realized_fx")
+
+    cursor = model_db.execute("SELECT * FROM reports.realized_fx LIMIT 0")
+    columns = {description[0] for description in cursor.description or ()}
+
+    assert {"from_amount", "to_amount"}.isdisjoint(columns)
+    assert {
+        "disposed_amount",
+        "proceeds",
+        "cost_basis",
+        "fee_amount",
+        "gain_loss",
+    } <= columns
 
 
 def test_realized_fx_updated_at_includes_account_name_source(

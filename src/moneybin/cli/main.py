@@ -4,9 +4,10 @@ Unified entry point for MoneyBin CLI operations. Commands are organized into
 top-level groups for entity management, workflows, reports, and infrastructure
 per `docs/specs/moneybin-cli.md` v2.
 
-Cold-start cost is kept down by deferring heavy transitive imports
-(``fastmcp``, ``sqlmesh``, ``polars``) inside the command function bodies
-that need them — see `.claude/rules/cli.md` → "Cold-Start Hygiene".
+Command modules import lazily (``_MoneyBinRoot.lazy_commands``), so ``--help``
+and the start menu load none of their service graphs. Heavy third-party
+imports (``fastmcp``, ``sqlmesh``, ``polars``) are also deferred inside command
+bodies — see `.claude/rules/cli.md` → "Cold-Start Hygiene".
 """
 
 import importlib.metadata
@@ -23,38 +24,7 @@ from ..config import (
     set_current_profile,
 )
 from ..observability import setup_observability
-from .commands import (
-    accounts,
-    assets,
-    categories,
-    db,
-    demo,
-    export,
-    fx,
-    gsheet,
-    import_cmd,
-    investments,
-    logs,
-    mcp,
-    merchants,
-    migrate,
-    privacy,
-    profile,
-    refresh,
-    reports,
-    review,
-    sql,
-    stats,
-    sync,
-    synthetic,
-    system,
-    transactions,
-    transform,
-)
-from .commands import (
-    budget as budget_cmd,
-)
-from .navigation import RootGroup, configure_root_help, show_start_menu
+from .navigation import LazyCommand, RootGroup, show_start_menu
 from .utils import resolve_profile, stash_cli_flags
 
 logger = logging.getLogger(__name__)
@@ -63,12 +33,48 @@ logger = logging.getLogger(__name__)
 # terminal policy; docs/specs/cli-human-experience.md#implementation-boundary-and-migration.
 
 
+_COMMANDS = "moneybin.cli.commands"
+
+
+class _MoneyBinRoot(RootGroup):
+    """The root group; each command module imports when first resolved."""
+
+    lazy_commands = {
+        "accounts": LazyCommand(f"{_COMMANDS}.accounts", "app"),
+        "assets": LazyCommand(f"{_COMMANDS}.assets", "app"),
+        "investments": LazyCommand(f"{_COMMANDS}.investments", "app"),
+        "reports": LazyCommand(f"{_COMMANDS}.reports", "app"),
+        "transactions": LazyCommand(f"{_COMMANDS}.transactions", "app"),
+        "categories": LazyCommand(f"{_COMMANDS}.categories", "app"),
+        "fx": LazyCommand(f"{_COMMANDS}.fx", "app"),
+        "merchants": LazyCommand(f"{_COMMANDS}.merchants", "app"),
+        "review": LazyCommand(f"{_COMMANDS}.review", "review_command"),
+        "export": LazyCommand(f"{_COMMANDS}.export", "export_app"),
+        "gsheet": LazyCommand(f"{_COMMANDS}.gsheet", "app"),
+        "import": LazyCommand(f"{_COMMANDS}.import_cmd", "app"),
+        "refresh": LazyCommand(f"{_COMMANDS}.refresh", "refresh_command"),
+        "sync": LazyCommand(f"{_COMMANDS}.sync", "app"),
+        "demo": LazyCommand(f"{_COMMANDS}.demo", "demo_command"),
+        "mcp": LazyCommand(f"{_COMMANDS}.mcp", "app"),
+        "privacy": LazyCommand(f"{_COMMANDS}.privacy", "app"),
+        "profile": LazyCommand(f"{_COMMANDS}.profile", "app"),
+        "db": LazyCommand(f"{_COMMANDS}.db", "app"),
+        "logs": LazyCommand(f"{_COMMANDS}.logs", "logs_command"),
+        "sql": LazyCommand(f"{_COMMANDS}.sql", "app"),
+        "stats": LazyCommand(f"{_COMMANDS}.stats", "stats_command"),
+        "synthetic": LazyCommand(f"{_COMMANDS}.synthetic", "app"),
+        "system": LazyCommand(f"{_COMMANDS}.system", "app"),
+        "transform": LazyCommand(f"{_COMMANDS}.transform", "app"),
+        "budget": LazyCommand(f"{_COMMANDS}.budget", "app", hidden=True),
+    }
+
+
 app = typer.Typer(
     name="moneybin",
     help="MoneyBin: Personal financial data aggregation and analysis tool",
     add_completion=True,
     rich_markup_mode="rich",
-    cls=RootGroup,
+    cls=_MoneyBinRoot,
     no_args_is_help=False,
     invoke_without_command=True,
     subcommand_metavar="[COMMAND] [ARGS]...",
@@ -219,40 +225,6 @@ def main_callback(
     # the command runs unlogged with SQLMesh's per-statement INFO on stderr.
     if explicit:
         mark_profile_resolution_pending()
-
-
-# Root help grouping and summaries are applied below from navigation.py.
-app.add_typer(accounts.app, name="accounts")
-app.add_typer(assets.app, name="assets")
-app.add_typer(investments.app, name="investments")
-app.add_typer(reports.app, name="reports")
-app.add_typer(transactions.app, name="transactions")
-app.add_typer(categories.app, name="categories")
-app.add_typer(fx.app, name="fx")
-app.add_typer(merchants.app, name="merchants")
-app.command(name="review")(review.review_command)
-app.add_typer(export.export_app, name="export")
-app.add_typer(gsheet.app, name="gsheet")
-app.add_typer(import_cmd.app, name="import")
-app.command(name="refresh")(refresh.refresh_command)
-app.add_typer(sync.app, name="sync")
-app.command(name="demo")(demo.demo_command)
-app.add_typer(mcp.app, name="mcp")
-app.add_typer(privacy.app, name="privacy")
-app.add_typer(profile.app, name="profile")
-app.add_typer(db.app, name="db")
-app.command(name="logs")(logs.logs_command)
-app.add_typer(sql.app, name="sql")
-app.command(name="stats")(stats.stats_command)
-app.add_typer(synthetic.app, name="synthetic")
-app.add_typer(system.app, name="system")
-app.add_typer(transform.app, name="transform")
-app.add_typer(budget_cmd.app, name="budget", hidden=True)
-
-configure_root_help(app)
-
-# Add db migrate as a sub-typer of db
-db.app.add_typer(migrate.app, name="migrate", help="Database migration management")
 
 
 def main() -> None:
