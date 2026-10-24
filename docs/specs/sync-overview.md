@@ -1,24 +1,24 @@
 # Sync — Overview
 
-> Last updated: 2026-10-14 — server address is saved per profile at login instead of requiring an environment variable; login offers the local server address
-> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
+> Last updated: 2026-10-18 — ADR-017 governs encryption custody and recovery; the older encryption protocol sketch is historical
+> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 require protocol design under ADR-017. All older encryption mechanism sketches in this document are historical, not selected contracts.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
 > Replaces: `plaid-integration.md` (removed in #28) and `sync-client-integration.md` (moved to `archived/`)
 
 ## Purpose
 
-Sync is MoneyBin's framework for pulling financial data from external providers (banks, brokerages, aggregators) through moneybin-sync. This doc is the umbrella: it defines the client-side interaction model, infrastructure, CLI/MCP surface, E2E encryption design, error handling, and the contract for plugging in new providers. Provider-specific design and implementation details live in the child specs it points to.
+Sync is MoneyBin's framework for pulling financial data from external providers (banks, brokerages, aggregators) through moneybin-sync. This doc is the umbrella: it defines the client-side interaction model, infrastructure, CLI/MCP surface, error handling, and the contract for plugging in new providers. [ADR-017](../decisions/017-client-owned-encryption-and-recovery.md) governs accepted encryption custody and recovery principles. Provider-specific design and implementation details live in the child specs it points to.
 
 ## Vision
 
-> **Connect your bank, pull your data, keep it local. The server is a conduit — it never stores your financial data, and with E2E encryption, it can never read it either.**
+> **Connect your bank, pull your data, keep it local.** The broker handles readable provider data during processing. The client-owned encryption target protects stored financial content; it does not remove that processing trust boundary.
 
 Three commitments, in order:
 
 1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The client never knows which aggregator backs a connection — that's a server implementation detail.
 2. **Provider-specific raw schemas.** Each provider gets its own raw tables that preserve the provider's native data shape. No generic "sync schema" that forces every provider into a least-common-denominator format. The data warehouse layers (prep → core) handle homogenization through staging views and `UNION ALL`.
-3. **Financial-grade security.** E2E encryption is designed into the protocol from day one. v1 ships with TLS + encrypted-at-rest (acceptable baseline). v2 adds full zero-knowledge encryption where the server cannot read financial data, even under subpoena. The `EncryptionBackend` abstraction supports algorithm upgrades (X25519 → hybrid post-quantum) without protocol changes.
+3. **Client-owned stored-data encryption.** Local database encryption, sync delivery keys, and device authorization have separate responsibilities under ADR-017. A concrete protocol and its security evidence must establish those protections before release; neither zero-knowledge processing nor transparent algorithm upgrades are promised here.
 
 ## Target users
 
@@ -36,7 +36,7 @@ Sync is the bridge between MoneyBin's power-user core and mainstream usability:
 - The provider-agnostic interaction model (authenticate → connect → pull → decrypt → load → transform)
 - Client infrastructure: `SyncClient`, connection health tracking, provider extractors
 - CLI namespace (`moneybin sync *`) and MCP tools
-- E2E encryption design with `EncryptionBackend` abstraction
+- Historical encryption sketch, superseded in principle by ADR-017
 - Error handling and recovery patterns
 - The contract new providers must satisfy to plug into the framework
 - Schedule management for automated sync
@@ -136,12 +136,14 @@ sequenceDiagram
 
 ### Phase 4: Decrypt
 
-Designed as a first-class part of the protocol. v1 ships without encryption; v2 activates when the server implements its Phase 5.
+The current baseline returns JSON over HTTPS and encrypts the local DuckDB
+database. The broker has read access during provider processing.
 
-- **v1 (current):** Server returns plain JSON over HTTPS. TLS protects data in transit. DuckDB encryption at rest protects data once loaded. Server has read access to plaintext financial data — an accepted and documented risk (see [E2E encryption design](#e2e-encryption-design) for mitigation).
-- **v2 (designed, implementation phased):** Server encrypts the sync payload to the client's registered public key. Client decrypts locally. The JSON shape inside the encrypted blob is identical to the unencrypted format — everything downstream (extractors, staging, core) is unchanged.
-
-The client auto-negotiates: if the server returns `Content-Type: application/json`, parse directly. If the server returns `Content-Type: application/age`, decrypt first. No client-side configuration needed — a v2 client works against both v1 and v2 servers.
+Client-owned delivery encryption must follow ADR-017 and a separately reviewed
+sync API contract. The former public-key registration and `application/age`
+auto-negotiation sketch is unselected; server readiness alone does not activate
+an approved client protocol. Compatibility and refusal behavior must be
+explicit, including how a client prevents an unintended plaintext downgrade.
 
 ### Phase 5: Load & Transform
 
@@ -489,6 +491,12 @@ No additional sync-specific read tools are needed. Once data is pulled and trans
 
 ## E2E encryption design
 
+**Historical sketch.** This section's protocol, key-storage paths, enrollment,
+and algorithm-upgrade assumptions are retained for context, not implementation
+authority. [ADR-017](../decisions/017-client-owned-encryption-and-recovery.md)
+supersedes its custody and recovery model. Concrete mechanisms require separate
+design and validation; the legacy section title remains for existing links.
+
 ### Threat model
 
 | Layer | Protects against | Limitation |
@@ -496,11 +504,13 @@ No additional sync-specific read tools are needed. Once data is pulled and trans
 | **TLS (v1 baseline)** | Network observers, MITM | Server can read plaintext |
 | **Server TTL store** | Persistent server-side storage | Data exists in-memory for 30 minutes |
 | **DuckDB encryption at rest** | Stolen laptop, cloud sync exposure | Only protects the local database file |
-| **E2E encryption (v2)** | Compromised server, subpoena, rogue employee, data breach | Requires key management on client |
+| **Client-owned encrypted storage (target)** | Disclosure of stored ciphertext without usable client keys | Broker still sees provider plaintext; active processing, metadata, and client compromise remain separate risks |
 
 v1 provides defense-in-depth: TLS in transit, ephemeral server storage (30-minute TTL, no persistent plaintext), and AES-256-GCM encryption at rest once data reaches DuckDB. This is an acceptable baseline for a beta product with a single-digit user count.
 
-v2 achieves full zero-knowledge: the server never sees plaintext financial data. This is the target state, designed now and implemented when the server completes its Phase 5.
+The broker receives provider plaintext before encryption. ADR-017 therefore
+rejects the former full-zero-knowledge claim. This section does not establish
+that the target protections are implemented.
 
 ### Key lifecycle
 
@@ -541,11 +551,17 @@ Path B (passphrase, shared-machine protection):
   User passphrase → [Argon2id] → derived key → unlocks age private key → decrypts sync payload
 ```
 
-Both paths are implemented by the `keyring` library. Path B adds protection when the OS keychain itself isn't trustworthy (shared machines, compromised user accounts).
+These were proposed storage paths. The passphrase protection depends on which
+usable keys persist, not the choice of keyring library; ADR-009's persistence
+policy remains a separate decision.
 
 ### Multi-device
 
-Each device has its own key pair. Server encrypts to the requesting device's registered public key. No key sharing between devices — each device registers independently after `moneybin sync login`. This avoids the complexity of key distribution and ensures a compromised device's key doesn't affect other devices.
+ADR-017 replaces login-only enrollment: an existing authorized device or the
+user's recovery secret must authorize decryption on a new device. Device-local
+database keys need not be shared. The concrete distribution and revocation
+protocol remains to be designed; an independently registered public key alone
+does not establish access to existing encrypted history.
 
 ### Auto-negotiation
 
@@ -845,19 +861,17 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 
 ### Phase 3: E2E encryption
 
-- `EncryptionBackend` protocol and `AgeX25519Backend` implementation
-- Key generation, OS keychain storage, passphrase-protected storage
-- `POST /auth/register-key` integration
-- Auto-negotiation (`application/json` vs `application/age`)
-- `moneybin sync key rotate` command
-- Blocked on moneybin-sync Phase 5
+The legacy phase name is retained for navigation. Deliver client-owned stored
+payload protection under ADR-017 through a reviewed sync API and key-lifecycle
+contract. This includes rotation, interruption, recovery, and downgrade
+handling. The historical named backend, registration endpoint, and content-type
+negotiation are not implementation instructions.
 
 ### Phase 4: Post-quantum upgrade
 
-- `HybridPQBackend` (X25519 + ML-KEM) behind the same `EncryptionBackend` protocol
-- Algorithm negotiation via `algorithm_id` during key registration
-- Swap without protocol, CLI, or server API changes
-- Timing: when the hybrid library ecosystem matures (Signal PQXDH and Apple PQ3 shipped in 2024; Rust/Python libraries are emerging)
+Any algorithm upgrade needs a separate protocol and compatibility assessment.
+The historical hybrid-backend sketch does not establish an algorithm choice,
+release date, or a guarantee of unchanged CLI and server APIs.
 
 ### Relationship to roadmap
 
@@ -893,7 +907,11 @@ Peer initiative. Sync produces raw rows that may duplicate records already loade
 
 ### Privacy & AI Trust — `privacy-and-ai-trust.md`
 
-Framework spec. Sync operates in the "Encrypted Sync" data flow tier (ADR-002). The E2E encryption design in this spec implements that tier's contract. The consent model does not apply to sync (no AI involvement) — sync is a direct data pipeline, not an AI-assisted feature.
+Framework spec. ADR-017 defines the accepted custody boundary for the
+"Encrypted Sync" tier in ADR-002. This overview's historical encryption sketch
+does not implement or prove that contract. Provider ingestion is a direct data
+pipeline; any AI access to the resulting data remains subject to the separate
+consent model.
 
 ### Data Protection — `privacy-data-protection.md`
 
@@ -918,7 +936,7 @@ Not designed here. Architectural constraints noted so the current design does no
 - **Provider expansion boundary.** A second provider (SimpleFIN or MX) needs a
   child spec, the provider artifacts, and the unresolved response-model and
   extractor-dispatch decision; it is not yet a no-framework-change extension.
-- **Encryption readiness.** When the server implements Phase 5, the client activates E2E encryption with a key generation step and zero changes to the loading pipeline.
+- **Encryption readiness.** The client and server satisfy a reviewed delivery and key-lifecycle contract under ADR-017, with recovery and adversarial evidence. Server availability or key generation alone does not establish readiness.
 - **No plaintext leakage.** Sync payloads are never written to disk in plaintext. In v1, they exist only in process memory during load. In v2, they're decrypted in memory only. The `SanitizedLogFormatter` prevents PII from appearing in logs.
 
 ## Open questions

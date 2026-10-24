@@ -3,6 +3,15 @@
 ## Status
 accepted
 
+Scope clarification, 2026-10-18: this record concerns local database keys.
+[ADR-017](017-client-owned-encryption-and-recovery.md) governs the accepted
+principles for device authorization, encrypted history, and recovery. It does
+not change local key parameters or settle the passphrase persistence policy.
+The design below persists the derived key in the keychain: access to that key
+can permit decryption without the passphrase, regardless of the KDF. The
+shared-machine protection claim therefore remains a policy question, not a
+guarantee established by this ADR.
+
 ## Context
 
 MoneyBin encrypts all local DuckDB databases at rest using AES-256-GCM
@@ -45,13 +54,13 @@ passphrase + profile_name (salt)
   → 256-bit key (base64-encoded for storage/transport)
 ```
 
-These match the parameters in [ADR-004](004-e2e-encryption.md) for consistency across
-the project's key derivation operations.
+These parameters were originally aligned with the now-superseded
+[ADR-004](004-e2e-encryption.md). That historical alignment does not prescribe
+parameters for sync delivery or multi-device recovery.
 
 **Why not PBKDF2:** PBKDF2 is CPU-bound and can be parallelized efficiently on GPUs. A
-stolen keychain entry containing a PBKDF2-derived key is more vulnerable to offline
-brute-force than one derived with Argon2id's memory-hard algorithm. Since `argon2-cffi`
-is already a planned dependency, there is no cost to choosing the stronger option.
+password-guessing attack is more expensive with a memory-hard KDF. This does
+not protect a usable derived key already obtained from the keychain.
 
 **Relationship to DuckDB:** DuckDB's encryption extension runs its own internal KDF on
 whatever key string it receives. Our Argon2id derivation is upstream of DuckDB — it
@@ -100,15 +109,14 @@ KDF derives the AES key material.
 - Passphrase-derived keys are resistant to GPU brute-force attacks (Argon2id).
 - Auto-key mode has zero daily friction — no passphrase to remember.
 - `argon2-cffi` is already a planned dependency (ADR-004), so no new dependency.
-- Consistency: both local encryption (this ADR) and sync encryption (ADR-004) use the
-  same KDF with the same parameters.
-- Lost passphrase = lost data (no recovery). This is communicated clearly at setup.
+- Sync and recovery key derivation must be designed independently under ADR-017.
+- Local database recovery depends on the remaining usable key material; loss of
+  the passphrase alone is not equivalent to loss of a persisted derived key.
 - Key rotation requires a full database copy (acceptable for personal finance volumes).
 
 ## References
 
 - [`privacy-data-protection.md`](../specs/privacy-data-protection.md) — encryption at rest spec
-- [ADR-004: E2E Encryption](004-e2e-encryption.md) — sync-tier encryption (same KDF)
-- [ADR-005: Security Tradeoffs](005-security-tradeoffs.md) — threat model
+- [ADR-017: Client-owned encryption and recovery](017-client-owned-encryption-and-recovery.md) — accepted custody and recovery boundaries
 - [Argon2 RFC 9106](https://datatracker.ietf.org/doc/html/rfc9106)
 - [DuckDB Encryption Extension](https://duckdb.org/2025/11/19/encryption-in-duckdb)
