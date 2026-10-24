@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -17,6 +19,7 @@ from moneybin.cli.commands.import_cmd import (
     app,
 )
 from moneybin.cli.output import OutputFormat
+from moneybin.errors import RecoveryAction
 from moneybin.extractors.confidence import Confidence
 from moneybin.services.import_confirmation import (
     ConfirmationRequired,
@@ -153,7 +156,48 @@ def test_confirmation_preserves_committed_planner_block(
             assert "unchanged" in captured.out
             assert "moneybin refresh" not in captured.out
         else:
-            assert "moneybin refresh --steps transform" in captured.out
+            assert "moneybin refresh --step transform" in captured.out
+            assert "--steps" not in captured.out
+
+
+@pytest.mark.parametrize("steps", [["transform"], ["match", "transform"]])
+def test_printed_confirmation_retry_runs_with_every_requested_step(
+    pending_file: Path, mocker: MockerFixture, steps: list[str]
+) -> None:
+    from moneybin.cli.main import app as root_app
+    from moneybin.orchestration.refresh import RefreshResult
+
+    mocker.patch(
+        "moneybin.services.import_service.ImportService.import_file",
+        return_value=_committed_result(pending_file, bounded=False),
+    )
+    mocker.patch(
+        "moneybin.cli.commands.import_cmd.refresh_step_actions",
+        return_value=[
+            RecoveryAction(
+                tool="refresh_run",
+                arguments={"steps": steps},
+                rationale="Retry the requested refresh stages.",
+                confidence="suggested",
+                idempotent=True,
+            )
+        ],
+    )
+    confirmed = CliRunner().invoke(app, ["confirm", str(pending_file), "--accept"])
+    assert confirmed.exit_code == 1, confirmed.output
+    command = re.search(
+        r"Run '(moneybin.*?)'; do not repeat the import",
+        " ".join(confirmed.stdout.split()),
+    )
+    assert command is not None, confirmed.stdout
+    _assert_archived(pending_file)
+    refreshed = mocker.patch(
+        "moneybin.orchestration.refresh.refresh",
+        return_value=RefreshResult(applied=True, duration_seconds=0.1),
+    )
+    retried = CliRunner().invoke(root_app, shlex.split(command.group(1))[1:])
+    assert retried.exit_code == 0, retried.output
+    assert refreshed.call_args.kwargs["steps"] == steps
 
 
 def test_interactive_import_files_archives_after_planner_block(

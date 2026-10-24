@@ -3484,7 +3484,9 @@ def _complete_import_confirmation(
         for action in recovery_actions:
             if action.tool == "refresh_run":
                 steps = cast("list[str]", action.arguments["steps"])
-                command = generated_cli_command("refresh", "--steps", ",".join(steps))
+                command = generated_cli_command(
+                    "refresh", *(part for step in steps for part in ("--step", step))
+                )
                 recovery.append(f"Run '{command}'; do not repeat the import.")
         _confirm_receipt(
             "Import saved; refresh blocked",
