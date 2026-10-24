@@ -1,8 +1,13 @@
 """One root command menu for quick discovery and complete help."""
 
+import importlib
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from typing import Any, ClassVar, cast
+
 import typer
 from typer import _click as click
-from typer.core import TyperGroup
+from typer.core import TyperCommand, TyperGroup
 
 HELP_SECTIONS: dict[str, dict[str, str]] = {
     "Your finances": {
@@ -41,6 +46,11 @@ HELP_SECTIONS: dict[str, dict[str, str]] = {
         "transform": "Run data transformations",
     },
 }
+_ENTRIES: dict[str, tuple[str, str]] = {
+    name: (section, description)
+    for section, commands in HELP_SECTIONS.items()
+    for name, description in commands.items()
+}
 SHORT_COMMANDS = frozenset({
     "accounts",
     "investments",
@@ -54,8 +64,105 @@ SHORT_COMMANDS = frozenset({
 })
 
 
+@dataclass(frozen=True)
+class LazyCommand:
+    """A root command imported on first use rather than when ``cli.main`` loads."""
+
+    module: str
+    attr: str  # a ``typer.Typer`` (group) or a command function (leaf)
+    hidden: bool = False
+
+
+class _LazyCommands(Mapping[str, click.Command]):
+    """The root's ``commands`` mapping: every name is known, each value loads on access.
+
+    Anything that walks the click tree (``group.commands[name]``) keeps working;
+    only help and completion avoid the import, through ``RootGroup``'s stubs.
+    """
+
+    def __init__(self, group: "RootGroup") -> None:
+        self._group = group
+
+    def __getitem__(self, name: str) -> click.Command:
+        if name not in self._group.lazy_commands:
+            raise KeyError(name)
+        return self._group.load(name)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._group.lazy_commands)
+
+    def __len__(self) -> int:
+        return len(self._group.lazy_commands)
+
+
 class RootGroup(TyperGroup):
-    """Order mixed leaves and groups together, independent of Typer registration."""
+    """Order mixed leaves and groups together, independent of Typer registration.
+
+    Commands come from ``lazy_commands`` and load on first resolution, so
+    ``--help`` and the start menu never import a command group's service graph.
+    """
+
+    lazy_commands: ClassVar[dict[str, LazyCommand]] = {}
+    _listing = False  # True while rendering help or completion: stubs, no imports
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Start with nothing loaded."""
+        super().__init__(*args, **{**kwargs, "commands": _LazyCommands(self)})
+        self._loaded: dict[str, click.Command] = {}
+
+    def _stub(self, name: str) -> click.Command:
+        """Describe a command for a listing from navigation data alone."""
+        panel, description = _ENTRIES.get(name, (None, None))
+        return TyperCommand(
+            name,
+            short_help=description,
+            rich_help_panel=panel,
+            hidden=self.lazy_commands[name].hidden,
+        )
+
+    def load(self, name: str) -> click.Command:
+        """Import and build the real command, once."""
+        if name not in self._loaded:
+            spec = self.lazy_commands[name]
+            target = getattr(importlib.import_module(spec.module), spec.attr)
+            # Same markup mode as the root app in main.py, which sub-apps don't inherit.
+            loader = typer.Typer(rich_markup_mode="rich", add_completion=False)
+            command: click.Command
+            if isinstance(target, typer.Typer):
+                loader.add_typer(target, name=name, hidden=spec.hidden)
+                group = cast(TyperGroup, typer.main.get_command(loader))
+                command = group.commands[name]
+            else:
+                loader.command(name=name)(target)
+                command = typer.main.get_command(loader)
+            if name in _ENTRIES and isinstance(command, (TyperCommand, TyperGroup)):
+                command.rich_help_panel, command.short_help = _ENTRIES[name]
+            self._loaded[name] = command
+        return self._loaded[name]
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        """Resolve a command, importing it unless a listing only needs its summary."""
+        if self._listing and cmd_name in self.lazy_commands:
+            return self._stub(cmd_name)
+        return super().get_command(ctx, cmd_name)
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        """Render help from stubs so listing every command imports none of them."""
+        self._listing = True
+        try:
+            super().format_help(ctx, formatter)
+        finally:
+            self._listing = False
+
+    def shell_complete(
+        self, ctx: click.Context, incomplete: str
+    ):  # return type is click's private CompletionItem
+        """Complete command names from stubs, for the same reason as help."""
+        self._listing = True
+        try:
+            return super().shell_complete(ctx, incomplete)
+        finally:
+            self._listing = False
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         """List root commands in section order, then alphabetically within each."""
@@ -66,7 +173,7 @@ class RootGroup(TyperGroup):
             )
         }
         return sorted(
-            super().list_commands(ctx),
+            self.lazy_commands,  # not super(): it iterates .items(), which loads
             key=lambda name: (order.get(name, len(order)), name),
         )
 
@@ -87,18 +194,6 @@ class RootGroup(TyperGroup):
         for title, rows in sections.items():
             with formatter.section(title):
                 formatter.write_dl(rows)
-
-
-def configure_root_help(app: typer.Typer) -> None:
-    """Attach shared descriptions and native Typer help panels to registered commands."""
-    entries = {
-        name: (section, description)
-        for section, commands in HELP_SECTIONS.items()
-        for name, description in commands.items()
-    }
-    for command in [*app.registered_commands, *app.registered_groups]:
-        if command.name in entries:
-            command.rich_help_panel, command.short_help = entries[command.name]
 
 
 def show_start_menu() -> None:
