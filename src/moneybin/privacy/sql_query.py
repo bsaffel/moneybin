@@ -527,13 +527,13 @@ _MISSING_COLUMN = re.compile(
 _QUALIFY_MISSING_COLUMN = re.compile(r"^(?:Unknown column|Cannot automatically join): ")
 
 
-def _bind_error_code(exc: Exception) -> str:
-    """`sql_unknown_column` for a missing-column miss, else `sql_unknown_table`."""
-    if isinstance(exc, duckdb.BinderException) and _MISSING_COLUMN.match(str(exc)):
-        return error_codes.SQL_UNKNOWN_COLUMN
-    if isinstance(exc, SqlSchemaError) and _QUALIFY_MISSING_COLUMN.match(str(exc)):
-        return error_codes.SQL_UNKNOWN_COLUMN
-    return error_codes.SQL_UNKNOWN_TABLE
+def _is_missing_column(exc: Exception) -> bool:
+    """Whether a bind failure names a missing column rather than a table."""
+    if isinstance(exc, duckdb.BinderException):
+        return _MISSING_COLUMN.match(str(exc)) is not None
+    if isinstance(exc, SqlSchemaError):
+        return _QUALIFY_MISSING_COLUMN.match(str(exc)) is not None
+    return False
 
 
 def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryResult:
@@ -646,7 +646,9 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         )
         raise UserError(
             "Query could not be bound to the schema.",
-            code=_bind_error_code(e),
+            code=error_codes.SQL_UNKNOWN_COLUMN
+            if _is_missing_column(e)
+            else error_codes.SQL_UNKNOWN_TABLE,
             # `sql_unknown_table` is still the catch-all for every other binder
             # or catalog rejection (negative LIMIT/OFFSET, an out-of-range
             # GROUP BY term, ...); only a missing column gets its own code.
@@ -715,7 +717,9 @@ def _fetch_metadata(
         )
         raise UserError(
             "Query could not be bound to the schema.",
-            code=_bind_error_code(e),
+            code=error_codes.SQL_UNKNOWN_COLUMN
+            if _is_missing_column(e)
+            else error_codes.SQL_UNKNOWN_TABLE,
             hint=_identifier_detail(e),
         ) from e
     except duckdb.Error as e:
