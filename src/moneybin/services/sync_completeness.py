@@ -103,6 +103,7 @@ class SyncCompletenessService:
         from_date: date | None = None,
         to_date: date | None = None,
         transaction_scope: bool = False,
+        transaction_windows: tuple[tuple[date | None, date | None], ...] = (),
     ) -> None:
         """Use the report's resolved account inclusion policy for local evidence."""
         self.db = db
@@ -111,6 +112,7 @@ class SyncCompletenessService:
         self.from_date = from_date
         self.to_date = to_date
         self.transaction_scope = transaction_scope
+        self.transaction_windows = transaction_windows or ((from_date, to_date),)
         self.affected_windows: set[str] = set()
 
     def assess(self, *, account_ids: Collection[str] | None = None) -> SyncCompleteness:
@@ -250,8 +252,10 @@ class SyncCompletenessService:
             ).fetchall():
                 if self.transaction_scope and observed_at is not None:
                     observed_date = observed_at.astimezone(UTC).date()
-                    if (self.from_date and observed_date < self.from_date) or (
-                        self.to_date and observed_date > self.to_date
+                    if not any(
+                        (lower is None or lower <= observed_date)
+                        and (upper is None or observed_date <= upper)
+                        for lower, upper in self.transaction_windows
                     ):
                         continue
                 scope = (str(origin), str(native))
@@ -387,10 +391,11 @@ class SyncCompletenessService:
                             or outcome.error_code == "provider_error"
                         )
                         and self._relevant_window(outcome.window)
-                        and not self._local_hold_resolved(
-                            receipt,
-                            self._intersect_outcome(outcome),
-                            retained[connection],
+                        and not all(
+                            self._local_hold_resolved(
+                                receipt, relevant, retained[connection]
+                            )
+                            for relevant in self._intersect_outcomes(outcome)
                         )
                     ):
                         affected = add(
@@ -401,6 +406,31 @@ class SyncCompletenessService:
                         )
                         if affected:
                             self._record_window(outcome.window)
+                if self.transaction_scope:
+                    for outcome in receipt.source.outcomes:
+                        if (
+                            outcome.status not in _RETRIEVAL
+                            or not self._relevant_window(outcome.window)
+                        ):
+                            continue
+                        scope = self._outcome_scope(receipt.source, outcome)
+                        for relevant in self._intersect_outcomes(outcome):
+                            resolved = (
+                                self._general_failure_resolved(
+                                    receipt.started_at,
+                                    relevant,
+                                    retained[connection],
+                                    observed_scopes.get(connection, set()),
+                                )
+                                if scope == general
+                                else self._local_hold_resolved(
+                                    receipt,
+                                    relevant,
+                                    retained[connection],
+                                )
+                            )
+                            if not resolved and add(_RETRIEVAL[outcome.status], scope):
+                                self._record_window(relevant.window)
             for receipt in candidates:
                 # The receipt status belongs to the whole job. Explicit source
                 # outcomes locate its failures; another source may have failed.
@@ -422,24 +452,6 @@ class SyncCompletenessService:
                     if not self._relevant_window(outcome.window):
                         continue
                     scope = self._outcome_scope(source, outcome)
-                    if self.transaction_scope and outcome.status in _RETRIEVAL:
-                        relevant = self._intersect_outcome(outcome)
-                        resolved = (
-                            self._general_failure_resolved(
-                                receipt.started_at,
-                                relevant,
-                                candidates,
-                                observed_scopes.get(connection, set()),
-                            )
-                            if scope == general
-                            else self._local_hold_resolved(
-                                receipt,
-                                relevant,
-                                candidates,
-                            )
-                        )
-                        if not resolved and add(_RETRIEVAL[outcome.status], scope):
-                            self._record_window(relevant.window)
                     outcomes[scope].append((receipt.started_at, outcome))
                     if receipt.started_at == newest:
                         latest_scopes.add(scope)
@@ -557,19 +569,27 @@ class SyncCompletenessService:
                     ):
                         add("history_pending", scope)
 
-    def _intersect_outcome(self, outcome: ScopeOutcome) -> ScopeOutcome:
-        """Only complete repair of the requested failed subinterval clears a warning."""
+    def _intersect_outcomes(self, outcome: ScopeOutcome) -> tuple[ScopeOutcome, ...]:
+        """Require repair separately for each requested failed subinterval."""
         window = outcome.window
         if not self.transaction_scope or window is None:
-            return outcome
-        start, end = window.start, window.end
-        if self.from_date is not None:
-            start = max(start, datetime.combine(self.from_date, time.min, UTC))
-        if self.to_date is not None and self.to_date < date.max:
-            end = min(
-                end, datetime.combine(self.to_date + timedelta(days=1), time.min, UTC)
-            )
-        return outcome.model_copy(update={"window": UTCWindow(start=start, end=end)})
+            return (outcome,)
+        relevant: list[ScopeOutcome] = []
+        for lower, upper in self.transaction_windows:
+            start, end = window.start, window.end
+            if lower is not None:
+                start = max(start, datetime.combine(lower, time.min, UTC))
+            if upper is not None and upper < date.max:
+                end = min(
+                    end, datetime.combine(upper + timedelta(days=1), time.min, UTC)
+                )
+            if start < end:
+                relevant.append(
+                    outcome.model_copy(
+                        update={"window": UTCWindow(start=start, end=end)}
+                    )
+                )
+        return tuple(relevant)
 
     def _record_window(self, window: UTCWindow | None) -> None:
         if window is None:
@@ -586,11 +606,14 @@ class SyncCompletenessService:
     def _relevant_interval(self, start: datetime, end: datetime) -> bool:
         if not self.transaction_scope:
             return True
-        return not (
-            self.from_date is not None
-            and end <= datetime.combine(self.from_date, time.min, UTC)
-            or self.to_date is not None
-            and start > datetime.combine(self.to_date, time.max, UTC)
+        return any(
+            not (
+                lower is not None
+                and end <= datetime.combine(lower, time.min, UTC)
+                or upper is not None
+                and start > datetime.combine(upper, time.max, UTC)
+            )
+            for lower, upper in self.transaction_windows
         )
 
     def _general_failure_resolved(

@@ -1130,3 +1130,88 @@ def test_cashflow_without_evidence_has_normal_result_without_warning(
     assert result.records
     assert result.degraded_reason is None
     assert "sync_completeness" not in result.to_envelope().to_dict()["summary"]
+
+
+@pytest.mark.parametrize(
+    ("month", "warn"),
+    [
+        ("2026-01", False),
+        ("2025-09", True),
+        ("2026-07", True),
+        ("2026-08", True),
+        ("2026-09", True),
+    ],
+)
+def test_spending_warning_uses_disjoint_calculation_windows(
+    db: Database, month: str, warn: bool
+) -> None:
+    from calendar import monthrange
+    from datetime import UTC, datetime, timedelta
+
+    from moneybin.connectors.sync_models import (
+        ScopeOutcome,
+        SimpleFINV2ConnectionScope,
+        UTCWindow,
+    )
+    from moneybin.reports._framework.catalog import get_report_catalog
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+
+    _install_spending_trend(db)
+    start = datetime.fromisoformat(month + "-01").replace(tzinfo=UTC)
+    end = start + timedelta(days=monthrange(start.year, start.month)[1])
+    data = source()
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=SimpleFINV2ConnectionScope(
+                kind="simplefin_v2_connection", conn_id="native-connection"
+            ),
+            window=UTCWindow(start=start, end=end),
+            status="failed",
+            error_code="upstream_unavailable",
+        )
+    ]
+    data.batches = []
+    load(db, data, status="failed")
+    result = get_report_catalog().execute(
+        db,
+        report_id="core:spending_trend",
+        parameters={"from_month": "2026-09", "to_month": "2026-09"},
+        limit=100,
+    )
+    assert (
+        "Some transaction data may be incomplete" in (result.degraded_reason or "")
+    ) is warn
+
+
+@pytest.mark.parametrize(
+    ("lower", "upper"),
+    [
+        ("0001-01", "0001-01"),
+        ("0001-02", "0001-02"),
+        (None, "0001-02"),
+        ("0001-01", None),
+    ],
+)
+def test_spending_comparison_windows_respect_supported_date_floor(
+    db: Database, lower: str | None, upper: str | None
+) -> None:
+    from datetime import date
+
+    query = spending_trend(db, from_month=lower, to_month=upper)
+    assert query.sync_scope is not None
+    windows = query.sync_scope.transaction_windows
+    assert windows
+    assert all(
+        bound is None or bound >= date.min for window in windows for bound in window
+    )
+    if upper is not None:
+        assert len(windows) == 1  # Prior-year months precede the supported calendar.
+
+
+def test_spending_prior_year_window_includes_leap_month_end(db: Database) -> None:
+    from datetime import date
+
+    query = spending_trend(db, from_month="2025-02", to_month="2025-02")
+    assert query.sync_scope is not None
+    assert (date(2024, 2, 1), date(2024, 2, 29)) in query.sync_scope.transaction_windows

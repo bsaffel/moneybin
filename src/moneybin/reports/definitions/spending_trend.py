@@ -319,9 +319,24 @@ def spending_trend(
     end = date.fromisoformat(to_month + "-01") if to_month else None
     if end is not None:
         end = end.replace(day=monthrange(end.year, end.month)[1])
-    # Every row carries YoY values, even when the default display selects MoM.
+    # Filled calendar months make trailing/MoM and prior-year windows disjoint.
+    recent_start = prior_start = None
     if start is not None:
-        start = start.replace(year=start.year - 1)
+        year, month = start.year, start.month - 2
+        if month <= 0:
+            year, month = year - 1, month + 12
+        recent_start = start.replace(year=year, month=month) if year >= 1 else date.min
+        prior_start = start.replace(year=start.year - 1) if start.year > 1 else date.min
+    prior_end = None
+    if end is not None and end.year > 1:
+        prior_end = end.replace(day=1, year=end.year - 1)
+        prior_end = prior_end.replace(
+            day=monthrange(prior_end.year, prior_end.month)[1]
+        )
+    windows: tuple[tuple[date | None, date | None], ...] = ((recent_start, end),)
+    # There is no supported prior-year calendar for results wholly in year one.
+    if end is None or end.year > 1:
+        windows += ((prior_start, prior_end),)
     return ReportQuery(
         sql,
         params,
@@ -330,7 +345,8 @@ def spending_trend(
         sync_scope=SyncReportScope(
             net_worth=False,
             transaction_scope=True,
-            from_date=start,
+            from_date=prior_start,
             to_date=end,
+            transaction_windows=windows,
         ),
     )

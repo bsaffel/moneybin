@@ -230,8 +230,11 @@ CLI: `moneybin reports spending-trend [--from-month MONTH] [--to-month MONTH] [-
 MCP: `reports(report_id="core:spending_trend", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 
-The same bounded warning includes the prior twelve months needed by returned
-comparison columns, even when the selected display emphasizes another comparison.
+The same bounded warning covers the selected months and their two preceding
+months, plus the selected months shifted back one year. These are the actual
+MoM, trailing-average and YoY input windows; unused intervening months are
+excluded even though the prior-year window is twelve months earlier. All returned
+comparison columns are assessed regardless of the selected display.
 It adds no per-row audit fields and does not claim completeness for other sources.
 
 ### `reports.recurring_subscriptions`

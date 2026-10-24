@@ -1263,3 +1263,96 @@ def test_transaction_scope_requires_repair_covering_relevant_failed_interval(
 
     doctor = DoctorService(db)._run_sync_completeness()  # pyright: ignore[reportPrivateUsage]  # verifies diagnostic parity
     assert "retrieval_failed" in (doctor.detail or "")
+
+
+@pytest.mark.parametrize("repair", ["disjoint", "covering", "different-native-scope"])
+def test_transaction_failure_survives_credential_replacement_until_same_scope_repair(
+    db: Database, repair: str
+) -> None:
+    from datetime import date
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    failed = source()
+    native = _history(1).accounts[0].native_scope
+    failed.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=native,
+            window=failed.batches[0].window,
+            status="failed",
+            error_code="upstream_unavailable",
+        )
+    ]
+    failed.batches = []
+    load(db, failed, status="failed")
+    later = source(
+        batch=2,
+        day=2,
+        account_changes={"conn_id": "other-native"}
+        if repair == "different-native-scope"
+        else {},
+    )
+    later.credential_generation = 2
+    if repair == "disjoint":
+        later.batches[0].window = UTCWindow.model_validate({
+            "start": "2026-10-01T00:00:00Z",
+            "end": "2026-10-20T00:00:00Z",
+        })
+    later.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=native.model_copy(update={"conn_id": "other-native"})
+            if repair == "different-native-scope"
+            else native,
+            window=later.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    load(db, later, job=2, day=2)
+    _bind(db)
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date(2026, 9, 1),
+        to_date=date(2026, 9, 19),
+    ).assess()
+    assert ("retrieval_failed" in _kinds(result)) is (repair != "covering")
+
+
+def test_transaction_disjoint_windows_ignore_observation_between_comparisons(
+    db: Database,
+) -> None:
+    from datetime import UTC, date, datetime
+
+    from moneybin.services.sync_completeness import SyncCompletenessService
+
+    data = source(
+        amount="-1.001",
+        transaction_changes={
+            "posted": int(datetime(2026, 1, 10, tzinfo=UTC).timestamp()),
+        },
+    )
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=_history(1).accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="complete",
+            error_code=None,
+        )
+    ]
+    load(db, data)
+    _bind(db)
+    result = SyncCompletenessService(
+        db,
+        transaction_scope=True,
+        from_date=date(2025, 9, 1),
+        to_date=date(2026, 9, 30),
+        transaction_windows=(
+            (date(2025, 9, 1), date(2025, 9, 30)),
+            (date(2026, 7, 1), date(2026, 9, 30)),
+        ),
+    ).assess()
+    assert result.complete

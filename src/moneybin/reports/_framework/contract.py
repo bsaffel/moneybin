@@ -125,6 +125,7 @@ class SyncReportScope:
     latest_date_relation: TableRef | None = None
     transaction_scope: bool = False
     to_date: date | None = None
+    transaction_windows: tuple[tuple[date | None, date | None], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

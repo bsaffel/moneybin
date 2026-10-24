@@ -776,6 +776,7 @@ def execute_catalog_report(
         from_date=from_date,
         to_date=scope.to_date,
         transaction_scope=scope.transaction_scope,
+        transaction_windows=scope.transaction_windows,
     ).assess(account_ids=scope.account_ids)
     if scope.transaction_scope:
         if coverage.complete:
