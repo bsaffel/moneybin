@@ -1,6 +1,6 @@
 """Tests for the db migrate CLI commands."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -66,6 +66,10 @@ def sqlmesh_state() -> object:
             "moneybin.cli.commands.migrate.sqlmesh_state_assessment",
             return_value=(None, False),
         ) as assessment,
+        patch(
+            "moneybin.repositories.profile_settings_repo.ProfileSettingsRepo.get_reporting_timezone",
+            return_value="UTC",
+        ),
     ):
         yield SimpleNamespace(drift=drift, assessment=assessment)
 
@@ -344,7 +348,7 @@ class TestMigrateStatus:
                 filename="V001__init.sql",
                 success=True,
                 execution_ms=42,
-                applied_at=datetime(2026, 1, 1),
+                applied_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         ]
         mock_runner.check_drift.return_value = []
@@ -438,7 +442,7 @@ def test_status_pages_complete_migration_state_and_no_pager_prints_it(
             filename="V001__initialize_schema.sql",
             success=True,
             execution_ms=42,
-            applied_at=datetime(2026, 1, 1),
+            applied_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
     ]
     mock_runner.pending.return_value = [_migration(2, filename="V002__next.sql")]
@@ -754,3 +758,46 @@ def test_apply_preserves_text_only_success_surface() -> None:
     result = runner.invoke(app, ["apply", "--output", "json"])
 
     assert result.exit_code == 2
+
+
+@pytest.mark.parametrize("output", ["json", "text"])
+def test_status_formats_applied_instant_with_saved_reporting_timezone(
+    output: str,
+) -> None:
+    import json
+
+    from moneybin.migrations import AppliedMigration
+
+    with (
+        patch("moneybin.cli.commands.migrate.get_database") as get_db,
+        patch("moneybin.cli.commands.migrate.MigrationRunner") as runner_cls,
+        patch("moneybin.cli.commands.migrate.get_current_versions", return_value={}),
+        patch(
+            "moneybin.repositories.profile_settings_repo.ProfileSettingsRepo"
+        ) as repo_cls,
+    ):
+        repo_cls.return_value.get_reporting_timezone.return_value = "America/New_York"
+        migration_runner = runner_cls.return_value
+        migration_runner.pending.return_value = []
+        migration_runner.check_drift.return_value = []
+        migration_runner.applied_details.return_value = [
+            AppliedMigration(
+                version=1,
+                filename="V001__init.sql",
+                success=True,
+                execution_ms=42,
+                applied_at=datetime(2026, 1, 1, 12, 34, 56, tzinfo=UTC),
+            )
+        ]
+        result = runner.invoke(app, ["status", "--output", output, "--no-pager"])
+
+        assert result.exit_code == 0, result.output
+        if output == "json":
+            assert json.loads(result.stdout)["applied"][0]["applied_at"] == (
+                "2026-01-01T12:34:56.000000Z"
+            )
+        else:
+            assert "2026-01-01 07:34:56-05:00 [America/New_York]" in _compact(
+                result.stdout
+            )
+            repo_cls.assert_called_once_with(get_db.return_value.__enter__.return_value)

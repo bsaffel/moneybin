@@ -76,6 +76,7 @@ class DemoResult:
     # None when no default was set (or it was already `demo`).
     previous_default: str | None
     # Text-only receipt context. JSON retains its established envelope shape.
+    reporting_timezone: str = "UTC"
     start_date: date | None = None
     end_date: date | None = None
     inbox_dir: Path | None = None
@@ -338,6 +339,9 @@ class DemoService:
             logger.info(f"⚙️  Created demo profile {DEMO_PROFILE!r}")
 
         with get_database(read_only=False) as db:
+            from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+            reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
             # 4. Generate persona data into the (now fresh) database.
             result = GeneratorEngine(persona, seed=seed, years=years).generate()
             counts = SyntheticWriter(db).write(result)
@@ -428,6 +432,7 @@ class DemoService:
         logger.info(f"✅ Demo profile {DEMO_PROFILE!r} ready (seed={seed})")
         return DemoResult(
             profile=DEMO_PROFILE,
+            reporting_timezone=reporting_timezone,
             persona=persona,
             seed=seed,
             account_count=account_count,

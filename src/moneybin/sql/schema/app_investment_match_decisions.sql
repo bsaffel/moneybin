@@ -10,8 +10,8 @@ CREATE TABLE IF NOT EXISTS app.investment_match_decisions (
     is_competing BOOLEAN NOT NULL, -- Derived by the persisted constrained optimal solve
     proposal JSON NOT NULL, -- Exact legs, evidence, conflicts, alternatives and supersession topology
     actor VARCHAR NOT NULL, -- Surface requesting the planning operation
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- First planning time
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last planner lifecycle change
-    decided_at TIMESTAMP, -- First human decision time; NULL for planner writes
-    accepted_at TIMESTAMP -- Ratification time; NULL throughout review-only rollout
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- First planning time
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last planner lifecycle change
+    decided_at TIMESTAMPTZ, -- First human decision time; NULL for planner writes
+    accepted_at TIMESTAMPTZ -- Ratification time; NULL throughout review-only rollout
 );

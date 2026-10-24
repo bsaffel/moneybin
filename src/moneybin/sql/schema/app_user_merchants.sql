@@ -11,6 +11,6 @@ CREATE TABLE IF NOT EXISTS app.user_merchants (
     category_id VARCHAR, -- Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows or merchants with no default category
     created_by VARCHAR NOT NULL, -- 'user' | 'ai' | 'rule' | 'plaid' | 'migration'
     exemplars VARCHAR[] DEFAULT [], -- exact match_text values for oneOf set-membership lookup
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- when this entry was added
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Latest of all per-row input timestamps contributing to this row's current values. Set on UPDATE by service writes.
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- when this entry was added
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- Latest of all per-row input timestamps contributing to this row's current values. Set on UPDATE by service writes.
 );

@@ -6,6 +6,6 @@ CREATE TABLE IF NOT EXISTS app.budgets (
     monthly_amount DECIMAL(18, 2) NOT NULL, -- Target monthly spending limit for this category in USD
     start_month VARCHAR NOT NULL, -- First month this budget is active, in YYYY-MM format
     end_month VARCHAR, -- Last month this budget is active, in YYYY-MM format; NULL means no end date
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this budget was created
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Timestamp when this budget was last modified
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this budget was created
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP -- Timestamp when this budget was last modified
 );

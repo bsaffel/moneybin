@@ -13,6 +13,6 @@ CREATE TABLE IF NOT EXISTS app.categorization_rules (
     priority INTEGER DEFAULT 100, -- Evaluation order; lower number = higher priority. Default 100; use lower values for more specific rules
     is_active BOOLEAN DEFAULT true, -- False for rules that have been disabled without being deleted
     created_by VARCHAR DEFAULT 'user', -- Who created the rule: user (manually entered) or ai (LLM-suggested)
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this rule was created
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Timestamp when this rule was last modified
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this rule was created
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP -- Timestamp when this rule was last modified
 );

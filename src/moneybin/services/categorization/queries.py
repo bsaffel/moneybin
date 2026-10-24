@@ -39,6 +39,7 @@ from moneybin.services.categorization._shared import (
     plaid_bridge_match_predicate,
     source_category_bridge_match_predicate,
 )
+from moneybin.services.profile_settings_service import ProfileSettingsService
 from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
@@ -51,6 +52,7 @@ from moneybin.tables import (
     STG_PLAID_TRANSACTIONS,
     TRANSACTION_CATEGORIES,
 )
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -386,8 +388,8 @@ class CategorizationQueries:
                 priority=int(row[10]) if row[10] is not None else None,
                 is_active=bool(row[11]) if row[11] is not None else None,
                 created_by=row[12],
-                created_at=row[13].isoformat() if row[13] is not None else None,
-                updated_at=row[14].isoformat() if row[14] is not None else None,
+                created_at=format_utc(row[13]) if row[13] is not None else None,
+                updated_at=format_utc(row[14]) if row[14] is not None else None,
             )
             for row in rows
         ]
@@ -435,7 +437,7 @@ class CategorizationQueries:
 
         A row needs one when ``core.fct_transactions.is_categorizable`` holds
         and its ``category`` is NULL. ``age_days`` and ``priority_score`` are
-        computed here; both depend on ``CURRENT_DATE`` and serve only this sort.
+        computed here using the saved reporting calendar and serve only this sort.
 
         ``sort`` controls the ORDER BY:
         - ``"date"``   — ``txn_date DESC`` (most recent first, default)
@@ -472,9 +474,9 @@ class CategorizationQueries:
                     t.description,
                     t.merchant_id,
                     t.merchant_name AS merchant_normalized,
-                    CAST(CURRENT_DATE - t.transaction_date AS INT) AS age_days,
+                    CAST(?::DATE - t.transaction_date AS INT) AS age_days,
                     ABS(t.amount)
-                        * CAST(CURRENT_DATE - t.transaction_date AS INT)
+                        * CAST(?::DATE - t.transaction_date AS INT)
                         AS priority_score,
                     t.source_type,
                     NULL::TEXT AS source_id
@@ -485,7 +487,8 @@ class CategorizationQueries:
             ) AS queue
             WHERE ABS(amount) >= ?
         """  # TableRef constants + fixed column list
-        params: list[object] = [min_amount]
+        today = ProfileSettingsService(self._db).today()
+        params: list[object] = [today, today, min_amount]
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)

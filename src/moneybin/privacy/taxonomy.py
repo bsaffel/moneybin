@@ -197,6 +197,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "status": DataClass.TXN_TYPE,
     },
     ("app", "account_settings"): {
+        "account_type": DataClass.TXN_TYPE,
         "account_id": DataClass.RECORD_ID,
         "account_subtype": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
@@ -217,6 +218,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # When archived last moved; freshness bookkeeping, like updated_at.
         "archived_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         # When the currency / cost-basis method last moved; the same bookkeeping.
+        "account_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "account_subtype_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "currency_code_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "default_cost_basis_method_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
@@ -227,6 +230,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "scope": DataClass.RECORD_ID,
         "home_currency": DataClass.CURRENCY,
         "display_currency_targets": DataClass.CURRENCY,
+        "reporting_timezone": DataClass.RECORD_ID,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("app", "ai_consent_grants"): {
@@ -402,6 +406,17 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     # INTERNAL_CRITICAL). `app` is not floored, so every column needs an
     # explicit class now — an undeclared one fails closed to UNRESOLVED and
     # whole-masks, silently hiding a column that used to display.
+    ("app", "sync_job_state"): {
+        "job_id": DataClass.RECORD_ID,
+        "consumer_id": DataClass.RECORD_ID,
+        "ingested_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "ack_state": DataClass.TXN_TYPE,
+        "acked_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "setup_state": DataClass.TXN_TYPE,
+        "refresh_state": DataClass.TXN_TYPE,
+        "job_details": DataClass.COMPOSITE_IDENTIFIER,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "import_log"): {
         "account_names": (
             # Same value as raw.tabular_accounts.account_name / the OFX
@@ -618,6 +633,10 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "resolved_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "resolved_rule_id": DataClass.RECORD_ID,
         "status": DataClass.TXN_TYPE,
+    },
+    ("app", "utc_upgrade_provenance"): {
+        "contract_version": DataClass.AGGREGATE,
+        "rules": DataClass.USER_NOTE,
     },
     ("app", "schema_migrations"): {
         "applied_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -878,6 +897,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "dim_accounts"): {
+        "account_type_override": DataClass.TXN_TYPE,
+        "source_account_type": DataClass.TXN_TYPE,
         # Opaque minted canonical surrogate (spec D6) — not PII. PII lives in
         # app.account_links.ref_value (ACCOUNT_IDENTIFIER).
         "account_id": DataClass.RECORD_ID,
@@ -1300,6 +1321,47 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
 # partial-masking transform, so the choice sets the label's accuracy, not the
 # masking. ROUTING_NUMBER masks WHOLE and is not interchangeable with either.
 INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
+    ("prep", "stg_simplefin__accounts"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("prep", "stg_simplefin__transactions"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("prep", "stg_simplefin__balances"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_accounts"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_transactions"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_balances"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_responses"): {
+        "original_payload": DataClass.COMPOSITE_IDENTIFIER,
+        "source_errors": DataClass.COMPOSITE_IDENTIFIER,
+    },
+    ("raw", "simplefin_sync_receipts"): {
+        "source_metadata": DataClass.COMPOSITE_IDENTIFIER,
+        "local_outcomes": DataClass.COMPOSITE_IDENTIFIER,
+    },
     # --- OFX: `account_id` is the `<ACCTID>` element, i.e. the institution's
     # own account number (raw_ofx_accounts.sql). `source_account_key` is that
     # same column re-aliased by every stg_ofx__* model.

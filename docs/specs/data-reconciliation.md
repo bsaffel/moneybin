@@ -88,7 +88,7 @@ Columns:
   raw_amount_sum    DECIMAL(18,2) -- SUM(amount) in raw
   prep_amount_sum   DECIMAL(18,2) -- SUM(amount) in prep
   amount_delta      DECIMAL(18,2) -- Difference (should be 0 for non-dedup sources)
-  checked_at        TIMESTAMP     -- CURRENT_TIMESTAMP
+  checked_at        TIMESTAMPTZ     -- CURRENT_TIMESTAMP
 ```
 
 ### SQLMesh model: `core.reconciliation_import_batches` (VIEW)
@@ -107,7 +107,7 @@ Columns:
   log_rows_skipped    INTEGER
   accounting_balanced BOOLEAN       -- total = imported + rejected + skipped
   status              VARCHAR       -- From import_log
-  checked_at          TIMESTAMP
+  checked_at          TIMESTAMPTZ
 ```
 
 ### SQLMesh model: `core.reconciliation_coverage` (VIEW)

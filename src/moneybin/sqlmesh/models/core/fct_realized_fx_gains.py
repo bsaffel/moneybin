@@ -55,7 +55,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
         "acquisition_date": "DATE",
         "disposal_date": "DATE",
         "valuation_rate_date": "DATE",
-        "updated_at": "TIMESTAMP",
+        "updated_at": "TIMESTAMPTZ",
     },
     column_descriptions={
         "realized_fx_gain_id": "Stable content hash of the disposal and consumed lot",
@@ -118,7 +118,7 @@ def execute(
         pa.field("acquisition_date", pa.date32()),
         pa.field("disposal_date", pa.date32()),
         pa.field("valuation_rate_date", pa.date32()),
-        pa.field("updated_at", pa.timestamp("us")),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
     ])
     yield pa.Table.from_pylist([asdict(row) for row in rows], schema=schema).to_pandas(  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list
         types_mapper=pd.ArrowDtype

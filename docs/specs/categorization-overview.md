@@ -149,7 +149,7 @@ The trained model is serialized and stored as a BLOB in `app.ml_models`, keeping
 | `model_id` | `VARCHAR PK` | Unique identifier for this model version |
 | `model_type` | `VARCHAR DEFAULT 'categorizer'` | Model type identifier |
 | `model_blob` | `BLOB NOT NULL` | Serialized scikit-learn model (pipeline: vectorizer + classifier) |
-| `trained_at` | `TIMESTAMP` | When this model was trained |
+| `trained_at` | `TIMESTAMPTZ` | When this model was trained |
 | `training_samples` | `INTEGER` | Number of categorized transactions used for training |
 | `accuracy` | `DECIMAL(5,4)` | Overall cross-validation accuracy |
 | `feature_set` | `VARCHAR` | Features used: 'description' or 'description+amount' |

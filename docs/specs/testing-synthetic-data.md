@@ -539,7 +539,7 @@ where doing so exercises real code paths. Columns not listed default to NULL.
 | `transaction_id` | Seeded deterministic ID, FITID-style (e.g. `SYN20240115001`) |
 | `account_id` | Matching `account_id` from `raw.ofx_accounts` |
 | `transaction_type` | Contextual: `DEBIT`, `CREDIT`, `DEP`, `DIRECTDEP`, `XFER` |
-| `date_posted` | TIMESTAMP from generated date |
+| `date_posted` | TIMESTAMPTZ from generated date |
 | `amount` | Generated amount (negative = expense, positive = income) |
 | `payee` | Generated description (bank-statement-style for merchants with `description_prefix`) |
 | `memo` | NULL |
@@ -616,7 +616,7 @@ CREATE TABLE synthetic.ground_truth (
     transfer_pair_id VARCHAR,              -- non-NULL for transfer pairs; both sides share the same ID
     persona VARCHAR NOT NULL,              -- which persona generated this row
     seed INTEGER NOT NULL,                 -- seed used for reproducibility
-    generated_at TIMESTAMP NOT NULL        -- when this ground truth was produced
+    generated_at TIMESTAMPTZ NOT NULL        -- when this ground truth was produced
 );
 ```
 

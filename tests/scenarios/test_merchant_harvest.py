@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.account_resolver import AccountResolver
@@ -148,7 +148,7 @@ def test_harvest_binds_existing_categorizations() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         # --- Load Plaid data, resolve accounts, materialize prep/core views ---
-        sync_data = SyncDataResponse.model_validate(_PAYLOAD_SINGLE)
+        sync_data = PlaidSyncDataResponse.model_validate(_PAYLOAD_SINGLE)
         loader = PlaidExtractor(db)
         loader.load(sync_data, job_id=sync_data.metadata.job_id)
 
@@ -240,7 +240,7 @@ def test_harvest_routes_conflict_to_review() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         # --- Load Plaid data, resolve accounts, materialize prep/core views ---
-        sync_data = SyncDataResponse.model_validate(_PAYLOAD_CONFLICT)
+        sync_data = PlaidSyncDataResponse.model_validate(_PAYLOAD_CONFLICT)
         loader = PlaidExtractor(db)
         loader.load(sync_data, job_id=sync_data.metadata.job_id)
 

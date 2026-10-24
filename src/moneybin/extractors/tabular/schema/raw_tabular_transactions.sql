@@ -27,9 +27,9 @@ CREATE TABLE IF NOT EXISTS raw.tabular_transactions (
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data (e.g. "chase_credit", "tiller", Plaid item_id); scopes Tier 2b dedup
     import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in app.import_log; enables import reverting and history
     row_number INTEGER,                         -- 1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation
-    extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
-    deleted_from_source_at TIMESTAMP,                  -- For live tabular sources (gsheet): timestamp when this row was observed absent from the source on the most recent pull. NULL means the row is currently present in source (or the source is non-live like a one-shot CSV import).
+    extracted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
+    deleted_from_source_at TIMESTAMPTZ,                  -- For live tabular sources (gsheet): timestamp when this row was observed absent from the source on the most recent pull. NULL means the row is currently present in source (or the source is non-live like a one-shot CSV import).
     to_amount DECIMAL(18, 2),                   -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
     to_currency VARCHAR,                        -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     PRIMARY KEY (transaction_id, account_id, source_file)

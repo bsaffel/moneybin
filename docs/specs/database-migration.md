@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS app.schema_migrations (
     checksum VARCHAR NOT NULL, -- Lowercase hex SHA-256 of the migration file contents at apply time
     success BOOLEAN NOT NULL DEFAULT TRUE, -- FALSE if the migration failed mid-execution (stuck state)
     execution_ms INTEGER, -- Migration duration in milliseconds
-    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Timestamp when this migration was applied
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- Timestamp when this migration was applied
 );
 ```
 
@@ -205,8 +205,8 @@ CREATE TABLE IF NOT EXISTS app.versions (
     component VARCHAR PRIMARY KEY, -- Component identifier: 'moneybin', 'sqlmesh', etc.
     version VARCHAR NOT NULL, -- Current version string (semver)
     previous_version VARCHAR, -- Version before the last update (NULL on first install)
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the version was last changed
-    installed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- When this component was first recorded
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the version was last changed
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- When this component was first recorded
 );
 ```
 
@@ -385,3 +385,16 @@ N/A — migrations are an infrastructure concern, not exposed via MCP tools.
   troubleshooting.
 - All migration operations are logged with enough detail to diagnose failures from
   the log file alone.
+
+
+### UTC compatibility before migration
+
+The [warehouse UTC contract](warehouse-utc.md) is checked before initialization
+or migration escalation. Incompatible old profiles are refused; ordinary
+migrations cannot infer historical timezone provenance. This pre-v1 change
+expects fresh profiles after the planned SQL baseline. Any retained-history
+conversion needs separately prepared, explicitly authorized offline maintenance;
+no permanent converter or conversion migration is installed. Historical
+migration files remain unchanged. Encrypted restore validates source key and
+contract before replacement and exposes interrupted promotion reconciliation
+through `moneybin db restore --recover`.

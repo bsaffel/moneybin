@@ -10,6 +10,6 @@ CREATE TABLE IF NOT EXISTS app.user_reports (
     class_downgrades JSON NOT NULL DEFAULT '{}', -- Approved downgrades as {column: {from, to, reason}}; 'from' is the derived class the approval was granted against
     class_fingerprint VARCHAR NOT NULL, -- Hash over the derivation inputs; a mismatch forces re-resolution before the run rather than trusting the stored map
     is_active BOOLEAN NOT NULL DEFAULT true, -- False archives the report: hidden from the default catalog, still runnable by name
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Saved-report creation timestamp
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last saved-report mutation timestamp
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Saved-report creation timestamp
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last saved-report mutation timestamp
 );

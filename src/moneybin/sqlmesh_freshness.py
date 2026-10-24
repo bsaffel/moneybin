@@ -37,6 +37,7 @@ from moneybin.tables import (
     TRANSACTION_TAGS,
     USER_CATEGORIES,
     USER_MERCHANTS,
+    UTC_UPGRADE_PROVENANCE,
     TableRef,
 )
 
@@ -78,7 +79,6 @@ _ACCOUNT_SETTINGS_READ_THROUGH = (
     "display_name",
     "official_name",
     "last_four",
-    "account_subtype",
     "holder_category",
     "credit_limit",
     "updated_at",
@@ -101,6 +101,8 @@ APP_INPUTS: tuple[InputClass, ...] = (
     InputClass(LOT_SELECTIONS, _R),
     InputClass(EXCHANGE_RATE_OVERRIDES, _R),
     InputClass(PROFILE_SETTINGS, _R),
+    # Bootstrap precedes model builds; offline provenance changes require a rebuild.
+    InputClass(UTC_UPGRADE_PROVENANCE, _R),
     InputClass(AUDIT_LOG, InputFreshness.TARGET_SCOPED),
     InputClass(TRANSACTION_CATEGORIES, _T),
     InputClass(TRANSACTION_NOTES, _T),

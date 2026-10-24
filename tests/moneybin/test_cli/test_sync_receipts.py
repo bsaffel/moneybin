@@ -12,7 +12,11 @@ import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.connectors.sync_models import InstitutionResult, PullResult
+from moneybin.connectors.sync_models import (
+    InstitutionResult,
+    PlaidSourceResult,
+    PullResult,
+)
 from moneybin.logging.config import setup_logging
 
 runner = CliRunner()
@@ -127,11 +131,33 @@ def _pull_result(*, partial: bool = False) -> PullResult:
         )
     return PullResult(
         job_id="job-1",
+        ack_state="confirmed",
+        setup_state="complete",
+        refresh_state="complete",
         transactions_loaded=28,
         accounts_loaded=1,
         balances_loaded=1,
         transactions_removed=2,
         institutions=institutions,
+        source_results=[
+            PlaidSourceResult.model_validate({
+                "provider": "plaid",
+                "connection_id": "22222222-2222-4222-8222-222222222222",
+                "credential_generation": 1,
+                "outcomes": [
+                    {
+                        "account_id": "synthetic-account",
+                        "native_scope": {
+                            "kind": "plaid_item",
+                            "provider_item_id": "item_example_bank",
+                        },
+                        "window": None,
+                        "status": "complete",
+                        "error_code": None,
+                    }
+                ],
+            })
+        ],
         transforms_applied=True,
     )
 

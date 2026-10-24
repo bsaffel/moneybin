@@ -563,6 +563,18 @@ class TestCategorizationRulesTargetState:
         assert id_retry.to_dict()["error"]["code"] == "mutation_nothing_to_do"
         assert active.data.rules[0].min_amount == Decimal("-19.99")
         assert active.data.rules[0].max_amount == Decimal("-0.10")
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE app.categorization_rules SET created_at = "
+                "TIMESTAMPTZ '2025-11-02 01:30:00.123456-04:00', updated_at = "
+                "TIMESTAMPTZ '2025-11-02 01:31:00-04:00' WHERE rule_id = ?",
+                [rule_id],
+            )
+        timestamps = (
+            await transactions_categorize_rules_coarse(view="active")
+        ).to_dict()["data"]["rules"][0]
+        assert timestamps["created_at"] == "2025-11-02T05:30:00.123456Z"
+        assert timestamps["updated_at"] == "2025-11-02T05:31:00.000000Z"
         with get_database(read_only=True) as db:
             assert db.execute(
                 "SELECT COUNT(*) FROM app.categorization_rules "

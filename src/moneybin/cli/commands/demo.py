@@ -43,6 +43,7 @@ def _render_demo_receipt(result: DemoResult, *, quiet: bool) -> None:
     )
     facts = [
         ("Profile", demo_result.profile),
+        ("Reporting timezone", demo_result.reporting_timezone),
         ("Persona", demo_result.persona),
         ("Seed", str(demo_result.seed)),
         ("History", history),
@@ -203,6 +204,7 @@ def demo_command(
                 build_envelope(
                     data={
                         "profile": result.profile,
+                        "reporting_timezone": result.reporting_timezone,
                         "persona": result.persona,
                         "seed": result.seed,
                         "account_count": result.account_count,

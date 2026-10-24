@@ -13,6 +13,7 @@ from moneybin.reports._framework.contract import (
     OutputColumn,
     ReportQuery,
     ReportSemantics,
+    SyncReportScope,
     report,
 )
 from moneybin.reports.definitions._shared import DRIFT_STATUSES, validate_date
@@ -277,6 +278,7 @@ def balance_drift(
         WHERE 1=1
     """  # noqa: S608  # TableRef interpolation
     params: list[Binding] = []
+    account_ids: tuple[str, ...] | None = None
     if account:
         sql += " AND account_id = ?"
         # Bind the filter to the resolved account_id (free-text → id at the
@@ -286,9 +288,9 @@ def balance_drift(
         # ACCOUNT_IDENTIFIER — free text a user typed — while the *binding* is a
         # minted opaque surrogate, RECORD_ID. Neither class describes the other's
         # value, so the class travels with the binding.
-        params.append(
-            Binding(AccountService(db).resolve_strict(account), DataClass.RECORD_ID)
-        )
+        resolved = AccountService(db).resolve_strict(account)
+        params.append(Binding(resolved, DataClass.RECORD_ID))
+        account_ids = (resolved,)
     if status != "all":
         sql += " AND status = ?"
         params.append(Binding(status, DataClass.TXN_TYPE))
@@ -323,4 +325,9 @@ def balance_drift(
             verb="Rerun",
         ),
     ]
-    return ReportQuery(sql, params, actions=actions)
+    return ReportQuery(
+        sql,
+        params,
+        actions=actions,
+        sync_scope=SyncReportScope(account_ids=account_ids, net_worth=False),
+    )

@@ -116,7 +116,7 @@ class TestV011Migration:
         data_type, is_nullable = column_info(
             db, "app", "balance_assertions", "updated_at"
         )
-        assert data_type == "TIMESTAMP"
+        assert data_type == "TIMESTAMP WITH TIME ZONE"
         assert is_nullable is False
 
 

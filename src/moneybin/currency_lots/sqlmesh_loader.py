@@ -13,7 +13,7 @@ import re
 import typing as t
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 import pandas as pd
@@ -23,6 +23,7 @@ from moneybin.investments.cost_basis import (
     PairedTransfer,
     compute_lots_and_gains,
 )
+from moneybin.services.audit_service import AuditEvent
 from moneybin.services.currency_service import last_publication_day
 from moneybin.tables import (
     AUDIT_LOG,
@@ -37,6 +38,13 @@ from moneybin.tables import (
     INT_TRANSACTIONS_MERGED,
     MATCH_DECISIONS,
     PROFILE_SETTINGS,
+    UTC_UPGRADE_PROVENANCE,
+)
+from moneybin.temporal import format_utc, parse_utc
+from moneybin.temporal_contract import (
+    AuditTemporalPolicy,
+    decode_audit_row,
+    parse_audit_temporal_policy,
 )
 
 if t.TYPE_CHECKING:
@@ -256,7 +264,7 @@ def _opt_date(value: object) -> date | None:
 
 def _opt_timestamp(value: object) -> datetime | None:
     text = _opt_str(value)
-    return datetime.fromisoformat(text) if text is not None else None
+    return parse_utc(text) if text is not None else None
 
 
 def _candidate(record: dict[str, object]) -> _Candidate:
@@ -479,7 +487,15 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
             credit.loaded_at,
             COALESCE(decision_audit.mutation_updated_at, md.decided_at),
             CASE WHEN debit.currency_code IS NULL THEN debit_account.updated_at END,
-            CASE WHEN credit.currency_code IS NULL THEN credit_account.updated_at END
+            CASE WHEN credit.currency_code IS NULL THEN credit_account.updated_at END,
+            CASE WHEN md.source_type_a = 'simplefin' THEN GREATEST(
+              debit_account.account_type_changed_at,
+              debit_account.account_subtype_changed_at
+            ) END,
+            CASE WHEN md.source_type_b = 'simplefin' THEN GREATEST(
+              credit_account.account_type_changed_at,
+              credit_account.account_subtype_changed_at
+            ) END
           )::VARCHAR AS candidate_updated_at
         FROM {bridge} AS bt
         JOIN {match_decisions} AS md
@@ -501,9 +517,9 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
         LEFT JOIN {transactions} AS canonical_credit
           ON credit.transaction_id = canonical_credit.transaction_id
         LEFT JOIN {accounts} AS debit_account
-          ON debit.account_id = debit_account.account_id
+          ON md.account_id = debit_account.account_id
         LEFT JOIN {accounts} AS credit_account
-          ON credit.account_id = credit_account.account_id
+          ON md.account_id_b = credit_account.account_id
         WHERE md.match_type = 'transfer'
           AND md.match_status = 'accepted'
           AND md.reversed_at IS NULL
@@ -541,7 +557,15 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
             COALESCE(debit.loaded_at, md.decided_at),
             COALESCE(credit.loaded_at, md.decided_at),
             CASE WHEN debit.currency_code IS NULL THEN debit_account.updated_at END,
-            CASE WHEN credit.currency_code IS NULL THEN credit_account.updated_at END
+            CASE WHEN credit.currency_code IS NULL THEN credit_account.updated_at END,
+            CASE WHEN md.source_type_a = 'simplefin' THEN GREATEST(
+              debit_account.account_type_changed_at,
+              debit_account.account_subtype_changed_at
+            ) END,
+            CASE WHEN md.source_type_b = 'simplefin' THEN GREATEST(
+              credit_account.account_type_changed_at,
+              credit_account.account_subtype_changed_at
+            ) END
           )::VARCHAR AS candidate_updated_at
         FROM {match_decisions} AS md
         LEFT JOIN {bridge} AS bt
@@ -565,9 +589,9 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
         LEFT JOIN {transactions} AS canonical_credit
           ON credit.transaction_id = canonical_credit.transaction_id
         LEFT JOIN {accounts} AS debit_account
-          ON debit.account_id = debit_account.account_id
+          ON md.account_id = debit_account.account_id
         LEFT JOIN {accounts} AS credit_account
-          ON credit.account_id = credit_account.account_id
+          ON md.account_id_b = credit_account.account_id
         LEFT JOIN (
           SELECT target_id, MAX(occurred_at) AS mutation_updated_at
           FROM {audit_log}
@@ -701,7 +725,8 @@ def _load_profile_home_freshness(
     audit_log = AUDIT_LOG.full_name
     frame = context.fetchdf(
         f"""
-        SELECT occurred_at::VARCHAR AS occurred_at,
+        SELECT audit_id, actor, action, operation_id,
+               occurred_at::VARCHAR AS occurred_at,
                before_value::VARCHAR AS before_value,
                after_value::VARCHAR AS after_value
         FROM {audit_log}
@@ -714,6 +739,7 @@ def _load_profile_home_freshness(
     records = _records(frame)
     home_changed_at: datetime | None = None
     legacy_home_updated_at: datetime | None = None
+    policy = AuditTemporalPolicy(rules=())
     for record in records:
         before = _audit_snapshot(record["before_value"])
         after = _audit_snapshot(record["after_value"])
@@ -724,7 +750,33 @@ def _load_profile_home_freshness(
             home_changed_at = _latest(home_changed_at, occurred_at)
         if legacy_home_updated_at is None and before is not None:
             if before.get("home_currency") is not None:
-                legacy_home_updated_at = _opt_timestamp(before.get("updated_at"))
+                event = AuditEvent(
+                    audit_id=str(record["audit_id"]),
+                    occurred_at=format_utc(occurred_at)
+                    if occurred_at is not None
+                    else "",
+                    actor=str(record["actor"]),
+                    action=str(record["action"]),
+                    operation_id=str(record["operation_id"]),
+                    target_schema="app",
+                    target_table="profile_settings",
+                    target_id="profile",
+                    before_value=dict(before),
+                    after_value=dict(after) if after is not None else None,
+                    parent_audit_id=None,
+                )
+                try:
+                    decoded = decode_audit_row(event, before, policy)
+                except ValueError:
+                    provenance = context.fetchdf(
+                        f"SELECT contract_version, rules FROM {UTC_UPGRADE_PROVENANCE.full_name}"  # noqa: S608  # registered TableRef, not user input
+                    )
+                    policy = parse_audit_temporal_policy([
+                        (row["contract_version"], row["rules"])
+                        for row in _records(provenance)
+                    ])
+                    decoded = decode_audit_row(event, before, policy)
+                legacy_home_updated_at = _opt_timestamp(decoded.get("updated_at"))
     return home_changed_at, legacy_home_updated_at, bool(records)
 
 
@@ -793,6 +845,7 @@ def _load_stored_rates(
         )
 
     provider_rates: dict[tuple[str, str, date], _StoredRate] = {}
+    earliest = datetime.min.replace(tzinfo=UTC)
     for record in _records(provider_frame):
         rate_date = _opt_date(record["rate_date"])
         rate = _opt_decimal(record["rate"])
@@ -807,13 +860,13 @@ def _load_stored_rates(
             _opt_timestamp(record["loaded_at"]),
         )
         current = provider_rates.get(key)
-        candidate_loaded_at = candidate.updated_at or datetime.min
+        candidate_loaded_at = candidate.updated_at or earliest
         current_loaded_at = current.updated_at if current is not None else None
         if (
             current is None
-            or candidate_loaded_at > (current_loaded_at or datetime.min)
+            or candidate_loaded_at > (current_loaded_at or earliest)
             or (
-                candidate_loaded_at == (current_loaded_at or datetime.min)
+                candidate_loaded_at == (current_loaded_at or earliest)
                 and candidate.source_type < current.source_type
             )
         ):
@@ -1597,6 +1650,14 @@ def _load_same_currency_transfers(
                GREATEST(
                  debit.loaded_at,
                  credit.loaded_at,
+                 CASE WHEN md.source_type_a = 'simplefin' THEN GREATEST(
+                   debit_account.account_type_changed_at,
+                   debit_account.account_subtype_changed_at
+                 ) END,
+                 CASE WHEN md.source_type_b = 'simplefin' THEN GREATEST(
+                   credit_account.account_type_changed_at,
+                   credit_account.account_subtype_changed_at
+                 ) END,
                  CASE
                    WHEN debit_row.currency_code IS NULL THEN debit_account.updated_at
                  END,

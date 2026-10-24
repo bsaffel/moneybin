@@ -50,7 +50,14 @@ MODEL (
   grain (account_id, security_id)
 );
 
-WITH positions AS (
+WITH reporting_calendar AS (
+  /* Keep source price dates intact; only "today" follows the saved calendar. */
+  SELECT
+    timezone(ps.reporting_timezone, CURRENT_TIMESTAMP)::DATE AS today
+  FROM app.profile_settings AS ps
+  WHERE
+    ps.scope = 'profile'
+), positions AS (
   SELECT
     l.account_id,
     l.security_id,
@@ -137,7 +144,11 @@ WITH positions AS (
     updated_at
   FROM core.fct_security_prices
   WHERE
-    price_date <= CURRENT_DATE
+    price_date <= (
+      SELECT
+        today
+      FROM reporting_calendar
+    )
   QUALIFY
     ROW_NUMBER() OVER (PARTITION BY security_id, quote_currency ORDER BY price_date DESC) = 1
 ), split_reject_securities AS (
@@ -416,7 +427,11 @@ SELECT
     THEN 'withheld'
     WHEN lp.close IS NULL
     THEN 'unpriced'
-    WHEN lp.price_date = CURRENT_DATE
+    WHEN lp.price_date = (
+      SELECT
+        today
+      FROM reporting_calendar
+    )
     THEN 'valued'
     ELSE 'carried_forward'
   END AS valuation_status, /* valued | carried_forward | unpriced | withheld | source_overlap. Every status either carries a number the reader can rely on or carries none at all — no status publishes a qualified figure. The non-valued statuses stay distinct because each has a different remedy: unpriced wants a price feed; withheld wants the share count reconciled — an unreconciled split recorded, a broker divergence resolved, or a position the broker no longer reports closed out; source_overlap wants one source chosen for the account (accounts set --investment-source-type), and is checked first because a share count measured against a double-counted ledger is a symptom rather than the fault */
@@ -443,7 +458,11 @@ SELECT
   CASE
     WHEN wh.is_source_overlap OR wh.is_withheld
     THEN NULL
-    ELSE CAST(CURRENT_DATE - lp.price_date AS INT)
+    ELSE CAST((
+      SELECT
+        today
+      FROM reporting_calendar
+    ) - lp.price_date AS INT)
   END AS days_since_observed, /* Calendar days between the price used and today (`PendingTxnRow.age_days` uses the same CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault. NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
   pr.provider_reported_quantity, /* NON-AUTHORITATIVE: the broker's claimed open units in its newest snapshot. Reconciliation reference only — `quantity` above is MoneyBin's figure. NULL = the broker's newest snapshot does not report this position */
   pr.provider_reported_cost_basis, /* NON-AUTHORITATIVE: the broker's claimed cost basis. Never overwrites or feeds `cost_basis` above; system doctor warns when the two diverge */

@@ -6,8 +6,8 @@ CREATE TABLE IF NOT EXISTS raw.ofx_accounts (
     institution_org VARCHAR, -- Financial institution name from OFX <ORG> element; mapped to institution_name in core
     institution_fid VARCHAR, -- Financial institution identifier from OFX <FID> element; used in OFX routing
     source_file VARCHAR, -- Path to the OFX/QFX file this record was loaded from; part of primary key
-    extracted_at TIMESTAMP, -- Timestamp when the OFX file was parsed; part of primary key to allow re-extraction
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this record was inserted into the database
+    extracted_at TIMESTAMPTZ, -- Timestamp when the OFX file was parsed; part of primary key to allow re-extraction
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this record was inserted into the database
     import_id VARCHAR, -- UUID of the import batch this row belongs to; NULL for rows imported before V003
     source_type VARCHAR DEFAULT 'ofx', -- Format taxonomy marker; always 'ofx' for OFX/QFX/QBO files
     source_origin VARCHAR, -- Institution slug resolved at import time; scopes source_native against slug collisions (matches app.account_links.source_origin for the staging JOIN)

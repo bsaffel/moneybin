@@ -409,10 +409,12 @@ async def test_system_audit_event_continuation_ignores_newer_insert() -> None:
     from moneybin.database import get_database
 
     with get_database(read_only=False) as db:
+        baseline_count = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+        assert baseline_count is not None
         for audit_id, occurred_at in (
-            ("audit-original-third", "2099-07-18 10:00:00"),
-            ("audit-original-second", "2099-07-18 11:00:00"),
-            ("audit-original-first", "2099-07-18 12:00:00"),
+            ("audit-original-third", "2099-07-18 10:00:00+00:00"),
+            ("audit-original-second", "2099-07-18 11:00:00+00:00"),
+            ("audit-original-first", "2099-07-18 12:00:00+00:00"),
         ):
             db.execute(
                 """
@@ -432,7 +434,7 @@ async def test_system_audit_event_continuation_ignores_newer_insert() -> None:
             INSERT INTO app.audit_log (
                 audit_id, occurred_at, actor, action, target_schema,
                 target_table, target_id, operation_id
-            ) VALUES ('audit-new-head', '2100-01-01 00:00:00', 'cli',
+            ) VALUES ('audit-new-head', '2100-01-01 00:00:00+00:00', 'cli',
                       'tag.add', 'app', 'transaction_tags', 'new', 'op-new')
             """
         )
@@ -444,8 +446,8 @@ async def test_system_audit_event_continuation_ignores_newer_insert() -> None:
 
     assert [event.audit_id for event in first.data.events] == ["audit-original-first"]
     assert [event.audit_id for event in second.data.events] == ["audit-original-second"]
-    assert first.summary.total_count == 3
-    assert second.summary.total_count == 3
+    assert first.summary.total_count == baseline_count[0] + 3
+    assert second.summary.total_count == baseline_count[0] + 3
 
 
 async def test_system_audit_coarse_paginates_tied_events_without_gaps(
@@ -453,9 +455,15 @@ async def test_system_audit_coarse_paginates_tied_events_without_gaps(
 ) -> None:
     from moneybin.database import get_database
 
-    timestamp = "2099-07-18 12:00:00"
+    timestamp = "2099-07-18 12:00:00+00:00"
     expected = ["audit-c", "audit-b", "audit-a"]
     with get_database(read_only=False) as db:
+        expected += [
+            row[0]
+            for row in db.execute(
+                "SELECT audit_id FROM app.audit_log ORDER BY occurred_at DESC, audit_id DESC"
+            ).fetchall()
+        ]
         for audit_id in ("audit-a", "audit-c", "audit-b"):
             db.execute(
                 """
@@ -483,7 +491,19 @@ async def test_system_audit_coarse_paginates_tied_events_without_gaps(
 
 
 async def test_system_audit_coarse_paginates_history(mcp_db: object) -> None:
-    expected = {_make_tag_op(tag) for tag in ("history-a", "history-b", "history-c")}
+    from moneybin.database import get_database
+
+    with get_database(read_only=True) as db:
+        expected = {
+            row[0]
+            for row in db.execute(
+                "SELECT DISTINCT operation_id FROM app.audit_log "
+                "WHERE operation_id IS NOT NULL"
+            ).fetchall()
+        }
+    expected.update(
+        _make_tag_op(tag) for tag in ("history-a", "history-b", "history-c")
+    )
     observed: set[str] = set()
     cursor: str | None = None
 
@@ -505,10 +525,15 @@ async def test_system_audit_history_continuation_ignores_newer_operation() -> No
     from moneybin.database import get_database
 
     with get_database(read_only=False) as db:
+        baseline_count = db.execute(
+            "SELECT COUNT(DISTINCT operation_id) FROM app.audit_log "
+            "WHERE operation_id IS NOT NULL"
+        ).fetchone()
+        assert baseline_count is not None
         for operation_id, occurred_at in (
-            ("op-original-third", "2099-07-18 10:00:00"),
-            ("op-original-second", "2099-07-18 11:00:00"),
-            ("op-original-first", "2099-07-18 12:00:00"),
+            ("op-original-third", "2099-07-18 10:00:00+00:00"),
+            ("op-original-second", "2099-07-18 11:00:00+00:00"),
+            ("op-original-first", "2099-07-18 12:00:00+00:00"),
         ):
             db.execute(
                 """
@@ -533,7 +558,7 @@ async def test_system_audit_history_continuation_ignores_newer_operation() -> No
             INSERT INTO app.audit_log (
                 audit_id, occurred_at, actor, action, target_schema,
                 target_table, target_id, operation_id
-            ) VALUES ('audit-new-operation', '2100-01-01 00:00:00', 'cli',
+            ) VALUES ('audit-new-operation', '2100-01-01 00:00:00+00:00', 'cli',
                       'tag.add', 'app', 'transaction_tags', 'new', 'op-new')
             """
         )
@@ -549,8 +574,8 @@ async def test_system_audit_history_continuation_ignores_newer_operation() -> No
     assert [operation.operation_id for operation in second.data.operations] == [
         "op-original-second"
     ]
-    assert first.summary.total_count == 3
-    assert second.summary.total_count == 3
+    assert first.summary.total_count == baseline_count[0] + 3
+    assert second.summary.total_count == baseline_count[0] + 3
 
 
 async def test_system_audit_coarse_rejects_continuation_before_its_snapshot(
@@ -575,7 +600,7 @@ async def test_system_audit_coarse_rejects_continuation_before_its_snapshot(
     position = decode_keyset_cursor(
         first.next_cursor,
         namespace="system_audit",
-        scope={"view": "events"},
+        scope={"view": "events", "temporal_contract": 2},
     )
 
     response = await system_audit_coarse(
@@ -583,9 +608,9 @@ async def test_system_audit_coarse_rejects_continuation_before_its_snapshot(
         limit=1,
         cursor=encode_keyset_cursor(
             namespace="system_audit",
-            scope={"view": "events"},
+            scope={"view": "events", "temporal_contract": 2},
             snapshot=position.snapshot,
-            after=("2999-01-01T00:00:00", "audit-forged"),
+            after=("2999-01-01T00:00:00+00:00", "audit-forged"),
             total=position.total,
         ),
     )
@@ -614,9 +639,9 @@ async def test_system_audit_coarse_rejects_an_inversion_spelled_in_two_iso_forms
         limit=1,
         cursor=encode_keyset_cursor(
             namespace="system_audit",
-            scope={"view": "events"},
-            snapshot=("2025-06-01T01:00:00", "audit-a"),
-            after=("2025-06-01 02:00:00", "audit-b"),
+            scope={"view": "events", "temporal_contract": 2},
+            snapshot=("2025-06-01T01:00:00+00:00", "audit-a"),
+            after=("2025-06-01 02:00:00+00:00", "audit-b"),
             total=2,
         ),
     )
@@ -639,7 +664,7 @@ async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
         view="events",
         cursor=encode_keyset_cursor(
             namespace="system_audit",
-            scope={"view": "events"},
+            scope={"view": "events", "temporal_contract": 2},
             snapshot=("not-a-timestamp", "audit-a"),
             after=("still-not-a-timestamp", "audit-b"),
             total=2,

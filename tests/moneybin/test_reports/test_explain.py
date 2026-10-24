@@ -444,6 +444,13 @@ def test_freshness_reports_the_stored_fingerprint_with_no_drift(
     assert explanation.drift_detected is False
     assert explanation.drift_reason is None
     assert explanation.updated_at is not None
+    saved_db.execute(
+        "UPDATE app.user_reports SET updated_at = "
+        "TIMESTAMPTZ '2025-11-02 01:30:00.123456-04:00' WHERE report_id = ?",
+        [explanation.report_id],
+    )
+    refreshed = explain_report(saved_db, handle=explanation.report_id, parameters={})
+    assert refreshed.updated_at == "2025-11-02T05:30:00.123456Z"
 
 
 def test_freshness_reports_drift_when_an_upstream_column_is_reclassified(

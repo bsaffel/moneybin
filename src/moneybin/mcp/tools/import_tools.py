@@ -111,6 +111,7 @@ from moneybin.services.import_confirmation import (
     sign_convention_effect,
 )
 from moneybin.services.refresh_outcome import RefreshStepOutcome
+from moneybin.temporal import format_utc
 from moneybin.utils.file import file_sha256
 
 logger = logging.getLogger(__name__)
@@ -1024,7 +1025,7 @@ def import_preview_coarse(
     wire = TypeAdapter(dict[str, Any]).validate_json(response.to_json())
     data = TypeAdapter(dict[str, Any]).validate_python(wire["data"])
     pending_id = "pending"
-    expires_wire = expires_at.isoformat()
+    expires_wire = format_utc(expires_at)
     # Confirm rejects both of these outright, so the correction hint below has
     # to survive the preview_id rewrite at the end of this function.
     from moneybin.services.import_confirmation import (
@@ -1451,7 +1452,7 @@ def _import_status_position(
         position = decode_keyset_cursor(
             cursor,
             namespace="import_status.imports",
-            scope={"import_id": None, "sections": sections},
+            scope={"import_id": None, "sections": sections, "temporal_contract": 2},
         )
         # Validates arity first, so the indexing below is safe. The third key
         # element is the frozen imports-section total rather than a sort
@@ -1486,7 +1487,7 @@ def _import_status_position(
         return canonical
     except ValueError as exc:
         raise UserError(
-            "Invalid import pagination cursor.",
+            "Invalid import pagination cursor. Restart pagination without a cursor.",
             code=error_codes.IMPORT_CURSOR_INVALID,
         ) from exc
 
@@ -1632,7 +1633,7 @@ def import_status_coarse(
                         count,
                     ),
                     (
-                        str(last["started_at"]),
+                        format_utc(cast(datetime, last["started_at"])),
                         str(last["import_id"]),
                         count,
                     ),
@@ -1668,7 +1669,7 @@ def import_status_coarse(
     if pending_cursor is not None:
         next_cursor = encode_keyset_cursor(
             namespace="import_status.imports",
-            scope={"import_id": None, "sections": requested},
+            scope={"import_id": None, "sections": requested, "temporal_contract": 2},
             snapshot=pending_cursor[0],
             after=pending_cursor[1],
             total=stable_total,

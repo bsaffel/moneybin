@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -733,7 +734,7 @@ class TestMatchesPending:
                 "match_tier": "3",
                 "confidence_score": 0.95,
                 "decided_by": "user",
-                "decided_at": "2026-01-02T03:04:05",
+                "decided_at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
                 "source_type_a": "csv",
                 "source_type_b": "ofx",
             }
@@ -845,7 +846,7 @@ class TestMatchesPending:
                 "match_tier": None,
                 "confidence_score": None,
                 "decided_by": "user",
-                "decided_at": "2026-01-02T03:04:05",
+                "decided_at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
                 "source_type_a": "csv",
                 "source_type_b": "ofx",
             }

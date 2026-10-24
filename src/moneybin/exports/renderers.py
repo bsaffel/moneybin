@@ -28,6 +28,7 @@ from moneybin.exports.manifest import (
     safe_table_identifier,
 )
 from moneybin.exports.snapshot import PreparedExport, PreparedTable
+from moneybin.temporal import format_utc
 
 _MANIFEST_SHEET = "MoneyBin Manifest"
 _DICTIONARY_SHEET = "MoneyBin Data Dictionary"
@@ -285,7 +286,9 @@ def normalize_tabular_cell(value: object) -> TabularCell:
     if isinstance(value, Decimal):
         # Text preserves DECIMAL precision; XLSX numeric cells are IEEE-754 doubles.
         return str(value)
-    if isinstance(value, (datetime, date, time)):
+    if isinstance(value, datetime):
+        return format_utc(value)
+    if isinstance(value, (date, time)):
         return value.isoformat()
     if isinstance(value, bytes):
         return value.hex()

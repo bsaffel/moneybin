@@ -35,7 +35,7 @@ An account that is genuinely gone should be excluded by archiving it
 ageing out of the spine.
 
 Per-account precedence within a single date (most authoritative wins):
-  user assertion > ofx/plaid snapshot > tabular running balance
+  user assertion > ofx/plaid/simplefin snapshot > tabular running balance
 
 This is the only Python SQLMesh model in the project. The carry-forward logic
 cannot be expressed in SQL without recursive CTEs, which SQLMesh/DuckDB support
@@ -57,7 +57,13 @@ from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type st
     model,
 )
 
-_SOURCE_PRECEDENCE = {"assertion": 3, "ofx": 2, "plaid": 2, "tabular": 1}
+_SOURCE_PRECEDENCE = {
+    "assertion": 3,
+    "ofx": 2,
+    "plaid": 2,
+    "simplefin": 2,
+    "tabular": 1,
+}
 
 
 def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
@@ -96,7 +102,7 @@ def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
 
     Winner per balance_date: highest source precedence, then freshest updated_at,
     then source_type ascending as a final key. The updated_at + source_type keys
-    make the ofx/plaid precedence tie deterministic — both are institution
+    make the ofx/plaid/simplefin precedence tie deterministic — all are institution
     snapshots at the same tier, so without a tiebreak the winner would depend on
     pandas' (unstable) sort order.
     """
@@ -371,7 +377,7 @@ def _build_spine_rows(
     },
     column_descriptions={
         "account_id": "Foreign key to core.dim_accounts.account_id",
-        "observation_source": "source_type of the winning observation (ofx, tabular, assertion, plaid); NULL if interpolated or the account has no balance observation",
+        "observation_source": "source_type of the winning observation (ofx, tabular, assertion, plaid, simplefin); NULL if interpolated or the account has no balance observation",
         "currency_code": "ISO 4217 currency code, carried forward from the winning observation (or its interpolated predecessor) on each day; core.dim_accounts.currency_code when the account has no balance observation",
         "balance": "Balance as of end of this day; NULL when the account holds value (a transaction, a trade, or a broker-reported position) but has no balance observation. Count those rows before trusting a SUM: SUM() skips them silently",
         "reconciliation_delta": "Difference between observed and transaction-derived balance; NULL on interpolated days, on the first observation, and when the account has no balance observation",

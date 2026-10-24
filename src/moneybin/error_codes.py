@@ -178,6 +178,7 @@ INFRA_TOO_MANY_ITEMS = "infra_too_many_items"
 # mask_error_details would otherwise leave. Carries the exception *type* only —
 # never its message, which can embed file paths, SQL, and financial data.
 INFRA_UNCLASSIFIED_ERROR = "infra_unclassified_error"
+INFRA_UTC_UPGRADE_REQUIRED = "infra_utc_upgrade_required"
 INFRA_WRONG_KEY = "infra_wrong_key"
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from moneybin import error_codes
 from moneybin.errors import UserError
@@ -11,6 +11,7 @@ from moneybin.repositories.base import BaseRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import MANUAL_INVESTMENT_TRANSACTIONS, SECURITY_LINKS, TableRef
+from moneybin.temporal_contract import decode_audit_row, read_audit_temporal_policy
 
 _MANUAL_INVESTMENT_COLUMNS = (
     "source_transaction_id",
@@ -142,6 +143,22 @@ class ManualInvestmentTransactionsRepo(BaseRepo):
             )
         self._require_capture(before, _MANUAL_INVESTMENT_COLUMNS, event)
         self._require_capture(after, _MANUAL_INVESTMENT_COLUMNS, event)
+        try:
+            policy = read_audit_temporal_policy(self._db)
+            before = cast(
+                dict[str, Any],
+                self._serialize_for_audit(decode_audit_row(event, before, policy)),
+            )
+            after = cast(
+                dict[str, Any],
+                self._serialize_for_audit(decode_audit_row(event, after, policy)),
+            )
+        except ValueError:
+            raise UserError(
+                "Cannot undo: historical timestamps lack unambiguous accepted "
+                "UTC upgrade provenance. Inspect the operation and its upgrade evidence.",
+                code=error_codes.RECOVERY_NO_PATH,
+            ) from None
         if (
             before.keys() != after.keys()
             or any(before[key] != after[key] for key in before if key != "security_id")

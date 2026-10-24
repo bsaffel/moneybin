@@ -48,6 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from moneybin.privacy.payloads.currency import FxRatePayload
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.row_set import NO_ROW_SET, row_set
+from moneybin.temporal import format_utc
 
 # Every payload below classifies its `warnings` field AGGREGATE (Tier.LOW), not
 # DESCRIPTION: these are canned system-generated diagnostic strings (the
@@ -708,7 +709,7 @@ class SecurityLinkHistoryRow:
             candidate_security_id=r["candidate_security_id"],
             status=r["status"],
             decided_by=r["decided_by"],
-            decided_at=str(r["decided_at"])
+            decided_at=format_utc(r["decided_at"])
             if r.get("decided_at") is not None
             else None,
             confidence=(

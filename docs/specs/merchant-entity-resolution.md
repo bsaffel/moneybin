@@ -105,8 +105,8 @@ ref_value    TEXT     NOT NULL,      -- the provider's stable merchant id (opaqu
 source_type  TEXT     NOT NULL,      -- issuing provider: plaid (future: mx, simplefin, ...)
 status       TEXT     NOT NULL,      -- CHECK (status IN ('accepted', 'reversed'))
 decided_by   TEXT     NOT NULL,      -- CHECK (decided_by IN ('auto', 'user', 'system'))
-decided_at   TIMESTAMP NOT NULL,
-reversed_at  TIMESTAMP,
+decided_at   TIMESTAMPTZ NOT NULL,
+reversed_at  TIMESTAMPTZ,
 reversed_by  TEXT
 ```
 
@@ -139,8 +139,8 @@ match_signals         TEXT,               -- JSON: which signal fired + value (p
 status                TEXT  NOT NULL,     -- CHECK (status IN ('pending','accepted','rejected','reversed'))
 decided_by            TEXT  NOT NULL,     -- CHECK (decided_by IN ('auto','user'))
 match_reason          TEXT,
-decided_at            TIMESTAMP NOT NULL,
-reversed_at           TIMESTAMP,
+decided_at            TIMESTAMPTZ NOT NULL,
+reversed_at           TIMESTAMPTZ,
 reversed_by           TEXT
 ```
 

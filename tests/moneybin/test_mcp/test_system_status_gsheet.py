@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from typing import Any
 
 import pytest
 
-from moneybin.database import get_database
+from moneybin.database import Database, get_database
 from moneybin.mcp.tools.system import system_status
 
 
@@ -68,11 +69,20 @@ async def test_system_status_gsheet_block_present_when_no_connections(
 @pytest.mark.unit
 async def test_system_status_gsheet_block_zero_shape_when_table_absent(
     mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On a bare DB before init_schemas, an absent table reports zero-shape."""
+    """An already-open connection reports an absent table as zero-shape."""
     with get_database(read_only=False) as db:
         db.execute("DROP TABLE app.gsheet_connections")
-    env = system_status()
+
+        def existing_database(**_kwargs: Any) -> nullcontext[Database]:
+            return nullcontext(db)
+
+        monkeypatch.setattr(
+            "moneybin.database.get_database",
+            existing_database,
+        )
+        env = system_status()
     block = env.to_dict()["data"]["gsheet"]
     assert block["total_connections"] == 0
     assert block["by_status"] == {}

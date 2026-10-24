@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.tables import IMPORT_PREVIEW_SNAPSHOTS, IMPORT_PREVIEWS
+from moneybin.temporal import as_utc
 
 _COLUMNS = (
     "preview_id",
@@ -33,13 +34,6 @@ def _decode(row: tuple[Any, ...]) -> dict[str, Any]:
     if isinstance(snapshot, str):
         values["snapshot_json"] = json.loads(snapshot)
     return values
-
-
-def _db_time(value: datetime) -> datetime:
-    """Normalize an aware/naive UTC timestamp to DuckDB's naive UTC form."""
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 class ImportPreviewsRepo(BaseRepo):
@@ -93,8 +87,8 @@ class ImportPreviewsRepo(BaseRepo):
                     file_size_bytes,
                     channel,
                     json.dumps(snapshot, sort_keys=True, separators=(",", ":")),
-                    _db_time(issued_at),
-                    _db_time(expires_at),
+                    as_utc(issued_at),
+                    as_utc(expires_at),
                 ],
             )
             self._db.execute(
@@ -103,7 +97,7 @@ class ImportPreviewsRepo(BaseRepo):
                     preview_id, source_bytes, created_at
                 ) VALUES (?, ?, ?)
                 """,  # noqa: S608  # TableRef + parameterized values
-                [preview_id, source_bytes, _db_time(issued_at)],
+                [preview_id, source_bytes, as_utc(issued_at)],
             )
             after = self._fetch_row(preview_id)
             self._emit_audit(
@@ -162,7 +156,7 @@ class ImportPreviewsRepo(BaseRepo):
                         "from a fresh import_preview(file_path=...)."
                     ),
                 )
-            if _db_time(now) >= before["expires_at"]:
+            if as_utc(now) >= before["expires_at"]:
                 raise UserError(
                     "Import preview has expired.",
                     code=error_codes.IMPORT_PREVIEW_EXPIRED,
@@ -192,7 +186,7 @@ class ImportPreviewsRepo(BaseRepo):
                 SET consumed_at = ?, updated_at = ?
                 WHERE preview_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
-                [_db_time(now), _db_time(now), preview_id],
+                [as_utc(now), as_utc(now), preview_id],
             )
             self._db.execute(
                 f"""
@@ -232,7 +226,7 @@ class ImportPreviewsRepo(BaseRepo):
         if int(tables[0]) == 1:
             return True
 
-        cutoff = _db_time(now)
+        cutoff = as_utc(now)
         row = self._db.execute(
             f"""
             SELECT
@@ -268,7 +262,7 @@ class ImportPreviewsRepo(BaseRepo):
         in_outer_txn: bool = False,
     ) -> int:
         """Delete expired previews and either side's unusable orphan rows."""
-        cutoff = _db_time(now)
+        cutoff = as_utc(now)
         with self._transaction(in_outer_txn=in_outer_txn):
             rows = self._db.execute(
                 f"""

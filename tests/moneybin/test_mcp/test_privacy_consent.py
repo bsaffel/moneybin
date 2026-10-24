@@ -67,10 +67,20 @@ async def test_status_tool_reflects_grant(
     from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_status
 
     privacy_consent_grant(category="mcp-data-sharing")
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            "UPDATE app.ai_consent_grants SET granted_at = "
+            "TIMESTAMPTZ '2025-11-02 01:30:00.123456-04:00'"
+        )
     env = privacy_status()
     assert env.error is None
     cats = {g.feature_category for g in env.data.active_grants}
     assert "mcp-data-sharing" in cats
+    assert env.to_dict()["data"]["active_grants"][0]["granted_at"] == (
+        "2025-11-02T05:30:00.123456Z"
+    )
 
 
 async def test_revoke_consent_tool(

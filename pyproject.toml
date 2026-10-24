@@ -81,6 +81,8 @@ dependencies = [
     "pyyaml>=6.0.3",
     # Modern CLI framework.
     "typer>=0.27.2",
+    "tzdata==2026.4",
+    "tzlocal==5.4.4",
     # Imported directly by the terminal renderers and progress display.
     "rich>=15.0.0",
     # Inline, searchable choice input. Imported only for interactive prompts.

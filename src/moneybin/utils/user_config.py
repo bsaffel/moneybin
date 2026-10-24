@@ -319,9 +319,23 @@ def ensure_default_profile() -> str:
     # error out with "profile directory not found".
     from moneybin.services.profile_service import ProfileExistsError, ProfileService
 
+    svc = ProfileService()
     try:
-        svc = ProfileService()
-        profile_dir = svc.create(profile_name)
+        from moneybin.cli.utils import get_terminal_policy
+        from moneybin.services.profile_settings_service import (
+            suggest_reporting_timezone,
+        )
+
+        zone = None
+        if not svc.has_database(profile_name):
+            zone = (
+                typer.prompt(
+                    "Reporting timezone (IANA)", default=suggest_reporting_timezone()
+                )
+                if get_terminal_policy().interactive
+                else "UTC"
+            )
+        profile_dir = svc.create(profile_name, reporting_timezone=zone)
     except ProfileExistsError:
         from moneybin.config import get_base_dir
 
@@ -343,6 +357,7 @@ def ensure_default_profile() -> str:
 
     typer.echo(f"\n🎉 Your default profile '{profile_name}' has been created!")
     typer.echo(f"    Data will be stored in: {profile_dir}")
+    typer.echo(f"    Reporting timezone: {svc.reporting_timezone(profile_name)}")
 
     # ProfileService.create() already initializes the encrypted database,
     # so no separate init step is needed here.

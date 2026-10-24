@@ -32,7 +32,7 @@ from typing import cast
 
 import pytest
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.account_resolver import AccountResolver
@@ -117,7 +117,7 @@ def test_mixed_currency_profile_gets_sub_totals_not_a_blended_figure() -> None:
         pipeline=[],
     )
     with scenario_env(scenario) as (db, _tmp, env):
-        sync_data = SyncDataResponse.model_validate(_PAYLOAD)
+        sync_data = PlaidSyncDataResponse.model_validate(_PAYLOAD)
         loader = PlaidExtractor(db)
         loader.load(sync_data, job_id=sync_data.metadata.job_id)
 
@@ -216,7 +216,7 @@ def test_a_transaction_with_no_captured_currency_stays_unknown() -> None:
     transactions[0]["iso_currency_code"] = None
 
     with scenario_env(scenario) as (db, _tmp, env):
-        sync_data = SyncDataResponse.model_validate(payload)
+        sync_data = PlaidSyncDataResponse.model_validate(payload)
         loader = PlaidExtractor(db)
         loader.load(sync_data, job_id=sync_data.metadata.job_id)
 

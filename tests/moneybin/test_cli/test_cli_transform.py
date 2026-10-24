@@ -8,7 +8,7 @@ the restate command (which still drives ``sqlmesh_context`` directly).
 import json
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +23,7 @@ from moneybin.services.transform_service import (
     TransformStatus,
     ValidationResult,
 )
+from tests.database_mocks import with_reporting_timezone
 
 runner = CliRunner()
 
@@ -30,7 +31,7 @@ runner = CliRunner()
 @contextmanager
 def _fake_get_database(*_a: Any, **_kw: Any) -> Generator[MagicMock, None, None]:
     """Stub get_database so the CLI never opens a real DB."""
-    yield MagicMock()
+    yield with_reporting_timezone(MagicMock())
 
 
 def _mock_sqlmesh_context() -> tuple[Any, MagicMock]:
@@ -86,7 +87,7 @@ class TestTransformStatus:
             return TransformStatus(
                 environment="prod",
                 initialized=True,
-                last_apply_at=datetime(2026, 1, 15, 12, 34, 56),
+                last_apply_at=datetime(2026, 1, 15, 12, 34, 56, tzinfo=UTC),
                 pending=False,
                 latest_import_at=None,
             )

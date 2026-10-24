@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -43,7 +43,7 @@ def test_transform_status_json(monkeypatch: pytest.MonkeyPatch) -> None:
     canned = TransformStatus(
         environment="prod",
         initialized=True,
-        last_apply_at=datetime(2026, 1, 1, 12, 0, 0),
+        last_apply_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         pending=False,
         latest_import_at=None,
     )
@@ -61,7 +61,7 @@ def test_transform_status_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert payload["data"]["environment"] == "prod"
     assert payload["data"]["initialized"] is True
     assert payload["data"]["pending"] is False
-    assert payload["data"]["last_apply_at"] == "2026-01-01T12:00:00"
+    assert payload["data"]["last_apply_at"] == "2026-01-01T12:00:00.000000Z"
     assert payload["summary"]["sensitivity"] == "low"
 
 
@@ -73,7 +73,7 @@ def test_transform_status_json_pending_emits_action(
         initialized=True,
         last_apply_at=None,
         pending=True,
-        latest_import_at=datetime(2026, 2, 1, 9, 0, 0),
+        latest_import_at=datetime(2026, 2, 1, 9, 0, 0, tzinfo=UTC),
     )
 
     def fake_status(_self: Any) -> TransformStatus:
@@ -87,6 +87,7 @@ def test_transform_status_json_pending_emits_action(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["data"]["pending"] is True
+    assert payload["data"]["latest_import_at"] == "2026-02-01T09:00:00.000000Z"
     assert any("moneybin refresh --step transform" in a for a in payload["actions"]), (
         payload["actions"]
     )

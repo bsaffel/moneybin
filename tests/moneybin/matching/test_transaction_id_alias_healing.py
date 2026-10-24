@@ -81,6 +81,7 @@ _PREP_MODELS = (
     "stg_manual__transactions",
     "stg_tabular__transactions",
     "stg_plaid__transactions",
+    "stg_simplefin__transactions",
     "int_transactions__unioned",
     "int_transactions__matched",
     "int_transactions__merged",
@@ -114,14 +115,21 @@ def pipeline_db(db: Database) -> Generator[Database, None, None]:
     """A database carrying the shipped raw -> prep -> core transaction chain."""
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(CORE_DIM_ACCOUNTS_DDL)
+    db.execute(
+        "CREATE VIEW prep.int_accounts__merged AS SELECT *, "
+        "NULL::TIMESTAMPTZ AS account_type_changed_at, "
+        "NULL::TIMESTAMPTZ AS account_subtype_changed_at FROM core.dim_accounts"
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+    db.execute("CREATE TABLE seeds.iso_currencies (currency_code TEXT, minor_unit INT)")
     for name in _PREP_MODELS:
         db.execute(  # model body read from the repo file, not user input
             f"CREATE OR REPLACE VIEW prep.{name} AS\n{_model_body('prep', name)}"
         )
-    # core.fct_transactions' dimension joins are all LEFT and irrelevant here, so
-    # they carry the same shape-only stubs the rest of the suite uses; the fact
-    # view itself is the shipped model.
-    db.execute(CORE_DIM_ACCOUNTS_DDL)
+    # Dimension/ISO shapes support the empty SimpleFIN branch; other fact joins
+    # use the same shape-only stubs as the rest of the suite. The fact view itself
+    # and the complete prep chain are shipped models.
     db.execute(CORE_BRIDGE_TRANSFERS_DDL)
     db.execute(CORE_DIM_CATEGORIES_STUB_DDL)
     db.execute(CORE_DIM_MERCHANTS_STUB_DDL)
@@ -228,13 +236,15 @@ def _load_ofx_row(
         """
         INSERT INTO raw.ofx_transactions (
             source_transaction_id, account_id, transaction_type, date_posted,
+            date_posted_source_date,
             amount, payee, source_file, extracted_at, loaded_at, import_id,
             source_type, source_origin, currency_code
-        ) VALUES (?, ?, 'DEBIT', ?, ?, ?, 'statement.qfx', ?, ?, ?, 'ofx', ?, 'USD')
+        ) VALUES (?, ?, 'DEBIT', ?, ?, ?, ?, 'statement.qfx', ?, ?, ?, 'ofx', ?, 'USD')
         """,
         [
             source_transaction_id,
             _OFX_ACCOUNT_KEY,
+            txn_date,
             txn_date,
             Decimal(amount),
             description,
@@ -619,9 +629,9 @@ class TestPlaidRemovalStrandsCuration:
             _CURATION_TABLES, [anchor_id]
         )
 
-        removed = PlaidExtractor(pipeline_db).handle_removed_transactions([
-            "plaid_anchor"
-        ])
+        removed = PlaidExtractor(pipeline_db).handle_removed_transactions(
+            ["plaid_anchor"], provider_item_ids={_ORIGIN}
+        )
 
         assert removed == 1
         assert _live_ids(pipeline_db) == {twin_id}
@@ -962,7 +972,9 @@ class TestHealingRunsWhenTheMatcherFails:
             side_a=("plaid", "plaid_anchor"),
             side_b=("plaid", "plaid_twin"),
         )
-        PlaidExtractor(pipeline_db).handle_removed_transactions(["plaid_anchor"])
+        PlaidExtractor(pipeline_db).handle_removed_transactions(
+            ["plaid_anchor"], provider_item_ids={_ORIGIN}
+        )
         assert _curation_ids(pipeline_db)["transaction_categories"] == [anchor_id]
 
         def _explode(*_args: object, **_kwargs: object) -> None:
@@ -985,13 +997,24 @@ class TestHealingSkipsBeforeTheFactViewExists:
     ) -> None:
         """The catalog is asked, not the view: reaching the view would raise.
 
-        Only the prep chain exists here, which is the state after a first load
-        and before the first ``transform apply``. Curation sits on an id that no
+        The prep chain and its dimensions exist, but the fact view has not
+        yet been created by ``transform apply``. Curation sits on an id that no
         view can confirm, and the pass must neither raise nor touch it — the
         query it would run names ``core.fct_transactions``, so completing
         without a ``CatalogException`` is what proves the guard fired.
         """
         db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute("CREATE SCHEMA IF NOT EXISTS core")
+        db.execute(CORE_DIM_ACCOUNTS_DDL)
+        db.execute(
+            "CREATE VIEW prep.int_accounts__merged AS SELECT *, "
+            "NULL::TIMESTAMPTZ AS account_type_changed_at, "
+            "NULL::TIMESTAMPTZ AS account_subtype_changed_at FROM core.dim_accounts"
+        )
+        db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+        db.execute(
+            "CREATE TABLE seeds.iso_currencies (currency_code TEXT, minor_unit INT)"
+        )
         for name in _PREP_MODELS:
             db.execute(  # model body read from the repo file
                 f"CREATE OR REPLACE VIEW prep.{name} AS\n{_model_body('prep', name)}"

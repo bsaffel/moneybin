@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from collections.abc import Generator
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -1888,7 +1889,7 @@ def test_bootstrap_row_carries_the_ledger_shape(bootstrap_cases: Database) -> No
         """
         SELECT type, subtype, settlement_date, event_group_id, price, fees,
                provider_type, provider_subtype, currency_code, source_type,
-               source_origin, description, created_at::VARCHAR
+               source_origin, description, created_at
         FROM prep.stg_plaid__opening_lots
         WHERE source_security_key = 'sec_a'
         """
@@ -1906,7 +1907,7 @@ def test_bootstrap_row_carries_the_ledger_shape(bootstrap_cases: Database) -> No
         "plaid",
         "item_1",
         "Opening lot bootstrap (pre-window position)",
-        "2026-07-08 12:00:00",  # created_at = the FIRST snapshot's extracted_at
+        datetime(2026, 7, 8, 12, tzinfo=UTC),  # FIRST snapshot's extracted_at
     )
 
 
@@ -2144,7 +2145,7 @@ def test_dim_holdings_reconciles_against_newest_snapshot_only(
     row = core_ledger.execute(
         """
         SELECT quantity, cost_basis, provider_reported_quantity,
-               provider_reported_cost_basis, provider_reported_as_of::VARCHAR
+               provider_reported_cost_basis, provider_reported_as_of
         FROM core.dim_holdings WHERE security_id = 'cat0000000d1'
         """
     ).fetchone()
@@ -2154,7 +2155,7 @@ def test_dim_holdings_reconciles_against_newest_snapshot_only(
         Decimal("2145.50"),
         Decimal("10"),
         Decimal("1980.00"),  # newest, not the first snapshot's 2000.00
-        "2026-08-01 12:00:00",
+        datetime(2026, 8, 1, 12, tzinfo=UTC),
     )
 
 
@@ -2169,10 +2170,10 @@ def test_same_day_second_pull_wins_on_extracted_at_not_holdings_date(
     `holdings_date DESC, source_file DESC` ordering would pick the stale one.
     """
     row = core_ledger.execute(
-        "SELECT provider_reported_cost_basis, provider_reported_as_of::VARCHAR "
+        "SELECT provider_reported_cost_basis, provider_reported_as_of "
         "FROM core.dim_holdings WHERE security_id = 'cat0000000d2'"
     ).fetchone()
-    assert row == (Decimal("1975.00"), "2026-07-08 18:00:00")
+    assert row == (Decimal("1975.00"), datetime(2026, 7, 8, 18, tzinfo=UTC))
 
 
 @pytest.mark.slow

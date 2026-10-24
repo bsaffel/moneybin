@@ -7,7 +7,7 @@ never do. Values are synthetic throughout.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -286,7 +286,7 @@ def test_a_moved_ledger_setting_is_stamped_and_rebuilt_by_the_rematch(
 ) -> None:
     """The rematch's transform rebuilds every model, so no separate restate runs."""
     _put(db, _ABSORBED, **{field: value})
-    began = db.execute("SELECT NOW()::TIMESTAMP").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+    began = db.execute("SELECT NOW()::TIMESTAMPTZ").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
 
     svc.set(_DECISION, target_account_id=_SURVIVOR)
 
@@ -759,3 +759,53 @@ def test_the_identity_batch_binding_refuses_a_moved_value_edited_after_approval(
     assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
     assert _row(db, _SURVIVOR) is None
     assert _decision_status(db, _DECISION) == "pending"
+
+
+@pytest.mark.parametrize("survivor_type", [None, "credit"])
+def test_merge_reconciles_canonical_type_override(
+    svc: AccountLinksService, db: Database, survivor_type: str | None
+) -> None:
+    _put(db, _ABSORBED, account_type="depository", display_name="Moved name")
+    _put(db, _SURVIVOR, account_type=survivor_type)
+    plan = svc.plan_settings(_ABSORBED, _SURVIVOR)
+    assert "account_type" in (plan.kept if survivor_type else plan.moved)
+
+    svc.set(_DECISION, target_account_id=_SURVIVOR)
+
+    row = _row(db, _SURVIVOR)
+    assert row is not None
+    assert row["account_type"] == (survivor_type or "depository")
+    assert row["display_name"] == "Moved name"
+
+
+def test_label_merge_preserves_existing_canonical_type_override(
+    svc: AccountLinksService, db: Database
+) -> None:
+    _put(db, _ABSORBED, display_name="Moved name")
+    _put(db, _SURVIVOR, account_type="credit")
+    svc.set(_DECISION, target_account_id=_SURVIVOR)
+    row = _row(db, _SURVIVOR)
+    assert row is not None
+    assert row["account_type"] == "credit"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("account_type", "investment"), ("account_subtype", "brokerage")],
+)
+def test_moved_classification_restates_account_projections(
+    svc: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    restate: MagicMock,
+    field: str,
+    value: str,
+) -> None:
+    _put(db, _ABSORBED, **{field: value})
+    svc.set(_DECISION, target_account_id=_SURVIVOR)
+    row = _row(db, _SURVIVOR)
+    assert row is not None
+    stamp = row[f"{field}_changed_at"]
+    assert stamp is not None and stamp.utcoffset() == timedelta(0)
+    assert row[field] == value
+    _assert_rebuilt_by_the_rematch_alone(db, rematch, restate)

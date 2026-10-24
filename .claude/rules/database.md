@@ -7,6 +7,9 @@ paths: ["**/*.sql", "src/moneybin/sqlmesh/**", "src/moneybin/sql/**", "src/money
 
 ## Connection Management
 
+For timestamp columns, connection timezones, clock defaults and migrations,
+apply [Time: UTC instants, business dates](design-principles.md#time-utc-instants-business-dates).
+
 **Never call `duckdb.connect()` directly.** Use the `Database` class (`src/moneybin/database.py`) via `get_database()` for all database access. The `Database` class handles encryption key retrieval, encrypted file attachment, extension loading, schema initialization, and migrations.
 
 Connections are **short-lived and purpose-declared** — acquire, use, release immediately via the context manager. The `read_only` argument is **required** on both `Database.__init__()` and `get_database()`; there is no default. Every call site declares intent explicitly.
@@ -48,6 +51,12 @@ unwritable file, or a lock timeout), the open raises the classified
 `DatabaseUpgradeRequiredError` instead of proceeding. See
 [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md)
 § "Read-only migration escalation".
+
+UTC-incompatible profiles refuse before initialization or normal migration
+escalation. Create a fresh profile or arrange separate offline maintenance per
+[`warehouse-utc.md`](../../docs/specs/warehouse-utc.md); ordinary reader/writer
+locking remains unchanged. Managed sessions select UTC before configuration
+sealing, including SQLMesh cursors.
 
 See [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) and [ADR-010](../../docs/decisions/010-writer-coordination.md).
 

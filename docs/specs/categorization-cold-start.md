@@ -219,7 +219,7 @@ CREATE TABLE IF NOT EXISTS app.user_merchants (
     category VARCHAR,                           -- default category (joined to core.dim_categories)
     subcategory VARCHAR,                        -- default subcategory
     created_by VARCHAR NOT NULL,                -- 'user' | 'ai' | 'plaid' | 'migration'
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 ```
 

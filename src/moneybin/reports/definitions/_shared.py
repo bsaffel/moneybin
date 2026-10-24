@@ -11,11 +11,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 from moneybin import error_codes
 from moneybin.errors import NextStep, UserError
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import Binding
+from moneybin.reports._framework.contract import Binding, SyncReportScope
 from moneybin.tables import TableRef
 
 # Month bound as YYYY-MM. Enforced because the runners canonicalize with
@@ -73,15 +74,17 @@ DRIFT_STATUSES: tuple[str, ...] = (
 REALIZED_FX_COVERAGE: tuple[str, ...] = ("complete", "incomplete", "all")
 
 
-def default_window(months: int = 12) -> tuple[str, str]:
-    """Return (from_month, to_month) as YYYY-MM strings for the last N months.
+def default_window(
+    months: int = 12, *, reporting_timezone: str, now: datetime | None = None
+) -> tuple[str, str]:
+    """Return the last N calendar months in the profile's saved timezone."""
+    from moneybin.temporal import as_utc
 
-    Uses UTC so the window stays stable across deploy timezones and matches a
-    manual query against DuckDB's ``current_date`` (no TZ-aware date type; reads
-    the system clock, treated as UTC). A local-time read would drift by a month
-    near calendar boundaries.
-    """
-    end = datetime.now(UTC).replace(day=1)
+    end = (
+        as_utc(now or datetime.now(UTC))
+        .astimezone(ZoneInfo(reporting_timezone))
+        .replace(day=1)
+    )
     year = end.year
     month = end.month - (months - 1)
     while month <= 0:
@@ -97,6 +100,7 @@ def resolve_window(
     *,
     report_id: str,
     cli: tuple[str, ...],
+    reporting_timezone: str,
 ) -> tuple[str | None, str | None, str | None, NextStep | None]:
     """Default to the last 12 months when both bounds are omitted.
 
@@ -114,7 +118,7 @@ def resolve_window(
         validate_month(to_month, "to_month")
     defaulted = from_month is None and to_month is None
     if defaulted:
-        from_month, to_month = default_window(12)
+        from_month, to_month = default_window(12, reporting_timezone=reporting_timezone)
     # A one-sided window still filters; report it so the envelope's period signals
     # that a temporal bound was applied rather than reading as "no filter" (None).
     if from_month and to_month:
@@ -191,6 +195,23 @@ class DateRange:
     """Positional bindings for ``where_sql``'s ``?`` placeholders, in order."""
     period: str | None
     """Human window for ``ReportQuery.period``; ``None`` for the latest-day default."""
+
+
+def net_worth_sync_scope(
+    from_date: str | None,
+    to_date: str | None,
+    *,
+    view: TableRef,
+    default_latest: bool = True,
+) -> SyncReportScope:
+    """Carry the already-validated range's archive policy to source assessment."""
+    return SyncReportScope(
+        include_archived=True,
+        from_date=date.fromisoformat(from_date) if from_date else None,
+        latest_date_relation=view
+        if default_latest and from_date is None and to_date is None
+        else None,
+    )
 
 
 def resolve_date_range(

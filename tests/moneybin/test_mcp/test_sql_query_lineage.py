@@ -12,6 +12,7 @@ Verifies that:
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 from typing import Any
 
@@ -24,6 +25,30 @@ from moneybin.protocol.envelope import ResponseEnvelope
 
 def _run(sql: str) -> ResponseEnvelope[Any]:
     return asyncio.run(sql_query(sql))  # type: ignore[arg-type]
+
+
+@pytest.mark.integration
+def test_sql_wall_time_mcp_json_preserves_temporal_meaning(mcp_db: object) -> None:
+    result = _run("""
+        SELECT date_trunc('month', DATE '2026-10-21') AS wall_time,
+               TIMESTAMPTZ '2026-10-01 00:30:00+02' AS instant,
+               DATE '2026-10-01' AS day,
+               '2026-10-01 00:00:00' AS text,
+               [{'wall_time': TIMESTAMP '2026-10-01 12:34:56.123456'}] AS nested,
+               row(TIMESTAMP '2026-10-01 12:34:56') AS unnamed
+    """)
+    assert result.error is None
+    payload = json.loads(result.to_json())
+    assert payload["data"] == [
+        {
+            "wall_time": "2026-10-01T00:00:00.000000",
+            "instant": "2026-09-30T22:30:00.000000Z",
+            "day": "2026-10-01",
+            "text": "2026-10-01 00:00:00",
+            "nested": [{"wall_time": "2026-10-01T12:34:56.123456"}],
+            "unnamed": ["2026-10-01T12:34:56.000000"],
+        }
+    ]
 
 
 @pytest.fixture()

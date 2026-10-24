@@ -8,6 +8,11 @@ First entry in the `connect-*` family: live tabular sources connected via direct
 <!-- draft | ready | in-progress | implemented -->
 implemented
 
+Stored connection instants follow [Warehouse UTC](warehouse-utc.md). Machine
+output uses fixed six-digit UTC timestamps; human list/status output uses the
+saved reporting calendar with its offset and IANA zone. Source transaction DATEs
+and opaque sheet values retain their source meaning.
+
 ## Goal
 
 Make a user's Google Sheets workbook a live data source for MoneyBin. Connect once (OAuth + automatic column detection), and every `refresh_run` re-pulls the latest sheet state through the connector's adapter machinery, with structural drift caught, soft-deletes preserving audit history, and downstream tables reflecting the current sheet content.
@@ -376,14 +381,14 @@ CREATE TABLE app.gsheet_connections (
     status VARCHAR NOT NULL DEFAULT 'healthy'
         CHECK (status IN ('healthy', 'auth_expired', 'unreachable',
                           'drift_detected', 'rate_limited', 'disconnected')),
-    last_pull_at TIMESTAMP,                      -- Last pull attempt (success or failure)
+    last_pull_at TIMESTAMPTZ,                      -- Last pull attempt (success or failure); Warehouse UTC
     last_pull_import_id VARCHAR,                 -- FK to app.import_log.import_id for most recent attempt
-    last_success_at TIMESTAMP,                   -- Last pull that ingested cleanly
+    last_success_at TIMESTAMPTZ,                   -- Last pull that ingested cleanly
     last_drift_reason TEXT,                      -- Human-readable when status='drift_detected'
     consecutive_failure_count INTEGER NOT NULL DEFAULT 0,
 
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     alias VARCHAR,                               -- User-supplied slug; required for adapter='seed' (becomes view name raw.gsheet_<alias>); NULL for adapter='transactions'
 
@@ -407,9 +412,9 @@ CREATE TABLE raw.gsheet_seeds (
     row_number INTEGER NOT NULL,                 -- 1-based source row number (post skip_rows)
     row_hash VARCHAR NOT NULL,                   -- SHA-256(connection_id|row_number|canonical_json(data))[:16]; stable per-row key for diff
     data JSON NOT NULL,                          -- {header: cell_value, ...} JSON object; cell values are strings (typed extraction happens in views)
-    deleted_from_source_at TIMESTAMP NULL,       -- Set when row absent from latest pull; NULL when present in source
+    deleted_from_source_at TIMESTAMPTZ NULL,       -- Set when row absent from latest pull; NULL when present in source
     import_id VARCHAR NOT NULL,                  -- FK to app.import_log.import_id; the pull that last touched this row
-    loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (connection_id, row_hash)
 );
@@ -443,7 +448,7 @@ Column types are inferred at connect time from sample rows and pinned in the con
 
 ```sql
 ALTER TABLE raw.tabular_transactions
-  ADD COLUMN deleted_from_source_at TIMESTAMP NULL;
+  ADD COLUMN deleted_from_source_at TIMESTAMPTZ NULL;
 
 COMMENT ON COLUMN raw.tabular_transactions.deleted_from_source_at IS
 'For live tabular sources (gsheet): timestamp when this row was observed

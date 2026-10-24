@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -750,3 +751,95 @@ class TestAutoRulePipeline:
         # this exercises the path future imports will hit.
         result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()
+
+
+def test_offline_restore_and_recovery_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.config import (
+        clear_settings_cache,
+        get_current_profile,
+        get_settings,
+        set_current_profile,
+    )
+    from moneybin.database import Database, invalidate_encryption_key_cache
+    from moneybin.services.database_restore_lock import SourceLease
+    from moneybin.services.database_restore_service import restore_encrypted_database
+    from tests.e2e.conftest import TEST_ENCRYPTION_KEY
+
+    env = make_workflow_env(tmp_path / "home", "restore-workflow")
+    try:
+        previous_profile = get_current_profile(auto_resolve=False)
+    except RuntimeError:
+        previous_profile = None
+    with monkeypatch.context() as parent_env:
+        for key, value in env.items():
+            parent_env.setenv(key, value)
+        clear_settings_cache()
+        set_current_profile(env["MONEYBIN_PROFILE"])
+        invalidate_encryption_key_cache()
+        try:
+            store = MagicMock()
+            store.get_key.return_value = TEST_ENCRYPTION_KEY
+            destination = get_settings().database.path
+            source = tmp_path / "restore-source.duckdb"
+            with Database(
+                source, read_only=False, secret_store=store, no_auto_upgrade=True
+            ) as db:
+                db.execute(
+                    "INSERT INTO app.versions (component, version) "
+                    "VALUES ('restore_probe', 'source')"
+                )
+            original = destination.read_bytes()
+            source_bytes = source.read_bytes()
+            restored = run_cli("db", "restore", "--from", str(source), "--yes", env=env)
+            restored.assert_success()
+            assert destination.read_bytes() == source_bytes
+            backups = list(
+                (destination.parent / "backups").glob("*_pre_restore.duckdb")
+            )
+            assert len(backups) == 1
+            assert backups[0].read_bytes() == original
+            with Database(destination, read_only=False, secret_store=store) as db:
+                db.execute(
+                    "UPDATE app.versions SET version = 'destination' "
+                    "WHERE component = 'restore_probe'"
+                )
+            before_interruption = destination.read_bytes()
+            promote = SourceLease.promote
+
+            def interrupt(
+                self: SourceLease, candidate: Path, *, fingerprint: str
+            ) -> None:
+                promote(self, candidate, fingerprint=fingerprint)
+                raise KeyboardInterrupt
+
+            recovery_backup = tmp_path / "original-before-interruption.duckdb"
+            with monkeypatch.context() as patcher:
+                patcher.setattr(SourceLease, "promote", interrupt)
+                with pytest.raises(KeyboardInterrupt):
+                    restore_encrypted_database(
+                        source,
+                        destination,
+                        secret_store=store,
+                        backup_path=recovery_backup,
+                    )
+            journal = destination.with_name(
+                destination.name + ".restore-promotion.json"
+            )
+            assert journal.exists()
+            recovered = run_cli("db", "restore", "--recover", env=env)
+            recovered.assert_success()
+            assert not journal.exists()
+            assert destination.read_bytes() == source_bytes
+            assert recovery_backup.read_bytes() == before_interruption
+            assert source.read_bytes() == source_bytes
+            for command in ("utc-inspect", "utc-prepare", "utc-apply", "utc-recover"):
+                absent = run_cli("db", "migrate", command, "--help", env=env)
+                assert absent.exit_code == 2
+                assert "No such command" in absent.output
+        finally:
+            clear_settings_cache()
+            invalidate_encryption_key_cache()
+            if previous_profile is not None:
+                set_current_profile(previous_profile)

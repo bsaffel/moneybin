@@ -1,0 +1,1 @@
+"""SimpleFIN immutable Raw ingestion."""

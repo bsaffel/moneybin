@@ -49,9 +49,10 @@ def test_int_transactions_unioned_carries_source_account_key(
         """
         INSERT INTO raw.ofx_transactions
             (source_transaction_id, account_id, transaction_type, date_posted,
+             date_posted_source_date,
              amount, source_file, extracted_at, loaded_at, import_id,
              source_type, source_origin)
-        VALUES ('fitid-union-001', ?, 'DEBIT', CURRENT_TIMESTAMP,
+        VALUES ('fitid-union-001', ?, 'DEBIT', TIMESTAMPTZ '2024-01-31 00:00:00+00', DATE '2024-01-31',
                 -25.00, '/tmp/test_union.ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                 'imp-union-001', 'ofx', 'test_bank_union')
         """,  # test fixture

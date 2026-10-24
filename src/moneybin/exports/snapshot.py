@@ -19,12 +19,13 @@ from moneybin.exports.catalog import BUNDLE_TABLES
 from moneybin.exports.models import RedactionMode
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.tables import TableRef
+from moneybin.temporal import format_utc
 
 if TYPE_CHECKING:
     from moneybin.database import Database
 
 
-ARTIFACT_VERSION = 1
+ARTIFACT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +163,7 @@ class PreparedExport:
             "artifact_version": self.artifact_version,
             "export_id": self.export_id,
             "profile": self.profile,
-            "created_at": self.created_at.isoformat(),
+            "created_at": format_utc(self.created_at),
             "subject": self.subject.as_manifest(),
             "redaction_mode": self.redaction_mode,
             "tables": [
@@ -294,7 +295,7 @@ def _json_safe(value: object) -> object:
     if isinstance(value, Decimal):
         return {"$decimal": str(value)}
     if isinstance(value, datetime):
-        return {"$datetime": value.isoformat()}
+        return {"$datetime": format_utc(value)}
     if isinstance(value, date):
         return {"$date": value.isoformat()}
     if isinstance(value, time):

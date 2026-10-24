@@ -1268,7 +1268,9 @@ class TestImportStatusCommand:
         db_path = tmp_path / "moneybin.duckdb"
         conn = duckdb.connect(str(db_path))
         conn.execute("CREATE SCHEMA IF NOT EXISTS raw")
-        conn.execute("CREATE TABLE raw.ofx_transactions (id INT, date_posted DATE)")
+        conn.execute(
+            "CREATE TABLE raw.ofx_transactions (id INT, date_posted_source_date DATE)"
+        )
         conn.execute(
             "INSERT INTO raw.ofx_transactions VALUES (1, '2025-01-01'), (2, '2025-06-15')"
         )

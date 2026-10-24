@@ -16,6 +16,7 @@ from moneybin.database import get_database
 from moneybin.privacy.payloads.consent import ConsentGrantRow, PrivacyStatusPayload
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.consent_service import ConsentService
+from moneybin.temporal import format_utc, parse_utc
 
 
 def privacy_status(
@@ -27,6 +28,13 @@ def privacy_status(
     with handle_cli_errors():
         with get_database(read_only=True) as db:
             status = ConsentService(db).status()
+            from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+            reporting_timezone = (
+                ProfileSettingsRepo(db).get_reporting_timezone()
+                if output != OutputFormat.JSON and status.active_grants
+                else None
+            )
     payload = PrivacyStatusPayload(
         default_backend=status.default_backend,
         consent_policy=status.consent_policy,
@@ -35,7 +43,7 @@ def privacy_status(
                 feature_category=g.feature_category,
                 backend=g.backend,
                 consent_mode=g.consent_mode.value,
-                granted_at=str(g.granted_at),
+                granted_at=format_utc(g.granted_at),
             )
             for g in status.active_grants
         ],
@@ -76,9 +84,15 @@ def privacy_status(
             build_rows(
                 ["Category", "Backend", "Mode", "Granted"],
                 [
-                    (g.feature_category, g.backend, g.consent_mode, g.granted_at)
+                    (
+                        g.feature_category,
+                        g.backend,
+                        g.consent_mode,
+                        parse_utc(g.granted_at),
+                    )
                     for g in payload.active_grants
                 ],
+                reporting_timezone=reporting_timezone,
             )
         )
     emit_human_result(

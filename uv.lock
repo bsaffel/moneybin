@@ -1890,6 +1890,8 @@ dependencies = [
     { name = "starlette" },
     { name = "tomlkit" },
     { name = "typer" },
+    { name = "tzdata" },
+    { name = "tzlocal" },
 ]
 
 [package.dev-dependencies]
@@ -1963,6 +1965,8 @@ requires-dist = [
     { name = "starlette", specifier = ">=1.8.0" },
     { name = "tomlkit", specifier = ">=0.15.1" },
     { name = "typer", specifier = ">=0.27.2" },
+    { name = "tzdata", specifier = "==2026.4" },
+    { name = "tzlocal", specifier = "==5.4.4" },
 ]
 
 [package.metadata.requires-dev]

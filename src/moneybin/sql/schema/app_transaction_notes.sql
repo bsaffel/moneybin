@@ -6,6 +6,6 @@ CREATE TABLE IF NOT EXISTS app.transaction_notes (
     transaction_id VARCHAR NOT NULL,                             -- Foreign key to core.fct_transactions
     text           VARCHAR NOT NULL,                             -- Note body; max 2000 chars (service-layer enforced)
     author         VARCHAR NOT NULL,                             -- 'cli', 'mcp', 'legacy' (migrated rows), or future user identity
-    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When the note was added
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When the note was added
 );
 CREATE INDEX IF NOT EXISTS idx_transaction_notes_txn ON app.transaction_notes(transaction_id);

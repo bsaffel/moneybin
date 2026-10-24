@@ -72,6 +72,7 @@ def test_demo_runs_and_prints_networth(mocker: Any) -> None:
     result = runner.invoke(app, ["demo", "--yes"])
     assert result.exit_code == 0, result.output
     assert "12,345.67" in result.output
+    assert "Reporting timezone" in result.output and "UTC" in result.output
     svc.run.assert_called_once()
 
 
