@@ -436,7 +436,7 @@ transactions create <amount> <description>
     [--check-number N]
     [--payment-channel CH]
     [--currency CODE]           Default: unspecified (never guessed — see multi-currency.md)
-    [--yes]                     Skip confirmation
+    [--yes]                     Compatibility flag; creation never prompts
 ```
 
 Single transaction per invocation. Returns the new `transaction_id` (gold key) and a one-line confirmation with next-step hints. Triggers the full pipeline (transform → match → categorize) for the new row.

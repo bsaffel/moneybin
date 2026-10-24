@@ -24,10 +24,13 @@ def db(
     database.close()
 
 
-def test_transactions_create_minimum(runner: CliRunner, db: Database) -> None:
+@pytest.mark.parametrize("yes", [[], ["--yes"]])
+def test_transactions_create_minimum(
+    runner: CliRunner, db: Database, yes: list[str]
+) -> None:
     result = runner.invoke(
         app,
-        ["transactions", "create", "--account", "A1", "--", "-12.50", "Coffee"],
+        ["transactions", "create", "--account", "A1", *yes, "--", "-12.50", "Coffee"],
     )
     assert result.exit_code == 0, result.output
     rows = db.conn.execute(
