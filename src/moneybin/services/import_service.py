@@ -1588,7 +1588,7 @@ def _refuse_unknown_binding_targets(
     entry carrying it. The statement's rows then landed under an account the
     caller invented by typo, under a name no surface would ever show them. That
     is what the shared reference-resolution contract exists to prevent: a write
-    never invents its own target (``.claude/rules/mcp.md``, "Entity resolution").
+    never invents its own target (``.claude/rules/services.md``, "Entity resolution").
 
     Scoped to values that arrived through ``account_bindings``, which is why it
     reads them rather than every ``explicit_account_id``. A binding answers a

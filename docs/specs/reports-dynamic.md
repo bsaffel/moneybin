@@ -1069,7 +1069,7 @@ this draft assigns it no MCP identity. If its implementing PR cannot place the
 outcome behind an admitted existing projection, it must pass the bounded-
 registry admission record before receiving a public name. Its handle resolves
 by the shared reference contract's order — an exact `report_id` first, then an
-exact name (`.claude/rules/mcp.md` "Entity resolution") — so a report whose name
+exact name (`.claude/rules/services.md` "Entity resolution") — so a report whose name
 is contested by a registry collision (R5) stays inspectable by its stable
 `report_id`. Every handle-taking operation resolves the same way: the shipped
 `reports` tool already accepts `report_id`, and the CLI's `reports run` /
