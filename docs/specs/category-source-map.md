@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
 > Last updated: 2026-10-24
-> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface, "Extension: ignoring a term" for the translation to nothing, and "Extension: MCP surface and removal".
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface, "Extension: ignoring a term" for the translation to nothing, "Extension: MCP surface and removal", and "Extension: retiring the pass-through", which completes MB-180.
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -411,6 +411,52 @@ surfaces gain removal.
   mapping. Mapping, re-mapping, and ignoring are not confirmed: they withdraw
   only `provider_native` rows the sweep recomputes, and
   `system_audit_undo(operation_id=...)` reverses the batch's audited writes.
+
+## Extension: retiring the pass-through
+
+The last arm of `core.fct_transactions`' category fallback is gone: the column
+is `COALESCE(dc.category, c.category)`, so only a MoneyBin categorization
+reaches it. A source's own category text is an input to this bridge and
+nothing else. It becomes a category when a mapping translates it, at
+`provider_native` rank, and until then the row is uncategorized and in the
+queue. An exact name match earns no exception: `Groceries` in a CSV column
+stays unmapped until a mapping says it means MoneyBin's `Groceries`, and
+`categories mappings pending` offers that category among its suggestions.
+
+- **One predicate for "uncategorized".** With the fallback gone, a non-NULL
+  `category` always has an `app.transaction_categories` row behind it.
+  `transactions list --uncategorized` and the MCP `transactions_get`
+  `uncategorized_only` flag move from `categorized_by IS NULL` onto the
+  queue's own `is_categorizable AND category IS NULL`. The listing, the
+  queue, and every coverage figure now count the same rows, which closes the
+  split MB-155 left in place. The flag also stops listing transfer legs and
+  rows on archived or unresolved accounts, which the queue never offered.
+- **No `source_supplied` bucket.** `categorize stats` reported text-only rows
+  in a reporting bucket of their own, since no `categorized_by` described
+  them. No row can take that shape now, so the bucket is gone and the
+  breakdown joins `app.transaction_categories` with an inner join. A mapped
+  term's rows count under `provider_native`.
+- **The source text stays readable as evidence.** `prep.int_transactions__merged`
+  still carries `category` and `subcategory` from the winning source row, and
+  `prep.int_transactions__matched` carries each source row's own, which is
+  what the sweep and `pending` read. No core column was added.
+- **Consumers that changed nothing.** The queue, coverage, the doctor's
+  `categorization_coverage` check, and the review surfaces already read
+  `is_categorizable AND category IS NULL` through
+  `CategorizationQueries.coverage` (MB-155). The report models
+  (`spending_trend`, `cash_flow`, `large_transactions`, `merchant_activity`)
+  and `core.fct_transaction_lines` are views over `category` that already
+  treat NULL as uncategorized, so they group a formerly passed-through row
+  under the uncategorized bucket until its term is mapped. The CLI's
+  `Uncategorized` placeholder now stands for exactly that population.
+- **No backfill.** A term already mapped categorized its rows when the
+  mapping was written, because the sweep's pending set reads
+  `app.transaction_categories`, not `category`. An unmapped term's rows read
+  as uncategorized from the next query on, since the fact is a view, and the
+  term is in `pending`.
+- **Manual entry is unaffected.** `transactions create` writes its category
+  through `app.transaction_categories` at `user` rank, which `c.category`
+  still carries.
 
 ## Reverse-lookup contract
 
