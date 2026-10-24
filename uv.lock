@@ -1940,7 +1940,7 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pdfplumber", specifier = ">=0.11.10" },
     { name = "pillow", specifier = ">=12.3.0" },
-    { name = "plaid-python", specifier = ">=44.0.0" },
+    { name = "plaid-python", specifier = ">=46.0.0" },
     { name = "polars", specifier = ">=2.0.0" },
     { name = "prometheus-client", specifier = ">=0.26.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
@@ -2472,14 +2472,14 @@ wheels = [
 
 [[package]]
 name = "plaid-python"
-version = "44.0.0"
+version = "46.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nulltype" },
     { name = "python-dateutil" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/52/b7/4278774fa880ff64cb4bfa579f69a5f904865f0cbfa95b1fecb94ffd9958/plaid_python-44.0.0.tar.gz", hash = "sha256:cf303e67820d9e4bd9b4d779f97e442c5cd3a94d8a2c054f5fb30938f294e162", size = 1308325, upload-time = "2026-09-01T20:26:39.592Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/f5/aba2f7da7c6750e9faa4dc6a64172672a748a41959481e2eb7854c578d19/plaid_python-46.0.0.tar.gz", hash = "sha256:f1b06c1a653f0378caf50a4077d61de36074b2560d473a8c7cc1697a580910e7", size = 1365135, upload-time = "2026-10-19T22:03:21.332Z" }
 
 [[package]]
 name = "platformdirs"
