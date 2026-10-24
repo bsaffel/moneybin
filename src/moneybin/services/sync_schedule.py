@@ -86,8 +86,11 @@ class ScheduleResult:
 
 def _local_now() -> datetime:
     # astimezone() without a zone returns today's fixed offset, losing DST rules.
-    with Path("/etc/localtime").open("rb") as zone_file:
-        zone = ZoneInfo.from_file(zone_file)
+    try:
+        with Path("/etc/localtime").open("rb") as zone_file:
+            zone = ZoneInfo.from_file(zone_file)
+    except (OSError, ValueError):
+        raise schedule_error("Could not read the OS local time zone.") from None
     return datetime.now(zone)
 
 

@@ -297,6 +297,25 @@ def test_schedule_diagnostics_follow_persisted_logging_path(
     assert not log_path.parent.exists()
 
 
+def test_schedule_show_reports_unreadable_os_time_zone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise OSError("synthetic unavailable localtime")
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "open", unavailable)
+
+    result = runner.invoke(
+        app, ["--profile", "alice", "sync", "schedule", "show", "--output", "json"]
+    )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "sync_schedule_error"
+    assert "OS local time zone" in payload["error"]["message"]
+
+
 def test_schedule_text_json_have_same_operational_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

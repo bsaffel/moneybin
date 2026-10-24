@@ -309,6 +309,23 @@ def test_native_guard_failure_prevents_backend_work(
         pytest.fail("failed native suppression was accepted")
 
 
+def test_native_guard_restore_failure_retains_operation_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.secrets import _macos_interaction_guard  # pyright: ignore[reportPrivateUsage]  # native binding boundary
+
+    native = Mock()
+    native.SecKeychainGetUserInteractionAllowed.return_value = 0
+    native.SecKeychainSetUserInteractionAllowed.side_effect = [0, -1]
+    monkeypatch.setattr("moneybin.secrets.ctypes.CDLL", Mock(return_value=native))
+
+    with pytest.raises(SecretStorageUnavailableError) as raised:
+        with _macos_interaction_guard():
+            raise KeyringLocked("locked")
+
+    assert isinstance(raised.value.__context__, KeyringLocked)
+
+
 @pytest.mark.parametrize("operation", ["read", "write", "delete"])
 def test_observed_locked_macos_store_refuses_before_backend_operation(
     stock_store: tuple[Keyring, list[str]],

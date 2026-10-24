@@ -66,6 +66,61 @@ def _latest(service: SyncScheduleService) -> ScheduledAttempt:
     return attempt
 
 
+def test_local_now_refuses_unreadable_os_time_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.errors import UserError
+    from moneybin.services.sync_schedule import _local_now  # pyright: ignore[reportPrivateUsage]  # local-time failure boundary
+
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise OSError("synthetic unavailable localtime")
+
+    monkeypatch.setattr(Path, "open", unavailable)
+
+    with pytest.raises(UserError, match="OS local time zone") as raised:
+        _local_now()
+
+    assert raised.value.code == "sync_schedule_error"
+
+
+def test_local_now_refuses_malformed_os_time_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from io import BytesIO
+
+    from moneybin.errors import UserError
+    from moneybin.services.sync_schedule import _local_now  # pyright: ignore[reportPrivateUsage]  # local-time failure boundary
+
+    monkeypatch.setattr(Path, "open", Mock(return_value=BytesIO(b"not a TZif file")))
+
+    with pytest.raises(UserError, match="OS local time zone") as raised:
+        _local_now()
+
+    assert raised.value.code == "sync_schedule_error"
+
+
+def test_schedule_show_refuses_unreadable_os_time_zone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.errors import UserError
+
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise OSError("synthetic unavailable localtime")
+
+    monkeypatch.setattr(Path, "open", unavailable)
+    service = SyncScheduleService(
+        home=tmp_path,
+        profile="alice",
+        adapter=MemoryAdapter(),
+        launcher=("/usr/bin/true",),
+    )
+
+    with pytest.raises(UserError, match="OS local time zone") as raised:
+        service.show()
+
+    assert raised.value.code == "sync_schedule_error"
+
+
 @pytest.fixture
 def schedule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ScheduleFixture:
     from moneybin.services.sync_schedule import SyncScheduleService
