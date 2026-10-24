@@ -64,7 +64,7 @@ dependencies = [
     "plaid-python>=44.0.0",
     "ofxparse>=0.21",
     "requests>=2.34.2",
-    "python-dotenv>=1.2.3",
+    "python-dotenv>=1.2.4",
     # Google Sheets connector (gsheet domain)
     "google-api-python-client>=2.200.0",
     "google-auth>=2.58.0",
