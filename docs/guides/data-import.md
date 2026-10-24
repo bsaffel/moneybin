@@ -420,6 +420,9 @@ moneybin import revert <import_id>
 
 ## Live banking sync (Plaid)
 
+Choosing between connections? See [Choosing a bank connection](choosing-a-bank-connection.md)
+for institution directories, pricing, a comparison grid, and completeness checks.
+
 Plaid-connected sync pulls transactions, balances, and accounts directly from supported US banks. The connection brokers through `moneybin-sync` (the Plaid integration backend you can self-host).
 
 One-time setup:
@@ -448,6 +451,9 @@ moneybin sync status                               # connected institutions, las
 ```
 
 ## SimpleFIN sync
+
+See [Choosing a bank connection](choosing-a-bank-connection.md) to compare
+institution coverage, costs, and supported data before subscribing.
 
 SimpleFIN delivery is in progress for Early Access. Synthetic acceptance passes
 locally; final delivery review, deployment and consenting non-author live
