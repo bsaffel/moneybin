@@ -22,17 +22,29 @@ import typer
 from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
+    applied_rates_note,
     display_currency_option,
-    echo_applied_rates,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import Money, count_wide_request, render_note, render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    UNCATEGORIZED_LABEL,
+    Money,
+    Placeholder,
+    build_rows,
+    count_wide_request,
+)
+from moneybin.cli.utils import (
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
-from moneybin.protocol.envelope import ResponseEnvelope
+from moneybin.errors import NextStep
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
     ReportSpec,
@@ -40,10 +52,11 @@ from moneybin.reports._framework.contract import (
 )
 
 if TYPE_CHECKING:
+    from moneybin.cli.terminal import TerminalSymbols
+
     # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
     # the CLI cold-start path, which this module exists to keep clear. `catalog`
     # is deferred for the same reason — it reaches `execute`.
-    from moneybin.reports._framework.catalog import RegisteredReport
     from moneybin.reports._framework.execute import CatalogReportResult
 
 
@@ -63,6 +76,14 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             default=display_currency_option,
             annotation=str | None,
+        )
+    )
+    params.append(
+        inspect.Parameter(
+            "no_pager",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default=no_pager_option,
+            annotation=bool,
         )
     )
     params.append(
@@ -95,65 +116,78 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
     return inspect.Signature(params)
 
 
-def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> None:
-    """Echo the envelope metadata the text path would otherwise drop.
+def report_note_lines(
+    result: CatalogReportResult,
+    *,
+    quiet: bool = False,
+    symbols: TerminalSymbols | None = None,
+) -> tuple[str, ...]:
+    """Build report fidelity disclosures for one complete terminal answer.
 
-    ``quiet`` reaches the next-step hints and nothing else. Requirement 4 makes
-    ``-q`` the switch for an informational status line, and a hint is one: it
-    suggests a command to run next. The conversion disclosure and the two
-    warnings are not — they state how far the numbers above can be trusted, and
-    a flag asking for less chatter is not a claim that masking, truncation, or
-    a currency conversion stopped happening. Silencing those is the failure the
-    rest of this docstring describes, arriving through ``-q`` instead of
-    through the surface that skipped them.
-
-    ``render_or_json`` renders the envelope on the JSON path only, so every
-    text renderer of a report result has to say these three things itself.
-    Shared rather than copied: the report commands with hand-written renderers
-    (``reports networth`` and ``networth-history``) printed none of them, so a
-    conversion that fell back to per-currency segmentation showed segmented
-    positions and never said why — the silent masking these echoes exist to
-    prevent, reappearing on the surface that skipped them.
-
-    All of it goes to stderr (``cli.md`` "Exit Codes & stderr"): these are
-    diagnostics about the answer, not the answer, and redirecting a report to a
-    file or a downstream parser must not append prose to the data stream.
+    ``quiet`` drops the next-step hints and nothing else: the conversion
+    disclosure and the two warnings say how far the numbers can be trusted,
+    and asking for less chatter is not a claim that truncation or a currency
+    conversion stopped happening.
     """
-    # Requirement 10 on the surface that cannot read `summary.applied_rates`.
-    # Shared with the investments portfolio total so one disclosure has one
-    # rendering; the reasoning for its shape lives on the helper.
-    echo_applied_rates(result.applied_rates, result.display_currency)
-    # R4's verdict, on the surface that cannot see the envelope. JSON and MCP
-    # callers read `summary.degraded_reason`; without this a drifted report
-    # printed `*****` and said nothing — the silent masking that teaches a
-    # reader to skip the warning that matters.
+    if symbols is None:
+        symbols = get_terminal_policy().symbols
+    lines: list[str] = []
+    if not result.records:
+        # Requirement 6: an empty table says nothing on its own. State what was
+        # searched before any hint below, so "nothing matched the filter" and
+        # "nothing exists at all" are never the same silence.
+        lines.append(_empty_result_scope(result))
+    if conversion_note := applied_rates_note(
+        result.applied_rates, result.display_currency
+    ):
+        lines.append(conversion_note)
     if result.degraded and result.degraded_reason:
-        render_note(f"⚠️  {result.degraded_reason}", warn=True)
-    # Same gap, same surface: `truncated` rides the envelope to JSON and MCP
-    # callers, so without this the text path renders a capped table that
-    # reads as the whole answer — worse here than a masked cell, because
-    # nothing about the rows themselves looks unusual.
-    #
-    # The count of what was *not* shown is deliberately absent. A truncated
-    # execution fetches `limit + 1` rows and reports that as `total_count`,
-    # so it is a lower bound — "1,000,000 of 1,000,001" would read as one
-    # row missing when millions are, which is a more confident lie than
-    # saying nothing. `mcp.md` calls this a lower-bound total for the same
-    # reason; counting the rest means running the query again without a cap.
+        lines.append(f"{symbols.attention} {result.degraded_reason}")
     if result.truncated:
-        render_note(
-            f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
-            "Raise --limit or narrow the report to see the rest.",
-            warn=True,
+        lines.append(
+            f"{symbols.attention} Showing the first {len(result.records):,} rows; more exist. "
+            "Raise --limit or narrow the report to see the rest."
         )
-    # Third instance of the same asymmetry, and the one that inverted its own
-    # intent: `inspection_hint` deliberately names a CLI command — "Run
-    # `moneybin reports explain …`" — so the surfaces that cannot run it were
-    # told to while the terminal printed `*****` and stopped. Every action is
-    # rendered, not just that hint: a runner's own `actions` are next steps for
-    # whoever called it, and the text path is a caller.
-    for action in result.actions:
-        render_note(f"💡 {action}", quiet=quiet)
+    if not quiet:
+        lines.extend(
+            f"{symbols.action} {_next_step_line(action)}" for action in result.actions
+        )
+    return tuple(lines)
+
+
+def _empty_result_scope(result: CatalogReportResult) -> str:
+    """Requirement 6's line for zero rows: what was searched, not just that nothing came back.
+
+    Names the effective parameters and period the caller already knows rather
+    than distinguishing "no records at all" from "no matches for this filter"
+    — no report here can tell the two apart without a second, unfiltered
+    query. ``getattr`` covers a test double built from the base
+    ``ReportResult`` (no ``report_id``/``parameters``), which never reaches a
+    real terminal.
+    """
+    report_label = getattr(result, "report_id", "report").split(":", 1)[-1]
+    parameters: Mapping[str, Any] = getattr(result, "parameters", {})
+    scope = [
+        f"{name}={value}" for name, value in parameters.items() if value is not None
+    ]
+    if result.period:
+        scope.insert(0, result.period)
+    if not scope:
+        return f"No rows matched {report_label}."
+    return f"No rows matched {report_label} ({', '.join(scope)})."
+
+
+def _next_step_line(action: NextStep | str) -> str:
+    """Render one next-step hint for the terminal: reason, then a runnable command.
+
+    A ``NextStep`` renders its own ``cli`` argv so the command is last on the
+    line, per requirement 7 of ``cli-human-experience.md``. A legacy string
+    (a dedup caveat authored outside this module's allotment) prints as-is.
+    """
+    if not isinstance(action, NextStep):
+        return action
+    reason = action.reason[:1].upper() + action.reason[1:] if action.reason else ""
+    return f"{reason}: {generated_cli_command(*action.cli)}"
 
 
 class ColumnView(NamedTuple):
@@ -161,15 +195,21 @@ class ColumnView(NamedTuple):
 
     columns: tuple[str, ...]
     fit: bool
+    optional: tuple[str, ...] = ()
+    implied_currency: str | None = None
+    """The one currency every row is in, when its column left the table."""
+    placeholder: Placeholder | None = None
+    """The shown column declaring ``uncategorized``, whose NULL prints as that word."""
 
 
 def column_view(
-    spec: RegisteredReport,
+    spec: ReportSpec,
     result_columns: Sequence[str],
     *,
     parameters: Mapping[str, Any],
     wide: bool,
     output: OutputFormat,
+    display_currency: str | None = None,
 ) -> ColumnView:
     """One report's whole text-branch column decision (requirements 6, 7).
 
@@ -182,6 +222,12 @@ def column_view(
     view before :func:`render_report_result` branches on the format, so this
     function — unlike ``render.py``'s namesake, which its callers reach only
     after their own JSON branch has returned — runs on the JSON path too.
+
+    ``display_currency`` is the result's own, set only when every row shares one
+    known currency. The narrow table then drops the currency column — it would
+    repeat one value down every row — and names the currency once beneath it.
+    Not while a ``currency_basis="home"`` column is shown: that column is in the
+    home currency, which the one footer currency would mislabel.
     """
     if wide and output != OutputFormat.JSON:
         # Counted here rather than in the generated command body, for the same
@@ -194,16 +240,44 @@ def column_view(
         # against it, so counting the request alone would inflate one half of
         # the ratio requirement 7 reads and leave the other at zero.
         count_wide_request()
+    visible = visible_columns(spec, result_columns, parameters=parameters, wide=wide)
+    currency = spec.semantics.currency
+    implied = None
+    home_basis = {c.name for c in spec.columns if c.currency_basis == "home"}
+    if (
+        not wide
+        and display_currency is not None
+        and currency in visible
+        and home_basis.isdisjoint(visible)
+    ):
+        visible = tuple(name for name in visible if name != currency)
+        implied = display_currency
+    uncategorized = {c.name for c in spec.columns if c.uncategorized}
+    placeholder = next(
+        (
+            Placeholder(name, UNCATEGORIZED_LABEL)
+            for name in visible
+            if name in uncategorized
+        ),
+        None,
+    )
     return ColumnView(
-        visible_columns(spec, result_columns, parameters=parameters, wide=wide),
+        visible,
         # Only a report that named no columns of its own. `--wide` is a request
         # for the whole projection, not for a fitted one.
         fit=spec.default_columns is None and not wide,
+        optional=(
+            optional_columns(spec, result_columns, parameters=parameters)
+            if wide
+            else ()
+        ),
+        implied_currency=implied,
+        placeholder=placeholder,
     )
 
 
 def visible_columns(
-    spec: RegisteredReport,
+    spec: ReportSpec,
     result_columns: Sequence[str],
     *,
     parameters: Mapping[str, Any],
@@ -263,8 +337,31 @@ def visible_columns(
     return visible
 
 
+def optional_columns(
+    spec: ReportSpec,
+    result_columns: Sequence[str],
+    *,
+    parameters: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """The columns a ``--wide`` table may omit to fit, most important first.
+
+    Everything the narrow view does not show, so the default set — the
+    report's curated answer — is never what gives way. The renderer drops the
+    tail of this tuple first, and a ``reports`` projection puts its id first
+    and its headline measure last (column-ordering.md), so the tuple is the
+    projection's extras reversed: the id goes before a balance does. Empty for
+    a report that declares no default set: that one is fitted, not curated.
+    """
+    if spec.default_columns is None:
+        return ()
+    shown = set(
+        visible_columns(spec, result_columns, parameters=parameters, wide=False)
+    )
+    return tuple(name for name in reversed(result_columns) if name not in shown)
+
+
 def resolve_default_columns(
-    spec: RegisteredReport, parameters: Mapping[str, Any]
+    spec: ReportSpec, parameters: Mapping[str, Any]
 ) -> tuple[str, ...]:
     """The names a report's declaration resolves to, before any intersection.
 
@@ -296,7 +393,7 @@ def resolve_default_columns(
     return tuple(declared)
 
 
-def money_columns(spec: RegisteredReport) -> dict[str, Money]:
+def money_columns(spec: ReportSpec) -> dict[str, Money]:
     """Build the renderer's money declarations from a report's own columns.
 
     Requirement 12: the kind is declared where the meaning is known — beside
@@ -311,15 +408,47 @@ def money_columns(spec: RegisteredReport) -> dict[str, Money]:
     }
 
 
+def numeric_columns(spec: ReportSpec) -> tuple[str, ...]:
+    """Columns declaring a bare number (a count, a score) for `build_rows(numeric=...)`.
+
+    Mirrors :func:`money_columns`: the declaration lives beside the column, and
+    a report that declares nothing renders its numbers left-aligned exactly as
+    it did before this field existed.
+    """
+    return tuple(column.name for column in spec.columns if column.numeric)
+
+
+def grouped_columns(spec: ReportSpec) -> tuple[str, ...]:
+    """The `numeric` columns that are counts, for `build_rows(grouped=...)`.
+
+    A strict subset of :func:`numeric_columns`: `.claude/rules/cli.md` groups
+    a row count by thousands and prints a rate or a per-unit price exactly as
+    stored, so the two are declared apart and never equated here.
+    """
+    return tuple(column.name for column in spec.columns if column.grouped)
+
+
+def percent_columns(spec: ReportSpec) -> tuple[str, ...]:
+    """The `numeric` columns storing a ratio, for `build_rows(percent=...)`."""
+    return tuple(column.name for column in spec.columns if column.percent)
+
+
 def render_report_result(
     result: CatalogReportResult,
     output: OutputFormat,
     *,
     cli_actor: str,
     money: Mapping[str, Money] | None = None,
+    numeric: Sequence[str] | None = None,
+    grouped: Sequence[str] | None = None,
+    percent: Sequence[str] | None = None,
     quiet: bool = False,
     columns: Sequence[str] | None = None,
+    implied_currency: str | None = None,
+    placeholder: Placeholder | None = None,
     fit: bool = False,
+    optional: Sequence[str] | None = None,
+    no_pager: bool = False,
 ) -> None:
     """Render one report result as a table or the JSON envelope.
 
@@ -331,6 +460,20 @@ def render_report_result(
     :func:`money_columns`. Both callers resolve it from the spec, so one report
     renders its amounts identically whichever command ran it.
 
+    ``numeric`` carries the report's bare-number declarations, from
+    :func:`numeric_columns` — requirement 9's right-alignment for a column
+    that is a count or a score rather than an amount. ``grouped`` is the
+    count subset of it, from :func:`grouped_columns`, that also gets thousands
+    grouping; a rate declared ``numeric`` alone prints as stored. ``percent``
+    is the ratio subset, from :func:`percent_columns`, printed as ``+9.4%``.
+
+    ``implied_currency`` is :class:`ColumnView`'s: the currency every row is in
+    after its column left the table, named once on the framing line instead.
+
+    ``placeholder`` is :class:`ColumnView`'s too: a column declaring
+    ``uncategorized`` prints a NULL as ``Uncategorized``, the word
+    ``transactions list`` uses; JSON keeps the NULL.
+
     ``columns`` is the text branch's narrowed view, from
     :func:`visible_columns`. It never reaches the JSON envelope — requirement 8
     keeps that projection whole, filtered only by ``--json-fields``.
@@ -340,34 +483,64 @@ def render_report_result(
     set: a declared set is a curated answer to "what does this report say",
     contract-tested at 80 characters, and re-deciding it from column widths
     would discard the author's judgement.
+
+    ``optional`` is the ``--wide`` counterpart, from :func:`optional_columns`:
+    the columns the default set leaves out, dropped least-important-first (the
+    projection's first extra, usually an id, before its last) only while the
+    whole projection is wider than the terminal. A declared set is never among
+    them, so the curated answer survives a narrow terminal under ``--wide``
+    too. Exclusive with ``fit``.
     """
     visible = list(result.columns if columns is None else columns)
 
-    def _render_text(_: ResponseEnvelope[Any]) -> None:
-        if result.records:
-            rows: list[tuple[object, ...]] = [
+    if output == OutputFormat.JSON:
+        render_or_json(
+            result.to_envelope(),
+            output,
+            cli_actor=cli_actor,
+            classes_returned=result.classes_returned,
+        )
+        return
+    policy = get_terminal_policy(no_pager=no_pager)
+    disclosures = report_note_lines(result, quiet=quiet, symbols=policy.symbols)
+    if result.records:
+        from rich.console import Group
+        from rich.text import Text
+
+        human = build_rows(
+            visible,
+            [
                 tuple(record.get(column) for column in visible)
                 for record in result.records
-            ]
-            render_rows(
-                visible,
-                rows,
-                money=money,
-                total_columns=len(result.columns),
-                fit=fit,
-            )
-        echo_report_notes(result, quiet=quiet)
+            ],
+            money=money,
+            numeric=numeric,
+            grouped=grouped,
+            percent=percent,
+            total_columns=len(result.columns),
+            placeholder=placeholder,
+            framing=((f"amounts in {implied_currency}",) if implied_currency else ()),
+            fit=fit,
+            optional=optional,
+            terminal=policy,
+        )
+        if disclosures:
+            human = Group(human, Text("\n" + "\n".join(disclosures)))
+        emit_human_result(
+            human,
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
+    elif disclosures:
+        from rich.text import Text
 
-    render_or_json(
-        result.to_envelope(),
-        output,
-        render_fn=_render_text,
-        cli_actor=cli_actor,
-        # Bare-list payload + lineage-derived classes: pass them explicitly so
-        # the privacy.log audit event records the real data classes instead of an
-        # empty set (same as `sql query`).
-        classes_returned=result.classes_returned,
-    )
+        emit_human_result(
+            Text("\n".join(disclosures)),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
 
 def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
@@ -382,12 +555,13 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         )
 
         output: OutputFormat = kwargs.pop("output")
-        # Reaches the next-step hints in `echo_report_notes` and nothing else —
+        # Reaches the next-step hints in `report_note_lines` and nothing else —
         # the table is data (requirement 5) and JSON output has no notes.
         quiet: bool = bool(kwargs.pop("quiet", False))
         # Popped for the same reason as `display_currency`: a framework option
         # the runner never declared and would reject as unknown.
         wide: bool = bool(kwargs.pop("wide", False))
+        no_pager: bool = bool(kwargs.pop("no_pager", False))
         # Popped before `kwargs` becomes `parameters`: display conversion is the
         # framework's, not the runner's, so a runner would reject it as unknown.
         display_currency: str | None = kwargs.pop("display_currency", None)
@@ -412,16 +586,28 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     home_currency=profile_home_currency(db),
                 )
             view = column_view(
-                spec, result.columns, parameters=kwargs, wide=wide, output=output
+                spec,
+                result.columns,
+                parameters=kwargs,
+                wide=wide,
+                output=output,
+                display_currency=result.display_currency,
             )
             render_report_result(
                 result,
                 output,
                 cli_actor=cli_actor,
                 money=money_columns(spec),
+                numeric=numeric_columns(spec),
+                grouped=grouped_columns(spec),
+                percent=percent_columns(spec),
                 quiet=quiet,
                 columns=view.columns,
+                implied_currency=view.implied_currency,
+                placeholder=view.placeholder,
                 fit=view.fit,
+                optional=view.optional,
+                no_pager=no_pager,
             )
 
     _impl.__name__ = spec.name

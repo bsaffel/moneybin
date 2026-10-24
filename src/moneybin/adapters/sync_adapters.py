@@ -139,6 +139,7 @@ def sync_connection_row(connection: SyncConnectionView) -> SyncConnectionRow:
         provider=connection.provider,
         status=connection.status,
         last_sync=(connection.last_sync.isoformat() if connection.last_sync else None),
+        created_at=connection.created_at.isoformat(),
         error_code=connection.error_code,
         guidance=connection.guidance,
     )
@@ -160,11 +161,22 @@ def sync_status_envelope(
 
 def sync_disconnect_envelope(
     *,
-    institution: str,
+    institution: str | None,
+    provider_item_id: str,
     actions: list[str],
+    purged: bool = False,
+    rows_deleted: int = 0,
+    account_links_reversed: int = 0,
 ) -> ResponseEnvelope[SyncDisconnectPayload]:
-    """Wrap the confirmation that one institution was disconnected."""
+    """Wrap the confirmation that one institution was disconnected or purged."""
     return build_envelope(
-        data=SyncDisconnectPayload(status="disconnected", institution=institution),
+        data=SyncDisconnectPayload(
+            status="purged" if purged else "disconnected",
+            institution=institution,
+            provider_item_id=provider_item_id,
+            purged=purged,
+            rows_deleted=rows_deleted,
+            account_links_reversed=account_links_reversed,
+        ),
         actions=actions,
     )

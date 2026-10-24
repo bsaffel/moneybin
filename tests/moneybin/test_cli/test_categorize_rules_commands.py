@@ -11,12 +11,14 @@ this test only pins the CLI-to-service wiring, which had no boundary test.
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
 from moneybin import error_codes
+from moneybin.cli import utils as cli_utils
 from moneybin.cli.commands.transactions.categorize import app
 from moneybin.privacy.payloads.categorize import RuleConflictDetail
 from moneybin.services.categorization import (
@@ -49,6 +51,29 @@ _ARGS = [
     "--match-type",
     "contains",
 ]
+
+
+class _Stream:
+    def __init__(self, tty: bool) -> None:
+        self.tty = tty
+        self.encoding = "utf-8"
+
+    def isatty(self) -> bool:
+        return self.tty
+
+
+def _set_terminal_streams(
+    monkeypatch: pytest.MonkeyPatch, *, stdin_tty: bool, stdout_tty: bool
+) -> None:
+    monkeypatch.setattr(
+        cli_utils,
+        "sys",
+        SimpleNamespace(
+            stdin=_Stream(stdin_tty),
+            stdout=_Stream(stdout_tty),
+            stderr=_Stream(True),
+        ),
+    )
 
 
 def _rule_result() -> RuleCreationResult:
@@ -129,17 +154,26 @@ def _resolution(
     )
 
 
+@pytest.mark.parametrize("output_args", [[], ["--output", "json"]])
 @patch("moneybin.services.categorization.CategorizationService")
 @patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
 def test_rules_resolve_forwards_one_replace_decision(
-    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock, output_args: list[str]
 ) -> None:
     mock_get_db.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
     svc.resolve_rule_conflicts.return_value = [_resolution()]
 
     result = runner.invoke(
-        app, ["rules", "resolve", "conf_aaaaaaaaaaaaaaaa", "--replace", "--yes"]
+        app,
+        [
+            "rules",
+            "resolve",
+            "conf_aaaaaaaaaaaaaaaa",
+            "--replace",
+            "--yes",
+            *output_args,
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -262,16 +296,59 @@ def test_rules_resolve_refuses_no_resolution(
 @patch("moneybin.services.categorization.CategorizationService")
 @patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
 def test_rules_resolve_declined_confirmation_changes_nothing(
-    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+    mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A human who says no must not have the batch applied anyway."""
     mock_get_db.return_value.__enter__.return_value = MagicMock()
+    _set_terminal_streams(monkeypatch, stdin_tty=True, stdout_tty=True)
 
     result = runner.invoke(
         app, ["rules", "resolve", "conf_aaaaaaaaaaaaaaaa", "--replace"], input="n\n"
     )
 
     assert result.exit_code == 0, result.output
+    assert "Rule conflict resolution cancelled" in result.stdout
+    assert "No rule conflicts were changed" in result.stdout
+    mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("output_args", "stdin_tty", "stdout_tty"),
+    [([], False, True), ([], True, False), (["--output", "json"], True, True)],
+)
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_resolve_refuses_piped_confirmation_without_yes(
+    mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    output_args: list[str],
+    stdin_tty: bool,
+    stdout_tty: bool,
+) -> None:
+    """A redirected ``y`` cannot apply a rule-conflict decision."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    _set_terminal_streams(monkeypatch, stdin_tty=stdin_tty, stdout_tty=stdout_tty)
+
+    result = runner.invoke(
+        app,
+        [
+            "rules",
+            "resolve",
+            "conf_aaaaaaaaaaaaaaaa",
+            "--replace",
+            *output_args,
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 2, result.output
+    if output_args:
+        body = json.loads(result.stdout)
+        assert body["error"]["code"] == error_codes.MUTATION_CONFIRMATION_REQUIRED
+        assert "Apply 1 rule-conflict" not in result.output
     mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()
 
 
@@ -401,6 +478,332 @@ def test_rules_create_partial_write_is_not_a_failure(
     assert payload["status"] == "ok"
     assert payload["data"]["created"] == 1
     assert payload["data"]["conflicts"] == 1
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_short_pattern_warns_with_exact_rerun_hint(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """The short-pattern refusal names no Python keyword syntax.
+
+    It also offers a real, copyable rerun command using an exact match.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=0,
+        existing=0,
+        skipped=1,
+        error_details=[
+            {
+                "name": "Transfer TO",
+                "reason": (
+                    "Pattern 'TO' is too short to be a 'contains' rule — it "
+                    "would match unrelated merchants (e.g. a 2-char pattern "
+                    "like 'TO' matches STORE, AUTO, TOTAL). Use an exact "
+                    "match for a short pattern, or allow a broad match "
+                    "explicitly to accept the risk."
+                ),
+                "merchant_pattern": "TO",
+                "category": "Transfer",
+                "subcategory": "Internal Transfer",
+            }
+        ],
+        rule_ids=[],
+    )
+
+    result = runner.invoke(app, _ARGS)
+
+    assert result.exit_code == 1, result.output
+    assert "match_type=" not in result.stderr
+    assert "allow_broad=True" not in result.stderr
+    assert (
+        "› Rerun with an exact match: moneybin transactions categorize rules "
+        "create 'Transfer TO' --pattern TO --category Transfer --subcategory "
+        "'Internal Transfer' --match-type exact" in result.stderr
+    )
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_conflict_hint_is_three_runnable_commands(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """No alternation: each resolution choice is its own complete command."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=1,
+        existing=0,
+        skipped=0,
+        error_details=[],
+        rule_ids=["r2"],
+        conflicts=1,
+        conflict_ids=["conf_aaaaaaaaaaaaaaaa"],
+        conflict_details=[
+            RuleConflictDetail(
+                conflict_id="conf_aaaaaaaaaaaaaaaa",
+                name="Transfer TO",
+                existing_rule_id="r1",
+                reason="Rule r1 already matches this pattern.",
+            )
+        ],
+    )
+
+    result = runner.invoke(app, _ARGS)
+
+    assert result.exit_code == 0, result.output
+    assert "|" not in result.stderr
+    resolve_cmd = "moneybin transactions categorize rules resolve conf_aaaaaaaaaaaaaaaa"
+    assert f"› Decide it: {resolve_cmd} --replace" in result.stderr
+    assert f"› Or: {resolve_cmd} --reprioritize <N>" in result.stderr
+    assert f"› Or: {resolve_cmd} --cancel" in result.stderr
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_title_says_created_on_full_success(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = _rule_result()
+
+    result = runner.invoke(app, _ARGS)
+
+    assert result.exit_code == 0, result.output
+    assert "Rules created" in result.stdout
+    assert "partially" not in result.stdout
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_title_says_partially_created_on_skip(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=1,
+        existing=0,
+        skipped=1,
+        error_details=[{"name": "x", "reason": "failed"}],
+        rule_ids=["r1"],
+    )
+
+    result = runner.invoke(app, _ARGS)
+
+    assert result.exit_code == 1, result.output
+    assert "Rules partially created" in result.stdout
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_title_says_no_rules_created_when_all_refused(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """Created == 0 with no conflicts is always a refusal, never partial."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=0,
+        existing=0,
+        skipped=1,
+        error_details=[{"name": "x", "reason": "failed"}],
+        rule_ids=[],
+    )
+
+    result = runner.invoke(app, _ARGS)
+
+    assert result.exit_code == 1, result.output
+    assert "No rules created" in result.stdout
+    assert "partially" not in result.stdout
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_title_says_already_exist_when_nothing_was_refused(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """Re-running the same create is an idempotent success, not a failure."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=0,
+        existing=1,
+        skipped=0,
+        error_details=[],
+        rule_ids=[],
+    )
+
+    result = runner.invoke(app, _ARGS)
+
+    assert result.exit_code == 0, result.output
+    assert "Rules already exist" in result.stdout
+    assert "No rules created" not in result.stdout
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_exact_match_rerun_carries_the_scoping_flags(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """The suggested rerun recreates the refused rule, not a broader one."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=0,
+        existing=0,
+        skipped=1,
+        error_details=[
+            {
+                "name": "Transfer TO",
+                "reason": "Pattern 'TO' is too short to be a 'contains' rule.",
+                "merchant_pattern": "TO",
+                "category": "Transfer",
+                "subcategory": "Internal Transfer",
+                # What the service echoes back from the refused row itself.
+                "account_id": "acct1234",
+                "min_amount": "5.0",
+                "max_amount": "",
+                "priority": "7",
+            }
+        ],
+        rule_ids=[],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            *_ARGS,
+            "--account-id",
+            "acct1234",
+            "--min-amount",
+            "5",
+            "--priority",
+            "7",
+            "--reapply",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "--match-type exact --account-id acct1234 --min-amount 5.0 --priority 7 "
+        "--reapply" in result.stderr
+    )
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_from_file_rerun_keeps_each_refused_rows_own_scoping(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock, tmp_path: Path
+) -> None:
+    """A batch row's account and amount bounds ride on its own rerun hint.
+
+    The scoping comes from the refused row the service echoes back, not from
+    the command line, so a `--from-file` batch keeps each rule's constraints
+    instead of suggesting an account-agnostic recreation. The default
+    priority is not echoed: `--priority 100` would only add noise.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=0,
+        existing=0,
+        skipped=2,
+        error_details=[
+            {
+                "name": "Transfer TO",
+                "reason": "Pattern 'TO' is too short to be a 'contains' rule.",
+                "merchant_pattern": "TO",
+                "category": "Transfer",
+                "subcategory": "",
+                "account_id": "acct5678",
+                "min_amount": "",
+                "max_amount": "250.0",
+                "priority": "5",
+            },
+            {
+                "name": "Fee",
+                "reason": "Pattern 'FE' is too short to be a 'contains' rule.",
+                "merchant_pattern": "FE",
+                "category": "Fees",
+                "subcategory": "",
+                "account_id": "",
+                "min_amount": "",
+                "max_amount": "",
+                "priority": "100",
+            },
+        ],
+        rule_ids=[],
+    )
+    batch = tmp_path / "rules.json"
+    batch.write_text(
+        json.dumps([
+            {
+                "name": "Transfer TO",
+                "merchant_pattern": "TO",
+                "category": "Transfer",
+                "account_id": "acct5678",
+                "max_amount": 250.0,
+                "priority": 5,
+            },
+            {"name": "Fee", "merchant_pattern": "FE", "category": "Fees"},
+        ])
+    )
+
+    result = runner.invoke(app, ["rules", "create", "--from-file", str(batch)])
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "--category Transfer --match-type exact --account-id acct5678 "
+        "--max-amount 250.0 --priority 5" in result.stderr
+    )
+    assert "--category Fees --match-type exact" in result.stderr
+    assert "--category Fees --match-type exact --" not in result.stderr
+    assert "--priority 100" not in result.stderr
+    assert "--reapply" not in result.stderr
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_shows_recategorized_count_after_reapply(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """--reapply's post-commit sweep total is on the receipt, not hidden."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=1,
+        existing=0,
+        skipped=0,
+        error_details=[],
+        rule_ids=["r1"],
+        recategorized=42,
+    )
+
+    result = runner.invoke(app, [*_ARGS, "--reapply"])
+
+    assert result.exit_code == 0, result.output
+    assert "Recategorized: 42 rows (every active rule, not just this one)" in (
+        result.stdout
+    )
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_omits_recategorized_row_without_reapply(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = _rule_result()  # recategorized defaults to None
+
+    result = runner.invoke(app, _ARGS)
+
+    assert result.exit_code == 0, result.output
+    assert "Recategorized" not in result.stdout
 
 
 @patch("moneybin.services.categorization.CategorizationService")

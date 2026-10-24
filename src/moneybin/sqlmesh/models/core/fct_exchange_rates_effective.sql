@@ -6,9 +6,9 @@
    corrections at their recorded dates.
 
    That distinction is the whole correctness of the model.
-   CurrencyService.resolve_rate consults _stored_rate twice — once for the
-   exact day, once for _last_publication_day of it — and _stored_rate is
-   override-first both times. A user who corrects Friday's quote is therefore
+   CurrencyService.resolve_rate consults _stored_rate for the exact day, then
+   for _last_publication_day of it, then (offline) for the publication before
+   a market closure — and _stored_rate is override-first every time. A user who corrects Friday's quote is therefore
    already pricing Saturday today. An overlay matched on effective_date alone
    would leave Saturday carrying the provider's Friday rate, so the SQL
    reports would ignore the correction on exactly the days carry-forward
@@ -51,9 +51,9 @@
       same-pair, non-publication correction past the single day it was filed
       under would assume a claim about neighboring days the user never made;
       Requirement 5 governs the ambiguity the same way rule 4 states it for
-      an uncovered override. This mirrors currency_service.py:197-205's
-      open weekday-holiday gap for `resolve_rate` itself: neither surface
-      claims to close it.)
+      an uncovered override. resolve_rate agrees: its offline closure rule
+      finds the bracketing publications from provider rows alone, then reads
+      the override on the earlier one — this rule — never one inside the gap.)
    4. An override on a pair and date the daily spine does not cover
       contributes its own row — _stored_rate answers from the override table
       whether or not a provider ever priced that day, so a correction is

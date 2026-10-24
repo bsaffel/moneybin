@@ -31,8 +31,9 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
-import click
 import pytest
+from typer._click import Command
+from typer.core import TyperArgument, TyperCommand, TyperGroup, TyperOption
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -561,7 +562,7 @@ def _expand_alternatives(token: str) -> list[str]:
 
 
 def _resolve_invocation(
-    tokens: list[str], root: click.Command, *, runnable: bool
+    tokens: list[str], root: Command, *, runnable: bool
 ) -> str | None:
     """Return why the invocation does not resolve, or None when it does.
 
@@ -576,11 +577,11 @@ def _resolve_invocation(
     """
     node = root
     path = ["moneybin"]
-    parents: list[tuple[click.Command, list[str]]] = []
+    parents: list[tuple[Command, list[str]]] = []
     positionals = 0
     options_done = False
     saw_help = False
-    seen_options: set[click.Option] = set()
+    seen_options: set[TyperOption] = set()
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -609,7 +610,7 @@ def _resolve_invocation(
             aliases = name.split("/")  # `--refresh/--no-refresh`: each must exist
             if any("<" in alias for alias in aliases):
                 continue  # `--clear-<field>`: a placeholder for an option family
-            options = [p for p in node.params if isinstance(p, click.Option)]
+            options = [p for p in node.params if isinstance(p, TyperOption)]
             declared = {
                 alias for p in options for alias in (*p.opts, *p.secondary_opts)
             }
@@ -642,12 +643,12 @@ def _resolve_invocation(
                 index += 1  # the option's value
             continue
         if _is_placeholder(token):
-            if isinstance(node, click.Group):
+            if isinstance(node, TyperGroup):
                 if node is root or _names_a_command_slot(token):
                     return None  # `moneybin <command>`: nothing checkable
                 return f"`{' '.join(path)}` takes a subcommand, not `{token}`"
             positionals += 1
-        elif isinstance(node, click.Group):
+        elif isinstance(node, TyperGroup):
             alternatives = _expand_alternatives(token)
             unknown = [alt for alt in alternatives if alt not in node.commands]
             if unknown:
@@ -662,7 +663,7 @@ def _resolve_invocation(
             continue
         else:
             positionals += 1
-        arguments = [p for p in node.params if isinstance(p, click.Argument)]
+        arguments = [p for p in node.params if isinstance(p, TyperArgument)]
         capacity = sum(
             float("inf") if argument.nargs < 0 else argument.nargs
             for argument in arguments
@@ -677,7 +678,7 @@ def _resolve_invocation(
     if (
         runnable
         and not saw_help
-        and isinstance(node, click.Group)
+        and isinstance(node, TyperGroup)
         and node is not root
         and not getattr(node, "invoke_without_command", False)
     ):
@@ -686,8 +687,8 @@ def _resolve_invocation(
     # (`moneybin db key import` with no path) exits non-zero, same as the
     # subcommand and option-value checks above. A required variadic
     # (`FILE_PATHS...` `[required]`) still needs at least one.
-    if runnable and not saw_help and not isinstance(node, click.Group):
-        arguments = [p for p in node.params if isinstance(p, click.Argument)]
+    if runnable and not saw_help and not isinstance(node, TyperGroup):
+        arguments = [p for p in node.params if isinstance(p, TyperArgument)]
         minimum = sum(
             (1 if argument.required else 0)
             if argument.nargs < 0
@@ -702,7 +703,7 @@ def _resolve_invocation(
         missing_options = [
             option
             for option in node.params
-            if isinstance(option, click.Option)
+            if isinstance(option, TyperOption)
             and option.required
             and option not in seen_options
         ]
@@ -732,7 +733,7 @@ def test_public_docs_cli_invocations_resolve() -> None:
     from moneybin.cli.main import app
 
     root = get_command(app)
-    assert isinstance(root, click.Group)
+    assert isinstance(root, TyperGroup)
     violations: list[str] = []
     for document in _user_facing_documents():
         text = document.read_text()
@@ -771,53 +772,55 @@ def _fixture_callback() -> None:
 
 
 @pytest.fixture
-def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # pytest fixture
+def _fixture_cli() -> TyperGroup:  # pyright: ignore[reportUnusedFunction]  # pytest fixture
     """A small synthetic command tree exercising the resolver's checks.
 
-    Built from plain Click objects (not Typer's decorator sugar, and not
+    Built from Typer's command classes directly (not its decorator sugar, and not
     nested `def`s pyright can't see used) — a fixture only ever inspected,
     never invoked.
     """
-    db = click.Group(
-        "db",
-        commands={"show": click.Command("show", callback=_fixture_callback)},
+    db = TyperGroup(
+        name="db",
+        commands={"show": TyperCommand("show", callback=_fixture_callback)},
         # No `invoke_without_command`: a bare invocation requires a subcommand.
     )
-    inbox = click.Group(
-        "inbox",
-        commands={"list": click.Command("list", callback=_fixture_callback)},
+    inbox = TyperGroup(
+        name="inbox",
+        commands={"list": TyperCommand("list", callback=_fixture_callback)},
         invoke_without_command=True,  # Runs its own callback bare.
         callback=_fixture_callback,
     )
-    create = click.Command(
+    create = TyperCommand(
         "create",
         callback=_fixture_callback,
         params=[
-            click.Argument(["name"]),
-            click.Argument(["amount"], required=False),
+            TyperArgument(param_decls=["name"], required=True),
+            TyperArgument(param_decls=["amount"], required=False),
         ],
     )
-    commit = click.Command(
+    commit = TyperCommand(
         "commit",
         callback=_fixture_callback,
-        params=[click.Option(["-y", "--yes"], is_flag=True)],
+        params=[TyperOption(param_decls=["-y", "--yes"], is_flag=True)],
     )
-    rules = click.Command(
-        "rules", callback=_fixture_callback, params=[click.Option(["--pattern"])]
+    rules = TyperCommand(
+        "rules",
+        callback=_fixture_callback,
+        params=[TyperOption(param_decls=["--pattern"])],
     )
-    secret = click.Command("secret", callback=_fixture_callback, hidden=True)
-    deploy = click.Command(
+    secret = TyperCommand("secret", callback=_fixture_callback, hidden=True)
+    deploy = TyperCommand(
         "deploy",
         callback=_fixture_callback,
-        params=[click.Option(["--target"], required=True)],
+        params=[TyperOption(param_decls=["--target"], required=True)],
     )
-    files = click.Command(
+    files = TyperCommand(
         "files",
         callback=_fixture_callback,
-        params=[click.Argument(["file_paths"], nargs=-1, required=True)],
+        params=[TyperArgument(param_decls=["file_paths"], nargs=-1, required=True)],
     )
-    return click.Group(
-        "cli",
+    return TyperGroup(
+        name="cli",
         commands={
             "db": db,
             "inbox": inbox,
@@ -893,7 +896,7 @@ def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # p
     ],
 )
 def test_resolve_invocation_runnable_scoping(
-    _fixture_cli: click.Group,
+    _fixture_cli: TyperGroup,
     tokens: list[str],
     runnable: bool,
     expected_ok: bool,
@@ -915,7 +918,7 @@ def test_invocations_semicolon_chain_finds_both() -> None:
     assert commands == [["db", "show"], ["create", "x"]]
 
 
-def test_resolve_invocation_elision_short_circuits(_fixture_cli: click.Group) -> None:
+def test_resolve_invocation_elision_short_circuits(_fixture_cli: TyperGroup) -> None:
     """An elision (`...`) stops the check before a trailing bogus flag."""
     (command,) = _invocations("moneybin commit ... --bogus")
     assert command == ["commit", "...", "--bogus"]
@@ -934,7 +937,7 @@ def test_invocations_masks_non_moneybin_substitution() -> None:
     assert command == ["db", "show", "-o", "backup-SUBST.db"]
 
 
-def test_invocations_elides_unterminated_quote_value(_fixture_cli: click.Group) -> None:
+def test_invocations_elides_unterminated_quote_value(_fixture_cli: TyperGroup) -> None:
     """An unterminated quote (a multi-line string) elides rather than vanishing.
 
     Cutting the value away entirely would leave `--pattern` as the last token
@@ -946,19 +949,19 @@ def test_invocations_elides_unterminated_quote_value(_fixture_cli: click.Group) 
 
 
 def test_resolve_invocation_placeholder_then_bogus_flag(
-    _fixture_cli: click.Group,
+    _fixture_cli: TyperGroup,
 ) -> None:
     (command,) = _invocations("moneybin create <name> --bogus")
     assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
 
 
-def test_resolve_invocation_bracketed_bogus_option(_fixture_cli: click.Group) -> None:
+def test_resolve_invocation_bracketed_bogus_option(_fixture_cli: TyperGroup) -> None:
     (command,) = _invocations("moneybin create <name> [--bogus]")
     assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
 
 
 def test_invocations_drop_click_usage_options_placeholder(
-    _fixture_cli: click.Group,
+    _fixture_cli: TyperGroup,
 ) -> None:
     """Click's `[OPTIONS]` names no positional; `[--yes]` still keeps its option."""
     (command,) = _invocations("moneybin create [OPTIONS] NAME [AMOUNT]")
@@ -968,12 +971,12 @@ def test_invocations_drop_click_usage_options_placeholder(
     assert flagged == ["commit", "--yes"]
 
 
-def test_resolve_invocation_root_dash_h_unregistered(_fixture_cli: click.Group) -> None:
+def test_resolve_invocation_root_dash_h_unregistered(_fixture_cli: TyperGroup) -> None:
     (command,) = _invocations("moneybin -h")
     assert _resolve_invocation(command, _fixture_cli, runnable=True) is not None
 
 
-def test_code_lines_reads_soft_wrapped_span(_fixture_cli: click.Group) -> None:
+def test_code_lines_reads_soft_wrapped_span(_fixture_cli: TyperGroup) -> None:
     """A code span that soft-wraps across a line is still read as one span."""
     text = "run `moneybin\ncommit --bogus` now"
     (entry,) = _code_lines(text)
@@ -985,7 +988,7 @@ def test_code_lines_reads_soft_wrapped_span(_fixture_cli: click.Group) -> None:
 
 
 def test_full_pipeline_scopes_fenced_block_vs_inline_mention(
-    _fixture_cli: click.Group,
+    _fixture_cli: TyperGroup,
 ) -> None:
     """End to end: the same bare-group text is strict fenced, lenient inline."""
     text = (
@@ -1091,9 +1094,10 @@ def _either_case(words: tuple[str, ...]) -> str:
     return "|".join(f"[{word[0].upper()}{word[0]}]{word[1:]}" for word in words)
 
 
-# Digits, or words up to 999: "eight", "forty-six", "one hundred twelve".
+# Digits (comma-grouped or not), or words up to 999: "1,000", "eight",
+# "forty-six", "one hundred twelve".
 _NUMBER = (
-    r"(\d+|"
+    r"(\d{1,3}(?:,\d{3})+|\d+|"
     rf"(?:(?:{_either_case(_UNIT_WORDS[1:10])}|[Aa]) hundred(?: and)?(?: |-))?"
     rf"(?:(?:{_either_case(_TENS_WORDS)})(?:[- ](?:{_either_case(_UNIT_WORDS[1:10])}))?"
     rf"|(?:{_either_case(_UNIT_WORDS)}))"
@@ -1102,8 +1106,8 @@ _NUMBER = (
 
 
 def _as_int(token: str) -> int:
-    if token.isdigit():
-        return int(token)
+    if token.replace(",", "").isdigit():
+        return int(token.replace(",", ""))
     total = 0
     for word in re.split(r"[\s-]+", token.lower()):
         if word == "a":
@@ -1159,6 +1163,65 @@ def _hidden_stub_counts() -> tuple[int, int]:
     return len(UNIMPLEMENTED_CLI_PATHS) + exit_one, exit_one
 
 
+def _doctor_investment_check_count() -> int:
+    """Length of the `investment_checks` list `DoctorService.run_all` runs.
+
+    The list is local to the method, so it is read from the source rather
+    than by running the doctor against a database.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from moneybin.services.doctor_service import DoctorService
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(DoctorService.run_all)))
+    literals: list[ast.List] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign | ast.AugAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(
+                isinstance(t, ast.Name) and t.id == "investment_checks" for t in targets
+            ):
+                assert isinstance(node, ast.Assign), "investment_checks is extended"
+                assert isinstance(node.value, ast.List), "investment_checks not a list"
+                literals.append(node.value)
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "investment_checks"
+        ):
+            raise AssertionError(f"investment_checks.{node.attr} changes the count")
+    assert len(literals) == 1, "DoctorService.run_all no longer lists investment_checks"
+    (checks,) = literals
+    assert not any(isinstance(e, ast.Starred) for e in checks.elts), (
+        "investment_checks unpacks a sequence; count it another way"
+    )
+    return len(checks.elts)
+
+
+def _duckdb_versions() -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """(the version `uv.lock` pins, the `pyproject.toml` floor) for DuckDB."""
+    import tomllib
+
+    lock = tomllib.loads((_REPO_ROOT / "uv.lock").read_text())
+    pinned = [p["version"] for p in lock["package"] if p["name"] == "duckdb"]
+    assert len(pinned) == 1, f"uv.lock pins duckdb {len(pinned)} times: {pinned}"
+    project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
+    floors = [
+        found.group(1)
+        for dep in project["project"]["dependencies"]
+        if (found := re.fullmatch(r"duckdb>=(\d+(?:\.\d+)*)", dep))
+    ]
+    assert len(floors) == 1, "pyproject.toml no longer floors duckdb as `duckdb>=X.Y.Z`"
+    version = re.fullmatch(r"\d+(?:\.\d+)*", pinned[0])
+    assert version, f"uv.lock's duckdb {pinned[0]!r} is not a plain release"
+    return (
+        tuple(int(part) for part in pinned[0].split(".")),
+        tuple(int(part) for part in floors[0].split(".")),
+    )
+
+
 #: Specs that restate a guarded figure beside their own contract; they are
 #: scanned with the user-facing docs.
 _LIVE_SPECS = (
@@ -1183,8 +1246,11 @@ def _stated_figures() -> list[_Figure]:
     from moneybin.cli.commands.mcp import (
         _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
     )
+    from moneybin.config import DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS, MCPConfig
     from moneybin.exports.catalog import BUNDLE_TABLES
     from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+    from moneybin.privacy.sensitivity import Sensitivity
+    from moneybin.reports.definitions import ALL_REPORTS
 
     domains = _spec_domain_table()
     assert frozenset().union(*domains.values()) == STANDARD_TOOL_NAMES, (
@@ -1205,7 +1271,11 @@ def _stated_figures() -> list[_Figure]:
     ), "moneybin-mcp.md's domain-count sentence disagrees with its own table"
     seeds = _REPO_ROOT / "src" / "moneybin" / "sqlmesh" / "models" / "seeds"
     with (seeds / "categories.csv").open(newline="") as handle:
-        seeded_categories = sum(1 for _ in csv.DictReader(handle))
+        seed_rows = list(csv.DictReader(handle))
+    seeded_categories = len(seed_rows)
+    seeded_primaries = len({row["category"] for row in seed_rows})
+    mcp_defaults = MCPConfig()
+    duckdb_pinned, duckdb_floor = _duckdb_versions()
     stub_count, exit_one_stub_count = _hidden_stub_counts()
     n = _NUMBER
     return [
@@ -1225,7 +1295,7 @@ def _stated_figures() -> list[_Figure]:
         _Figure(
             "export bundle tables",
             # `\[?` admits a link opener between the count and its noun.
-            (rf"\b{n}-table \[?(?:canonical |portability )?(?:bundle|catalog)\b",),
+            (rf"\b{n}-table \[?(?:canonical |portability )?(?:bundle|catalog)s?\b",),
             (len(BUNDLE_TABLES),),
         ),
         _Figure(
@@ -1274,6 +1344,70 @@ def _stated_figures() -> list[_Figure]:
             "seeded categories",
             (rf"\b{n} seeded categories\b",),
             (seeded_categories,),
+        ),
+        _Figure(
+            # "~95 subcategories" is worded as a bound, so only the primary
+            # count is captured and pinned.
+            "seeded primary categories",
+            (rf"\b{n} primary(?: categories)?(?:,| with) ~\d+ subcategories\b",),
+            (seeded_primaries,),
+        ),
+        _Figure(
+            "built-in reports",
+            (rf"\b{n} built-in reports\b",),
+            # ALL_REPORTS is what the CLI and the report catalog register.
+            (len(ALL_REPORTS),),
+        ),
+        _Figure(
+            "system doctor investment checks",
+            # The roadmap's "gains nine investment checks" dates M1G.4, before
+            # the four price checks of M1J.3 C.2; it is history, not the count.
+            (rf"(?<!gains\s)\b{n} investment checks\b",),
+            (_doctor_investment_check_count(),),
+        ),
+        _Figure(
+            "sensitivity tiers",
+            (rf"\b{n} sensitivity tiers\b",),
+            (len(Sensitivity),),
+        ),
+        _Figure(
+            "write-lock wait budget, in seconds",
+            (
+                rf"write-lock wait budget (?:elapses|expires) \({n} s\b",
+                rf"\b{n} s write-lock budget\b",
+                rf"\(default {n} s, `DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS`",
+            ),
+            (int(DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS),),
+        ),
+        _Figure(
+            "MCP tool timeout, in seconds",
+            (
+                rf"\b{n}-second default dispatch cap\b",
+                rf"\b{n}s dispatch cap\b",
+                rf"timeout guard \({n}s default\b",
+                rf"`mcp\.tool_timeout_seconds` \(default \**{n} s\b",
+                rf"\brows with a {n}-second limit\b",
+            ),
+            (int(mcp_defaults.tool_timeout_seconds),),
+        ),
+        _Figure(
+            "MCP row cap",
+            (
+                rf"`MONEYBIN_MCP__MAX_ROWS`, {n} by default\b",
+                rf"`mcp\.max_rows` from `MoneyBinSettings` \(default \**{n}\b",
+                rf"\bcaps results at {n} rows\b",
+            ),
+            (mcp_defaults.max_rows,),
+        ),
+        _Figure(
+            "bundled DuckDB version",
+            (r"\bbundles \**DuckDB (\d+)\.(\d+)\.(\d+)\b",),
+            duckdb_pinned,
+        ),
+        _Figure(
+            "DuckDB version floor",
+            (r"`duckdb>=(\d+)\.(\d+)\.(\d+)`",),
+            duckdb_floor,
         ),
     ]
 
@@ -1326,6 +1460,32 @@ def test_public_docs_stated_figures_match_code() -> None:
     )
 
 
+def test_cli_spec_profile_config_example_matches_generator(tmp_path: Path) -> None:
+    """The spec's profile config.yaml example has the keys `profile create` writes.
+
+    The example once showed a `sync:` block and `max_file_size_mb` that the
+    generator never wrote; comparing section and key sets keeps it honest.
+    """
+    import yaml
+
+    from moneybin.utils.user_config import generate_profile_config
+
+    spec = (_REPO_ROOT / "docs/specs/moneybin-cli.md").read_text()
+    section = spec.split("### Profile config (", 1)[1]
+    found = re.search(r"```yaml\n(.*?)```", section, re.DOTALL)
+    assert found, "moneybin-cli.md's Profile config section has no yaml example"
+    documented = yaml.safe_load(found.group(1))
+
+    written = yaml.safe_load(
+        generate_profile_config(tmp_path / "example", "example").read_text()
+    )
+
+    def shape(config: dict[str, dict[str, object]]) -> dict[str, set[str]]:
+        return {name: set(keys) for name, keys in config.items()}
+
+    assert shape(documented) == shape(written)
+
+
 def test_blank_fenced_blocks_hides_top_level_and_indented_fences() -> None:
     """Fence content is blanked, markers and every offset survive, prose stays."""
     text = (
@@ -1356,7 +1516,8 @@ def test_public_docs_list_exactly_the_supported_clients() -> None:
     The count figure above cannot see one client swapped for another; the
     per-client install sections would go stale with the count still right.
     The MCP clients guide carries the list as bullets and the CLI reference
-    as a sentence; both are checked.
+    as a sentence; the CLI spec carries it twice, in its command tree and in
+    the `mcp install` section. All four are checked.
     """
     from moneybin.cli.commands.mcp import (
         _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
@@ -1371,6 +1532,11 @@ def test_public_docs_list_exactly_the_supported_clients() -> None:
         r"the supported clients are (.*?), and ([a-z-]+),", reference.replace("\n", " ")
     )
     assert sentence is not None, "cli-reference.md lost its supported-clients sentence"
+    cli_spec = (_REPO_ROOT / "docs" / "specs" / "moneybin-cli.md").read_text()
+    tree = re.search(r"\[--client ([a-z|-]+)\]", cli_spec)
+    assert tree is not None, "moneybin-cli.md lost its --client command-tree entry"
+    spec_sentence = re.search(r"^Supported clients: (.*?)\.", cli_spec, re.MULTILINE)
+    assert spec_sentence is not None, "moneybin-cli.md lost its supported-clients line"
     enumerations = {
         "docs/guides/mcp-clients.md": set(
             re.findall(r"^- `([a-z-]+)`", listing, flags=re.MULTILINE)
@@ -1379,12 +1545,27 @@ def test_public_docs_list_exactly_the_supported_clients() -> None:
             *sentence.group(1).split(", "),
             sentence.group(2),
         },
+        "docs/specs/moneybin-cli.md (command tree)": set(tree.group(1).split("|")),
+        "docs/specs/moneybin-cli.md (mcp install)": set(
+            re.findall(r"`([a-z-]+)`", spec_sentence.group(1))
+        ),
     }
     for relative, listed in enumerations.items():
         assert listed == set(_SUPPORTED_CLIENTS), (
             f"{relative}: missing={sorted(set(_SUPPORTED_CLIENTS) - listed)!r}; "
             f"extra={sorted(listed - set(_SUPPORTED_CLIENTS))!r}"
         )
+    # The per-client sections use display names, which no code owns, so they
+    # are pinned by count: one section per supported client.
+    setup_heading = "\n## Per-client setup\n"
+    assert setup_heading in guide, "mcp-clients.md lost its Per-client setup section"
+    setup = guide.split(setup_heading, 1)[1].split("\n## ", 1)[0]
+    headings = re.findall(r"^### (.+)$", setup, flags=re.MULTILINE)
+    assert len(headings) == len(_SUPPORTED_CLIENTS), (
+        f"Per-client setup has {len(headings)} subsections for "
+        f"{len(_SUPPORTED_CLIENTS)} clients; each subsection there is one "
+        f"client: {headings}"
+    )
 
 
 def test_getting_started_names_live_registry_tools() -> None:

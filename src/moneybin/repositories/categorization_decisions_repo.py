@@ -35,6 +35,32 @@ _COLUMNS = (
 )
 
 
+# Fixed `queue` alias only: canonical eligibility for projection and scoped reads.
+PENDING_ATTEMPT_PREDICATE = f"""
+    NOT EXISTS (
+        SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} AS category
+        WHERE category.transaction_id = queue.transaction_id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM {CATEGORIZATION_DECISIONS.full_name} AS rejected
+        WHERE rejected.transaction_id = queue.transaction_id
+          AND rejected.status = 'rejected'
+          AND rejected.reversed_at IS NULL
+          AND rejected.attempt_number = (
+              SELECT MAX(attempt.attempt_number)
+              FROM {CATEGORIZATION_DECISIONS.full_name} AS attempt
+              WHERE attempt.transaction_id = queue.transaction_id
+          )
+          AND rejected.category_revision = (
+              SELECT COUNT(*) FROM {AUDIT_LOG.full_name} AS revision
+              WHERE revision.target_schema = 'app'
+                AND revision.target_table = 'transaction_categories'
+                AND revision.target_id = queue.transaction_id
+          )
+    )
+"""  # noqa: S608  # TableRef constants and fixed aliases only; no user SQL
+
+
 def categorization_decision_id(
     transaction_id: str,
     *,
@@ -54,6 +80,15 @@ class CategorizationDecisionsRepo(BaseRepo):
     repository = "categorization_decisions"
     table_ref = CATEGORIZATION_DECISIONS
     pk_columns = ("decision_id",)
+    # The accepted category/subcategory display snapshot. undo_event below
+    # overrides the generic reverser for its own is_undo=False events (it only
+    # ever toggles reversed_at/reversed_by, never rewrites these columns), but
+    # delegates to the generic BaseRepo.undo_event — and therefore through
+    # _require_admissible — when reversing one of its own is_undo rows. Declared
+    # for the same reason as rule_conflicts (#547): found by re-sweeping every
+    # BaseRepo table for a category/subcategory text column, not by trusting a
+    # fixed list.
+    _CATEGORY_TEXT_COLUMNS = ("category", "subcategory")
 
     def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -109,27 +144,23 @@ class CategorizationDecisionsRepo(BaseRepo):
             WITH requested(transaction_id) AS (
                 VALUES {values_sql}
             )
-            SELECT r.transaction_id, {decision_columns},
+            SELECT queue.transaction_id, {decision_columns},
                    (
                        SELECT COUNT(*)
                        FROM {AUDIT_LOG.full_name} AS audit
                        WHERE audit.target_schema = 'app'
                          AND audit.target_table = 'transaction_categories'
-                         AND audit.target_id = r.transaction_id
-                   ) AS current_revision,
-                   EXISTS (
-                       SELECT 1
-                       FROM {TRANSACTION_CATEGORIES.full_name} AS tc
-                       WHERE tc.transaction_id = r.transaction_id
-                   ) AS is_categorized
-            FROM requested AS r
+                         AND audit.target_id = queue.transaction_id
+                   ) AS current_revision
+            FROM requested AS queue
             LEFT JOIN LATERAL (
                 SELECT *
                 FROM {CATEGORIZATION_DECISIONS.full_name} AS attempts
-                WHERE attempts.transaction_id = r.transaction_id
+                WHERE attempts.transaction_id = queue.transaction_id
                 ORDER BY attempts.attempt_number DESC
                 LIMIT 1
             ) AS d ON TRUE
+            WHERE {PENDING_ATTEMPT_PREDICATE}
             """,  # noqa: S608  # Placeholder count only; TableRef constants
             ordered_ids,
         ).fetchall()
@@ -137,20 +168,10 @@ class CategorizationDecisionsRepo(BaseRepo):
         for row in rows:
             transaction_id = str(row[0])
             latest_values = row[1 : 1 + len(_COLUMNS)]
-            current_revision = int(row[-2])
-            is_categorized = bool(row[-1])
-            if is_categorized:
-                continue
+            current_revision = int(row[-1])
             latest: dict[str, Any] | None = None
             if latest_values[0] is not None:
                 latest = dict(zip(_COLUMNS, latest_values, strict=True))
-            if (
-                latest is not None
-                and latest["status"] == "rejected"
-                and latest["reversed_at"] is None
-                and int(latest["category_revision"]) == current_revision
-            ):
-                continue
             if (
                 latest is not None
                 and latest["status"] == "pending"

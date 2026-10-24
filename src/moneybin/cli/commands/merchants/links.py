@@ -13,9 +13,20 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import confidence_cell, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    no_pager_option,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import (
+    confidence_cell,
+    format_cli_failure,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.merchants import (
     MerchantLinksHistoryPayload,
@@ -36,6 +47,7 @@ logger = logging.getLogger(__name__)
 def links_pending(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List pending merchant-link decisions, grouped by provider entity id.
 
@@ -61,31 +73,51 @@ def links_pending(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary(
+            [("Pending decisions", str(n_pending))], title="Merchant-link decisions"
+        )
+    ]
     if not groups:
-        if not quiet:
-            logger.info("No pending merchant-link decisions")
-        return
-
+        parts.append(build_summary([("Result", "No pending decisions.")]))
     for group in groups:
-        typer.echo(
-            f"\n── entity {group.ref_value[:20]} "
-            f"({group.provider_merchant_name or '-'}) "
-            f"[{group.source_type}] "
-            f"— {len(group.candidates)} candidate(s) ──"
+        parts.extend([
+            build_summary([
+                ("Provider entity", group.ref_value),
+                ("Provider merchant", group.provider_merchant_name or "-"),
+                ("Source", group.source_type),
+                ("Candidates", str(len(group.candidates))),
+            ]),
+            build_rows(
+                ["decision id", "merchant id", "confidence", "canonical name"],
+                [
+                    (
+                        candidate.decision_id,
+                        candidate.candidate_merchant_id,
+                        confidence_cell(candidate.confidence),
+                        candidate.candidate_canonical_name or "-",
+                    )
+                    for candidate in group.candidates
+                ],
+                numeric=("confidence",),
+                terminal=policy,
+            ),
+        ])
+    if quiet:
+        disclosures: tuple[str, ...] = ()
+    elif groups:
+        disclosures = (
+            "Next: moneybin merchants links set <decision-id> --into <merchant-id>",
         )
-        render_rows(
-            ["decision id", "merchant id", "conf", "canonical name"],
-            [
-                (
-                    c.decision_id[:12],
-                    c.candidate_merchant_id[:12],
-                    confidence_cell(c.confidence),
-                    c.candidate_canonical_name or "-",
-                )
-                for c in group.candidates
-            ],
-            numeric=("conf",),
-        )
+    else:
+        disclosures = ("Next: moneybin merchants links run",)
+    emit_human_result(
+        compose_human_result(parts, disclosures=disclosures),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("set")
@@ -115,12 +147,12 @@ def links_set(
       moneybin merchants links set dec001 --new
     """
     if into is not None and new:
-        logger.error("❌ --into and --new are mutually exclusive")
+        logger.error(format_cli_failure("--into and --new are mutually exclusive"))
         raise typer.Exit(2)
     # Truthiness, not `is None`: an empty `--into ""` is not a valid merchant id
     # and must not silently fall through to the bind path.
     if not into and not new:
-        logger.error("❌ Specify either --into <merchant_id> or --new")
+        logger.error(format_cli_failure("Specify either --into <merchant_id> or --new"))
         raise typer.Exit(2)
 
     target_merchant_id: str | None = into if not new else None
@@ -131,12 +163,20 @@ def links_set(
                 decision_id, target_merchant_id=target_merchant_id, decided_by="user"
             )
 
-    action = (
-        f"bound to {target_merchant_id}"
-        if target_merchant_id
-        else "new merchant (rejected)"
+    receipt = [
+        ("Decision", decision_id),
+        ("Outcome", "bound to merchant" if target_merchant_id else "rejected"),
+    ]
+    if target_merchant_id:
+        receipt.append(("Merchant ID", target_merchant_id))
+    emit_human_result(
+        compose_human_result([
+            build_summary(receipt, title="Merchant-link decision recorded")
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
-    logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
 
 
 @app.command("history")
@@ -144,6 +184,7 @@ def links_history(
     limit: int = typer.Option(50, "--limit", "-n", min=1, help="Max records to show"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show recent merchant-link decisions (all statuses), newest first."""
     with handle_cli_errors():
@@ -162,34 +203,58 @@ def links_history(
         )
         return
 
-    if not rows:
-        if not quiet:
-            logger.info("No merchant-link decisions found")
-        return
-
-    render_rows(
-        [
-            "decision id",
-            "ref value",
-            "candidate",
-            "status",
-            "decided by",
-            "signal",
-            "conf",
-        ],
-        [
-            (
-                d.decision_id[:12],
-                d.ref_value[:20],
-                d.candidate_merchant_id[:12],
-                d.status,
-                d.decided_by,
-                d.signal,
-                confidence_cell(d.confidence),
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary([("Maximum records", str(limit))], title="Merchant-link history")
+    ]
+    if payload.decisions:
+        parts.append(
+            build_rows(
+                [
+                    "decision id",
+                    "provider entity",
+                    "provider merchant",
+                    "source",
+                    "merchant id",
+                    "status",
+                    "decided by",
+                    "decided at",
+                    "signal",
+                    "confidence",
+                ],
+                [
+                    (
+                        decision.decision_id,
+                        decision.ref_value,
+                        decision.provider_merchant_name or "-",
+                        decision.source_type,
+                        decision.candidate_merchant_id,
+                        decision.status,
+                        decision.decided_by,
+                        decision.decided_at or "-",
+                        decision.signal,
+                        confidence_cell(decision.confidence),
+                    )
+                    for decision in payload.decisions
+                ],
+                numeric=("confidence",),
+                terminal=policy,
             )
-            for d in payload.decisions
-        ],
-        numeric=("conf",),
+        )
+    else:
+        parts.append(build_summary([("Result", "No merchant-link decisions found.")]))
+    emit_human_result(
+        compose_human_result(
+            parts,
+            disclosures=(
+                ()
+                if payload.decisions or quiet
+                else ("Next: moneybin merchants links run",)
+            ),
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
     )
 
 
@@ -222,11 +287,22 @@ def links_run(
         )
         return
 
-    if result.bound == 0 and result.conflicts == 0:
-        typer.echo("No merchant-link bindings or conflicts found.")
-    else:
-        typer.echo(
-            f"✅ Recorded {result.bound} merchant binding(s); "
-            f"queued {result.conflicts} conflict(s) for review."
-        )
-        typer.echo("Run `merchants links pending` to review.")
+    emit_human_result(
+        compose_human_result(
+            [
+                build_summary(
+                    [
+                        ("Bindings recorded", str(result.bound)),
+                        ("Conflicts queued", str(result.conflicts)),
+                    ],
+                    title="Merchant-link harvest complete",
+                )
+            ],
+            disclosures=(
+                ("Next: moneybin merchants links pending",) if result.conflicts else ()
+            ),
+        ),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )

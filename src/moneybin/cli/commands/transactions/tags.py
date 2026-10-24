@@ -12,12 +12,14 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import TagRenamePayload, TagsPayload
 from moneybin.protocol.envelope import build_envelope
@@ -46,8 +48,9 @@ def transactions_tags_add(
                     transaction_id, tags, actor="cli"
                 )
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_tags_add"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -59,10 +62,23 @@ def transactions_tags_add(
             cli_actor="transactions_tags_add",
         )
         return
-    if added:
-        logger.info(f"✅ Added tags to {transaction_id}: {', '.join(added)}")
-    else:
-        logger.info(f"No new tags applied (all already present) on {transaction_id}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Transaction", transaction_id),
+                    (
+                        "Tags added",
+                        ", ".join(added) if added else "none (already present)",
+                    ),
+                ],
+                title="Tags updated",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("remove")
@@ -90,10 +106,20 @@ def transactions_tags_remove(
             cli_actor="transactions_tags_remove",
         )
         return
-    if removed:
-        logger.info(f"✅ Removed tags from {transaction_id}: {', '.join(removed)}")
-    else:
-        logger.info(f"No tags removed (none matched) on {transaction_id}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Transaction", transaction_id),
+                    ("Tags removed", ", ".join(removed) if removed else "none matched"),
+                ],
+                title="Tags updated",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("list")
@@ -104,10 +130,13 @@ def transactions_tags_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List tags on a transaction, or all distinct tags with usage counts."""
     from moneybin.services.transaction_service import TransactionService
 
+    tags: list[str] = []
+    rows: list[tuple[str, int]] = []
     with handle_cli_errors():
         with get_database(read_only=True) as db:
             svc = TransactionService(db)
@@ -123,15 +152,8 @@ def transactions_tags_list(
                         cli_actor="transactions_tags_list",
                     )
                     return
-                if not tags:
-                    if not quiet:
-                        logger.info(f"No tags on {transaction_id}")
-                    return
-                for t in tags:
-                    typer.echo(t)
-                return
-
-            rows = svc.list_distinct_tags()
+            else:
+                rows = svc.list_distinct_tags()
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -143,11 +165,41 @@ def transactions_tags_list(
             cli_actor="transactions_tags_list",
         )
         return
-    if not rows:
-        if not quiet:
-            logger.info("No tags in use")
-        return
-    render_rows(["tag", "transactions"], list(rows), numeric=("transactions",))
+    policy = get_terminal_policy(no_pager=no_pager)
+    if transaction_id is not None:
+        parts: list[object] = [
+            build_summary([("Transaction", transaction_id)], title="Tags")
+        ]
+        if tags:
+            parts.append(build_rows(["tag"], [(tag,) for tag in tags], terminal=policy))
+        else:
+            parts.append(build_summary([("Result", "No tags on this transaction.")]))
+    else:
+        parts = [build_summary([], title="Tags")]
+        if rows:
+            parts.append(
+                build_rows(
+                    ["tag", "transactions"],
+                    list(rows),
+                    numeric=("transactions",),
+                    terminal=policy,
+                )
+            )
+        else:
+            parts.append(build_summary([("Result", "No tags in use.")]))
+    emit_human_result(
+        compose_human_result(
+            parts,
+            disclosures=(
+                ()
+                if (tags if transaction_id is not None else rows)
+                else ("Next: moneybin transactions tags add --help",)
+            ),
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("rename")
@@ -164,8 +216,9 @@ def transactions_tags_rename(
             with get_database(read_only=False) as db:
                 result = TransactionService(db).rename_tag(old, new, actor="cli")
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_tags_rename"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -182,10 +235,22 @@ def transactions_tags_rename(
             cli_actor="transactions_tags_rename",
         )
         return
-    logger.info(
-        f"✅ Renamed tag {old!r} -> {new!r}: {result.row_count} rows updated "
-        f"(parent_audit_id={result.parent_audit_id})"
-    )
-    logger.info(
-        f"💡 Use 'moneybin system audit show {result.parent_audit_id}' to inspect"
+    emit_human_result(
+        compose_human_result(
+            [
+                build_summary(
+                    [
+                        ("Tag", old),
+                        ("Renamed to", new),
+                        ("Transactions updated", str(result.row_count)),
+                        ("Audit ID", result.parent_audit_id),
+                    ],
+                    title="Tag renamed",
+                )
+            ],
+            disclosures=(f"Next: moneybin system audit show {result.parent_audit_id}",),
+        ),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )

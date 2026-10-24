@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -26,10 +27,15 @@ _CLEAN_BELOW = Decimal("1.00")
 _WARNING_BELOW = Decimal("10.00")
 
 #: Statuses that say nothing about magnitude, so conversion cannot restate them.
-#: ``no-data`` has no computed balance to drift from and ``currency-mismatch``
-#: means no drift was computable at all — re-bucketing either from an amount
-#: that does not exist would invent a reconciliation verdict.
-_MAGNITUDE_FREE_STATUSES = frozenset({"no-data", "currency-mismatch"})
+#: ``no-data`` has no computed balance to drift from, and ``currency-mismatch``
+#: and ``investment-ledger`` mean no drift was computable at all — re-bucketing
+#: any of them from an amount that does not exist would invent a reconciliation
+#: verdict.
+_MAGNITUDE_FREE_STATUSES = frozenset({
+    "no-data",
+    "currency-mismatch",
+    "investment-ledger",
+})
 
 
 def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
@@ -129,7 +135,8 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
         ),
         OutputColumn(
             "computed_balance",
-            "Independent transaction-derived position as of assertion_date.",
+            "Independent transaction-derived position as of assertion_date; "
+            "null for an account with investment ledger events, which has none.",
             DataClass.BALANCE,
             money_kind="balance",
         ),
@@ -143,6 +150,8 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
             "drift_pct",
             "Drift divided by asserted balance.",
             DataClass.AGGREGATE,
+            numeric=True,
+            percent=True,
         ),
         OutputColumn(
             "drift",
@@ -192,7 +201,8 @@ def _rebucket_status(rows: list[dict[str, Any]], _currency: str) -> None:
         "(drift / asserted_balance); a percentage reveals no absolute "
         "balance figure",
         "status": "coarse 4-way bucket on |drift| (<$1 / <$10 / >=$10 / "
-        "no-data, currency-mismatch), never the drift or balance values themselves",
+        "no-data, currency-mismatch, investment-ledger), never the drift or "
+        "balance values themselves",
     },
     on_converted=_rebucket_status,
     # Requirement 6: which accounts disagree with their statements, as of when
@@ -231,11 +241,17 @@ def balance_drift(
     truncated result still represents every currency. Compare drift_abs only
     between rows sharing a currency_code.
 
+    An account with investment ledger events reports status investment-ledger
+    and no computed balance or drift: the ledger's cash legs never reach the
+    transactions a computed balance sums, and its positions need a price
+    history to value on a past date, so no comparable figure exists.
+
     Args:
         db: Open read-only database connection.
         account: Filter to an account; accepts account_id or case-insensitive
             display_name. Ambiguous display_name matches raise; None for all.
-        status: drift | warning | clean | no-data | currency-mismatch | all.
+        status: drift | warning | clean | no-data | currency-mismatch |
+            investment-ledger | all.
             Selects on the bucket in each row's own currency. A display-
             converted read re-buckets what it returns, so combining this with
             a display currency can return a row whose displayed status differs
@@ -292,10 +308,19 @@ def balance_drift(
         ), currency_code
     """
 
-    actions = [
-        "Rerun reports(report_id='core:balance_drift', "
-        "parameters={'account': '<name or id>'}) to filter to one account",
-        "Rerun reports(report_id='core:balance_drift', "
-        "parameters={'status': 'drift'}) to show drift rows",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="filtering to one account",
+            cli=("reports", "balance-drift", "--account", "<name or id>"),
+            mcp="reports(report_id='core:balance_drift', "
+            "parameters={'account': '<name or id>'})",
+            verb="Rerun",
+        ),
+        NextStep(
+            reason="showing drift rows",
+            cli=("reports", "balance-drift", "--status", "drift"),
+            mcp="reports(report_id='core:balance_drift', parameters={'status': 'drift'})",
+            verb="Rerun",
+        ),
     ]
     return ReportQuery(sql, params, actions=actions)

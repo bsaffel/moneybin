@@ -2,11 +2,7 @@
 
 Verifies that the eight SQLMesh views added in Wave 2C all materialize
 against the basic synthetic persona, and that the four atomic migrations
-they entail landed cleanly. Seven of the eight still live in ``reports.*``;
-``uncategorized_queue`` moved to ``core.*`` after reports-foundation.md R5
-(service-internal, not a user-facing report) but is still exercised here —
-this scenario's job is "did the pipeline materialize every view," not
-"is every view still in reports.*":
+they entail landed cleanly. Seven of the eight still live in ``reports.*``; ``uncategorized_queue`` moved to ``core.*`` after reports-foundation.md R5 and was later retired in favor of ``core.fct_transactions.is_categorizable`` (categorizable-transactions.md), so it is asserted absent:
 
   - ``core.agg_net_worth`` retired in favor of ``reports.net_worth``.
   - ``app.categories`` retired in favor of ``core.dim_categories``.
@@ -36,8 +32,6 @@ Be Independently Derived"):
     multiple distinct merchants per spending category.
   * ``reports.large_transactions`` ≥ 1: view returns one row per non-transfer
     transaction; ≥ 100 rows by the same persona derivation as fct above.
-  * ``core.uncategorized_queue`` ≥ 0: may legitimately be empty if
-    categorize covered every txn — kept as a smoke check (view materializes).
   * ``reports.recurring_subscriptions`` ≥ 0: persona has 5 monthly recurring
     descriptions but they're generated under varied amounts (electric is
     stochastic). >=1 is plausible but not guaranteed by the persona config
@@ -72,15 +66,14 @@ _RETIRED_ENTITIES: tuple[str, ...] = (
     "core.agg_net_worth",
     "app.categories",
     "app.merchants",
+    "core.uncategorized_queue",
 )
 
 # Tables/views expected to be PRESENT after the migrations. Includes the
-# seven reports.* views, core.uncategorized_queue (moved out of reports.*
-# per reports-foundation.md R5), and the two new core dimensions.
+# seven reports.* views and the two new core dimensions.
 _PRESENT_ENTITIES: tuple[str, ...] = (
     "core.dim_categories",
     "core.dim_merchants",
-    "core.uncategorized_queue",
     "reports.net_worth",
     "reports.cash_flow",
     "reports.spending_trend",
@@ -99,7 +92,6 @@ _VIEW_MIN_ROWS: dict[str, int] = {
     "reports.large_transactions": 1,
     # 0-floor views materialize but may legitimately be empty on the basic
     # persona; the row-count check still catches a SQL error during SELECT.
-    "core.uncategorized_queue": 0,
     "reports.recurring_subscriptions": 0,
     "reports.balance_drift": 0,
 }
@@ -253,11 +245,10 @@ def _reports_assertions(db: Database) -> list[AssertionResult]:
     return results
 
 
-# The two service-backed net-worth routes take a required window; every other
-# built-in runs on its declared defaults.
-_RUNNER_PARAMETERS: dict[str, dict[str, str]] = {
-    "core:networth_history": {"from_date": "2024-01-01", "to_date": "2024-12-31"},
-}
+# Every built-in report runs on its declared defaults — including all three
+# net-worth rungs, whose from_date/to_date are optional and default to the
+# latest available day.
+_RUNNER_PARAMETERS: dict[str, dict[str, str]] = {}
 
 
 def _runner_assertions(db: Database) -> list[AssertionResult]:

@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import cast
 
 import duckdb
 
@@ -149,6 +150,16 @@ class BalanceService:
 
     # --- Assertion CRUD ---
 
+    def prepare_assertion_balance(self, balance: Decimal) -> Decimal:
+        """Use the assertion column's coercion for previews and equality checks."""
+        row = cast(
+            tuple[Decimal],
+            self._db.execute(
+                """SELECT CAST(? AS DECIMAL(18, 2))""", [balance]
+            ).fetchone(),
+        )
+        return row[0]
+
     def assert_balance(
         self,
         account_id: str,
@@ -157,6 +168,7 @@ class BalanceService:
         notes: str | None = None,
         *,
         actor: str,
+        verify: Callable[[BalanceAssertionSnapshot | None], None] | None = None,
     ) -> BalanceAssertionPayload:
         """Insert or update a balance assertion (audited via ``BalanceAssertionsRepo``).
 
@@ -165,12 +177,28 @@ class BalanceService:
         records first entry) and updated_at is refreshed so `core.fct_balances`
         per-row freshness reflects the edit, per the core-updated-at-convention
         spec.
+
+        ``verify`` checks the exact prior row inside the audited write transaction.
         """
         self._assert_account_exists(account_id)
-        self._assertions_repo.set(
-            account_id, assertion_date, balance=balance, notes=notes, actor=actor
-        )
+        self._db.begin()
+        try:
+            if verify is not None:
+                verify(self._find_assertion_snapshot(account_id, assertion_date))
+            self._assertions_repo.set(
+                account_id,
+                assertion_date,
+                balance=balance,
+                notes=notes,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
         logger.info(f"Asserted balance for account {account_id} on {assertion_date}")
+        self._restate()
         return BalanceAssertionPayload(
             assertion=self._load_assertion(account_id, assertion_date)
         )
@@ -225,7 +253,16 @@ class BalanceService:
             logger.info(
                 f"Deleted balance assertion for account {account_id} on {assertion_date}"
             )
+            self._restate()
             return True
+
+    def _restate(self) -> None:
+        """Rebuild the daily balances, which anchor on assertions."""
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(
+            self._db, [BALANCE_ASSERTIONS], committed_change="balance assertion"
+        )
 
     def _fetch_assertions(
         self, tail: str, params: list[object]

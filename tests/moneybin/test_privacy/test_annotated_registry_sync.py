@@ -113,12 +113,11 @@ def test_payload_fields_match_registry(payload_cls: type) -> None:
 
 
 @pytest.mark.unit
-def test_pending_txn_age_days_is_a_date_on_both_sides() -> None:
-    """``age_days`` is TXN_DATE in the payload AND in the registry — absolutely.
+def test_pending_txn_age_days_is_a_date() -> None:
+    """``age_days`` is TXN_DATE in the payload — absolutely.
 
-    ``test_payload_fields_match_registry`` only proves the two AGREE, so a
-    change that moves both back to AGGREGATE together passes it unchanged. This
-    pins the value itself on both sides.
+    The categorization queue computes it in its own query; no registry relation carries
+    it any more, so this pins the payload's class directly.
 
     Nothing else would notice the regression: ``age_days`` shares
     ``PendingTxnRow`` with ``amount`` (TXN_AMOUNT, HIGH), which dominates the
@@ -135,7 +134,3 @@ def test_pending_txn_age_days_is_a_date_on_both_sides() -> None:
 
     hints = get_type_hints(PendingTxnRow, include_extras=True)
     assert _find_annotated_meta(hints["age_days"]) is DataClass.TXN_DATE
-    assert (
-        CLASSIFICATION[("core", "uncategorized_queue")]["age_days"]
-        is DataClass.TXN_DATE
-    )

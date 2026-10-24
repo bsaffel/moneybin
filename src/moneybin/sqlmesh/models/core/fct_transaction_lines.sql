@@ -14,25 +14,25 @@ MODEL (
 SELECT
   t.transaction_id, /* Foreign key to core.fct_transactions */
   COALESCE(s.split_id, 'whole') AS line_id, /* 'whole' for unsplit transactions; split_id for split children */
-  COALESCE(s.amount, t.amount) AS line_amount, /* Per-line amount; equals parent.amount for unsplit rows */
+  t.account_id, /* Foreign key to core.dim_accounts */
+  t.transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
   COALESCE(s.category, t.category) AS line_category, /* Per-line category resolved via category_id FK to core.dim_categories (resolution happens inside fct_transactions.splits); falls through to parent for unsplit rows */
   COALESCE(s.subcategory, t.subcategory) AS line_subcategory, /* Per-line subcategory; same FK resolution + parent fallback */
   s.note AS line_note, /* NULL on unsplit rows; per-split note when present */
   CASE WHEN s.split_id IS NULL THEN 'whole' ELSE 'split' END AS line_kind, /* 'whole' for unsplit transactions, 'split' for split children */
-  t.account_id, /* Foreign key to core.dim_accounts */
-  t.currency_code, /* ISO 4217 currency code inherited from the parent fact row; every line of a transaction is denominated in that transaction's currency */
-  t.transaction_date, /* Date the transaction posted or settled */
   t.merchant_name, /* Normalized merchant name from the parent fact row */
   t.description, /* Payee or merchant description from the parent fact row */
-  t.is_pending, /* TRUE if any contributing source row is pending */
-  t.transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
-  t.is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
   t.source_type, /* Canonical source type from the parent fact row */
+  t.transaction_year_month, /* YYYY-MM period grouping */
+  t.transaction_year_quarter, /* YYYY-QN period grouping */
+  t.currency_code, /* ISO 4217 currency code inherited from the parent fact row; every line of a transaction is denominated in that transaction's currency */
+  COALESCE(s.amount, t.amount) AS line_amount, /* Per-line amount; equals parent.amount for unsplit rows */
   t.source_count, /* Number of contributing source rows on the parent */
   t.transaction_year, /* Calendar year */
   t.transaction_month, /* Calendar month (1-12) */
-  t.transaction_year_month, /* YYYY-MM period grouping */
-  t.transaction_year_quarter /* YYYY-QN period grouping */
+  t.is_pending, /* TRUE if any contributing source row is pending */
+  t.is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
+  t.transaction_date /* Date the transaction posted or settled */
 FROM core.fct_transactions AS t
 LEFT JOIN UNNEST(t.splits) AS u(s)
   ON TRUE

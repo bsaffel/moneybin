@@ -63,7 +63,7 @@ class OAuthGrant:
 
     @property
     def can_write(self) -> bool:
-        """Return whether the grant permits Sheets mutations."""
+        """Whether the grant permits Sheets mutations."""
         return GOOGLE_SHEETS_WRITE_SCOPE in self.scopes
 
 

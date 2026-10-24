@@ -76,6 +76,7 @@ class TestImportFileAccountName:
         assert result.exit_code == 0
         mock_import_file.assert_called_once_with(
             file_path=csv_file,
+            source_bytes=csv_file.read_bytes(),
             refresh=True,
             institution=None,
             force=False,
@@ -224,7 +225,7 @@ class TestImportSignShapeValidation:
         assert result.exit_code == 1
         assert "single amount column" in caplog.text
         assert "--sign negative_is_expense" in caplog.text
-        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
 
     def test_import_confirm_rejects_single_sign_for_split_mapping(
@@ -269,7 +270,7 @@ class TestImportSignShapeValidation:
         assert result.exit_code == 1
         assert "debit/credit pair" in caplog.text
         assert "--sign split_debit_credit" in caplog.text
-        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
 
 
@@ -370,8 +371,25 @@ class TestDeleteFormat:
         )
 
         assert result.exit_code == 0
+        assert "Format deleted" in result.stdout
+        assert "my_custom_format" in result.stdout
         service.plan_saved_format_delete.assert_called_once_with("my_custom_format")
         service.delete_saved_format_confirmed.assert_called_once()
+
+    def test_delete_requires_yes_when_noninteractive(self, mocker: Any) -> None:
+        """A saved format cannot be deleted by a piped, unanswered prompt."""
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
+        service = mocker.patch(
+            "moneybin.services.import_service.ImportService"
+        ).return_value
+        service.plan_saved_format_delete.return_value = SavedFormatDeletePlan(
+            format_name="my_custom_format", state_sha256="reviewed-state"
+        )
+
+        result = runner.invoke(app, ["formats", "delete", "my_custom_format"])
+
+        assert result.exit_code == 1, result.output
+        service.delete_saved_format_confirmed.assert_not_called()
 
     def test_delete_rejects_a_changed_live_plan_with_canonical_error(
         self,
@@ -445,6 +463,22 @@ class TestPreview:
         result = runner.invoke(app, ["preview", str(csv_file)])
 
         assert result.exit_code == 0
+
+    def test_preview_names_the_bounded_sample_scope(self, tmp_path: Path) -> None:
+        """Parsed values render as rows with an explicit first-five sample bound."""
+        csv_file = tmp_path / "sample.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n"
+            "2025-01-01,-10.00,Coffee\n"
+            "2025-01-02,20.00,Refund\n"
+        )
+
+        result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0, result.output
+        assert "Sample scope" in result.stdout
+        assert "first 2 of 2 parsed rows" in result.stdout
+        assert "Coffee" in result.stdout
         assert "Columns" in result.output
 
     def test_undetected_date_hint_only_names_flags_preview_accepts(
@@ -476,11 +510,12 @@ class TestPreview:
 
         from typing import cast
 
-        import click
         import typer.main
+        from typer._click import Command
+        from typer.core import TyperGroup
 
-        group = cast(click.Group, typer.main.get_command(app))
-        preview_cmd: click.Command = group.commands["preview"]
+        group = cast(TyperGroup, typer.main.get_command(app))
+        preview_cmd: Command = group.commands["preview"]
         registered: set[str] = {
             opt
             for param in preview_cmd.params
@@ -561,7 +596,7 @@ class TestPreview:
 
         assert result.exit_code == 0
         assert "Header row detected: False" in result.output
-        assert "Rows: 3" in result.output
+        assert re.search(r"Parsed rows:\s+3", result.output)
 
     def test_preview_reads_the_sheet_the_named_format_selects(
         self, tmp_path: Path, mocker: Any
@@ -616,7 +651,7 @@ class TestPreview:
 
         assert result.exit_code == 0, result.output
         # The larger "Ledger" sheet has 5 data rows; the named one has 2.
-        assert "Rows: 2" in result.output, result.output
+        assert re.search(r"Parsed rows:\s+2", result.output), result.output
         assert "Posted" not in result.output, result.output
 
     def test_preview_skips_the_preamble_the_named_format_declares(
@@ -667,7 +702,7 @@ class TestPreview:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Rows: 2" in result.output, result.output
+        assert re.search(r"Parsed rows:\s+2", result.output), result.output
         assert "Header row detected: True" in result.output, result.output
         assert "transaction_date ← Date" in result.output, result.output
 
@@ -703,8 +738,9 @@ class TestPreview:
         assert "declared" in line, line
         assert "not detected" not in line, line
 
+    @pytest.mark.parametrize("omit_status", [False, True])
     def test_preview_header_position_ambiguous_uses_shared_recovery_text(
-        self, tmp_path: Path, caplog: LogCaptureFixture
+        self, tmp_path: Path, caplog: LogCaptureFixture, omit_status: bool
     ) -> None:
         """`import preview` has no --confirm flag.
 
@@ -726,19 +762,31 @@ class TestPreview:
         )
 
         csv_file = tmp_path / "data_before_header.csv"
+        value_suffix = ",WA" if omit_status else ""
+        header_suffix = ",State" if omit_status else ""
         csv_file.write_text(
-            "2026-01-01,42.50,Coffee\n"
-            "2026-01-02,10.00,Tea\n"
-            "Date,Amount,Description\n"
-            "2026-01-03,5.00,Snack\n",
+            f"2026-01-01,42.50,Coffee{value_suffix}\n"
+            f"2026-01-02,10.00,Tea{value_suffix}\n"
+            f"Date,Amount,Description{header_suffix}\n"
+            f"2026-01-03,5.00,Snack{value_suffix}\n",
             encoding="utf-8",
         )
 
         with caplog.at_level(logging.WARNING):
-            result = runner.invoke(app, ["preview", str(csv_file)])
+            result = runner.invoke(
+                app,
+                [
+                    "preview",
+                    str(csv_file),
+                    *(["--omit-field", "status"] if omit_status else []),
+                ],
+            )
 
         assert result.exit_code == 0
-        expected = header_position_ambiguous_recovery(str(csv_file))
+        expected = header_position_ambiguous_recovery(
+            str(csv_file),
+            omitted_fields=frozenset({"status"}) if omit_status else frozenset(),
+        )
         assert expected in result.output, result.output
         # ...and never a log record, for the reason in the docstring.
         assert not any(expected in r.message for r in caplog.records), caplog.text
@@ -762,6 +810,216 @@ class TestPreview:
         assert not any(
             "transaction_date=2026-01-01" in r.message for r in caplog.records
         )
+
+    def test_preview_consumed_header_names_a_working_recovery(
+        self, tmp_path: Path, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stale --format's skip_rows must not tell the caller to "fix --format".
+
+        The hand-rolled warning this replaced said "Re-run with a corrected
+        --format" — but no command edits a saved format's skip_rows, so that
+        advice named nothing that exists. Reusing the shared
+        ``header_row_consumed_recovery`` helper (with ``retry_command="import
+        preview"``, since preview has nothing to load) names the one real
+        fix: re-run without --format. The runnable retry goes to stderr and
+        never the logger, same split as ``header_position_ambiguous`` just
+        below it: it repeats the caller's --format, arbitrary user text the
+        log allowlist does not admit.
+        """
+        import logging
+
+        from moneybin.extractors.tabular.formats import TabularFormat
+        from moneybin.services.import_confirmation import (
+            TabularReadOptions,
+            header_row_consumed_recovery,
+        )
+
+        # Row 0 is a preamble the format skips; row 1 then becomes the header
+        # and is itself a transaction (date + negative amount + description).
+        csv_file = tmp_path / "preamble_then_data.csv"
+        csv_file.write_text(
+            "Statement export\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+            encoding="utf-8",
+        )
+        saved_format = TabularFormat(
+            name="skiprows_fixture",
+            institution_name="Test",
+            file_type="csv",
+            header_signature=["2026-01-05", "-4.50", "Coffee"],
+            field_mapping={
+                "transaction_date": "2026-01-05",
+                "amount": "-4.50",
+                "description": "Coffee",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            skip_rows=1,
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd._load_all_formats",
+            return_value=({saved_format.name: saved_format}, {}),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = runner.invoke(
+                app, ["preview", str(csv_file), "--format", saved_format.name]
+            )
+
+        assert result.exit_code == 0, result.output
+        # The diagnostic is logged...
+        assert any("parses as a transaction" in r.message for r in caplog.records), (
+            caplog.text
+        )
+        # ...but no longer directs the caller to fix something no command
+        # can fix.
+        assert not any("corrected --format" in r.message for r in caplog.records), (
+            caplog.text
+        )
+        # The real recovery — the same text `import files`'s confirmation
+        # path prints for this reason, just naming `import preview` as the
+        # retry — is echoed to stderr and never reaches the log. The printed
+        # retry carries the format's own date_format/number_format/encoding
+        # (its resolved defaults), not just the caller's raw --format flag,
+        # per the fix under test.
+        expected = header_row_consumed_recovery(
+            str(csv_file),
+            format_name=saved_format.name,
+            read_options=TabularReadOptions(
+                date_format=saved_format.date_format,
+                number_format=saved_format.number_format,
+                encoding=saved_format.encoding,
+            ),
+            retry_command="import preview",
+        )
+        assert expected in result.output, result.output
+        assert not any(expected in r.message for r in caplog.records), caplog.text
+        assert "moneybin import preview" in result.output, result.output
+        assert "moneybin import files" not in result.output, result.output
+
+    def test_preview_consumed_header_keeps_the_worksheet_the_stale_format_selected(
+        self, tmp_path: Path, mocker: Any
+    ) -> None:
+        """The printed retry must not silently read a different worksheet.
+
+        Mirrors ``test_the_retry_keeps_the_worksheet_the_stale_format_
+        selected`` (test_tabular_import_service.py) at the ``import preview``
+        surface. Dropping ``--format`` is the whole recovery, but the format
+        carries the ``sheet`` alongside the ``skip_rows`` being escaped — with
+        the sheet gone the reader auto-selects the LARGEST worksheet, so a
+        workbook whose largest sheet also has compatible headers imports that
+        sheet instead, silently. The larger ``Archive`` sheet here is exactly
+        that trap. Asserts on the extracted retry command text, not the whole
+        output — the surrounding prose legitimately mentions --format.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat
+
+        wb = openpyxl.Workbook()
+        statement = wb.active
+        assert statement is not None
+        statement.title = "Statement"
+        statement.append(["Date", "Amount", "Description"])
+        statement.append(["2026-01-05", -4.50, "Coffee"])
+        statement.append(["2026-01-06", 100.00, "Payroll"])
+        # Same headers, more rows — what the reader would auto-select.
+        archive = wb.create_sheet("Archive")
+        archive.append(["Date", "Amount", "Description"])
+        for day in range(10, 20):
+            archive.append([f"2025-01-{day}", -1.00, "Old"])
+        xlsx = tmp_path / "two_sheets.xlsx"
+        wb.save(xlsx)
+
+        saved_format = TabularFormat(
+            name="stale_skip_sheet_preview",
+            institution_name="Test",
+            file_type="excel",
+            header_signature=["date", "amount", "description"],
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            number_format="us",
+            sheet="Statement",
+            skip_rows=1,
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd._load_all_formats",
+            return_value=({saved_format.name: saved_format}, {}),
+        )
+
+        result = runner.invoke(
+            app, ["preview", str(xlsx), "--format", saved_format.name]
+        )
+
+        assert result.exit_code == 0, result.output
+        match = re.search(r"`(moneybin import preview [^`]+)`", result.output)
+        assert match is not None, result.output
+        retry_command = match.group(1)
+        assert "--sheet Statement" in retry_command, retry_command
+        assert "--format" not in retry_command, retry_command
+
+    def test_preview_consumed_header_names_the_callers_number_format(
+        self, tmp_path: Path, mocker: Any
+    ) -> None:
+        """An explicit --number-format must outrank the saved format's value.
+
+        `resolve_read_settings`'s contract is "an explicit flag always
+        outranks the format" — but `import preview`'s call omitted
+        `number_format` entirely, so `read_settings.number_format` always
+        came from the FORMAT and the printed retry silently named the
+        format's decimal-separator locale instead of the caller's own. The
+        saved format's ``number_format`` ("us") is deliberately different
+        from the override ("european") so the two are distinguishable.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat
+
+        csv_file = tmp_path / "preamble_then_data.csv"
+        csv_file.write_text(
+            "Statement export\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+            encoding="utf-8",
+        )
+        saved_format = TabularFormat(
+            name="skiprows_fixture_number_format",
+            institution_name="Test",
+            file_type="csv",
+            header_signature=["2026-01-05", "-4.50", "Coffee"],
+            field_mapping={
+                "transaction_date": "2026-01-05",
+                "amount": "-4.50",
+                "description": "Coffee",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            number_format="us",
+            skip_rows=1,
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd._load_all_formats",
+            return_value=({saved_format.name: saved_format}, {}),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "preview",
+                str(csv_file),
+                "--format",
+                saved_format.name,
+                "--number-format",
+                "european",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        match = re.search(r"`(moneybin import preview [^`]+)`", result.output)
+        assert match is not None, result.output
+        retry_command = match.group(1)
+        assert "--number-format european" in retry_command, retry_command
+        assert "--number-format us" not in retry_command, retry_command
 
     def test_preview_disputed_row_evidence_survives_quoted_header(
         self, tmp_path: Path
@@ -928,14 +1186,14 @@ class TestPreview:
         import datetime
         import re
 
-        import click
+        from typer.core import TyperGroup, TyperOption
         from typer.main import get_command
 
         group = get_command(app)
-        assert isinstance(group, click.Group)
+        assert isinstance(group, TyperGroup)
         command = group.commands[command_name]
         option = next(p for p in command.params if "--date-format" in p.opts)
-        assert isinstance(option, click.Option)
+        assert isinstance(option, TyperOption)
         assert option.help is not None
         match = re.search(r"e\.g\. (\S+?)\)", option.help)
         assert match is not None, option.help
@@ -1089,11 +1347,11 @@ class TestPreview:
 
         assert result.exit_code == 1
         assert not isinstance(result.exception, PermissionError)
-        # The ❌ record has to name THIS failure (not merely be some
-        # classified error) — asserting only `startswith("❌ ")` would pass
+        # The terminal-policy failure marker has to name THIS failure (not merely be
+        # some classified error) — asserting only the marker would pass
         # for any classified error at all.
         assert any(
-            r.message.startswith("❌ ") and "Permission denied" in r.message
+            r.message.startswith("× ") and "Permission denied" in r.message
             for r in caplog.records
         )
         # The 💡 hint has to be the mode-denial one, not just any hint.
@@ -1156,9 +1414,9 @@ class TestDeclaredDateFormatConfirmConverges:
             assert preview_result.exit_code == 0, preview_result.output
             # Thousands-separated, as the command prints it — an oversized
             # file's count is the one this would otherwise silently miss.
-            assert f"Rows: {expect_rows:,}" in preview_result.output, (
-                preview_result.output
-            )
+            assert re.search(
+                rf"Parsed rows:\s+{expect_rows:,}", preview_result.output
+            ), preview_result.output
             assert f"Header row detected: {expect_header}" in preview_result.output, (
                 preview_result.output
             )
@@ -1196,7 +1454,7 @@ class TestDeclaredDateFormatConfirmConverges:
                 "--no-save-format",
             ],
         )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.output)
 
         for _ in range(max_rounds):
@@ -1218,6 +1476,13 @@ class TestDeclaredDateFormatConfirmConverges:
             caplog.clear()
             with caplog.at_level(logging.INFO):
                 confirm_result = runner.invoke(app, tokens[2:])
+            if confirm_result.exit_code == 1:
+                assert "Account binding required" in confirm_result.output
+                confirm_result = runner.invoke(app, [*tokens[2:], "--output", "json"])
+                assert confirm_result.exit_code == 0, confirm_result.output
+                payload = json.loads(confirm_result.output)
+                assert payload["data"]["status"] == "confirmation_required", payload
+                continue
             assert confirm_result.exit_code == 0, confirm_result.output
             # A settled `import confirm` (no more confirmation_required) takes
             # the normal `--output` (default text) success-render path, not
@@ -1231,7 +1496,7 @@ class TestDeclaredDateFormatConfirmConverges:
             try:
                 payload = json.loads(confirm_result.output)
             except json.JSONDecodeError:
-                assert "✅ Imported" in caplog.text, caplog.text
+                assert "Import complete" in confirm_result.output
                 return
 
         pytest.fail(f"did not converge to status=ok within {max_rounds} rounds")
@@ -1477,7 +1742,7 @@ class TestDeclaredDateFormatConfirmConverges:
         assert "%d/%m/%Y" in line, line
         assert "does not read the mapped column" in line, line
         # Detection's own reading of the column is the value the caller needs.
-        assert "%Y-%m-%d" in line, line
+        assert re.search(r"Detection:\s+%Y-%m-%d", preview.output), preview.output
 
         imported = runner.invoke(
             app,
@@ -1501,6 +1766,47 @@ class TestDeclaredDateFormatConfirmConverges:
         )
         assert imported.exit_code == 1, imported.output
         assert "could not read" in caplog.text, caplog.text
+
+    @pytest.mark.parametrize("width", [40, 80])
+    def test_preview_keeps_date_refusal_facts_at_narrow_widths(
+        self, tmp_path: Path, mocker: Any, width: int
+    ) -> None:
+        """A wrapped receipt still names declared, detected, and refused meanings."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        csv_file = tmp_path / "iso_dates.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n2026-01-05,42.50,Coffee\n",
+            encoding="utf-8",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=TerminalPolicy(
+                output="text",
+                interactive=False,
+                page=False,
+                color=False,
+                style=False,
+                animate_progress=False,
+                stage_chatter=True,
+                ascii=False,
+                width=width,
+                height=24,
+                symbols=TerminalSymbols("✓", "!", "×", "›"),
+                minus="−",
+            ),
+        )
+
+        result = runner.invoke(
+            app, ["preview", str(csv_file), "--date-format", "%d/%m/%Y"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "%d/%m/%Y" in result.output
+        assert re.search(r"Detection:\s+%Y-%m-%d", result.output), result.output
+        normalized = " ".join(result.output.split())
+        assert "does not read the mapped column" in normalized
+        assert "would refuse this date format" in normalized
 
     def test_confirm_hints_carry_the_size_override_that_allowed_the_read(
         self,
@@ -1622,7 +1928,9 @@ class TestDeclaredDateFormatConfirmConverges:
         assert tokens[tokens.index("--date-format") + 1] == "%Y%m%d", tokens
         preview_result = runner.invoke(app, tokens[2:])
         assert preview_result.exit_code == 0, preview_result.output
-        assert "Rows: 3" in preview_result.output, preview_result.output
+        assert re.search(r"Parsed rows:\s+3", preview_result.output), (
+            preview_result.output
+        )
         assert "Header row detected: False" in preview_result.output, (
             preview_result.output
         )

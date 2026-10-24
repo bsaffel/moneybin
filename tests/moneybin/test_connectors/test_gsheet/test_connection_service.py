@@ -29,6 +29,12 @@ from moneybin.repositories.export_destinations_repo import ExportDestinationsRep
 from moneybin.repositories.gsheet_connections_repo import (
     GSheetConnectionExportDestinationConflictError,
 )
+from moneybin.tables import (
+    GSHEET_SEEDS,
+    TABULAR_ACCOUNTS,
+    TABULAR_TRANSACTIONS,
+)
+from tests.moneybin.db_helpers import spy_restate
 
 
 def _confirmation_count(outcome: str) -> float:
@@ -1646,3 +1652,70 @@ def test_purge_leaves_another_channels_rows_alone(
         """
     ).fetchone()
     assert survivors == (1, 1)
+
+
+def _rows_left(db: Database, source_origin: str) -> int:
+    row = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_origin = ?",
+        [source_origin],
+    ).fetchone()
+    return int(row[0]) if row else -1
+
+
+def test_purge_restates_the_tables_it_deleted_from_after_the_commit(
+    in_memory_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The materialized merges read ``raw.tabular_*``.
+
+    Without a restate the purged rows stay in every report and account list
+    until the next refresh, while the purge says it deleted everything.
+    """
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-restate")
+    calls = spy_restate(monkeypatch, lambda: _rows_left(in_memory_db, connection_id))
+
+    svc.disconnect(connection_id, purge=True)
+
+    assert calls == [((TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS), "purge", 0)]
+
+
+def test_a_purge_that_deletes_nothing_restates_nothing(
+    in_memory_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection whose rows are already gone changes no model input."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    connection_id = _connect_multi_account(svc, sheets, "ss-purge-empty")
+    for table in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
+        in_memory_db.execute(
+            f"DELETE FROM {table.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
+            [connection_id],
+        )
+    calls = spy_restate(monkeypatch, lambda: _rows_left(in_memory_db, connection_id))
+
+    svc.disconnect(connection_id, purge=True)
+
+    assert calls == []
+
+
+def test_a_seed_purge_names_the_seed_table_it_emptied(
+    in_memory_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every writer names what it wrote; the restate helper knows what is read."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss-seed-restate", _seed_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ss-seed-restate/edit#gid=99",
+            adapter="seed",
+            alias="seed_restate",
+            yes=True,
+        )
+    )
+    connection_id = result.connection.connection_id
+    calls = spy_restate(monkeypatch, lambda: _rows_left(in_memory_db, connection_id))
+
+    svc.disconnect(connection_id, purge=True)
+
+    assert [(tables, change) for tables, change, _ in calls] == [
+        ((GSHEET_SEEDS,), "purge")
+    ]

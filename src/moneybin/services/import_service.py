@@ -11,19 +11,21 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast, get_args
 
 import duckdb
 
 if TYPE_CHECKING:
     from moneybin.extractors.pdf.ir import PdfDocument
     from moneybin.extractors.pdf.routing import RouteDecision
+    from moneybin.extractors.tabular.format_detector import FormatInfo
     from moneybin.extractors.tabular.formats import TabularFormat
+    from moneybin.extractors.tabular.readers import ReadResult
     from moneybin.repositories.pdf_formats_repo import PdfFormat
 
 from moneybin import error_codes
@@ -59,6 +61,7 @@ from moneybin.extractors.tabular.account_label import (
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
+    TabularFormat,
     resolve_read_settings,
 )
 from moneybin.metrics.observations import (
@@ -100,13 +103,16 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
+    TabularReadOptions,
 )
 from moneybin.services.ledger_overlap import probe_incoming_ledger_overlap
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.tables import (
     IMPORTS,
     OFX_TRANSACTIONS,
+    SECURITY_LINKS,
     TABULAR_TRANSACTIONS,
+    TableRef,
 )
 from moneybin.utils.file import source_sha256
 
@@ -126,10 +132,17 @@ class ImportRefreshError(RuntimeError):
     been and callers catch it as such; the narrower type only adds the payload.
     """
 
-    def __init__(self, message: str, *, transfers_retired: int) -> None:
-        """Carry ``transfers_retired`` — the reversals already committed."""
+    def __init__(
+        self,
+        message: str,
+        *,
+        transfers_retired: int,
+        result: "ImportResult | None" = None,
+    ) -> None:
+        """Carry committed import and transfer state past a failed refresh."""
         super().__init__(message)
         self.transfers_retired = transfers_retired
+        self.result = result
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,12 +317,15 @@ class ImportResult:
     the synthesized batch, so this has to ride across onto it."""
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+    sign_assumed: str | None = None
+    """The sign convention the import proceeded with when the file could not
+    disambiguate it; None when the sign was explicit or unambiguous."""
     sign_override_replayed: bool = False
     """True when this PDF replayed a saved recipe whose sign convention a human set
     with `sign=` — the card-marker detector is bypassed for that format, so the
     replay is surfaced rather than applied silently."""
     import_id: str | None = None
-    """UUID of the raw.import_log row this import created."""
+    """UUID of the app.import_log row this import created."""
     accounts_created: tuple[CreatedAccount, ...] = ()
     """Canonical accounts this import minted; empty when every account was adopted.
 
@@ -384,7 +400,7 @@ class SavedFormatDeletePlan:
 
     @property
     def blast_radius(self) -> dict[str, int]:
-        """Return the one-row destructive impact for confirmation metadata."""
+        """The one-row destructive impact for confirmation metadata."""
         return {"saved_formats": 1}
 
 
@@ -415,17 +431,17 @@ class ImportRevertPlan:
 
     @property
     def revertable(self) -> bool:
-        """Return whether this plan would actually delete or flip anything."""
+        """Whether this plan would actually delete or flip anything."""
         return self.outcome == "revertable"
 
     @property
     def rows_to_delete(self) -> int:
-        """Return the total raw rows this reversion would destroy."""
+        """The total raw rows this reversion would destroy."""
         return sum(count for _, count in self.table_counts)
 
     @property
     def blast_radius(self) -> dict[str, int]:
-        """Return the per-table destructive impact for confirmation metadata."""
+        """The per-table destructive impact for confirmation metadata."""
         radius = dict(self.table_counts)
         radius["total_rows"] = self.rows_to_delete
         if self.security_link_ids:
@@ -484,6 +500,9 @@ class PerFileResult:
     """
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+    sign_assumed: str | None = None
+    """Mirrors ``ImportResult.sign_assumed`` for batch imports — the sign
+    convention this file proceeded with when it could not disambiguate one."""
     sign_override_replayed: bool = False
     """Mirrors ``ImportResult.sign_override_replayed`` for batch imports — a saved
     `sign=` override replayed onto this file, bypassing the card-marker detector."""
@@ -531,6 +550,11 @@ class BatchImportResult:
     def failed_count(self) -> int:
         """Number of files that failed to import."""
         return sum(1 for r in self.per_file if r.status == "failed")
+
+    @property
+    def confirmation_required_count(self) -> int:
+        """Number of files awaiting an explicit confirmation."""
+        return sum(1 for r in self.per_file if r.status == "confirmation_required")
 
     @property
     def total_count(self) -> int:
@@ -680,6 +704,46 @@ class ReviewedTabularPlan:
     `import_confirm`) is itself the ratification, because nothing was lost:
     the preview already showed the ambiguity and the caller chose to
     proceed."""
+    sheet: str | None = None
+    """The worksheet actually read. Old MCP previews had no sheet input and
+    retain deterministic auto-selection against their unchanged source bytes."""
+
+    @classmethod
+    def from_read(
+        cls,
+        format_info: "FormatInfo",
+        read_result: "ReadResult",
+        *,
+        field_mapping: dict[str, str],
+        date_format: str | None,
+        sign_convention: SignConventionType,
+        number_format: NumberFormatType,
+        is_multi_account: bool,
+        confidence: str,
+        flagged_fields: list[str],
+    ) -> "ReviewedTabularPlan":
+        """Capture one read's exact source signature and parse accounting."""
+        return cls(
+            file_type=format_info.file_type,
+            delimiter=format_info.delimiter,
+            encoding=format_info.encoding,
+            file_size=format_info.file_size,
+            field_mapping=dict(field_mapping),
+            date_format=date_format,
+            sign_convention=sign_convention,
+            number_format=number_format,
+            is_multi_account=is_multi_account,
+            confidence=confidence,
+            skip_rows=read_result.skip_rows,
+            has_header=read_result.has_header,
+            rows_in_file=read_result.rows_in_file,
+            rows_skipped_trailing=read_result.rows_skipped_trailing,
+            header_row_looks_like_data=read_result.header_row_looks_like_data,
+            header_signature=sorted(read_result.df.columns),
+            flagged_fields=list(flagged_fields),
+            header_position_ambiguous=read_result.header_position_ambiguous,
+            sheet=read_result.sheet_used,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical JSON-ready representation."""
@@ -691,6 +755,14 @@ class ReviewedTabularPlan:
         from pydantic import TypeAdapter
 
         return TypeAdapter(cls).validate_python(value)
+
+
+@dataclass(frozen=True)
+class PreparedTabularImport:
+    """Read-only interpretation and the next unresolved authorization gate."""
+
+    plan: ReviewedTabularPlan
+    confirmation: ConfirmationRequired | None = None
 
 
 def declared_date_format_reads_column(
@@ -1145,6 +1217,55 @@ def _detect_file_type(file_path: Path) -> str:
     raise ValueError(
         f"Unsupported file type: {suffix}. "
         f"Supported: .ofx, .qfx, .qbo, .pdf, .csv, .tsv, .xlsx, .parquet, .feather"
+    )
+
+
+def detect_import_file_type(file_path: Path) -> str:
+    """Expose canonical channel routing to read-only import callers."""
+    return _detect_file_type(file_path)
+
+
+def _selected_tabular_format(
+    all_formats: dict[str, TabularFormat], format_name: str | None
+) -> TabularFormat | None:
+    if not format_name:
+        return None
+    if format_name not in all_formats:
+        raise ValueError(
+            f"Unknown format {format_name!r}. Available: {sorted(all_formats)}"
+        )
+    return all_formats[format_name]
+
+
+def read_tabular_import_source(
+    file_path: Path,
+    *,
+    db: Database,
+    format_name: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+    no_size_limit: bool = False,
+) -> bytes:
+    """Bound the snapshot with the same selected read settings as import."""
+    from moneybin.extractors.tabular.formats import (
+        load_builtin_formats,
+        load_formats_from_db,
+        merge_formats,
+    )
+    from moneybin.services.tabular_preparation import read_tabular_source
+
+    selected = None
+    if format_name:
+        selected = _selected_tabular_format(
+            merge_formats(load_builtin_formats(), load_formats_from_db(db)), format_name
+        )
+    settings = resolve_read_settings(selected, delimiter=delimiter, encoding=encoding)
+    return read_tabular_source(
+        file_path,
+        no_size_limit=no_size_limit,
+        format_override=settings.format_override,
+        delimiter_override=settings.delimiter,
+        encoding_override=settings.encoding,
     )
 
 
@@ -1675,7 +1796,7 @@ class ImportService:
         format_name: str,
         actor: str,
     ) -> str:
-        """Allocate a fresh ``raw.import_log`` row and return its ``import_id``.
+        """Allocate a fresh ``app.import_log`` row and return its ``import_id``.
 
         Thin wrapper around :meth:`ImportLogRepo.begin_import` that exposes
         the lifecycle to callers (manual entry, future API connectors) that
@@ -1707,7 +1828,7 @@ class ImportService:
         limit: int = 20,
         import_id: str | None = None,
     ) -> list[dict[str, str | int | None]]:
-        """Read ``raw.import_log`` batch history — thin wrapper for CLI/MCP.
+        """Read ``app.import_log`` batch history — thin wrapper for CLI/MCP.
 
         Backs ``moneybin import history``, the read path for one entity
         (``ImportLogRepo``) whose write path already goes through this
@@ -1726,7 +1847,7 @@ class ImportService:
         after_import_id: str | None = None,
         snapshot_total: int | None = None,
     ) -> ImportHistoryPage:
-        """Read one keyset page of ``raw.import_log`` history.
+        """Read one keyset page of ``app.import_log`` history.
 
         The paged twin of :meth:`get_import_history`, so the cursored MCP
         read reaches the same service boundary as the unpaged one rather
@@ -1887,6 +2008,7 @@ class ImportService:
         from moneybin.extractors.ofx import OFXExtractor
         from moneybin.extractors.ofx.extractor import (
             OFXLoadError,
+            incoming_ofx_transactions,
             ofx_source_accounts,
             parse_ofx_content,
         )
@@ -1984,6 +2106,7 @@ class ImportService:
             ofx_source_accounts(parsed_ofx, source_origin),
             account_bindings,
             channel="ofx",
+            incoming_transactions=incoming_ofx_transactions(parsed_ofx),
         )
 
         # OFX <ACCTID> values are institution-assigned account numbers, not
@@ -2005,7 +2128,7 @@ class ImportService:
         # Extract and write all four raw.ofx_* tables through the encrypted
         # ingest path (OFXExtractor.load(), matching PlaidExtractor's
         # extract+write shape). Wrapped so a failure anywhere inside marks the
-        # batch 'failed' instead of leaving raw.import_log.status='importing'
+        # batch 'failed' instead of leaving app.import_log.status='importing'
         # and blocking re-imports.
         try:
             load_result = OFXExtractor(db=self._db).load(
@@ -2163,6 +2286,11 @@ class ImportService:
             archived_at=settings.archived_at,
             include_in_net_worth=settings.include_in_net_worth,
             default_cost_basis_method=settings.default_cost_basis_method,
+            investment_source_type=None,
+            investment_source_type_changed_at=None,
+            archived_changed_at=None,
+            currency_code_changed_at=None,
+            default_cost_basis_method_changed_at=None,
             actor="import",
             in_outer_txn=in_outer_txn,
         )
@@ -2176,7 +2304,8 @@ class ImportService:
         channel: Channel,
         resolved_mapping: dict[str, str] | None = None,
         fallback_keys: Collection[str] = (),
-        incoming_transactions: Sequence[IncomingTransaction] = (),
+        incoming_transactions: Mapping[str, Sequence[IncomingTransaction]]
+        | None = None,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
     ) -> list[SourceAccount]:
@@ -2228,6 +2357,16 @@ class ImportService:
         reaches ``resolve()``'s candidate pass any more — the confidence
         histogram it used to feed would read zero for the interactive path.
         ``disposition="rollback"`` because raising is this call's success case.
+
+        ``incoming_transactions`` is keyed by ``source_account_key``, not one
+        flat sequence, so a multi-account file (a tabular export with several
+        accounts, an OFX file with several ``<STMTRS>`` blocks) probes each
+        candidate against only the rows belonging to ITS OWN source account.
+        A single shared sequence would let one account's rows count as
+        overlap evidence for a sibling account merely because both arrived in
+        the same file. A source key with no entry (or an empty tuple) leaves
+        every candidate's ``overlap`` at ``None`` — unmeasured, not a
+        measured zero — same as passing nothing at all.
         """
         source_accounts, binding_targets = _apply_account_bindings(
             source_accounts, bindings or {}
@@ -2249,7 +2388,10 @@ class ImportService:
             proposal = resolver.propose(
                 src, fallback=src.source_account_key in wanted_fallback
             )
-            if incoming_transactions and proposal.candidates:
+            own_transactions = (incoming_transactions or {}).get(
+                src.source_account_key
+            ) or ()
+            if own_transactions and proposal.candidates:
                 proposal = dataclasses.replace(
                     proposal,
                     candidates=tuple(
@@ -2257,7 +2399,7 @@ class ImportService:
                             candidate,
                             overlap=probe_incoming_ledger_overlap(
                                 self._db,
-                                transactions=incoming_transactions,
+                                transactions=own_transactions,
                                 against_account_id=candidate.account_id,
                             ),
                         )
@@ -2472,6 +2614,27 @@ class ImportService:
             balance_validated=balance_validated,
         )
 
+    def prepare_tabular_import(
+        self,
+        file_path: Path,
+        *,
+        source_bytes: bytes,
+        omitted_fields: frozenset[str] = frozenset(),
+        **options: Any,
+    ) -> PreparedTabularImport:
+        """Prepare and propose accounts without any repository mutation."""
+        if _detect_file_type(file_path) != "tabular":
+            raise ValueError("Preparation requires a tabular file.")
+        prepared = self._import_tabular(
+            file_path,
+            source_bytes=source_bytes,
+            _omitted_fields=omitted_fields,
+            _prepare_only=True,
+            emit_metrics=False,
+            **options,
+        )
+        return cast(PreparedTabularImport, prepared)
+
     def _import_tabular(
         self,
         file_path: Path,
@@ -2482,6 +2645,7 @@ class ImportService:
         account_id: str | None = None,
         format_name: str | None = None,
         overrides: dict[str, str] | None = None,
+        _omitted_fields: frozenset[str] = frozenset(),
         sign: str | None = None,
         date_format_override: str | None = None,
         number_format_override: str | None = None,
@@ -2500,7 +2664,8 @@ class ImportService:
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
-    ) -> ImportResult:
+        _prepare_only: bool = False,
+    ) -> ImportResult | PreparedTabularImport:
         """Import a tabular file through the five-stage pipeline.
 
         Args:
@@ -2543,7 +2708,6 @@ class ImportService:
             ImportResult with summary.
         """
         from moneybin.extractors.tabular import TabularExtractor
-        from moneybin.extractors.tabular.column_mapper import map_columns
         from moneybin.extractors.tabular.extractor import build_account_dataframe
         from moneybin.extractors.tabular.format_detector import detect_format
         from moneybin.extractors.tabular.formats import (
@@ -2555,13 +2719,15 @@ class ImportService:
         )
         from moneybin.extractors.tabular.readers import (
             normalize_excel_date_columns_after_mapping,
-            normalize_excel_date_columns_for_detection,
             read_file,
         )
         from moneybin.extractors.tabular.sign_convention import (
             validate_explicit_sign_shape,
         )
-        from moneybin.extractors.tabular.transforms import transform_dataframe
+        from moneybin.extractors.tabular.transforms import (
+            incoming_tabular_transactions,
+            transform_dataframe,
+        )
         from moneybin.utils import slugify
 
         result = ImportResult(file_path=str(file_path), file_type="tabular")
@@ -2571,20 +2737,25 @@ class ImportService:
         # mid-resolve would orphan account_links rows with no import batch.
         _validate_account_metadata(account_metadata)
 
+        if _omitted_fields:
+            from moneybin.services.import_confirmation import validate_omitted_fields
+
+            validate_omitted_fields(_omitted_fields, overrides)
+            if reviewed_plan is not None:
+                raise ValueError(
+                    "Optional omissions require a fresh tabular mapping, not a saved format or reviewed plan."
+                )
+
         # Load formats for ordinary imports and optional post-load format saving.
         builtin_formats = load_builtin_formats()
         all_formats = merge_formats(builtin_formats, load_formats_from_db(self._db))
 
         matched_format: TabularFormat | None = None
         if reviewed_plan is None and format_name:
-            if format_name not in all_formats:
-                raise ValueError(
-                    f"Unknown format {format_name!r}. Available: {sorted(all_formats)}"
-                )
-            matched_format = all_formats[format_name]
+            matched_format = _selected_tabular_format(all_formats, format_name)
 
         # Stage 1: Format detection — apply matched format's properties as
-        # defaults. `import preview` resolves the same seven values from the
+        # defaults. `import preview` resolves the same eight values from the
         # same helper, which is what keeps a preview's read identical to the
         # import it previews.
         #
@@ -2604,6 +2775,31 @@ class ImportService:
             encoding=encoding,
             sheet=sheet,
             date_format=date_format_override,
+            number_format=number_format_override,
+        )
+
+        # What a `header_row_consumed` retry has to repeat: this read, minus
+        # the format that caused the refusal. Built once, here, because that
+        # reason has four raise sites below — one explicit and three through
+        # classify_unconfirmable_plan — and a retry built at only some of them
+        # is the same silent-wrong-worksheet bug on the paths that were missed.
+        # Drawn from read_settings rather than the caller's flags: a sheet,
+        # delimiter, encoding or number_format the FORMAT supplied appears in
+        # no flag, and dropping --format drops it along with the skip_rows
+        # being escaped. This runs BEFORE the number-format validation further
+        # down, but read_settings.number_format is already safe here: an
+        # invalid raw override was dropped by resolve_read_settings itself
+        # (falling back to the format's own validated value), so nothing
+        # unvalidated is ever echoed onto the printed retry.
+        retry_read_options = TabularReadOptions(
+            format_name=None,
+            date_format=read_settings.date_format,
+            number_format=read_settings.number_format,
+            sheet=read_settings.sheet,
+            delimiter=read_settings.delimiter,
+            encoding=read_settings.encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
         )
 
         if reviewed_plan is None:
@@ -2637,6 +2833,7 @@ class ImportService:
             read_result = read_file(
                 file_path,
                 format_info,
+                sheet=reviewed_plan.sheet,
                 skip_rows=reviewed_plan.skip_rows,
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,
@@ -2664,6 +2861,11 @@ class ImportService:
                     matched_format = fmt
                     break
 
+        if _omitted_fields and matched_format is not None:
+            raise ValueError(
+                "Optional omissions require a fresh tabular mapping, not a saved format or reviewed plan."
+            )
+
         # Excel's native-date columns still read as "<date> 00:00:00" text
         # here — df is untouched until normalize_excel_date_columns_after_
         # mapping renders it, exactly once, against the FINAL mapping and
@@ -2689,6 +2891,7 @@ class ImportService:
             declared_date_format = date_format_override
 
         sign_evidence_header: str | None = None
+        detected_flagged_fields: list[str] = []
         if reviewed_plan is not None:
             if sorted(df.columns) != reviewed_plan.header_signature:
                 raise UserError(
@@ -2737,7 +2940,6 @@ class ImportService:
                 from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
                 from moneybin.services.import_confirmation import (
                     ConfirmationRequired,
-                    ImportConfirmationRequiredError,
                     ProposedMapping,
                     classify_unconfirmable_plan,
                 )
@@ -2832,6 +3034,9 @@ class ImportService:
                             field_mapping=reviewed_plan.field_mapping,
                             flagged_fields=list(reviewed_plan.flagged_fields),
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                     )
                 )
             # The gate above already refused reviewed_plan.date_format is
@@ -2910,7 +3115,6 @@ class ImportService:
             from moneybin.services.import_confirmation import (
                 Accept,
                 ConfirmationRequired,
-                ImportConfirmationRequiredError,
                 Override,
                 ProposedMapping,
                 classify_unconfirmable_plan,
@@ -2925,18 +3129,22 @@ class ImportService:
             # as a sample — that only exists so map_columns / detect_date_
             # format can recognize a native-typed date column's content; df
             # itself stays untouched until the real mapping is final, below.
-            detection_df = normalize_excel_date_columns_for_detection(
-                df, file_type=format_info.file_type, date_format=date_format_override
-            )
-            mapping_result = map_columns(
-                detection_df,
+            from moneybin.services.tabular_preparation import detect_tabular_mapping
+
+            mapping_result = detect_tabular_mapping(
+                df,
+                file_type=format_info.file_type,
+                date_format=date_format_override,
                 overrides=overrides,
-                t_high=bands.t_high,
-                t_med=bands.t_med,
+                omitted_fields=_omitted_fields,
                 structural_red_flag=read_result.header_row_looks_like_data,
-                declared_date_format=date_format_override,
             )
             sign_evidence_header = mapping_result.sign_evidence_header
+            detected_flagged_fields = [
+                field
+                for field in mapping_result.flagged_fields
+                if field not in (overrides or {})
+            ]
             confidence = mapping_result.to_confidence(
                 t_high=bands.t_high, t_med=bands.t_med
             )
@@ -3077,6 +3285,9 @@ class ImportService:
                             flagged_fields=list(mapping_result.flagged_fields),
                             header_position_ambiguous=_unreadable_date_ambiguous_header,
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                         samples=dict(proposed.sample_values),
                         # header_position_ambiguous outranks unreadable_date
                         # in classify_unconfirmable_plan's precedence, so this
@@ -3182,6 +3393,9 @@ class ImportService:
                             if _first_contact_ambiguous_header
                             else ()
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                     )
                     if outcome.reason == "unknown_layout"
                     else outcome
@@ -3291,8 +3505,13 @@ class ImportService:
                 and not sign
                 and resolved.sign_convention != "negative_is_income"
             ):
-                logger.warning(
-                    "⚠️  Sign convention is ambiguous (all amounts appear positive). "
+                # Presentation lives on the result, not the console: the CLI's
+                # own attention line (import_cmd.py) is the one the user sees,
+                # so this stays a file-log record rather than a second WARNING
+                # `_ConsoleNoiseFilter` would also print (rule 33).
+                result.sign_assumed = resolved.sign_convention
+                logger.info(
+                    "Sign convention is ambiguous (all amounts appear positive). "
                     f"Proceeding with '{resolved.sign_convention}' — "
                     "use --sign to override if expense amounts look wrong."
                 )
@@ -3348,7 +3567,6 @@ class ImportService:
             )
             from moneybin.services.import_confirmation import (
                 ConfirmationRequired,
-                ImportConfirmationRequiredError,
                 ProposedMapping,
             )
 
@@ -3396,6 +3614,7 @@ class ImportService:
                     ),
                     reason="header_row_consumed",
                     samples=gate_samples,
+                    retry_read_options=retry_read_options,
                 )
             )
 
@@ -3434,11 +3653,12 @@ class ImportService:
         # Validate at runtime: typing.cast has no runtime effect, so an
         # invalid value like ``--sign=backwards`` would silently propagate
         # into the transform pipeline and surface deep inside SQLMesh,
-        # leaving a dangling raw.import_log row in ``importing`` state.
+        # leaving a dangling app.import_log row in ``importing`` state.
         # Guard explicitly via get_args so the failure is a clean UserError
-        # at the import boundary.
-        from typing import get_args
-
+        # at the import boundary. Imported at module scope rather than here:
+        # a function-local import binds the name for the WHOLE function, so
+        # the header_row_consumed gate above — which reads it earlier — would
+        # raise UnboundLocalError instead of reaching its confirmation.
         if sign and sign not in get_args(SignConventionType):
             raise UserError(
                 f"Invalid sign convention: {sign!r}. "
@@ -3478,15 +3698,37 @@ class ImportService:
                 else resolved.number_format,
             )
 
-        self._gate_tabular_sign_convention(
-            detected_sign=detected_sign,
-            sign=sign,
-            human_sign_confirmation=human_sign_confirmation,
-            is_first_contact=matched_format is None,
-            evidence=sign_evidence_header or resolved.field_mapping.get("amount", ""),
-            emit_metrics=emit_metrics,
-            observations=observations,
+        prepared_plan = ReviewedTabularPlan.from_read(
+            format_info,
+            read_result,
+            field_mapping=dict(resolved.field_mapping),
+            date_format=resolved.date_format,
+            sign_convention=resolved.sign_convention,
+            number_format=resolved.number_format,
+            is_multi_account=resolved.is_multi_account,
+            confidence=resolved.confidence,
+            flagged_fields=(
+                list(reviewed_plan.flagged_fields)
+                if reviewed_plan
+                else detected_flagged_fields
+            ),
         )
+
+        try:
+            self._gate_tabular_sign_convention(
+                detected_sign=detected_sign,
+                sign=sign,
+                human_sign_confirmation=human_sign_confirmation,
+                is_first_contact=matched_format is None,
+                evidence=sign_evidence_header
+                or resolved.field_mapping.get("amount", ""),
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+        except ImportConfirmationRequiredError as exc:
+            if _prepare_only:
+                return PreparedTabularImport(prepared_plan, exc.outcome)
+            raise
 
         # Determine account info
         source_type = format_info.file_type
@@ -3837,17 +4079,36 @@ class ImportService:
 
         # Phase 2 — gate on any account identity the caller hasn't ratified.
         # Raises ImportConfirmationRequiredError (no rows load) and returns the
-        # bound accounts for the resolve pass below.
-        source_accounts = self._gate_account_proposals(
-            resolver,
-            source_accounts,
-            bindings,
-            channel="tabular",
-            resolved_mapping=dict(resolved.field_mapping),
-            fallback_keys=fallback_keys,
-            emit_metrics=emit_metrics,
-            observations=observations,
-        )
+        # bound accounts for the resolve pass below. Ledger evidence comes from
+        # the raw mapped frame (Stage 3), one stage before transform_dataframe
+        # (Stage 4) below normalizes it further — the gate needs date/amount now,
+        # not after a confirm it might never reach.
+        try:
+            source_accounts = self._gate_account_proposals(
+                resolver,
+                source_accounts,
+                bindings,
+                channel="tabular",
+                resolved_mapping=dict(resolved.field_mapping),
+                fallback_keys=fallback_keys,
+                incoming_transactions=incoming_tabular_transactions(
+                    df=df,
+                    field_mapping=resolved.field_mapping,
+                    date_format=final_date_format,
+                    sign_convention=resolved.sign_convention,
+                    number_format=resolved.number_format,
+                    account_ids=account_ids,
+                ),
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+        except ImportConfirmationRequiredError as exc:
+            if _prepare_only:
+                return PreparedTabularImport(prepared_plan, exc.outcome)
+            raise
+
+        if _prepare_only:
+            return PreparedTabularImport(prepared_plan)
 
         # Phase 3 — resolve (writes native->canonical mapping + pending decisions),
         # then capture any caller-supplied metadata for accounts minted this import.
@@ -4037,6 +4298,16 @@ class ImportService:
             and rows_imported > 0
         ):
             try:
+                # skip_rows and skip_trailing_patterns are deliberately NOT
+                # persisted here (both take their model default, 0/None): a
+                # saved format describes the column layout, not the header's
+                # position, so every read re-detects that position fresh —
+                # which adapts when a future export of this layout grows one
+                # more preamble line, where a pinned position would instead
+                # consume a transaction as the header. resolve_read_settings
+                # already reads a format's skip_rows of 0 as "no opinion" and
+                # lets detection run, so this is the behavior either way — do
+                # not "fix" this omission without deciding to change that.
                 detected_fmt = TabularFormat(
                     name=source_origin,
                     # Institution is best-effort metadata; the per-account label
@@ -4191,7 +4462,7 @@ class ImportService:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
         Four outcomes — same machinery as ``_import_pdf`` but no side effects
-        on raw tables and no ``raw.import_log`` row:
+        on raw tables and no ``app.import_log`` row:
 
         - Deterministic success (``decision.outcome == "transactions"``):
           returns ``PdfPreviewResult(deterministic=True, ...)`` with the row
@@ -4303,7 +4574,7 @@ class ImportService:
           recipe to ``app.pdf_formats`` (first contact → ``save_new``; audited,
           Invariant 10) unless ``save_format=False``, then load the re-executed
           rows to ``raw.tabular_transactions`` (``source_type='pdf'``) with a
-          reversible ``raw.import_log`` row (Req 17).
+          reversible ``app.import_log`` row (Req 17).
         - **Verify expectation vs actual.** If the agent's row count differs
           from the re-executed count, ``rows_diverged=True`` is surfaced (and
           logged) — the saved recipe does not reproduce the agent's own
@@ -4465,7 +4736,9 @@ class ImportService:
             account_bindings,
             channel="pdf",
             fallback_keys=identity.fallback_keys,
-            incoming_transactions=incoming_pdf_transactions(decision),
+            incoming_transactions={
+                identity.source.source_account_key: incoming_pdf_transactions(decision)
+            },
             emit_metrics=emit_metrics,
             observations=observations,
         )
@@ -5131,7 +5404,11 @@ class ImportService:
                 account_bindings,
                 channel="pdf",
                 fallback_keys=identity.fallback_keys,
-                incoming_transactions=incoming_pdf_transactions(decision),
+                incoming_transactions={
+                    identity.source.source_account_key: incoming_pdf_transactions(
+                        decision
+                    )
+                },
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
@@ -5725,7 +6002,7 @@ class ImportService:
         # can never drift on the naming scheme — see that helper.
         first_contact_format_name = pdf_format_name(fp)
 
-        # Backfill format columns on raw.import_log now that routing has
+        # Backfill format columns on app.import_log now that routing has
         # decided. Tabular knows its format before begin_import; PDFs only
         # know it post-routing, so without this update every PDF import_log
         # entry would carry NULL format_name/format_source and users could
@@ -5924,6 +6201,7 @@ class ImportService:
         account_name: str | None = None,
         format_name: str | None = None,
         overrides: dict[str, str] | None = None,
+        _omitted_fields: frozenset[str] = frozenset(),
         sign: str | None = None,
         date_format: str | None = None,
         number_format: str | None = None,
@@ -6020,6 +6298,7 @@ class ImportService:
             account_name=account_name,
             format_name=format_name,
             overrides=overrides,
+            _omitted_fields=_omitted_fields,
             sign=sign,
             date_format=date_format,
             number_format=number_format,
@@ -6069,15 +6348,12 @@ class ImportService:
             result.transfers_retired = refresh_result.transfers_retired
             result.refresh_steps = _step_outcome(refresh_result)
             if not refresh_result.applied:
-                # The raise discards `result`, and this exception escapes past
-                # the success path's warning rather than landing in
-                # `_single_file_failure`. So the count travels on the exception
-                # — the reversal is the user's own decision being undone, and it
-                # is disclosed whether or not the transform that followed it
-                # succeeded.
+                # Carry committed state so confirmation can archive the file
+                # without retrying the import after a failed refresh.
                 raise ImportRefreshError(
                     f"SQLMesh transforms failed: {refresh_result.error}",
                     transfers_retired=refresh_result.transfers_retired,
+                    result=result,
                 )
             result.core_tables_rebuilt = True
 
@@ -6097,6 +6373,7 @@ class ImportService:
         account_name: str | None = None,
         format_name: str | None = None,
         overrides: dict[str, str] | None = None,
+        _omitted_fields: frozenset[str] = frozenset(),
         sign: str | None = None,
         date_format: str | None = None,
         number_format: str | None = None,
@@ -6129,6 +6406,8 @@ class ImportService:
             raise FileNotFoundError(f"File not found: {path}")
 
         file_type = _detect_file_type(path)
+        if _omitted_fields and file_type != "tabular":
+            raise ValueError("Optional omissions require a tabular import.")
         reject_unhonored_account_signals(
             file_type,
             account_id=account_id,
@@ -6146,7 +6425,7 @@ class ImportService:
                 account_bindings=account_bindings,
             )
         if file_type == "tabular":
-            return self._import_tabular(
+            tabular_result = self._import_tabular(
                 path,
                 source_bytes=source_bytes,
                 reviewed_plan=reviewed_plan,
@@ -6154,6 +6433,7 @@ class ImportService:
                 account_id=account_id,
                 format_name=format_name,
                 overrides=overrides,
+                _omitted_fields=_omitted_fields,
                 sign=sign,
                 date_format_override=date_format,
                 number_format_override=number_format,
@@ -6173,6 +6453,8 @@ class ImportService:
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
+            return cast(ImportResult, tabular_result)
+
         if file_type == "pdf":
             return self._import_pdf(
                 path,
@@ -6242,6 +6524,7 @@ class ImportService:
                         rows_loaded=rows_loaded,
                         import_id=r.import_id,
                         sign_correction_suggested=r.sign_correction_suggested,
+                        sign_assumed=r.sign_assumed,
                         sign_override_replayed=r.sign_override_replayed,
                         accounts_created=r.accounts_created,
                     )
@@ -6413,7 +6696,7 @@ class ImportService:
         binding instead of slipping past it.
 
         Args:
-            import_id: UUID of the import batch in ``raw.import_log``.
+            import_id: UUID of the import batch in ``app.import_log``.
         """
         from moneybin.tables import IMPORT_LOG
 
@@ -6554,15 +6837,7 @@ class ImportService:
                         f"DELETE FROM {table.full_name} WHERE import_id = ?",
                         [import_id],
                     )
-                self._db.execute(
-                    f"""
-                    UPDATE {IMPORT_LOG.full_name} SET
-                        status = 'reverted',
-                        reverted_at = CURRENT_TIMESTAMP
-                    WHERE import_id = ?
-                    """,
-                    [import_id],
-                )
+                self._import_log.mark_reverted(import_id)
                 # After the deletes: the re-key it causes is what the pass reads.
                 forwarding = forward_rekeyed_transaction_ids(
                     self._db, actor=actor, in_outer_txn=True
@@ -6618,6 +6893,20 @@ class ImportService:
         logger.info(
             f"Reverted import {import_id[:8]}...: {live.rows_to_delete} rows deleted"
         )
+        # Materialized models read these raw tables and app.security_links, so
+        # without a restate the reverted rows and the reversed links stay in
+        # every report until the next refresh. Last, so a failed rebuild leaves
+        # the revert itself intact; the error names `moneybin refresh`. A
+        # revert that changed nothing restates nothing.
+        changed: list[TableRef] = []
+        if live.rows_to_delete:
+            changed.extend(REVERT_TABLES[cast(str, live.source_type)])
+        if live.security_link_ids:
+            changed.append(SECURITY_LINKS)
+        if changed:
+            from moneybin.services.restate import restate_after_write
+
+            restate_after_write(self._db, changed, committed_change="import revert")
         return {"status": "reverted", "rows_deleted": live.rows_to_delete}
 
     # ------------------------------------------------------------------

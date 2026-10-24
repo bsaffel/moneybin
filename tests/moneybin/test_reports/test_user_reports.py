@@ -1949,7 +1949,7 @@ def test_the_listing_carries_the_name_every_operation_resolves(
 
     ``reports-dynamic.md`` makes ``name`` "the handle every operation in R5
     takes", and ``resolve()`` accepts it. But the id diverges from it everywhere:
-    a built-in registers ``report_id="core:networth", name="networth"``, and a
+    a built-in registers ``report_id="core:net_worth", name="net_worth"``, and a
     saved report's id is an opaque ``user:r…`` its owner never chose and cannot
     retype. Publishing only the id leaves the one string the surface accepts
     undiscoverable the moment the create response scrolls away.
@@ -1962,7 +1962,7 @@ def test_the_listing_carries_the_name_every_operation_resolves(
     assert names_by_id[report_id] == "monthly_spend"
     # A built-in too, so the field cannot be satisfied by echoing `report_id`:
     # every entry's name is the bare handle, never the namespaced identifier.
-    assert names_by_id["core:networth"] == "networth"
+    assert names_by_id["core:net_worth"] == "net_worth"
 
 
 def test_the_run_envelope_reports_that_a_report_degraded(
@@ -2021,7 +2021,7 @@ def test_an_undegraded_run_leaves_the_envelope_undegraded(
 def test_a_builtin_run_carries_no_degraded_flag(saved_db: Database) -> None:
     """A tier with no stored row has no drift state to report."""
     result = get_report_catalog(saved_db).execute(
-        saved_db, report_id="core:networth", parameters={}, limit=10
+        saved_db, report_id="core:net_worth", parameters={}, limit=10
     )
 
     assert "degraded" not in result.to_envelope().to_dict()["summary"]

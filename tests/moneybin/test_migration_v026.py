@@ -106,7 +106,7 @@ def pre_v026_db(db: Database) -> Database:
         ),
     ]
     # DuckDB doesn't enforce the import_id FK by default — skip the
-    # raw.import_log row and reference the id directly. (V019's fixture
+    # app.import_log row and reference the id directly. (V019's fixture
     # follows the same pattern for tabular_transactions.)
     for sid, acct, txn_date, amt, desc in rows:
         db.execute(

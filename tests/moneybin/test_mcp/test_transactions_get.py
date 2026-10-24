@@ -59,6 +59,7 @@ def _insert_transactions() -> None:
                 'Coffee House'::VARCHAR AS raw_pattern,
                 'contains'::VARCHAR AS match_type,
                 'Coffee House'::VARCHAR AS canonical_name,
+                NULL::VARCHAR AS category_id,
                 'Food & Drink'::VARCHAR AS category,
                 NULL::VARCHAR AS subcategory,
                 'test'::VARCHAR AS created_by,
@@ -68,7 +69,7 @@ def _insert_transactions() -> None:
             UNION ALL
             SELECT
                 'merchant_restaurant', 'Restaurant', 'contains',
-                'Restaurant', 'Food & Drink', NULL, 'test', [],
+                'Restaurant', NULL, 'Food & Drink', NULL, 'test', [],
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             """  # test fixture view, literal test data only
         )

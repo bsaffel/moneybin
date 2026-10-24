@@ -2,6 +2,7 @@
 
 import datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -26,6 +27,219 @@ _CITI_CSV = (
     _FIXTURES / "citi_credit.csv"
 )  # split debit/credit (Status,Date,Description,Debit,Credit,Member Name)
 _TILLER_CSV = _FIXTURES / "tiller.csv"  # headers match the built-in `tiller` format
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_reviewed_worksheet_roundtrip_applies_exact_data(
+    db: Database, tmp_path: Path, legacy: bool
+) -> None:
+    import json
+
+    import openpyxl
+
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    path = tmp_path / "workbook.xlsx"
+    book = openpyxl.Workbook()
+    first = book.active
+    assert first is not None
+    first.title = "Default"
+    second = book.create_sheet("Selected worksheet")
+    for sheet, description in [(first, "Default row"), (second, "Selected row")]:
+        sheet.append(["Date", "Amount", "Description"])
+        sheet.append(["2026-01-01", "-2", description])
+    book.save(path)
+    source = path.read_bytes()
+    service = ImportService(db)
+    prepared = service.prepare_tabular_import(
+        path,
+        source_bytes=source,
+        sheet=None if legacy else "Selected worksheet",
+        confirm=True,
+        account_name="test",
+        account_bindings={"test": "new"},
+    )
+    assert prepared.confirmation is None
+    encoded = json.loads(json.dumps(prepared.plan.to_dict()))
+    if legacy:
+        # Old staged MCP previews had no explicit worksheet input: replaying
+        # their identical bytes retains the deterministic default selection.
+        encoded.pop("sheet", None)
+    else:
+        assert encoded.get("sheet") == "Selected worksheet"
+    plan = ReviewedTabularPlan.from_dict(encoded)
+    result = service.import_file(
+        path,
+        source_bytes=source,
+        reviewed_plan=plan,
+        account_name="test",
+        account_bindings={"test": "new"},
+        refresh=False,
+        save_format=False,
+    )
+    assert result.rows_loaded == 1
+    assert db.conn.execute(
+        "SELECT description FROM raw.tabular_transactions"
+    ).fetchall() == [("Default row" if legacy else "Selected row",)]
+
+
+@pytest.mark.parametrize("sign", [None, "negative_is_income"])
+def test_prepare_tabular_import_is_read_only_and_retains_exact_decision(
+    db: Database, tmp_path: Path, mocker: MockerFixture, sign: str | None
+) -> None:
+    from moneybin.repositories.import_log_repo import ImportLogRepo
+    from moneybin.services.account_resolver import AccountResolver
+    from moneybin.services.import_service import ImportService
+
+    path = tmp_path / "geography.csv"
+    path.write_text(
+        "Date,Transaction Credit,Description,State\n2026-01-01,-2,Example,WA\n"
+    )
+    service = ImportService(db)
+    mocker.patch(
+        "moneybin.repositories.base.BaseRepo._transaction",
+        side_effect=AssertionError("repository write during preparation"),
+    )
+    mocker.patch.object(
+        AccountResolver,
+        "resolve",
+        side_effect=AssertionError("write during preparation"),
+    )
+    mocker.patch.object(
+        ImportLogRepo,
+        "begin_import",
+        side_effect=AssertionError("write during preparation"),
+    )
+    prepared = service.prepare_tabular_import(
+        path,
+        source_bytes=path.read_bytes(),
+        overrides={
+            "transaction_date": "Date",
+            "amount": "Transaction Credit",
+            "description": "Description",
+        },
+        omitted_fields=frozenset({"status"}),
+        sign=sign,
+    )
+    assert "status" not in prepared.plan.field_mapping
+    assert prepared.confirmation is not None
+    assert prepared.confirmation.reason == (
+        "sign_convention" if sign is None else "account_confirmation"
+    )
+    if sign is None:
+        from moneybin.extractors.tabular import readers
+
+        read = mocker.spy(readers, "read_file")
+        try:
+            following = service.prepare_tabular_import(
+                path,
+                source_bytes=path.read_bytes(),
+                reviewed_plan=prepared.plan,
+                sign="negative_is_income",
+            )
+        except Exception as exc:
+            pytest.fail(
+                f"Replay failed: {exc}; expected={prepared.plan.header_signature!r}; actual={read.spy_return.df.columns!r}"
+            )
+        assert following.confirmation is not None
+        assert following.confirmation.reason == "account_confirmation"
+    row = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert row is not None and row[0] == 0
+    row = db.conn.execute("SELECT count(*) FROM app.import_log").fetchone()
+    assert row is not None and row[0] == 0
+
+
+@pytest.mark.parametrize(
+    "omitted",
+    [
+        "transaction_date",
+        "description",
+        "amount",
+        "debit_amount",
+        "credit_amount",
+        "unknown",
+    ],
+)
+def test_private_omissions_refuse_required_or_unknown_fields_before_writing(
+    db: Database,
+    tmp_path: Path,
+    omitted: str,
+) -> None:
+    from moneybin.services.import_service import ImportService
+
+    path = tmp_path / "optional.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    with pytest.raises(ValueError, match="optional destination"):
+        ImportService(db).import_file(
+            path, refresh=False, _omitted_fields=frozenset({omitted})
+        )
+    count = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert count is not None and count[0] == 0
+
+
+@pytest.mark.parametrize("mode", ["implicit", "explicit", "reviewed"])
+def test_private_omissions_refuse_saved_or_reviewed_precedence_before_writing(
+    db: Database,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    path = tmp_path / "optional.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    mapping = {
+        "transaction_date": "Date",
+        "amount": "Amount",
+        "description": "Description",
+        "status": "State",
+    }
+    save_format_to_db(
+        db,
+        TabularFormat(
+            name="optional",
+            institution_name="Fixture",
+            file_type="csv",
+            header_signature=["Date", "Amount", "Description", "State"],
+            field_mapping=mapping,
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            number_format="us",
+        ),
+        actor="test",
+    )
+    kwargs: dict[str, Any] = {}
+    if mode == "explicit":
+        kwargs["format_name"] = "optional"
+    elif mode == "reviewed":
+        kwargs["reviewed_plan"] = ReviewedTabularPlan(
+            file_type="csv",
+            delimiter=",",
+            encoding="utf-8",
+            file_size=path.stat().st_size,
+            field_mapping=mapping,
+            date_format="%Y-%m-%d",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            is_multi_account=False,
+            confidence="high",
+            skip_rows=0,
+            has_header=True,
+            rows_in_file=1,
+            rows_skipped_trailing=0,
+            header_row_looks_like_data=False,
+            header_signature=sorted(["Date", "Amount", "Description", "State"]),
+            flagged_fields=[],
+        )
+    before = db.conn.execute("SELECT count(*) FROM app.audit_log").fetchone()
+    assert before is not None
+    with pytest.raises(ValueError, match="fresh tabular mapping"):
+        ImportService(db).import_file(
+            path, refresh=False, _omitted_fields=frozenset({"status"}), **kwargs
+        )
+    assert db.conn.execute("SELECT count(*) FROM app.audit_log").fetchone() == before
+    count = db.conn.execute("SELECT count(*) FROM raw.tabular_transactions").fetchone()
+    assert count is not None and count[0] == 0
 
 
 def _make_mapping_result(
@@ -69,6 +283,44 @@ def _make_mapping_result(
         score=score,
         missing_required=(),
     )
+
+
+def _make_stale_skip_format_fixture(db: Database, tmp_path: Path, name: str) -> Path:
+    """Write a headed CSV and save a format whose skip_rows skips past it.
+
+    Reproduces the only reachable cause of ``header_row_consumed``: a saved
+    format's ``skip_rows`` was tuned against a preamble line this export no
+    longer has, so the explicit skip now lands on the first transaction.
+    """
+    from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+
+    csv = tmp_path / f"{name}.csv"
+    csv.write_text(
+        "Date,Amount,Description\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+        encoding="utf-8",
+    )
+    save_format_to_db(
+        db,
+        TabularFormat(
+            name=name,
+            institution_name="Test",
+            file_type="csv",
+            delimiter=",",
+            encoding="utf-8",
+            header_signature=["date", "amount", "description"],
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            number_format="us",
+            skip_rows=1,
+        ),
+        actor="test",
+    )
+    return csv
 
 
 class TestDetectFileType:
@@ -1920,6 +2172,262 @@ class TestTabularConfirmationFlow:
             == reuse_before
         )
 
+    def test_no_builtin_format_sets_skip_rows(self) -> None:
+        """The recovery text names only saved formats: no built-in reaches this."""
+        from moneybin.extractors.tabular.formats import load_builtin_formats
+
+        for fmt in load_builtin_formats().values():
+            assert fmt.skip_rows == 0
+
+    def test_naming_the_stale_format_again_fails_the_same_way(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Recovery: re-import without ``--format``; naming it again still fails.
+
+        Reproduces the only reachable cause of ``header_row_consumed`` (a
+        saved format's ``skip_rows`` tuned against a preamble this export no
+        longer has) and proves both halves of the recovery text: dropping
+        the format loads every row, and no command edits the saved format's
+        ``skip_rows``, so naming it again reproduces the exact same refusal.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = _make_stale_skip_format_fixture(db, tmp_path, "stale_skip_convergence")
+        service = ImportService(db)
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            service.import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_convergence",
+                save_format=False,
+            )
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
+        result = service.import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+        assert result.rows_loaded == 2
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            service.import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_convergence",
+                save_format=False,
+            )
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
+    def test_deleting_the_stale_format_also_recovers_every_row(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Recovery: delete the stale saved format, then re-import.
+
+        Uses the same service call CLI ``import formats delete`` and MCP
+        ``import_revert`` both use.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = _make_stale_skip_format_fixture(db, tmp_path, "stale_skip_delete")
+        service = ImportService(db)
+
+        with pytest.raises(ImportConfirmationRequiredError):
+            service.import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_delete",
+                save_format=False,
+            )
+
+        service.delete_saved_format_confirmed(
+            "stale_skip_delete", actor="test", verify=lambda live: None
+        )
+        with pytest.raises(ValueError, match="Unknown format 'stale_skip_delete'"):
+            service.import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_delete",
+                save_format=False,
+            )
+
+        result = service.import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+
+    def test_the_retry_keeps_the_worksheet_the_stale_format_selected(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The printed retry must not silently read a different worksheet.
+
+        Dropping ``--format`` is the whole recovery, but the format carries
+        the ``sheet`` alongside the ``skip_rows`` being escaped. With the
+        sheet gone the reader auto-selects the LARGEST worksheet, so a
+        workbook whose largest sheet also has compatible headers imports that
+        sheet instead — no error, and nothing in the output saying so. The
+        larger ``Archive`` sheet here is exactly that trap.
+
+        Asserts the sheet survives onto the retry the service hands the
+        surfaces, and that the format itself does not (re-naming it would
+        reproduce the refusal being recovered from).
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        statement = wb.active
+        assert statement is not None
+        statement.title = "Statement"
+        statement.append(["Date", "Amount", "Description"])
+        statement.append(["2026-01-05", -4.50, "Coffee"])
+        statement.append(["2026-01-06", 100.00, "Payroll"])
+        # Same headers, more rows — what the reader would auto-select.
+        archive = wb.create_sheet("Archive")
+        archive.append(["Date", "Amount", "Description"])
+        for day in range(10, 20):
+            archive.append([f"2025-01-{day}", -1.00, "Old"])
+        xlsx = tmp_path / "two_sheets.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="stale_skip_sheet",
+                institution_name="Test",
+                file_type="excel",
+                header_signature=["date", "amount", "description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                sheet="Statement",
+                skip_rows=1,
+            ),
+            actor="test",
+        )
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                xlsx,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_sheet",
+                save_format=False,
+            )
+
+        outcome = exc_info.value.outcome
+        assert outcome.reason == "header_row_consumed"
+        retry = outcome.retry_read_options
+        assert retry is not None
+        # The caller passed no --sheet; this value can only have come from the
+        # format. Dropping it is the defect this test exists to catch.
+        assert retry.sheet == "Statement"
+        assert retry.format_name is None
+        assert "--sheet Statement" in " ".join(retry.cli_args())
+
+    def test_the_retry_keeps_the_number_format_the_stale_format_declared(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The printed retry must not silently re-detect the number format.
+
+        Every other fixture in this module uses ``number_format="us"`` — the
+        default a dropped override also falls back to — so a retry that
+        carried nothing at all for this field still looked correct. A format
+        declaring a non-default convention (``european``: comma decimal,
+        no caller ``--number-format``) exposes the gap: the retry must carry
+        the format's *own* value, not silently omit it and let the next read
+        auto-detect (and potentially misread decimal separators).
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        # Semicolon-delimited so a European comma decimal in Amount doesn't
+        # also read as a field separator.
+        csv = tmp_path / "stale_skip_number_format.csv"
+        csv.write_text(
+            "Date;Amount;Description\n"
+            "2026-01-05;-4,50;Coffee\n"
+            "2026-01-06;100,00;Payroll\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="stale_skip_number_format",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=";",
+                encoding="utf-8",
+                header_signature=["date", "amount", "description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="european",
+                skip_rows=1,
+            ),
+            actor="test",
+        )
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_number_format",
+                save_format=False,
+            )
+
+        outcome = exc_info.value.outcome
+        assert outcome.reason == "header_row_consumed"
+        retry = outcome.retry_read_options
+        assert retry is not None
+        # The caller passed no --number-format; this value can only have come
+        # from the format. Dropping it is the defect this test exists to catch.
+        assert retry.number_format == "european"
+        assert retry.format_name is None
+        assert "--number-format european" in " ".join(retry.cli_args())
+
     def test_an_override_cannot_resolve_an_unreadable_date_column(
         self, db: Database
     ) -> None:
@@ -2517,7 +3025,12 @@ class TestTabularConfirmationFlow:
         db: Database,
         caplog: LogCaptureFixture,
     ) -> None:
-        """Sign-convention warning still fires when sign is ambiguous (confirm=True path)."""
+        """Sign-convention record still fires when sign is ambiguous (confirm=True path).
+
+        Downgraded from WARNING to INFO: `result.sign_assumed` is now the
+        user-facing notice (the CLI renders it), so this is a file-log record,
+        not a second console warning duplicating that fact.
+        """
         from moneybin.services.import_service import ImportService
 
         high_ambig = _make_mapping_result(
@@ -2528,9 +3041,9 @@ class TestTabularConfirmationFlow:
                 "moneybin.extractors.tabular.column_mapper.map_columns",
                 return_value=high_ambig,
             ),
-            caplog.at_level("WARNING"),
+            caplog.at_level("INFO"),
         ):
-            ImportService(db).import_file(
+            result = ImportService(db).import_file(
                 _STANDARD_CSV,
                 account_name="test",
                 account_bindings=_BIND_TEST_ACCOUNT,
@@ -2541,6 +3054,7 @@ class TestTabularConfirmationFlow:
             "sign convention" in caplog.text.lower()
             or "ambiguous" in caplog.text.lower()
         )
+        assert result.sign_assumed == "negative_is_expense"
 
     def test_agent_cannot_confirm_an_inferred_credit_card_inversion(
         self, db: Database
@@ -2791,7 +3305,7 @@ class TestTabularConfirmationFlow:
 
         assert exc.value.code == "import_invalid_sign_convention"
         assert "--sign negative_is_expense" in exc.value.message
-        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
 
     @pytest.mark.parametrize("sign", ["negative_is_expense", "negative_is_income"])
@@ -2837,7 +3351,7 @@ class TestTabularConfirmationFlow:
 
         assert exc.value.code == "import_invalid_sign_convention"
         assert "--sign split_debit_credit" in exc.value.message
-        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
 
     @pytest.mark.parametrize(
@@ -2912,7 +3426,7 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 1
         log_row = db.execute(
-            "SELECT status, rows_imported, rows_rejected FROM raw.import_log "
+            "SELECT status, rows_imported, rows_rejected FROM app.import_log "
             "WHERE import_id = ?",
             [result.import_id],
         ).fetchone()

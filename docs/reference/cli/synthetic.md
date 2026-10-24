@@ -27,7 +27,7 @@ Usage: `moneybin synthetic generate [OPTIONS]`
 | `--persona` | text |  | Required. Persona to generate (basic, family, freelancer, international) |
 | `--profile` | text |  | Target profile name (auto-derived from persona) |
 | `--years` | int |  | Number of years of history |
-| `--seed` | int (≥ 1, ≤ 9999) |  | Seed for deterministic output (random if omitted) |
+| `--seed` | int (≥ 1, ≤ 9999) |  | Seed for deterministic output |
 | `--skip-transform` | flag |  | Skip running transforms after generation |
 
 ## moneybin synthetic reset

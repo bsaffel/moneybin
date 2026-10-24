@@ -111,7 +111,7 @@ The only genuinely new code is **PDF → rows extraction + the routing decision.
 
 ### Operational
 
-17. **Reversible imports.** PDF imports are logged to `raw.import_log` (each import gets an `import_id`) and are undoable, identical to tabular and OFX imports.
+17. **Reversible imports.** PDF imports are logged to `app.import_log` (each import gets an `import_id`) and are undoable, identical to tabular and OFX imports.
 18. **Inbox support.** PDFs dropped in the watched inbox folder import via the existing inbox flow; success/failure routing and YAML error sidecars are reused. (The inbox already references PDF in its messaging.) A PDF needing the bridge in a non-interactive inbox drain is routed to `failed/` with a "needs extraction" sidecar rather than blocking.
 19. **No silent failure.** Every import produces a visible outcome — loaded (to core or seed), pending-vetting, or declined — never "imported but wrong."
 19a. **Bounded MCP preview snapshots.** `import_preview` refuses a PDF larger
@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS raw.pdf_seeds (
     data JSON NOT NULL,            -- Extracted row as a JSON object: field-name -> value
     source_file VARCHAR NOT NULL,  -- Original filename (informational; basename only, no path)
     page INTEGER,                  -- Source page number (informational)
-    import_id VARCHAR NOT NULL,    -- Import that wrote this row (FK to raw.import_log; reversibility)
+    import_id VARCHAR NOT NULL,    -- Import that wrote this row (FK to app.import_log; reversibility)
     loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- First observed; does not change on re-import
     PRIMARY KEY (alias, row_hash)
 );
@@ -186,8 +186,8 @@ CREATE TABLE IF NOT EXISTS app.pdf_formats (
 
 ### Reused
 
-- `raw.tabular_transactions` — transaction-shaped rows land here with `source_type='pdf'`. **No migration needed**: `source_type` is an unconstrained `VARCHAR`; only the value-list comments in `raw_import_log.sql` and `.claude/rules/database.md` get `'pdf'` appended.
-- `raw.import_log` — reversibility (each import gets an `import_id`).
+- `raw.tabular_transactions` — transaction-shaped rows land here with `source_type='pdf'`. **No migration needed**: `source_type` is an unconstrained `VARCHAR`; only the value-list comments in `app_import_log.sql` and `.claude/rules/database.md` get `'pdf'` appended.
+- `app.import_log` — reversibility (each import gets an `import_id`).
 - `app.audit_log` — `app.pdf_formats` mutations route through a `PdfFormatsRepo` emitting a paired audit row (Invariant 10); also holds recipe-version history for undo (Req 9a / Invariant 11).
 - `moneybin://schema` — `raw.pdf_<alias>` seed views surface here with a `pdf-seed` origin marker.
 - *Deferred:* `app.ai_consent_grants` is **not** used in v1 (the bridge needs no per-backend consent grant); it attaches to the future in-process cloud rung.
@@ -293,7 +293,7 @@ Phase 1 (shipped) and Phase 2 (next) are interleaved here so the layout reads as
 - `src/moneybin/mcp/tools/import_tools.py` — extend `import_preview` for the PDF bridge payload (request out); register the import-family `import_confirm` tool if `smart-import-confirmation.md` hasn't already (vetted recipe + rows in).
 - `docs/specs/moneybin-mcp.md` + `docs/specs/moneybin-capabilities.md` — record the `import_confirm` branch and `import_preview`'s live staged-write contract: dynamic file-derived classification, maximum critical sensitivity, changed escalation response, and audit side effect.
 - `moneybin://schema` provider — surface `raw.pdf_<alias>` views with a `pdf-seed` marker.
-- `src/moneybin/sql/schema/raw_import_log.sql` + `.claude/rules/database.md` — append `pdf` to the `source_type` value-list comments.
+- `src/moneybin/sql/schema/app_import_log.sql` + `.claude/rules/database.md` — append `pdf` to the `source_type` value-list comments.
 - `docs/specs/privacy-and-ai-trust.md` — replace the parsing "redacted preview" promise with the bridge-transparency model (Requirements 14–16). **Lands with the implementation that introduces the egress path (Phase 3/4), not in this spec-design PR** — until then the two specs are transiently inconsistent on the parsing-redaction promise; this spec is the authority, and `privacy-and-ai-trust.md` catches up when the code ships.
 
 ### Key Decisions
@@ -349,7 +349,7 @@ Generate native-text PDF fixtures from existing synthetic personas: a checking s
 - **`camelot`** — optional, ruled-table extraction; prefer its `stream` flavor to avoid the `ghostscript` system dep. Optional extra.
 - **No LLM SDK, no `ollama`, no `AIBackend`** in v1 — the bridge is the driving agent, reached through the existing MCP/CLI export-apply seam.
 - **No `pytesseract` / `poppler` / `pdf2image`** in v1 (the deps #186 removed stay removed).
-- **Prerequisites (all shipped):** `raw.import_log`, the tabular pipeline + `ingest_dataframe`, the `app.audit_log` repo pattern, the import workflow, and the gsheet `generate_seed_view_sql` (to be lifted).
+- **Prerequisites (all shipped):** `app.import_log`, the tabular pipeline + `ingest_dataframe`, the `app.audit_log` repo pattern, the import workflow, and the gsheet `generate_seed_view_sql` (to be lifted).
 
 ## Out of Scope
 

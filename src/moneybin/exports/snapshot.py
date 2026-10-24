@@ -152,12 +152,12 @@ class PreparedExport:
 
     @property
     def data_dictionary(self) -> dict[str, object]:
-        """Return a fresh JSON-safe standalone data-dictionary receipt."""
+        """A fresh JSON-safe standalone data-dictionary receipt."""
         return cast(dict[str, object], _json_safe(self._data_dictionary))
 
     @property
     def manifest(self) -> dict[str, object]:
-        """Return the JSON-safe receipt for this prepared snapshot."""
+        """The JSON-safe receipt for this prepared snapshot."""
         return {
             "artifact_version": self.artifact_version,
             "export_id": self.export_id,

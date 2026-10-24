@@ -120,7 +120,7 @@ class TestImportOFXBatchLifecycle:
         ``SHAREDFITID999`` row in raw (the surviving half of the dropped pair);
         that pre-fix state is simulated here by seeding the plain row directly,
         so the single ``import_file`` call below proceeds without needing the
-        ``force`` gate or a prior ``raw.import_log`` row. Importing the file
+        ``force`` gate or a prior ``app.import_log`` row. Importing the file
         post-fix emits two content-suffixed rows with new primary keys; because
         the OFX write path upserts by PK (``on_conflict="upsert"``), it inserts
         them and leaves the stale plain row untouched — so the surviving
@@ -288,9 +288,9 @@ class TestImportOFXMidLoadFailure:
         # The failed batch must report what it actually wrote (accounts
         # survived the failure), never a hardcoded zero that discards real
         # partial progress. get_import_history() doesn't project rows_total,
-        # so read raw.import_log directly for both.
+        # so read app.import_log directly for both.
         failed = db.execute(
-            "SELECT rows_total, rows_imported FROM raw.import_log "
+            "SELECT rows_total, rows_imported FROM app.import_log "
             "WHERE source_type = 'ofx' AND status = 'failed'"
         ).fetchall()
         assert len(failed) == 1
@@ -350,7 +350,7 @@ class TestImportOFXRevertPreservesSameInstitutionSibling:
 
         # The FIRST import must still be 'complete' ...
         first_status = db.execute(
-            "SELECT status FROM raw.import_log WHERE import_id = ?",
+            "SELECT status FROM app.import_log WHERE import_id = ?",
             [first_import_id],
         ).fetchone()
         assert first_status is not None

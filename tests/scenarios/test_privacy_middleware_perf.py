@@ -10,8 +10,16 @@ applicable, envelope handling, and the privacy audit write.
 **Budgets:**
 
 - p50 latency increase: ≤ 50 ms per flow
-- p99 latency increase: ≤ 200 ms per flow
+- p95 latency increase: ≤ 200 ms per flow
 - Aggregate regression across the sums of five per-flow p50 values: ≤ 20 %
+
+The tail budget is asserted at p95, not p99. With ``ITERATIONS = 30``,
+``percentile(0.99)`` indexes ``round(0.99 × 29) = 29`` — the single slowest
+sample — so one scheduler stall or GC pause in either path decided the
+assertion, and the measured delta changed sign between runs of the same flow
+(−84 to +84 ms, PR #666). p95 indexes the second-slowest sample. The 200 ms cap
+is unchanged; p99 is still measured and logged. Changed with explicit user
+override on 2026-10-14.
 
 The tests carry ``scenarios`` and ``perf`` markers. A dedicated CI job runs
 them serially against the family persona built by this module's fixture;
@@ -53,7 +61,6 @@ from moneybin.mcp.tools.transactions import transactions_get
 from moneybin.privacy import classified_envelope
 from moneybin.privacy.payloads.accounts import AccountsCoarsePayload
 from moneybin.privacy.payloads.budget import BudgetStatusPayload
-from moneybin.privacy.payloads.networth import NetWorthHistoryPayload
 from moneybin.privacy.payloads.transactions import TransactionGetPayload
 from moneybin.privacy.redaction import redact_records, redact_typed
 from moneybin.privacy.sql_lineage import (
@@ -65,7 +72,6 @@ from moneybin.privacy.sql_lineage import (
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework import execute as report_execute
 from moneybin.services.budget_service import BudgetService
-from moneybin.services.networth_service import NetworthService
 from tests.scenarios._perf_runner import FlowResult, measure_flow
 from tests.scenarios._runner.loader import Scenario, SetupSpec
 from tests.scenarios._runner.runner import scenario_env
@@ -81,11 +87,10 @@ logger = logging.getLogger(__name__)
 
 ITERATIONS = 30
 P50_BUDGET_MS = 50.0
-P99_BUDGET_MS = 200.0
+P95_BUDGET_MS = 200.0  # tail budget; p95, not p99 — see the module docstring
 TOTAL_REGRESSION_PCT = 20.0
 
-# 12-month window for networth_history matches the default-window used by
-# reports_networth_history when called without dates.
+# 12-month window for the net-worth currencies flow's `from_date`/`to_date`.
 _HISTORY_FROM = date.today() - timedelta(days=365)
 _HISTORY_TO = date.today()
 _PERSONA_SETUP_HINT = (
@@ -125,7 +130,9 @@ async def _accounts_perf_call() -> ResponseEnvelope[AccountsCoarsePayload]:
 
 
 def _log_timing_summary(
-    timing_summary: list[tuple[str, float, float, float, float, float, float]],
+    timing_summary: list[
+        tuple[str, float, float, float, float, float, float, float, float]
+    ],
     *,
     total_raw_p50: float,
     total_protected_p50: float,
@@ -280,17 +287,33 @@ def test_privacy_middleware_within_budget() -> None:
     def _budget_protected() -> ResponseEnvelope[BudgetStatusPayload]:
         return _budget_raw()
 
-    def _networth_raw() -> ResponseEnvelope[NetWorthHistoryPayload]:
-        with get_database(read_only=True) as db:
-            return build_envelope(
-                data=NetworthService(db).history(
-                    from_date=_HISTORY_FROM, to_date=_HISTORY_TO
+    # core:net_worth_currencies is, like spending, a dynamic `reports()` route:
+    # its raw path bypasses only terminal record redaction and the decorator's
+    # audit write, and protected restores the production callables.
+    def _net_worth_call(
+        redactor: Callable[..., list[dict[str, Any]]],
+        audit_writer: Callable[..., None],
+    ) -> ResponseEnvelope[object]:
+        with (
+            patch.object(report_execute, "redact_records", redactor),
+            patch.object(mcp_decorator, "write_privacy_event", audit_writer),
+        ):
+            return asyncio.run(
+                reports(
+                    report_id="core:net_worth_currencies",
+                    parameters={
+                        "from_date": _HISTORY_FROM.isoformat(),
+                        "to_date": _HISTORY_TO.isoformat(),
+                    },
+                    limit=1000,
                 )
             )
 
-    @mcp_tool()
-    def _networth_protected() -> ResponseEnvelope[NetWorthHistoryPayload]:
-        return _networth_raw()
+    def _net_worth_raw() -> ResponseEnvelope[object]:
+        return _net_worth_call(_identity_report_redaction, _skip_privacy_audit)
+
+    def _net_worth_protected() -> ResponseEnvelope[object]:
+        return _net_worth_call(report_redact_records, write_privacy_event)
 
     def _assert_static_protection(
         raw: ResponseEnvelope[Any], protected: ResponseEnvelope[Any]
@@ -358,9 +381,15 @@ def test_privacy_middleware_within_budget() -> None:
     budget_protected = asyncio.run(_budget_protected())
     _assert_static_protection(budget_raw, budget_protected)
 
-    networth_raw = _networth_raw()
-    networth_protected = asyncio.run(_networth_protected())
-    _assert_static_protection(networth_raw, networth_protected)
+    net_worth_audit_before = _audit_event_count()
+    net_worth_raw = _net_worth_raw()
+    net_worth_protected = _net_worth_protected()
+    assert net_worth_raw.error is None
+    assert net_worth_protected.error is None
+    # core:net_worth_currencies contains no currently masked classes, so its
+    # data is equal after terminal redaction — same reasoning as spending below.
+    assert net_worth_protected.data == net_worth_raw.data
+    assert _audit_event_count() == net_worth_audit_before + 1
 
     spending_audit_before = _audit_event_count()
     spending_raw = _spending_raw()
@@ -397,9 +426,9 @@ def test_privacy_middleware_within_budget() -> None:
                 lambda: _run_static_raw(runner, _budget_raw),
                 lambda: _require_protected_success(runner.run(_budget_protected())),
             ),
-            "reports_networth_history": (
-                lambda: _run_static_raw(runner, _networth_raw),
-                lambda: _require_protected_success(runner.run(_networth_protected())),
+            "reports_net_worth_currencies": (
+                _net_worth_raw,
+                lambda: _require_protected_success(_net_worth_protected()),
             ),
         }
         for name, (raw, protected) in flows.items():
@@ -407,8 +436,8 @@ def test_privacy_middleware_within_budget() -> None:
                 name, raw, protected
             )
             d_p50 = protected_result.p50_ms - raw_result.p50_ms
-            d_p99 = protected_result.p99_ms - raw_result.p99_ms
-            measurements.append((name, raw_result, protected_result, d_p50, d_p99))
+            d_p95 = protected_result.p95_ms - raw_result.p95_ms
+            measurements.append((name, raw_result, protected_result, d_p50, d_p95))
             total_raw_p50 += raw_result.p50_ms
             total_protected_p50 += protected_result.p50_ms
 
@@ -421,13 +450,15 @@ def test_privacy_middleware_within_budget() -> None:
         (
             name,
             raw.p50_ms,
+            raw.p95_ms,
             raw.p99_ms,
             protected.p50_ms,
+            protected.p95_ms,
             protected.p99_ms,
             p50_delta,
-            p99_delta,
+            p95_delta,
         )
-        for name, raw, protected, p50_delta, p99_delta in measurements
+        for name, raw, protected, p50_delta, p95_delta in measurements
     ]
     _log_timing_summary(
         timing_summary,
@@ -435,20 +466,20 @@ def test_privacy_middleware_within_budget() -> None:
         total_protected_p50=total_protected_p50,
         total_pct=total_pct,
     )
-    for name, raw_result, protected_result, d_p50, d_p99 in measurements:
+    for name, raw_result, protected_result, d_p50, d_p95 in measurements:
         assert d_p50 <= P50_BUDGET_MS, (
             f"{name}: protected egress p50 overhead {d_p50:+.2f}ms exceeds "
             f"cap {P50_BUDGET_MS}ms (raw {raw_result.p50_ms:.2f}ms, "
             f"protected {protected_result.p50_ms:.2f}ms)"
         )
-        assert d_p99 <= P99_BUDGET_MS, (
-            f"{name}: protected egress p99 overhead {d_p99:+.2f}ms exceeds "
-            f"cap {P99_BUDGET_MS}ms (raw {raw_result.p99_ms:.2f}ms, "
-            f"protected {protected_result.p99_ms:.2f}ms)"
+        assert d_p95 <= P95_BUDGET_MS, (
+            f"{name}: protected egress p95 overhead {d_p95:+.2f}ms exceeds "
+            f"cap {P95_BUDGET_MS}ms (raw {raw_result.p95_ms:.2f}ms, "
+            f"protected {protected_result.p95_ms:.2f}ms)"
         )
     delta_summary = [
-        (name, p50_delta, p99_delta)
-        for name, _, _, p50_delta, p99_delta in measurements
+        (name, p50_delta, p95_delta)
+        for name, _, _, p50_delta, p95_delta in measurements
     ]
     assert total_pct <= TOTAL_REGRESSION_PCT, (
         f"Sum of per-flow p50 protected-egress overhead {total_pct:+.1f}% "
@@ -510,13 +541,13 @@ def test_sql_query_lineage_overhead_within_budget() -> None:
     raw = measure_flow("sql_query_raw", _raw, iterations=ITERATIONS)
     lineage = measure_flow("sql_query_lineage", _with_lineage, iterations=ITERATIONS)
     overhead_p50 = lineage.p50_ms - raw.p50_ms
-    overhead_p99 = lineage.p99_ms - raw.p99_ms
+    overhead_p95 = lineage.p95_ms - raw.p95_ms
 
     assert overhead_p50 <= P50_BUDGET_MS, (
         f"sql_query lineage overhead p50 {overhead_p50:+.2f}ms exceeds cap "
         f"{P50_BUDGET_MS}ms (raw {raw.p50_ms:.2f}ms, lineage {lineage.p50_ms:.2f}ms)"
     )
-    assert overhead_p99 <= P99_BUDGET_MS, (
-        f"sql_query lineage overhead p99 {overhead_p99:+.2f}ms exceeds cap "
-        f"{P99_BUDGET_MS}ms (raw {raw.p99_ms:.2f}ms, lineage {lineage.p99_ms:.2f}ms)"
+    assert overhead_p95 <= P95_BUDGET_MS, (
+        f"sql_query lineage overhead p95 {overhead_p95:+.2f}ms exceeds cap "
+        f"{P95_BUDGET_MS}ms (raw {raw.p95_ms:.2f}ms, lineage {lineage.p95_ms:.2f}ms)"
     )

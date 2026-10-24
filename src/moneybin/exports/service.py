@@ -669,11 +669,7 @@ class ExportService:
             tuple(record[name] for name in execution.columns)
             for record in execution.records
         )
-        source = (
-            _report_spec_source(spec)
-            if isinstance(spec, ReportSpec)
-            else _service_report_source(spec.name, execution.provenance)
-        )
+        source = _report_spec_source(spec)
         table = PreparedTable(
             name=execution.report_id,
             source=source,
@@ -682,9 +678,8 @@ class ExportService:
             checksum_sha256=prepared_table_checksum(columns, rows),
         )
         status = catalog.status(execution.report_id)
-        parameters = spec.params if isinstance(spec, ReportSpec) else spec.parameters
         parameter_classes_by_name = {
-            parameter.name: parameter.data_class for parameter in parameters
+            parameter.name: parameter.data_class for parameter in spec.params
         }
         published_parameters = _published_names(
             tuple(parameter_classes_by_name),
@@ -815,22 +810,12 @@ def _report_spec_source(spec: ReportSpec) -> TableRef | None:
 
     A dynamic report's ``view`` is ``None``: it is evaluated at query time over
     whatever ``core``/``app`` tables its SQL names, so no single source view
-    exists. Pass that through rather than synthesizing one — the pre-existing
-    ``_service_report_source`` fallback ends at ``TableRef("reports", name)``,
-    which here would write a view that does not exist into the manifest, and
-    provenance that cannot be checked is worse than none. Nothing is lost: the
-    complete read-table set is carried by the receipt's ``lineage``.
+    exists. Pass that through rather than synthesizing one — writing a view
+    that does not exist into the manifest would make provenance that cannot be
+    checked, which is worse than none. Nothing is lost: the complete
+    read-table set is carried by the receipt's ``lineage``.
     """
     return spec.view
-
-
-def _service_report_source(name: str, provenance: tuple[str, ...]) -> TableRef:
-    """Return the service report's declared report-level provenance source."""
-    if provenance:
-        parts = provenance[0].split(".", maxsplit=1)
-        if len(parts) == 2:
-            return TableRef(parts[0], parts[1])
-    return TableRef("reports", name)
 
 
 def _destination_validation_reasons(

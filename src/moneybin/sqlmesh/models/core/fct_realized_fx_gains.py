@@ -22,11 +22,18 @@ from moneybin.metrics.registry import set_fx_accounting_rows
     "core.fct_realized_fx_gains",
     kind="FULL",
     depends_on={
+        "app.audit_log",
+        "app.exchange_rate_overrides",
+        "app.match_decisions",
+        "app.profile_settings",
         "core.bridge_currency_conversions",
         "core.bridge_transfers",
         "core.fct_investment_transactions",
         "core.fct_transactions",
+        "prep.int_accounts__merged",
         "prep.int_transactions__matched",
+        "prep.int_transactions__merged",
+        "raw.exchange_rates",
     },
     columns={
         "realized_fx_gain_id": "VARCHAR",
@@ -113,6 +120,6 @@ def execute(
         pa.field("valuation_rate_date", pa.date32()),
         pa.field("updated_at", pa.timestamp("us")),
     ])
-    yield pa.Table.from_pylist([asdict(row) for row in rows], schema=schema).to_pandas(
+    yield pa.Table.from_pylist([asdict(row) for row in rows], schema=schema).to_pandas(  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list
         types_mapper=pd.ArrowDtype
     )

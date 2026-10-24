@@ -47,8 +47,9 @@ an explicit migration or deprecation path; record the rationale in an
 ADR if it meets the bar in
 [`.claude/references/design-principles-depth.md`](../references/design-principles-depth.md).
 
-**Launch trigger.** Lock at the earlier of: M3E hosted launch, or the
-first tagged release adopted by any non-author user.
+**Launch trigger.** Lock at Early Access. Public Beta testers accept
+breaking changes, so a Beta tag does not lock a contract, even one a
+non-author has adopted. Release definitions: `CONTEXT.md` → Releases.
 
 ### Internal abstractions (two-way doors)
 

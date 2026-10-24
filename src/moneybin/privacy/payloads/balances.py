@@ -26,7 +26,8 @@ class BalanceObservationRow:
 
     account_id: Annotated[str, DataClass.RECORD_ID]
     balance_date: Annotated[date, DataClass.TXN_DATE]
-    balance: Annotated[Decimal, DataClass.BALANCE]
+    # NULL when the account holds value but has no balance observation.
+    balance: Annotated[Decimal | None, DataClass.BALANCE]
     is_observed: Annotated[bool, DataClass.TXN_TYPE]
     observation_source: Annotated[str | None, DataClass.TXN_TYPE]
     reconciliation_delta: Annotated[Decimal | None, DataClass.BALANCE]

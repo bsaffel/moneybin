@@ -1,0 +1,1 @@
+The CLI now runs on typer 0.27, which writes positional arguments in command help as `{account_id}` rather than `ACCOUNT_ID` — `moneybin accounts get [OPTIONS] {account_id}` — and the generated CLI reference follows it. Every command, argument, and option is unchanged; only how the help spells argument names moved.

@@ -13,7 +13,8 @@ Tier derivation summary:
   - ``SyncLinkPayload``               → Tier.MEDIUM (link_url = DESCRIPTION —
                                         link is a sensitive one-time credential)
   - ``SyncLinkStatusPayload``         → Tier.MEDIUM (error = DESCRIPTION)
-  - ``SyncDisconnectPayload``         → Tier.LOW (INSTITUTION + TXN_TYPE only)
+  - ``SyncDisconnectPayload``         → Tier.LOW (INSTITUTION + TXN_TYPE +
+                                        RECORD_ID only)
   - ``SyncSchedulePlaceholderPayload``→ Tier.LOW (stub; not-implemented payloads)
 """
 
@@ -96,6 +97,9 @@ class SyncPullPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
+    # Securities and investment transactions (like accounts and balances) count
+    # rows new or changed; holdings and lots count those that differ from the
+    # item's previous snapshot.
     securities_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     investment_transactions_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     holdings_loaded: Annotated[int, DataClass.AGGREGATE] = 0
@@ -131,6 +135,7 @@ class SyncConnectionRow:
     provider: Annotated[str, DataClass.INSTITUTION]
     status: Annotated[str, DataClass.TXN_TYPE]
     last_sync: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    created_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
     error_code: Annotated[str | None, DataClass.TXN_TYPE]
     guidance: Annotated[str | None, DataClass.DESCRIPTION]
 
@@ -259,22 +264,40 @@ SyncStatusCoarsePayload = Annotated[
 class SyncDisconnectPayload:
     """Payload for ``sync_disconnect`` — confirmation of disconnection.
 
-    Both fields are Tier.LOW: ``status`` is a fixed string (TXN_TYPE),
-    ``institution`` is caller-supplied institution name (INSTITUTION).
+    ``status`` is a fixed string (TXN_TYPE), ``institution`` is the
+    caller-supplied institution name (INSTITUTION), ``None`` when the
+    disconnected connection has no name, and ``provider_item_id`` identifies
+    exactly which connection was removed (RECORD_ID) — needed because two
+    same-named connections (e.g. after a relink) share the same
+    ``institution`` value.
     """
 
     status: Annotated[str, DataClass.TXN_TYPE]
-    institution: Annotated[str, DataClass.INSTITUTION]
+    institution: Annotated[str | None, DataClass.INSTITUTION]
+    provider_item_id: Annotated[str, DataClass.RECORD_ID]
+    purged: Annotated[bool, DataClass.TXN_TYPE] = False
+    rows_deleted: Annotated[int, DataClass.AGGREGATE] = 0
+    account_links_reversed: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 class SyncInstitutionDisconnectView(BaseModel):
-    """Confirmation that one institution was disconnected."""
+    """Confirmation that one institution was disconnected, optionally purged.
+
+    ``purged`` carries the local half: with ``state="absent"`` every locally
+    pulled row of the item was deleted and ``rows_deleted`` counts them.
+    ``institution`` is ``None`` when the server no longer listed the item and
+    only the local rows were removed.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
-    status: Annotated[Literal["disconnected"], DataClass.TXN_TYPE]
-    institution: Annotated[str, DataClass.INSTITUTION]
+    status: Annotated[Literal["disconnected", "purged"], DataClass.TXN_TYPE]
+    institution: Annotated[str | None, DataClass.INSTITUTION]
+    provider_item_id: Annotated[str, DataClass.RECORD_ID]
+    purged: Annotated[bool, DataClass.TXN_TYPE] = False
+    rows_deleted: Annotated[int, DataClass.AGGREGATE] = 0
+    account_links_reversed: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 class SyncLogoutView(BaseModel):

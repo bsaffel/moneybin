@@ -1,10 +1,9 @@
 # tests/moneybin/test_mcp/test_v1_tools.py
 """Tests for the transactions_categorize_pending MCP tool.
 
-Stubs ``core.uncategorized_queue`` directly (the SQLMesh layer is
-exercised in scenario tests) and exercises the MCP tool wrapper against
-that stub to confirm parameter validation, SQL composition, and
-envelope shape.
+Seeds ``core.fct_transactions`` directly (the SQLMesh layer is exercised in
+integration and scenario tests) and exercises the MCP tool wrapper against it
+to confirm parameter validation, SQL composition, and envelope shape.
 """
 
 from __future__ import annotations
@@ -19,12 +18,16 @@ from moneybin.errors import UserError
 from moneybin.mcp.tools.transactions_categorize import (
     transactions_categorize_pending,
 )
+from tests.moneybin.db_helpers import (
+    insert_three_pending_transactions,
+    simulate_pre_refresh_fct_transactions,
+)
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
 class TestCategorizePendingGet:
-    """Stubs core.uncategorized_queue; exercises filters + limit.
+    """Seeds three pending transactions; exercises filters + limit.
 
     Covers transactions_categorize_pending (replaced reports_uncategorized).
     """
@@ -32,32 +35,7 @@ class TestCategorizePendingGet:
     @staticmethod
     def _install_view() -> None:
         with get_database(read_only=False) as db:
-            db.conn.execute("""
-                CREATE OR REPLACE VIEW core.uncategorized_queue AS
-                SELECT
-                    'T1' AS transaction_id, 'ACC001' AS account_id,
-                    'Test Bank Checking' AS account_name,
-                    DATE '2026-04-01' AS txn_date,
-                    CAST(-25.00 AS DECIMAL(18,2)) AS amount,
-                    'USD' AS currency_code,
-                    'COFFEE SHOP' AS description,
-                    CAST(NULL AS VARCHAR) AS merchant_id,
-                    'Coffee Shop' AS merchant_normalized,
-                    CAST(39 AS INTEGER) AS age_days,
-                    CAST(975.0 AS DOUBLE) AS priority_score,
-                    'ofx' AS source_type,
-                    CAST(NULL AS VARCHAR) AS source_id
-                UNION ALL SELECT
-                    'T2', 'ACC001', 'Test Bank Checking',
-                    DATE '2026-04-10', CAST(-500.00 AS DECIMAL(18,2)),
-                    'USD', 'BIG EXPENSE', NULL, 'Big Expense',
-                    CAST(30 AS INTEGER), 15000.0, 'ofx', NULL
-                UNION ALL SELECT
-                    'T3', 'ACC002', 'Other Bank Savings',
-                    DATE '2026-04-15', CAST(-5.00 AS DECIMAL(18,2)),
-                    'USD', 'TINY', NULL, 'Tiny',
-                    CAST(25 AS INTEGER), 125.0, 'ofx', NULL
-            """)  # test input, not executing dynamic SQL
+            insert_three_pending_transactions(db)
 
     @pytest.mark.unit
     async def test_returns_all_rows_default_sort_date(self, mcp_db: Path) -> None:
@@ -74,7 +52,7 @@ class TestCategorizePendingGet:
     ) -> None:
         self._install_view()
         parsed = (transactions_categorize_pending(sort="impact")).to_dict()
-        # Impact sort: T2(500*30=15000) > T1(25*39=975) > T3(5*25=125).
+        # Impact sort: ABS(amount) * age_days, so T2 (largest) > T1 > T3 (smallest).
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T2", "T1", "T3"]
 
@@ -111,26 +89,18 @@ class TestCategorizePendingGet:
 
     @pytest.mark.unit
     async def test_account_filter_accepts_display_name(self, mcp_db: Path) -> None:
-        # Install a queue row keyed to A1 and an Alpha→A1 dim_accounts row.
+        # Seed a pending row on A1 and an Alpha→A1 dim_accounts row.
         # The resolver must translate "Alpha" → "A1" before binding to SQL.
         self._install_view()
         self._install_resolver_accounts()
         with get_database(read_only=False) as db:
             db.conn.execute("""
-                CREATE OR REPLACE VIEW core.uncategorized_queue AS
-                SELECT
-                    'TA' AS transaction_id, 'A1' AS account_id,
-                    'Alpha' AS account_name,
-                    DATE '2026-04-20' AS txn_date,
-                    CAST(-10.00 AS DECIMAL(18,2)) AS amount,
-                    'USD' AS currency_code,
-                    'ALPHA TXN' AS description,
-                    CAST(NULL AS VARCHAR) AS merchant_id,
-                    'Alpha Txn' AS merchant_normalized,
-                    CAST(20 AS INTEGER) AS age_days,
-                    CAST(200.0 AS DOUBLE) AS priority_score,
-                    'ofx' AS source_type,
-                    CAST(NULL AS VARCHAR) AS source_id
+                INSERT INTO core.fct_transactions
+                    (transaction_id, account_id, transaction_date, amount,
+                     currency_code, description, merchant_name, source_type,
+                     is_transfer)
+                VALUES ('TA', 'A1', DATE '2026-04-20', -10.00, 'USD',
+                        'ALPHA TXN', 'Alpha Txn', 'ofx', false)
             """)  # test input, not executing dynamic SQL
         parsed = (transactions_categorize_pending(account="Alpha")).to_dict()
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
@@ -157,10 +127,13 @@ class TestCategorizePendingGet:
         assert exc_info.value.code == "account_ambiguous"
 
     @pytest.mark.unit
-    async def test_missing_view_raises_schema_out_of_date(self, mcp_db: Path) -> None:
-        # fct_transactions exists (from conftest) but the queue view does not.
-        # This is the schema-drift case — must surface a structured error
-        # pointing at refresh_run, NOT silently collapse to "no data".
+    async def test_pre_refresh_fact_raises_schema_out_of_date(
+        self, mcp_db: Path
+    ) -> None:
+        # fct_transactions exists but predates is_categorizable: schema drift,
+        # which must surface a refresh_run remediation, not "no data".
+        with get_database(read_only=False) as db:
+            simulate_pre_refresh_fct_transactions(db)
         with pytest.raises(UserError) as exc_info:
             transactions_categorize_pending()
         assert exc_info.value.code == "infra_schema_drift"

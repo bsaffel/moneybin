@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from dataclasses import replace
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 import duckdb
 import pytest
-from pydantic import JsonValue
 from pytest_mock import MockerFixture
 
 import moneybin.reports._framework.catalog as report_catalog
@@ -21,15 +18,10 @@ from moneybin.errors import UserError
 from moneybin.exports.renderers import render_parquet
 from moneybin.exports.service import ExportService
 from moneybin.exports.snapshot import PreparedExport
-from moneybin.privacy.payloads.networth import (
-    NetWorthHistoryPayload,
-    NetWorthHistoryPoint,
-)
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     ReportStatus,
-    ServiceReportSpec,
     report_tier,
 )
 from moneybin.reports._framework.contract import (
@@ -43,12 +35,7 @@ from moneybin.reports._framework.dynamic import (
     DEGRADED_PENDING_DEDUP,
     DEGRADED_STALE_CLASSIFICATION,
 )
-from moneybin.reports._framework.execute import (
-    CatalogReportExecution,
-    build_catalog_execution,
-)
 from moneybin.reports._framework.introspect import build_spec
-from moneybin.reports.service_reports import NETWORTH_HISTORY_REPORT
 from moneybin.services.user_reports_service import UserReportsService
 from moneybin.tables import TableRef
 from tests.moneybin.db_helpers import create_core_tables_raw, seed_pending_dedup_pair
@@ -816,34 +803,22 @@ def test_prepare_report_exports_every_row_without_the_mcp_response_cap(
     db: Database,
 ) -> None:
     """Artifact completeness is independent from interactive response limits."""
-    rows = [{"value": value} for value in range(5)]
 
-    def executor(
-        database: Database,  # service contract handle
-        parameters: Mapping[str, JsonValue],
-        limit: int | None,
-    ) -> CatalogReportExecution:
-        assert limit is None
-        return build_catalog_execution(
-            spec,
-            parameters=parameters,
-            records=rows,
-            columns=["value"],
-            column_types=["BIGINT"],
-            max_rows=limit,
-            sql=None,
+    def runner(database: Database) -> ReportQuery:  # contract handle
+        return ReportQuery(
+            "SELECT * FROM (VALUES (0), (1), (2), (3), (4)) AS t(value)", []
         )
 
-    spec = ServiceReportSpec(
+    spec = ReportSpec(
         report_id="test:complete_export",
         name="complete_export",
         description="Synthetic complete report export.",
-        parameters=(),
+        view=TableRef("reports", "complete_export"),
+        runner=runner,
         columns=(OutputColumn("value", "Value.", DataClass.AGGREGATE),),
         semantics=TEST_SEMANTICS,
         classes={"value": DataClass.AGGREGATE},
         examples=(),
-        executor=executor,
     )
 
     snapshot = ExportService(
@@ -856,6 +831,8 @@ def test_prepare_report_exports_every_row_without_the_mcp_response_cap(
         redaction_mode="redacted",
     )
 
+    # Every row, not just the interactive-response cap's worth — the direct
+    # proof that the export path passed no limit downstream.
     assert snapshot.tables[0].rows == tuple((value,) for value in range(5))
     assert snapshot.manifest["tables"][0]["row_count"] == 5  # type: ignore[index]
 
@@ -888,35 +865,32 @@ def test_prepare_report_uses_catalog_errors_for_invalid_subjects_and_parameters(
     assert exc_info.value.code == code
 
 
-def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
+def test_prepare_report_uses_one_raw_execution_for_each_output_policy(
     db: Database,
 ) -> None:
     calls = 0
 
-    def executor(
-        database: Database,  # service contract handle
-        parameters: Mapping[str, JsonValue],
-        limit: int | None,
-    ) -> CatalogReportExecution:
+    def runner(
+        database: Database,  # contract handle
+        *,
+        account_number: str = "acct_11112222",
+    ) -> ReportQuery:
         nonlocal calls
         calls += 1
-        return build_catalog_execution(
-            spec,
-            parameters=parameters,
-            records=[{"account_number": parameters["account_number"]}],
-            columns=["account_number"],
-            column_types=["VARCHAR"],
-            max_rows=limit,
+        return ReportQuery(
+            "SELECT ? AS account_number",
+            [Binding(account_number, DataClass.ACCOUNT_IDENTIFIER)],
             actions=["reports.inspect"],
             period="all time",
-            sql=None,
         )
 
-    spec = ServiceReportSpec(
+    spec = ReportSpec(
         report_id="test:service_export",
         name="service_export",
-        description="Synthetic service-backed export.",
-        parameters=(
+        description="Synthetic report export.",
+        view=TableRef("reports", "service_export"),
+        runner=runner,
+        params=(
             ParamSpec(
                 "account_number",
                 str,
@@ -936,7 +910,6 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
         semantics=TEST_SEMANTICS,
         classes={"account_number": DataClass.ACCOUNT_IDENTIFIER},
         examples=(),
-        executor=executor,
     )
     service = ExportService(db, report_catalog=ReportCatalog((spec,)))
 
@@ -947,7 +920,6 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
     )
     assert calls == 1
     assert _first_row(redacted)["account_number"] == "****2222"
-    assert redacted.manifest["provenance"]["receipt"]["sql"] is None  # type: ignore[index]
 
     unredacted = service.prepare_report(
         profile="test",
@@ -1012,73 +984,4 @@ def test_a_saved_report_masking_a_numeric_column_still_exports_to_parquet(
 
     assert duckdb.read_parquet(str(rendered.table_files[report_id])).fetchall() == [
         ("*****",)
-    ]
-
-
-def test_networth_history_export_retains_native_values_with_truthful_types(
-    db: Database,
-    mocker: MockerFixture,
-) -> None:
-    history = mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.history",
-        return_value=NetWorthHistoryPayload(
-            points=[
-                NetWorthHistoryPoint(
-                    period="2026-07-01",
-                    currency_code="USD",
-                    net_worth=Decimal("1000.12345678"),
-                    change_abs=Decimal("100.75308643"),
-                    change_pct=Decimal("0.100740651234567890"),
-                )
-            ]
-        ),
-    )
-
-    snapshot = ExportService(
-        db,
-        report_catalog=ReportCatalog((NETWORTH_HISTORY_REPORT,)),
-    ).prepare_report(
-        profile="test",
-        report_id="core:networth_history",
-        report_parameters={
-            "from_date": "2026-07-01",
-            "to_date": "2026-07-31",
-        },
-        redaction_mode="unredacted",
-    )
-
-    history.assert_called_once_with(
-        date(2026, 7, 1),
-        date(2026, 7, 31),
-        interval="monthly",
-    )
-    table = snapshot.tables[0]
-    # Grain-first, and `net_worth` ahead of the two changes measured from it
-    # (`column-ordering.md` Rules B and C: a comparative's base leads its group
-    # even when it is also the headline). Each type is asserted beside its own
-    # column: the executor now keys them by name, and this is what would catch a
-    # regression back to a list bound by position.
-    assert [(column.name, column.duckdb_type) for column in table.columns] == [
-        ("currency_code", "VARCHAR"),
-        ("period", "VARCHAR"),
-        ("net_worth", "DECIMAL(12,8)"),
-        ("change_abs", "DECIMAL(11,8)"),
-        ("change_pct", "DECIMAL(18,18)"),
-    ]
-    assert table.rows == (
-        (
-            "USD",
-            "2026-07-01",
-            Decimal("1000.12345678"),
-            Decimal("100.75308643"),
-            Decimal("0.100740651234567890"),
-        ),
-    )
-    manifest_columns = snapshot.manifest["tables"][0]["columns"]  # type: ignore[index]
-    assert [column["duckdb_type"] for column in manifest_columns] == [  # type: ignore[index]
-        "VARCHAR",
-        "VARCHAR",
-        "DECIMAL(12,8)",
-        "DECIMAL(11,8)",
-        "DECIMAL(18,18)",
     ]

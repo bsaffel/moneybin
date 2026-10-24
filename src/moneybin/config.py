@@ -9,17 +9,31 @@ import math
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast, get_args
 
+import yaml
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     SecretStr,
+    ValidationError,
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    SettingsConfigDict,
+)
+
+from moneybin.crypto_constants import (
+    ARGON2_HASH_LEN,
+    ARGON2_MEMORY_COST,
+    ARGON2_PARALLELISM,
+    ARGON2_TIME_COST,
+)
 
 # Direct-path imports of provider configs. We import from the concrete
 # config modules (not the package ``__init__``) to avoid triggering
@@ -103,6 +117,17 @@ def find_repo_root() -> Path | None:
     return None
 
 
+def running_checkout_root() -> Path | None:
+    """Return the checkout this ``moneybin`` package was loaded from, else None.
+
+    Answers how the package is installed, not where the command runs: a source
+    tree (``<root>/src/moneybin/config.py``) gives its root, while an installed
+    wheel sits under ``site-packages``, which is never a MoneyBin checkout.
+    """
+    root = Path(__file__).resolve().parents[2]
+    return root if _is_moneybin_repo(root) else None
+
+
 def _find_moneybin_repo_ancestor(path: Path) -> Path | None:
     """Return the nearest MoneyBin checkout containing ``path``."""
     for candidate in (path, *path.parents):
@@ -177,16 +202,18 @@ class DatabaseConfig(BaseModel):
     # WARNING: changing these after a database is created locks you out —
     # the derived key will differ and the database will be unreadable.
     argon2_time_cost: int = Field(
-        default=3, ge=1, description="Argon2id time cost (iterations)"
+        default=ARGON2_TIME_COST, ge=1, description="Argon2id time cost (iterations)"
     )
     argon2_memory_cost: int = Field(
-        default=65536, ge=8192, description="Argon2id memory cost in KiB"
+        default=ARGON2_MEMORY_COST, ge=8192, description="Argon2id memory cost in KiB"
     )
     argon2_parallelism: int = Field(
-        default=4, ge=1, description="Argon2id degree of parallelism"
+        default=ARGON2_PARALLELISM, ge=1, description="Argon2id degree of parallelism"
     )
     argon2_hash_len: int = Field(
-        default=32, ge=16, description="Argon2id output hash length in bytes"
+        default=ARGON2_HASH_LEN,
+        ge=16,
+        description="Argon2id output hash length in bytes",
     )
     no_auto_upgrade: bool = Field(
         default=False,
@@ -252,6 +279,17 @@ class LoggingConfig(BaseModel):
     )
     # PII sanitization (SanitizedLogFormatter) is always on and cannot be
     # disabled — it's a security invariant, not a tunable preference.
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _uppercase_level(cls, value: object) -> object:
+        """Accept ``info`` for ``INFO`` from every source.
+
+        A profile config.yaml written before `profile set` validated its values
+        can hold the lowercase form; refusing it here would fail every command
+        with no way back short of editing the file by hand.
+        """
+        return value.upper() if isinstance(value, str) else value
 
 
 class MetricsConfig(BaseModel):
@@ -409,10 +447,6 @@ class SyncConfig(BaseModel):
         default=None,
         description="API key for MoneyBin Sync service (legacy - prefer OAuth)",
     )
-    use_local_server: bool = Field(
-        default=True,
-        description="Use local server code directly (development mode)",
-    )
 
     # OAuth/Auth0 configuration (future)
     oauth_client_id: str | None = Field(
@@ -547,7 +581,8 @@ class ImportSettings(BaseModel):
         default_factory=lambda: Path.home() / "Documents" / "MoneyBin",
         description=(
             "Parent directory for the user-facing import workspace. "
-            "Per-profile subdirs (<inbox_root>/<profile>/{inbox,processed,failed}/) "
+            "Per-profile subdirs "
+            "(<inbox_root>/<profile>/{inbox,processed,failed,pending}/) "
             "are created on first use. Defaults to ~/Documents/MoneyBin."
         ),
     )
@@ -610,6 +645,15 @@ class DoctorSettings(BaseModel):
             "duplicate_account_overlap will judge a pair. Two savings accounts "
             "posting the same interest every month mirror each other perfectly "
             "on one amount; a duplicated account mirrors many."
+        ),
+    )
+    balance_staleness_threshold_days: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "net_worth_stale_balance warns when an account's latest observed "
+            "balance is more than this many days before today. 30 absorbs a "
+            "monthly statement cycle."
         ),
     )
 
@@ -867,6 +911,180 @@ class InvestmentsSettings(BaseModel):
     )
 
 
+class CLISettings(BaseModel):
+    """Persistent preferences for human terminal presentation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    auto_pager: bool = Field(
+        default=True,
+        description="Page eligible interactive text results automatically.",
+    )
+    reduced_motion: bool = Field(
+        default=False,
+        description="Replace animated progress with static stage labels.",
+    )
+    ascii: bool = Field(
+        default=False,
+        description="Use portable ASCII symbols and minus signs in terminal text.",
+    )
+
+
+def settings_section_model(
+    settings_cls: type[BaseSettings], section: str
+) -> type[BaseModel] | None:
+    """The nested model behind a settings section, or None if it is not one.
+
+    Matches the alias too: ``import`` is the section's name in the environment,
+    in dotenv files, and in config.yaml, and ``import_`` only in Python.
+    """
+    field = settings_cls.model_fields.get(section) or next(
+        (f for f in settings_cls.model_fields.values() if f.alias == section), None
+    )
+    annotation = field.annotation if field else None
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def _section_error(
+    section: str, model: type[BaseModel], values: dict[str, Any]
+) -> str | None:
+    """Why the section model rejects ``values``, or None if it accepts them.
+
+    Validates through the model, not the bare annotation, so ``Field`` bounds,
+    field validators, and cross-field validators all apply. Fields absent from
+    ``values`` sit at their defaults; an environment override of one can make a
+    refused combination valid, and refusing it then is the safe error.
+    """
+    try:
+        model.model_validate(values)
+    except ValidationError as e:
+        error = e.errors()[0]
+        where = f"{section}.{error['loc'][0]}" if error["loc"] else section
+        return f"{where}: {error['msg']}"
+    return None
+
+
+def _is_secret(model: type[BaseModel], name: str) -> bool:
+    annotation = model.model_fields[name].annotation
+    return annotation is SecretStr or SecretStr in get_args(annotation)
+
+
+def _secret_refusal(section: str, name: str) -> str:
+    return (
+        f"{section}.{name} is a secret and cannot be stored in config.yaml, "
+        "which is plain text."
+    )
+
+
+def validate_profile_setting(
+    section: str, name: str, raw: str, saved: dict[str, Any] | None = None
+) -> Any:
+    """Return ``raw`` as the value config.yaml should hold for ``section.name``.
+
+    Refuses a key no setting declares, a secret-typed field (the file is plain
+    text), and a value the field's type rejects or that breaks a cross-field
+    rule together with the section's other ``saved`` values.
+    """
+    model = settings_section_model(MoneyBinSettings, section)
+    if model is None:
+        sections = sorted(
+            f.alias or s
+            for s, f in MoneyBinSettings.model_fields.items()
+            if settings_section_model(MoneyBinSettings, s) is not None
+        )
+        raise ValueError(
+            f"Unknown settings section {section!r}. "
+            f"Valid sections: {', '.join(sections)}"
+        )
+    field = model.model_fields.get(name)
+    if field is None:
+        raise ValueError(
+            f"Unknown setting {section}.{name}. "
+            f"Valid fields in {section}: {', '.join(sorted(model.model_fields))}"
+        )
+    if _is_secret(model, name):
+        raise ValueError(_secret_refusal(section, name))
+    others = {k: v for k, v in (saved or {}).items() if k in model.model_fields}
+    rejected = _section_error(section, model, {**others, name: raw})
+    if rejected is not None:
+        raise ValueError(rejected)
+    # Through the model, not the bare annotation, so a field validator's
+    # normalization (``info`` -> ``INFO``) is what the file stores.
+    return model.model_validate({**others, name: raw}).model_dump(mode="json")[name]
+
+
+def _load_profile_config(
+    settings_cls: type[BaseSettings], path: Path
+) -> dict[str, Any]:
+    """Read a profile's config.yaml as a settings source.
+
+    Each declared ``section.field`` value is validated here rather than left to
+    the merged model, because only this function still knows which file a bad
+    value came from. A secret is refused like a bad value: the file is plain
+    text. Undeclared keys are dropped so an older file still loads.
+    """
+    if not path.exists():
+        return {}
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path} is not valid YAML: {e}") from e
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{path} must hold section.field settings as a mapping")
+    values: dict[str, Any] = {}
+    for section, fields in cast(dict[object, object], loaded).items():
+        model = settings_section_model(settings_cls, str(section))
+        if model is None or not isinstance(fields, dict):
+            continue
+        declared = {
+            str(name): value
+            for name, value in cast(dict[object, object], fields).items()
+            if str(name) in model.model_fields
+        }
+        if not declared:
+            continue
+        secret = next((n for n in declared if _is_secret(model, n)), None)
+        if secret is not None:
+            raise ValueError(f"{path}: {_secret_refusal(str(section), secret)}")
+        rejected = _section_error(str(section), model, declared)
+        if rejected is not None:
+            raise ValueError(f"{path}: {rejected}")
+        values[str(section)] = declared
+    return values
+
+
+def _profile_dotenv_source(
+    settings_cls: type[BaseSettings], profile: str
+) -> DotEnvSettingsSource:
+    """The profile's dotenv file, falling back to ``.env`` when it has none."""
+    base = get_base_dir()
+    profile_env_file = base / f".env.{profile}"
+    env_file = profile_env_file if profile_env_file.exists() else base / ".env"
+    return DotEnvSettingsSource(
+        settings_cls, env_file=str(env_file), env_file_encoding="utf-8"
+    )
+
+
+def setting_override(profile: str, section: str, name: str) -> object | None:
+    """What the environment or the profile's dotenv supply for ``section.name``.
+
+    Both outrank config.yaml, so a value saved there while one is present is
+    shadowed. An override set to the empty string still counts.
+    """
+    for source in (
+        EnvSettingsSource(MoneyBinSettings),
+        _profile_dotenv_source(MoneyBinSettings, profile),
+    ):
+        supplied = source().get(section)
+        if isinstance(supplied, dict) and name in supplied:
+            return cast(dict[str, object], supplied)[name]
+    return None
+
+
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.
 
@@ -893,6 +1111,7 @@ class MoneyBinSettings(BaseSettings):
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
     doctor: DoctorSettings = Field(default_factory=DoctorSettings)
     investments: InvestmentsSettings = Field(default_factory=InvestmentsSettings)
+    cli: CLISettings = Field(default_factory=CLISettings)
     categorization: CategorizationSettings = Field(
         default_factory=CategorizationSettings
     )
@@ -1073,25 +1292,9 @@ class MoneyBinSettings(BaseSettings):
         init_dict = init_settings.init_kwargs if init_settings else {}
         profile = init_dict.get("profile", "dev")  # type: ignore[reportUnknownMemberType] — Pydantic init_settings has incomplete type stubs
 
-        # Determine which env file to load based on profile
-        base = get_base_dir()
-        profile_env_file = base / f".env.{profile}"
-        if profile_env_file.exists():
-            env_file = str(profile_env_file)
-        else:
-            # Fall back to .env for backward compatibility
-            env_file = str(base / ".env")
+        custom_dotenv = _profile_dotenv_source(settings_cls, cast(str, profile))
 
-        # Create custom dotenv settings with the profile-specific file
-        from pydantic_settings import DotEnvSettingsSource
-
-        custom_dotenv = DotEnvSettingsSource(
-            settings_cls,
-            env_file=env_file,
-            env_file_encoding="utf-8",
-        )
-
-        profile_dir = get_base_dir() / "profiles" / profile
+        profile_dir: Path = get_base_dir() / "profiles" / cast(str, profile)
 
         def profile_path_defaults() -> dict[str, Any]:
             """Provide profile paths after operator configuration sources."""
@@ -1108,12 +1311,17 @@ class MoneyBinSettings(BaseSettings):
                 "logging": {"log_file_path": profile_dir / "logs" / "moneybin.log"},
             }
 
+        def profile_config() -> dict[str, Any]:
+            """Provide values saved to the profile's config.yaml."""
+            return _load_profile_config(settings_cls, profile_dir / "config.yaml")
+
         # Return sources in priority order: the first source wins.
         return (
             init_settings,
             env_settings,
             custom_dotenv,
             file_secret_settings,
+            profile_config,
             profile_path_defaults,
         )
 

@@ -15,6 +15,7 @@ from typing import Literal, cast
 from moneybin import error_codes
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_errors import SyncAPIError, SyncAuthError
+from moneybin.connectors.sync_models import DeviceAuthorizationChallenge
 from moneybin.errors import UserError
 from moneybin.secrets import SecretNotFoundError, SecretStore, SecretUnavailableError
 
@@ -66,6 +67,10 @@ class _StoredAuthSession:
     poll_interval_seconds: float = 5.0
     next_poll_at: str | None = None
     error_code: str | None = None
+    # The server that issued device_code; None on a session stored before this
+    # was recorded, which is then never polled. A code approved at one server
+    # mints tokens for whoever polls.
+    server_url: str | None = None
 
     def safe_result(self, *, replayed: bool = False) -> SyncAuthResult:
         return SyncAuthResult(
@@ -100,9 +105,12 @@ class SyncAuthService:
         self._lock_path = lock_path
         self._now = now or (lambda: datetime.now(UTC))
 
-    def begin(self) -> SyncAuthResult:
+    def begin(
+        self, *, challenge: DeviceAuthorizationChallenge | None = None
+    ) -> SyncAuthResult:
         """Start a device flow and persist only its secret half in keychain storage."""
-        challenge = self._client.begin_login()
+        if challenge is None:
+            challenge = self._client.begin_login()
         auth_session_id = f"syncauth_{uuid.uuid4().hex}"
         now = self._now()
         expiration = now + timedelta(seconds=challenge.expires_in)
@@ -118,6 +126,7 @@ class SyncAuthService:
             device_code=challenge.device_code.get_secret_value(),
             poll_interval_seconds=challenge.interval,
             next_poll_at=(now + timedelta(seconds=challenge.interval)).isoformat(),
+            server_url=self._client.server_url,
         )
         with self._acquire_lock():
             sessions = self._load_collection()
@@ -173,6 +182,15 @@ class SyncAuthService:
                 raise UserError(
                     "Authentication session cannot be resumed.",
                     code=error_codes.SYNC_AUTH_SESSION_INVALID,
+                )
+            if session.server_url != self._client.server_url:
+                if pruned:
+                    self._save_collection(sessions)
+                raise UserError(
+                    "Authentication session was not started against the current "
+                    "sync server.",
+                    code=error_codes.SYNC_AUTH_SESSION_INVALID,
+                    hint="Start a new login for the current server.",
                 )
             try:
                 polled = self._client.poll_login(session.device_code)

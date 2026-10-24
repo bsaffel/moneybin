@@ -143,9 +143,9 @@ def test_show_reports_the_home_currency_from_the_database(
         result = runner.invoke(app, ["show"])
 
     assert result.exit_code == 0
-    assert "Settings (database):" in caplog.text
-    assert "home_currency: GBP" in caplog.text
-    assert "Config (config.yaml):" in caplog.text
+    assert "Settings (database)" in result.stdout
+    assert "home_currency:" in result.stdout and "GBP" in result.stdout
+    assert "Config (config.yaml)" in result.stdout
 
 
 def test_show_calls_empty_display_targets_not_set(
@@ -158,7 +158,7 @@ def test_show_calls_empty_display_targets_not_set(
         result = runner.invoke(app, ["show"])
 
     assert result.exit_code == 0
-    assert "display_currency_targets: (not set)" in caplog.text
+    assert "display_currency_targets: (not set)" in result.stdout
 
 
 def test_show_renders_populated_display_targets_as_a_human_list(
@@ -173,8 +173,8 @@ def test_show_renders_populated_display_targets_as_a_human_list(
         result = runner.invoke(app, ["show"])
 
     assert result.exit_code == 0
-    assert "display_currency_targets: EUR, GBP" in caplog.text
-    assert "display_currency_targets: ('EUR', 'GBP')" not in caplog.text
+    assert "display_currency_targets: EUR, GBP" in result.stdout
+    assert "display_currency_targets: ('EUR', 'GBP')" not in result.stdout
 
 
 def test_show_survives_a_database_that_predates_the_settings_table(
@@ -195,7 +195,7 @@ def test_show_survives_a_database_that_predates_the_settings_table(
 
     assert result.exit_code == 0
     assert result.exception is None
-    assert "home_currency: (not set)" in caplog.text
+    assert "home_currency:" in result.stdout and "(not set)" in result.stdout
 
 
 def test_managed_key_on_a_non_active_profile_is_refused(
@@ -276,7 +276,7 @@ def test_profile_set_managed_key_works_without_an_explicit_profile(
         result = runner.invoke(root_app, ["profile", "set", "home_currency", "EUR"])
 
     assert result.exit_code == 0, result.output
-    assert opened_under == ["alice"], (
+    assert opened_under == ["alice", "alice"], (
         "the command must activate the profile it resolved before opening its "
         "database; None here is the unclassified RuntimeError users hit"
     )

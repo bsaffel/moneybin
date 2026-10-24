@@ -225,11 +225,11 @@ def test_reimport_does_not_inflate_rows_imported(
     assert result_b.import_id is not None
 
     log_a = db.execute(
-        "SELECT rows_total, rows_imported FROM raw.import_log WHERE import_id = ?",
+        "SELECT rows_total, rows_imported FROM app.import_log WHERE import_id = ?",
         [result_a.import_id],
     ).fetchone()
     log_b = db.execute(
-        "SELECT rows_total, rows_imported FROM raw.import_log WHERE import_id = ?",
+        "SELECT rows_total, rows_imported FROM app.import_log WHERE import_id = ?",
         [result_b.import_id],
     ).fetchone()
     assert log_a is not None
@@ -273,7 +273,7 @@ def test_cleanup_failure_still_finalizes_import_log(
     assert delete_attempts, "cleanup DELETE must have been attempted"
     # The import_log entry was finalized as 'failed' despite the cleanup error.
     log = db.execute(
-        "SELECT status FROM raw.import_log "
+        "SELECT status FROM app.import_log "
         "WHERE source_type = 'pdf' ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
     assert log is not None

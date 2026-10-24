@@ -1,0 +1,1 @@
+A rule proposal's trigger count no longer double-counts a transaction that a dedup merge re-keyed after it was first categorized. Categorizing it again under its new canonical id is now recognized as the same evidence instead of inflating the count toward automatic promotion.

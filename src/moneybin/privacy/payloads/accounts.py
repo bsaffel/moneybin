@@ -81,6 +81,7 @@ class AccountDetail:
     archived: Annotated[bool, DataClass.TXN_TYPE]
     archived_at: Annotated[date | None, DataClass.TXN_DATE]
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
+    investment_source_type: Annotated[str | None, DataClass.TXN_TYPE]
     source_type: Annotated[str | None, DataClass.TXN_TYPE]
 
 
@@ -243,6 +244,7 @@ class AccountSettingsPayload:
     currency_code: Annotated[str | None, DataClass.CURRENCY]
     credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
     default_cost_basis_method: Annotated[str | None, DataClass.TXN_TYPE]
+    investment_source_type: Annotated[str | None, DataClass.TXN_TYPE]
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     archived: Annotated[bool, DataClass.TXN_TYPE]
     archived_at: Annotated[date | None, DataClass.TXN_DATE]

@@ -107,7 +107,7 @@ def _audit_count(db: Database) -> int:
 
 def _import_log_count(db: Database, source_file: Path) -> int:
     row = db.conn.execute(
-        "SELECT COUNT(*) FROM raw.import_log WHERE source_file = ?",
+        "SELECT COUNT(*) FROM app.import_log WHERE source_file = ?",
         [str(source_file)],
     ).fetchone()
     return row[0] if row else 0

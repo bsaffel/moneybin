@@ -78,6 +78,51 @@ def test_explicit_account_name_overrides_saved_format_binding(
     assert keys == {"wf-checking", "wf-savings"}, keys
 
 
+def test_autosaved_format_never_pins_a_header_position(
+    db: Database, tmp_path: Path
+) -> None:
+    """The auto-save omits ``skip_rows`` even for a file with a preamble.
+
+    This pins a DELIBERATE omission, not an oversight: a saved format
+    describes the column layout, not the header's position, so every read
+    re-detects the header fresh. Pinning the position this import detected
+    would instead consume a transaction as the header the first time a
+    future export of this same layout grows one more preamble line.
+    Changing this assertion changes import behavior — see the comment beside
+    the ``TabularFormat(...)`` construction in ``import_service.py``.
+    """
+    from moneybin.services.import_service import ImportService
+
+    csv = tmp_path / "with_preamble.csv"
+    csv.write_text(
+        "Bank Summary Report\n"
+        "Generated: 2026-01-15\n"
+        "Date,Amount,Description\n"
+        "2026-01-05,-4.50,Coffee\n"
+        "2026-01-06,100.00,Payroll\n"
+    )
+    svc = ImportService(db)
+    result = import_answering_gate(
+        svc,
+        csv,
+        account_name="Checking",
+        confirm=True,
+        actor_kind="human",
+        save_format=True,
+        refresh=False,
+    )
+    # Load the two transactions and neither preamble line: this is what makes
+    # the skip_rows assertion below mean something. A stored 0 is also what a
+    # file with no preamble produces, so without proving detection actually
+    # found and skipped two rows, the assertion would pass for the wrong
+    # reason.
+    assert result.transactions == 2, result
+
+    row = db.execute("SELECT skip_rows FROM app.tabular_formats").fetchone()
+    assert row is not None, "expected an auto-saved format row"
+    assert row[0] == 0
+
+
 def test_autosaved_format_records_resolved_institution(
     db: Database, tmp_path: Path
 ) -> None:

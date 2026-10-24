@@ -7,6 +7,7 @@ All delegate to BalanceService — no business logic here.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date as _date
 from decimal import Decimal
 
@@ -15,18 +16,34 @@ import typer
 from moneybin.cli.output import (
     OutputFormat,
     currency_label,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    Money,
+    MoneyWithCurrency,
+    build_rows,
+    build_summary,
+    compose_human_result,
+    format_money,
+)
+from moneybin.cli.utils import (
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
+from moneybin.errors import UserError, error_codes
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
     BalanceObservationListPayload,
+    BalanceObservationRow,
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.balance_service import (
+    BalanceAssertionSnapshot,
     BalanceService,
     balances_display_currency,
 )
@@ -39,6 +56,108 @@ app = typer.Typer(
 )
 
 
+def _assertion_drift_check(
+    expected: BalanceAssertionSnapshot | None,
+) -> Callable[[BalanceAssertionSnapshot | None], None]:
+    """Bind the write to the assertion read before confirmation."""
+
+    def verify(current: BalanceAssertionSnapshot | None) -> None:
+        if current != expected:
+            raise UserError(
+                "The balance assertion changed while confirmation was open. "
+                "Nothing was written. Re-run the command to review it again.",
+                code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+            )
+
+    return verify
+
+
+def _confirm_assertion_change(
+    before: BalanceAssertionSnapshot,
+    *,
+    balance: Decimal | None,
+    notes: str | None,
+    currency_code: str | None,
+) -> None:
+    """Preview replacement or removal after releasing the read connection."""
+    policy = get_terminal_policy()
+    if not policy.interactive:
+        typer.echo(
+            "Changing an existing balance assertion requires an interactive "
+            "terminal. Use --yes after reviewing the assertion.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    currency = currency_label(currency_code)
+    pairs = [
+        ("Account", before.account_id),
+        ("Date", str(before.assertion_date)),
+        (
+            "Before balance",
+            f"{format_money(before.balance, 'balance', minus=policy.minus)} {currency}",
+        ),
+        ("Before notes", repr(before.notes)),
+        (
+            "After balance",
+            "absent"
+            if balance is None
+            else f"{format_money(balance, 'balance', minus=policy.minus)} {currency}",
+        ),
+        ("After notes", "absent" if balance is None else repr(notes)),
+    ]
+    emit_human_result(
+        build_summary(pairs, title="Balance assertion change", terminal=policy),
+        policy=policy,
+        finite_read=False,
+    )
+    question = (
+        "Delete this balance assertion?"
+        if balance is None
+        else "Replace this balance assertion?"
+    )
+    if not typer.confirm(question, default=False, err=True):
+        typer.echo("Cancelled — nothing was changed.", err=True)
+        raise typer.Exit(0)
+
+
+def _emit_observations(
+    observations: list[BalanceObservationRow], *, no_pager: bool, include_account: bool
+) -> None:
+    """Render balance observations as one pageable result with atomic amounts."""
+    policy = get_terminal_policy(no_pager=no_pager)
+    columns = (
+        ["account_id", "date", "balance", "observed", "source", "delta"]
+        if include_account
+        else ["date", "balance", "observed", "source", "delta"]
+    )
+    rows: list[tuple[object, ...]] = []
+    for obs in observations:
+        # format_money passes a non-empty string through, so the absence reads
+        # as a statement rather than the "-" a merely missing amount gets.
+        balance_cell: object = (
+            "no balance recorded"
+            if obs.balance is None
+            else MoneyWithCurrency(obs.balance, currency_label(obs.currency_code))
+        )
+        row = [
+            obs.account_id,
+            obs.balance_date,
+            balance_cell,
+            obs.is_observed,
+            obs.observation_source,
+            obs.reconciliation_delta,
+        ]
+        rows.append(tuple(row if include_account else row[1:]))
+    human = build_rows(
+        columns,
+        rows,
+        money={"balance": Money("balance"), "delta": Money("delta", polarity="income")},
+        total_columns=len(columns),
+        terminal=policy,
+    )
+    emit_human_result(human, policy=policy, finite_read=True, no_pager=no_pager)
+
+
 @app.command("show")
 def accounts_balance_show(
     output: OutputFormat = output_option,
@@ -49,6 +168,7 @@ def accounts_balance_show(
     as_of: str | None = typer.Option(
         None, "--as-of", help="ISO date (YYYY-MM-DD); shows balance on or before"
     ),
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show current or as-of balances per account."""
     account_ids = [account] if account else None
@@ -61,20 +181,14 @@ def accounts_balance_show(
                 account_ids=account_ids, as_of_date=as_of_date
             )
 
-    def _render_text(_: object) -> None:
-        for obs in result.observations:
-            typer.echo(
-                f"  {obs.account_id}  {obs.balance_date}"
-                f"  {obs.balance} {currency_label(obs.currency_code)}"
-                f"  observed={obs.is_observed}  source={obs.observation_source}"
-                f"  delta={obs.reconciliation_delta}"
-            )
-
-    render_or_json(
-        build_envelope(data=result, display_currency=balances_display_currency(result)),
-        output,
-        render_fn=_render_text,
-        cli_actor="accounts_balance_show",
+    envelope = build_envelope(
+        data=result, display_currency=balances_display_currency(result)
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(envelope, output, cli_actor="accounts_balance_show")
+        return
+    _emit_observations(
+        list(result.observations), no_pager=no_pager, include_account=True
     )
 
 
@@ -85,6 +199,7 @@ def accounts_balance_history(
     to_date: str | None = typer.Option(None, "--to"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # history has no informational chatter
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Per-account balance history (daily series)."""
     with handle_cli_errors(
@@ -96,19 +211,14 @@ def accounts_balance_history(
             to_d = _date.fromisoformat(to_date) if to_date else None
             result = BalanceService(db).history(account, from_date=from_d, to_date=to_d)
 
-    def _render_text(_: object) -> None:
-        for obs in result.observations:
-            typer.echo(
-                f"  {obs.balance_date}  {obs.balance} {currency_label(obs.currency_code)}"
-                f"  observed={obs.is_observed}  source={obs.observation_source}"
-                f"  delta={obs.reconciliation_delta}"
-            )
-
-    render_or_json(
-        build_envelope(data=result, display_currency=balances_display_currency(result)),
-        output,
-        render_fn=_render_text,
-        cli_actor="accounts_balance_history",
+    envelope = build_envelope(
+        data=result, display_currency=balances_display_currency(result)
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(envelope, output, cli_actor="accounts_balance_history")
+        return
+    _emit_observations(
+        list(result.observations), no_pager=no_pager, include_account=False
     )
 
 
@@ -119,26 +229,63 @@ def accounts_balance_assert(
     amount: str = typer.Argument(..., help="Balance amount as decimal"),
     notes: str | None = typer.Option(None, "--notes"),
     yes: bool = typer.Option(
-        False, "--yes", "-y"
-    ),  # accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation when replacing an existing assertion",
+    ),
 ) -> None:
     """Assert a balance for an account on a specific date."""
     parsed_date: _date
     with handle_cli_errors():
+        parsed_date = _date.fromisoformat(assertion_date)
+        parsed_amount = Decimal(amount)
+        verify = None
+        if not yes:
+            with get_database(read_only=True) as db:
+                service = BalanceService(db)
+                parsed_amount = service.prepare_assertion_balance(parsed_amount)
+                before = service.get_assertion_snapshot(account_id, parsed_date)
+                row = service.get_assertion(account_id, parsed_date)
+            if before is not None and (
+                before.balance != parsed_amount or before.notes != notes
+            ):
+                _confirm_assertion_change(
+                    before,
+                    balance=parsed_amount,
+                    notes=notes,
+                    currency_code=row.currency_code if row is not None else None,
+                )
+            verify = _assertion_drift_check(before)
         with get_database(read_only=False) as db:
-            parsed_date = _date.fromisoformat(assertion_date)
-            parsed_amount = Decimal(amount)
             result = BalanceService(db).assert_balance(
                 account_id=account_id,
                 assertion_date=parsed_date,
                 balance=parsed_amount,
                 notes=notes,
                 actor="cli",
+                verify=verify,
             )
-    typer.echo(
-        f"✅ Asserted balance for {account_id} on {parsed_date}: "
-        f"{result.assertion.balance} {currency_label(result.assertion.currency_code)}",
-        err=True,
+    policy = get_terminal_policy()
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Account", account_id),
+                    ("Date", str(parsed_date)),
+                    (
+                        "Balance",
+                        f"{format_money(result.assertion.balance, 'balance', minus=policy.minus)} "
+                        f"{currency_label(result.assertion.currency_code)}",
+                    ),
+                ],
+                title="Balance asserted",
+                terminal=policy,
+            )
+        ]),
+        policy=policy,
+        finite_read=False,
+        receipt=True,
     )
 
 
@@ -147,6 +294,7 @@ def accounts_balance_list(
     account: str | None = typer.Option(None, "--account"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list has no informational chatter
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List balance assertions, optionally filtered by account."""
     with handle_cli_errors(
@@ -161,12 +309,29 @@ def accounts_balance_list(
             cli_actor="accounts_balance_list",
         )
         return
-    for assertion in result.assertions:
-        typer.echo(
-            f"  {assertion.account_id}  {assertion.assertion_date}  "
-            f"{assertion.balance} {currency_label(assertion.currency_code)}  "
-            f"notes={assertion.notes}"
+    policy = get_terminal_policy(no_pager=no_pager)
+    rows: list[tuple[object, ...]] = [
+        (
+            assertion.account_id,
+            assertion.assertion_date,
+            MoneyWithCurrency(
+                assertion.balance, currency_label(assertion.currency_code)
+            ),
+            assertion.notes,
         )
+        for assertion in result.assertions
+    ]
+    emit_human_result(
+        build_rows(
+            ["account_id", "date", "balance", "notes"],
+            rows,
+            money={"balance": Money("balance")},
+            terminal=policy,
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("assertion-delete")
@@ -174,18 +339,48 @@ def accounts_balance_assertion_delete(
     account_id: str = typer.Argument(...),
     assertion_date: str = typer.Argument(..., help="ISO date (YYYY-MM-DD)"),
     yes: bool = typer.Option(
-        False, "--yes", "-y"
-    ),  # accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation when deleting an existing assertion",
+    ),
 ) -> None:
     """Delete a balance assertion. Silent no-op if no row exists."""
     parsed_date: _date
     with handle_cli_errors():
+        parsed_date = _date.fromisoformat(assertion_date)
+        verify = None
+        if not yes:
+            with get_database(read_only=True) as db:
+                service = BalanceService(db)
+                before = service.get_assertion_snapshot(account_id, parsed_date)
+                row = service.get_assertion(account_id, parsed_date)
+            if before is not None:
+                _confirm_assertion_change(
+                    before,
+                    balance=None,
+                    notes=None,
+                    currency_code=row.currency_code if row is not None else None,
+                )
+            verify = _assertion_drift_check(before)
         with get_database(read_only=False) as db:
-            parsed_date = _date.fromisoformat(assertion_date)
-            BalanceService(db).delete_assertion(account_id, parsed_date, actor="cli")
-    typer.echo(
-        f"✅ Deleted balance assertion for {account_id} on {parsed_date}",
-        err=True,
+            deleted = BalanceService(db).delete_assertion(
+                account_id, parsed_date, actor="cli", verify=verify
+            )
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Account", account_id), ("Date", str(parsed_date))],
+                title=(
+                    "Balance assertion deleted"
+                    if deleted
+                    else "No balance assertion found"
+                ),
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
 
 
@@ -195,6 +390,7 @@ def accounts_balance_reconcile(
     threshold: str = typer.Option("0.01", "--threshold"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # reconcile has no informational chatter
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show observed balance days with non-zero reconciliation delta."""
     account_ids = [account] if account else None
@@ -216,9 +412,6 @@ def accounts_balance_reconcile(
             cli_actor="accounts_balance_reconcile",
         )
         return
-    for obs in result.observations:
-        typer.echo(
-            f"  {obs.account_id}  {obs.balance_date}"
-            f"  {obs.balance} {currency_label(obs.currency_code)}"
-            f"  source={obs.observation_source}  delta={obs.reconciliation_delta}"
-        )
+    _emit_observations(
+        list(result.observations), no_pager=no_pager, include_account=True
+    )

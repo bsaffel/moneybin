@@ -7,9 +7,10 @@ import os
 import subprocess  # noqa: S404  # explicit command list, never shell=True
 from collections.abc import Callable
 
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import Database
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
+from moneybin.services.transform_service import TransformService
 from moneybin.synthetic.engine import GeneratorEngine
 from moneybin.synthetic.models import load_persona
 from moneybin.synthetic.writer import SyntheticWriter
@@ -95,8 +96,10 @@ def _step_import_file(setup: SetupSpec, db: Database, env: dict[str, str]) -> No
 
 
 def _step_transform(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    # The product's apply: a bare plan never rebuilds a FULL model from new raw rows.
+    result = TransformService(db).apply()
+    if not result.applied:
+        raise RuntimeError(f"transform apply failed: {result.error}")
 
 
 def _step_match(setup: SetupSpec, db: Database, env: dict[str, str]) -> None:

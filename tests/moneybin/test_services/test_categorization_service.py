@@ -12,7 +12,10 @@ from typing import Any
 import pytest
 import yaml
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
@@ -27,8 +30,9 @@ from moneybin.services.categorization.assist import (
 from moneybin.services.categorization.queries import CategorizationQueries
 from tests.moneybin.db_helpers import (
     create_core_tables,
-    install_uncategorized_queue_view,
+    derive_is_categorizable,
     seed_categories_view,
+    simulate_pre_refresh_fct_transactions,
 )
 
 
@@ -78,6 +82,28 @@ def get_active_categories(db: Database) -> list[dict[str, str | bool | None]]:
     return CategorizationService(db).get_active_categories()
 
 
+def test_list_merchants_carries_category_id_from_the_core_view(db: Database) -> None:
+    """The merchant category label remains joinable by its stable category ID."""
+    db.execute(
+        """
+        CREATE OR REPLACE VIEW core.dim_merchants AS
+        SELECT 'merchant-1' AS merchant_id,
+               'COFFEE' AS raw_pattern,
+               'contains' AS match_type,
+               'Coffee Shop' AS canonical_name,
+               'cat_food_coffee' AS category_id,
+               'Food' AS category,
+               'Coffee' AS subcategory
+        """
+    )
+
+    merchants = CategorizationQueries(db).list_merchants().merchants
+
+    assert len(merchants) == 1
+    assert merchants[0].category == "Food"
+    assert merchants[0].category_id == "cat_food_coffee"
+
+
 @pytest.fixture(autouse=True)
 def _core_tables(db: Database) -> None:  # pyright: ignore[reportUnusedFunction]
     create_core_tables(db)
@@ -108,10 +134,9 @@ def _reflect_categorizations_into_fact(db: Database) -> None:
 def db_with_transactions(db: Database) -> Database:
     """DB with sample transactions in core.fct_transactions."""
     # The accounts these transactions belong to, and an explicit is_transfer.
-    # Coverage figures are scoped to core.uncategorized_queue's population,
-    # which INNER JOINs core.dim_accounts and filters on `NOT is_transfer` —
-    # transactions with neither model a database that cannot exist, and would
-    # silently count as zero.
+    # Coverage is scoped to is_categorizable (resolved, unarchived account and
+    # `NOT is_transfer`). The fixture defaults the column to TRUE, so rows count
+    # either way; the accounts and explicit is_transfer keep the data realistic.
     db.conn.execute("""
         INSERT INTO core.dim_accounts (account_id, display_name, archived)
         VALUES ('ACC001', 'Checking', false), ('ACC002', 'Savings', false)
@@ -878,12 +903,12 @@ def db_with_coverage_population(db: Database) -> Database:
         "('T_RULE', 'Shopping', 'rule', 'r_1'), "
         "('T_VANISHED', 'Food', 'user', NULL)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     return db
 
 
 class TestCoverageOverWhatNeedsCategorizing:
-    """The coverage figures describe the queue's population, not the whole ledger."""
+    """The coverage figures describe the categorizable population, not the whole ledger."""
 
     @pytest.mark.unit
     def test_the_population_excludes_rows_nobody_is_asked_to_categorize(
@@ -905,27 +930,6 @@ class TestCoverageOverWhatNeedsCategorizing:
         stats = get_categorization_stats(db_with_coverage_population)
 
         assert stats["categorized"] + stats["uncategorized"] == stats["total"]
-
-    @pytest.mark.unit
-    def test_uncategorized_matches_the_canonical_queue(
-        self, db_with_coverage_population: Database
-    ) -> None:
-        """The figure equals what ``moneybin review`` will actually hand the user.
-
-        The view under test is built from the shipped model file, so this fails
-        if core.uncategorized_queue's predicate and this query's ever diverge.
-        That divergence is what MB-155 exists to close and the one thing no
-        type check can see.
-        """
-        db = db_with_coverage_population
-        queue_count = db.execute(
-            "SELECT COUNT(*) FROM core.uncategorized_queue"
-        ).fetchone()
-
-        stats = get_categorization_stats(db)
-
-        assert queue_count is not None
-        assert stats["uncategorized"] == queue_count[0]
 
     @pytest.mark.unit
     def test_a_category_the_source_file_supplied_counts_as_categorized(
@@ -1037,6 +1041,41 @@ def real_db(db: Database) -> Database:
     return db
 
 
+def _seed_live_transaction(
+    db: Database, transaction_id: str, *, description: str = "STARBUCKS"
+) -> None:
+    """Seed one ``core.fct_transactions`` row and its liveness-oracle row.
+
+    Curation-id resolution reads liveness off ``prep.int_transactions__matched``
+    (production: the fact's own id set) and passes ids through unresolved when
+    that relation is absent. The stub's columns are the union of this file's
+    other matched stubs (``_insert_matched_txn``, ``_install_matched_stub``),
+    so whichever creates it first, the others' inserts still fit.
+    """
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES (?, 'a1', DATE '2026-03-01', -3.00, ?, 'csv')",
+        [transaction_id, description],
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched ("
+        "  transaction_id VARCHAR, "
+        "  source_transaction_id VARCHAR, "
+        "  source_type VARCHAR, "
+        "  source_origin VARCHAR, "
+        "  account_id VARCHAR, "
+        "  category VARCHAR, "
+        "  subcategory VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched (transaction_id) VALUES (?)",
+        [transaction_id],
+    )
+
+
 def test_service_categorize_items_applies_categorization(
     real_db: Database,
 ) -> None:
@@ -1090,11 +1129,7 @@ def test_categorize_items_against_superseded_id_resolves_to_live_transaction(
     the live transaction, not the dead one ``upsert_guarded`` would otherwise
     insert under with no FK to catch it.
     """
-    real_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
-    )
+    _seed_live_transaction(real_db, "txn-live")
     real_db.execute(
         "INSERT INTO app.transaction_id_aliases "
         "(old_transaction_id, new_transaction_id, created_at) "
@@ -1115,11 +1150,7 @@ def test_categorize_items_against_unresolvable_id_is_a_per_item_error(
     real_db: Database,
 ) -> None:
     """An unresolvable id fails just that item — the batch keeps going."""
-    real_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES ('ts1', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
-    )
+    _seed_live_transaction(real_db, "ts1")
     svc = CategorizationService(real_db)
     result = svc.categorize_items([
         CategorizationItem(transaction_id="never-existed", category="Food & Drink"),
@@ -1143,11 +1174,7 @@ def test_categorize_items_rejects_two_ids_resolving_to_the_same_live_transaction
     side effects double-run — reject the collision instead of letting
     iteration order decide (issue #538).
     """
-    real_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
-    )
+    _seed_live_transaction(real_db, "txn-live")
     real_db.execute(
         "INSERT INTO app.transaction_id_aliases "
         "(old_transaction_id, new_transaction_id, created_at) "
@@ -1213,11 +1240,7 @@ def test_categorize_items_against_superseded_id_still_resolves_merchant_and_exem
     misses the row entirely and both silently no-op for exactly the
     superseded-id case this module resolves ids to support.
     """
-    real_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS COFFEE', 'csv')"
-    )
+    _seed_live_transaction(real_db, "txn-live", description="STARBUCKS COFFEE")
     real_db.execute(
         "INSERT INTO app.transaction_id_aliases "
         "(old_transaction_id, new_transaction_id, created_at) "
@@ -1440,8 +1463,6 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     With N items, the number of read queries (description fetch + merchant
     fetch) must be O(1), not O(N).
     """
-    from moneybin.tables import FCT_TRANSACTIONS
-
     # In production core.fct_transactions is a view over
     # core.bridge_merchant_entities, so the batched description fetch joins the
     # bridge to read merchant_entity_id (M1T rung-0). Provide an (empty) bridge so
@@ -1453,16 +1474,9 @@ def test_categorize_items_uses_constant_number_of_db_calls(
         "merchant_entity_source_type VARCHAR)"
     )
 
-    # Seed 25 transactions and 25 corresponding category items.
+    # Seed 25 live transactions and 25 corresponding category items.
     for i in range(25):
-        db.execute(
-            f"""
-            INSERT INTO {FCT_TRANSACTIONS.full_name}
-            (transaction_id, account_id, transaction_date, amount, description, source_type)
-            VALUES (?, 'acct1', DATE '2025-01-01', -10.00, ?, 'csv')
-            """,  # noqa: S608  # building test input string, not executing SQL
-            [f"txn_{i}", f"Coffee shop {i}"],
-        )
+        _seed_live_transaction(db, f"txn_{i}", description=f"Coffee shop {i}")
     items = [
         CategorizationItem(
             transaction_id=f"txn_{i}", category="Food", subcategory="Coffee"
@@ -1487,16 +1501,16 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     # so must the shared curation-id liveness resolver it now also runs
     # (issue #538) — both are O(1) queries against a "transaction_id IN (...)"
     # list, so distinguish them by their distinct table shapes rather than
-    # asserting one combined count. Per-row fetches inside _auto_rule
+    # asserting one combined count. The liveness query reads
+    # prep.int_transactions__matched, not the fact, so it is matched on its
+    # manual-transactions arm alone. Per-row fetches inside _auto_rule
     # recording are a separate concern and are out of scope here.
-    batched = [
-        q
-        for q in select_calls
-        if "fct_transactions" in q.lower() and "transaction_id in (" in q.lower()
-    ]
+    batched = [q for q in select_calls if "transaction_id in (" in q.lower()]
     liveness_queries = [q for q in batched if "manual_transactions" in q.lower()]
     description_queries = [
-        q for q in batched if "bridge_merchant_entities" in q.lower()
+        q
+        for q in batched
+        if "fct_transactions" in q.lower() and "bridge_merchant_entities" in q.lower()
     ]
     assert len(liveness_queries) == 1, (
         f"Expected exactly 1 batched liveness resolve, got {len(liveness_queries)}:\n"
@@ -1570,8 +1584,8 @@ def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> No
 
     svc = CategorizationService(real_db)
     # Nothing categorized yet — the snowball's starting state. Read straight
-    # from app.transaction_categories: core.uncategorized_queue is a SQLMesh
-    # view over a live core.fct_transactions, and this module's fixture table
+    # from app.transaction_categories: core.fct_transactions is a SQLMesh
+    # view in production, and this module's fixture table
     # is static, so the queue cannot observe writes made during the test.
     seeded = real_db.execute(
         "SELECT COUNT(*) FROM app.transaction_categories"
@@ -3118,16 +3132,25 @@ def _seed_bridge_mapping(
     category_id: str,
     category: str,
     subcategory: str | None,
+    source_type: str = "plaid",
+    source_origin: str = "",
+    source_subcategory_code: str = "",
 ) -> None:
     """Seed one core.bridge_category_source_map row, real mechanism.
 
-    Inserts into ``seeds.category_source_map`` (the bridge's seed tier —
-    mirrors ``test_bridge_category_source_map.py``'s ``_insert_seed_row``)
-    plus a matching ``seeds.categories`` row so
-    ``core.dim_categories``/``core.bridge_category_source_map`` — both real
-    views, not stubs — resolve ``category_id`` to a ``(category,
-    subcategory)`` pair the same way production does. Callers must call
-    ``refresh_views(db)`` first so the seed tables exist.
+    A provider row (blank ``source_origin``, the default) goes into
+    ``seeds.category_source_map`` — the bridge's seed tier, mirroring
+    ``test_bridge_category_source_map.py``'s ``_insert_seed_row``. An imported
+    mapping (``source_type='csv'``, ``source_origin='chase_credit'``) goes into
+    ``app.category_source_map``, where curation writes it. Either way a matching
+    ``seeds.categories`` row lets ``core.dim_categories`` resolve ``category_id``
+    as production does. Callers must call ``refresh_views(db)`` first so the
+    seed tables exist.
+
+    ``source_subcategory_code`` defaults to ``''`` (the "no subcategory"
+    sentinel) — Plaid's own predicate never reads this column, so the
+    Plaid-bridge tests are indifferent to it; the imported-category-text
+    tests pass the source row's own subcategory text.
 
     Named-column insert (not positional) on purpose: the bootstrap
     ``seeds.categories`` table (``moneybin.seeds._ensure_seed_tables_exist``)
@@ -3136,12 +3159,35 @@ def _seed_bridge_mapping(
     (``NULL``) rather than assuming a name or position for a column this
     test doesn't exercise.
     """
-    db.execute(
-        "INSERT INTO seeds.category_source_map "
-        "(source_type, source_category_code, code_level, category_id, "
-        "source_taxonomy_version) VALUES ('plaid', ?, ?, ?, 'plaid_pfc_v2')",
-        [source_category_code, code_level, category_id],
-    )
+    if source_origin:
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_origin, source_category_code, "
+            "source_subcategory_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                source_type,
+                source_origin,
+                source_category_code,
+                source_subcategory_code,
+                code_level,
+                category_id,
+            ],
+        )
+    else:
+        db.execute(
+            "INSERT INTO seeds.category_source_map "
+            "(source_type, source_category_code, source_subcategory_code, "
+            "code_level, category_id, source_taxonomy_version) "
+            "VALUES (?, ?, ?, ?, ?, 'plaid_pfc_v2')",
+            [
+                source_type,
+                source_category_code,
+                source_subcategory_code,
+                code_level,
+                category_id,
+            ],
+        )
     db.execute(
         "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
         "VALUES (?, ?, ?, 'test category')",
@@ -3289,6 +3335,664 @@ class TestApplyPlaidCategories:
                 "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t4'"
             ).fetchone()
             is None
+        )
+
+    @pytest.mark.unit
+    def test_ignored_detailed_code_does_not_fall_back_to_primary(
+        self, db: Database
+    ) -> None:
+        """An ignored detailed code ends the lookup; the primary is not consulted."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK",
+            code_level="primary",
+            category_id="FND",
+            category="Food & Drink",
+            subcategory=None,
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK_COFFEE", code_level="detailed")
+        for transaction_id, detailed in (
+            ("t_ignored", "FOOD_AND_DRINK_COFFEE"),
+            # Control: an unmapped detailed code still falls back.
+            ("t_unmapped", "FOOD_AND_DRINK_FAST_FOOD"),
+        ):
+            _insert_plaid_txn(
+                db,
+                transaction_id,
+                category_detailed=detailed,
+                plaid_category="FOOD_AND_DRINK",
+                category_confidence="HIGH",
+            )
+            _seed_gold_transaction(db, transaction_id)
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        assert db.execute(
+            "SELECT transaction_id, category_id FROM app.transaction_categories"
+        ).fetchall() == [("t_unmapped", "FND")]
+
+    @pytest.mark.unit
+    def test_user_ignore_switches_off_a_seeded_translation(self, db: Database) -> None:
+        """A user row overrides the seed row for its key, even with no category."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK_COFFEE", code_level="detailed")
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_gold_transaction(db, "t1")
+
+        assert db.execute(
+            "SELECT category_id, is_default FROM core.bridge_category_source_map "
+            "WHERE source_category_code = 'FOOD_AND_DRINK_COFFEE'"
+        ).fetchall() == [(None, False)]
+        assert apply_plaid_categories(db) == 0
+        # An ignored code is known, not a coverage gap.
+        stats = CategorizationService(db).categorization_stats()
+        assert stats["plaid_unmapped"] == 0
+
+    @pytest.mark.unit
+    def test_ignored_primary_code_leaves_a_mapped_detailed_code_working(
+        self, db: Database
+    ) -> None:
+        """Detailed still outranks primary when it is the primary that is ignored."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _ignore_plaid_code(db, "FOOD_AND_DRINK", code_level="primary")
+        for transaction_id, detailed in (
+            ("t_detailed", "FOOD_AND_DRINK_COFFEE"),
+            ("t_primary_only", "FOOD_AND_DRINK_FAST_FOOD"),
+        ):
+            _insert_plaid_txn(
+                db,
+                transaction_id,
+                category_detailed=detailed,
+                plaid_category="FOOD_AND_DRINK",
+                category_confidence="HIGH",
+            )
+            _seed_gold_transaction(db, transaction_id)
+
+        assert apply_plaid_categories(db) == 1
+        assert db.execute(
+            "SELECT transaction_id, category_id FROM app.transaction_categories"
+        ).fetchall() == [("t_detailed", "FND-COF")]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("mapped_first", [True, False])
+    def test_mislabelled_primary_ignore_does_not_suppress_a_detailed_code(
+        self, db: Database, mapped_first: bool
+    ) -> None:
+        """The ranking reads the transaction's codes, not the row's ``code_level``.
+
+        The ignore is written without ``code_level``, so it carries the
+        ``'detailed'`` default and ties with the real detailed row on label.
+        """
+        refresh_views(db)
+        db.execute(
+            "INSERT INTO seeds.categories "
+            "(category_id, category, subcategory, description) "
+            "VALUES ('FND-COF', 'Food & Drink', 'Coffee Shops', 'test category')"
+        )
+        # Both written as user rows, in each order, so neither scan order hides a tie.
+        writes: list[tuple[str, str | None]] = [
+            ("FOOD_AND_DRINK_COFFEE", "FND-COF"),
+            ("FOOD_AND_DRINK", None),
+        ]
+        for code, category_id in writes if mapped_first else reversed(writes):
+            CategorySourceMapRepo(db).upsert(
+                source_type="plaid",
+                source_origin="",
+                category=code,
+                subcategory=None,
+                category_id=category_id,
+                actor="test",
+            )
+        _insert_plaid_txn(
+            db,
+            "t0",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        # A tie resolves by scan order, which only varies once the join output
+        # spans DuckDB vectors (2,048 rows); a handful of rows cannot expose it.
+        transaction_count = 5000
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged "
+            "SELECT 't' || n, 'FOOD_AND_DRINK_COFFEE', 'FOOD_AND_DRINK', 'HIGH' "
+            "FROM range(1, ?) AS r(n)",
+            [transaction_count],
+        )
+
+        candidates = CategorizationService(db)._orchestrator._plaid_bridge_candidates(  # pyright: ignore[reportPrivateUsage]  # the ranking, without 5,000 writes
+            "uncategorized"
+        )
+
+        assert len(candidates) == transaction_count
+        assert {(row[1], row[2]) for row in candidates} == {
+            ("Food & Drink", "Coffee Shops")
+        }
+
+
+def _ignore_plaid_code(db: Database, code: str, *, code_level: str) -> None:
+    """Store a user row that ignores one provider-wide Plaid code."""
+    CategorySourceMapRepo(db).upsert(
+        source_type="plaid",
+        source_origin="",
+        category=code,
+        subcategory=None,
+        category_id=None,
+        code_level=code_level,
+        actor="test",
+    )
+
+
+# ---------------------------------------------------------------------------
+# apply_source_category_map — imported (tabular/manual) category text ->
+# provider_native, keyed by source_origin
+# ---------------------------------------------------------------------------
+
+
+def apply_source_category_map(db: Database) -> int:
+    """Test shim — delegates to CategorizationService.apply_source_category_map."""
+    return CategorizationService(db).apply_source_category_map()
+
+
+def _insert_matched_txn(
+    db: Database,
+    transaction_id: str,
+    *,
+    source_type: str,
+    source_origin: str,
+    category: str | None,
+    subcategory: str | None,
+    source_transaction_id: str | None = None,
+) -> None:
+    """Insert one imported row into a stub ``prep.int_transactions__matched``.
+
+    ``apply_source_category_map`` reads the row-grain matched layer (gold
+    ``transaction_id`` alongside each source row's own ``source_origin`` +
+    ``category``/``subcategory``), not the merged layer — see
+    ``_source_category_bridge_candidates``'s docstring for why. Mirrors
+    ``_insert_plaid_txn``'s stub-table approach: building the real SQLMesh
+    VIEW here would require a full SQLMesh plan, so this creates just the
+    columns the query reads as a physical table.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched ("
+        "  transaction_id VARCHAR, "
+        "  source_transaction_id VARCHAR, "
+        "  source_type VARCHAR, "
+        "  source_origin VARCHAR, "
+        "  category VARCHAR, "
+        "  subcategory VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "
+        "(transaction_id, source_transaction_id, source_type, source_origin, "
+        " category, subcategory) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            transaction_id,
+            source_transaction_id or transaction_id,
+            source_type,
+            source_origin,
+            category,
+            subcategory,
+        ],
+    )
+
+
+class TestApplySourceCategoryMap:
+    """Tests for the imported-category-text categorizer.
+
+    Mirrors ``TestApplyPlaidCategories`` but keys the bridge on
+    ``source_origin`` (an exporter, e.g. ``chase_credit``) rather than a
+    provider code, matches on the row's own free-text ``category``/
+    ``subcategory`` instead of a controlled vocabulary code, and applies no
+    confidence gate — a curated mapping row is a deterministic assertion.
+    """
+
+    @pytest.mark.unit
+    def test_matches_on_category_and_subcategory(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Groceries",
+            source_subcategory_code="Produce",
+            code_level="detailed",
+            category_id="cat-groceries",
+            category="Food & Dining",
+            subcategory="Groceries",
+            source_type="csv",
+            source_origin="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t1",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory="Produce",
+        )
+        _seed_gold_transaction(db, "t1")
+
+        n = apply_source_category_map(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id, categorized_by, source_type, confidence "
+            "FROM app.transaction_categories WHERE transaction_id='t1'"
+        ).fetchone()
+        assert row == ("cat-groceries", "provider_native", "csv", Decimal("1.00"))
+
+    @pytest.mark.unit
+    def test_matches_with_no_subcategory(self, db: Database) -> None:
+        """A category with no subcategory still resolves via the '' sentinel."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Rent",
+            code_level="detailed",
+            category_id="cat-rent",
+            category="Housing",
+            subcategory="Rent",
+            source_type="manual",
+            source_origin="user",
+        )
+        _insert_matched_txn(
+            db,
+            "t2",
+            source_type="manual",
+            source_origin="user",
+            category="Rent",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t2")
+
+        n = apply_source_category_map(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t2'"
+        ).fetchone()
+        assert row == ("cat-rent",)
+
+    @pytest.mark.unit
+    def test_two_exporters_map_the_same_text_to_different_categories(
+        self, db: Database
+    ) -> None:
+        """Keying on source_origin within a source_type lets exporters disagree.
+
+        Both rows carry the SAME category string ("Auto") from the SAME
+        ``source_type`` ('csv'), but two different exporters
+        (``chase_credit`` vs ``amex_gold``) map it to two different
+        MoneyBin categories.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Auto",
+            code_level="detailed",
+            category_id="cat-transportation",
+            category="Transportation",
+            subcategory=None,
+            source_type="csv",
+            source_origin="chase_credit",
+        )
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Auto",
+            code_level="detailed",
+            category_id="cat-insurance",
+            category="Insurance",
+            subcategory="Auto",
+            source_type="csv",
+            source_origin="amex_gold",
+        )
+        _insert_matched_txn(
+            db,
+            "t3",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Auto",
+            subcategory=None,
+        )
+        _insert_matched_txn(
+            db,
+            "t4",
+            source_type="csv",
+            source_origin="amex_gold",
+            category="Auto",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t3")
+        _seed_gold_transaction(db, "t4")
+
+        n = apply_source_category_map(db)
+
+        assert n == 2
+        t3_category = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t3'"
+        ).fetchone()
+        t4_category = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t4'"
+        ).fetchone()
+        assert t3_category == ("cat-transportation",)
+        assert t4_category == ("cat-insurance",)
+
+    @pytest.mark.unit
+    def test_does_not_overwrite_higher_priority_row(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Coffee",
+            code_level="detailed",
+            category_id="cat-coffee",
+            category="Food & Dining",
+            subcategory="Coffee Shops",
+            source_type="csv",
+            source_origin="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t5",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Coffee",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t5")
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by) VALUES ('t5', 'Coffee', 'user')"
+        )
+
+        n = apply_source_category_map(db)
+
+        assert n == 0
+        row = db.execute(
+            "SELECT categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id='t5'"
+        ).fetchone()
+        assert row == ("user",)
+
+    @pytest.mark.unit
+    def test_no_bridge_row_is_a_no_op(self, db: Database) -> None:
+        """An imported category string with no curated mapping falls through."""
+        refresh_views(db)
+        _insert_matched_txn(
+            db,
+            "t6",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Some Unmapped Category",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t6")
+
+        n = apply_source_category_map(db)
+
+        assert n == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t6'"
+            ).fetchone()
+            is None
+        )
+
+    @pytest.mark.unit
+    def test_lookup_succeeds_alongside_seeded_plaid_rows(self, db: Database) -> None:
+        """The reverse lookup runs against mixed-shape rows without raising.
+
+        Regression test for the bug this bridge redesign fixes: the prior
+        JSON-encoded composite code made the read-side predicate emit
+        ``b.source_category_code = to_json({...})``, and DuckDB resolved
+        that VARCHAR-vs-JSON comparison by casting the whole column to JSON —
+        which raised ``ConversionException`` the moment a bare (non-JSON)
+        seeded Plaid code, such as ``INCOME``, coexisted in the same table.
+        This seeds a bare Plaid row and an imported mapping together and
+        proves the imported lookup still matches its own row cleanly.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="INCOME",
+            code_level="primary",
+            category_id="INC",
+            category="Income",
+            subcategory=None,
+        )
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Groceries",
+            source_subcategory_code="Produce",
+            code_level="detailed",
+            category_id="cat-groceries",
+            category="Food & Dining",
+            subcategory="Groceries",
+            source_type="csv",
+            source_origin="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t_mixed",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory="Produce",
+        )
+        _seed_gold_transaction(db, "t_mixed")
+
+        n = apply_source_category_map(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t_mixed'"
+        ).fetchone()
+        assert row == ("cat-groceries",)
+
+    @pytest.mark.unit
+    def test_no_subcategory_round_trips_through_write_bridge_read(
+        self, db: Database
+    ) -> None:
+        """The '' sentinel survives write -> bridge -> read for a bare category.
+
+        Writes through the real repository (not a direct seed-table insert)
+        so the write-side normalization (``subcategory or ""``) and the
+        read-side predicate (``COALESCE(subcategory_expr, '')``) are proven
+        to agree, not merely assumed to.
+        """
+        refresh_views(db)
+        db.execute(
+            "INSERT INTO seeds.categories (category_id, category, subcategory, "
+            "description) VALUES ('cat-utilities', 'Utilities', NULL, 'test category')"
+        )
+        CategorySourceMapRepo(db).upsert(
+            source_type="csv",
+            source_origin="amex_gold",
+            category="Electric",
+            subcategory=None,
+            category_id="cat-utilities",
+            actor="test",
+        )
+        _insert_matched_txn(
+            db,
+            "t_no_subcat",
+            source_type="csv",
+            source_origin="amex_gold",
+            category="Electric",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t_no_subcat")
+
+        n = apply_source_category_map(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t_no_subcat'"
+        ).fetchone()
+        assert row == ("cat-utilities",)
+
+    @pytest.mark.unit
+    def test_a_written_candidate_counts_toward_the_provider_native_metric(
+        self, db: Database
+    ) -> None:
+        """The per-source_type counter keys on the ids the write returned.
+
+        Candidates come from ``prep.int_transactions__matched``, the liveness
+        oracle, so a candidate is always the live id and the write returns it
+        unchanged; the counter must still see the row it landed on.
+        """
+        from moneybin.metrics.registry import CATEGORIZE_PROVIDER_NATIVE_TOTAL
+
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Gas",
+            code_level="detailed",
+            category_id="cat-gas",
+            category="Auto",
+            subcategory="Gas",
+            source_type="csv",
+            source_origin="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t_live",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Gas",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t_live")
+        before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+            source_type="csv", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        n = apply_source_category_map(db)
+
+        after = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+            source_type="csv", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert n == 1
+        assert after == before + 1, "the written row dropped its metric increment"
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t_live'"
+        ).fetchone()
+        assert row == ("cat-gas",)
+
+
+class TestCategorizePendingSourceCategoryMapPass:
+    """Proves the source-category-map pass is wired into categorize_pending."""
+
+    @pytest.mark.unit
+    def test_source_category_map_fills_bare_row(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Groceries",
+            code_level="detailed",
+            category_id="cat-groceries",
+            category="Food & Dining",
+            subcategory="Groceries",
+            source_type="csv",
+            source_origin="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t7",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory=None,
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t7', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'csv')"
+        )
+
+        result = categorize_pending(db)
+
+        assert result["source_category_map"] == 1
+        assert result["total"] == 1
+        row = db.execute(
+            "SELECT category_id, categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id='t7'"
+        ).fetchone()
+        assert row == ("cat-groceries", "provider_native")
+
+    @pytest.mark.unit
+    def test_categorize_run_rules_and_merchants_excludes_source_category_map(
+        self, db: Database
+    ) -> None:
+        """categorize_run's explicit methods=[...] selection must not silently add this pass."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Groceries",
+            code_level="detailed",
+            category_id="cat-groceries",
+            category="Food & Dining",
+            subcategory="Groceries",
+            source_type="csv",
+            source_origin="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t8",
+            source_type="csv",
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory=None,
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t8', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'csv')"
+        )
+
+        result = CategorizationService(db).categorize_run()
+
+        assert result["applied_by_method"] == {"rules": 0, "merchants": 0}
+        assert result["total_applied"] == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t8'"
+            ).fetchone()
+            is None
+        ), (
+            "categorize_run(methods=['rules','merchants']) must not trigger source_category_map"
         )
 
 
@@ -3793,12 +4497,13 @@ class TestCategorizePendingPlaidPass:
         ``CategorizationService.categorize_run`` (``effective == ["rules",
         "merchants"]``): before the plaid pass existed, that fast path
         delegated straight to ``categorize_pending()`` because the two were
-        equivalent. Now that ``categorize_pending()`` also runs plaid by
-        default, the fast path must opt out (``include_plaid=False``) or it
-        would apply a third, unrequested engine whose writes go unreported
-        in ``applied_by_method`` — and, depending on the requested method
+        equivalent. Now that ``categorize_pending()`` also runs plaid (and
+        the source-category-map pass) by default, the fast path must opt
+        out (``include_provider_native=False``) or it would apply
+        unrequested engines whose writes go unreported in
+        ``applied_by_method`` — and, depending on the requested method
         order, only sometimes (the per-method loop for other orders never
-        touches plaid at all).
+        touches either pass at all).
         """
         refresh_views(db)
         _seed_bridge_mapping(
@@ -3925,13 +4630,13 @@ def _install_matched_stub(db: Database) -> None:
 
 
 def test_count_uncategorized_counts_exactly_the_pending_queue(db: Database) -> None:
-    """One definition of "uncategorized": whatever core.uncategorized_queue holds.
+    """One definition of "uncategorized": is_categorizable AND category IS NULL.
 
     The count and the listing sit side by side on the review surface — the
     count in `moneybin review` / system_status, the listing in the pending
     queue — so a count computed from a different predicate shows the user two
     different Ns for the same question. Each excluded row here is a row the
-    canonical view drops and a hand-rolled LEFT JOIN against
+    is_categorizable excludes and a hand-rolled LEFT JOIN against
     app.transaction_categories would have counted.
     """
     db.execute(
@@ -3956,7 +4661,7 @@ def test_count_uncategorized_counts_exactly_the_pending_queue(db: Database) -> N
         "('t_source_category', 'acct_open', DATE '2026-04-04', -8.00, 'Bus', "
         "'Travel', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
 
     queries = CategorizationQueries(db)
@@ -3988,7 +4693,7 @@ def test_pending_queue_names_each_row_currency(db: Database) -> None:
         "('t_usd', 'acct_us', DATE '2026-04-01', -50.00, 'Local cafe', "
         "'USD', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
@@ -4004,7 +4709,7 @@ def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
 ) -> None:
     """An unmatched transfer leg is flagged, not silently categorizable (F19).
 
-    core.uncategorized_queue filters `NOT is_transfer`, but is_transfer only
+    is_categorizable requires `NOT is_transfer`, but is_transfer only
     becomes true AFTER matching links the pair. Pre-matching, a "BILL PAY" leg is
     the top-impact "uncategorized" row — and categorizing it double-counts
     against the eventual transfer pair.
@@ -4038,7 +4743,7 @@ def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
         "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
         "'GROCERY STORE', 'ofx', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
     db.execute(
         "INSERT INTO prep.int_transactions__matched "
@@ -4108,7 +4813,7 @@ def test_pending_queue_ignores_dedup_decisions_for_transfer_flag(
         "('t_dedup_b', 'acct_checking', '2026-06-02', -8.00, "
         "'COFFEE SHOP', 'ofx', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
     db.execute(
         "INSERT INTO prep.int_transactions__matched "
@@ -4205,7 +4910,7 @@ def test_pending_queue_degrades_when_matched_view_predates_a_column(
         "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
         "'GROCERY STORE', 'ofx', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub_missing_account_id(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
@@ -4247,7 +4952,7 @@ def test_impact_queue_spans_currencies_under_cap(db: Database) -> None:
         "('t_usd', 'acct_us', DATE '2026-04-01', -50.00, 'Local cafe', "
         "'USD', false)"
     )
-    install_uncategorized_queue_view(db)
+    derive_is_categorizable(db)
     _install_matched_stub(db)
 
     rows = CategorizationQueries(db).list_uncategorized_transactions(
@@ -4259,3 +4964,97 @@ def test_impact_queue_spans_currencies_under_cap(db: Database) -> None:
     assert set(leading) == {"JPY", "USD"}, (
         f"capped impact queue is {leading}; the dollar row is hidden entirely"
     )
+
+
+_PENDING_KEYS = [
+    "transaction_id",
+    "account_id",
+    "account_name",
+    "txn_date",
+    "amount",
+    "currency_code",
+    "description",
+    "merchant_id",
+    "merchant_normalized",
+    "age_days",
+    "priority_score",
+    "source_type",
+    "source_id",
+    "pending_transfer_match",
+]
+
+
+def test_pending_list_keeps_the_queue_columns_in_order(db: Database) -> None:
+    """The MCP and CLI payloads read these keys; the view's removal changes none."""
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_open', 'Checking', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "currency_code, merchant_name, source_type, is_transfer) VALUES "
+        "('t_one', 'acct_open', CURRENT_DATE - 10, -20.00, 'Cafe', 'USD', "
+        "'Cafe Co', 'ofx', false)"
+    )
+    derive_is_categorizable(db)
+    _install_matched_stub(db)
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+
+    assert rows is not None
+    assert list(rows[0].keys()) == _PENDING_KEYS
+    assert rows[0]["account_name"] == "Checking"
+    assert rows[0]["merchant_normalized"] == "Cafe Co"
+    assert rows[0]["age_days"] == 10
+    assert rows[0]["priority_score"] == Decimal("200.00")
+    assert rows[0]["source_id"] is None
+
+
+def test_pending_list_reports_a_pre_refresh_fact_as_schema_drift(
+    db: Database,
+) -> None:
+    """Upgraded code over a not-yet-refreshed fact is drift, not "no data" (R7)."""
+    simulate_pre_refresh_fct_transactions(db)
+
+    with pytest.raises(UserError) as exc_info:
+        CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+
+    assert exc_info.value.code == error_codes.INFRA_SCHEMA_DRIFT
+    assert exc_info.value.hint == "refresh_run"
+    assert exc_info.value.details == {
+        "missing_object": "core.fct_transactions.is_categorizable"
+    }
+
+
+def test_pending_list_reports_an_unbindable_fact_view_as_schema_drift(
+    db: Database,
+) -> None:
+    """A stale fact view whose own inputs no longer bind is drift, not a raw error."""
+    db.execute("DROP TABLE core.fct_transactions")
+    db.execute("CREATE TABLE core.fct_input (gone INTEGER, kept INTEGER)")
+    db.execute("CREATE VIEW core.fct_transactions AS SELECT gone FROM core.fct_input")
+    db.execute("ALTER TABLE core.fct_input DROP COLUMN gone")
+
+    with pytest.raises(UserError) as exc_info:
+        CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+
+    assert exc_info.value.code == error_codes.INFRA_SCHEMA_DRIFT
+    assert exc_info.value.hint == "refresh_run"
+
+
+def test_stats_report_zeros_on_a_pre_refresh_fact(db: Database) -> None:
+    simulate_pre_refresh_fct_transactions(db)
+
+    assert get_categorization_stats(db) == {
+        "total": 0,
+        "categorized": 0,
+        "uncategorized": 0,
+        "pct_categorized": 0,
+    }
+
+
+def test_pending_count_is_zero_on_a_pre_refresh_fact(db: Database) -> None:
+    simulate_pre_refresh_fct_transactions(db)
+
+    assert CategorizationQueries(db).count_uncategorized() == 0

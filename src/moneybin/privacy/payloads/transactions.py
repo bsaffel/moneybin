@@ -333,6 +333,26 @@ class MatchSetPayload:
     transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
 
 
+@row_set("outcomes")
+@dataclass(frozen=True, slots=True)
+class MatchReviewDecisionPayload:
+    """Payload for one CLI review invocation with multiple explicit decisions."""
+
+    outcomes: list[MatchSetPayload]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchBulkSetPayload:
+    """Committed result of ``review --confirm-all`` for transaction matches."""
+
+    requested: Annotated[int, DataClass.AGGREGATE]
+    accepted: Annotated[int, DataClass.AGGREGATE]
+    reversed_by_reconciliation: Annotated[int, DataClass.AGGREGATE]
+    transfers_retired: Annotated[int, DataClass.AGGREGATE]
+    accounting_stale: Annotated[bool, DataClass.TXN_TYPE]
+    accounting_hint: Annotated[str | None, DataClass.DESCRIPTION]
+
+
 # ---------------------------------------------------------------------------
 # transactions_matches_history / transactions_matches_run
 # ---------------------------------------------------------------------------

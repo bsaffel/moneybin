@@ -62,7 +62,7 @@ Top-level groups represent **entities** (`accounts`, `transactions`) or **cross-
 
 Concretely:
 
-- `accounts` owns its per-account workflows (`balance`) and its aggregation (`networth`)
+- `accounts` owns its per-account workflows (`balance`); the cross-account rollup is a report, so `net-worth` lives under `reports`
 - `transactions` owns its per-transaction workflows (`matches`, `categorize`) and entity ops (`list`, `show`, `search`)
 - `reports` holds analytical lenses on transaction-level data (spending, cashflow, budget vs actual) — cross-cutting, read-only
 
@@ -70,7 +70,7 @@ The rule replaces v1's "domain commands are top-level" principle, which produced
 
 ### Sub-group naming
 
-Sub-group names are the natural English name for the workflow or concept. Usually a noun (`balance`, `networth`, `matches`); a verb-form is fine when it names the workflow more clearly than the equivalent noun (`categorize` rather than `categorization`). Action verbs at the leaf are always imperative single-word: `list`, `show`, `assert`, `accept`, `reject`, `apply`, `delete`.
+Sub-group names are the natural English name for the workflow or concept. Usually a noun (`balance`, `net-worth`, `matches`); a verb-form is fine when it names the workflow more clearly than the equivalent noun (`categorize` rather than `categorization`). Action verbs at the leaf are always imperative single-word: `list`, `show`, `assert`, `accept`, `reject`, `apply`, `delete`.
 
 ### Universal flags
 
@@ -161,7 +161,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- logout                     -- Clear stored JWT from keychain
 |   +-- link                       -- Link a bank via mediated provider (Plaid: opens Link UI)
 |   +-- link-status                -- Poll the in-flight link session
-|   +-- disconnect --institution NAME -- Remove an institution
+|   +-- disconnect --institution NAME [--purge] -- Remove an institution; --purge also deletes its local rows
 |   +-- pull [--force] [--institution NAME] -- Pull data + full pipeline
 |   +-- status                     -- Connected institutions, health, errors
 |   +-- schedule
@@ -210,7 +210,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 +-- review                         -- What needs my attention? Pending counts across all review queues.
 |     [--type all|matches|investment-matches|categorize|account-links|merchant-links|security-links]   Default all
 |     [--status]                        Counts — the default; the flag states it explicitly
-|     [--interactive]                   Walk the queue item by item (not yet built)
+|     [--interactive]                   Review pending items with explicit decisions, skip, or quit
 |     [--confirm <id>]                  Non-interactive: confirm one review item by ID
 |     [--reject <id>]                   Non-interactive: reject one review item by ID
 |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
@@ -219,6 +219,15 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |     [--output text|json] [-q]
 |   Aggregates matches_pending + investment_matches_pending + categorize_pending +
 |   account_links_pending + merchant_links_pending + security_links_pending in one sweep.
+|   The shipped interactive loop covers matches, categorize, account-links,
+|   merchant-links, and security-links only. Investment-match decisions and
+|   --field-choice in this target-state tree remain planned.
+|   Shipped noninteractive review accepts --reject for matches or categorize;
+|   categorization assignments use transactions categorize commit. Pending
+|   categorization output includes nullable versioned decision_id for rejection.
+|   Review counts include current pending attempts, excluding closed rejections.
+|   categorize pending retains uncategorized inventory by default; --pending-only
+|   filters canonical attempt eligibility before ordering and limiting.
 |   Counts are what a bare invocation prints; drill into
 |   `accounts links pending`, `merchants links pending`, `investments securities links pending`,
 |   `investments matches pending`, `transactions matches pending`, or
@@ -273,7 +282,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 +-- assets                         -- (future spec) Physical assets (real estate, vehicles, valuables)
 |                                     Workflows defined in asset-tracking.md.
-|                                     Contributes to reports networth alongside accounts.
+|                                     Contributes to reports net-worth alongside accounts.
 |
 +-- investments                    -- Investment ledger, positions, tax lots, realized gains, and
 |                                     the manually-maintained securities catalog. Defined in
@@ -373,17 +382,16 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |                                  Unified review queue (matches + investment-matches + categorize + account-links + merchant-links + security-links)
 |   |     [--type all|matches|investment-matches|categorize|account-links|merchant-links|security-links]   Default all
 |   |     [--status]                        Counts — the default; the flag states it explicitly
-|   |     [--interactive]                   Walk the queue item by item (not yet built)
+|   |     [--interactive]                   Review pending items with explicit decisions, skip, or quit
 |   |     [--confirm <id>]                  Non-interactive: confirm one review item by ID
 |   |     [--reject <id>]                   Non-interactive: reject one review item by ID
 |   |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
 |   |     [--confirm-all]                   Non-interactive: confirm all items in an eligible --type scope
 |   |     [--limit N]                       Cap items per session
-|   |   Note: --confirm/--reject are defined for --type matches and investment-matches;
-|   |         --confirm-all with investment-matches or all exits 2, as does --field-choice
-|   |         without both --type investment-matches and exactly one --confirm.
-|   |         --type categorize review is not yet wired (stub); categorize items use
-|   |         transactions categorize commit instead.
+|   |   Shipped --confirm/--confirm-all require --type matches; --reject supports
+|   |   matches or categorize. Categorization assignments also use transactions
+|   |   categorize commit. Investment-match decisions and --field-choice above
+|   |   remain target-state plans.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see the top-level `review`)
 |   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
 |   |   |         Pending proposals grouped by component_key (N-way dedup clusters appear
@@ -394,6 +402,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- undo <match_id> [--yes]
 |   |   +-- backfill [--skip-transform] [--auto-accept-transfers]
 |   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at the top-level `review`)
+|   |   +-- pending [--pending-only] [--limit N] [--sort date|impact]
+|   |   |                           -- Inventory by default; pending-only filters before the limit
 |   |   +-- commit                  -- Commit externally-decided categorizations (--input <path> or stdin '-')
 |   |   +-- commit-from-file <path> -- Commit from a JSON file (convenience wrapper)
 |   |   +-- run                     -- Run engine cascade (--methods rules,merchants)
@@ -430,6 +440,20 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- create <name> [--parent] [--icon] [--output text|json]
 |   +-- set <category_id> --active/--inactive [--output text|json]
 |   +-- delete <category_id> [--force]
+|   +-- mappings                   -- Map a source's own category text to a MoneyBin category
+|       +-- pending [--namespace <source_origin>] [--output json] [--quiet]
+|       |         Distinct unmapped (source_origin, category, subcategory) terms, one row per
+|       |         term with the count of uncategorized transactions mapping it would
+|       |         categorize and up to 3 suggestions drawn from active categories;
+|       |         largest count first. A term with nothing left to categorize is omitted.
+|       +-- set --namespace <source_origin> --category <text> [--subcategory <text>]
+|                 --into <category_id> | --new <name> | --ignore
+|                 Map one term to an existing category (--into), create a category and
+|                 map the term to it in one transaction (--new), or ignore the term
+|                 (--ignore): it leaves the pending list and categorizes nothing. The three
+|                 flags are mutually exclusive; passing none or more than one exits 2. The
+|                 mapping applies at once, and a changed mapping withdraws and re-evaluates
+|                 the categorizations it produced; the receipt reports both counts.
 |
 +-- merchants                      -- Merchant mappings (reference data) and link-review
 |   +-- list
@@ -453,13 +477,13 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 |
 +-- reports                        -- Cross-domain analytical and aggregation views (read-only)
-|   |   # The seven view-backed reports below (cash-flow, spending-trend, recurring-subscriptions,
-|   |   # merchant-activity, large-transactions, balance-drift, realized-fx) are framework-generated
-|   |   # from `@report` runners in src/moneybin/reports/definitions/. Command
-|   |   # names and result shapes are unchanged; each flag is auto-derived from
-|   |   # the runner's parameter name (e.g. `from_month` -> `--from-month`), and
-|   |   # every generated command also carries `--output` / `--quiet`. `networth`
-|   |   # and `networth-history` stay hand-written.
+|   |   # Every report below — net-worth, net-worth-currencies, net-worth-accounts,
+|   |   # cash-flow, spending-trend, recurring-subscriptions, merchant-activity,
+|   |   # large-transactions, balance-drift, realized-fx — is framework-generated
+|   |   # from `@report` runners in src/moneybin/reports/definitions/. Each flag
+|   |   # is auto-derived from the runner's parameter name (e.g. `from_month` ->
+|   |   # `--from-month`), and every generated command also carries `--output` /
+|   |   # `--quiet`.
 |   |
 |   |   # The seven verbs below span every report tier — built-in, extension, and
 |   |   # user-created (reports-dynamic.md). `list` / `run` / `explain` serve all
@@ -518,8 +542,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     # writes nothing, so the revision guard alone cannot see it.
 |   |     # A blank or whitespace `--reason` is a usage error — it is the only
 |   |     # durable record of why the floor was lowered.
-|   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets) [--as-of DATE]
-|   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
+|   +-- net-worth                  -- Day-grain, home-currency total [--from-date DATE] [--to-date DATE] [--interval daily|weekly|monthly]
+|   +-- net-worth-currencies       -- Day x currency breakdown [--from-date DATE] [--to-date DATE]
+|   +-- net-worth-accounts         -- Day x account breakdown [--from-date DATE] [--to-date DATE]
 |   +-- cash-flow                  -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]
 |   +-- spending-trend             -- Spending by category [--from-month YYYY-MM] [--to-month YYYY-MM] [--category] [--compare]
 |   +-- recurring-subscriptions    -- Recurring transactions [--min-confidence] [--status] [--cadence] via `reports(report_id="core:recurring_subscriptions")`
@@ -655,7 +680,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- list-prompts               -- Show available MCP prompts
 |   +-- config path                -- Print the install-target config path for a client
 |   +-- install                    -- Install MoneyBin into a client's MCP config
-|         [--client claude-desktop|claude-code|cursor|vscode|windsurf|codex|gemini-cli]
+|         [--client claude-desktop|claude-code|cursor|vscode|windsurf|codex|chatgpt-desktop|gemini-cli]
 |         [--profile NAME]           Profile to configure (default: active)
 |         [--print]                  Print the snippet instead of writing
 |         [--yes]                    Skip the install confirmation prompt
@@ -698,8 +723,10 @@ format and reject `--format` and `--compress`; ZIP is limited to local CSV and
 Parquet bundles.
 
 **Exports carry original currency, deliberately — there is no
-`--display-currency` here.** `moneybin reports run`, `reports networth`, and
-`reports networth-history` all take one; `export report` does not, and
+`--display-currency` here.** `moneybin reports run` and all ten generated report
+commands take one — including the five that cannot convert, which accept it and
+report why they stayed segmented rather than varying their signature per report;
+`export report` does not, and
 `ExportService.prepare_report` reads through `execute_raw` so no conversion can
 reach a written artifact. Display conversion is presentation-time by
 construction: nothing converted is ever stored, because a converted figure is
@@ -726,7 +753,7 @@ Naming follows [`extension-contracts.md`](extension-contracts.md) §"Naming and 
 ```
 Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
-Reports:        reports — per-report commands (networth, networth-history, spending-trend, cash-flow, recurring-subscriptions, merchant-activity, uncategorized, large-transactions, balance-drift, realized-fx; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
+Reports:        reports — per-report commands (net-worth, net-worth-currencies, net-worth-accounts, spending-trend, cash-flow, recurring-subscriptions, merchant-activity, uncategorized, large-transactions, balance-drift, realized-fx; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
 System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
@@ -780,7 +807,7 @@ selectors to preserve bounded agent context.
 | Show current balances | `accounts balance show` | `accounts_balances(view="latest")` | `GET /accounts/balances` |
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
 | Balance history | `accounts balance history` | `accounts_balances(view="history", reference=...)` | `GET /accounts/{id}/balances/history` |
-| Net worth now | `reports networth` | `reports(report_id="core:networth")` | `GET /reports/networth` |
+| Net worth now | `reports net-worth` | `reports(report_id="core:net_worth")` | `GET /reports/net-worth` |
 | Pending matches | `transactions matches pending` | `reviews(kind="matches", status="pending")` | `GET /transactions/matches/pending` |
 | Match history | `transactions matches history` | `reviews(kind="matches", status="history")` | `GET /transactions/matches` |
 | Locate an accepted match operation | `transactions matches history` | `system_audit(view="history", ...)` or `system_audit(view="events", ...)` | `GET /transactions/matches` |
@@ -795,7 +822,7 @@ Each protocol uses its own idiom:
 
 | Protocol | Convention |
 |---|---|
-| CLI | Top-level groups plural (`accounts`, `transactions`, `reports`); sub-resource nouns named for the *concept* (singular for types: `balance`, `networth`; plural for relationship collections: `matches`); verbs always singular |
+| CLI | Top-level groups plural (`accounts`, `transactions`, `reports`); sub-resource nouns named for the *concept* (singular for types: `balance`, `net-worth`; plural for relationship collections: `matches`); verbs always singular |
 | MCP | Uses admitted domain nouns and operation verbs; compatible CLI leaves map through typed selectors |
 | HTTP | Standard REST: plural for collections (`/accounts/{id}/balances`), singular for single instances (`/accounts/{id}/balances/{date}`) |
 
@@ -855,7 +882,7 @@ active_profile: default
 
 ### Profile config (`~/.moneybin/profiles/{name}/config.yaml`)
 
-Generated by `profile create` with all sections and sensible defaults:
+Generated by `profile create`:
 
 ```yaml
 # Profile: default
@@ -863,17 +890,46 @@ Generated by `profile create` with all sections and sensible defaults:
 
 database:
   encryption_key_mode: auto    # auto (OS keychain) or passphrase
-  # backup_path: null          # uncomment to enable backups
 
 logging:
   level: INFO                  # DEBUG, INFO, WARNING, ERROR, CRITICAL
   log_to_file: true
-  max_file_size_mb: 50
-
-sync:
-  enabled: false
-  # server_url: null           # set when connecting to MoneyBin Sync
 ```
+
+`sync login` adds `sync.server_url` the first time it reaches a server (see
+`sync-overview.md` → Server address).
+
+**This file is a settings source.** Its `section.field` keys are the same names
+`MoneyBinSettings` declares, and settings load it for the active profile. A
+value is taken from the first source that supplies one:
+
+1. the process environment (`MONEYBIN_<SECTION>__<FIELD>`);
+2. the dotenv in the data home (`.env.<profile>`, else `.env`);
+3. this file;
+4. the built-in default.
+
+So an environment variable overrides a saved value for one run without
+rewriting the file.
+
+Three rules keep the file honest:
+
+- **`profile set` writes only keys that exist, with values the field accepts.**
+  A `section.field` that `MoneyBinSettings` does not declare is refused with
+  the list of valid fields in that section, and a value the field's type
+  rejects is refused before the file is touched. So is a value that breaks a
+  cross-field rule together with the section's other saved values, such as a
+  `matching.review_threshold` above `matching.high_confidence_threshold`;
+  saved, it would fail every later load. A write that changes nothing
+  downstream is a bug, not a convenience. Section names match the environment
+  variables, so the import settings are `import.<field>`.
+- **Secrets never land here.** A field typed as a secret is refused by
+  `profile set`, which names `SecretStore`-backed setup instead, and one written
+  into the file by hand fails settings load like a bad value below. The file is
+  plain text at the umask default.
+- **A bad value fails loudly.** A value the field's type rejects fails settings
+  load with the file path and the key, on the next command — never a silent
+  fallback to the default. A key the settings no longer declare is ignored, so
+  a file written by an older version still loads.
 
 ### `get_base_dir()` resolution
 
@@ -937,6 +993,9 @@ Error handling: if any pipeline stage fails, prior stages' data is preserved (ra
 ### `sync pull` follows the same pattern
 
 After fetching new data from providers, `sync pull` runs the same transform -> match -> categorize pipeline and reports identically.
+Any failed requested post-load refresh stage leaves the pull partial and exits
+nonzero in both text and JSON modes; intentionally unrequested or cleanly
+skipped stages do not change the exit status.
 
 ### `--validate` (parse-only preview)
 
@@ -984,6 +1043,12 @@ Supported clients: `claude-desktop`, `claude-code`, `cursor`, `vscode`, `windsur
 - `chatgpt-desktop` installs into the **shared Codex host config** (`~/.codex/config.toml`), because the ChatGPT desktop app hosts Codex and shares its MCP configuration — installing for `codex` or `chatgpt-desktop` is equivalent. ChatGPT on the **web/mobile** cannot reach a local server (it doesn't read local Codex config); that needs remote transport with auth, which is M3D.
 - `--yes` / `-y` — skip the install confirmation prompt.
 - Interactive mode (no `--client` flag) prompts the user to select a client and profile.
+
+**Superseding implementation note.** The current CLI defaults an omitted
+`--client` to `claude-desktop` and resolves an omitted profile from the active
+profile; it does not prompt for either optional value. This supersedes only the
+interaction detail above. [CLI Human Experience](cli-human-experience.md)
+requires prompts for missing required choices, not optional defaults.
 
 Scope: install only. Does not edit or remove existing entries — that's the user's responsibility. Re-running `--install` for a different profile **adds** an additional entry rather than replacing the previous one.
 
@@ -1177,8 +1242,8 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 
 | Spec | CLI change needed (v2) | MCP change needed (v2) |
 |---|---|---|
-| `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | Use `accounts_balances(view=...)` for balances and `reports(report_id="core:networth")` for net worth. |
-| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports networth`. | Future MCP capabilities remain unnamed until bounded-registry admission. |
+| `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports net-worth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | Use `accounts_balances(view=...)` for balances and `reports(report_id="core:net_worth")` for net worth. |
+| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports net-worth`. | Future MCP capabilities remain unnamed until bounded-registry admission. |
 | `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `reports-net-worth.md`. | Use `accounts(view=...)` for reads and `accounts_set(...)` for settings. |
 | `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Use `reviews(kind="matches", status="pending")` and `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])`. Locate an operation with `system_audit(view="history", ...)` or inspect events with `system_audit(view="events", ...)` before `system_audit_undo(operation_id=...)`; use `refresh_run(steps=["match"])` to rerun matching. |
 | `categorization-overview.md` / `categorization-auto-rules.md` / `categorization-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Use the admitted categorization operations, `reviews(kind=...)`, and `taxonomy(view=...)` / `taxonomy_set(...)`. |

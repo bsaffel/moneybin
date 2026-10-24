@@ -24,15 +24,17 @@ import importlib
 import inspect
 import json
 import textwrap
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
-import click
 import pytest
 import typer
 import typer.main
+from typer._click import Command
+from typer.core import TyperGroup
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
@@ -50,7 +52,7 @@ runner = CliRunner()
 # --------------------------------------------------------------- the rule ---
 
 
-def _leaf_commands() -> Iterator[tuple[str, click.Command]]:
+def _leaf_commands() -> Iterator[tuple[str, Command]]:
     """Every command in the real CLI that has a body, keyed by its command path.
 
     Groups are yielded too when they carry a callback of their own: an
@@ -60,10 +62,10 @@ def _leaf_commands() -> Iterator[tuple[str, click.Command]]:
     """
     root = typer.main.get_command(app)
 
-    def walk(cmd: click.Command, path: list[str]) -> Iterator[tuple[str, Any]]:
+    def walk(cmd: Command, path: list[str]) -> Iterator[tuple[str, Any]]:
         if cmd.callback is not None and path != ["moneybin"]:
             yield " ".join(path), cmd
-        if isinstance(cmd, click.Group):
+        if isinstance(cmd, TyperGroup):
             for name in sorted(cmd.commands):
                 yield from walk(cmd.commands[name], [*path, name])
 
@@ -95,7 +97,7 @@ def _literal_actor(node: ast.Call) -> str | None:
     return None
 
 
-def _audit_actors(command: click.Command, command_path: str) -> set[str]:
+def _audit_actors(command: Command, command_path: str) -> set[str]:
     """Every actor string this command can write, from every audit site it reaches.
 
     Follows calls into module-level helpers rather than reading the callback
@@ -157,7 +159,7 @@ def _expected_actor(command_path: str) -> str:
     return "_".join(command_path.split(" ")[1:]).replace("-", "_")
 
 
-def _declared_actors(command: click.Command) -> set[str]:
+def _declared_actors(command: Command) -> set[str]:
     """Literal ``cli_actor=`` strings passed inside a command's own body.
 
     Reads the callback's source, so an actor threaded through a shared helper
@@ -422,6 +424,99 @@ def test_handle_cli_errors_outside_a_click_context_still_audits(
     assert _read_events(privacy_log_dir)[0]["actor"] == "cli.unknown"
 
 
+@pytest.mark.parametrize(
+    "command,fail", [("confirm", False), ("confirm", True), ("files", True)]
+)
+def test_import_completion_keeps_the_calling_commands_audit_actor(
+    privacy_log_dir: Path,
+    tmp_path: Path,
+    mocker: Any,
+    command: str,
+    fail: bool,
+) -> None:
+    from moneybin.extractors.confidence import Confidence
+    from moneybin.services.import_confirmation import (
+        ConfirmationRequired,
+        ImportConfirmationRequiredError,
+        ProposedMapping,
+    )
+    from moneybin.services.import_service import ImportResult
+
+    file_path = tmp_path / "statement.csv"
+    file_path.write_text("Date,Amount,Description\n2026-01-01,-1,Example\n")
+    mocker.patch("moneybin.database.get_database", return_value=MagicMock())
+    completion = (
+        DatabaseLockError("busy")
+        if fail
+        else ImportResult(
+            file_path=str(file_path),
+            file_type="tabular",
+            transactions=1,
+            import_id="example",
+        )
+    )
+    outcomes: list[Exception | ImportResult] = [completion]
+    if command == "files":
+        outcomes.insert(
+            0,
+            ImportConfirmationRequiredError(
+                ConfirmationRequired(
+                    channel="tabular",
+                    confidence=Confidence(
+                        score=0.8, tier="medium", flagged=(), missing_required=()
+                    ),
+                    proposed=ProposedMapping(
+                        {
+                            "transaction_date": "Date",
+                            "amount": "Amount",
+                            "description": "Description",
+                        },
+                        {},
+                        (),
+                    ),
+                    reason="unknown_layout",
+                )
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                output="text",
+                width=80,
+                height=24,
+                page=False,
+                color=False,
+                style=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required", return_value="accept"
+        )
+    mocker.patch(
+        "moneybin.services.import_service.ImportService.import_file",
+        side_effect=outcomes,
+    )
+    mocker.patch(
+        "moneybin.services.inbox_service.InboxService.for_active_profile_no_db",
+        return_value=MagicMock(),
+    )
+    flags = (
+        ["--accept", "--output", "json"] if command == "confirm" else ["--no-refresh"]
+    )
+    result = runner.invoke(
+        app, ["import", command, str(file_path), *flags], prog_name="moneybin"
+    )
+    assert result.exit_code == int(fail), result.output
+    if command == "files":
+        # Text-mode failures deliberately emit no privacy audit event.
+        assert not (privacy_log_dir / "privacy.log.jsonl").exists()
+        return
+    assert {event["actor"] for event in _read_events(privacy_log_dir)} == {
+        f"cli.import_{command}_command"
+    }
+
+
 # ------------------------------------------------- behaviour: real command ---
 
 
@@ -442,3 +537,38 @@ def test_gsheet_list_failure_audits_as_gsheet_list(
 
     assert result.exit_code == 1
     assert _read_events(privacy_log_dir)[0]["actor"] == "cli.gsheet_list"
+
+
+@patch("moneybin.synthetic.reset.reset_synthetic_rows")
+@patch("moneybin.cli.commands.synthetic._require_profile_database")
+@patch("moneybin.cli.commands.synthetic._reset_safety_check")
+@patch("moneybin.database.get_database")
+def test_synthetic_reset_regeneration_failure_audits_as_reset(
+    mock_get_database: MagicMock,
+    _mock_safety_check: MagicMock,
+    _mock_profile_check: MagicMock,
+    _mock_reset_rows: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regeneration phase retains the reset command's audit identity."""
+    actors: list[str | None] = []
+
+    @contextmanager
+    def record_error_actor(*, cli_actor: str | None = None, **_kwargs: object) -> Any:
+        actors.append(cli_actor)
+        yield
+
+    monkeypatch.setattr("moneybin.cli.utils.handle_cli_errors", record_error_actor)
+    safety_context = MagicMock()
+    safety_context.__enter__.return_value = MagicMock()
+    generation_context = MagicMock()
+    generation_context.__enter__.side_effect = DatabaseLockError("busy")
+    mock_get_database.side_effect = [safety_context, safety_context, generation_context]
+
+    result = runner.invoke(
+        app,
+        ["synthetic", "reset", "--persona", "basic", "--yes"],
+    )
+
+    assert result.exit_code == 1
+    assert actors == ["synthetic_reset", "synthetic_reset"]

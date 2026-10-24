@@ -113,6 +113,17 @@ EXAMPLES: dict[str, list[Example]] = {
                 LIMIT 50
             """,
         ),
+        Example(
+            question="Transactions that still need a category, most recent first",
+            sql="""
+                SELECT transaction_id, transaction_date, account_id, amount,
+                       currency_code, description
+                FROM core.fct_transactions
+                WHERE is_categorizable AND category IS NULL
+                ORDER BY transaction_date DESC, transaction_id
+                LIMIT 25
+            """,
+        ),
     ],
     "core.fct_transaction_lines": [
         Example(
@@ -202,12 +213,13 @@ EXAMPLES: dict[str, list[Example]] = {
     "core.bridge_category_source_map": [
         Example(
             question="Resolve a Plaid category code to a MoneyBin category "
-            "(substitute YOUR_DETAILED_CODE and YOUR_PRIMARY_CODE)",
+            "(substitute YOUR_DETAILED_CODE and YOUR_PRIMARY_CODE; a NULL "
+            "category_id means the code is ignored and categorizes nothing)",
             sql="""
                 SELECT category_id FROM core.bridge_category_source_map
-                WHERE source_type = 'plaid'
+                WHERE source_type = 'plaid' AND source_origin = ''
                 AND source_category_code IN ('YOUR_DETAILED_CODE', 'YOUR_PRIMARY_CODE')
-                ORDER BY code_level = 'detailed' DESC LIMIT 1
+                ORDER BY source_category_code = 'YOUR_DETAILED_CODE' DESC LIMIT 1
             """,
         ),
     ],
@@ -395,41 +407,75 @@ EXAMPLES: dict[str, list[Example]] = {
                 ORDER BY balance_date DESC
             """,
         ),
-    ],
-    "core.uncategorized_queue": [
         Example(
-            question="Highest-impact uncategorized transactions",
+            question="Net worth per currency on the latest date, withheld while "
+            "any account in it has no recorded balance",
             sql="""
-                SELECT account_name, txn_date, amount, currency_code, description,
-                       age_days, priority_score
-                FROM core.uncategorized_queue
-                ORDER BY priority_score DESC
-                LIMIT 25
+                SELECT currency_code, balance_date,
+                       COUNT(*) FILTER (WHERE balance IS NULL)
+                           AS accounts_without_balance,
+                       CASE WHEN COUNT(*) FILTER (WHERE balance IS NULL) = 0
+                            THEN SUM(balance) END AS net_worth
+                FROM core.fct_balances_daily
+                WHERE in_net_worth
+                  AND balance_date = (
+                      SELECT MAX(balance_date) FROM core.fct_balances_daily
+                      WHERE in_net_worth
+                  )
+                GROUP BY currency_code, balance_date
+                ORDER BY balance_date, currency_code
             """,
         ),
     ],
     "reports.net_worth": [
         Example(
-            question="Net worth today, one row per currency",
+            question="Net worth today, in the profile's home currency",
             sql="""
-                SELECT currency_code, balance_date, account_count,
+                SELECT home_currency_code, balance_date, account_count,
+                       unpriced_currency_count, unanchored_account_count,
                        total_assets, total_liabilities, net_worth
                 FROM reports.net_worth
                 WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)
-                ORDER BY currency_code
             """,
         ),
         Example(
-            question="Net worth trend over the last 12 months (monthly, per currency)",
+            question="Net worth trend over the last 12 months (monthly)",
             sql="""
                 SELECT
-                    currency_code,
                     STRFTIME(balance_date, '%Y-%m') AS month,
+                    LAST(home_currency_code ORDER BY balance_date) AS home_currency_code,
                     LAST(net_worth ORDER BY balance_date) AS end_of_month_net_worth
                 FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
-                GROUP BY month, currency_code
-                ORDER BY month, currency_code
+                GROUP BY month
+                ORDER BY month
+            """,
+        ),
+    ],
+    "reports.net_worth_accounts": [
+        Example(
+            question="Per-account balances today, converted to home currency",
+            sql="""
+                SELECT account_name, currency_code, account_balance,
+                       home_currency_code, account_balance_home
+                FROM reports.net_worth_accounts
+                WHERE balance_date = (
+                    SELECT MAX(balance_date) FROM reports.net_worth_accounts
+                )
+                ORDER BY account_name
+            """,
+        ),
+    ],
+    "reports.net_worth_currencies": [
+        Example(
+            question="Today's net worth by currency, in each currency's own unit and in home currency",
+            sql="""
+                SELECT currency_code, net_worth, home_currency_code, net_worth_home
+                FROM reports.net_worth_currencies
+                WHERE balance_date = (
+                    SELECT MAX(balance_date) FROM reports.net_worth_currencies
+                )
+                ORDER BY currency_code
             """,
         ),
     ],
@@ -682,6 +728,17 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "core.dim_holdings_broker_reported": [
+        Example(
+            question="Which accounts does the broker say still hold a position, "
+            "and as of when?",
+            sql="""
+                SELECT account_id, has_position, as_of
+                FROM core.dim_holdings_broker_reported
+                ORDER BY account_id
+            """,
+        ),
+    ],
     "core.fct_security_prices": [
         Example(
             question="Price history for one security, most recent first "
@@ -710,7 +767,7 @@ EXAMPLES: dict[str, list[Example]] = {
 _BEYOND_NOTE = (
     "The tables above are the curated query surface. sql_query also reads raw "
     "ingest (raw) and staging (prep) — use them only when the curated tables "
-    "cannot answer the question, and note they carry 34 column declarations "
+    "cannot answer the question, and note they carry 33 column declarations "
     "with every other value masked only when it is a text or integer value "
     "shaped like an SSN or a run of 8 or more digits; a DECIMAL or FLOAT is "
     "not scanned at all. Provenance (meta) and seed data (seeds) are not "

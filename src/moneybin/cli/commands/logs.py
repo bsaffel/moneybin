@@ -8,13 +8,21 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    no_pager_option,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy
 from moneybin.config import get_settings
 from moneybin.utils.parsing import parse_duration
 
@@ -180,52 +188,118 @@ def _parse_time_bound(value: str) -> datetime:
     return parsed
 
 
-def _do_prune(log_dir: Path, older_than: str, *, dry_run: bool, quiet: bool) -> None:
+@dataclass
+class _PruneOutcome:
+    """The completed and failed portions of one filesystem prune request."""
+
+    removed: list[tuple[Path, int | None]] = field(default_factory=list)
+    failures: list[tuple[Path, str]] = field(default_factory=list)
+
+    @property
+    def regular_file_bytes(self) -> int:
+        """Logical regular-file sizes, not physical space reclaimed."""
+        return sum(size for _, size in self.removed if size is not None)
+
+    @property
+    def regular_file_count(self) -> int:
+        return sum(1 for _, size in self.removed if size is not None)
+
+    @property
+    def symlink_count(self) -> int:
+        return sum(1 for _, size in self.removed if size is None)
+
+
+def _render_prune_outcome(outcome: _PruneOutcome, *, dry_run: bool) -> None:
+    """Print the prune receipt from actual filesystem outcomes."""
+    if not outcome.removed and not outcome.failures:
+        text = "No log files matched the requested age.\n"
+    else:
+        action = "Prune preview" if dry_run else "Prune complete"
+        if outcome.failures and not dry_run:
+            action = "Prune partially completed" if outcome.removed else "Prune failed"
+        lines = [action]
+        if outcome.regular_file_count:
+            verb = "Selected" if dry_run else "Removed"
+            lines.append(f"{verb} regular files: {outcome.regular_file_count}")
+            lines.append(
+                f"Removed file sizes: {outcome.regular_file_bytes} bytes "
+                "(logical sizes; not reclaimed disk space)"
+            )
+        if outcome.symlink_count:
+            verb = "Selected" if dry_run else "Removed"
+            lines.append(f"{verb} symlinks: {outcome.symlink_count}")
+        for path, _ in outcome.removed:
+            lines.append(f"  {path.name}")
+        if outcome.failures:
+            lines.append(f"Failed: {len(outcome.failures)} file(s)")
+            lines.extend(
+                f"  {path.name}: {reason}" for path, reason in outcome.failures
+            )
+        text = "\n".join(lines) + "\n"
+    emit_human_result(
+        text,
+        policy=get_terminal_policy(no_pager=True),
+        finite_read=False,
+        no_pager=True,
+        receipt=True,
+    )
+
+
+def _prune_json_payload(outcome: _PruneOutcome, *, dry_run: bool) -> dict[str, object]:
+    """Build the machine-readable prune receipt from filesystem outcomes."""
+    completed = [
+        {"path": path.name, "size_bytes": size} for path, size in outcome.removed
+    ]
+    return {
+        "dry_run": dry_run,
+        "selected" if dry_run else "removed": completed,
+        "failures": [
+            {"path": path.name, "reason": reason} for path, reason in outcome.failures
+        ],
+    }
+
+
+def _do_prune(
+    log_dir: Path, older_than: str, *, dry_run: bool, output: OutputFormat
+) -> _PruneOutcome:
     try:
         delta = parse_duration(older_than)
     except ValueError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(2) from e
+        abort_cli_error(e, output=output, exit_code=2, cli_actor="logs")
 
     cutoff = datetime.now() - delta
     if not log_dir.exists():
-        if not quiet:
-            logger.info(f"Log directory does not exist: {log_dir}")
-        return
+        return _PruneOutcome()
 
-    deleted = 0
-    freed_bytes = 0
-    # Mirror `_find_log_files` and scope to *.log only — the log directory
-    # may contain non-log artifacts (lock files, .pid, symlinks) that must
-    # not be deleted by mtime.
+    outcome = _PruneOutcome()
+    # Mirror `_find_log_files` and scope to *.log only. Path.is_file() and
+    # stat() deliberately follow symlinks, so a qualifying log symlink is
+    # unlinked as a link under the command's existing predicate.
     for log_file in log_dir.glob("*.log"):
-        if not log_file.is_file():
-            continue
-        stat = log_file.stat()
-        if datetime.fromtimestamp(stat.st_mtime) < cutoff:
-            size = stat.st_size
-            if dry_run:
-                if not quiet:
-                    logger.info(
-                        f"  Would delete: {log_file.name} ({size / 1024:.1f} KB)"
-                    )
-            else:
+        try:
+            if not log_file.is_file():
+                continue
+            stat = log_file.stat()
+            if datetime.fromtimestamp(stat.st_mtime) >= cutoff:
+                continue
+            logical_size = None if log_file.is_symlink() else stat.st_size
+            if not dry_run:
                 log_file.unlink()
-                if not quiet:
-                    logger.info(f"  Deleted: {log_file.name}")
-            deleted += 1
-            freed_bytes += size
+            outcome.removed.append((log_file, logical_size))
+        except OSError as error:
+            outcome.failures.append((log_file, str(error)))
+    return outcome
 
-    if quiet:
-        return
-    if deleted == 0:
-        logger.info(f"No log files older than {older_than}")
-    elif dry_run:
-        logger.info(
-            f"Would delete {deleted} file(s), freeing {freed_bytes / 1024:.1f} KB"
-        )
-    else:
-        logger.info(f"✅ Deleted {deleted} file(s), freed {freed_bytes / 1024:.1f} KB")
+
+def _emit_log_view(text: str, *, no_pager: bool, live_follow: bool = False) -> None:
+    """Render one complete, safely literal log answer through the shared boundary."""
+    emit_human_result(
+        text,
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+        live_follow=live_follow,
+    )
 
 
 def _do_view(
@@ -240,46 +314,66 @@ def _do_view(
     grep: str | None,
     output: OutputFormat,
     quiet: bool,
+    no_pager: bool,
 ) -> None:
     if level and level.upper() not in _LEVEL_PRIORITY:
-        logger.error(
-            f"❌ Unknown level '{level}'. Choose from: {', '.join(_LEVEL_PRIORITY)}"
+        abort_cli_error(
+            ValueError(
+                f"Unknown level '{level}'. Choose from: {', '.join(_LEVEL_PRIORITY)}"
+            ),
+            output=output,
+            exit_code=2,
+            cli_actor="logs",
         )
-        raise typer.Exit(2)
 
     since_dt: datetime | None = None
     if since:
         try:
             since_dt = _parse_time_bound(since)
         except ValueError as e:
-            logger.error(f"❌ {e}")
-            raise typer.Exit(2) from e
+            abort_cli_error(e, output=output, exit_code=2, cli_actor="logs")
 
     until_dt: datetime | None = None
     if until:
         try:
             until_dt = _parse_time_bound(until)
         except ValueError as e:
-            logger.error(f"❌ {e}")
-            raise typer.Exit(2) from e
+            abort_cli_error(e, output=output, exit_code=2, cli_actor="logs")
 
     grep_pattern: re.Pattern[str] | None = None
     if grep:
         try:
             grep_pattern = re.compile(grep)
         except re.error as e:
-            logger.error(f"❌ Invalid regex pattern: {e}")
-            raise typer.Exit(2) from e
+            abort_cli_error(
+                ValueError(str(e)),
+                output=output,
+                exit_code=2,
+                cli_actor="logs",
+                message=f"Invalid regex pattern: {e}",
+            )
 
     if not log_dir.exists():
-        if not quiet:
-            logger.info(f"No log directory found: {log_dir}")
+        if output == OutputFormat.JSON:
+            typer.echo("[]")
+            return
+        _emit_log_view(
+            f"Logs · {stream}\n\nNo log directory found: {log_dir}\n",
+            no_pager=no_pager,
+            live_follow=follow,
+        )
         return
 
     log_files = _find_log_files(log_dir, stream)
     if not log_files:
-        if not quiet:
-            logger.info(f"No log files found for stream '{stream}' in {log_dir}")
+        if output == OutputFormat.JSON:
+            typer.echo("[]")
+            return
+        _emit_log_view(
+            f"Logs · {stream}\n\nNo log files found for stream '{stream}' in {log_dir}\n",
+            no_pager=no_pager,
+            live_follow=follow,
+        )
         return
 
     has_filters = bool(
@@ -309,11 +403,29 @@ def _do_view(
             # reach this output verbatim either way.
             typer.echo(json.dumps([e.to_dict() for e in filtered], indent=2))
         else:
-            for entry in filtered:
-                typer.echo(entry.to_text())
+            scope = f"Logs · {stream} · requested line cap {lines}"
+            if level or grep_pattern:
+                scope += f" · searched last {read_lines} candidate lines"
+            if grep:
+                scope += f" · grep={grep}"
+            content = "\n".join(entry.to_text() for entry in filtered)
+            if not content:
+                content = "No log entries match the requested filters."
+            _emit_log_view(
+                f"{scope}\n\n{content}\n",
+                no_pager=no_pager,
+                live_follow=follow,
+            )
     else:
-        for raw_line in _tail_file(log_files[0], lines):
-            typer.echo(raw_line.rstrip())
+        raw_lines = _tail_file(log_files[0], lines)
+        content = "\n".join(raw_lines)
+        if not content:
+            content = "No log lines in the requested scope."
+        _emit_log_view(
+            f"Logs · {stream} · requested line cap {lines}\n\n{content}\n",
+            no_pager=no_pager,
+            live_follow=follow,
+        )
 
     if follow:
         if not quiet:
@@ -400,6 +512,7 @@ def logs_command(
         bool,
         typer.Option("--dry-run", help="With --prune: show what would be deleted"),
     ] = False,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """View, prune, or locate MoneyBin log files for the active profile."""
     # Argument validation runs before any profile-dependent work so a bare
@@ -441,7 +554,15 @@ def logs_command(
     if prune:
         # older_than presence enforced by guard above; type narrows here.
         assert older_than is not None  # noqa: S101  # type-narrowing aid
-        _do_prune(log_dir, older_than, dry_run=dry_run, quiet=quiet)
+        outcome = _do_prune(log_dir, older_than, dry_run=dry_run, output=output)
+        if output == OutputFormat.JSON:
+            typer.echo(
+                json.dumps(_prune_json_payload(outcome, dry_run=dry_run), indent=2)
+            )
+        else:
+            _render_prune_outcome(outcome, dry_run=dry_run)
+        if outcome.failures:
+            raise typer.Exit(1)
         return
 
     # stream presence and validity enforced by guards above; type narrows here.
@@ -458,6 +579,7 @@ def logs_command(
         grep=grep,
         output=output,
         quiet=quiet,
+        no_pager=no_pager,
     )
 
 

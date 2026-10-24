@@ -31,12 +31,18 @@ from moneybin.privacy.payloads.categorize import (
     CategorizeStatsPayload,
     RuleRow,
 )
-from moneybin.services.categorization._shared import plaid_bridge_match_predicate
+from moneybin.repositories.categorization_decisions_repo import (
+    PENDING_ATTEMPT_PREDICATE,
+)
+from moneybin.services.categorization._shared import (
+    did_you_mean,
+    plaid_bridge_match_predicate,
+    source_category_bridge_match_predicate,
+)
 from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
     CATEGORIZATION_RULES,
-    CORE_UNCATEGORIZED_QUEUE,
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
@@ -47,25 +53,6 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
-
-# The population core.uncategorized_queue is drawn from, minus its own
-# `category IS NULL` filter: not a confirmed transfer leg, on an account that
-# is not archived, and resolving to a real account — the queue INNER JOINs
-# dim_accounts, so a transaction whose account_id never resolved is absent from
-# it and must be absent from any denominator compared against it.
-#
-# Repeated here rather than read off the view because the view holds only the
-# uncategorized rows and a coverage denominator needs the ones it filtered out.
-# The clauses are the view's, character for character, and
-# test_uncategorized_matches_the_canonical_queue builds that view from the
-# shipped model file and compares the two counts — so a divergence fails a test
-# instead of quietly publishing a coverage figure the review queue contradicts.
-_CATEGORIZABLE_POPULATION = f"""
-FROM {FCT_TRANSACTIONS.full_name} AS t
-INNER JOIN {DIM_ACCOUNTS.full_name} AS a
-  ON t.account_id = a.account_id
-WHERE NOT t.is_transfer AND NOT a.archived
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +92,26 @@ class CategorizationStats:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class UnmappedSourceTerm:
+    """One imported category-vocabulary term with no ``app.category_source_map`` row.
+
+    The decision unit for curation is the *term* — the distinct
+    ``(source_type, source_origin, category, subcategory)`` tuple — not the transaction:
+    many rows can carry the same imported text. ``transaction_count`` is how
+    many transactions mapping this term would categorize on the next sweep;
+    ``suggestions`` are up to 3 ``did_you_mean`` guesses against active
+    MoneyBin category names, for a curator choosing where to map it.
+    """
+
+    source_type: str
+    source_origin: str
+    category: str
+    subcategory: str | None
+    transaction_count: int
+    suggestions: list[str]
+
+
 class CategorizationQueries:
     """Read-only reporting queries against the categorization tables."""
 
@@ -112,11 +119,133 @@ class CategorizationQueries:
         """Bind the queries collaborator to a database connection."""
         self._db = db
 
+    def _active_category_names(self) -> list[str]:
+        """Distinct active MoneyBin category names, for ``did_you_mean`` suggestions."""
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT category
+                FROM {CATEGORIES.full_name}
+                WHERE is_active = true AND category IS NOT NULL
+                """  # TableRef constant
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        return sorted({str(row[0]) for row in rows})
+
+    def list_unmapped_source_terms(
+        self, *, namespace: str | None = None
+    ) -> list[UnmappedSourceTerm]:
+        """Enumerate distinct imported vocabulary terms with no bridge mapping.
+
+        Reads ``prep.int_transactions__matched`` — the row-grain, pre-merge
+        layer that carries each source row's own ``source_origin`` +
+        ``category``/``subcategory`` — mirroring
+        ``CategorizationOrchestrator._source_category_bridge_candidates``'s
+        choice of layer. A term is unmapped when no
+        ``core.bridge_category_source_map`` row matches it, tested with the
+        same shared predicate the apply path and ``plaid_unmapped`` use, so
+        this enumeration can never disagree with what actually gets applied.
+
+        ``category IS NULL`` or ``source_origin IS NULL`` rows are excluded,
+        matching the apply path's own guards. ``''`` and ``NULL``
+        subcategory collapse into one term via ``COALESCE(..., '')`` in the
+        ``GROUP BY`` — the same sentinel the write side
+        (``CategorySourceMapRepo.upsert``) and read side
+        (``source_category_bridge_match_predicate``) already share, so a
+        term enumerated here binds correctly when resolved.
+
+        ``transaction_count`` counts only what the apply path would write:
+        distinct gold transactions not yet categorized by any source and not
+        already covered by another member's mapping. A transaction carrying
+        two unmapped terms counts under each, since either mapping alone
+        would resolve it. A term with nothing left to resolve is omitted.
+
+        It joins ``transaction_id`` directly rather than resolving
+        ``app.transaction_id_aliases``: ids are forwarded at re-key and never
+        resolved on read (``matching/aliasing.py``), so this live view serves
+        only current ids and every categorization already sits on one. The
+        apply path resolves only because a write must land on a live id.
+
+        ``namespace`` optionally filters to one ``source_origin``. Results
+        are ordered by that count descending, then the term itself, so the
+        biggest wins surface first — per the owner's ruling, curation
+        answers ~17 term-questions, not ~879 row-questions.
+
+        Degrades to an empty list when ``prep.int_transactions__matched``
+        isn't materialized yet, mirroring
+        ``_source_category_bridge_candidates``.
+        """
+        sql = f"""
+            WITH mapped AS (
+                SELECT DISTINCT m.transaction_id
+                FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                    ON {
+            source_category_bridge_match_predicate(
+                "m.source_type", "m.source_origin", "m.category", "m.subcategory"
+            )
+        }
+                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
+            )
+            SELECT
+                m.source_type,
+                m.source_origin,
+                m.category,
+                COALESCE(m.subcategory, '') AS subcategory,
+                COUNT(DISTINCT m.transaction_id) AS transaction_count
+            FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
+                ON tc.transaction_id = m.transaction_id
+            WHERE m.category IS NOT NULL
+                AND m.source_origin IS NOT NULL
+                AND tc.transaction_id IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM mapped WHERE mapped.transaction_id = m.transaction_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                    WHERE {
+            source_category_bridge_match_predicate(
+                "m.source_type", "m.source_origin", "m.category", "m.subcategory"
+            )
+        }
+                )
+        """  # TableRef constants + code-constant bridge predicate; no user input
+        params: list[object] = []
+        if namespace is not None:
+            sql += " AND m.source_origin = ?"
+            params.append(namespace)
+        sql += """
+            GROUP BY m.source_type, m.source_origin, m.category,
+                COALESCE(m.subcategory, '')
+            ORDER BY transaction_count DESC, m.source_type, m.source_origin,
+                m.category,
+                COALESCE(m.subcategory, '')
+        """
+        try:
+            rows = self._db.execute(sql, params).fetchall()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            return []
+
+        valid_categories = self._active_category_names()
+        return [
+            UnmappedSourceTerm(
+                source_type=str(source_type),
+                source_origin=str(source_origin),
+                category=str(category),
+                subcategory=str(subcategory) if subcategory else None,
+                transaction_count=int(transaction_count),
+                suggestions=did_you_mean(str(category), valid_categories),
+            )
+            for source_type, source_origin, category, subcategory, transaction_count in rows
+        ]
+
     def _fct_transactions_exists(self) -> bool:
         """Return True if core.fct_transactions is queryable.
 
         Used to distinguish pre-first-import state (no fact table yet) from
-        schema drift (fact table present, derived views missing).
+        schema drift (fact table present, `is_categorizable` column missing).
         """
         try:
             self._db.execute(
@@ -124,6 +253,8 @@ class CategorizationQueries:
             )
         except duckdb.CatalogException:
             return False
+        except duckdb.BinderException:
+            return True  # present but stale: its own inputs no longer bind
         return True
 
     def get_active_categories(self) -> list[dict[str, str | bool | None]]:
@@ -267,7 +398,7 @@ class CategorizationQueries:
             rows = self._db.execute(
                 f"""
                 SELECT merchant_id, raw_pattern, match_type,
-                       canonical_name, category, subcategory
+                       canonical_name, category, subcategory, category_id
                 FROM {MERCHANTS.full_name}
                 ORDER BY canonical_name
                 """
@@ -284,6 +415,7 @@ class CategorizationQueries:
                     canonical_name=r[3],
                     category=r[4],
                     subcategory=r[5],
+                    category_id=r[6],
                 )
                 for r in rows
             ]
@@ -296,12 +428,14 @@ class CategorizationQueries:
         sort: Literal["date", "impact"] = "date",
         min_amount: Decimal = Decimal("0"),
         account_id: str | None = None,
+        pending_only: bool = False,
+        transaction_id: str | None = None,
     ) -> list[dict[str, Any]] | None:
-        """List uncategorized transactions from the curator-impact view.
+        """List the transactions that need a category.
 
-        Uses ``core.uncategorized_queue`` which already excludes transfer
-        pairs and archived accounts and provides pre-computed ``age_days`` and
-        ``priority_score`` columns needed for impact-sort.
+        A row needs one when ``core.fct_transactions.is_categorizable`` holds
+        and its ``category`` is NULL. ``age_days`` and ``priority_score`` are
+        computed here; both depend on ``CURRENT_DATE`` and serve only this sort.
 
         ``sort`` controls the ORDER BY:
         - ``"date"``   — ``txn_date DESC`` (most recent first, default)
@@ -309,9 +443,9 @@ class CategorizationQueries:
           first) *within each currency*, the currencies then interleaved by rank
           so a capped queue offers work in every one
 
-        Returns ``None`` only when the underlying fact table doesn't exist
-        yet (pre-first-import). When the fact table exists but the queue
-        view is missing — schema drift or unapplied refresh — raises
+        Returns ``None`` only when the fact table doesn't exist yet
+        (pre-first-import). When it exists but predates ``is_categorizable`` —
+        upgraded code, unrefreshed database — raises
         ``UserError(code=error_codes.INFRA_SCHEMA_DRIFT)`` so callers surface a
         ``refresh_run`` remediation rather than misreporting "no data".
         """
@@ -323,19 +457,47 @@ class CategorizationQueries:
             "currency_code, description, merchant_id, merchant_normalized, "
             "age_days, priority_score, source_type, source_id"
         )
+        # LEFT JOIN: is_categorizable already requires a resolved account, so an
+        # INNER JOIN would only add a second membership condition beside it.
         sql = f"""
             SELECT {columns}
-            FROM {CORE_UNCATEGORIZED_QUEUE.full_name}
+            FROM (
+                SELECT
+                    t.transaction_id,
+                    t.account_id,
+                    a.display_name AS account_name,
+                    t.transaction_date AS txn_date,
+                    t.amount,
+                    t.currency_code,
+                    t.description,
+                    t.merchant_id,
+                    t.merchant_name AS merchant_normalized,
+                    CAST(CURRENT_DATE - t.transaction_date AS INT) AS age_days,
+                    ABS(t.amount)
+                        * CAST(CURRENT_DATE - t.transaction_date AS INT)
+                        AS priority_score,
+                    t.source_type,
+                    NULL::TEXT AS source_id
+                FROM {FCT_TRANSACTIONS.full_name} AS t
+                LEFT JOIN {DIM_ACCOUNTS.full_name} AS a
+                  ON t.account_id = a.account_id
+                WHERE t.is_categorizable AND t.category IS NULL
+            ) AS queue
             WHERE ABS(amount) >= ?
-        """  # TableRef constant + fixed column list
+        """  # TableRef constants + fixed column list
         params: list[object] = [min_amount]
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
 
+        if transaction_id is not None:
+            sql += " AND transaction_id = ?"
+            params.append(transaction_id)
+        if pending_only:
+            sql += f" AND {PENDING_ATTEMPT_PREDICATE}"  # fixed internal SQL predicate
+
         if sort == "impact":
-            # priority_score is ABS(amount) * age_days — a nominal magnitude
-            # that core.uncategorized_queue's own column comment calls
+            # priority_score is ABS(amount) * age_days — a nominal magnitude,
             # meaningful only within one currency. Ranked across currencies
             # ahead of LIMIT, the highest-denomination unit takes every slot
             # and the other currencies' pending work is absent from the queue
@@ -368,20 +530,28 @@ class CategorizationQueries:
             result = self._db.execute(sql, params)
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
-        except duckdb.CatalogException as e:
+        except (duckdb.CatalogException, duckdb.BinderException) as e:
             if not self._fct_transactions_exists():
                 return None
             raise UserError(
-                "Uncategorized-queue view is missing. The schema is out of "
-                "date — run `refresh_run` (MCP) or `moneybin refresh` (CLI) "
-                "to rebuild derived views.",
+                "The transactions view predates is_categorizable. The schema is "
+                "out of date — run `refresh_run` (MCP) or `moneybin refresh` "
+                "(CLI) to rebuild derived views.",
                 code=error_codes.INFRA_SCHEMA_DRIFT,
                 hint="refresh_run",
-                details={"missing_object": CORE_UNCATEGORIZED_QUEUE.full_name},
+                details={
+                    "missing_object": f"{FCT_TRANSACTIONS.full_name}.is_categorizable"
+                },
             ) from e
 
-        pending_matches = self._transactions_with_pending_matches()
         result_rows = [dict(zip(columns, row, strict=False)) for row in rows]
+        pending_matches = (
+            self._transactions_with_pending_matches([
+                str(row["transaction_id"]) for row in result_rows
+            ])
+            if pending_only
+            else self._transactions_with_pending_matches()
+        )
         for row in result_rows:
             row["pending_transfer_match"] = row["transaction_id"] in pending_matches
         return result_rows
@@ -403,16 +573,18 @@ class CategorizationQueries:
         except duckdb.CatalogException:
             return []
 
-    def _transactions_with_pending_matches(self) -> set[str]:
+    def _transactions_with_pending_matches(
+        self, transaction_ids: list[str] | None = None
+    ) -> set[str]:
         """Return gold transaction_ids that have an unresolved match decision.
 
         ``app.match_decisions`` keys on ``(source_type, source_transaction_id)``,
-        not the gold ``transaction_id`` the queue reports, so this maps through
+        not the gold ``transaction_id`` the categorization queue reports, so this maps through
         ``prep.int_transactions__matched`` — the layer that assigns the gold id
         to each source member.
 
         Materialized as a set in ONE query, then applied in memory. Do NOT turn
-        this into a correlated EXISTS against the queue view: correlating
+        this into a correlated EXISTS against the categorization queue: correlating
         against the fct_transactions merge pipeline per row is what made
         system_doctor hang for >73s in production (F14).
 
@@ -435,6 +607,14 @@ class CategorizationQueries:
         decision would falsely flag its transactions as an unresolved
         transfer.
         """
+        if transaction_ids is not None and not transaction_ids:
+            return set()
+        scope_clause = ""
+        params: list[str] | None = None
+        if transaction_ids is not None:
+            placeholders = ", ".join("?" for _ in transaction_ids)
+            scope_clause = f"AND m.transaction_id IN ({placeholders})"
+            params = transaction_ids * 2
         try:
             rows = self._db.execute(
                 f"""
@@ -446,6 +626,7 @@ class CategorizationQueries:
                   AND d.account_id = m.account_id
                 WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
                   AND d.match_type = 'transfer'
+                  {scope_clause}
 
                 UNION
 
@@ -457,7 +638,9 @@ class CategorizationQueries:
                   AND COALESCE(d.account_id_b, d.account_id) = m.account_id
                 WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
                   AND d.match_type = 'transfer'
-                """  # TableRef constants + literal predicates, no user input
+                  {scope_clause}
+                """,  # TableRefs + placeholder count only; selected IDs parameterized
+                params,
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
             # CatalogException: pre-matching (no matches run yet) or
@@ -471,43 +654,77 @@ class CategorizationQueries:
             return set()
         return {str(r[0]) for r in rows}
 
-    def count_uncategorized(self) -> int:
-        """Return the size of the canonical uncategorized queue.
+    def count_pending_review(self) -> int:
+        """Count current eligible attempts without hydrating the queue."""
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} AS queue
+                WHERE queue.is_categorizable AND queue.category IS NULL
+                  AND {PENDING_ATTEMPT_PREDICATE}
+                """,  # TableRef and fixed internal eligibility predicate
+            ).fetchone()
+        except (duckdb.CatalogException, duckdb.BinderException) as exc:
+            if not self._fct_transactions_exists():
+                return 0
+            # An empty fact table proves zero work before its new column is built.
+            if (
+                self._db.execute(
+                    f"SELECT 1 FROM {FCT_TRANSACTIONS.full_name} LIMIT 1"  # TableRef constant
+                ).fetchone()
+                is None
+            ):
+                return 0
+            raise UserError(
+                "Categorization review state is missing or out of date; run moneybin refresh.",
+                code=error_codes.INFRA_SCHEMA_DRIFT,
+                hint="refresh_run",
+                details={
+                    "missing_object": f"{FCT_TRANSACTIONS.full_name}.is_categorizable"
+                },
+            ) from exc
+        return int(row[0]) if row else 0
 
-        ``core.uncategorized_queue`` is the one definition of "uncategorized":
-        no resolved category, not a confirmed transfer leg, not on an archived
-        account. Counting anything else here puts a different N beside the same
-        queue the user is sent to (:meth:`list_uncategorized_transactions`).
+    def count_uncategorized(self) -> int:
+        """Return how many transactions need a category.
+
+        The same filter as :meth:`list_uncategorized_transactions`: the count
+        and the listing sit side by side on the review surface, so they must
+        never show two different Ns.
         """
         try:
             row = self._db.execute(
-                f"SELECT COUNT(*) FROM {CORE_UNCATEGORIZED_QUEUE.full_name}"  # TableRef constant, no user input interpolated
+                f"""
+                SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}
+                WHERE is_categorizable AND category IS NULL
+                """  # TableRef constant, no user input interpolated
             ).fetchone()
             return int(row[0]) if row else 0
-        except Exception:  # the view is absent before first refresh
+        except Exception:  # the fact or its column is absent before first refresh
             return 0
 
     def coverage(self) -> CategorizationCoverage:
         """Count what needs categorizing, and how much of it already is.
 
-        Scoped to :data:`_CATEGORIZABLE_POPULATION` — a coverage figure over
-        rows nobody is ever asked to categorize describes no work. A category
-        counts however it arrived: a row whose source file supplied its own
-        category text is one ``moneybin review`` skips, so coverage has to
-        agree that it is done.
+        Scoped to ``is_categorizable`` — a coverage figure over rows nobody is
+        ever asked to categorize describes no work. A category counts however
+        it arrived: a row whose source file supplied its own category text is
+        one ``moneybin review`` skips, so coverage has to agree that it is done.
 
         Raises:
-            duckdb.CatalogException: the core layer is not built yet. Callers
-                decide whether that means "nothing to report" or "cannot
-                check" — the two surfaces here answer differently.
+            duckdb.CatalogException: the core layer is not built yet.
+            duckdb.BinderException: the fact predates ``is_categorizable``
+                (upgraded, not yet refreshed). Callers decide whether either
+                means "nothing to report" or "cannot check".
         """
         row = self._db.execute(
             f"""
             SELECT
                 COUNT(*) AS categorizable,
-                COUNT(*) FILTER (WHERE t.category IS NULL) AS uncategorized
-            {_CATEGORIZABLE_POPULATION}
-            """  # TableRef constants, no user input interpolated
+                COUNT(*) FILTER (WHERE category IS NULL) AS uncategorized
+            FROM {FCT_TRANSACTIONS.full_name}
+            WHERE is_categorizable
+            """  # TableRef constant, no user input interpolated
         ).fetchone()
         categorizable = int(row[0]) if row else 0
         uncategorized = int(row[1]) if row else 0
@@ -528,7 +745,7 @@ class CategorizationQueries:
         """
         try:
             counts = self.coverage()
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.BinderException):
             return {
                 "total": 0,
                 "categorized": 0,
@@ -568,8 +785,9 @@ class CategorizationQueries:
             source_rows = self._db.execute(
                 f"""
                 WITH categorizable AS (
-                  SELECT t.transaction_id, t.category
-                  {_CATEGORIZABLE_POPULATION}
+                  SELECT transaction_id, category
+                  FROM {FCT_TRANSACTIONS.full_name}
+                  WHERE is_categorizable
                 )
                 SELECT
                   CASE
@@ -586,18 +804,18 @@ class CategorizationQueries:
                 WHERE t.category IS NOT NULL
                 GROUP BY 1
                 ORDER BY cnt DESC
-                """  # TableRef constant
+                """  # TableRef constants
             ).fetchall()
             for source, count in source_rows:
                 stats[f"by_{source}"] = count
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.BinderException):
             pass
 
         # Plaid coverage gap (Tier-2b observability): count Plaid transactions
         # carrying a PFC code with no bridge mapping — the long-tail codes the
         # two-tier bridge doesn't cover.
         #
-        # Deliberately NOT scoped to _CATEGORIZABLE_POPULATION like everything
+        # Deliberately NOT scoped to is_categorizable like everything
         # above it. This measures the bridge, not the user's backlog, and a
         # code's coverage does not depend on the transaction sitting on an
         # archived account or being half of a transfer — narrowing it would

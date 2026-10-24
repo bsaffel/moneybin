@@ -885,3 +885,131 @@ def test_empty_arrays_load_cleanly(db: Database) -> None:
     assert result.investment_transactions_loaded == 0
     assert result.holdings_loaded == 0
     assert result.holding_lots_loaded == 0
+
+
+def test_an_unchanged_repull_counts_no_changes_but_still_writes(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A new job re-sending identical data reports zero changes.
+
+    The rows are still written — securities upsert, a fresh holdings snapshot
+    and receipts — so ``rows_written`` stays non-zero for the refresh gate:
+    2 accounts + 3 securities + 4 investment-transaction receipts + 3 holdings
+    + 2 lots + 2 snapshot receipts. Prices re-sent for the same date write
+    nothing (append-only).
+    """
+    _load(db, sync_data, job_id="job-inv-1")
+    result = _load(db, sync_data, job_id="job-inv-2")
+
+    assert result.accounts_loaded == 0
+    assert result.securities_loaded == 0
+    assert result.investment_transactions_loaded == 0
+    assert result.holdings_loaded == 0
+    assert result.holding_lots_loaded == 0
+    assert result.security_prices_loaded == 0
+    assert result.rows_written == 16
+
+
+def test_a_revised_investment_transaction_counts_as_one_change(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_transactions[0].transaction_name = "BUY AAPL (corrected)"
+
+    result = _load(db, payload, job_id="job-inv-2")
+
+    assert result.investment_transactions_loaded == 1
+
+
+def test_a_transaction_reverted_to_an_earlier_version_counts_as_a_change(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """The revert stores no new revision but changes which version is current."""
+    _load(db, sync_data, job_id="job-inv-1")
+    revised = sync_data.model_copy(deep=True)
+    revised.investment_transactions[0].transaction_name = "BUY AAPL (corrected)"
+    _load(db, revised, job_id="job-inv-2")
+
+    result = _load(db, sync_data, job_id="job-inv-3")
+
+    assert result.investment_transactions_loaded == 1
+
+
+def test_a_revalued_lot_counts_as_a_lot_change_only(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A lot's value lives on the lot row, not the position row."""
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings[0].tax_lots[0].current_value = Decimal("1300.00")
+
+    result = _load(db, payload, job_id="job-inv-2")
+
+    assert result.holding_lots_loaded == 1
+    assert result.holdings_loaded == 0
+
+
+def test_reordered_lots_count_as_no_change(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A lot's array position is not its identity."""
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings[0].tax_lots.reverse()
+
+    result = _load(db, payload, job_id="job-inv-2")
+
+    assert result.holding_lots_loaded == 0
+
+
+def test_a_revalued_position_counts_as_one_change(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings[0].quantity = Decimal("11.0")
+
+    result = _load(db, payload, job_id="job-inv-2")
+
+    assert result.holdings_loaded == 1
+
+
+def test_a_sold_off_broker_counts_every_exited_position(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """Both items report an empty snapshot: all three prior positions are gone."""
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings = []
+
+    result = _load(db, payload, job_id="job-liquidated")
+
+    assert result.holdings_loaded == 3
+    assert result.holding_lots_loaded == 2
+
+
+def test_a_position_is_compared_only_with_its_items_newest_snapshot(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """Re-sending the revalued state is no change, though the first snapshot differs."""
+    _load(db, sync_data, job_id="job-inv-1")
+    revalued = sync_data.model_copy(deep=True)
+    revalued.investment_holdings[0].quantity = Decimal("11.0")
+    _load(db, revalued, job_id="job-inv-2")
+
+    result = _load(db, revalued, job_id="job-inv-3")
+
+    assert result.holdings_loaded == 0
+
+
+def test_a_moved_close_counts_its_security_as_changed(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    _load(db, sync_data, job_id="job-inv-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.securities[0].close_price = Decimal("215.00")
+
+    result = _load(db, payload, job_id="job-inv-2")
+
+    assert result.securities_loaded == 1

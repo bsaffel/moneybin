@@ -14,7 +14,7 @@ Bring the OFX/QFX/QBO import path to the same maturity as `smart-import-tabular.
 
 ## Background
 
-OFX was MoneyBin's first import format and predates the smart-import architecture. The shipped extractor (`src/moneybin/extractors/ofx_extractor.py`, 441 lines) parses correctly and the staging models already register `source_type='ofx'` so OFX rows participate in dedup and the matching engine. But the loader (`src/moneybin/loaders/ofx_loader.py`, 175 lines) bypasses the contracts that tabular adopted later: it doesn't go through `Database.ingest_dataframe()`, doesn't write to `raw.import_log`, can't be reverted, and resolves accounts via its own `_extract_accounts` path instead of `account_matching.py`. The original OFX spec (101 lines, archived) reflects that early scope and is well below the depth of `smart-import-tabular.md` (1807 lines).
+OFX was MoneyBin's first import format and predates the smart-import architecture. The shipped extractor (`src/moneybin/extractors/ofx_extractor.py`, 441 lines) parses correctly and the staging models already register `source_type='ofx'` so OFX rows participate in dedup and the matching engine. But the loader (`src/moneybin/loaders/ofx_loader.py`, 175 lines) bypasses the contracts that tabular adopted later: it doesn't go through `Database.ingest_dataframe()`, doesn't write to `app.import_log`, can't be reverted, and resolves accounts via its own `_extract_accounts` path instead of `account_matching.py`. The original OFX spec (101 lines, archived) reflects that early scope and is well below the depth of `smart-import-tabular.md` (1807 lines).
 
 This spec closes the gap. It does **not** unify the raw schema — `raw.ofx_*` legitimately carries structure that `raw.tabular_*` does not (statement balances, institution metadata, multi-account-per-file). Instead, it lifts the cross-cutting capabilities into a shared import-log primitive that both lineages call.
 
@@ -40,7 +40,7 @@ OFX files carry four entity types in one document (institutions, accounts, balan
 3. Resolve institution name from the file (`<FI><ORG>` → `<FI><FID>` lookup → filename heuristic) before falling back to user input.
 4. In non-interactive mode, fail fast with an actionable error when institution cannot be derived; surface `--institution <name>` as the override flag.
 5. Resolve accounts via `account_matching.py` against `core.dim_accounts`. New accounts are auto-created only when matching fails *and* file confidence is high (file has both `<FI><FID>` and account number).
-6. Every import creates a `raw.import_log` row with a UUID `import_id` and lifecycle status (`pending` → `committed` | `reverted` | `failed`).
+6. Every import creates a `app.import_log` row with a UUID `import_id` and lifecycle status (`pending` → `committed` | `reverted` | `failed`).
 7. Re-importing an already-committed file is rejected with an actionable error unless `--force` is passed. Today's silent overwrite behavior is replaced with explicit duplicate detection.
 8. `import revert <id>` deletes all rows from `raw.ofx_*` tables tagged with the given `import_id` and updates the log row's status.
 9. All raw writes go through `Database.ingest_dataframe()` — the encrypted single write path. The bespoke `OFXLoader.load_data()` is removed.
@@ -113,7 +113,7 @@ ALTER TABLE raw.ofx_institutions ADD COLUMN source_type VARCHAR DEFAULT 'ofx';
 
 Balances and institutions don't need `source_origin` — institution itself is the origin and balances inherit from their account.
 
-### `raw.import_log` — no schema change
+### `app.import_log` — no schema change
 
 The existing tabular `import_log` table is already format-agnostic. OFX simply starts writing rows with `source_type='ofx'`. The columns (`import_id`, `source_file`, `source_type`, `source_origin`, `status`, `started_at`, `finalized_at`, `row_counts`) cover OFX needs without change.
 
@@ -246,7 +246,7 @@ Routes any file (regardless of extension) to the OFX pipeline if the signature m
 ### Key decisions
 
 - **Keep `raw.ofx_*` as a distinct schema.** Don't collapse into `raw.tabular_*`. Rationale in Background.
-- **Module-level functions, not a service class, for import-log primitives.** `begin_import`, `finalize_import`, `get_import_history`, and `find_existing_import` are single-table CRUD over `raw.import_log` — a primitive, not a domain. Matches `account_matching.py` organization. **Revert is the exception:** it cascades deletes across multiple raw tables and updates the log row's status under a transaction, so it lives on `ImportService.plan_revert` (read-only) and `ImportService.revert_confirmed` (the confirmed write) per the service-layer convention (every multi-table mutation flows through the service that owns the domain). The loader module stays the source of truth for the `REVERT_TABLES` allowlist that the service consults.
+- **Module-level functions, not a service class, for import-log primitives.** `begin_import`, `finalize_import`, `get_import_history`, and `find_existing_import` are single-table CRUD over `app.import_log` — a primitive, not a domain. Matches `account_matching.py` organization. **Revert is the exception:** it cascades deletes across multiple raw tables and updates the log row's status under a transaction, so it lives on `ImportService.plan_revert` (read-only) and `ImportService.revert_confirmed` (the confirmed write) per the service-layer convention (every multi-table mutation flows through the service that owns the domain). The loader module stays the source of truth for the `REVERT_TABLES` allowlist that the service consults.
 - **Hard-coded `source_type → tables` mapping in `REVERT_TABLES`.** Allowlist over runtime catalog query: simpler, explicit, and adding new formats is rare and deliberate.
 - **No automatic backfill of `import_id` for legacy rows.** Synthesizing batch IDs for un-tracked imports would obscure history; leave them as `NULL` and surface as pre-batch-tracking entries.
 - **Re-import behavior change is a breaking change worth flagging.** Today's silent overwrite becomes explicit duplicate rejection (with `--force` opt-out). Documented in CHANGELOG and release notes.

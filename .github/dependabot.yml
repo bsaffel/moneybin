@@ -1,6 +1,8 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # `uv`, not `pip`: the pip ecosystem edits pyproject.toml alone, leaving
+  # uv.lock stale, so every `--locked` install in CI refused the PR.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -17,3 +19,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # An action version bump is never user-visible, so it is exempt from the
+    # changelog check up front. `labels` replaces Dependabot's defaults, hence
+    # the first two. Python bumps stay unlabeled: each one gets a reviewed call.
+    labels:
+      - "dependencies"
+      - "github_actions"
+      - "skip-changelog"

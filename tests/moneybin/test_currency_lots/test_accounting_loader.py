@@ -1352,22 +1352,31 @@ def test_transfer_position_watermarks_exclude_unequal_same_currency_decision(
     assert watermarks == {}
 
 
-def test_deleted_account_method_uses_audit_freshness() -> None:
+def test_cleared_account_method_uses_its_change_stamp() -> None:
+    """A method cleared back to the default advances the lot by its own stamp.
+
+    An undo that clears the method resets the settings row in place and stamps
+    ``default_cost_basis_method_changed_at``; the loader folds that stamp from
+    the account base, never the settings row's ``updated_at`` or an audit
+    watermark, which a display-only edit also advances.
+    """
     context = _FakeContext(
-        pd.DataFrame(
-            columns=t.cast(
-                t.Any,
-                ["account_id", "default_cost_basis_method", "method_updated_at"],
-            )
-        ),
         pd.DataFrame({
-            "target_id": ["acct-eur"],
-            "mutation_updated_at": [str(T5)],
+            "account_id": ["acct-eur"],
+            "default_cost_basis_method": [None],
+            "method_updated_at": [str(T5)],
         }),
     )
     methods, updated_at = sqlmesh_loader._load_account_methods(  # pyright: ignore[reportPrivateUsage]
         t.cast(t.Any, context)
     )
+    assert context.resolved_tables == ["prep.int_accounts__merged"]
+    query = " ".join(context.queries[0].lower().split())
+    assert "default_cost_basis_method_changed_at::varchar as method_updated_at" in (
+        query
+    )
+    assert "from prep.int_accounts__merged" in query
+    assert "audit_log" not in query
 
     result = sqlmesh_loader._derive_currency_accounting(  # pyright: ignore[reportPrivateUsage]
         (_conversion(updated_at=T1),),
@@ -1392,22 +1401,11 @@ def test_materialized_accounting_reads_follow_registered_table_refs(
     monkeypatch.setattr(
         sqlmesh_loader, "FCT_INVESTMENT_TRANSACTIONS", investments, raising=False
     )
-    context = _FakeContext(
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-    )
+    context = _FakeContext(*(pd.DataFrame() for _ in range(10)))
 
     result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
 
+    assert context.frames == []
     assert result.lots == ()
     assert result.gains == ()
     assert "alternate.trusted_conversions" in context.resolved_tables
@@ -1454,7 +1452,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
         name: TableRef("alternate", table)
         for name, table in (
             ("BRIDGE_TRANSFERS", "trusted_transfers"),
-            ("DIM_ACCOUNTS", "canonical_accounts"),
+            ("INT_ACCOUNTS_MERGED", "merged_accounts"),
             ("INT_TRANSACTIONS_MATCHED", "matched_transactions"),
             ("INT_TRANSACTIONS_MERGED", "merged_transactions"),
             ("MATCH_DECISIONS", "trusted_decisions"),
@@ -1462,7 +1460,6 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
             ("EXCHANGE_RATE_OVERRIDES", "rate_overrides"),
             ("EXCHANGE_RATES", "stored_rates"),
             ("AUDIT_LOG", "audit_log"),
-            ("ACCOUNT_SETTINGS", "account_config"),
         )
     }
     for name, ref in refs.items():
@@ -1478,12 +1475,13 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
         pd.DataFrame(),
         pd.DataFrame(),
     )
-    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(11)))
+    accounting_context = _FakeContext(*(pd.DataFrame() for _ in range(10)))
 
     assert sqlmesh_loader.load_conversion_rows(t.cast(t.Any, conversion_context)) == []
     assert sqlmesh_loader.load_currency_accounting(
         t.cast(t.Any, accounting_context)
     ) == sqlmesh_loader.CurrencyAccountingResult(lots=(), gains=())
+    assert accounting_context.frames == []
 
     resolved = {
         *conversion_context.resolved_tables,
@@ -1496,7 +1494,7 @@ def test_all_currency_loader_queries_follow_registered_table_refs(
     expected = {ref.full_name for ref in refs.values()}
     model_refs = {
         refs["BRIDGE_TRANSFERS"].full_name,
-        refs["DIM_ACCOUNTS"].full_name,
+        refs["INT_ACCOUNTS_MERGED"].full_name,
         refs["INT_TRANSACTIONS_MATCHED"].full_name,
         refs["INT_TRANSACTIONS_MERGED"].full_name,
     }
@@ -1546,13 +1544,13 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "default_cost_basis_method": [None],
             "method_updated_at": [str(T4)],
         }),
-        pd.DataFrame(columns=t.cast(t.Any, ["target_id", "mutation_updated_at"])),
         pd.DataFrame(),
         pd.DataFrame(),
     )
 
     result = sqlmesh_loader.load_currency_accounting(t.cast(t.Any, context))
 
+    assert context.frames == []
     assert result.lots[0].original_quantity == D("40.00")
     assert result.lots[0].cost_basis_total == D("50.00")
     assert result.lots[0].updated_at == T5
@@ -1668,7 +1666,7 @@ class _RoutingContext:
                     ],
                 )
             )
-        if "from app.account_settings" in normalized:
+        if "from prep.int_accounts__merged" in normalized:
             return pd.DataFrame(
                 columns=t.cast(
                     t.Any,

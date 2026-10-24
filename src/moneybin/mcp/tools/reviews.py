@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
@@ -21,6 +21,7 @@ from moneybin.adapters.rematch_report import rematch_actions, rematch_count
 from moneybin.config import get_settings
 from moneybin.database import Database, get_database
 from moneybin.errors import (
+    ErrorDetail,
     UserError,
     classify_user_error,
     exception_origin,
@@ -256,15 +257,15 @@ def _unavailable_queue(kind: ReviewQueueKind, exc: Exception) -> QueueUnavailabl
 def _pending_categorization_rows(
     service: CategorizationService,
 ) -> list[CategorizationReviewRow]:
-    """Project the existing uncategorized queue into normalized rows.
+    """Project the pending categorization list into normalized rows.
 
-    A missing ``core.uncategorized_queue`` propagates as ``INFRA_SCHEMA_DRIFT``
-    rather than degrading to an empty queue. It is the single definition of an
-    uncategorized transaction, so without it the queue's contents are unknown,
-    not zero — and the summary already reports one broken queue as
-    ``unavailable`` instead of failing the aggregate.
+    A fact without ``is_categorizable`` (upgraded, not yet refreshed)
+    propagates as ``INFRA_SCHEMA_DRIFT`` rather than degrading to an empty
+    queue: the queue's contents are unknown, not zero — and the summary already
+    reports one broken queue as ``unavailable`` instead of failing the
+    aggregate.
     """
-    raw_rows = service.list_uncategorized_transactions(limit=None) or []
+    raw_rows = service.list_pending_review_transactions(limit=None) or []
     ordered = sorted(
         raw_rows,
         key=lambda row: (
@@ -273,9 +274,6 @@ def _pending_categorization_rows(
         ),
         reverse=True,
     )
-    attempts = service.project_pending_review_attempts([
-        str(row["transaction_id"]) for row in ordered
-    ])
     result: list[CategorizationReviewRow] = []
     for row in ordered:
         transaction = PendingTxnRow(
@@ -298,12 +296,9 @@ def _pending_categorization_rows(
             pending_transfer_match=bool(row.get("pending_transfer_match", False)),
         )
         summary = transaction.description or f"Transaction {transaction.transaction_id}"
-        attempt = attempts.get(transaction.transaction_id)
-        if attempt is None:
-            continue
         result.append(
             CategorizationReviewRow(
-                decision_id=str(attempt["decision_id"]),
+                decision_id=str(row["decision_id"]),
                 status="pending",
                 created_at=transaction.transaction_date,
                 summary=summary,
@@ -954,6 +949,8 @@ def _review_count(
     status: ReviewStatus,
 ) -> int:
     """Count one queue without materializing expensive row enrichments."""
+    if kind == "categorization" and status == "pending":
+        return CategorizationService(db).count_pending_review()
     if kind == "auto_rules":
         service = AutoRuleService(db)
         return (
@@ -1067,8 +1064,8 @@ def reviews_coarse(
         unavailable: list[QueueUnavailable] = []
         with get_database(read_only=True) as db:
             for queue_kind in _QUEUE_KINDS:
-                # Count each queue independently: one missing view (e.g.
-                # core.uncategorized_queue) must not fail the whole summary.
+                # Count each queue independently: one unreadable queue must not
+                # fail the whole summary.
                 try:
                     queue_counts = [
                         ReviewCount(
@@ -1149,6 +1146,20 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
     )
 
 
+# The two guards `AutoRuleService.approve` refuses on; under `decide` they are
+# the only way an accept stays pending, since every other skip raises. Authored
+# here because the service leaves wording to each surface (the CLI names
+# --allow-broad), and never quotes the proposal's pattern.
+_REFUSED_BROAD_REASON = (
+    "broad: matches far more transactions than the evidence behind it; "
+    "set allow_broad=true on this decision to accept it anyway, or reject it"
+)
+_REFUSED_UNSELECTIVE_REASON = (
+    "short pattern: its 'contains' pattern is too short to match one merchant; "
+    "set allow_broad=true on this decision to accept it anyway, or reject it"
+)
+
+
 @mcp_tool(read_only=False, idempotent=True)
 def reviews_decide_coarse(
     decisions: list[ReviewDecisionRequest],
@@ -1160,6 +1171,7 @@ def reviews_decide_coarse(
     # Stays None on the auto-rule branch, which folds no match edge and so
     # runs no reconciliation — distinct from a pass that reversed nothing.
     transfers_retired: int | None = None
+    refused_details: dict[str, list[str]] | None = None
     with get_database(read_only=False) as db:
         auto_rule_decisions = [
             decision
@@ -1239,6 +1251,18 @@ def reviews_decide_coarse(
                 },
             )
             after = result.statuses
+            refusals = {
+                **dict.fromkeys(result.impact.refused_broad, _REFUSED_BROAD_REASON),
+                **dict.fromkeys(
+                    result.impact.refused_unselective, _REFUSED_UNSELECTIVE_REASON
+                ),
+            }
+            if result.impact.approved == 0 and result.impact.rejected == 0:
+                refused = {
+                    "refused_broad": list(result.impact.refused_broad),
+                    "refused_unselective": list(result.impact.refused_unselective),
+                }
+                refused_details = {k: v for k, v in refused.items() if v} or None
             auto_rule_impact = AutoAcceptPayload(
                 approved=result.impact.approved,
                 rejected=result.impact.rejected,
@@ -1254,6 +1278,7 @@ def reviews_decide_coarse(
                     status=after.get(decision.decision_id, "pending"),
                     changed=after.get(decision.decision_id) in {"approved", "rejected"},
                     operation_id=operation_id,
+                    reason=refusals.get(decision.decision_id),
                 )
                 for decision in auto_rule_decisions
             ]
@@ -1293,7 +1318,7 @@ def reviews_decide_coarse(
             "refresh_run(steps=['match']) to re-propose over the legs the "
             "reversal freed",
         )
-    return build_envelope(
+    envelope = build_envelope(
         data=ReviewsDecidePayload(
             results=outcomes,
             applied_count=sum(item.changed for item in outcomes),
@@ -1303,6 +1328,21 @@ def reviews_decide_coarse(
             transfers_retired=transfers_retired,
         ),
         actions=actions,
+    )
+    if refused_details is None:
+        return envelope
+    # Nothing applied and a guard refused: a requested mutation that did not
+    # happen is an error, but data keeps every per-item outcome and reason.
+    return envelope.with_error(
+        ErrorDetail(
+            message=(
+                "Every decision in this batch was refused by a guard and "
+                "nothing was applied; see data.results[].reason, and set "
+                "allow_broad=true on a decision to accept it anyway."
+            ),
+            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            details=cast(dict[str, Any], refused_details),
+        )
     )
 
 
@@ -1360,9 +1400,14 @@ def _preview_identity_decisions(
         ]
         links = AccountLinksService(db, actor="mcp")
         merges = tuple(
-            links.merge_facts(
-                absorbed_account_id=item.source_id,
-                survivor_account_id=item.target_id,
+            # The plan, not a fresh read: it sequenced settings across the batch.
+            replace(
+                links.merge_facts(
+                    absorbed_account_id=item.source_id,
+                    survivor_account_id=item.target_id,
+                ),
+                settings_moved=item.settings_moved,
+                settings_kept=item.settings_kept,
             )
             for item in accepts
             if item.request.kind == "account_link"

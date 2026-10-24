@@ -9,10 +9,13 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
+from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
 from moneybin import error_codes
@@ -21,10 +24,11 @@ from moneybin.cli.commands.accounts.links import (
     # build an approval or resolve a preview — so the tests that cover them
     # reach in rather than widening the surface to make them reachable.
     _ApprovedMerge,  # pyright: ignore[reportPrivateUsage]
-    _drift_check,  # pyright: ignore[reportPrivateUsage]
     _merge_preview,  # pyright: ignore[reportPrivateUsage]
     app,
+    merge_drift_check,  # pyright: ignore[reportPrivateUsage]
 )
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.errors import UserError
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.orchestration.refresh import RefreshResult
@@ -39,6 +43,23 @@ from moneybin.services.review_decisions_service import (
 )
 
 runner = CliRunner()
+
+
+def _terminal_policy(*, interactive: bool) -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=interactive,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +478,39 @@ class TestLinksPending:
 class TestLinksSet:
     """Tests for `accounts links set`."""
 
+    @pytest.fixture(autouse=True)
+    def interactive_merge_confirmation(self, mocker: MockerFixture) -> None:
+        """Default prompt tests to an interactive text terminal."""
+        mocker.patch(
+            "moneybin.cli.commands.accounts.links.get_terminal_policy",
+            return_value=_terminal_policy(interactive=True),
+        )
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_refuses_piped_yes_without_yes_flag(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_get_db: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Piped input cannot satisfy the destructive merge confirmation."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_preview.return_value = _previewed_merge()
+        mock_set.return_value = _clean_rematch()
+        mocker.patch(
+            "moneybin.cli.commands.accounts.links.get_terminal_policy",
+            return_value=_terminal_policy(interactive=False),
+        )
+
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
+
+        assert result.exit_code == 1
+        assert "requires an interactive terminal" in result.output
+        mock_set.assert_not_called()
+
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
     def test_set_into_calls_service_with_target(
@@ -510,9 +564,9 @@ class TestLinksSet:
             result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 
         assert result.exit_code == 0
-        assert "2" in caplog.text
-        assert "5" in caplog.text
-        assert "re-match" in caplog.text.lower()
+        assert "2" in result.output
+        assert "5" in result.output
+        assert "re-match" in result.output.lower()
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
@@ -544,8 +598,8 @@ class TestLinksSet:
             result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 
         assert result.exit_code == 0
-        assert "no new duplicates found" not in caplog.text
-        assert "could not run" in caplog.text
+        assert "no new duplicates found" not in result.output
+        assert "could not run" in result.output
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
@@ -574,9 +628,9 @@ class TestLinksSet:
             result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 
         assert result.exit_code == 0
-        assert "no new duplicates found" not in caplog.text
-        assert "3" in caplog.text
-        assert "transfer" in caplog.text.lower()
+        assert "no new duplicates found" not in result.output
+        assert "3" in result.output
+        assert "transfer" in result.output.lower()
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
@@ -594,7 +648,7 @@ class TestLinksSet:
             result = runner.invoke(app, ["set", "dec001", "--standalone"])
 
         assert result.exit_code == 0
-        assert "re-match" not in caplog.text.lower()
+        assert "re-match" not in result.output.lower()
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
@@ -629,11 +683,9 @@ class TestLinksSet:
         # and a script or agent gating on status must not read that as done.
         assert result.exit_code == 1
         # The match counts are real — decisions were written — so they stay.
-        assert "2" in caplog.text
-        assert [r for r in caplog.records if r.levelno == logging.WARNING], (
-            "a failed rebuild must warn, not ride along under the match counts"
-        )
-        assert "refresh" in caplog.text.lower()
+        assert "2" in result.output
+        assert "Attention:" in result.output
+        assert "refresh" in result.output.lower()
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
@@ -666,12 +718,12 @@ class TestLinksSet:
             result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 
         assert result.exit_code == 0
-        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("2" in m and "transfer" in m for m in warnings), (
-            "reversing a transfer the user accepted must warn, not ride along "
-            "under the match counts"
+        assert "2" in result.output and "transfer" in result.output.lower(), (
+            "reversing a transfer the user accepted must warn in the receipt"
         )
-        assert "undo" in caplog.text.lower(), "the user must be told how to restore it"
+        assert "undo" in result.output.lower(), (
+            "the user must be told how to restore it"
+        )
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
@@ -702,19 +754,14 @@ class TestLinksSet:
             result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
 
         assert result.exit_code == 1
-        warnings = [
-            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
-        ]
-        assert any("stopped partway" in m for m in warnings), (
-            f"no warning covers the failed match: {warnings}"
-        )
+        assert "stopped partway" in result.output, "no warning covers the failed match"
         # Collapsed before matching because the production message is wrapped
         # across source lines: a substring spanning the wrap point matches the
         # source and never the runtime string, which is how the previous
         # `"not\nreflected"` half of this assertion came to be permanently inert.
-        collapsed = [" ".join(m.split()) for m in warnings]
-        assert any("not reflected in your accounts" in m for m in collapsed), (
-            f"no warning covers the failed rebuild: {warnings}"
+        collapsed = " ".join(result.output.split())
+        assert "not reflected in your accounts" in collapsed, (
+            "no warning covers the failed rebuild"
         )
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
@@ -916,11 +963,58 @@ class TestLinksSet:
         The plan is pinned unchanged so only the row comparison can refuse.
         """
         mock_plan.return_value = _merge_plan(transactions=("t1",))
-        verify = _drift_check(MagicMock(), "dec001", _approved_merge(links=("L1",)))
+        verify = merge_drift_check(
+            MagicMock(), "dec001", _approved_merge(links=("L1",))
+        )
         assert verify is not None
 
         with pytest.raises(UserError) as excinfo:
             verify(_accept_impact(links=("L1", "L2")))
+
+        assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+
+    @patch("moneybin.cli.commands.accounts.links._plan_merge")
+    def test_drift_refusal_catches_a_change_in_the_settings_the_merge_moves(
+        self, mock_plan: MagicMock
+    ) -> None:
+        """The prompt named which settings move; a different plan is a different yes."""
+        mock_plan.return_value = _merge_plan(transactions=("t1",))
+        approved = replace(_approved_merge(), settings_moved=("display_name",))
+        verify = merge_drift_check(MagicMock(), "dec001", approved)
+        assert verify is not None
+
+        drifted = replace(
+            _accept_impact(),
+            settings_moved=("credit_limit", "display_name"),
+        )
+
+        with pytest.raises(UserError) as excinfo:
+            verify(drifted)
+
+        assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+
+    @patch("moneybin.cli.commands.accounts.links._plan_merge")
+    def test_drift_refusal_catches_an_edit_the_moved_names_cannot_see(
+        self, mock_plan: MagicMock
+    ) -> None:
+        """A moved value edited while the prompt was open keeps its name moved."""
+        mock_plan.return_value = _merge_plan(transactions=("t1",))
+        approved = replace(
+            _approved_merge(),
+            settings_moved=("credit_limit",),
+            settings_revision=(("CAND001", None), ("PROV1", "2026-01-01T00:00:00")),
+        )
+        verify = merge_drift_check(MagicMock(), "dec001", approved)
+        assert verify is not None
+
+        drifted = replace(
+            _accept_impact(),
+            settings_moved=("credit_limit",),
+            settings_revision=(("CAND001", None), ("PROV1", "2026-01-02T00:00:00")),
+        )
+
+        with pytest.raises(UserError) as excinfo:
+            verify(drifted)
 
         assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
 
@@ -938,7 +1032,7 @@ class TestLinksSet:
         """
         mock_plan.return_value = _merge_plan(transactions=("t1",))
         approved = _approved_merge(decisions=("dec001", "dec002"))
-        verify = _drift_check(MagicMock(), "dec001", approved)
+        verify = merge_drift_check(MagicMock(), "dec001", approved)
         assert verify is not None
 
         swapped = _accept_impact(decisions=("dec001", "dec003"))
@@ -1458,7 +1552,7 @@ def test_links_run_arity_error_is_logged_like_its_siblings(
     """A half-named pair reaches the console marker and the durable log.
 
     The sibling usage errors in this command group go through
-    ``logger.error("❌ ...")``, which both marks the line as an error on the
+    ``logger.error(format_cli_failure(...))``, which both marks the line as an error on the
     console and writes it to ``cli_YYYY-MM-DD.log``. A bare ``typer.echo(...,
     err=True)`` does neither, so the one usage error an agent is most likely to
     hit would have been the only one leaving no trace. The check runs before
@@ -1468,5 +1562,111 @@ def test_links_run_arity_error_is_logged_like_its_siblings(
         result = runner.invoke(app, ["run", "ACC001"])
 
     assert result.exit_code == 2
-    assert "❌" in caplog.text
+    assert "×" in caplog.text
     assert "ambiguous" in caplog.text
+
+
+def test_links_pending_help_offers_no_pager() -> None:
+    """The finite review queue offers the shared paging escape hatch."""
+    result = runner.invoke(app, ["pending", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--no-pager" in result.stdout
+
+
+@patch("moneybin.cli.commands.accounts.links.get_database")
+@patch("moneybin.services.account_links_service.AccountLinksService.pending")
+@patch("moneybin.services.account_links_service.AccountLinksService.count_pending")
+def test_links_pending_pages_and_no_pager_bypasses_the_same_answer(
+    count_pending: MagicMock,
+    pending: MagicMock,
+    database: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queue leaf forwards both terminal choices to the shared pager boundary."""
+    from moneybin.cli import pager
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    policy = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=True,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=20,
+        height=1,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+    database.return_value.__enter__.return_value = MagicMock()
+    pending.return_value = [_make_pending_group()]
+    count_pending.return_value = 1
+
+    def _pager_policy(*, no_pager: bool = False) -> TerminalPolicy:
+        del no_pager
+        return policy
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.accounts.links.get_terminal_policy", _pager_policy
+    )
+    paged: list[str] = []
+
+    def _capture_page(text: str, *, color: bool, wide: bool) -> bool:
+        del color, wide
+        paged.append(text)
+        return True
+
+    monkeypatch.setattr(
+        pager,
+        "page_text",
+        _capture_page,
+    )
+
+    normal = runner.invoke(app, ["pending"])
+    bypass = runner.invoke(app, ["pending", "--no-pager"])
+
+    assert normal.exit_code == 0, normal.output
+    assert bypass.exit_code == 0, bypass.output
+    assert len(paged) == 1
+    assert "No pending account-link decisions" not in bypass.stdout
+    assert "decision-id" in bypass.stdout
+
+
+@patch("moneybin.cli.commands.accounts.links.get_database")
+@patch("moneybin.services.account_links_service.AccountLinksService.set")
+def test_links_set_renders_each_rematch_warning_once_even_when_quiet(
+    set_link: MagicMock,
+    database: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The receipt is the one human home for a post-merge warning."""
+    import moneybin.cli.commands.accounts.links as links
+
+    database.return_value.__enter__.return_value = MagicMock()
+    set_link.return_value = RefreshResult(
+        applied=True,
+        duration_seconds=0.0,
+        stages=(_match_stage(ran=False),),
+    )
+
+    def _console_warning(message: str) -> None:
+        typer.echo(message, err=True)
+
+    monkeypatch.setattr(
+        links.logger,
+        "warning",
+        _console_warning,
+    )
+
+    normal = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+    quiet = runner.invoke(
+        app, ["set", "dec001", "--into", "CAND001", "--yes", "--quiet"]
+    )
+
+    assert normal.exit_code == 0, normal.output
+    assert normal.output.count("could not run") == 1
+    assert quiet.exit_code == 0, quiet.output
+    assert quiet.output.count("could not run") == 1

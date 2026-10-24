@@ -138,7 +138,7 @@ def test_every_expected_call_validates_against_its_surface_schema() -> None:
     invalid: list[str] = []
     for surface_id, inventory in inventories.items():
         schemas = {
-            tool.name: Tool.model_validate(tool.definition).inputSchema
+            tool.name: Tool.model_validate(tool.definition).input_schema
             for tool in inventory.tools
         }
         for case in cases:

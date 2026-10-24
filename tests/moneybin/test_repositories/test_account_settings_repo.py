@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -40,6 +40,11 @@ def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "archived_at": None,
         "include_in_net_worth": True,
         "default_cost_basis_method": None,
+        "investment_source_type": None,
+        "investment_source_type_changed_at": None,
+        "archived_changed_at": None,
+        "currency_code_changed_at": None,
+        "default_cost_basis_method_changed_at": None,
         "actor": "cli",
     }
     kwargs.update(overrides)
@@ -109,6 +114,30 @@ def test_set_persists_default_cost_basis_method(db: Database) -> None:
         ["acct_a"],
     ).fetchone()
     assert row == ("average",)
+
+
+def test_set_round_trips_investment_source_fields_and_audits_them(
+    db: Database,
+) -> None:
+    repo = AccountSettingsRepo(db)
+    changed_at = datetime(2026, 10, 1, 12, 30, 0)
+    event = _set(
+        repo,
+        investment_source_type="manual",
+        investment_source_type_changed_at=changed_at,
+    )
+
+    row = db.conn.execute(
+        "SELECT investment_source_type, investment_source_type_changed_at "
+        "FROM app.account_settings WHERE account_id = ?",
+        ["acct_a"],
+    ).fetchone()
+    assert row == ("manual", changed_at)
+    assert event.after_value is not None
+    assert event.after_value["investment_source_type"] == "manual"
+    assert (
+        event.after_value["investment_source_type_changed_at"] == changed_at.isoformat()
+    )
 
 
 def test_set_invalid_default_cost_basis_method_raises_constraint_exception(
@@ -562,24 +591,22 @@ def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
         operation_id="op-legacy6",
     )
 
-    # Undo #1: before is None -> deletes the row via _delete_by_pk.
+    # Undo #1: before is None -> _delete_by_pk. Deleting would unarchive the
+    # account with no archived_changed_at, so the row is reset in place.
     undo_result = repo.undo_event(first_write_event, actor="cli")
     assert undo_result is not None
-    assert (
-        db.conn.execute(
-            "SELECT 1 FROM app.account_settings WHERE account_id = ?",
-            ["acct_legacy6"],
-        ).fetchone()
-        is None
-    )
+    assert db.conn.execute(
+        "SELECT archived, archived_at, archived_changed_at IS NOT NULL "
+        "FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy6"],
+    ).fetchone() == (False, None, True)
     # The real live date must survive into the undo's own before_value
     # capture -- not be reported as an unrecoverable NULL/missing key, which
     # is what a later redo would restore from.
     assert undo_result.before_value is not None
     assert undo_result.before_value["archived_at"] == "2024-06-01"
 
-    # Undo #2 (redo): after is None -> reinserts via _insert_row, not
-    # _restore_row.
+    # Undo #2 (redo): both images present -> _restore_row over the reset row.
     redo_result = repo.undo_event(undo_result, actor="cli")
     assert redo_result is not None
 
@@ -653,6 +680,15 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
     ) -> Generator[Database, None, None]:
         """A real write-mode Database reopened over account_settings missing archived_at."""
         db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_at")
+        # Added by V074 and V075, after V063: a pre-V063 table holds none of them.
+        for column in (
+            "archived_changed_at",
+            "currency_code_changed_at",
+            "default_cost_basis_method_changed_at",
+        ):
+            db.execute(
+                f"ALTER TABLE app.account_settings DROP COLUMN {column}"
+            )  # literal test column names
         db_path = db.path
         db.close()
         rw_db = Database(
@@ -771,3 +807,59 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
             ).fetchone()
             is None
         )
+
+
+class TestPreV069SchemaToleranceOnAccountSettingsWrite:
+    """A write-mode open must tolerate account_settings predating V069.
+
+    Same shape as the pre-V063 grid above: ``no_auto_upgrade=True`` never
+    applies the migration, so the live table lacks both investment-source
+    columns and every other settings read/write must keep working.
+    """
+
+    @pytest.fixture()
+    def pre_v069_rw_db(
+        self, db: Database, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        """A real write-mode Database reopened over the pre-V069 table shape."""
+        db.execute(
+            "ALTER TABLE app.account_settings "
+            "DROP COLUMN investment_source_type_changed_at"
+        )
+        db.execute(
+            "ALTER TABLE app.account_settings DROP COLUMN investment_source_type"
+        )
+        # Added by V074, after V069: a pre-V069 table cannot hold it either.
+        db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_changed_at")
+        db_path = db.path
+        db.close()
+        rw_db = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+        yield rw_db
+        rw_db.close()
+
+    def test_set_with_null_source_fields_succeeds_and_omits_keys(
+        self, pre_v069_rw_db: Database
+    ) -> None:
+        repo = AccountSettingsRepo(pre_v069_rw_db)
+        event = _set(repo, account_id="acct_pre_v069")
+        assert event.after_value is not None
+        assert event.after_value["display_name"] == "Checking"
+        assert "investment_source_type" not in event.after_value
+        assert "investment_source_type_changed_at" not in event.after_value
+
+        update = _set(repo, account_id="acct_pre_v069", display_name="Renamed")
+        assert update.before_value is not None
+        assert "investment_source_type" not in update.before_value
+
+    def test_live_columns_excludes_the_missing_pair(
+        self, pre_v069_rw_db: Database
+    ) -> None:
+        live = AccountSettingsRepo(pre_v069_rw_db)._live_columns()  # pyright: ignore[reportPrivateUsage]  # probe under test
+        assert "archived_at" in live
+        assert "investment_source_type" not in live
+        assert "investment_source_type_changed_at" not in live

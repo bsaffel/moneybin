@@ -5,7 +5,7 @@ JSON-output parity for status/plan/apply/validate/audit lives in
 the restate command (which still drives ``sqlmesh_context`` directly).
 """
 
-import logging
+import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
@@ -16,7 +16,9 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.transform import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.services.transform_service import (
+    ApplyResult,
     AuditResult,
     TransformStatus,
     ValidationResult,
@@ -51,7 +53,6 @@ class TestTransformStatus:
     def test_status_uninitialized(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Missing transform env reports the bootstrap hint."""
 
@@ -70,16 +71,14 @@ class TestTransformStatus:
         )
         monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
-        with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.transform"):
-            result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        assert "No transform environment initialized yet" in caplog.text
+        assert "No transform environment initialized yet" in result.stdout
 
     def test_status_renders_last_apply(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Last-apply timestamp is rendered in text mode."""
 
@@ -98,16 +97,15 @@ class TestTransformStatus:
         )
         monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
-        with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.transform"):
-            result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        assert "Last apply: 2026-01-15 12:34:56" in caplog.text
+        assert "Last apply" in result.stdout
+        assert "2026-01-15 12:34:56" in result.stdout
 
     def test_status_reports_never_finalized_when_null(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Initialized env without a last_apply_at reports 'never finalized'."""
 
@@ -126,11 +124,74 @@ class TestTransformStatus:
         )
         monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
-        with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.transform"):
-            result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        assert "Last apply: never finalized" in caplog.text
+        assert "Last apply" in result.stdout
+        assert "never finalized" in result.stdout
+
+    def test_status_accepts_no_pager(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Finite inspection leaves provide the shared pager escape hatch."""
+        monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
+        def fake_status(_self: Any) -> TransformStatus:
+            return TransformStatus("prod", True, None, False, None)
+
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.status", fake_status
+        )
+
+        result = runner.invoke(app, ["status", "--no-pager"])
+
+        assert result.exit_code == 0, result.output
+
+    def test_status_pages_only_without_no_pager(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same complete finite answer pages only when the caller allows it."""
+        monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
+        def fake_status(_self: Any) -> TransformStatus:
+            return TransformStatus("prod", True, None, True, None)
+
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=20,
+            height=1,
+            symbols=TerminalSymbols("OK", "!", "X", ">"),
+            minus="-",
+        )
+        paged: list[str] = []
+
+        def fake_terminal_policy(**_kwargs: Any) -> TerminalPolicy:
+            return policy
+
+        def fake_page_text(text: str, **_kwargs: Any) -> bool:
+            paged.append(text)
+            return True
+
+        monkeypatch.setattr(
+            "moneybin.services.transform_service.TransformService.status", fake_status
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.transform.get_terminal_policy", fake_terminal_policy
+        )
+        monkeypatch.setattr("moneybin.cli.pager.page_text", fake_page_text)
+
+        paged_result = runner.invoke(app, ["status"])
+        no_pager_result = runner.invoke(app, ["status", "--no-pager"])
+
+        assert paged_result.exit_code == no_pager_result.exit_code == 0
+        assert "Transform status" in paged[0]
+        assert len(paged) == 1
+        assert "Transform status" in no_pager_result.stdout
 
 
 class TestTransformValidate:
@@ -150,6 +211,167 @@ class TestTransformValidate:
 
         result = runner.invoke(app, ["validate"])
         assert result.exit_code == 0, result.output
+
+
+def test_apply_receipt_never_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mutation receipt stays direct even when its terminal allows paging."""
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
+    def fake_apply(_self: Any) -> ApplyResult:
+        return ApplyResult(applied=True, duration_seconds=0.1, error=None)
+
+    policy = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=True,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=20,
+        height=1,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+    paged: list[str] = []
+
+    def fake_policy(**_kwargs: Any) -> TerminalPolicy:
+        return policy
+
+    def fake_page(text: str, **_kwargs: Any) -> bool:
+        paged.append(text)
+        return True
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.TransformService.apply", fake_apply
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.transform.get_terminal_policy", fake_policy
+    )
+    monkeypatch.setattr("moneybin.cli.pager.page_text", fake_page)
+
+    result = runner.invoke(app, ["apply"])
+
+    assert result.exit_code == 0, result.output
+    assert "Transforms applied" in result.stdout
+    assert paged == []
+
+
+@pytest.mark.parametrize("command", [["apply"], ["plan", "--apply"]])
+def test_apply_interrupt_reports_unknown_saved_scope(
+    monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    """Direct apply and plan delegation clean progress before interruption output."""
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
+    def interrupted_apply(_self: Any) -> ApplyResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.TransformService.apply",
+        interrupted_apply,
+    )
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 130
+    assert "Transform apply cancelled" in result.stdout
+    assert "saved scope is unknown" in result.stdout.lower()
+    assert "moneybin transform status" in result.stdout
+
+
+@pytest.mark.parametrize("command", [["apply"], ["plan", "--apply"]])
+def test_apply_interrupt_json_uses_structured_failure(
+    monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    """Both routes keep stdout parseable for an interrupted JSON mutation."""
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
+    def interrupted_apply(_self: Any) -> ApplyResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.TransformService.apply",
+        interrupted_apply,
+    )
+
+    result = runner.invoke(app, [*command, "--output", "json"])
+
+    assert result.exit_code == 130
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "refresh_model_failed"
+    assert payload["error"]["details"] == {
+        "saved_scope": "unknown",
+        "outcome": "cancelled",
+    }
+    assert result.stderr == ""
+
+
+def test_plan_apply_delegates_to_apply_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The proposed-change shortcut uses the same write result and receipt."""
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+
+    def successful_apply(_self: Any) -> ApplyResult:
+        return ApplyResult(applied=True, duration_seconds=0.1, error=None)
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.TransformService.apply",
+        successful_apply,
+    )
+
+    result = runner.invoke(app, ["plan", "--apply"])
+
+    assert result.exit_code == 0, result.output
+    assert "Transforms applied" in result.stdout
+
+
+def test_plan_has_no_pager_option() -> None:
+    """A preview is an unpaged proposal, so it has no pager control."""
+    result = runner.invoke(app, ["plan", "--no-pager"])
+
+    assert result.exit_code == 2
+
+
+def test_restate_help_does_not_advertise_output() -> None:
+    """Restate is an operator-only text command with no JSON success contract."""
+    result = runner.invoke(app, ["restate", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--output" not in result.stdout
+
+
+def test_restate_rejects_unsupported_output() -> None:
+    """A caller cannot request a JSON response whose success shape is undefined."""
+    result = runner.invoke(
+        app,
+        [
+            "restate",
+            "--model",
+            "core.fct_transactions",
+            "--start",
+            "2026-01-01",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "No such option: --output" in result.output
+
+
+def test_seed_interruption_reports_unknown_saved_scope() -> None:
+    """Seed cancellation keeps its committed scope unknown rather than guessing."""
+    with (
+        patch("moneybin.database.get_database") as get_db,
+        patch("moneybin.seeds.materialize_seeds", side_effect=KeyboardInterrupt),
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["seed"])
+
+    assert result.exit_code == 130
+    assert "Seed materialization cancelled" in result.stdout
+    assert "saved scope is unknown" in result.stdout.lower()
 
 
 class TestTransformAudit:
@@ -200,17 +422,18 @@ class TestTransformRestate:
     @patch("moneybin.database.get_database")
     @patch("moneybin.cli.commands.transform.sqlmesh_context")
     def test_restate_requires_confirmation(
-        self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
+        self,
+        mock_ctx_factory: MagicMock,
+        _mock_get_db: MagicMock,
     ) -> None:
-        """Transform restate prompts for confirmation."""
+        """Noninteractive restate refuses before opening a write context."""
         ctx_fn, mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
         result = runner.invoke(
             app,
             ["restate", "--model", "core.fct_transactions", "--start", "2026-01-01"],
-            input="n\n",
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 2
         mock_ctx.plan.assert_not_called()
 
     @patch("moneybin.database.get_database")
@@ -219,7 +442,7 @@ class TestTransformRestate:
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
     ) -> None:
         """Transform restate --yes skips confirmation."""
-        ctx_fn, _mock_ctx = _mock_sqlmesh_context()
+        ctx_fn, mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
         result = runner.invoke(
             app,
@@ -233,3 +456,57 @@ class TestTransformRestate:
             ],
         )
         assert result.exit_code == 0
+        mock_ctx.plan.assert_called_once_with(
+            restate_models=["core.fct_transactions"],
+            start="2026-01-01",
+            end=None,
+            auto_apply=True,
+            no_prompts=True,
+        )
+
+    @patch("moneybin.database.get_database")
+    @patch("moneybin.cli.commands.transform.sqlmesh_context")
+    @patch("moneybin.cli.commands.transform.typer.confirm", return_value=False)
+    @patch("moneybin.cli.commands.transform.get_terminal_policy")
+    def test_restate_confirmation_includes_effective_end_date(
+        self,
+        terminal_policy: MagicMock,
+        confirm: MagicMock,
+        mock_ctx_factory: MagicMock,
+        _mock_get_db: MagicMock,
+    ) -> None:
+        """The destructive confirmation must name the requested closed range."""
+        terminal_policy.return_value = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=24,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        ctx_fn, _mock_ctx = _mock_sqlmesh_context()
+        mock_ctx_factory.side_effect = ctx_fn
+
+        result = runner.invoke(
+            app,
+            [
+                "restate",
+                "--model",
+                "core.fct_transactions",
+                "--start",
+                "2026-01-01",
+                "--end",
+                "2026-01-31",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "2026-01-01 through 2026-01-31" in confirm.call_args.args[0]

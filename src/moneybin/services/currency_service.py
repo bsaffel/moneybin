@@ -1,7 +1,8 @@
 """Resolve an exchange rate for one pair and one date, or fail loud.
 
 Precedence is override → cached provider row → the Friday a weekend resolves
-back to → one live fetch → raise. Nothing here ever substitutes a rate: a
+back to → one live fetch, or, offline, the last publication before a market
+closure the cache brackets → raise. Nothing here ever substitutes a rate: a
 conversion the user cannot audit is worse than a conversion that did not happen,
 because the wrong number looks exactly like the right one
 (``docs/specs/multi-currency.md`` Requirement 12).
@@ -21,6 +22,7 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+import duckdb
 import polars as pl
 
 from moneybin import error_codes
@@ -28,15 +30,22 @@ from moneybin.connectors.feed_errors import FeedError, FeedUnreachableError
 from moneybin.connectors.rates.protocol import RateAdapter, RateObservation
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
 from moneybin.metrics.registry import (
     FX_RATE_FETCH_DURATION_SECONDS,
     FX_RATE_RESOLUTION_TOTAL,
     FX_RATE_ROWS_WRITTEN_TOTAL,
 )
 from moneybin.repositories.exchange_rate_repo import ExchangeRateOverridesRepo
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services._validators import validate_currency_code, validate_note_text
 from moneybin.services.audit_service import AuditEvent
-from moneybin.tables import EXCHANGE_RATE_OVERRIDES, EXCHANGE_RATES
+from moneybin.tables import (
+    EXCHANGE_RATE_COVERAGE,
+    EXCHANGE_RATE_CURRENCIES,
+    EXCHANGE_RATE_OVERRIDES,
+    EXCHANGE_RATES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +78,13 @@ IDENTITY_SOURCE = "identity"
 #: Lunar New Year cluster — stays under two weeks. Past that the answer is a
 #: stale or misdirected response rather than a publication-day hop.
 MAX_BACKWARD_RESOLUTION_DAYS = 14
+
+#: The widest gap between two consecutive stored publications that is still read
+#: as a market closure, so a day inside it prices at the earlier publication.
+#: ECB's longest closure is Easter (Thursday to Tuesday, 5 days); a week keeps
+#: that with slack while a wider hole is likelier a gap in the cache than a closed
+#: market. ``core.fct_exchange_rates_daily`` hard-codes the same bound.
+MAX_MARKET_CLOSURE_DAYS = 7
 
 _RAW_RATE_SCHEMA = {
     "from_currency": pl.Utf8,
@@ -128,6 +144,24 @@ class RateUnavailableError(UserError):
     currencies on no date at all, and ``FX_RATE_UNAVAILABLE`` when the pair is
     priced in general but not here. The remedies differ, so the codes do.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class MissingRate:
+    """Why no stored rate priced a pair, judged from what is on disk.
+
+    ``unsupported`` names the currencies the provider's last-read list lacks;
+    when it is non-empty only ``moneybin fx set`` can fill the pair. Otherwise
+    the pair is unfetched, and ``gathered`` says whether refresh plans it at all
+    — when it does not, ``targets`` is the display-currency list that would, or
+    empty when the profile already declares the most targets it may.
+    """
+
+    from_currency: str
+    to_currency: str
+    unsupported: tuple[str, ...] = ()
+    gathered: bool = True
+    targets: tuple[str, ...] = ()
 
 
 def apply_rate(amount: Decimal, rate: Decimal) -> Decimal:
@@ -194,17 +228,32 @@ class CurrencyService:
                 FX_RATE_RESOLUTION_TOTAL.labels(outcome=_outcome_for(source)).inc()
                 return ResolvedRate(base, quote, on, published, rate, source)
 
-        # Known gap: `_store` files the row under the day the provider PUBLISHED,
-        # so a weekday holiday — which `last_publication_day` deliberately does
-        # not hop — misses both lookups above on every later call. The same
-        # question re-fetches, and offline it fails outright even though its
-        # answer is on disk under another date. Closing it needs a stored
-        # requested-to-published mapping; do NOT close it by widening the lookup
-        # to the nearest earlier stored day, which would answer an ordinary
-        # Tuesday with Monday's rate as if it were Tuesday's (Requirement 12,
-        # and `last_publication_day`'s docstring).
+        if self._adapter is None:
+            # Offline, a weekday the provider published nothing for is priced
+            # only when stored publications bracket it closely enough to be a
+            # market closure — the same rule `core.fct_exchange_rates_daily`
+            # densifies by, so a report's SQL and Python halves agree. Online,
+            # the provider answers instead: it can tell a holiday from a day
+            # nobody fetched, which the cache cannot.
+            closure = self._closure_publication(base, quote, on)
+            if closure is not None:
+                closed_since, provider = closure
+                stored = self._stored_rate(
+                    base, quote, closed_since, source_type=provider
+                )
+                if stored is not None:
+                    rate, source = stored
+                    FX_RATE_RESOLUTION_TOTAL.labels(outcome=_outcome_for(source)).inc()
+                    return ResolvedRate(base, quote, on, closed_since, rate, source)
+
         observation = self._fetch(base, quote, on)
         self._store(observation)
+        # The provider resolving `on` back to its publication day says nothing
+        # was published in between, which is the proof the offline closure
+        # rule needs for those days.
+        self.record_coverage(
+            base, quote, observation.rate_date, on, observation.source_type
+        )
 
         # The provider can also resolve backwards — a weekday holiday reaches
         # here, because only a weekend is hopped before the fetch. An override
@@ -325,11 +374,11 @@ class CurrencyService:
         event = ExchangeRateOverridesRepo(self._db).set(
             base, quote, on, rate=rate, note=note, actor=self._actor
         )
-        from moneybin.services.fx_accounting_refresh import (
-            restate_fx_accounting,
-        )
+        from moneybin.services.restate import restate_after_write
 
-        restate_fx_accounting(self._db)
+        restate_after_write(
+            self._db, [EXCHANGE_RATE_OVERRIDES], committed_change="exchange rate"
+        )
         return event
 
     def delete_override(self, from_currency: str, to_currency: str, on: date) -> bool:
@@ -347,24 +396,26 @@ class CurrencyService:
         )
         if event is None:
             return False
-        from moneybin.services.fx_accounting_refresh import (
-            restate_fx_accounting,
-        )
+        from moneybin.services.restate import restate_after_write
 
-        restate_fx_accounting(self._db)
+        restate_after_write(
+            self._db, [EXCHANGE_RATE_OVERRIDES], committed_change="exchange rate"
+        )
         return True
 
     # -------------------------------- storage --------------------------------
 
     def _stored_rate(
-        self, base: str, quote: str, day: date
+        self, base: str, quote: str, day: date, *, source_type: str | None = None
     ) -> tuple[Decimal, str] | None:
         """The best rate already on disk for one exact day, or ``None``.
 
         Override first: a correction outranks every cached provider rate for its
         own pair and date, and this is the single place that ordering is
         expressed — both the exact-date lookup and the weekend fallback go
-        through here, so the two cannot drift apart.
+        through here, so the two cannot drift apart. ``source_type`` narrows the
+        provider rows to the one provider whose publications proved a closure,
+        so the carried rate is that provider's, not a newer write from another.
         """
         override = self._override_rate(base, quote, day)
         if override is not None:
@@ -376,8 +427,9 @@ class CurrencyService:
         cached = self._db.execute(
             f"SELECT rate, source_type FROM {EXCHANGE_RATES.full_name} "  # TableRef + parameterized values
             "WHERE from_currency = ? AND to_currency = ? AND rate_date = ? "
+            "AND (? IS NULL OR source_type = ?) "
             "ORDER BY loaded_at DESC, source_type LIMIT 1",
-            [base, quote, day],
+            [base, quote, day, source_type, source_type],
         ).fetchone()
         if cached is None:
             return None
@@ -401,11 +453,13 @@ class CurrencyService:
         """Append one observation to the cache, returning rows actually written."""
         written = self.store_observations((observation,))
         if written:
-            from moneybin.services.fx_accounting_refresh import (
-                restate_fx_accounting,
-            )
+            from moneybin.services.restate import restate_after_write
 
-            restate_fx_accounting(self._db, committed_change="exchange rate")
+            restate_after_write(
+                self._db,
+                [EXCHANGE_RATES, EXCHANGE_RATE_COVERAGE],
+                committed_change="exchange rate",
+            )
         return written
 
     def store_observations(self, observations: Sequence[RateObservation]) -> int:
@@ -603,7 +657,184 @@ class CurrencyService:
         record the rate, which is the right advice for a lookup whose support is
         unknown. The backfill's fall-through is not, so it reads the ``None``.
         """
-        return unsupported_currencies(self._adapter, base, quote) or set()
+        return self.unsupported(base, quote) or set()
+
+    def unsupported(self, *codes: str) -> set[str] | None:
+        """Which of ``codes`` the provider prices on no date at all, or ``None``.
+
+        Every caller asks about a *pair*, and either side can be the one the
+        provider has never carried — a profile whose home currency is
+        unpublished reaches this with a perfectly ordinary base — so both are
+        checked.
+
+        With an adapter the provider's own list answers, and is recorded so a
+        cache-only read can answer the same question later without the network.
+        Without one, that recorded list answers. ``None`` means no list could be
+        read or none was ever recorded, and is deliberately not the empty set:
+        claiming a currency unsupported over a dropped connection sends the user
+        to a permanent remedy for a transient failure, while answering "none" to
+        a caller that reads that as proof the pair is fine is the opposite
+        mistake. Only the caller knows which its branch would make.
+        """
+        if self._adapter is None:
+            return self._recorded_unsupported(codes)
+        try:
+            published = self._adapter.supported_currencies()
+        except FeedError:
+            logger.info("Could not read the provider's currency list")
+            return None
+        self._record_catalog(self._adapter.source_type, published)
+        return {code for code in codes if code not in published}
+
+    def explain_missing(self, from_currency: str, to_currency: str) -> MissingRate:
+        """Why no stored rate priced this pair, so a report can name the one fix.
+
+        Unsupported is decided first because no refresh can fill such a pair,
+        whatever else is true. Otherwise the pair is unfetched, and the fix is a
+        refresh — unless refresh never plans the target, which it does only for
+        the home currency and declared display targets, so a bare refresh would
+        change nothing.
+        """
+        base = require_currency(from_currency)
+        quote = require_currency(to_currency)
+        unsupported = self.unsupported(base, quote)
+        if unsupported:
+            return MissingRate(base, quote, unsupported=tuple(sorted(unsupported)))
+        settings = ProfileSettingsRepo(self._db)
+        home = settings.get_home_currency()
+        declared = settings.get_display_currency_targets()
+        planned = {canonical_currency(code) for code in (*declared, home) if code}
+        if quote in planned:
+            return MissingRate(base, quote)
+        if len(declared) >= DISPLAY_CURRENCY_TARGETS_MAX_COUNT:
+            # Adding one more would be refused, so no target list is a fix.
+            return MissingRate(base, quote, gathered=False)
+        return MissingRate(base, quote, gathered=False, targets=(*declared, quote))
+
+    def _recorded_unsupported(self, codes: Sequence[str]) -> set[str] | None:
+        """``unsupported`` from the provider lists a refresh last recorded.
+
+        A code counts only when every recorded list lacks it, since a read with
+        no adapter cannot say which provider would be asked.
+        """
+        try:
+            rows = self._db.execute(
+                f"SELECT source_type, currency_code FROM {EXCHANGE_RATE_CURRENCIES.full_name}"  # TableRef, no values
+            ).fetchall()
+        except duckdb.CatalogException:
+            # A read-only open skips the migration runner, so an upgrading
+            # profile can reach this before the table exists.
+            return None
+        if not rows:
+            return None
+        published = {str(row[1]) for row in rows}
+        return {code for code in codes if code not in published}
+
+    def _record_catalog(self, source_type: str, published: frozenset[str]) -> None:
+        """Replace one provider's recorded currency list with what it just said.
+
+        Replaced rather than appended so a currency the provider stops carrying
+        stops counting as published. A failure between the two statements leaves
+        no list for that provider, which reads as "unknown" — never as a claim.
+        """
+        self._db.execute(
+            f"DELETE FROM {EXCHANGE_RATE_CURRENCIES.full_name} WHERE source_type = ?",  # TableRef + parameterized values
+            [source_type],
+        )
+        self._db.executemany(
+            f"INSERT INTO {EXCHANGE_RATE_CURRENCIES.full_name} "  # TableRef + parameterized values
+            "(source_type, currency_code) VALUES (?, ?)",
+            [[source_type, code] for code in sorted(published)],
+        )
+
+    def _closure_publication(
+        self, base: str, quote: str, on: date
+    ) -> tuple[date, str] | None:
+        """The publication and provider a market closure around ``on`` carries.
+
+        Two proofs are required, both from one provider. A coverage span that
+        provider recorded must include ``on``: it answered for that day and
+        published nothing, so the gap is a closed market. Stored rows alone
+        cannot say that, because two separate `fx rate` lookups leave the same
+        rows as a full fetch with a real gap between them. And that provider's
+        own stored rows must bracket ``on`` no more than
+        ``MAX_MARKET_CLOSURE_DAYS`` apart, so a stopped series is not carried
+        forward indefinitely. The proofs are not mixed across providers: one
+        provider's answer says nothing about a gap in another's sparser cache,
+        so a day covered only by A while B holds the nearer rows is not B's
+        closure. Overrides count toward neither: a user's correction says
+        nothing about whether the market was open. When several providers each
+        prove the closure, the latest publication wins, then the provider name,
+        so the choice is deterministic.
+        """
+        try:
+            row = self._db.execute(
+                f"""
+                WITH covering AS (
+                    SELECT DISTINCT source_type
+                      FROM {EXCHANGE_RATE_COVERAGE.full_name}
+                     WHERE from_currency = ? AND to_currency = ?
+                       AND start_date <= ? AND end_date >= ?
+                ), bracketed AS (
+                    SELECT
+                        c.source_type,
+                        (SELECT MAX(rate_date) FROM {EXCHANGE_RATES.full_name} r
+                          WHERE r.from_currency = ? AND r.to_currency = ?
+                            AND r.rate_date < ? AND r.source_type = c.source_type
+                        ) AS before,
+                        (SELECT MIN(rate_date) FROM {EXCHANGE_RATES.full_name} r
+                          WHERE r.from_currency = ? AND r.to_currency = ?
+                            AND r.rate_date > ? AND r.source_type = c.source_type
+                        ) AS after
+                    FROM covering c
+                )
+                SELECT before, source_type FROM bracketed
+                 WHERE before IS NOT NULL AND after IS NOT NULL
+                   AND after - before <= ?
+                 ORDER BY before DESC, source_type
+                 LIMIT 1
+                """,  # TableRef + parameterized values
+                [
+                    base,
+                    quote,
+                    on,
+                    on,
+                    base,
+                    quote,
+                    on,
+                    base,
+                    quote,
+                    on,
+                    MAX_MARKET_CLOSURE_DAYS,
+                ],
+            ).fetchone()
+        except duckdb.CatalogException:
+            # A read-only open skips the migration runner, so an upgrading
+            # profile can reach this before the coverage table exists.
+            return None
+        if row is None:
+            return None
+        return row[0], str(row[1])
+
+    def record_coverage(
+        self,
+        from_currency: str,
+        to_currency: str,
+        start: date,
+        end: date,
+        source_type: str,
+    ) -> None:
+        """Record that the provider answered for every date in ``[start, end]``.
+
+        Callers vouch that the stored rows already hold every publication in
+        the span; the closure rule trusts a date inside it to be closed.
+        """
+        self._db.execute(
+            f"INSERT INTO {EXCHANGE_RATE_COVERAGE.full_name} "  # TableRef + parameterized values
+            "(from_currency, to_currency, start_date, end_date, source_type) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            [from_currency, to_currency, start, end, source_type],
+        )
 
 
 def build_currency_service(db: Database, *, actor: str = "system") -> CurrencyService:
@@ -708,34 +939,6 @@ def _require_storable(rate: Decimal) -> None:
             "different number than the one reported back. Round it first.",
             code=error_codes.FX_OVERRIDE_RATE_INVALID,
         )
-
-
-def unsupported_currencies(adapter: RateAdapter | None, *codes: str) -> set[str] | None:
-    """Which of ``codes`` the provider prices on no date at all, or ``None``.
-
-    Every caller asks about a *pair*, and either side can be the one the
-    provider has never carried — a profile whose home currency is unpublished
-    reaches this with a perfectly ordinary base. Reading one side is what makes
-    such a profile report an empty result forever with nothing to act on, so
-    the check is shared rather than re-derived per caller.
-
-    ``None`` means the list itself could not be read, and is deliberately not
-    the empty set: claiming a currency is unsupported on the strength of a
-    dropped connection would send the user to a permanent remedy for a
-    transient failure, but so would answering "none unsupported" to a caller
-    that reads an empty answer as proof the pair is fine. Only the caller knows
-    which of those two mistakes its branch would make, so the distinction is
-    handed back rather than resolved here. Adapters memoize the list, so asking
-    about many pairs still costs one call.
-    """
-    if adapter is None:
-        return set()
-    try:
-        published = adapter.supported_currencies()
-    except FeedError:
-        logger.info("Could not read the provider's currency list")
-        return None
-    return {code for code in codes if code not in published}
 
 
 def is_storable_after_rounding(rate: Decimal) -> bool:

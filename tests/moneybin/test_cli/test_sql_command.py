@@ -21,6 +21,8 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.cli.commands.sql import app
 from moneybin.database import Database
+from moneybin.privacy.sql_query import SqlQueryResult
+from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.tables import FCT_TRANSACTION_PROVENANCE
 from tests.moneybin.db_helpers import (
     apply_core_table_comments,
@@ -103,6 +105,51 @@ def test_query_text_masks_critical() -> None:
     assert result.exit_code == 0, result.output
     assert "****" in result.output
     assert "021000021" not in result.output
+
+
+@pytest.mark.usefixtures("_patched")
+def test_query_text_marks_a_truncated_total_unknown_under_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cap sentinel is not an exact `N of M` result count."""
+
+    def truncated_query(_db: Database, _query: str, *, max_rows: int) -> SqlQueryResult:
+        assert max_rows > 0
+        return SqlQueryResult(
+            records=[{"value": 1}],
+            columns=["value"],
+            output_classes={"value": DataClass.AGGREGATE},
+            tier=Tier.LOW,
+            total_count=101,
+            truncated=True,
+        )
+
+    monkeypatch.setattr(
+        "moneybin.privacy.sql_query.execute_sql_query",
+        truncated_query,
+    )
+    result = runner.invoke(app, ["query", "SELECT 1", "--quiet"])
+    assert result.exit_code == 0, result.output
+    assert "1 of 101 shown" not in result.output
+    assert "raise --limit for more" in result.output
+
+
+@pytest.mark.usefixtures("_patched")
+@pytest.mark.parametrize("width", [40, 80, 120])
+def test_query_text_keeps_high_precision_numeric_value_at_all_terminal_widths(
+    width: int,
+) -> None:
+    """SQL text uses the shared numeric declaration rather than splitting decimals."""
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT CAST(8.2987654321 AS DECIMAL(28, 10)) AS precise_rate",
+        ],
+        env={"COLUMNS": str(width)},
+    )
+    assert result.exit_code == 0, result.output
+    assert "8.2987654321" in result.output
 
 
 @pytest.mark.usefixtures("_patched")

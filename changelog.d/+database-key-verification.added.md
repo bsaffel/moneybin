@@ -1,0 +1,1 @@
+`moneybin db key verify` now checks the selected profile’s effective credential against its existing encrypted database without changing database, credential, or profile configuration state. It supports text and JSON results, bypasses stale process keys, and leaves key export/import unimplemented.

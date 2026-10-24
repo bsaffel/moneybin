@@ -60,6 +60,13 @@ MODULE_IMPORT = "<module>"
 # `adapter_relpath` is relative to src/moneybin/ for stability across moves.
 ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     # --- Pure validation constants --------------------------------------
+    # why: the CLI editor lists and validates destination names against this
+    # pure alias table; no extraction, DB access, or orchestration crosses layers.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.tabular.field_aliases",
+        "FIELD_ALIASES",
+    ),
     # VALID_MATCH_TYPES is a frozenset of valid match_type values used for
     # CLI argument validation. Pure data, no DB access.
     (
@@ -117,6 +124,19 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "cli/commands/refresh.py",
         "moneybin.matching.reconciliation",
         "RETIRED_SIDES_COLLAPSED",
+    ),
+    # why: same pure text cause as the noninteractive review adapter; no writes.
+    (
+        "cli/commands/interactive_review.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    # why: SELECT-only readback after a committed decision's FX rebuild fails;
+    # no writes or orchestration, and the receipt must report authoritative state.
+    (
+        "cli/commands/interactive_review.py",
+        "moneybin.matching.persistence",
+        "get_match_decision",
     ),
     # The four embedded refresh callers. Each reaches the same reconciliation
     # the dedicated refresh surfaces do — three by running the full cascade,
@@ -213,54 +233,6 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.readers",
         "normalize_excel_date_columns_after_mapping",
     ),
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.column_mapper",
-        "map_columns",
-    ),
-    # why: pure read — builds {dest: samples} for an in-memory frame the
-    # adapter already holds, always against a frame rendered under the
-    # mapping being shown. Needed so a mapping override can refresh samples
-    # for a destination the detector never proposed.
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.column_mapper",
-        "collect_field_samples",
-    ),
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.format_detector",
-        "detect_format",
-    ),
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.readers",
-        "read_file",
-    ),
-    # why: pure DataFrame transform (no writes) — same reason as the CLI
-    # preview entry above; import_preview_coarse's map_columns call needs
-    # the identical read->normalize->map sequence the service layer applies.
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.readers",
-        "normalize_excel_date_columns_for_detection",
-    ),
-    # why: pure DataFrame transform (no writes) — same reason as the CLI
-    # after-mapping entry above.
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.readers",
-        "normalize_excel_date_columns_after_mapping",
-    ),
-    # FIELD_ALIASES is a pure module-level constant (destination field name ->
-    # alias list) — import_preview's mapping= override validates against its
-    # keys the same way the service layer's resolve_or_confirm does. No DB or
-    # extractor logic crosses the layer.
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.field_aliases",
-        "FIELD_ALIASES",
-    ),
     # `formats` re-exports — multi-name imports from the same module
     # flatten to one allowlist entry per imported name. These are all
     # pure utilities (load_builtin_formats: reads bundled YAML; merge_formats:
@@ -290,7 +262,7 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     # resolve_read_settings is a pure resolution over a TabularFormat and the
     # caller's flags — no DB, no IO, no file read. It is guarded rather than
     # duplicated on purpose: `import preview` and ImportService must resolve the
-    # same seven read settings from the same place, and the copy that drifted is
+    # same eight read settings from the same place, and the copy that drifted is
     # exactly the defect this closes. Routing it through the service instead
     # would make the CLI construct a service to read a file it then reads
     # itself, which the surrounding read-stage imports (detect_format,

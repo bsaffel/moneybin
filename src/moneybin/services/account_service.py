@@ -11,7 +11,7 @@ import dataclasses
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from difflib import SequenceMatcher, get_close_matches
 from typing import Any, cast
@@ -20,6 +20,12 @@ from moneybin import error_codes
 from moneybin.database import Database, has_column
 from moneybin.errors import UserError
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
+from moneybin.investments.source_overlap import (
+    INVESTMENT_SOURCE_TYPES,
+    investment_source_evidence,
+    source_adjective,
+    trade_count_phrase,
+)
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
@@ -34,6 +40,7 @@ from moneybin.services.account_resolution_types import (
     is_reserved_account_name,
 )
 from moneybin.services.audit_service import AuditService
+from moneybin.sqlmesh_freshness import restating_columns
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     DIM_ACCOUNTS,
@@ -187,6 +194,13 @@ _TRIMMED_SETTING_FIELDS = (
     "holder_category",
 )
 
+#: Ledger settings ``settings_update`` stamps with a change time. The source
+#: choice and archive state stamp their own times beside their special cases.
+_LEDGER_CHANGE_STAMPS = (
+    ("currency_code", "currency_code_changed_at"),
+    ("default_cost_basis_method", "default_cost_basis_method_changed_at"),
+)
+
 
 def normalize_setting_text(value: str) -> str:
     """A free-text setting as ``app.account_settings`` will hold it.
@@ -219,6 +233,11 @@ def _stored_text(value: str | None) -> str | None:
 # NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
 _UNSET_LABEL = "<unset>"
 
+# Audit context key: the caller named include_in_net_worth in this write.
+# A full-row snapshot cannot tell an explicit value from an untouched one;
+# doctor's account_archive_intent_ambiguous reads this to settle an account.
+INCLUDE_DECISION_MARKER = "confirms_include_in_net_worth"
+
 
 @dataclass(frozen=True, slots=True)
 class AccountSettings:
@@ -240,6 +259,11 @@ class AccountSettings:
     archived_at: date | None = None
     include_in_net_worth: bool = True
     default_cost_basis_method: str | None = None
+    investment_source_type: str | None = None
+    investment_source_type_changed_at: datetime | None = None
+    archived_changed_at: datetime | None = None
+    currency_code_changed_at: datetime | None = None
+    default_cost_basis_method_changed_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict for JSON / envelope transport."""
@@ -256,6 +280,13 @@ class AccountSettings:
             "archived_at": self.archived_at,
             "include_in_net_worth": self.include_in_net_worth,
             "default_cost_basis_method": self.default_cost_basis_method,
+            "investment_source_type": self.investment_source_type,
+            "investment_source_type_changed_at": self.investment_source_type_changed_at,
+            "archived_changed_at": self.archived_changed_at,
+            "currency_code_changed_at": self.currency_code_changed_at,
+            "default_cost_basis_method_changed_at": (
+                self.default_cost_basis_method_changed_at
+            ),
         }
 
     def __post_init__(self) -> None:
@@ -436,6 +467,19 @@ class AccountService:
         the moment any settings write (``accounts set``) reaches this read.
         """
         has_archived_at = has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
+        # Same drift guard for the V069 pair, V074's archived_changed_at and
+        # V075's stamps: absent on a no_auto_upgrade profile.
+        later_fields = [
+            c
+            for c in (
+                "investment_source_type",
+                "investment_source_type_changed_at",
+                "archived_changed_at",
+                "currency_code_changed_at",
+                "default_cost_basis_method_changed_at",
+            )
+            if has_column(self._db, ACCOUNT_SETTINGS, c)
+        ]
         fields = [
             "account_id",
             "display_name",
@@ -449,6 +493,7 @@ class AccountService:
             *(["archived_at"] if has_archived_at else []),
             "include_in_net_worth",
             "default_cost_basis_method",
+            *later_fields,
         ]
         field_list = ", ".join(fields)
         row = self._db.execute(
@@ -475,7 +520,57 @@ class AccountService:
             archived_at=r.get("archived_at"),  # type: ignore[arg-type]
             include_in_net_worth=r["include_in_net_worth"],  # type: ignore[arg-type]
             default_cost_basis_method=r["default_cost_basis_method"],  # type: ignore[arg-type]
+            investment_source_type=r.get("investment_source_type"),  # type: ignore[arg-type]
+            investment_source_type_changed_at=r.get(
+                "investment_source_type_changed_at"
+            ),  # type: ignore[arg-type]
+            archived_changed_at=r.get("archived_changed_at"),  # type: ignore[arg-type]
+            currency_code_changed_at=r.get("currency_code_changed_at"),  # type: ignore[arg-type]
+            default_cost_basis_method_changed_at=r.get(
+                "default_cost_basis_method_changed_at"
+            ),  # type: ignore[arg-type]
         )
+
+    def investment_source_type(self, account_id: str) -> str | None:
+        """The account's chosen investment source; ``None`` when none is set.
+
+        Also ``None`` on a catalog that predates V069 (no column to read).
+        """
+        if not has_column(self._db, ACCOUNT_SETTINGS, "investment_source_type"):
+            return None
+        row = self._db.execute(
+            f"SELECT investment_source_type FROM {ACCOUNT_SETTINGS.full_name} "  # TableRef constant
+            "WHERE account_id = ?",
+            [account_id],
+        ).fetchone()
+        return None if row is None else row[0]
+
+    def investment_source_confirmation(self, account_id: str) -> str | None:
+        """What the ledger uses and ignores; ``None`` with no trades and no choice."""
+        evidence = investment_source_evidence(self._db, [account_id]).get(
+            account_id, []
+        )
+        choice = self.investment_source_type(account_id)
+        if not evidence:
+            if choice is None:
+                return None
+            return f"Using {source_adjective(choice)} trades (none yet)"
+        if choice is None:
+            return "Using every source: " + ", ".join(
+                trade_count_phrase(e) for e in evidence
+            )
+        kept = (
+            ", ".join(
+                trade_count_phrase(e) for e in evidence if e.source_type == choice
+            )
+            or f"{source_adjective(choice)} trades (none yet)"
+        )
+        ignored = ", ".join(
+            trade_count_phrase(e) for e in evidence if e.source_type != choice
+        )
+        if not ignored:
+            return f"Using {kept}"
+        return f"Using {kept}; ignoring {ignored} (kept, not deleted)"
 
     def list_accounts(
         self,
@@ -562,6 +657,8 @@ class AccountService:
         # archived_at is projected only when the live core.dim_accounts
         # catalog has it -- see the matching comment in list_accounts.
         has_archived_at = has_column(self._db, DIM_ACCOUNTS, "archived_at")
+        # Same drift guard for the V069 column on a dim_accounts not yet rebuilt.
+        has_source_choice = has_column(self._db, DIM_ACCOUNTS, "investment_source_type")
         fields = [
             "account_id",
             "display_name",
@@ -575,6 +672,7 @@ class AccountService:
             "archived",
             *(["archived_at"] if has_archived_at else []),
             "include_in_net_worth",
+            *(["investment_source_type"] if has_source_choice else []),
             "source_type",
             "routing_number",
             "official_name",
@@ -606,6 +704,7 @@ class AccountService:
             archived=bool(r["archived"]),
             archived_at=r.get("archived_at"),  # type: ignore[arg-type]
             include_in_net_worth=bool(r["include_in_net_worth"]),
+            investment_source_type=r.get("investment_source_type"),  # type: ignore[arg-type]
             source_type=r["source_type"],  # type: ignore[arg-type]
         )
 
@@ -732,6 +831,7 @@ class AccountService:
         credit_limit: Decimal | None | object = None,
         display_name: str | None | object = None,
         default_cost_basis_method: str | None | object = None,
+        investment_source_type: str | None | object = None,
         include_in_net_worth: bool | None = None,
         archived: bool | None = None,
     ) -> tuple[AccountSettings, list[dict[str, str]]]:
@@ -757,6 +857,15 @@ class AccountService:
         non-None value outside :data:`COST_BASIS_METHODS` raises ``UserError``
         (code ``mutation_invalid_input``) before the DB write. The column's
         ``CHECK`` constraint is the backstop, not the primary contract.
+
+        ``investment_source_type`` is hard-validated against
+        :data:`INVESTMENT_SOURCE_TYPES` (lowercase only; ``CLEAR`` uses every
+        source again). A real change stamps
+        ``investment_source_type_changed_at`` and restates from
+        ``core.dim_accounts`` before returning; repeating the current value is a
+        no-op for this field. A catalog that predates V069 refuses the field
+        (``infra_database_upgrade_required``) while every other setting keeps
+        working. See docs/specs/investment-source-choice.md.
         """
         self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
@@ -767,11 +876,17 @@ class AccountService:
         # input: stamp it with today's date on the FALSE->TRUE transition
         # (idempotent -- re-archiving an already-archived account leaves the
         # stored date alone), and clear it back to NULL on unarchive.
-        # include_in_net_worth is untouched either way (no cascade).
+        # include_in_net_worth is untouched either way (no cascade). Either
+        # transition also stamps archived_changed_at: it moves is_categorizable
+        # on every core.fct_transactions row of the account.
         if archived is True and not current.archived:
             diff["archived_at"] = date.today()
         elif archived is False and current.archived:
             diff["archived_at"] = None
+        if "archived_at" in diff:
+            diff["archived_changed_at"] = self._db.execute(
+                "SELECT NOW()::TIMESTAMP"
+            ).fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
 
         def _resolve(field_name: str, new: object) -> None:
             if new is None:
@@ -789,6 +904,7 @@ class AccountService:
         _resolve("credit_limit", credit_limit)
         _resolve("display_name", display_name)
         _resolve("default_cost_basis_method", default_cost_basis_method)
+        _resolve("investment_source_type", investment_source_type)
         # Non-null booleans: pass-through when set, no CLEAR semantics.
         if include_in_net_worth is not None:
             diff["include_in_net_worth"] = include_in_net_worth
@@ -834,6 +950,42 @@ class AccountService:
                 hint=f"Valid methods: {valid}.",
             )
 
+        # Same hard validation for the investment source, plus a guard for a
+        # catalog that predates V069: the repo would silently drop the value
+        # there, and a source choice that is not persisted must not look saved.
+        if "investment_source_type" in diff:
+            if not has_column(self._db, ACCOUNT_SETTINGS, "investment_source_type"):
+                raise UserError(
+                    "This database predates the investment source setting.",
+                    code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
+                    hint="Run 'moneybin db migrate apply' and try again.",
+                )
+            source = diff["investment_source_type"]
+            if source is not None and source not in INVESTMENT_SOURCE_TYPES:
+                valid = ", ".join(sorted(INVESTMENT_SOURCE_TYPES))
+                raise UserError(
+                    f"Invalid investment source type: {source!r}. Valid: {valid}.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint=f"Valid investment source types: {valid}.",
+                )
+            if source == current.investment_source_type:
+                del diff["investment_source_type"]
+            else:
+                diff["investment_source_type_changed_at"] = self._db.execute(
+                    "SELECT NOW()::TIMESTAMP"
+                ).fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+
+        # The materialized ledgers fold these change times instead of the row's
+        # updated_at, which a rename also advances. Repeating the current value
+        # is a no-op for the field, so it neither stamps nor restates.
+        for field_name, stamp in _LEDGER_CHANGE_STAMPS:
+            if field_name not in diff:
+                continue
+            if diff[field_name] == getattr(current, field_name):
+                del diff[field_name]
+            else:
+                diff[stamp] = self._db.execute("SELECT NOW()::TIMESTAMP").fetchone()[0]  # type: ignore[index]  # NOW() always returns a row
+
         # Reserved vocabulary: core shows this exact label for an account it
         # could not name, and `is_a_name` reads it that way everywhere. Taking
         # it as a user's name would drop that account out of fuzzy resolution,
@@ -869,18 +1021,30 @@ class AccountService:
             archived_at=target.archived_at,
             include_in_net_worth=target.include_in_net_worth,
             default_cost_basis_method=target.default_cost_basis_method,
+            investment_source_type=target.investment_source_type,
+            investment_source_type_changed_at=target.investment_source_type_changed_at,
+            archived_changed_at=target.archived_changed_at,
+            currency_code_changed_at=target.currency_code_changed_at,
+            default_cost_basis_method_changed_at=(
+                target.default_cost_basis_method_changed_at
+            ),
             actor=actor,
+            context=(
+                {INCLUDE_DECISION_MARKER: True}
+                if include_in_net_worth is not None
+                else None
+            ),
         )
         logger.info(
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )
-        if diff.keys() & {"currency_code", "default_cost_basis_method"}:
-            from moneybin.services.fx_accounting_refresh import (
-                restate_fx_accounting,
-            )
+        # A display-only edit (a rename, a last four) is read by the
+        # core.dim_accounts view alone and needs no rebuild.
+        if restating_columns(ACCOUNT_SETTINGS, diff):
+            from moneybin.services.restate import restate_after_write
 
-            restate_fx_accounting(
-                self._db, account_currency_changed="currency_code" in diff
+            restate_after_write(
+                self._db, [ACCOUNT_SETTINGS], committed_change="setting"
             )
         # Re-read rather than return `target`: on a pre-V063 catalog opened
         # with no_auto_upgrade=True, AccountSettingsRepo.set() silently drops

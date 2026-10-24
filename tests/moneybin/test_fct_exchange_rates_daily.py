@@ -69,6 +69,22 @@ def _insert_ofx_balance(
     )
 
 
+def _insert_ofx_transaction(
+    db: Database, *, txn_id: str, account_id: str, on_date: str, currency_code: str
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_transactions
+            (source_transaction_id, account_id, transaction_type, date_posted,
+             amount, payee, source_file, extracted_at, source_type,
+             source_origin, currency_code)
+        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, -5.00, 'Test Payee',
+                'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
+        """,  # test fixture, not executing user SQL
+        [txn_id, account_id, on_date, currency_code],
+    )
+
+
 @pytest.fixture(scope="module")
 def fct_exchange_rates_daily_db(
     tmp_path_factory: pytest.TempPathFactory,
@@ -118,6 +134,110 @@ def fct_exchange_rates_daily_db(
         to_currency="CCC",
         rate_date="2026-01-08",
         rate="2.0000",
+    )
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rate_coverage
+            (from_currency, to_currency, start_date, end_date, source_type)
+        VALUES ('USD', 'CCC', '2026-01-05', '2026-01-08', 'frankfurter')
+        """  # test fixture, not executing user SQL
+    )
+
+    # Coverage from one provider over another's gap. frankfurter publishes the
+    # Monday and Thursday with no recorded answer between; exchangerate_host
+    # recorded an answer spanning the previous Monday to that Thursday, but
+    # its own publications sit ten days apart. Neither provider proves a
+    # closure on its own, so the interior weekdays stay unpriced.
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="MMM",
+        rate_date="2026-01-05",
+        rate="5.0000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="MMM",
+        rate_date="2026-01-08",
+        rate="5.5000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="MMM",
+        rate_date="2025-12-29",
+        rate="4.8000",
+        source_type="exchangerate_host",
+        loaded_at="2026-01-05 08:00:00",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="MMM",
+        rate_date="2026-01-08",
+        rate="5.4000",
+        source_type="exchangerate_host",
+        loaded_at="2026-01-05 08:00:00",
+    )
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rate_coverage
+            (from_currency, to_currency, start_date, end_date, source_type)
+        VALUES ('USD', 'MMM', '2025-12-29', '2026-01-08', 'exchangerate_host')
+        """  # test fixture, not executing user SQL
+    )
+
+    # A provider's trailing edge. frankfurter publishes the Monday and the
+    # Wednesday and records an answer through the Friday, then stops;
+    # exchangerate_host publishes the next Wednesday, which extends the spine
+    # past frankfurter's last row. Thursday and Friday sit inside frankfurter's
+    # answer but after its final publication, so nothing brackets them.
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="NNN",
+        rate_date="2026-01-05",
+        rate="6.0000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="NNN",
+        rate_date="2026-01-07",
+        rate="6.1000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="NNN",
+        rate_date="2026-01-14",
+        rate="6.5000",
+        source_type="exchangerate_host",
+    )
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rate_coverage
+            (from_currency, to_currency, start_date, end_date, source_type)
+        VALUES ('USD', 'NNN', '2026-01-05', '2026-01-09', 'frankfurter'),
+               ('USD', 'NNN', '2026-01-14', '2026-01-14', 'exchangerate_host')
+        """  # test fixture, not executing user SQL
+    )
+
+    # A Friday, then a Tuesday eleven days on — wider than a market closure.
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="KKK",
+        rate_date="2026-01-09",
+        rate="4.0000",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="KKK",
+        rate_date="2026-01-20",
+        rate="4.5000",
     )
 
     # Two providers on the same pair/date: freshest loaded_at wins. Mirrors
@@ -185,6 +305,17 @@ def fct_exchange_rates_daily_db(
         balance="50.00",
         currency_code="EUR",
         extracted_at="2026-01-10 09:00:00",
+    )
+
+    # An unanchored account: a transaction, no balance. Its NULL spine rows
+    # must not break or widen the rate spine (Requirement 9).
+    _insert_ofx_account(db, account_id="acct_unanchored")
+    _insert_ofx_transaction(
+        db,
+        txn_id="txn_unanchored",
+        account_id="acct_unanchored",
+        on_date="2026-01-07",
+        currency_code="DDD",
     )
 
     with sqlmesh_context(db) as ctx:
@@ -278,6 +409,81 @@ def test_interior_gap_carries_forward_with_provenance(
 
 
 @pytest.mark.slow
+def test_another_providers_coverage_does_not_prove_a_closure(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """The closure proof is one provider's answer over that provider's own gap.
+
+    Mixed across providers, exchangerate_host's recorded answer would vouch for
+    the three-day gap in frankfurter's rows and price the Tuesday and
+    Wednesday. Kept apart, frankfurter recorded nothing and
+    exchangerate_host's own publications sit ten days apart, so only the
+    publication days themselves are priced — the same answer
+    `resolve_rate`'s offline path gives.
+    """
+    rows = fct_exchange_rates_daily_db.execute(
+        "SELECT effective_date, published_date, rate_vendor "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'USD' AND to_currency = 'MMM' "
+        "ORDER BY effective_date"
+    ).fetchall()
+    assert [(str(r[0]), str(r[1]), r[2]) for r in rows] == [
+        ("2025-12-29", "2025-12-29", "exchangerate_host"),
+        ("2026-01-05", "2026-01-05", "frankfurter"),
+        ("2026-01-08", "2026-01-08", "frankfurter"),
+    ]
+
+
+@pytest.mark.slow
+def test_a_providers_last_publication_proves_no_closure_after_it(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """A covered day past a provider's final row has no bracket, so it stays unpriced.
+
+    The Tuesday is a closure frankfurter proves (Monday and Wednesday bracket
+    it inside its answer). Thursday and Friday are inside that answer too, but
+    no frankfurter row follows them — `resolve_rate`'s offline path needs one —
+    so only exchangerate_host's own publication prices the next week.
+    """
+    rows = fct_exchange_rates_daily_db.execute(
+        "SELECT effective_date, published_date, rate_vendor "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'USD' AND to_currency = 'NNN' "
+        "ORDER BY effective_date"
+    ).fetchall()
+    assert [(str(r[0]), str(r[1]), r[2]) for r in rows] == [
+        ("2026-01-05", "2026-01-05", "frankfurter"),
+        ("2026-01-06", "2026-01-05", "frankfurter"),
+        ("2026-01-07", "2026-01-07", "frankfurter"),
+        ("2026-01-14", "2026-01-14", "exchangerate_host"),
+    ]
+
+
+@pytest.mark.slow
+def test_a_gap_wider_than_a_market_closure_carries_only_its_weekend(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """Eleven days between publications is not a closure, so the weekdays go unpriced.
+
+    The weekend straight after the Friday still carries it — no reference rate
+    is published on a weekend, whatever follows — which is the hop
+    `resolve_rate` takes from the calendar alone.
+    """
+    rows = fct_exchange_rates_daily_db.execute(
+        "SELECT effective_date, published_date "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'USD' AND to_currency = 'KKK' "
+        "ORDER BY effective_date"
+    ).fetchall()
+    assert [(str(r[0]), str(r[1])) for r in rows] == [
+        ("2026-01-09", "2026-01-09"),
+        ("2026-01-10", "2026-01-09"),
+        ("2026-01-11", "2026-01-09"),
+        ("2026-01-20", "2026-01-20"),
+    ]
+
+
+@pytest.mark.slow
 def test_identity_rows_span_the_balance_spine_domain(
     fct_exchange_rates_daily_db: Database,
 ) -> None:
@@ -362,6 +568,33 @@ def test_two_providers_on_one_day_resolve_by_freshest_write(
     assert float(row[0]) == pytest.approx(3.1000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert row[1] == "provider"
     assert row[2] == "exchangerate_host"
+
+
+@pytest.mark.slow
+def test_a_null_balance_row_leaves_the_identity_domain_unchanged(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """An unanchored account's NULL spine rows neither break nor widen the rate spine."""
+    # Hand-derived: first evidence is the 01-07 transaction; the spine runs to the
+    # newest evidence date in the profile, the 01-14 balance observation.
+    null_rows = fct_exchange_rates_daily_db.execute(
+        "SELECT CAST(balance_date AS VARCHAR), balance, is_observed, in_net_worth "
+        "FROM core.fct_balances_daily WHERE account_id = 'acct_unanchored' "
+        "ORDER BY balance_date"
+    ).fetchall()
+    assert [r[0] for r in null_rows] == [f"2026-01-{day:02d}" for day in range(7, 15)]
+    assert all(r[1:] == (None, False, True) for r in null_rows)
+    bounds = fct_exchange_rates_daily_db.execute(
+        "SELECT MIN(effective_date), MAX(effective_date), COUNT(*) "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'DDD' AND to_currency = 'DDD'"
+    ).fetchone()
+    assert bounds is not None
+    assert (str(bounds[0]), str(bounds[1]), bounds[2]) == (
+        "2026-01-01",
+        "2026-01-14",
+        14,
+    )
 
 
 @pytest.mark.slow

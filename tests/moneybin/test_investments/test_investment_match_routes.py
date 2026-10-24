@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
 from moneybin.orchestration.refresh import expand_steps, refresh
 from tests.moneybin.test_investments.comparison_helpers import (
@@ -84,11 +85,13 @@ def test_cli_pending_text_displays_review_evidence(
 
 @pytest.mark.parametrize("command", ["pending", "history"])
 @pytest.mark.parametrize("quiet", [False, True], ids=["stdout-only", "quiet"])
+@pytest.mark.parametrize("width", [40, 80])
 def test_cli_review_stdout_preserves_proposal_and_choice_context(
     comparison_db: Database,
     monkeypatch: pytest.MonkeyPatch,
     command: str,
     quiet: bool,
+    width: int,
 ) -> None:
     from moneybin.privacy.payloads.reviews import (
         InvestmentMatchDetails,
@@ -101,7 +104,7 @@ def test_cli_review_stdout_preserves_proposal_and_choice_context(
         status="pending" if command == "pending" else "history",
         rows=[
             InvestmentMatchReviewRow(
-                decision_id="proposal-review-123",
+                decision_id="proposal-review-1234567890",
                 status="pending" if command == "pending" else "superseded",
                 created_at="2026-01-12T00:00:00",
                 summary="Investment Proposal",
@@ -120,8 +123,8 @@ def test_cli_review_stdout_preserves_proposal_and_choice_context(
                     "algorithm_version": "test-version",
                     "legs": [
                         {
-                            "source_event_key": "event-manual",
-                            "native_reference": "native-manual",
+                            "source_event_key": "event-manual-1234567890",
+                            "native_reference": "native-manual-1234567890",
                             "observation_version": "obsver-manual",
                             "original_investment_transaction_id": "native-manual",
                             # Raw, user-authored manual account_id (the
@@ -142,7 +145,7 @@ def test_cli_review_stdout_preserves_proposal_and_choice_context(
                             "trade_date_basis": "explicit",
                             "quantity": "1",
                             "price": "100",
-                            "amount": "-100",
+                            "amount": "-123456789012345.6789012345",
                             "fees": "0",
                             "source_currency_code": "USD",
                             "account_currency_code": "USD",
@@ -272,12 +275,44 @@ def test_cli_review_stdout_preserves_proposal_and_choice_context(
         "moneybin.adapters.investment_matching_adapters.investment_review_view",
         review_view,
     )
+
+    policy = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=width,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+    def policy_factory(*, no_pager: bool = False) -> TerminalPolicy:
+        return policy
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.investments.matches.get_terminal_policy",
+        policy_factory,
+    )
     result = CliRunner().invoke(
-        app, ["investments", "matches", command, *(["--quiet"] if quiet else [])]
+        app,
+        [
+            "investments",
+            "matches",
+            command,
+            "--wide",
+            "--no-pager",
+            *(["--quiet"] if quiet else []),
+        ],
     )
     assert result.exit_code == 0, result.output
+    normalized_stdout = re.sub(r"\s+", " ", result.stdout)
     for value in (
-        "proposal-review-123",
+        "proposal-review-1234567890",
         "fuzzy",
         "conflict-trade-date-123",
         "trade_date",
@@ -285,26 +320,169 @@ def test_cli_review_stdout_preserves_proposal_and_choice_context(
         "2026-01-10",
         "choice-plaid",
         "2026-01-11",
-        "quantity",
+        "event-manual-1234567890",
+        "native-manual-1234567890",
+        "-123456789012345.6789012345",
+        "USD",
         "trade_date_conflict",
         "golden_membership_changed",
     ):
-        assert value in result.stdout
+        assert value in normalized_stdout
     # Without the lifecycle status a terminal reader cannot tell why a settled
     # Proposal is in the history at all — every row there renders the same id
     # and confidence, and only JSON carried the state that separates them. The
     # label is asserted too: "pending" reaches stdout from the view's own status
     # either way, so the value alone proves nothing on the pending route.
-    assert "Status" in result.stdout
-    assert ("pending" if command == "pending" else "superseded") in result.stdout
+    assert "Status" in normalized_stdout
+    assert ("pending" if command == "pending" else "superseded") in normalized_stdout
     # The two branches the fixture above exists to reach.
-    assert "native-manual / native-plaid-alt" in result.stdout
-    assert "proposal-prior-122" in result.stdout
+    assert "native-manual / native-plaid-alt" in normalized_stdout
+    assert "proposal-prior-122" in normalized_stdout
     # The leg's raw, user-authored account_id must reach the text table
     # masked, never bare — the CLI text path applies no redaction by design
     # (render_or_json's docstring), so the command itself must mask it.
     assert "****9999" in result.stdout
     assert "raw_account_9999" not in result.stdout
+
+
+@pytest.mark.parametrize("command", ["pending", "history"])
+def test_cli_review_empty_scope_stays_visible_without_its_routine_hint_under_quiet(
+    comparison_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    """Quiet keeps the requested empty result while dropping the next-step hint."""
+
+    @contextmanager
+    def database_context(
+        *args: object, **kwargs: object
+    ) -> Generator[Database, None, None]:
+        yield comparison_db
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.investments.matches.get_database", database_context
+    )
+    result = CliRunner().invoke(
+        app, ["investments", "matches", command, "--quiet", "--no-pager"]
+    )
+
+    assert result.exit_code == 0, result.output
+    expected_scope = "pending" if command == "pending" else "historical"
+    assert f"No {expected_scope} investment Proposals." in result.stdout
+    assert "moneybin investments matches run" not in result.stdout
+
+
+def test_cli_pending_pages_one_complete_answer_and_no_pager_prints_it(
+    comparison_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pager receives scope, proposal evidence, and context as one answer."""
+    from moneybin.cli import pager
+
+    _seed(comparison_db)
+    refresh(comparison_db, steps=["investment_match"])
+
+    @contextmanager
+    def database_context(
+        *args: object, **kwargs: object
+    ) -> Generator[Database, None, None]:
+        yield comparison_db
+
+    policy = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=True,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=1,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+    pages: list[str] = []
+
+    def policy_factory(*, no_pager: bool = False) -> TerminalPolicy:
+        return policy
+
+    def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+        pages.append(text)
+        return True
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.investments.matches.get_database", database_context
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.investments.matches.get_terminal_policy",
+        policy_factory,
+    )
+    monkeypatch.setattr(
+        pager,
+        "page_text",
+        capture_page,
+    )
+
+    paged = CliRunner().invoke(app, ["investments", "matches", "pending"])
+    direct = CliRunner().invoke(
+        app, ["investments", "matches", "pending", "--no-pager"]
+    )
+
+    assert paged.exit_code == 0, paged.output
+    assert direct.exit_code == 0, direct.output
+    assert len(pages) == 1
+    for text in (pages[0], direct.stdout):
+        assert "All 1 pending investment Proposals" in text
+        assert "Evidence" in text
+        assert "Downstream effects" in text
+
+
+def test_cli_pending_json_keeps_the_typed_envelope_and_masks_account_ids(
+    comparison_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The text migration leaves the JSON contract and its redaction untouched."""
+    _seed(comparison_db)
+    refresh(comparison_db, steps=["investment_match"])
+
+    @contextmanager
+    def database_context(
+        *args: object, **kwargs: object
+    ) -> Generator[Database, None, None]:
+        yield comparison_db
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.investments.matches.get_database", database_context
+    )
+    result = CliRunner().invoke(
+        app, ["investments", "matches", "pending", "--output", "json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["data"]["status"] == "pending"
+    assert payload["data"]["rows"][0]["details"]["legs"][0]["account_id"] == "****ount"
+
+
+def test_cli_run_no_input_prints_a_factual_receipt(
+    comparison_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty planner run does not claim proposals were prepared."""
+
+    @contextmanager
+    def database_context(
+        *args: object, **kwargs: object
+    ) -> Generator[Database, None, None]:
+        yield comparison_db
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.investments.matches.get_database", database_context
+    )
+    result = CliRunner().invoke(app, ["investments", "matches", "run"])
+
+    assert result.exit_code == 0, result.output
+    assert "Investment match planning" in result.stdout
+    assert "Comparison inputs are not ready; run refresh first." in result.stdout
+    assert "prepared for review" not in result.stdout
 
 
 def test_bounded_refresh_persists_proposals_without_transform(

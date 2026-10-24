@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-10-07 -->
 # MCP Server
 
 MoneyBin exposes one **50-tool standard registry** to every generic MCP client,
@@ -25,7 +25,6 @@ Install a client entry with `moneybin mcp install --client <name>`. Pass
 
 ```console
 $ uv run moneybin mcp install --client claude-desktop --print
-Using profile: demo
 {
   "mcpServers": {
     "MoneyBin (demo)": {
@@ -49,7 +48,13 @@ Three lines are trimmed from that block: the two `args` entries
 `"--directory"` and the absolute path of the checkout `uv` runs from, and the
 `"MONEYBIN_HOME"` entry inside `env`, which carries the absolute path of the
 MoneyBin home directory that was set when install ran (the `env` block appears
-only when `MONEYBIN_HOME` is set). Every option the command takes is in the
+only when `MONEYBIN_HOME` is set, or when the server would otherwise open a
+different home; [Preview the snippet](mcp-clients.md#preview-the-snippet) gives
+the rule). A one-line note `mcp install` writes to
+stderr is trimmed as well: it appears when install runs inside a linked
+worktree, names the main checkout the config was anchored at, and carries no
+status symbol because it reports information rather than an outcome. Every option
+the command takes is in the
 [`moneybin mcp` reference](../reference/cli/mcp.md#moneybin-mcp-install).
 
 [`mcp-clients.md`](mcp-clients.md) lists the supported clients, config paths,
@@ -74,7 +79,7 @@ a client can offer as a menu entry. Client support varies; run
 
 ```console
 $ uv run moneybin mcp list-prompts
-Registered MCP tools — full surface visible at connect
+7 registered prompts:
   categorization_organize  Organize uncategorized transactions into categories.
   curate_recent_transactions  Walk the user through curating recently-imported transactions.
   monthly_review  Monthly financial review — spending, budget status, and trends.
@@ -84,8 +89,9 @@ Registered MCP tools — full surface visible at connect
   sync_review  Review sync health and suggest the next action.
 ```
 
-The first line is a log record the server emits while it builds the registry,
-not a heading over the list: the seven indented rows are prompts.
+The seven indented rows are the prompts, under a header that counts them. The
+registry-build log record the command used to emit ahead of the list no longer
+reaches the console. Nothing is trimmed from that block.
 
 All seven are defined in
 [`src/moneybin/mcp/prompts.py`](../../src/moneybin/mcp/prompts.py). Each returns

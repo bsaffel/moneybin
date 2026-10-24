@@ -210,6 +210,58 @@ def test_service_revoke_all_emits_per_grant_privacy_events(
     assert "*" not in {e["feature_category"] for e in revokes}
 
 
+@pytest.mark.parametrize("drift", ["added", "removed"])
+def test_service_revoke_all_refuses_a_stale_selected_grant_set(
+    db: Database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    """A confirmation snapshot never widens or mutates after it goes stale."""
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir", lambda: tmp_path
+    )
+    svc = ConsentService(db)
+    first = svc.grant_consent(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="test",
+    ).grant
+    expected_ids = {first.grant_id}
+    if drift == "added":
+        svc.grant_consent(
+            feature_category="ml-categorization",
+            backend="anthropic",
+            consent_mode=ConsentMode.PERSISTENT,
+            actor="test",
+        )
+    else:
+        svc.revoke_consent(
+            feature_category="mcp-data-sharing", backend="anthropic", actor="test"
+        )
+
+    audit_before_row = db.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'consent.revoke'"
+    ).fetchone()
+    assert audit_before_row is not None
+    audit_before = audit_before_row[0]
+    events_before = read_privacy_events({"action": "consent.revoke"}, max_rows=20)
+    with pytest.raises(UserError, match="Consent selection changed") as exc:
+        svc.revoke_all(actor="cli", expected_grant_ids=expected_ids)
+
+    assert exc.value.code == "mutation_confirmation_mismatch"
+    assert {grant.grant_id for grant in svc.status().active_grants} != expected_ids
+    audit_after_row = db.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'consent.revoke'"
+    ).fetchone()
+    assert audit_after_row is not None
+    assert audit_after_row[0] == audit_before
+    assert (
+        read_privacy_events({"action": "consent.revoke"}, max_rows=20) == events_before
+    )
+
+
 def test_service_grant_one_time_mode_persists_until_revoked(db: Database) -> None:
     """one-time grants are recorded and persist — enforcement is deferred.
 

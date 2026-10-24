@@ -14,20 +14,30 @@ from sqlglot import exp
 from moneybin.audits import recipes as recipe_registry
 from moneybin.audits.runner import run_standalone_audits
 from moneybin.config import get_settings
-from moneybin.database import Database
+from moneybin.database import Database, has_column
 from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.account_identity import (
     UNNAMED_ACCOUNT_LABEL,
     mask_embedded_account_number,
 )
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
-from moneybin.investments.source_overlap import investment_source_overlap
+from moneybin.investments.source_overlap import (
+    investment_source_choice_counts,
+    investment_source_overlap,
+    stale_source_choice_accounts,
+)
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
+    FX_RATE_SPINE_ROWS,
+    INVESTMENT_SOURCE_CHOICE_ACCOUNTS,
+    NET_WORTH_STALE_BALANCE_ACCOUNTS,
+    NET_WORTH_UNANCHORED_ACCOUNTS,
+    NET_WORTH_UNPRICED_DATES,
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
 )
 from moneybin.services.account_resolution_types import is_reserved_account_name
+from moneybin.services.account_service import INCLUDE_DECISION_MARKER
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.profile_settings_service import ProfileSettingsService
 from moneybin.sqlmesh_registry import model_presence
@@ -51,6 +61,8 @@ from moneybin.tables import (
     DIM_SECURITIES,
     EXCHANGE_RATE_OVERRIDES,
     FCT_BALANCES,
+    FCT_BALANCES_DAILY,
+    FCT_EXCHANGE_RATES_DAILY,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
@@ -66,6 +78,7 @@ from moneybin.tables import (
     PLAID_SECURITIES,
     PROFILE_SETTINGS,
     PROPOSED_RULES,
+    REPORTS_NET_WORTH,
     RULE_CONFLICTS,
     SECURITIES,
     SECURITY_LINKS,
@@ -135,40 +148,6 @@ _ALLOWED_PK_EXPRS = frozenset({
 })
 
 _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
-
-# Used by `_run_investment_unreported_holdings`, which needs "the one whole
-# snapshot per item with the latest extracted_at" (never "latest row per
-# position": that would let a stale survivor from an earlier pull mask an
-# omission in the newest one). Mirrors the identical CTE in `dim_holdings.sql`.
-# No leading `WITH` — callers splice this into their own `WITH <this>, ...`
-# clause. (`_run_investment_phantom_holdings` no longer needs it: it scopes on
-# the position-level `ever_reported_positions` gate instead.)
-#
-# Derived from the snapshot RECEIPTS (one row per item per pull, written even
-# when the item reports zero positions), NOT from the presence of holdings rows.
-# Plaid returns no holding entries for an item holding nothing, so the pull
-# where a broker's every account is liquidated writes no holdings rows at all —
-# a row-derived newest snapshot cannot see it, and silently keeps the last
-# NON-EMPTY snapshot from an earlier pull. Keyed on the receipt, an item that
-# reported nothing has an EMPTY newest snapshot (its positions are phantoms) and
-# an item that never reported has NO newest snapshot (its positions are out of
-# scope) — the distinction the raw holdings rows cannot express.
-_NEWEST_HOLDINGS_SNAPSHOT_CTE = f"""
-newest_snapshot AS (
-    SELECT source_origin, source_file
-    FROM (
-        SELECT
-            source_origin,
-            source_file,
-            ROW_NUMBER() OVER (
-                PARTITION BY source_origin
-                ORDER BY extracted_at DESC, ingestion_sequence DESC
-            ) AS snapshot_rank
-        FROM {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name}
-    )
-    WHERE snapshot_rank = 1
-)
-"""
 
 
 def _is_live_fingerprint(raw: str | None) -> bool:
@@ -605,6 +584,7 @@ class DoctorService:
         currency_integrity = self._run_currency_integrity()
         app_integrity = self._run_app_integrity(full=full)
         orphan_app_state = self._run_orphan_app_state()
+        archive_intent = self._run_account_archive_intent_ambiguous()
         investment_checks = [
             self._run_investment_staging_rejects(),
             self._run_opening_lot_review(),
@@ -631,6 +611,9 @@ class DoctorService:
             self._run_dim_accounts_reserved_display_name(),
             *app_integrity,
             orphan_app_state,
+            archive_intent,
+            self._run_net_worth_unanchored_accounts(),
+            self._run_net_worth_stale_balance(),
             *investment_checks,
         ]
         invariants = [self._apply_recipe(r) for r in raw_invariants]
@@ -1180,6 +1163,131 @@ class DoctorService:
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
+    def _run_account_archive_intent_ambiguous(self) -> InvariantResult:
+        """Accounts excluded from net worth by the retired archive cascade, maybe.
+
+        The pre-V063 cascade forced ``include_in_net_worth = FALSE`` in the same
+        write as ``archived = TRUE``, and its audit image is byte-identical to a
+        caller who archived *and* excluded in one call, so V063 left the flag as
+        stored. Evidence is a pre-V063 archive image (no ``archived_at`` key)
+        that flipped include from TRUE (or absent) to FALSE, since a later
+        archive cannot be the cascade. This names every such account until a
+        later audit row proves a decision: the
+        ``confirms_include_in_net_worth`` marker, or a pre-marker forward write
+        that excluded without archiving, either one not since undone. Reads
+        ``app.*`` directly, not ``core.dim_accounts``, so a fresh ``accounts
+        set`` clears it without a transform. See
+        reports-net-worth-sql-surface.md §Prerequisites.
+        """
+        name = "account_archive_intent_ambiguous"
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH evidence AS (
+                    SELECT a.target_id, a.occurred_at, a.rowid AS rid
+                    FROM {AUDIT_LOG.full_name} AS a
+                    WHERE a.target_schema = 'app'
+                      AND a.target_table = 'account_settings'
+                      AND a.action LIKE 'account_settings.set%'
+                      -- this write itself flipped include TRUE (or absent) -> FALSE
+                      AND (
+                          a.before_value IS NULL
+                          OR json_extract_string(
+                              a.before_value, '$.include_in_net_worth'
+                          ) = 'true'
+                      )
+                      AND json_extract_string(
+                          a.after_value, '$.include_in_net_worth'
+                      ) = 'false'
+                      AND json_extract_string(a.after_value, '$.archived') = 'true'
+                      -- pre-V063 image: post-V063 writes always carry the key
+                      AND NOT json_exists(a.after_value, '$.archived_at')
+                )
+                SELECT s.account_id
+                FROM {ACCOUNT_SETTINGS.full_name} AS s
+                WHERE NOT s.include_in_net_worth
+                  AND EXISTS (
+                      SELECT 1 FROM evidence AS e WHERE e.target_id = s.account_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {AUDIT_LOG.full_name} AS a
+                      WHERE a.target_schema = 'app'
+                        AND a.target_table = 'account_settings'
+                        AND a.target_id = s.account_id
+                        AND a.action = 'account_settings.set'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM {AUDIT_LOG.full_name} AS u
+                            WHERE u.undoes_operation_id = a.operation_id
+                        )
+                        -- a later cascade overwrote the decision; rowid breaks
+                        -- occurred_at ties within one transaction, as in V063
+                        AND NOT EXISTS (
+                            SELECT 1 FROM evidence AS e
+                            WHERE e.target_id = s.account_id
+                              AND (e.occurred_at, e.rid) > (a.occurred_at, a.rowid)
+                        )
+                        AND (
+                            json_extract_string(a.context_json, ?) = 'true'
+                            OR (
+                                (
+                                    a.before_value IS NULL
+                                    OR json_extract_string(
+                                        a.before_value, '$.include_in_net_worth'
+                                    ) = 'true'
+                                )
+                                AND json_extract_string(
+                                    a.after_value, '$.include_in_net_worth'
+                                ) = 'false'
+                                AND json_extract_string(
+                                    a.after_value, '$.archived'
+                                ) = 'false'
+                            )
+                        )
+                  )
+                ORDER BY s.account_id
+                """,  # TableRef constants; the marker path is a bound parameter
+                [f"$.{INCLUDE_DECISION_MARKER}"],
+            ).fetchall()
+        except Exception as e:  # table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"account settings or audit log unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} account(s) are left out of net worth by a flag "
+                    "the retired archive cascade may have written, not one you "
+                    "chose. Run `moneybin accounts set <account> --include` to "
+                    "count one, or `--exclude` to confirm it stays out"
+                ),
+                affected_ids=_masked_account_affected_ids(str(r[0]) for r in rows),
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _unchosen_plaid_filter(self, *, keep_split_rejects: bool = False) -> str:
+        """Predicate dropping staging rows (alias ``s``) in a non-Plaid account.
+
+        Empty when ``core.dim_accounts`` predates the column (migrated, not yet
+        refreshed): no choice is readable, so every row counts, as in the match
+        planner. ``keep_split_rejects`` exempts ``split_underivable`` rows.
+        """
+        if not has_column(self._db, DIM_ACCOUNTS, "investment_source_type"):
+            return ""
+        unchosen = f"""NOT EXISTS (
+                      SELECT 1 FROM {DIM_ACCOUNTS.full_name} AS a
+                      WHERE a.account_id = s.account_id
+                        AND a.investment_source_type IS NOT NULL
+                        AND a.investment_source_type <> 'plaid'
+                  )"""  # TableRef constant, no user input
+        if keep_split_rejects:
+            unchosen = f"(s.review_reason = 'split_underivable' OR {unchosen})"
+        return f"AND {unchosen}"
+
     def _run_investment_staging_rejects(self) -> InvariantResult:
         """Plaid investment rows staging routed to review instead of the ledger.
 
@@ -1191,17 +1299,21 @@ class DoctorService:
         subtype). All are deliberate refusals, not silent drops — this is where
         they surface. The query is deliberately open (``review_reason IS NOT
         NULL``), so a NEW reason added upstream surfaces here without a code
-        change; only this list needs the follow-up.
+        change; only this list needs the follow-up. Skips Plaid rows in an
+        account whose investment source is set to another source, except
+        ``split_underivable``: ``core.dim_holdings`` withholds a position per
+        security, so that reject still explains a withhold in any account.
         """
         name = "investment_staging_rejects"
         try:
             rows = self._db.execute(
                 f"""
-                SELECT investment_transaction_id, review_reason
-                FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name}
-                WHERE review_reason IS NOT NULL
-                ORDER BY investment_transaction_id
-                """  # TableRef constant, no user input
+                SELECT s.investment_transaction_id, s.review_reason
+                FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name} AS s
+                WHERE s.review_reason IS NOT NULL
+                  {self._unchosen_plaid_filter(keep_split_rejects=True)}
+                ORDER BY s.investment_transaction_id
+                """  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # view absent before first transform
             return InvariantResult(
@@ -1236,17 +1348,21 @@ class DoctorService:
         fallback ``_run_investment_unreported_holdings`` uses) — an unbound
         security is exactly the kind of gap this check exists to surface, and
         a bare ``security_id`` would render it as an unactionable ``None``.
+        Skips Plaid rows in an account whose investment source is set to
+        another source; those rows never reach its ledger.
         """
         name = "investment_opening_lot_review"
         try:
             rows = self._db.execute(
                 f"""
-                SELECT account_id,
-                       COALESCE(security_id, source_security_key) AS security_key,
-                       reason
-                FROM {STG_PLAID_OPENING_LOT_REVIEW.full_name}
-                ORDER BY account_id, security_key
-                """  # TableRef constant, no user input
+                SELECT s.account_id,
+                       COALESCE(s.security_id, s.source_security_key) AS security_key,
+                       s.reason
+                FROM {STG_PLAID_OPENING_LOT_REVIEW.full_name} AS s
+                WHERE TRUE
+                  {self._unchosen_plaid_filter()}
+                ORDER BY s.account_id, security_key
+                """  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # view absent before first transform
             return InvariantResult(
@@ -1292,7 +1408,9 @@ class DoctorService:
         casing in ``provider_subtype``: a case-sensitive list here would miss
         an ``'Assignment'`` that staging still routed to NULL-quantity
         ``other``, and the check would report ``pass`` on exactly the row it
-        exists to surface. Normalize identically on both sides.
+        exists to surface. Normalize identically on both sides. Reads the
+        ledger, which already excludes rows an account's investment source
+        choice leaves out.
         """
         name = "investment_unmodeled_legs"
         try:
@@ -1396,7 +1514,14 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_investment_source_overlap(self) -> InvariantResult:
-        """Detect transaction or holdings overlap before any transform runs."""
+        """Detect transaction or holdings overlap before any transform runs.
+
+        Unresolved overlaps come from the raw-scope detector, which excludes
+        chosen accounts. Accounts whose built ledger does not reflect their saved
+        choice (a restate that failed after it was saved or cleared) fail too:
+        the ledger can double-count or drop rows like an unresolved overlap.
+        Also refreshes the per-choice account gauge.
+        """
         name = "investment_source_overlap"
         try:
             accounts = investment_source_overlap(self._db)
@@ -1407,22 +1532,51 @@ class DoctorService:
                 detail=f"raw tables unavailable: {e}",
                 affected_ids=[],
             )
-        if accounts:
+        stale_error: Exception | None = None
+        try:
+            stale = stale_source_choice_accounts(self._db)
+        except Exception as e:  # ledger unreadable; a found overlap still fails
+            stale, stale_error = [], e
+        try:
+            for source_type, count in investment_source_choice_counts(self._db).items():
+                INVESTMENT_SOURCE_CHOICE_ACCOUNTS.labels(
+                    investment_source_type=source_type
+                ).set(count)
+        except Exception:  # telemetry never fails a check
+            logger.warning("! Could not refresh the investment source choice gauge")
+        if accounts or stale:
+            parts: list[str] = []
+            if accounts:
+                many = len(accounts) != 1
+                parts.append(
+                    f"{len(accounts)} account{'s' if many else ''} "
+                    f"{'have' if many else 'has'} investment history from two "
+                    "sources (recorded and synced). Lots and gains double-count "
+                    "and holdings are withheld until you choose which history "
+                    "each account keeps: moneybin accounts set <account> "
+                    "--investment-source-type manual|plaid. Choosing deletes "
+                    "nothing, and clearing the setting brings both back"
+                )
+            if stale:
+                many = len(stale) != 1
+                parts.append(
+                    f"{len(stale)} account{'s' if many else ''} "
+                    f"{'have' if many else 'has'} a saved source choice the "
+                    "investment ledger does not reflect yet; run "
+                    "`moneybin refresh`"
+                )
             return InvariantResult(
                 name=name,
                 status="fail",
-                detail=(
-                    f"{len(accounts)} account(s) have manual investment history "
-                    "alongside Plaid transactions or holdings. Review overlapping "
-                    "history before relying on lots or gains. Holdings withholding "
-                    "for mixed transaction ledgers remains active; opening-bootstrap "
-                    "rows do not trigger it. Revert the redundant import batch to "
-                    "clear it; disconnecting the connector stops future pulls "
-                    "but keeps the rows already pulled, so it does not "
-                    "(investment dedup across sources is a future matching "
-                    "child)"
-                ),
-                affected_ids=accounts,
+                detail=". ".join(parts),
+                affected_ids=_masked_account_affected_ids([*accounts, *stale]),
+            )
+        if stale_error is not None:  # don't pass blind on an unread ledger
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"investment ledger unavailable: {stale_error}",
+                affected_ids=[],
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
@@ -1435,7 +1589,8 @@ class DoctorService:
         understates lots and gains for that event. Scoped to rows whose
         staging row carried a non-NULL provider security key (a genuine
         security-bearing event); a NULL key is a legitimate cash-only row
-        (deposit, withdrawal, ...) and not a gap.
+        (deposit, withdrawal, ...) and not a gap. Reads the ledger, which
+        already excludes rows an account's investment source choice leaves out.
         """
         name = "investment_unresolved_securities"
         try:
@@ -1575,13 +1730,13 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
-                WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE}
                 SELECT DISTINCT h.account_id,
                        COALESCE(h.security_id, h.source_security_key) AS security_key
                 FROM {STG_PLAID_INVESTMENT_HOLDINGS.full_name} AS h
-                JOIN newest_snapshot AS ns
+                JOIN {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name} AS ns
                   ON ns.source_file = h.source_file
                   AND ns.source_origin = h.source_origin
+                  AND ns.is_newest
                 LEFT JOIN {DIM_HOLDINGS.full_name} AS d
                   ON d.account_id = h.account_id AND d.security_id = h.security_id
                 WHERE d.account_id IS NULL
@@ -1976,6 +2131,116 @@ class DoctorService:
                     "seeds.price_source_map registry"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_net_worth_unanchored_accounts(self) -> InvariantResult:
+        """Accounts in net worth holding value with no balance observation.
+
+        `fail`, because each one makes the net-worth total NULL: the account
+        contributes nothing, and the release bar says a total is right or
+        visibly incomplete. Read on the newest date any account counts, the date
+        reports.net_worth's unranged read lands on, so a closed account's
+        pre-archive history does not keep it red once a later date counts.
+        """
+        name = "net_worth_unanchored_accounts"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT d.account_id
+                FROM {FCT_BALANCES_DAILY.full_name} AS d
+                WHERE d.balance_date = (
+                    SELECT MAX(balance_date)
+                    FROM {FCT_BALANCES_DAILY.full_name}
+                    WHERE in_net_worth
+                )
+                  AND d.in_net_worth
+                  AND d.balance IS NULL
+                ORDER BY d.account_id
+                """  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # spine absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"balance spine unavailable: {e}",
+                affected_ids=[],
+            )
+        unanchored = [str(r[0]) for r in rows]
+        NET_WORTH_UNANCHORED_ACCOUNTS.set(len(unanchored))
+        if unanchored:
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(unanchored)} account(s) in net worth hold value "
+                    "(holdings or transactions) but have no balance observation, "
+                    "so the net-worth total is withheld — record a balance with "
+                    "`moneybin accounts balance assert`, or leave the account out "
+                    "with `moneybin accounts set <account_id> --exclude`, then run "
+                    "`moneybin refresh --step transform` — the rebuild the assert "
+                    "receipt names — so the total and this check pick it up"
+                ),
+                affected_ids=_masked_account_affected_ids(unanchored),
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_net_worth_stale_balance(self) -> InvariantResult:
+        """Accounts in net worth whose latest observed balance is older than the threshold.
+
+        Each account's OWN latest observed row, compared against today — never
+        a shared balance_date = CURRENT_DATE filter, which finds nothing when
+        every account has gone stale together. Scoped to the accounts that count
+        toward net worth with a known balance on the newest date any account
+        counts; an unknown balance is net_worth_unanchored_accounts' to report.
+        `warn`: the balance still counts; it is aging, not wrong.
+        """
+        name = "net_worth_stale_balance"
+        threshold = get_settings().doctor.balance_staleness_threshold_days
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH counted AS (
+                    SELECT c.account_id
+                    FROM {FCT_BALANCES_DAILY.full_name} AS c
+                    WHERE c.balance_date = (
+                        SELECT MAX(balance_date)
+                        FROM {FCT_BALANCES_DAILY.full_name}
+                        WHERE in_net_worth
+                    )
+                      AND c.in_net_worth
+                      AND c.balance IS NOT NULL
+                )
+                SELECT d.account_id,
+                       CAST(CURRENT_DATE - MAX(d.balance_date) AS INTEGER) AS age_days
+                FROM {FCT_BALANCES_DAILY.full_name} AS d
+                JOIN counted AS k ON k.account_id = d.account_id
+                WHERE d.is_observed
+                GROUP BY d.account_id
+                ORDER BY d.account_id
+                """  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # spine absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"balance spine unavailable: {e}",
+                affected_ids=[],
+            )
+        stale = [str(aid) for aid, age in rows if is_stale(int(age), threshold)]
+        NET_WORTH_STALE_BALANCE_ACCOUNTS.set(len(stale))
+        if stale:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(stale)} account(s) in net worth have no balance "
+                    f"observed in the last {threshold} days, so their balances "
+                    "are carried forward — import a recent statement, sync, or "
+                    "record one with `moneybin accounts balance assert` and run "
+                    "`moneybin refresh`"
+                ),
+                affected_ids=_masked_account_affected_ids(stale),
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
@@ -3687,6 +3952,35 @@ class DoctorService:
         )
         UNKNOWN_CURRENCY_ROWS.labels(grain="balances").set(unknown_balances)
 
+        # Guarded independently from the block above: an install whose core
+        # layer predates the rate spine or the net-worth rung must not turn
+        # this whole check "skipped" over two gauges it never had. A tripped
+        # guard leaves the gauge's last reading in place rather than zeroing
+        # it — the same behavior PROFILE_CURRENCIES gets from the outer
+        # try/except above, so a scrape during a transient failure reads as
+        # stale, not as a false "currently zero".
+        try:
+            spine_rows = self._scalar_int(
+                f"SELECT COUNT(*) FROM {FCT_EXCHANGE_RATES_DAILY.full_name}"
+            )  # TableRef constant, not user input
+        except Exception as e:  # degrade gracefully; see comment above
+            logger.debug(f"fx_rate_spine_rows skipped: {e}", exc_info=True)
+        else:
+            FX_RATE_SPINE_ROWS.set(spine_rows)
+
+        try:
+            unpriced_dates = self._scalar_int(
+                f"""
+                SELECT COUNT(DISTINCT balance_date)
+                FROM {REPORTS_NET_WORTH.full_name}
+                WHERE unpriced_currency_count > 0
+                """  # TableRef constant, not user input
+            )
+        except Exception as e:  # degrade gracefully; see comment above
+            logger.debug(f"net_worth_unpriced_dates skipped: {e}", exc_info=True)
+        else:
+            NET_WORTH_UNPRICED_DATES.set(unpriced_dates)
+
         unknown_total = (
             unknown_transaction_count + unknown_account_count + unknown_balances
         )
@@ -4142,9 +4436,10 @@ class DoctorService:
                     f"{', '.join(parts)} have an unknown currency. Their amounts "
                     "are segmented out of every total until you assign one — "
                     "run `moneybin accounts set <account> --currency <ISO 4217>`, "
-                    "then `moneybin transform apply`: the setting is app state, and "
-                    "core.* only picks it up on the next transform, so this check "
-                    "keeps failing until you re-run one. "
+                    "then the rebuild it names, `moneybin refresh --step "
+                    "transform`: the setting is app state, and core.* only picks "
+                    "it up on the next transform, so this check keeps failing "
+                    "until you re-run one. "
                     "MoneyBin never guesses a currency, because a wrong guess "
                     "would silently blend into a figure nothing could flag."
                 ),
@@ -4165,8 +4460,8 @@ class DoctorService:
             # the five aggregating reports still sub-total regardless — but it
             # does mean two of this detail's claims are: telling the user to
             # set what is already set, and asserting every combined figure is
-            # withheld when the three converting reports (networth,
-            # large-transactions, balance-drift) already produce one whenever
+            # withheld when the five converting reports (the three net-worth
+            # reports, large-transactions, balance-drift) already produce one whenever
             # their rates are on disk. Read the setting rather than guessing.
             home_currency = (
                 ProfileSettingsService(self._db).get_settings().home_currency
@@ -4193,8 +4488,9 @@ class DoctorService:
             else:
                 remedy = (
                     f"The five reports that aggregate per currency still "
-                    f"sub-total separately; `networth`, `large-transactions`, "
-                    f"and `balance-drift` price into {home_currency} whenever "
+                    f"sub-total separately; the three net-worth reports, "
+                    f"`large-transactions`, and `balance-drift` price into "
+                    f"{home_currency} whenever "
                     "every rate they need is on disk. A transaction "
                     "denominated differently from its account is also left "
                     "out of that account's carried daily balance — it cannot "
@@ -4225,8 +4521,8 @@ class DoctorService:
 
         Delegates the counting so this check and ``categorize stats`` cannot
         report different coverage for the same database: one query, scoped to
-        the population ``core.uncategorized_queue`` is drawn from, so the
-        percentage describes work ``moneybin review`` will actually offer.
+        ``core.fct_transactions.is_categorizable``, so the percentage describes
+        work ``moneybin review`` will actually offer.
         """
         try:
             coverage = CategorizationService(self._db).coverage()
@@ -4234,11 +4530,9 @@ class DoctorService:
             return InvariantResult(
                 name="categorization_coverage",
                 status="skipped",
-                # Names both models the delegated count reads: it joins
-                # dim_accounts to match the queue's population, so either being
-                # absent lands here and a reader sent to the wrong one looks
-                # for a table that is already there.
-                detail="fct_transactions or dim_accounts not available",
+                # Coverage reads only fct_transactions now; this also lands here
+                # when the fact predates is_categorizable (not yet refreshed).
+                detail="fct_transactions not available or not yet refreshed",
                 affected_ids=[],
             )
         if coverage.categorizable == 0:

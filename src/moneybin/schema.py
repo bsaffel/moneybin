@@ -79,7 +79,6 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "analytics_schema.sql",
     "meta_schema.sql",
     "reports_schema.sql",
-    "raw_import_log.sql",
     "raw_manual_transactions.sql",
     "app_categories.sql",
     "app_category_source_map.sql",
@@ -109,6 +108,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_audit_log.sql",
     "app_transaction_tags.sql",
     "app_transaction_splits.sql",
+    "app_import_log.sql",
     "app_imports.sql",
     "app_import_previews.sql",
     "raw_import_preview_snapshots.sql",
@@ -127,6 +127,8 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "raw_security_prices.sql",
     "app_security_price_overrides.sql",
     "raw_exchange_rates.sql",
+    "raw_exchange_rate_currencies.sql",
+    "raw_exchange_rate_coverage.sql",
     "app_exchange_rate_overrides.sql",
 ]
 

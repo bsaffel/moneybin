@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS app.gsheet_connections (
     skip_trailing_patterns JSON, -- Optional list of regex strings flagging trailing junk rows; NULL = use default patterns, [] = none, ['^Total'] = custom
     status VARCHAR NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy', 'auth_expired', 'unreachable', 'drift_detected', 'rate_limited', 'failed', 'disconnected')), -- Connection health; drives pre-refresh hook decisions and the system_status gsheet block
     last_pull_at TIMESTAMP, -- Timestamp of most recent pull attempt (success or failure)
-    last_pull_import_id VARCHAR, -- FK to raw.import_log.import_id for the most recent attempt; NULL before first pull
+    last_pull_import_id VARCHAR, -- FK to app.import_log.import_id for the most recent attempt; NULL before first pull
     last_success_at TIMESTAMP, -- Timestamp of most recent pull that ingested cleanly; NULL before first successful pull
     last_status_reason TEXT, -- Human-readable explanation of the current non-healthy status (drift detail or sanitized failure message); NULL when healthy
     consecutive_failure_count INTEGER NOT NULL DEFAULT 0, -- Number of consecutive failed pulls since the last success; resets to 0 on success

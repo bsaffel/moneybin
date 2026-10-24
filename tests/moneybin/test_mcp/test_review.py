@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, cast, get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -79,7 +78,7 @@ from moneybin.services.undo_service import UndoService
 from tests.moneybin.db_helpers import (
     CORE_FCT_INVESTMENT_LOTS_DDL,
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
-    install_uncategorized_queue_view,
+    simulate_pre_refresh_fct_transactions,
 )
 
 from .schema_assertions import (
@@ -90,20 +89,6 @@ from .schema_assertions import (
 )
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
-
-
-@pytest.fixture(autouse=True)
-def _canonical_uncategorized_queue(  # pyright: ignore[reportUnusedFunction]  # autouse pytest fixture
-    mcp_db: Path,
-) -> None:
-    """Give every review test the canonical queue view production always has.
-
-    ``core.uncategorized_queue`` is the single definition of an uncategorized
-    transaction, so a review DB without it is a drifted one — a state one test
-    below asserts on deliberately by dropping the view again.
-    """
-    with get_database(read_only=False) as db:
-        install_uncategorized_queue_view(db)
 
 
 _NOW = datetime.now(tz=UTC).isoformat()
@@ -446,16 +431,15 @@ async def test_review_queue_uses_one_envelope(kind: str) -> None:
     assert response.data.status == "pending"
 
 
-async def test_categorization_queue_reports_a_missing_canonical_view() -> None:
-    """An absent core.uncategorized_queue is surfaced, not rendered as "none pending".
+async def test_categorization_queue_reports_a_pre_refresh_fact() -> None:
+    """A fact without is_categorizable is surfaced, not rendered as "none pending".
 
-    core.uncategorized_queue is the single definition of an uncategorized
-    transaction, so when the view is missing the queue's contents are unknown
-    — not empty. Returning an empty queue would tell a curator their work is
-    done while the refresh that builds the view has never run.
+    Upgraded code over a database not yet refreshed cannot know which
+    transactions need a category. Returning an empty queue would tell a curator
+    their work is done while the refresh that adds the column has never run.
     """
     with get_database(read_only=False) as db:
-        db.execute("DROP VIEW core.uncategorized_queue")
+        simulate_pre_refresh_fct_transactions(db)
 
     response = await reviews_coarse(kind="categorization", status="pending")
 
@@ -492,7 +476,7 @@ async def test_review_summary_degrades_when_one_queue_is_unavailable(
 ) -> None:
     """One broken queue is marked unavailable; the other six still report counts.
 
-    A missing view (core.uncategorized_queue after #340 moved it) previously
+    A missing relation previously
     failed the whole aggregate, so the default reviews() call was a dead end
     while six of seven queues were healthy.
     """
@@ -500,7 +484,9 @@ async def test_review_summary_degrades_when_one_queue_is_unavailable(
 
     def count_or_fail(db: object, *, kind: str, status: str) -> int:
         if kind == "categorization":
-            raise duckdb.CatalogException("Table with name uncategorized_queue does")
+            raise duckdb.CatalogException(
+                "Table with name fct_transactions does not exist"
+            )
         return real_count(db, kind=kind, status=status)  # pyright: ignore[reportArgumentType]
 
     monkeypatch.setattr(reviews_module, "_review_count", count_or_fail)
@@ -854,9 +840,9 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
     tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"reviews"}
     tool = await listed_tool(mcp, "reviews")
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert_literal_values(
-        tool.inputSchema,
+        tool.input_schema,
         ("properties", "kind"),
         {
             "summary",
@@ -871,7 +857,7 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
         },
     )
     assert_literal_values(
-        tool.inputSchema,
+        tool.input_schema,
         ("properties", "status"),
         {"pending", "history"},
     )
@@ -991,9 +977,9 @@ async def test_review_raw_transport_is_canonical_and_uses_public_actor(
 
     text = response.content[0]
     assert hasattr(text, "text")
-    assert response.structuredContent is not None
-    assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["data"]["kind"] == kind
+    assert response.structured_content is not None
+    assert json.loads(text.text) == response.structured_content  # type: ignore[union-attr]
+    assert response.structured_content["data"]["kind"] == kind
     assert len(captured) == 1
     assert captured[0]["actor"] == "mcp.reviews"
     assert captured[0]["sensitivity"] == expected_sensitivity
@@ -1012,9 +998,9 @@ async def test_review_cursor_error_is_canonical_and_sanitized() -> None:
 
     text = response.content[0]
     assert hasattr(text, "text")
-    assert response.structuredContent is not None
-    assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["error"]["code"] == "review_cursor_invalid"
+    assert response.structured_content is not None
+    assert json.loads(text.text) == response.structured_content  # type: ignore[union-attr]
+    assert response.structured_content["error"]["code"] == "review_cursor_invalid"
     assert invalid_cursor not in text.text  # type: ignore[union-attr]
 
 
@@ -1034,7 +1020,7 @@ async def test_review_raw_transport_rejects_invalid_arguments(
 
     response = await call_tool_raw(mcp, "reviews", arguments)
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
@@ -1061,31 +1047,6 @@ def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
             [transaction_id],
         )
         CategorizationService(db).create_category(category, actor="test")
-        db.execute(
-            """
-            CREATE OR REPLACE VIEW core.uncategorized_queue AS
-            SELECT
-                transaction_id,
-                account_id,
-                CAST(NULL AS VARCHAR) AS account_name,
-                transaction_date AS txn_date,
-                amount,
-                currency_code,
-                description,
-                CAST(NULL AS VARCHAR) AS merchant_id,
-                CAST(NULL AS VARCHAR) AS merchant_normalized,
-                CAST(1 AS INTEGER) AS age_days,
-                CAST(1 AS DOUBLE) AS priority_score,
-                source_type,
-                CAST(NULL AS VARCHAR) AS source_id
-            FROM core.fct_transactions AS tx
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM app.transaction_categories AS tc
-                WHERE tc.transaction_id = tx.transaction_id
-            )
-            """
-        )
         MatchDecisionsRepo(db).insert(
             match_id=match_id,
             source_transaction_id_a="ordinary-a",
@@ -1484,6 +1445,7 @@ async def test_real_auto_rule_success_reports_rows_and_aggregate_impact() -> Non
         (accept_id, "approved", True),
         (reject_id, "rejected", True),
     ]
+    assert [row.reason for row in response.data.results] == [None, None]
     assert response.data.applied_count == 2
     assert response.data.auto_rule_impact is not None
     assert response.data.auto_rule_impact.approved == 1
@@ -1528,6 +1490,118 @@ async def test_real_auto_rule_success_reports_rows_and_aggregate_impact() -> Non
         response.data.auto_rule_impact.rule_ids[0],
     )
     assert rejected_backfill is None
+
+
+def _seed_guarded_auto_rule_proposal(pattern: str, matching_rows: int) -> str:
+    """Seed one pending `contains` proposal over `matching_rows` hits."""
+    with get_database(read_only=False) as db:
+        for i in range(matching_rows):
+            db.execute(
+                """
+                INSERT INTO core.fct_transactions (
+                    transaction_id, account_id, transaction_date, amount,
+                    description, source_type
+                ) VALUES (?, 'ACC001', DATE '2026-07-18', -7.00, ?, 'ofx')
+                """,
+                [f"guarded-{i}", f"{pattern} STORE 1111"],
+            )
+        proposal_id = (
+            AutoRuleService(db)
+            ._proposed.insert(  # pyright: ignore[reportPrivateUsage]  # seeding a pre-guard proposal shape
+                merchant_pattern=pattern,
+                match_type="contains",
+                category="Synthetic Category",
+                subcategory=None,
+                category_id=None,
+                status="pending",
+                sample_txn_ids=["guarded-0"],
+                actor="test",
+            )
+            .target_id
+        )
+    assert proposal_id is not None
+    return proposal_id
+
+
+@pytest.mark.parametrize(
+    ("pattern", "matching_rows", "guard_prefix", "details_key"),
+    [
+        # Long pattern, 40 hits against one trigger: only the breadth guard fires.
+        ("SAMPLE MART", 40, "broad:", "refused_broad"),
+        # Short pattern, 5 hits (under the breadth floor): only the length guard.
+        ("SM", 5, "short pattern:", "refused_unselective"),
+    ],
+)
+async def test_refused_auto_rule_accept_names_its_reason(
+    pattern: str, matching_rows: int, guard_prefix: str, details_key: str
+) -> None:
+    proposal_id = _seed_guarded_auto_rule_proposal(pattern, matching_rows)
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule",
+                decision_id=proposal_id,
+                decision="accept",
+            )
+        ]
+    )
+
+    [row] = response.data.results
+    assert (row.status, row.changed) == ("pending", False)
+    assert row.reason is not None
+    assert row.reason.startswith(guard_prefix)
+    assert "allow_broad=true" in row.reason
+    # The reason is authored text, never the user's pattern echoed back.
+    assert pattern not in row.reason
+    assert response.data.auto_rule_impact is not None
+    assert response.data.auto_rule_impact.skipped == 1
+    # A batch that applied nothing is an error, but data keeps the outcomes.
+    assert response.data.applied_count == 0
+    assert response.status == "error"
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
+    assert response.error.details == {details_key: [proposal_id]}
+    assert pattern not in response.error.message
+
+
+async def test_partial_auto_rule_batch_with_a_refusal_stays_ok() -> None:
+    refused_id = _seed_guarded_auto_rule_proposal("SAMPLE MART", 40)
+    with get_database(read_only=False) as db:
+        rejected_id = (
+            AutoRuleService(db)
+            ._proposed.insert(  # pyright: ignore[reportPrivateUsage]  # seeding a pre-guard proposal shape
+                merchant_pattern="OTHER STORE",
+                match_type="contains",
+                category="Synthetic Category",
+                subcategory=None,
+                category_id=None,
+                status="pending",
+                sample_txn_ids=["guarded-0"],
+                actor="test",
+            )
+            .target_id
+        )
+    assert rejected_id is not None
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule", decision_id=refused_id, decision="accept"
+            ),
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule", decision_id=rejected_id, decision="reject"
+            ),
+        ]
+    )
+
+    assert response.status == "ok"
+    assert response.error is None
+    assert response.data.applied_count == 1
+    by_id = {row.decision_id: row for row in response.data.results}
+    assert (by_id[refused_id].status, by_id[refused_id].changed) == ("pending", False)
+    assert by_id[refused_id].reason is not None
+    assert by_id[rejected_id].changed is True
 
 
 def test_auto_rule_reject_forbids_allow_broad() -> None:
@@ -2774,8 +2848,8 @@ async def test_identity_standard_write_reports_its_prompt_disclosure_tier() -> N
             },
         )
 
-    assert response.structuredContent is not None
-    assert response.structuredContent["status"] == "ok"
+    assert response.structured_content is not None
+    assert response.structured_content["status"] == "ok"
     assert len(captured) == 1
     assert captured[0]["sensitivity"] == "medium"
     assert captured[0]["classes_returned"] == [
@@ -2969,8 +3043,8 @@ async def test_identity_reject_batch_uses_public_privacy_actor() -> None:
             },
         )
 
-    assert response.structuredContent is not None
-    assert response.structuredContent["data"]["applied_count"] == 1
+    assert response.structured_content is not None
+    assert response.structured_content["data"]["applied_count"] == 1
     assert len(captured) == 1
     assert captured[0]["actor"] == "mcp.identity_links_decide"
 
@@ -3359,12 +3433,12 @@ async def test_review_standard_write_registrar_is_closed_and_max_risk() -> None:
     assert set(tools) == {"reviews_decide", "identity_links_decide"}
     reviews_tool = await listed_tool(mcp, "reviews_decide")
     identity_tool = await listed_tool(mcp, "identity_links_decide")
-    assert reviews_tool.outputSchema is None
-    assert identity_tool.outputSchema is None
+    assert reviews_tool.output_schema is None
+    assert identity_tool.output_schema is None
     assert reviews_tool.annotations is not None
-    assert reviews_tool.annotations.destructiveHint is False
+    assert reviews_tool.annotations.destructive_hint is False
     assert identity_tool.annotations is not None
-    assert identity_tool.annotations.destructiveHint is True
+    assert identity_tool.annotations.destructive_hint is True
 
 
 def _seed_investment_history(security_id: str, label: str) -> None:

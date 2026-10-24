@@ -4,26 +4,33 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat
-from moneybin.cli.render import Money
+from moneybin.cli.render import UNCATEGORIZED_LABEL, Money, Placeholder
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+from moneybin.cli.utils import generated_cli_command
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.cli_register import (
     build_cli_command,
+    column_view,
     money_columns,
+    numeric_columns,
+    percent_columns,
     register_report_cli,
+    report_note_lines,
     visible_columns,
 )
 from moneybin.reports._framework.contract import (
@@ -32,12 +39,17 @@ from moneybin.reports._framework.contract import (
     OutputColumn,
     ReportQuery,
 )
-from moneybin.reports._framework.execute import ReportResult, inspection_hint
+from moneybin.reports._framework.execute import (
+    CatalogReportResult,
+    ReportResult,
+    inspection_hint,
+)
 from moneybin.reports._framework.introspect import (
     _RESERVED_CLI_PARAMS,  # pyright: ignore[reportPrivateUsage]  # the guard's subject
     build_spec,
 )
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.services.currency_service import ResolvedRate
 from moneybin.tables import TableRef
 from tests.database_mocks import no_profile_database
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
@@ -95,6 +107,60 @@ def _result() -> ReportResult:
         total_count=1,
         truncated=False,
     )
+
+
+def _ascii_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+
+def test_report_disclosures_follow_ascii_policy_and_keep_essential_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quiet mode removes next steps but retains ASCII-safe fidelity disclosures."""
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy",
+        _ascii_policy,
+    )
+    result = replace(
+        _result(),
+        applied_rates=(
+            ResolvedRate(
+                "EUR",
+                "USD",
+                date(2026, 5, 1),
+                date(2026, 5, 1),
+                Decimal("1.13"),
+                "ecb",
+            ),
+        ),
+        degraded=True,
+        degraded_reason="Some source data is stale.",
+        truncated=True,
+        actions=["moneybin reports explain test:balance_drift"],
+    )
+
+    lines = report_note_lines(cast(CatalogReportResult, result), quiet=True)
+
+    assert lines[0].startswith("Converted from EUR at 1.13")
+    assert lines[1].startswith("! Some source data is stale.")
+    assert lines[2].startswith("! Showing the first 1 rows")
+    assert all(
+        "💱" not in line and "⚠️" not in line and "💡" not in line for line in lines
+    )
+    assert all("reports explain" not in line for line in lines)
 
 
 def _windowed_runner(
@@ -368,7 +434,11 @@ def test_the_text_path_prints_the_hint_the_masked_output_earned() -> None:
         result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
 
     assert result.exit_code == 0, result.output
-    assert hint in result.output
+    rendered = (
+        f"{hint.reason[:1].upper()}{hint.reason[1:]}: "
+        f"{generated_cli_command(*hint.cli)}"
+    )
+    assert rendered in re.sub(r"\s+", " ", result.output)
 
 
 def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
@@ -392,15 +462,8 @@ def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
     assert "💡" not in result.output
 
 
-def test_the_text_path_sends_every_note_to_stderr() -> None:
-    """Diagnostics take fd 2 so a redirected report carries only its rows.
-
-    Asserted against ``stdout``/``stderr`` separately because ``result.output``
-    structurally cannot see it: Click 8.2 turned that into a mix of both streams
-    in write order, so an assertion against it passes whichever stream the note
-    took. Every other note test here reads ``.output``, which is why the routing
-    needs its own case rather than a stricter assertion in one of them.
-    """
+def test_the_text_path_keeps_consequential_notes_with_the_report() -> None:
+    """A redirected report retains warnings and recovery guidance with its rows."""
     app = _multi_command_app()
     noted = replace(
         _result(),
@@ -420,13 +483,11 @@ def test_the_text_path_sends_every_note_to_stderr() -> None:
         result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
 
     assert result.exit_code == 0, result.output
-    assert "no stored EUR->USD rates at all" in result.stderr
-    assert "more exist" in result.stderr
-    assert "💡" in result.stderr
-    # The other half: routing the notes away must not take the answer with them.
+    assert "no stored EUR->USD rates at all" in result.stdout
+    assert "more exist" in result.stdout
+    assert "› Run moneybin reports explain test:balance_drift" in result.stdout
     assert "****2222" in result.stdout
-    assert "⚠️" not in result.stdout
-    assert "💡" not in result.stdout
+    assert result.stderr == ""
 
 
 def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
@@ -561,7 +622,7 @@ _MONEY_COLUMNS = (
         DataClass.TXN_AMOUNT,
         money_kind="magnitude",
     ),
-    OutputColumn("txn_count", "How many rows.", DataClass.AGGREGATE),
+    OutputColumn("txn_count", "How many rows.", DataClass.AGGREGATE, numeric=True),
 )
 
 
@@ -589,8 +650,11 @@ def _money_app():  # test helper
     return app
 
 
-def _money_result() -> ReportResult:
-    return ReportResult(
+def _money_result() -> CatalogReportResult:
+    # A real `CatalogReportResult`, not the base `ReportResult`: the empty-scope
+    # line (`_empty_result_scope`) reads `report_id`/`parameters`, which only
+    # this subclass carries — the shape `catalog.execute` actually returns.
+    return CatalogReportResult(
         records=[
             {
                 "net": Decimal("-1234.5"),
@@ -607,14 +671,18 @@ def _money_result() -> ReportResult:
         tier=Tier.MEDIUM,
         total_count=1,
         truncated=False,
+        report_id="test:money",
+        parameters={"top": 5, "sort": None},
+        semantics=TEST_SEMANTICS,
+        provenance=(),
     )
 
 
 def test_a_reports_declared_money_kind_reaches_its_rendered_table() -> None:
     """The generated command is the only path carrying requirement 12.
 
-    Every built-in report but ``networth`` renders through this command, and
-    the kinds they declare are inert unless ``money_columns`` is wired into
+    Every built-in report renders through this command, and the kinds they
+    declare are inert unless ``money_columns`` is wired into
     ``render_report_result``. Asserting the rendered string rather than the
     dict is what makes that wiring load-bearing: a ``money_columns`` returning
     ``{}`` leaves every column reaching the table through ``str()``, which no
@@ -640,6 +708,111 @@ def test_a_reports_declared_money_kind_reaches_its_rendered_table() -> None:
     assert "1,234.50" in result.output
 
 
+def test_an_ascii_terminal_signs_a_negative_amount_with_its_own_minus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The terminal policy's minus reaches the generated command's amounts.
+
+    Carried over from the retired hand-written net-worth command, whose summary
+    was the one surface where a dropped minus inverts the answer.
+    """
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy",
+        lambda *, no_pager=False: _ascii_policy(),
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _money_result()
+        result = _runner_cli.invoke(_money_app(), ["money"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0, result.output
+    assert "-1,234.50" in result.output
+    assert "−" not in result.output
+
+
+def test_an_empty_result_still_prints_its_disclosures() -> None:
+    """No rows is not no answer: why the read degraded still has to reach the reader."""
+    empty = replace(
+        _money_result(),
+        records=[],
+        total_count=0,
+        degraded=True,
+        degraded_reason="rate unavailable",
+        actions=["Run `moneybin refresh`"],
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = empty
+        result = _runner_cli.invoke(_money_app(), ["money"])
+
+    assert result.exit_code == 0, result.output
+    assert "rate unavailable" in result.output
+    assert "Run `moneybin refresh`" in result.output
+
+
+def test_an_empty_result_with_no_other_disclosures_still_names_the_scope() -> None:
+    """Requirement 6: zero rows and zero warnings must not read as zero output.
+
+    Before this line existed, an empty result with no degradation, no
+    truncation, and no next steps rendered nothing at all — `render_report_
+    result`'s empty branch only fires when `disclosures` is non-empty.
+    """
+    empty = replace(_money_result(), records=[], total_count=0)
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = empty
+        result = _runner_cli.invoke(_money_app(), ["money"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip(), "an empty result printed nothing at all"
+    assert "No rows matched money" in result.output
+    assert "top=5" in result.output
+    # `sort` is None in the fixture's effective parameters — an unset filter
+    # names nothing rather than printing "sort=None".
+    assert "sort" not in result.output
+
+
+def test_a_reports_declared_numeric_column_right_aligns_like_money() -> None:
+    """Requirement 9 covers a bare count too, not only a declared amount.
+
+    `merchant_activity.txn_count` was left-aligned before `numeric=True`
+    reached `build_rows` through `numeric_columns` — this pins the wiring at
+    the framework level so any report's `numeric` declaration is load-bearing.
+    """
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _money_result()
+        result = _runner_cli.invoke(_money_app(), ["money"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    value_line = next(line for line in lines if "2" in line and "txn_count" not in line)
+    assert "  2 " in value_line, (
+        f"{value_line!r} is not right-aligned within its column, "
+        "the way a numeric column declares"
+    )
+
+
 def test_every_declared_money_column_survives_spec_registration() -> None:
     """A declaration that never reaches `money_columns` is decoration.
 
@@ -653,6 +826,60 @@ def test_every_declared_money_column_survives_spec_registration() -> None:
         "net": Money("flow"),
         "spend": Money("magnitude"),
     }, "txn_count declares no kind and must not appear"
+
+
+def test_every_declared_numeric_column_survives_spec_registration() -> None:
+    """Same rebuild risk as `money_columns`, for the bare-number declaration."""
+    declared = numeric_columns(_money_spec())
+
+    assert declared == ("txn_count",), "net/spend are money, not bare numbers"
+
+
+def test_a_reports_declared_percent_column_reaches_its_rendered_table() -> None:
+    """`percent=True` is inert unless `percent_columns` reaches `build_rows`."""
+    spec = build_spec(
+        _money_runner,
+        report_id="test:ratio",
+        name="ratio",
+        view=_VIEW,
+        classes={"yoy_pct": DataClass.AGGREGATE},
+        parameter_classes={},
+        columns=(
+            OutputColumn(
+                "yoy_pct",
+                "A ratio.",
+                DataClass.AGGREGATE,
+                numeric=True,
+                percent=True,
+            ),
+        ),
+        semantics=TEST_SEMANTICS,
+    )
+    app = typer.Typer()
+    register_report_cli(spec, app)
+    app.command("noop")(lambda: None)
+    result = ReportResult(
+        records=[{"yoy_pct": 0.09434186779842532}],
+        columns=["yoy_pct"],
+        output_classes={"yoy_pct": DataClass.AGGREGATE},
+        tier=Tier.MEDIUM,
+        total_count=1,
+        truncated=False,
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = result
+        out = _runner_cli.invoke(app, ["ratio"], env={"COLUMNS": "200"})
+
+    assert out.exit_code == 0, out.output
+    assert percent_columns(spec) == ("yoy_pct",)
+    assert "+9.4%" in out.output
+    assert "0.0943" not in out.output
 
 
 def _noisy_result() -> ReportResult:
@@ -979,6 +1206,159 @@ def test_an_unconverted_read_does_not_invent_that_column() -> None:
     assert ORIGINAL_CURRENCY_COLUMN not in visible
 
 
+def _currency_spec(  # test helper
+    default_columns: DefaultColumns | None = None, **declared: dict[str, Any]
+):
+    """A spec whose semantics name `currency_code` as the row's denomination.
+
+    ``category`` declares ``uncategorized``; ``declared`` adds per-column fields.
+    """
+    declared = {"category": {"uncategorized": True}, **declared}
+    spec = _wide_spec(default_columns)
+    return replace(
+        spec,
+        columns=tuple(replace(c, **declared.get(c.name, {})) for c in spec.columns),
+        semantics=replace(TEST_SEMANTICS, currency="currency_code"),
+    )
+
+
+_SPEND_DEFAULT = ("category", "currency_code", "year_month", "net")
+
+
+def test_a_home_basis_column_keeps_the_currency_column() -> None:
+    """A home-currency amount is not in the rows' currency; one footer would mislabel it."""
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT, net={"currency_basis": "home"}),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+        display_currency="USD",
+    )
+
+    assert "currency_code" in view.columns
+    assert view.implied_currency is None
+
+
+def test_the_declared_uncategorized_column_gets_the_placeholder() -> None:
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+    )
+
+    assert view.placeholder == Placeholder("category", UNCATEGORIZED_LABEL)
+
+
+def test_an_undeclared_category_column_gets_no_placeholder() -> None:
+    """`DataClass.CATEGORY` alone also covers `subcategory`, where NULL is not a gap."""
+    view = column_view(
+        _wide_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+    )
+
+    assert view.placeholder is None
+
+
+def test_a_single_currency_column_leaves_the_narrow_table() -> None:
+    """Every row in one currency: the column repeats one value, so it goes."""
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+        display_currency="USD",
+    )
+
+    assert view.columns == ("category", "year_month", "net")
+    assert view.implied_currency == "USD"
+
+
+def test_a_mixed_currency_result_keeps_its_currency_column() -> None:
+    """No single currency resolves, so each row still has to name its own."""
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=False,
+        output=OutputFormat.TEXT,
+        display_currency=None,
+    )
+
+    assert "currency_code" in view.columns
+    assert view.implied_currency is None
+
+
+def test_wide_keeps_a_single_currency_column() -> None:
+    """`--wide` asks for the whole projection, redundant columns included."""
+    view = column_view(
+        _currency_spec(_SPEND_DEFAULT),
+        _WIDE_COLUMN_NAMES,
+        parameters={},
+        wide=True,
+        output=OutputFormat.TEXT,
+        display_currency="USD",
+    )
+
+    assert "currency_code" in view.columns
+    assert view.implied_currency is None
+
+
+def _invoke_spend(records: list[dict[str, Any]], display_currency: str | None):
+    app = typer.Typer()
+    register_report_cli(_currency_spec(_SPEND_DEFAULT), app)
+    app.command("noop")(lambda: None)
+    result = ReportResult(
+        records=records,
+        columns=list(_WIDE_COLUMN_NAMES),
+        output_classes=dict(_WIDE_CLASSES),
+        tier=Tier.MEDIUM,
+        total_count=len(records),
+        truncated=False,
+        display_currency=display_currency,
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = result
+        return _runner_cli.invoke(app, ["wide"], env={"COLUMNS": "200"})
+
+
+def _spend_row(category: str | None) -> dict[str, Any]:
+    row: dict[str, Any] = dict.fromkeys(_WIDE_COLUMN_NAMES, "x")
+    row.update(category=category, currency_code="USD", year_month="2025-11")
+    return row
+
+
+def test_the_dropped_currency_is_named_beneath_the_table() -> None:
+    """The unit leaves the rows but not the answer: `> out.txt` still records it."""
+    result = _invoke_spend([_spend_row("Food")], display_currency="USD")
+
+    assert result.exit_code == 0, result.output
+    assert "currency_code" not in result.output
+    assert "amounts in USD" in result.output
+
+
+def test_a_null_category_renders_as_uncategorized_in_a_report() -> None:
+    """A NULL category is a taxonomy gap, not a blank — same word `transactions list` uses."""
+    result = _invoke_spend(
+        [_spend_row("Food"), _spend_row(None)], display_currency="USD"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Uncategorized" in result.output
+
+
 def _invoke_wide(*args: str) -> Result:
     """Run a generated command whose default set is narrower than its result."""
     app = typer.Typer()
@@ -1048,3 +1428,99 @@ def test_json_output_is_unaffected_by_wide() -> None:
 
     assert result.exit_code == 0, result.output
     assert "columns shown" not in result.output
+
+
+def _invoke_balance_drift(
+    monkeypatch: pytest.MonkeyPatch, *args: str, width: int
+) -> Result:
+    """Run the real `balance_drift` command — eleven columns — at ``width``."""
+    from moneybin.reports._framework.registry import spec_of
+    from moneybin.reports.definitions.balance_drift import balance_drift
+
+    spec = spec_of(balance_drift)
+    app = typer.Typer()
+    register_report_cli(spec, app)
+    app.command("noop")(lambda: None)
+    record: dict[str, object] = {
+        "account_id": "acct_5678abcd",
+        "account_name": "Checking",
+        "currency_code": "USD",
+        "status": "drift",
+        "assertion_date": date(2026, 1, 31),
+        "days_since_assertion": 256,
+        "asserted_balance": Decimal("1234.56"),
+        "computed_balance": Decimal("1194.56"),
+        "drift_abs": Decimal("40.00"),
+        "drift_pct": Decimal("0.0324"),
+        "drift": Decimal("40.00"),
+    }
+    result = ReportResult(
+        records=[record],
+        columns=[column.name for column in spec.columns],
+        output_classes={column.name: column.data_class for column in spec.columns},
+        tier=Tier.HIGH,
+        total_count=1,
+        truncated=False,
+    )
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy",
+        lambda *, no_pager=False: replace(_ascii_policy(), width=width),
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = result
+        return _runner_cli.invoke(app, ["balance-drift", *args])
+
+
+def test_wide_drops_non_default_columns_until_the_table_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--wide` on a terminal narrower than the projection omits, not squeezes.
+
+    Eleven columns squeezed into 100 fold every text header to one character
+    per line. The default set is never omitted; the rest drop in projection
+    order — the id first, the last measure last — and the frame names them.
+    """
+    result = _invoke_balance_drift(monkeypatch, "--wide", width=100)
+
+    assert result.exit_code == 0, result.output
+    header = next(line for line in result.output.splitlines() if "drift_pct" in line)
+    frame = next(line for line in result.output.splitlines() if "omitted" in line)
+    assert "columns fit" in frame
+    assert "widen the terminal or use --output json" in frame
+    omitted = frame.split("— ", 1)[1].split(" omitted", 1)[0].split(", ")
+    assert omitted
+    for name in ("account_name", "currency_code", "assertion_date", "drift_pct"):
+        assert name not in omitted
+        assert name in header, f"default column {name!r} folded or dropped"
+    for name in (
+        "account_id",
+        "status",
+        "days_since_assertion",
+        "asserted_balance",
+        "computed_balance",
+        "drift_abs",
+    ):
+        assert (name in omitted) != (name in header), name
+    # Projection order decides: the id is the first extra to go, drift_abs the last.
+    assert "account_id" in omitted
+    assert "drift_abs" in header
+    table = [line for line in result.output.splitlines() if line[:1] in "+|"]
+    assert all(len(line) <= 100 for line in table)
+
+
+def test_the_narrow_balance_drift_view_is_unchanged_by_the_drop_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without `--wide` the default set renders and points at `--wide`."""
+    result = _invoke_balance_drift(monkeypatch, width=80)
+
+    assert result.exit_code == 0, result.output
+    assert "5 of 11 columns shown — --wide for all" in result.output
+    assert "columns fit" not in result.output
+    assert "account_id" not in result.output

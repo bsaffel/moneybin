@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-07-09
-> Status: Implemented — M1V (Ingestion Core). Feature spec.
+> Last updated: 2026-10-07
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface, and "Extension: ignoring a term" for the translation to nothing.
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -53,30 +53,36 @@ extensions/overrides in `app`, one resolved view in `core`.
 
 ```mermaid
 flowchart TD
-    seed["seeds.category_source_map<br/>PK (source_type, source_category_code)<br/>+ code_level, category_id, source_taxonomy_version"]
-    app["app.category_source_map<br/>PK (source_type, source_category_code)<br/>+ code_level, category_id, source_taxonomy_version, created_at, updated_at"]
-    view["core.bridge_category_source_map (VIEW)<br/>source_type · source_category_code · code_level · category_id · source_taxonomy_version · is_default"]
+    seed["seeds.category_source_map<br/>PK (source_type, source_category_code, source_subcategory_code)<br/>+ code_level, category_id, source_taxonomy_version"]
+    app["app.category_source_map<br/>PK (source_type, source_origin, source_category_code, source_subcategory_code)<br/>+ code_level, category_id, source_taxonomy_version, created_at, updated_at"]
+    view["core.bridge_category_source_map (VIEW)<br/>source_type · source_origin · source_category_code · source_subcategory_code · code_level · category_id · source_taxonomy_version · is_default"]
     dim["core.dim_categories<br/>+ class (income/expense/transfer/debt)"]
     seed -- "anti-join: seed MINUS overridden" --> view
-    app -- "UNION ALL (user wins per code)" --> view
+    app -- "UNION ALL (user wins per key)" --> view
     view -- "FK category_id" --> dim
 ```
 
 **Precedence uses an anti-join, not `UNION`.** A user row and a seed row for
-the same `(source_type, source_category_code)` may point at *different*
-`category_id`s; `UNION` would keep both and re-break the one-row-per-code
-guarantee. The view is therefore: seed rows whose `(source_type,
-source_category_code)` is **not** present in `app`, `UNION ALL` all `app`
-rows. This preserves exactly-one-row-per-code across the union.
+the same `(source_type, source_origin, source_category_code,
+source_subcategory_code)` may
+point at *different* `category_id`s; `UNION` would keep both and re-break the
+one-row-per-key guarantee. The view is therefore: seed rows whose key is
+**not** present in `app`, `UNION ALL` all `app` rows. A seed row is
+provider-wide, so the view gives it `source_origin = ''` and only an `app`
+row with a blank origin overrides it. This preserves
+exactly-one-row-per-key across the union.
 
 ### Grain: canonical-by-primary-key
 
-The bridge is keyed **`(source_type, source_category_code)`**. Exactly one
-canonical MoneyBin category per code is guaranteed by the primary key itself
-— there is no `is_canonical` flag that could go two-TRUE or zero-TRUE. The
-ambiguous-mapping winner is a visible, editable data row that cannot be made
-ambiguous (satisfies the "magic stays visible" requirement in
-`.claude/rules/design-principles.md`).
+The bridge is keyed **`(source_type, source_origin, source_category_code,
+source_subcategory_code)`**. Exactly one canonical MoneyBin category per key
+is guaranteed by the primary key itself — there is no `is_canonical` flag
+that could go two-TRUE or zero-TRUE. The ambiguous-mapping winner is a
+visible, editable data row that cannot be made ambiguous (satisfies the
+"magic stays visible" requirement in `.claude/rules/design-principles.md`).
+`source_subcategory_code` uses `''` as its sentinel for "the source supplied
+no subcategory" — DuckDB primary keys reject NULL, so an absent subcategory
+cannot be represented as one.
 
 ### Two-tier: detailed with primary fallback
 
@@ -92,24 +98,41 @@ match and falls back to the primary:
 SELECT category_id
 FROM   core.bridge_category_source_map
 WHERE  source_type = ?                       -- 'plaid' | 'mx' | 'simplefin' | …
+  AND  source_origin = ''                   -- provider-wide rows
   AND  source_category_code IN (?, ?)        -- (detailed, primary)
-ORDER  BY code_level = 'detailed' DESC        -- detailed match first
+ORDER  BY source_category_code = ? DESC     -- the detailed code's row first
 LIMIT  1;
 ```
+
+`apply_plaid_categories` ranks first on the row whose
+`source_category_code` equals the transaction's own detailed code, and only
+then on `code_level`. `code_level` is a label the writer supplies, and
+`CategorySourceMapRepo.upsert` defaults it to `'detailed'`, so a primary-code
+row written without it would otherwise tie with the real detailed row. An
+ignored primary row could then win and leave the transaction uncategorized.
 
 A code string is unique across levels (no primary equals any detailed), so
 the primary key holds with both levels in one table. An unmapped detailed
 code still lands in the right top-level category via its primary instead of
 falling through to rules/AI.
 
+The fallback covers an *unmapped* detailed code only. An *ignored* one — a
+user row with a NULL `category_id`, see "Extension: ignoring a term" — wins
+the ranking like any other detailed row and then yields nothing, so the
+transaction is not categorized through its primary code. The snippet above
+shows the ranking; a consumer must also discard a winner whose `category_id`
+is NULL, as `apply_plaid_categories` does.
+
 ### Columns
 
 | Column | Type | Notes |
 |---|---|---|
-| `source_type` | `VARCHAR` | Provenance vocabulary (`plaid`, future `mx`/`simplefin`). Closed-vocabulary discriminator (not an entity reference). |
+| `source_type` | `VARCHAR` | The transaction row's own `source_type` — the same values the column holds everywhere else: `plaid` for provider-native codes (future `mx`/`simplefin`), and `csv`, `tsv`, `excel`, `parquet`, `feather`, `pdf`, or `manual` for imported mappings (see "Extension" below). Never a provider alias and never an origin slug. Closed-vocabulary discriminator, not an entity reference. |
+| `source_origin` | `VARCHAR` | The row's own `source_origin` for an imported mapping (`chase_credit`, `mint`). `''` on a provider row means provider-wide. An import whose account label slugs to nothing also carries `''`; its `source_type` keeps it apart from provider rows. App table and view only — the seed table holds provider rows, and the view supplies their blank origin. |
 | `source_category_code` | `VARCHAR` | The provider's code, stored verbatim (source-provided ID, `.claude/rules/identifiers.md` strategy 1). |
+| `source_subcategory_code` | `VARCHAR` | Second half of the source's (category, subcategory) key. `''` is the sentinel for "no subcategory" — DuckDB primary keys reject NULL, so an absent subcategory cannot be stored as one; never a distinct real value. |
 | `code_level` | `VARCHAR` | `'detailed'` \| `'primary'` — the tier this code sits at for the provider. |
-| `category_id` | `VARCHAR` | **FK** to `core.dim_categories.category_id` (Guard 3 — never text-key the relationship). May reference a `user_categories` row (app table only). |
+| `category_id` | `VARCHAR` | **FK** to `core.dim_categories.category_id` (Guard 3 — never text-key the relationship). May reference a `user_categories` row (app table only). Nullable in the app table and the view: NULL on a user row marks the term as ignored. A seed row always carries a category. |
 | `source_taxonomy_version` | `VARCHAR` | The provider taxonomy revision the row was curated against (e.g. `plaid_pfc_v2`). Non-PK — drift insurance; promote into the key only if historical multi-version rows ever coexist. |
 | `is_default` | `BOOLEAN` | View-only: `TRUE` for seed rows, `FALSE` for user rows (mirrors `dim_categories.is_default`). |
 | `created_at` / `updated_at` | `TIMESTAMP` | App table only — audit of user edits. |
@@ -135,12 +158,219 @@ code set; they correctly produce no bridge row and fall through to
 rules/AI/LLM, which is the right solver for free text. Absence of a row is
 fall-through, not data loss.
 
+## Extension: imported (tabular/manual) category text (MB-180)
+
+An imported row (tabular/CSV, manual entry) was passed straight through to
+`core.fct_transactions.category` via `fct_transactions.sql`'s
+`COALESCE(dc.category, c.category, t.category)` — no `categorized_by`
+attribution, invisible to the queue filter, and never overridable
+by a later rule. The owner's ruling: this text is only ever an INPUT to the
+existing bridge above, never a passed-through value. The engine leg
+(`CategorizationOrchestrator.apply_source_category_map`, PR1 of MB-180)
+reuses `app.category_source_map` / `core.bridge_category_source_map`
+unchanged; only the reverse-lookup key and code shape are new:
+
+- **Keyed on the row's own `(source_type, source_origin)`.** An imported
+  mapping stores the pair exactly as the transaction row carries it —
+  `('csv', 'chase_credit')`, `('excel', 'mint')` — and matching is exact
+  equality on both, with no precedence rule. Two exporters can therefore
+  map an identical category string to two different MoneyBin categories.
+  Provider rows are `('plaid', '')`, so an import whose origin slug
+  happens to be `plaid` cannot collide with Plaid's vocabulary in either
+  direction: the type differs. An earlier version stored the origin slug
+  in the `source_type` column, which gave one column two meanings and
+  made that collision possible; `V068` rebuilt the key. The accepted cost:
+  one origin exported as CSV and as Excel is two vocabularies, mapped
+  separately. This reframes rather than contradicts "Multi-aggregator and
+  free-text boundary" above: a single exporter's own category list IS a
+  closed vocabulary from that exporter's perspective — SimpleFIN's
+  genuinely arbitrary free text is a different case and still falls
+  through as documented.
+- **Real second key column, not a composite code.** An imported row carries
+  `category` and `subcategory` independently. An earlier version of this
+  extension packed both into `source_category_code` via
+  `to_json({'category': ..., 'subcategory': ...})` — but comparing that
+  VARCHAR column against a JSON-typed literal made DuckDB cast the column to
+  JSON, and seeded Plaid rows hold bare codes (`INCOME`) that are not valid
+  JSON, so the cast raised `ConversionException` on every categorization run
+  that touched the bridge with seeded data present. `source_subcategory_code`
+  is a real second key column instead: `category` maps to
+  `source_category_code` verbatim, `subcategory` maps to
+  `source_subcategory_code` (normalized to `''` when absent, because a
+  DuckDB primary key rejects NULL; collapsing `''` and NULL to one value
+  matches how V054–V056 already treat blank taxonomy text). The write side
+  (`CategorySourceMapRepo.upsert`) and the read side
+  (`_source_category_bridge_candidates`, via
+  `_shared.source_category_bridge_match_predicate`) both key on the two
+  columns directly, so there is no serializer to keep in sync.
+- **No confidence gate.** Unlike Plaid's ML-classifier confidence, a curated
+  mapping row is a deterministic assertion — the same footing as a rule or
+  merchant — so every match writes `confidence=1.0`.
+- **Row grain, not merge grain.** Reads `prep.int_transactions__matched`
+  (row-grain, pre-merge — carries the gold `transaction_id` alongside each
+  source row's own `source_type`/`source_origin`/`category`/`subcategory`), not
+  `prep.int_transactions__merged` (which resolves one winning value per
+  transaction but drops which member contributed it).
+- **Schema widening: `V067__add_source_subcategory_code.py`.** Adds
+  `source_subcategory_code` and rebuilds the table's primary key (DuckDB
+  cannot `ALTER` a primary key), replacing the JSON-encoded composite code
+  described above.
+- **Schema widening: `V068__key_category_source_map_by_origin.py`.** Adds
+  `source_origin` to the primary key by the same rebuild. A `plaid` row
+  backfills `source_origin = ''`. An imported mapping written under the old
+  key held its origin slug in `source_type` and applied to every row of that
+  origin, so it is re-keyed once per source type the raw tables hold for the
+  origin. A `plaid` row is also copied to an import whose origin is `plaid`,
+  because the old key matched both and cannot say which was meant. A mapping
+  whose origin no raw row carries has no source type to take and is dropped;
+  its term returns to `pending` if those rows are imported again.
+
+PR1 shipped the engine only (repo write method + orchestrator leg, wired into
+`categorize_pending`). PR2 adds the authoring surface:
+`CategorizationQueries.list_unmapped_source_terms` enumerates distinct
+unmapped `(source_type, source_origin, category, subcategory)` terms — the
+decision unit
+is the term, not the transaction, since one curated mapping resolves every
+row carrying that text — with up to 3 `did_you_mean` suggestions against
+active MoneyBin category names; `MatchApplier.resolve_source_term` maps one
+term to an existing category or a newly-created one (via `create_category`),
+sharing one transaction with the `CategorySourceMapRepo.upsert` write. Both
+are exposed as `moneybin categories mappings pending` / `... set`.
+
+In PR2, `set` on an already-mapped term rebound it for later sweeps only:
+transactions the earlier mapping had categorized kept that category, because
+the sweep fills only uncategorized rows. A mapping now always follows
+through — see "Extension: ignoring a term" below. `set` refuses an inactive
+target category, since an inactive category takes no new categorizations.
+
+`set` accepts a term only when an imported row carries it — keyed through the
+sweep's own `source_category_bridge_match_predicate`, so it accepts exactly
+the terms the sweep can apply — or when the term is already mapped, so a
+mapping outlives a reverted import and can still be changed. Anything else is
+refused with `mutation_not_found` instead of being stored as a mapping that
+never matches. The term carries no length cap: imports bound none of its
+parts, and a value that must already exist in the database is bounded by it.
+
+`pending` reports each term's `source_type`. `set` takes it as an optional
+argument: omitted, it is derived from the imported rows and mappings that
+carry the rest of the term, and when several types carry it the write is
+refused with `mutation_ambiguous` and the candidate types, never guessed.
+`set` accepts a blank `source_origin`, because an import whose account label
+slugs to nothing carries one, and refuses `source_type = 'plaid'`: provider
+vocabularies are not curated through this surface.
+
+PR2 is CLI-only. The MCP surface, decided after PR2 opened, extends two
+existing tools instead of adding one: an unmapped term is a
+`source_categories` kind in `reviews`, and a mapping is a `source_category`
+item in `taxonomy_set`, beside its `category` and `merchant` items. A mapping
+is a translation of a source's label, not a pattern rule. It reads the
+category the source attached rather than the transaction's own text, and it
+writes at `provider_native` rank, so every rule and merchant mapping outranks
+it. That is why it sits with merchant items in `taxonomy_set` and not in
+`transactions_categorize_rules_set`. It ships in a follow-up slice.
+
+## Extension: ignoring a term
+
+Some source terms carry no category worth keeping — an exporter's own
+`Uncategorized`, or a provider code whose shipped translation is wrong for
+one user. Ignoring is modelled as a translation to nothing, not as a second
+kind of row.
+
+- **A NULL `category_id` is the ignored state.** `app.category_source_map`
+  stores the term under its ordinary key with no category
+  (`V070__allow_ignored_category_source_mapping.py` drops the column's
+  `NOT NULL` in place; `category_id` is outside the primary key, so no
+  rebuild). The term is *known*: the bridge holds a row for it, so it leaves
+  `categories mappings pending` and is not counted by the `plaid_unmapped`
+  coverage stat. It *categorizes nothing*: every sweep resolves a category
+  through `core.dim_categories`, and there is none to resolve.
+- **A user row overrides a seed row, ignored or not.** The view's anti-join
+  already drops a seed row whose key an `app` row holds, so an ignored user
+  row for `('plaid', '', <code>, '')` switches off the shipped translation
+  for that code. No new precedence rule was needed.
+- **No Plaid fallback past an ignored code.** See "Two-tier" above: the
+  ignored detailed row is ranked before it is tested for a category, so the
+  primary code never takes its place. An ignored *primary* code leaves a
+  mapped detailed code working, since detailed outranks it.
+- **An ignored imported term abstains.** When one transaction has two
+  imported members with different terms, ignoring one leaves the other's
+  mapping free to categorize it. The no-fallback rule is specific to a
+  provider's two codes for one transaction.
+- **`categories mappings set --ignore`** writes the ignored state. It is
+  mutually exclusive with `--into` and `--new`; passing none or more than one
+  exits 2 with `mutation_invalid_input`. Mapping an ignored term later, with
+  `--into` or `--new`, is how it is un-ignored.
+
+### A mapping always follows through
+
+`set` no longer waits for the next sweep, and a changed mapping no longer
+leaves history behind:
+
+1. In the transaction that writes the mapping, when the term was mapped to a
+   *different* category before, the categorizations that mapping produced are
+   removed (`TransactionCategoriesRepo.delete_provider_native`, one
+   `category.clear` audit row each, under the caller's actor).
+2. After the commit, `categorize_pending` runs.
+
+`app.transaction_categories` records no source term, so "produced by this
+term" is derived: an imported row of the transaction carries the term (the
+sweep's own match predicate), and the categorization holds the mapping's
+previous `category_id`, the term's `source_type`, and
+`categorized_by = 'provider_native'`. A categorization made by hand, by rule,
+or by merchant fails the last test and is never touched. One made by a
+different term fails the first, with one exception: a merged transaction
+whose imported members share a source type and carry two terms mapped to the
+same category. Both
+terms pass every test for that one row, so changing either mapping withdraws
+it, whichever term produced it. The sweep that follows recreates it from the
+term still mapped, so the transaction ends in the right category. The cost is
+bookkeeping: `recategorized` counts that row, and the audit log holds a
+`category.clear` and a `category.set` for a categorization that did not
+change.
+
+The receipt reports two disjoint counts, as `categorized` and `recategorized`
+in `--output json`:
+
+- **categorized** — transactions the term newly categorized in this sweep.
+- **recategorized** — transactions whose earlier categorization from this
+  term was withdrawn and re-evaluated. After a remap they hold the new
+  category; after `--ignore` they are uncategorized again unless another
+  signal claimed them.
+
+Setting a term to the category it already has withdraws nothing. The sweep
+runs after the commit, so a sweep failure leaves the mapping stored and the
+withdrawn rows the sweep had not yet reached pending for the next sweep, as
+`create_rules`' reapply does. Passes that finished before the failure keep
+their writes.
+`set` then
+fails with `refresh_categorize_failed`: the message states that the mapping
+is stored and how many categorizations were withdrawn, and the hint names
+`moneybin refresh --step categorize`, which runs the same sweep and finishes
+the change. The original exception is chained, not shown.
+
+**Known limit: another term's categorization is not displaced.** The sweep
+only considers transactions with no categorization, and withdrawal removes
+only what this term's previous mapping produced. So when a merged transaction
+has two imported members carrying different terms, the term mapped first
+keeps the transaction even if the second term's member has the higher source
+priority and is mapped (or un-ignored) later. The result depends on the order
+the two terms were mapped, where a sweep from scratch would pick the
+higher-priority member. This predates follow-through and is not changed by
+it; it needs two imports of one real transaction from different exporters.
+
+**Not delivered: a CLI path to ignore a provider code.** The engine honours
+an ignored Plaid row, and `CategorySourceMapRepo.upsert` writes one, but
+`set` still refuses `source_type = 'plaid'` (see above). Admitting it is a
+separate decision — ignore-only would leave no CLI way to restore the shipped
+translation — and is expected with the MCP `source_category` item.
+
 ## Reverse-lookup contract
 
 The `core.bridge_category_source_map` view **is** the contract the
 provider-native categorizer consumes. Given a transaction's `(source_type,
 detailed, primary)`, it returns exactly one `category_id` (detailed
-preferred, else primary) or nothing. No Python resolver ships in this PR —
+preferred, else primary) or nothing — and nothing when the preferred row is
+ignored. No Python resolver ships in this PR —
 M1U's `apply_plaid_categories`
 (`src/moneybin/services/categorization/orchestrator.py`) is that resolver;
 see [`categorization-source-model.md`](categorization-source-model.md).
@@ -211,8 +441,11 @@ rows, idempotent, wrapped in the runner's `BEGIN`/`COMMIT`) per
 Per the app-code-touches-metrics rule, the `app.category_source_map` write
 path (rows added / updated / removed) gets counters in
 `src/moneybin/metrics/registry.py`, mirroring existing `app.*` writers — this
-lands with the override writer itself (see "Deferred to Tier-2b" below; no
-writer exists yet, so there is nothing to instrument). The coverage query
+lands with the override writer itself. MB-180 PR2's curation writer records
+`moneybin_category_source_mapping_outcomes_total{outcome}` — `added`,
+`updated`, or `refused` — after its transaction commits; `removed` arrives
+with the MCP slice's `absent` state. Every write also increments the generic
+`app_mutation_audit_emitted_total{action="category_source_map.upsert"}`. The coverage query
 (source codes with no bridge row) shipped as observability with its first
 consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.md)
 (M1W), not the categorizer.
@@ -224,8 +457,11 @@ consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.m
 Agents read the canonical category and merchant catalog through
 `taxonomy(view="categories")` or `taxonomy(view="merchants")`. They declare
 category or merchant target state through `taxonomy_set(items=[...])`; each
-item is discriminated by `kind` and `state`. The provider-code bridge remains
-an internal categorization input, not a separate MCP mutation surface.
+item is discriminated by `kind` and `state`. The seeded provider-code rows
+remain an internal categorization input, not a separate MCP mutation surface.
+User-authored rows for imported vocabulary (MB-180) get no separate surface
+either: the follow-up MCP slice declares them as a `source_category` item in
+the same `taxonomy_set` batch.
 
 **In scope (this PR / M1V):** the three tables + view + two-tier contract;
 the `class` column on the category dim (available on `core.dim_categories`
@@ -248,8 +484,11 @@ spec + `INDEX.md` + `docs/roadmap.md` + CHANGELOG updates.
   (M1W) — the coverage-gap backfill, mortgage-duplicate resolution, and
   `class` reconciliation are done; the IRS Schedule C crosswalk remains
   deferred to the `us_tax` package (M2M).
-- Map-to-null suppression of a seed mapping; `parent_id` N-level nesting;
-  promoting `source_taxonomy_version` into the primary key.
+- ~~Map-to-null suppression of a seed mapping.~~ Delivered in the data model
+  and the sweeps — see "Extension: ignoring a term"; the CLI path for a
+  provider code is still open.
+- `parent_id` N-level nesting; promoting `source_taxonomy_version` into the
+  primary key.
 - See "Deferred to Tier-2b" immediately below for the three items pushed to
   the next increment by explicit decision.
 
@@ -268,9 +507,8 @@ consumer that needs it, rather than speculatively here:
    typed `CategoryRow` field (`src/moneybin/privacy/payloads/categories.py`)
    is still not added — M1U's categorizer shipped without needing it on the
    typed path, so this remains open for whichever future consumer needs it.
-3. **Write-path metrics** for `app.category_source_map`. No writer exists yet
-   — an override writer still hasn't shipped; instrumenting an unwritten path
-   would be speculative.
+3. **Write-path metrics** for `app.category_source_map`. Landed with the
+   MB-180 PR2 curation writer — see Observability above.
 
 ## Coordination
 

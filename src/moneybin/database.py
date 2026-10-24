@@ -24,6 +24,8 @@ import stat
 import sys
 import threading
 import time
+import uuid
+import warnings
 from collections.abc import Callable, Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
@@ -46,6 +48,18 @@ from moneybin.db_lock._types import CheckpointReason, OperationType
 os.environ.setdefault("MAX_FORK_WORKERS", "1")
 
 from moneybin.config import DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS, get_settings
+from moneybin.crypto_constants import (
+    ARGON2_HASH_LEN,
+    ARGON2_MEMORY_COST,
+    ARGON2_PARALLELISM,
+    ARGON2_TIME_COST,
+    ENCRYPTION_KEY_BYTES,
+    PASSPHRASE_SALT_BYTES,
+    SALT_NAME,
+)
+from moneybin.crypto_constants import (
+    KEY_NAME as _KEY_NAME,
+)
 from moneybin.secrets import (
     SecretNotFoundError,
     SecretStorageUnavailableError,
@@ -56,11 +70,21 @@ from moneybin.tables import TableRef
 
 logger = logging.getLogger(__name__)
 
-_KEY_NAME = "DATABASE__ENCRYPTION_KEY"
-SALT_NAME = "DATABASE__PASSPHRASE_SALT"
+# seeds.institutions declares `fid TEXT` (an opaque OFX institution id), but
+# pandas reads the all-digit CSV column as int64, so sqlmesh's string-column
+# cast warns on every seed load. CsvSettings exposes no dtype hook, so this
+# cannot be fixed from the model; remove once sqlmesh reads seeds with the
+# declared column types.
+warnings.filterwarnings(
+    "ignore",
+    message="Setting an item of incompatible dtype is deprecated",
+    category=FutureWarning,
+    module="sqlmesh",
+)
+
 _DATABASE_ALIAS = "moneybin"
 
-_cached_encryption_key: str | None = None
+_cached_encryption_key: tuple[str | None, str] | None = None
 
 _active_write_conn: "Database | None" = None
 _active_write_lock: threading.Lock = threading.Lock()
@@ -231,6 +255,19 @@ def _pin_cursor_to_moneybin(cur: Any) -> None:
     cur.execute(f"USE {_DATABASE_ALIAS}")
 
 
+def _release_sqlmesh_cursor(adapter: Any) -> None:
+    """Close SQLMesh's duplicate cursor without closing MoneyBin's connection.
+
+    The cursor is a ``conn.cursor()`` duplicate, and a result SQLMesh left
+    unconsumed keeps its transaction open (``Context.migrate()`` ends on a
+    ``fetchone`` since 0.236.3). Once MoneyBin writes, CHECKPOINT then raises
+    "other write transactions active". The pool's ``close()`` would close the
+    shared connection itself, so only the cursor is closed. Idempotent.
+    """
+    if adapter is not None:
+        adapter._connection_pool.close_cursor()  # pyright: ignore[reportPrivateUsage]  # no public API closes only the cursor
+
+
 def build_attach_sql(
     db_path: Path,
     encryption_key: str,
@@ -301,6 +338,18 @@ class DatabaseLockError(Exception):
     """DuckDB file lock held by another process; caller may retry."""
 
 
+class DatabaseUpgradeRequiredError(Exception):
+    """A database's migration ladder is behind the code and couldn't be upgraded.
+
+    Raised instead of ever serving a read, or a silently-incomplete write,
+    against a schema the installed code no longer matches. The three
+    causes: ``no_auto_upgrade`` is set, the file/filesystem is not
+    writable, or the write lock could not be acquired in time. Each
+    message names the remedy (``moneybin db migrate apply`` or clearing
+    ``no_auto_upgrade``).
+    """
+
+
 class DatabaseNotInitializedError(Exception):
     """Database file missing or incomplete; run 'moneybin db init'.
 
@@ -328,12 +377,12 @@ class SchemaDriftError(Exception):
     """
 
 
-# Captured from the final SELECT of each FULL-materialized core SQLMesh
-# model. Views (kind VIEW) cannot drift — they always reflect the current
-# model. NOT parsed at runtime; keep in sync via the parity test in
+# Captured from the final SELECT of the core SQLMesh models consumers read
+# most. A view drifts too when the warehouse predates the code: it still points
+# at the snapshot the last apply built. NOT parsed at runtime; keep in sync via the parity test in
 # tests/moneybin/test_db_helpers_parity.py (Task 6C).
 EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
-    # src/moneybin/sqlmesh/models/core/dim_accounts.sql — kind FULL
+    # src/moneybin/sqlmesh/models/core/dim_accounts.sql — kind VIEW
     "core.dim_accounts": frozenset({
         "account_id",
         "routing_number",
@@ -353,10 +402,13 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "account_subtype",
         "holder_category",
         "currency_code",
+        "investment_source_type",
         "credit_limit",
         "archived",
         "archived_at",
         "include_in_net_worth",
+        "investment_source_type_changed_at",
+        "archived_changed_at",
     }),
     # src/moneybin/sqlmesh/models/core/fct_balances_daily.py — kind FULL
     "core.fct_balances_daily": frozenset({
@@ -364,6 +416,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "balance_date",
         "balance",
         "is_observed",
+        "in_net_worth",
         "observation_source",
         "reconciliation_delta",
         "currency_code",
@@ -492,9 +545,20 @@ def _attach_encrypted(
     IO error + ``"different configuration"`` catalog error in 1.5.2) into a
     single ``"Could not set lock on file"`` IO error. Both phrasings are
     matched for belt-and-suspenders coverage across environments.
+
+    Contention inside one process never reaches the file lock: DuckDB refuses
+    a second attach of a file another connection in the process still holds
+    with a ``"Unique file handle conflict"`` binder error. It is the same
+    transient condition, so it retries the same way.
     """
     try:
         conn.execute(sql)
+    except duckdb.BinderException as e:
+        scrub_key_material(e, encryption_key)
+        if "Unique file handle conflict" not in str(e):
+            raise
+        conn.close()
+        raise DatabaseLockError(str(e)) from e
     except duckdb.CatalogException as e:
         scrub_key_material(e, encryption_key)
         conn.close()
@@ -612,8 +676,12 @@ class Database:
         # the default (secret_store=None) path repeat keyring lookups; letting it
         # override an explicit store would let a key cached in one context
         # decrypt-fail a DB opened with a different explicit key in another.
-        if secret_store is None and _cached_encryption_key is not None:
-            encryption_key = _cached_encryption_key
+        if (
+            secret_store is None
+            and _cached_encryption_key is not None
+            and _cached_encryption_key[0] == store.profile
+        ):
+            encryption_key = _cached_encryption_key[1]
         else:
             try:
                 encryption_key = store.get_key(_KEY_NAME)
@@ -628,10 +696,10 @@ class Database:
             except SecretNotFoundError as e:
                 raise DatabaseKeyError(
                     f"Cannot open database — encryption key not found in "
-                    f"keychain or env var MONEYBIN_{_KEY_NAME}."
+                    f"keychain or env var {store.env_var_name(_KEY_NAME)}."
                 ) from e
             if secret_store is None:
-                _cached_encryption_key = encryption_key
+                _cached_encryption_key = (store.profile, encryption_key)
 
         if read_only:
             self._conn = duckdb.connect()
@@ -717,19 +785,43 @@ class Database:
             if skip_upgrade is None:
                 settings = get_settings()
                 skip_upgrade = settings.database.no_auto_upgrade
-            if not skip_upgrade:
-                current_pkg_version = importlib.metadata.version("moneybin")
-                stored_versions = get_current_versions(self)
-                stored_pkg_version = stored_versions.get("moneybin")
 
-                # Gate on pending migrations, not pkg version. The version
-                # string in pyproject.toml is bumped by hand and was previously
-                # the only trigger — so a DB opened pre-V003 stayed pre-V003
-                # forever if the version hadn't moved between releases. Any
-                # unapplied migration (or a version mismatch) drives the runner.
-                runner = MigrationRunner(self)
-                pending = runner.pending()
-                if pending or stored_pkg_version != current_pkg_version:
+            # Computed unconditionally — both reads are plain SELECTs against
+            # tables init_schemas always creates, and skip_upgrade must not
+            # blind this open to a ladder it is about to leave stranded.
+            # Gate on pending migrations, not pkg version. The version
+            # string in pyproject.toml is bumped by hand and was previously
+            # the only trigger — so a DB opened pre-V003 stayed pre-V003
+            # forever if the version hadn't moved between releases. Any
+            # unapplied migration (or a version mismatch) drives the runner.
+            current_pkg_version = importlib.metadata.version("moneybin")
+            stored_versions = get_current_versions(self)
+            stored_pkg_version = stored_versions.get("moneybin")
+            runner = MigrationRunner(self)
+            pending = runner.pending()
+            needs_upgrade = bool(pending) or stored_pkg_version != current_pkg_version
+
+            if skip_upgrade:
+                # A never-before-opened database (stored_pkg_version is None)
+                # has nothing stranded: init_schemas() just built every table
+                # at its current shape from scratch, so "every migration is
+                # unapplied" is a fresh install, not a ladder behind the code.
+                # Anything else is a real upgrade skip_upgrade is refusing to
+                # run — most concretely, init_schemas() may have just created
+                # a relocated table (e.g. a schema-moved one) EMPTY while the
+                # real rows stay stranded under its old name, and that empty
+                # table would otherwise answer reads as though it were
+                # authoritative. Refuse instead of serving that silently.
+                if stored_pkg_version is not None and needs_upgrade:
+                    raise DatabaseUpgradeRequiredError(
+                        f"Database at {db_path} has pending schema migrations, "
+                        "but no_auto_upgrade is set, so this open cannot apply "
+                        "them. Run 'moneybin db migrate apply' after clearing "
+                        "no_auto_upgrade (MONEYBIN_DATABASE__NO_AUTO_UPGRADE or "
+                        "the config setting), or clear it for this open."
+                    )
+            else:
+                if needs_upgrade:
                     if stored_pkg_version is None:
                         # First-ever open of this DB — schema initialization.
                         logger.info("⚙️  Initializing MoneyBin schema...")
@@ -870,6 +962,7 @@ class Database:
         # Note: _data_file_to_adapter is a class-level dict — not thread-safe
         # for concurrent init with the same db_path. Acceptable for single-user.
         adapter_key = str(self._db_path)
+        adapter: DuckDBEngineAdapter | None = None
         try:
             conn = self._conn
             if conn is None:
@@ -918,6 +1011,7 @@ class Database:
             logger.warning("⚠️  Transform state migration failed — see logs for details")
             return False
         finally:
+            _release_sqlmesh_cursor(adapter)
             BaseDuckDBConnectionConfig._data_file_to_adapter.pop(adapter_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
     def repair_sqlmesh_state(self) -> bool:
@@ -1019,31 +1113,41 @@ class Database:
         else:
             safe_ref = exp.to_identifier(table, quoted=True).sql("duckdb")
 
-        arrow_table = df.to_arrow()
-        self.conn.register("_ingest_tmp", arrow_table)
-        try:
+        with self.registered_dataframe(df) as view:
             if on_conflict == "replace":
                 result = self.conn.execute(
-                    f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
+                    f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "upsert":
                 result = self.conn.execute(
-                    f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
+                    f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "ignore":
                 result = self.conn.execute(
-                    f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
+                    f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             else:
                 result = self.conn.execute(
-                    f"INSERT INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
+                    f"INSERT INTO {safe_ref} BY NAME SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             # DuckDB returns a single-row "Count" for each of these statements.
-            # It is read inside the try so the temp view is still registered.
+            # It is read inside the block so the temp view is still registered.
             written = result.fetchone()
-        finally:
-            self.conn.unregister("_ingest_tmp")
         return int(written[0]) if written else 0
+
+    @contextmanager
+    def registered_dataframe(self, df: Any) -> Generator[str, None, None]:
+        """Expose a Polars (or Arrow-compatible) DataFrame as a temporary view.
+
+        Yields the view name to interpolate into SQL; the view is dropped on exit.
+        The name is unique per call so a nested registration cannot shadow it.
+        """
+        view = f"_df_{uuid.uuid4().hex[:12]}"
+        self.conn.register(view, df.to_arrow())
+        try:
+            yield view
+        finally:
+            self.conn.unregister(view)
 
     @property
     def path(self) -> Path:
@@ -1205,6 +1309,20 @@ class Database:
         self.close()
 
 
+def verify_database_key(db_path: Path, *, secret_store: SecretStore) -> None:
+    """Verify current credential access without initializing or upgrading the file."""
+    try:
+        # The factory may escalate read-only opens into schema upgrades.
+        with Database(db_path, read_only=True, secret_store=secret_store):
+            pass
+    except duckdb.Error as e:
+        raise OSError(
+            "Could not verify the encryption key against the database. "
+            "The credential may not match, or the database may be unreadable "
+            "or corrupt."
+        ) from e
+
+
 def invalidate_encryption_key_cache() -> None:
     """Clear the in-process encryption key cache.
 
@@ -1247,26 +1365,39 @@ def database_key_error_hint(db_path: Path | None = None) -> str:
         return "💡 Run 'moneybin db init' to create the database first"
     return (
         "💡 Run 'moneybin db unlock' if the keychain is simply locked, or "
-        f"set MONEYBIN_{_KEY_NAME} if this environment (sandboxed, "
+        f"set {SecretStore().env_var_name(_KEY_NAME)} if this environment (sandboxed, "
         "headless, or CI) denies keychain access outright — a denied read "
         "looks identical to a missing key"
     )
 
 
-def _lock_error_message(db_path: "Path", max_wait: float) -> str:
+def _lock_error_message(db_path: "Path", max_wait: float, *, read_only: bool) -> str:
+    from moneybin.db_lock import live_writer
     from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
+    # A read-only open fails too while another process holds the file
+    # read-write, so name which open failed rather than always "write lock".
+    failed = (
+        f"Could not open the database for reading after {max_wait:.0f}s"
+        if read_only
+        else f"Could not acquire write lock after {max_wait:.0f}s"
+    )
+    # The lock metadata names the holder's operation, which a process name
+    # ("moneybin --profile") cannot — the difference between "another server is
+    # updating the schema" and "something is stuck".
+    writer = live_writer(db_path)
+    if writer is not None:
+        return (
+            f"{failed} (held by another MoneyBin process running "
+            f"{writer['operation_type']}). "
+            f"Run 'moneybin db ps' for details."
+        )
     blockers = find_blocking_processes(db_path)
     if blockers:
         names = ", ".join(describe_process(str(p["cmdline"])) for p in blockers)
-        return (
-            f"Could not acquire write lock after {max_wait:.0f}s "
-            f"(held by: {names}). "
-            f"Run 'moneybin db ps' for details."
-        )
+        return f"{failed} (held by: {names}). Run 'moneybin db ps' for details."
     return (
-        f"Could not acquire write lock after {max_wait:.0f}s. "
-        f"Another process may be writing to the database. "
+        f"{failed}. Another process may be writing to the database. "
         f"Run 'moneybin db ps' for details."
     )
 
@@ -1318,8 +1449,13 @@ def get_database(
     Write-mode opens acquire a process file lock (``write_lock``) that is
     held for the **lifetime of the returned Database**, not just during
     ATTACH. ``Database.close()`` releases the file lock alongside the
-    DuckDB connection. Read-mode opens never touch the file lock — DuckDB's
-    own arbitration handles read-write contention at the ATTACH layer.
+    DuckDB connection. Read-mode opens never touch the file lock for their
+    own ATTACH — DuckDB's own arbitration handles read-write contention at
+    that layer — with one exception: a read-only open whose migration
+    ladder is behind the running code briefly escalates to a write open
+    (via the same ``write_lock``) to bring it current before re-attaching
+    read-only, so a read is never served from a stale or empty schema. See
+    ``_upgrade_then_reopen_read_only``.
 
     A single shared ``deadline = monotonic() + max_wait`` drives both
     file-lock acquisition AND the existing ATTACH retry, so end-to-end
@@ -1338,12 +1474,6 @@ def get_database(
     acquiring the writer lock so a concurrent deletion cannot turn maintenance
     into implicit database creation.
     """
-    global _database_written, _active_write_conn
-
-    # Lazy import: db_lock.lock imports DatabaseLockError from this module,
-    # so deferring the import past module-load time breaks the cycle.
-    from moneybin.db_lock import write_lock
-
     settings = get_settings()
     db_path = settings.database.path
     if require_existing and not db_path.exists():
@@ -1367,6 +1497,11 @@ def get_database(
             deadline=deadline,
             max_wait=max_wait,
         )
+        if _read_only_ladder_is_behind(db):
+            db.close()
+            db = _upgrade_then_reopen_read_only(
+                db_path=db_path, deadline=deadline, max_wait=max_wait
+            )
         # Read opens register in the per-call holder too. Without this a
         # long-running read (sql_query) that hits the MCP timeout left the
         # handler on its "no connection acquired, nothing to reset" arm, so
@@ -1376,6 +1511,36 @@ def get_database(
         if _holder is not None:
             _holder[0] = db
         return db
+
+    return _open_write_locked(
+        db_path=db_path,
+        skip_upgrade=skip_upgrade,
+        deadline=deadline,
+        max_wait=max_wait,
+        operation_type=operation_type,
+        require_existing=require_existing,
+    )
+
+
+def _open_write_locked(
+    *,
+    db_path: Path,
+    skip_upgrade: bool,
+    deadline: float,
+    max_wait: float,
+    operation_type: OperationType,
+    require_existing: bool,
+) -> "Database":
+    """Acquire the write lock and open a write-mode ``Database`` inside it.
+
+    Factored out of ``get_database()`` so a read-only open's upgrade
+    escalation (``_upgrade_then_reopen_read_only``) can run the exact same
+    write-lock-and-migrate path a normal write open uses — one coordination
+    mechanism, not two.
+    """
+    global _database_written, _active_write_conn
+
+    from moneybin.db_lock import write_lock
 
     # write_lock places its lock file at <db_path>.write.lock inside the
     # profile directory, so that directory must exist before it runs. Pre-PR-B
@@ -1445,6 +1610,105 @@ def get_database(
         raise
 
 
+def _read_only_ladder_is_behind(db: "Database") -> bool:
+    """Whether a read-only-attached database's migration ladder is behind.
+
+    Read-only-safe: both reads are plain ``SELECT``s against tables
+    ``init_schemas`` always creates. Mirrors ``Database.__init__``'s own
+    write-path trigger condition, with the same fresh-install carve-out: a
+    never-versioned database (``stored_pkg_version`` is ``None``) has
+    nothing stranded — ``init_schemas()`` already built it at its current
+    shape from scratch, so ``MigrationRunner.pending()`` reporting every
+    migration unapplied does not mean anything is actually behind.
+
+    Any ``duckdb.Error`` counts as behind too — including a
+    ``CatalogException`` (schema init never completed against this file) and
+    an attempted write DuckDB's read-only attach refuses (``pending()``'s
+    ``_ensure_tracking_schema`` self-heal ALTERs a pre-V013 database's
+    tracking table if it lacks ``content_hash``). Either way, the
+    escalation's write open re-runs ``init_schemas()`` and the migration
+    ladder, which is exactly the idempotent repair for both cases.
+    """
+    from moneybin.migrations import MigrationRunner, get_current_versions
+
+    try:
+        stored_pkg_version = get_current_versions(db).get("moneybin")
+        if stored_pkg_version is None:
+            return False
+        if stored_pkg_version != importlib.metadata.version("moneybin"):
+            return True
+        return bool(MigrationRunner(db).pending())
+    except duckdb.Error:
+        return True
+
+
+def _upgrade_then_reopen_read_only(
+    *, db_path: Path, deadline: float, max_wait: float
+) -> "Database":
+    """Bring a behind-schedule database current, then re-open it read-only.
+
+    A read-only operation must never be served from a database whose
+    migration ladder is behind the running code (MB-255 review). Escalates
+    to a write open — reusing ``_open_write_locked``'s existing write-lock
+    acquisition and retry/backoff rather than a second coordination
+    mechanism — applies the ladder exactly as ``moneybin db migrate apply``
+    would, closes it (releasing the write lock), and re-attaches read-only.
+
+    A concurrent second reader that also observed the ladder as behind
+    blocks on the same write lock; by the time it acquires it, the first
+    reader's write open has already brought the ladder current, so its own
+    write-mode ``Database.__init__`` finds nothing pending and no-ops.
+
+    Refuses instead of ever serving a stale or empty read when the upgrade
+    genuinely cannot run:
+
+    Raises:
+        DatabaseUpgradeRequiredError: ``no_auto_upgrade`` is set, the write
+            lock could not be acquired within ``deadline``, or the database
+            file/directory is not writable.
+    """
+    settings = get_settings()
+    if settings.database.no_auto_upgrade:
+        raise DatabaseUpgradeRequiredError(
+            f"Database at {db_path} has pending schema migrations, but "
+            "no_auto_upgrade is set, so this read-only open cannot bring it "
+            "current. Run 'moneybin db migrate apply' after clearing "
+            "no_auto_upgrade (MONEYBIN_DATABASE__NO_AUTO_UPGRADE or the "
+            "config setting), or clear it for this open."
+        )
+    try:
+        write_db = _open_write_locked(
+            db_path=db_path,
+            skip_upgrade=False,
+            deadline=deadline,
+            max_wait=max_wait,
+            operation_type="migration",
+            require_existing=False,
+        )
+    except DatabaseLockError as exc:
+        raise DatabaseUpgradeRequiredError(
+            f"Database at {db_path} has pending schema migrations, but the "
+            "write lock needed to apply them could not be acquired in time. "
+            "Retry, or run 'moneybin db migrate apply' once no writer is "
+            "active."
+        ) from exc
+    except OSError as exc:
+        raise DatabaseUpgradeRequiredError(
+            f"Database at {db_path} has pending schema migrations, but the "
+            f"database file or its directory is not writable ({exc}). Fix "
+            "the permissions, or run 'moneybin db migrate apply' with write "
+            "access."
+        ) from exc
+    write_db.close()
+    return _open_with_attach_retry(
+        db_path=db_path,
+        read_only=True,
+        skip_upgrade=True,
+        deadline=deadline,
+        max_wait=max_wait,
+    )
+
+
 def _open_with_attach_retry(
     *,
     db_path: Path,
@@ -1483,7 +1747,7 @@ def _open_with_attach_retry(
         except DatabaseLockError:
             if time.monotonic() >= deadline:
                 raise DatabaseLockError(
-                    _lock_error_message(db_path, max_wait)
+                    _lock_error_message(db_path, max_wait, read_only=read_only)
                 ) from None
             time.sleep(delay)
             delay = min(delay * 1.5, 0.5)
@@ -1603,6 +1867,7 @@ def sqlmesh_context(
         )
 
     cache_key = str(db_path)
+    adapter: DuckDBEngineAdapter | None = None
     try:
         # _pin_cursor_to_moneybin (module-level) routes SQLMesh's state writes to
         # the persistent moneybin.sqlmesh.* catalog instead of the throwaway
@@ -1636,6 +1901,8 @@ def sqlmesh_context(
             gateway=_DATABASE_ALIAS,
         )
         yield ctx
+        # SQLMesh is done; close its cursor before the comment sync writes.
+        _release_sqlmesh_cursor(adapter)
         # After the caller's SQLMesh plan/run has written
         # register_comments output to core.*, append the privacy
         # classification sigils. Idempotent — short-circuits when the
@@ -1654,6 +1921,7 @@ def sqlmesh_context(
                     exc_info=True,
                 )
     finally:
+        _release_sqlmesh_cursor(adapter)
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
 
@@ -1661,10 +1929,10 @@ def derive_key_from_passphrase(
     passphrase: str,
     salt: bytes,
     *,
-    time_cost: int = 3,
-    memory_cost: int = 65536,
-    parallelism: int = 4,
-    hash_len: int = 32,
+    time_cost: int = ARGON2_TIME_COST,
+    memory_cost: int = ARGON2_MEMORY_COST,
+    parallelism: int = ARGON2_PARALLELISM,
+    hash_len: int = ARGON2_HASH_LEN,
 ) -> str:
     """Derive a hex encryption key from a passphrase using Argon2id.
 
@@ -1704,10 +1972,10 @@ def init_db(
     passphrase: str | None = None,
     secret_store: SecretStore | None = None,
     profile: str | None = None,
-    argon2_time_cost: int = 3,
-    argon2_memory_cost: int = 65536,
-    argon2_parallelism: int = 4,
-    argon2_hash_len: int = 32,
+    argon2_time_cost: int = ARGON2_TIME_COST,
+    argon2_memory_cost: int = ARGON2_MEMORY_COST,
+    argon2_parallelism: int = ARGON2_PARALLELISM,
+    argon2_hash_len: int = ARGON2_HASH_LEN,
 ) -> None:
     """Create a new encrypted database with all schemas initialized.
 
@@ -1745,7 +2013,7 @@ def init_db(
     if passphrase is not None:
         import base64
 
-        salt = secrets_mod.token_bytes(16)
+        salt = secrets_mod.token_bytes(PASSPHRASE_SALT_BYTES)
         encryption_key = derive_key_from_passphrase(
             passphrase,
             salt,
@@ -1842,7 +2110,7 @@ def init_db(
                 "encryption-key read (locked or restricted), so whether a "
                 "key already exists could not be determined. Refusing to "
                 "overwrite it; retry once the keychain is accessible, or "
-                f"set MONEYBIN_{_KEY_NAME} to bypass the keychain."
+                f"set {store.env_var_name(_KEY_NAME)} to bypass the keychain."
             ) from e
         if key_already_present:
             logger.debug("Using existing encryption key")
@@ -1858,11 +2126,11 @@ def init_db(
                     "the encryption-key read (locked or restricted), so "
                     "whether a key already exists could not be determined. "
                     "Refusing to overwrite it; retry once the keychain is "
-                    f"accessible, or set MONEYBIN_{_KEY_NAME} to bypass "
+                    f"accessible, or set {store.env_var_name(_KEY_NAME)} to bypass "
                     "the keychain."
                 ) from e
             except SecretNotFoundError:
-                encryption_key = secrets_mod.token_hex(32)
+                encryption_key = secrets_mod.token_hex(ENCRYPTION_KEY_BYTES)
                 logger.debug("Auto-generated encryption key stored in OS keychain")
             try:
                 store.set_key(_KEY_NAME, encryption_key)

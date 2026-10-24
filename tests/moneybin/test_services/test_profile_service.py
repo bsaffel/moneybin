@@ -83,6 +83,24 @@ class TestProfileCreate:
         assert (profile_inbox / "inbox").is_dir()
         assert (profile_inbox / "processed").is_dir()
         assert (profile_inbox / "failed").is_dir()
+        assert (profile_inbox / "pending").is_dir()
+        assert svc.inbox_root("alice") == profile_inbox
+
+    def test_denied_inbox_fails_before_the_database_is_built(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A macOS TCC denial on ~/Documents must not leave a half-built schema."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        denied = PermissionError(1, "Operation not permitted", "/denied/alice")
+        with (
+            patch.object(ProfileService, "ensure_inbox", side_effect=denied),
+            patch.object(ProfileService, "_init_database") as init_db,
+            pytest.raises(PermissionError),
+        ):
+            ProfileService().create("alice", init_inbox=True)
+
+        init_db.assert_not_called()
+        assert not (tmp_path / "profiles" / "alice").exists()
 
     def test_create_without_init_inbox_skips_layout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -250,7 +268,7 @@ class TestProfileCreateRepairsBareDirectory:
         svc = ProfileService()
         with (
             patch.object(
-                ProfileService, "_init_inbox", side_effect=RuntimeError("inbox fail")
+                ProfileService, "ensure_inbox", side_effect=RuntimeError("inbox fail")
             ),
             pytest.raises(RuntimeError, match="inbox fail"),
         ):
@@ -434,6 +452,33 @@ class TestProfileShow:
         assert info["name"] == "alice"
 
 
+class TestRecordedKeyMode:
+    """The key mode `db info` reports comes from the profile's config.yaml."""
+
+    def test_reads_the_recorded_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        assert svc.recorded_key_mode("alice") == "auto"
+        svc.set("alice", "database.encryption_key_mode", "passphrase")
+        assert svc.recorded_key_mode("alice") == "passphrase"
+
+    def test_unknown_or_missing_mode_is_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        assert svc.recorded_key_mode("ghost") is None
+        svc.create("alice")
+        # Hand-edited: `profile set` refuses a mode the field rejects.
+        (tmp_path / "profiles" / "alice" / "config.yaml").write_text(
+            "database:\n  encryption_key_mode: bogus\n"
+        )
+        assert svc.recorded_key_mode("alice") is None
+
+
 class TestProfileSet:
     """Test setting config values on a profile."""
 
@@ -445,6 +490,18 @@ class TestProfileSet:
         svc = ProfileService()
         svc.create("alice")
         svc.set("alice", "logging.level", "DEBUG")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        data = yaml.safe_load(config_path.read_text())
+        assert data["logging"]["level"] == "DEBUG"
+
+    def test_set_logging_level_stores_the_normalized_form(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lowercase input is accepted and written as the field's canonical form."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        svc.set("alice", "logging.level", "debug")
         config_path = tmp_path / "profiles" / "alice" / "config.yaml"
         data = yaml.safe_load(config_path.read_text())
         assert data["logging"]["level"] == "DEBUG"
@@ -472,6 +529,23 @@ class TestProfileSet:
         config_path = tmp_path / "profiles" / "alice" / "config.yaml"
         data = yaml.safe_load(config_path.read_text())
         assert data["mcp"]["max_rows"] == 500
+
+    def test_set_never_logs_the_raw_setting_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A config write must not send a supplied secret-shaped value to logs."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+
+        with caplog.at_level("INFO", logger="moneybin.services.profile_service"):
+            svc.set("alice", "sync.oauth_domain", "synthetic-secret-value")
+
+        assert "synthetic-secret-value" not in caplog.text
+        assert "sync.oauth_domain" in caplog.text
 
     def test_set_invalid_key_format_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -503,6 +577,135 @@ class TestProfileSet:
         svc = ProfileService()
         with pytest.raises(ProfileNotFoundError):
             svc.set("ghost", "logging.level", "DEBUG")
+
+    def test_set_undeclared_field_is_refused_and_names_valid_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key no setting reads would be a write that changes nothing."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="server_url"):
+            svc.set("alice", "sync.server_urll", "https://sync.example.test")
+
+        assert config_path.read_text() == before
+
+    def test_set_undeclared_section_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+
+        with pytest.raises(ValueError, match="nosuchsection"):
+            svc.set("alice", "nosuchsection.field", "value")
+
+    def test_set_secret_field_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """config.yaml is plain text; a secret must not land in it."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+
+        with pytest.raises(ValueError, match="secret"):
+            svc.set("alice", "sync.api_key", "synthetic-key-value")
+
+        assert "synthetic-key-value" not in config_path.read_text()
+
+    def test_set_rejected_value_leaves_the_file_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="logging.level"):
+            svc.set("alice", "logging.level", "LOUD")
+
+        assert config_path.read_text() == before
+
+    def test_set_refuses_a_value_outside_the_fields_bounds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The type alone accepts 0; the field's ge=1 must still refuse it."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="mcp.max_rows"):
+            svc.set("alice", "mcp.max_rows", "0")
+
+        assert config_path.read_text() == before
+
+    @pytest.mark.parametrize(
+        ("saved_high", "review"),
+        [
+            # Breaks the rule against the default high threshold (0.95).
+            (None, "0.99"),
+            # Fine against the default; breaks it only against the saved 0.80.
+            ("0.80", "0.85"),
+        ],
+    )
+    def test_set_refuses_a_value_that_breaks_a_cross_field_rule(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        saved_high: str | None,
+        review: str,
+    ) -> None:
+        """Saved, it would fail every later settings load."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        config_path = tmp_path / "profiles" / "alice" / "config.yaml"
+        if saved_high is not None:
+            svc.set("alice", "matching.high_confidence_threshold", saved_high)
+        before = config_path.read_text()
+
+        with pytest.raises(ValueError, match="matching"):
+            svc.set("alice", "matching.review_threshold", review)
+
+        assert config_path.read_text() == before
+
+    def test_set_accepts_the_import_section_by_its_public_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`import` is the name the environment uses; config.yaml must match."""
+        from moneybin.config import MoneyBinSettings
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+
+        svc.set("alice", "import.pdf_preview_size_limit_mb", "50")
+
+        settings = MoneyBinSettings(profile="alice")
+        assert settings.import_.pdf_preview_size_limit_mb == 50
+
+    def test_set_value_is_read_back_by_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The write and the settings load agree on one file."""
+        from moneybin.config import MoneyBinSettings
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.delenv("MONEYBIN_SYNC__SERVER_URL", raising=False)
+        svc = ProfileService()
+        svc.create("alice")
+
+        svc.set("alice", "sync.server_url", "https://sync.example.test")
+
+        settings = MoneyBinSettings(profile="alice")
+        assert settings.sync.server_url == "https://sync.example.test"
 
 
 class TestIsRegistered:

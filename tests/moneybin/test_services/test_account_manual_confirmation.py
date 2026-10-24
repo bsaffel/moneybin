@@ -116,7 +116,7 @@ def test_account_merge_confirmation_binds_affected_manual_identity(
             service.set(
                 "a_b_",
                 target_account_id="b",
-                verify_accept=cli_links._drift_check(db, "a_b_", preview[0]),  # pyright: ignore[reportPrivateUsage]  # test exercises confirmation seam
+                verify_accept=cli_links.merge_drift_check(db, "a_b_", preview[0]),  # pyright: ignore[reportPrivateUsage]  # test exercises confirmation seam
             )
         else:
             mcp_accounts._apply_account_accept("a_b_", "b", grant)  # pyright: ignore[reportPrivateUsage]  # test exercises confirmation seam

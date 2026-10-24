@@ -20,7 +20,13 @@ concurrency:
 jobs:
   review:
     name: Claude Review
-    if: github.actor != 'dependabot[bot]'
+    # Draft PRs get CI but no automated review: a draft is work its author
+    # knows is unfinished. PRs open ready by default so review runs alongside
+    # CI (AGENTS.md → "Pre-commit gate"); `ready_for_review` above reviews a
+    # draft once it leaves draft.
+    if: >-
+      github.actor != 'dependabot[bot]'
+      && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
     permissions:
       contents: read

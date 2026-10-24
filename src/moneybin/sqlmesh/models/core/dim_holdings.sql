@@ -93,16 +93,9 @@ WITH positions AS (
     source_origin,
     source_file,
     extracted_at
-  FROM (
-    SELECT
-      source_origin,
-      source_file,
-      extracted_at,
-      ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at DESC, ingestion_sequence DESC) AS snapshot_rank
-    FROM prep.stg_plaid__investment_holdings_snapshots
-  )
+  FROM prep.stg_plaid__investment_holdings_snapshots
   WHERE
-    snapshot_rank = 1
+    is_newest
 ), provider_reported AS (
   /* Aggregated to the position grain (account, security): a security merge can
      bind two provider security ids in one account onto one canonical id, and a
@@ -415,10 +408,22 @@ WITH positions AS (
 SELECT
   p.account_id, /* FK to core.dim_accounts (grain) */
   p.security_id, /* FK to core.dim_securities (grain) */
+  CASE WHEN wh.is_source_overlap OR wh.is_withheld THEN NULL ELSE lp.source_type END AS price_source, /* Which source_type supplied the close (see core.fct_security_prices); NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
+  CASE
+    WHEN wh.is_source_overlap
+    THEN 'source_overlap'
+    WHEN wh.is_withheld
+    THEN 'withheld'
+    WHEN lp.close IS NULL
+    THEN 'unpriced'
+    WHEN lp.price_date = CURRENT_DATE
+    THEN 'valued'
+    ELSE 'carried_forward'
+  END AS valuation_status, /* valued | carried_forward | unpriced | withheld | source_overlap. Every status either carries a number the reader can rely on or carries none at all — no status publishes a qualified figure. The non-valued statuses stay distinct because each has a different remedy: unpriced wants a price feed; withheld wants the share count reconciled — an unreconciled split recorded, a broker divergence resolved, or a position the broker no longer reports closed out; source_overlap wants one source chosen for the account (accounts set --investment-source-type), and is checked first because a share count measured against a double-counted ledger is a symptom rather than the fault */
+  p.currency_code, /* Denominating currency (one per position) */
   p.quantity, /* Total open units (Σ remaining_quantity); cast back to (28,10) — SUM widens to (38,10) */
   p.cost_basis, /* Total open basis (Σ cost_basis_remaining); cast back to (18,2) — SUM widens to (38,2) */
   p.average_cost, /* cost_basis / quantity; cast wraps the WHOLE division so the result is DECIMAL(28,10), not DOUBLE (DuckDB decimal / promotes to DOUBLE); (28,10) for crypto fractional-unit precision; NULL when quantity is 0 */
-  p.currency_code, /* Denominating currency (one per position) */
   CASE
     WHEN wh.is_source_overlap OR wh.is_withheld
     THEN NULL
@@ -435,35 +440,26 @@ SELECT
       )::DECIMAL(18, 2) - p.cost_basis
     )::DECIMAL(18, 2)
   END AS unrealized_gain, /* market_value less cost basis. NULL whenever market_value is NULL, AND — even on a valued row — whenever any contributing open lot has basis_incomplete: an ACATS-style transfer_in with unknown basis stores a 0.00 cost that is not a real zero, so the subtraction would overstate the gain by the missing basis. market_value stays published (quantity × close is unaffected); only the gain is unknowable. Realized gain is ledger-derived and lives in core.fct_realized_gains */
-  CASE WHEN wh.is_source_overlap OR wh.is_withheld THEN NULL ELSE lp.price_date END AS price_date, /* The date of the close used, which may be earlier than today. NULL whenever market_value is NULL — when no close resolved ('unpriced') and when one did but the figure cannot be trusted ('withheld', 'source_overlap'): a held-back row publishing today's date beside blanked figures reads as "pricing is current, something else is missing", which is the opposite of the truth. The close itself is not lost — it stays queryable in core.fct_security_prices, which is where a support path should look */
-  CASE WHEN wh.is_source_overlap OR wh.is_withheld THEN NULL ELSE lp.source_type END AS price_source, /* Which source_type supplied the close (see core.fct_security_prices); NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
   CASE
     WHEN wh.is_source_overlap OR wh.is_withheld
     THEN NULL
     ELSE CAST(CURRENT_DATE - lp.price_date AS INT)
-  END AS days_since_observed, /* Calendar days between the price used and today (uncategorized_queue.age_days precedent for this CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault. NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
-  CASE
-    WHEN wh.is_source_overlap
-    THEN 'source_overlap'
-    WHEN wh.is_withheld
-    THEN 'withheld'
-    WHEN lp.close IS NULL
-    THEN 'unpriced'
-    WHEN lp.price_date = CURRENT_DATE
-    THEN 'valued'
-    ELSE 'carried_forward'
-  END AS valuation_status, /* valued | carried_forward | unpriced | withheld | source_overlap. Every status either carries a number the reader can rely on or carries none at all — no status publishes a qualified figure. The non-valued statuses stay distinct because each has a different remedy: unpriced wants a price feed; withheld wants the share count reconciled — an unreconciled split recorded, a broker divergence resolved, or a position the broker no longer reports closed out; source_overlap wants one of the account's two source ledgers removed, and is checked first because a share count measured against a double-counted ledger is a symptom rather than the fault */
+  END AS days_since_observed, /* Calendar days between the price used and today (`PendingTxnRow.age_days` uses the same CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault. NULL exactly when price_date is NULL — on 'unpriced', 'withheld', and 'source_overlap' */
   pr.provider_reported_quantity, /* NON-AUTHORITATIVE: the broker's claimed open units in its newest snapshot. Reconciliation reference only — `quantity` above is MoneyBin's figure. NULL = the broker's newest snapshot does not report this position */
   pr.provider_reported_cost_basis, /* NON-AUTHORITATIVE: the broker's claimed cost basis. Never overwrites or feeds `cost_basis` above; system doctor warns when the two diverge */
   pr.provider_reported_value, /* NON-AUTHORITATIVE: the broker's claimed market value. MoneyBin computes `market_value` above independently, as quantity × its own resolved close, and never blends this claim into it — no doctor check reconciles the two yet */
+  CASE WHEN wh.is_source_overlap OR wh.is_withheld THEN NULL ELSE lp.price_date END AS price_date, /* The date of the close used, which may be earlier than today. NULL whenever market_value is NULL — when no close resolved ('unpriced') and when one did but the figure cannot be trusted ('withheld', 'source_overlap'): a held-back row publishing today's date beside blanked figures reads as "pricing is current, something else is missing", which is the opposite of the truth. The close itself is not lost — it stays queryable in core.fct_security_prices, which is where a support path should look */
   pr.provider_reported_as_of, /* Oldest extracted_at among the snapshots summed into the three columns above (MIN, not MAX) — a canonical position spanning multiple broker connections is only as fresh as its stalest contributor; NULL when the broker no longer reports this position */
   GREATEST(
     p.updated_at,
     COALESCE(lp.price_updated_at, p.updated_at),
     COALESCE(psf.newest_snapshot_at, p.updated_at),
-    COALESCE(wh.source_overlap_at, p.updated_at)
-  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots, the resolved close's freshness (market_value advances when a newer close lands), for a broker-reported position the newest snapshot receipt's time (valuation_status flips to 'withheld' when a fresh pull contradicts or omits the position), and for a position in a mixed-source account the newest ledger row behind that overlap (valuation_status flips to 'source_overlap'). The snapshot term keys on the position, not the account, so a purely manual holding in a covered account is not advanced by an unrelated pull; and it uses the snapshot RECEIPT (not the per-position claim), so a pull that DROPS a position still advances its watermark. The overlap term is the one deliberately ACCOUNT-scoped input: the flag it tracks is account-scoped too, so a second-source event on security B flips security A's status without touching any of A's position-scoped timestamps, and folding only those would report A unchanged. It reaches only overlapping accounts — source_overlap_accounts holds no others, so a single-source position joins to NULL and keeps its own watermark. COALESCE folds the LEFT-JOINed price, snapshot and overlap timestamps only when present, so an unpriced, manual, single-source position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. KNOWN LIMITATION: this term folds the overlap's own timestamp only while source_overlap_accounts still flags the account, so updated_at can fall backwards when import_revert clears the overlap by deleting the redundant batch's raw rows — see "Known limitation: dim_holdings can rewind when a source overlap clears" in docs/specs/core-updated-at-convention.md. */
+    COALESCE(wh.source_overlap_at, p.updated_at),
+    COALESCE(acct.investment_source_type_changed_at, p.updated_at)
+  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots, the resolved close's freshness (market_value advances when a newer close lands), for a broker-reported position the newest snapshot receipt's time (valuation_status flips to 'withheld' when a fresh pull contradicts or omits the position), and for a position in a mixed-source account the newest ledger row behind that overlap (valuation_status flips to 'source_overlap'). The snapshot term keys on the position, not the account, so a purely manual holding in a covered account is not advanced by an unrelated pull; and it uses the snapshot RECEIPT (not the per-position claim), so a pull that DROPS a position still advances its watermark. The overlap term is the one deliberately ACCOUNT-scoped input: the flag it tracks is account-scoped too, so a second-source event on security B flips security A's status without touching any of A's position-scoped timestamps, and folding only those would report A unchanged. It reaches only overlapping accounts — source_overlap_accounts holds no others, so a single-source position joins to NULL and keeps its own watermark. COALESCE folds the LEFT-JOINed price, snapshot and overlap timestamps only when present, so an unpriced, manual, single-source position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. A source choice (investment_source_type) clears an overlap without that rewind, because the account's investment_source_type_changed_at is folded here too. KNOWN LIMITATION: the overlap term folds the overlap's own timestamp only while source_overlap_accounts still flags the account, so updated_at can still fall backwards when import_revert clears the overlap by deleting the redundant batch's raw rows — see "Known limitation: dim_holdings can rewind when a source overlap clears" in docs/specs/core-updated-at-convention.md. */
 FROM positions AS p
+LEFT JOIN core.dim_accounts AS acct
+  ON acct.account_id = p.account_id
 LEFT JOIN provider_reported AS pr
   ON pr.account_id = p.account_id AND pr.security_id = p.security_id
 LEFT JOIN position_snapshot_freshness AS psf

@@ -440,3 +440,53 @@ class MatchDecisionsRepo(BaseRepo):
                     in_outer_txn=True,
                 )
             return [match_id for (match_id,) in rows]
+
+    def accept_ids(
+        self,
+        match_ids: tuple[str, ...],
+        *,
+        decided_by: str,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> list[str]:
+        """Accept exactly the supplied pending decisions in caller order.
+
+        Verify every id before the first write so a stale or incomplete batch
+        cannot leave a partial set of audited decisions behind.
+        """
+        if not match_ids:
+            return []
+        if len(set(match_ids)) != len(match_ids):
+            raise ValueError("match_decisions.accept_ids: duplicate match ids")
+        with self._transaction(in_outer_txn=in_outer_txn):
+            placeholders = ", ".join("?" for _ in match_ids)
+            rows = self._db.execute(
+                f"""
+                SELECT match_id, match_status, reversed_at
+                FROM {MATCH_DECISIONS.full_name}
+                WHERE match_id IN ({placeholders})
+                """,  # noqa: S608  # TableRef + generated parameter placeholders
+                list(match_ids),
+            ).fetchall()
+            current = {
+                str(match_id): (status, reversed_at)
+                for match_id, status, reversed_at in rows
+            }
+            invalid = [
+                match_id
+                for match_id in match_ids
+                if current.get(match_id) != ("pending", None)
+            ]
+            if invalid:
+                raise ValueError(
+                    "match_decisions.accept_ids: every match must still be pending"
+                )
+            for match_id in match_ids:
+                self.update_status(
+                    match_id,
+                    status="accepted",
+                    decided_by=decided_by,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+        return list(match_ids)

@@ -7,14 +7,15 @@ exists to make impossible.
 
 The precedence tests are ordered the way resolution is: an override outranks the
 provider cache, an exact cached row outranks the network, and a *weekend*
-resolves back to the preceding Friday from cache alone. A weekday gap
-deliberately does not: see
-``test_a_weekday_gap_is_not_answered_from_an_earlier_cached_day``.
+resolves back to the preceding Friday from cache alone. A weekday gap does so
+only offline, and only when stored publications bracket it as a market
+closure: see ``test_offline_a_bracketed_market_closure_prices_at_the_publication_before_it``
+and ``test_a_weekday_gap_is_not_answered_from_an_earlier_cached_day``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import date
 from decimal import Decimal
 
@@ -31,12 +32,49 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services import currency_service
 from moneybin.services.currency_service import CurrencyService, RateUnavailableError
+from moneybin.tables import (
+    EXCHANGE_RATE_COVERAGE,
+    EXCHANGE_RATE_OVERRIDES,
+    EXCHANGE_RATES,
+    TableRef,
+)
 
 _FRI = date(2026, 3, 13)
 _SAT = date(2026, 3, 14)
 _SUN = date(2026, 3, 15)
 _MON = date(2026, 3, 16)
 _TUE = date(2026, 3, 17)
+
+
+_Restatement = tuple[Database, list[TableRef], str]
+
+
+def _record_restatements(monkeypatch: pytest.MonkeyPatch) -> list[_Restatement]:
+    """Replace ``restate_after_write`` with a recorder of what each write restated."""
+    restated: list[_Restatement] = []
+
+    def record(
+        called_db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        restated.append((called_db, list(inputs), committed_change))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", record)
+    return restated
+
+
+def _fail_restatements(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every post-write restate fail as ``restate_after_write`` does."""
+
+    def fail(
+        _db: Database, _inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        raise UserError(
+            f"The {committed_change} was saved, but the reports that read it "
+            "could not be rebuilt.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+        )
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", fail)
 
 
 @pytest.mark.parametrize("day", [_FRI, _MON, _TUE])
@@ -212,20 +250,10 @@ def test_a_fetched_rate_is_stored_so_the_next_call_reads_the_cache(
     assert row == (Decimal("0.92000000"), "frankfurter")
 
 
-def test_a_newly_fetched_rate_restates_fx_accounting(
+def test_a_newly_fetched_rate_restates_the_rate_spine(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    restated: list[tuple[Database, str]] = []
-
-    def record_restatement(
-        called_db: Database, *, committed_change: str = "setting"
-    ) -> None:
-        restated.append((called_db, committed_change))
-
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
+    restated = _record_restatements(monkeypatch)
     adapter = _StubAdapter(
         RateObservation("USD", "EUR", _MON, Decimal("0.92"), "frankfurter")
     )
@@ -234,24 +262,15 @@ def test_a_newly_fetched_rate_restates_fx_accounting(
     service.resolve_rate("USD", "EUR", _MON)
     service.resolve_rate("USD", "EUR", _MON)
 
-    assert restated == [(db, "exchange rate")]
+    assert restated == [
+        (db, [EXCHANGE_RATES, EXCHANGE_RATE_COVERAGE], "exchange rate")
+    ], "only the fetch that wrote a row restates"
 
 
 def test_a_fetched_rate_remains_cached_when_fx_restatement_fails(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    failure = UserError(
-        "The exchange rate was saved, but derived FX accounting could not be rebuilt.",
-        code=error_codes.REFRESH_MODEL_FAILED,
-    )
-
-    def fail_restatement(_db: Database, *, committed_change: str = "setting") -> None:
-        raise failure
-
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        fail_restatement,
-    )
+    _fail_restatements(monkeypatch)
     service = CurrencyService(
         db,
         adapter=_StubAdapter(
@@ -339,6 +358,259 @@ def test_a_weekday_gap_is_not_answered_from_an_earlier_cached_day(
 
     with pytest.raises(RateUnavailableError):
         service.resolve_rate("USD", "EUR", _TUE)
+
+
+_XMAS_EVE = date(2025, 12, 24)  # Wednesday, ECB's last publication before Christmas
+_BOXING_DAY = date(2025, 12, 26)  # Friday, an ECB holiday
+_HOLIDAY_SATURDAY = date(2025, 12, 27)
+_NEXT_PUBLICATION = date(2025, 12, 29)  # Monday
+
+
+def _cache_christmas(db: Database, *, covered: bool = True) -> None:
+    """The EUR/USD series as ECB published it around Christmas 2025.
+
+    ``covered`` records the range answer that produced it, as a refresh does;
+    without it the two rows are what two separate lookups would leave.
+    """
+    _cache(
+        db,
+        from_currency="EUR",
+        to_currency="USD",
+        rate_date=_XMAS_EVE,
+        rate="1.17870000",
+    )
+    _cache(
+        db,
+        from_currency="EUR",
+        to_currency="USD",
+        rate_date=_NEXT_PUBLICATION,
+        rate="1.17730000",
+    )
+    if covered:
+        CurrencyService(db).record_coverage(
+            "EUR", "USD", _XMAS_EVE, _NEXT_PUBLICATION, "frankfurter"
+        )
+
+
+def test_offline_rows_from_separate_lookups_do_not_prove_a_closure(
+    db: Database,
+) -> None:
+    """Two stored days a few days apart may bracket a day nobody fetched.
+
+    Only a recorded provider answer covering the day proves it closed;
+    otherwise an ordinary weekday would be priced from the day before.
+    """
+    _cache_christmas(db, covered=False)
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+
+def test_a_fetch_that_resolves_back_records_the_closure_it_proves(
+    db: Database,
+) -> None:
+    """The provider answering Boxing Day with the 24th covers the days between.
+
+    A later cache-only read can then price that day without the network.
+    """
+    _cache_christmas(db, covered=False)
+    adapter = _StubAdapter(
+        RateObservation("EUR", "USD", _XMAS_EVE, Decimal("1.1787"), "frankfurter")
+    )
+    CurrencyService(db, adapter=adapter).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    resolved = CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    assert resolved.rate_date == _XMAS_EVE
+
+
+@pytest.mark.parametrize("requested", [_BOXING_DAY, _HOLIDAY_SATURDAY])
+def test_offline_a_bracketed_market_closure_prices_at_the_publication_before_it(
+    db: Database, requested: date
+) -> None:
+    """The holiday is proven by the publications either side of it, not guessed.
+
+    The weekend hop from Saturday lands on Boxing Day, which has no row. The
+    24th and the 29th sit five days apart — inside the closure bound — so the
+    cache can say the market was shut rather than unfetched, and the rate
+    names the day it was actually published.
+    """
+    _cache_christmas(db)
+
+    resolved = CurrencyService(db).resolve_rate("EUR", "USD", requested)
+
+    assert resolved.requested_date == requested
+    assert resolved.rate_date == _XMAS_EVE
+    assert resolved.rate == Decimal("1.17870000")
+    assert resolved.source == "frankfurter"
+
+
+def test_offline_a_closure_reads_the_override_on_the_publication_it_carries(
+    db: Database,
+) -> None:
+    """A correction to the 24th prices the closure carried from the 24th.
+
+    An override filed on a day inside the gap answers that day alone: it says
+    nothing about whether the market was open, so it neither anchors nor
+    breaks the bracket.
+    """
+    _cache_christmas(db)
+    service = CurrencyService(db, actor="test")
+    service.set_override("EUR", "USD", _XMAS_EVE, Decimal("1.18"), note=None)
+    service.set_override("EUR", "USD", date(2025, 12, 25), Decimal("9.99"), note=None)
+
+    resolved = service.resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    assert resolved.rate == Decimal("1.18")
+    assert resolved.source == "override"
+    assert resolved.rate_date == _XMAS_EVE
+
+
+def test_offline_a_closure_carries_the_rate_of_the_provider_that_proved_it(
+    db: Database,
+) -> None:
+    """The provider whose answer and rows prove the closure prices it.
+
+    A second provider wrote the 24th later, with a different rate, and holds
+    nothing nearer than mid-January: its cache is sparse there, not closed.
+    The carried rate is the proving provider's, not the newest write.
+    """
+    _cache_christmas(db)
+    db.execute(
+        """
+        INSERT INTO raw.exchange_rates
+            (from_currency, to_currency, rate_date, rate, source_type, loaded_at)
+        VALUES ('EUR', 'USD', ?, ?, 'exchangerate_host', NOW() + INTERVAL '1' DAY)
+        """,
+        [_XMAS_EVE, Decimal("1.20000000")],
+    )
+    _cache(
+        db,
+        from_currency="EUR",
+        to_currency="USD",
+        rate_date=date(2026, 1, 15),
+        rate="1.21000000",
+        source_type="exchangerate_host",
+    )
+
+    resolved = CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+    assert resolved.rate_date == _XMAS_EVE
+    assert resolved.rate == Decimal("1.17870000")
+    assert resolved.source == "frankfurter"
+
+
+def test_offline_another_providers_coverage_does_not_prove_a_closure(
+    db: Database,
+) -> None:
+    """Coverage from one provider cannot vouch for a gap in another's rows.
+
+    frankfurter's rows bracket Boxing Day five days apart but it recorded no
+    answer; exchangerate_host recorded the answer but its own publications sit
+    nine days apart. Mixed together they would read as a proven closure. Kept
+    apart, neither provider proves one, and the day stays unpriced.
+    """
+    _cache_christmas(db, covered=False)
+    for rate_date, rate in (
+        (date(2025, 12, 20), "1.17000000"),
+        (_NEXT_PUBLICATION, "1.17730000"),
+    ):
+        _cache(
+            db,
+            from_currency="EUR",
+            to_currency="USD",
+            rate_date=rate_date,
+            rate=rate,
+            source_type="exchangerate_host",
+        )
+    CurrencyService(db).record_coverage(
+        "EUR", "USD", date(2025, 12, 20), _NEXT_PUBLICATION, "exchangerate_host"
+    )
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("EUR", "USD", _BOXING_DAY)
+
+
+def test_offline_a_gap_wider_than_a_market_closure_stays_unpriced(
+    db: Database,
+) -> None:
+    """Eight days between publications is likelier a hole than a closed market."""
+    _cache(db, rate_date=date(2026, 3, 2), rate="0.92000000")
+    _cache(db, rate_date=date(2026, 3, 10), rate="0.93000000")
+    CurrencyService(db).record_coverage(
+        "USD", "EUR", date(2026, 3, 2), date(2026, 3, 10), "frankfurter"
+    )
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("USD", "EUR", date(2026, 3, 4))
+
+
+def test_offline_a_gap_with_no_later_publication_stays_unpriced(
+    db: Database,
+) -> None:
+    """Past the newest stored rate nothing proves the market was closed."""
+    _cache(
+        db,
+        from_currency="EUR",
+        to_currency="USD",
+        rate_date=_XMAS_EVE,
+        rate="1.17870000",
+    )
+
+    with pytest.raises(RateUnavailableError):
+        CurrencyService(db).resolve_rate("EUR", "USD", _HOLIDAY_SATURDAY)
+
+
+def test_online_a_bracketed_gap_asks_the_provider_rather_than_the_cache(
+    db: Database,
+) -> None:
+    """The provider can tell a holiday from a day nobody fetched; the cache cannot."""
+    _cache_christmas(db)
+    adapter = _StubAdapter(
+        RateObservation("EUR", "USD", _XMAS_EVE, Decimal("1.1787"), "frankfurter")
+    )
+
+    resolved = CurrencyService(db, adapter=adapter).resolve_rate(
+        "EUR", "USD", _BOXING_DAY
+    )
+
+    assert adapter.calls == 1
+    assert resolved.rate_date == _XMAS_EVE
+
+
+def test_a_read_provider_list_is_recorded_for_cache_only_reads(db: Database) -> None:
+    """Refresh's verdict outlives the process, so a report read can quote it."""
+    online = CurrencyService(db, adapter=_StubAdapter(None))
+    assert online.unsupported("AED", "USD") == {"AED"}
+
+    assert CurrencyService(db).unsupported("AED", "USD") == {"AED"}
+
+
+def test_a_recorded_provider_list_is_replaced_not_appended(db: Database) -> None:
+    """A currency the provider stops carrying stops counting as published."""
+    CurrencyService(
+        db, adapter=_StubAdapter(None, supported=frozenset({"USD", "BGN"}))
+    ).unsupported("BGN")
+    CurrencyService(
+        db, adapter=_StubAdapter(None, supported=frozenset({"USD", "EUR"}))
+    ).unsupported("BGN")
+
+    assert CurrencyService(db).unsupported("BGN", "USD") == {"BGN"}
+
+
+def test_with_no_recorded_provider_list_nothing_is_claimed_unsupported(
+    db: Database,
+) -> None:
+    """``None`` — unknown — is not the empty set, offline as online."""
+    assert CurrencyService(db).unsupported("AED", "USD") is None
+
+
+def test_an_unreadable_provider_list_records_nothing(db: Database) -> None:
+    """A dropped connection must not erase the list a previous read recorded."""
+    CurrencyService(db, adapter=_StubAdapter(None)).unsupported("AED")
+
+    assert CurrencyService(db, adapter=_OfflineAdapter()).unsupported("AED") is None
+    assert CurrencyService(db).unsupported("AED") == {"AED"}
 
 
 def test_an_override_wins_the_day_a_holiday_fetch_resolves_back_to(
@@ -755,25 +1027,26 @@ def test_a_lowercase_override_is_found_by_an_uppercase_lookup(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One canonical spelling, or a correction is unreachable from the read path."""
-    restated: list[Database] = []
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        restated.append,
-    )
+    restated = _record_restatements(monkeypatch)
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
     service.set_override(" usd ", "eur", _MON, Decimal("0.95"), note=None)
 
     assert service.resolve_rate("USD", "EUR", _MON).rate == Decimal("0.95")
-    assert len(restated) == 1
+    assert restated == [(db, [EXCHANGE_RATE_OVERRIDES], "exchange rate")]
 
 
-def test_delete_override_returns_the_date_to_the_provider_rate(db: Database) -> None:
+def test_delete_override_returns_the_date_to_the_provider_rate(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
     _cache(db, rate="0.92000000")
     service.set_override("USD", "EUR", _MON, Decimal("0.95"), note="typo")
 
+    restated = _record_restatements(monkeypatch)
+
     assert service.delete_override("USD", "EUR", _MON) is True
 
+    assert restated == [(db, [EXCHANGE_RATE_OVERRIDES], "exchange rate")]
     resolved = service.resolve_rate("USD", "EUR", _MON)
     assert resolved.rate == Decimal("0.92000000")
     assert resolved.source == "frankfurter"
@@ -783,11 +1056,7 @@ def test_delete_override_reports_that_there_was_nothing_to_delete(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A silent success reads as 'the override is gone' when there never was one."""
-    restated: list[Database] = []
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        restated.append,
-    )
+    restated = _record_restatements(monkeypatch)
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
 
     assert service.delete_override("USD", "EUR", _MON) is False
@@ -797,18 +1066,7 @@ def test_delete_override_reports_that_there_was_nothing_to_delete(
 def test_override_remains_saved_when_fx_restatement_fails(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    failure = UserError(
-        "The setting was saved, but derived FX accounting could not be rebuilt.",
-        code=error_codes.REFRESH_MODEL_FAILED,
-    )
-
-    def fail_restatement(_db: Database) -> None:
-        raise failure
-
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        fail_restatement,
-    )
+    _fail_restatements(monkeypatch)
     service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
 
     with pytest.raises(UserError) as caught:

@@ -17,6 +17,7 @@ from moneybin.sqlmesh_registry import (
     relations_downstream_of,
     relations_upstream_of,
 )
+from tests.moneybin.sqlmesh_model_helpers import load_model
 
 
 def _built_relations(db: Database) -> set[str]:
@@ -214,9 +215,6 @@ def test_model_reads_match_the_dependencies_sqlmesh_parses() -> None:
     connectionlessly (the ``report_class_derivation`` precedent), so CI can
     hold the cheap runtime scan to the expensive parser's answer.
     """
-    from sqlmesh.core.dialect import parse as sqlmesh_parse
-    from sqlmesh.core.model import load_sql_based_model
-
     from moneybin.sqlmesh_registry import (
         _MODELS_DIR,  # pyright: ignore[reportPrivateUsage]  # the scan under test
         _relations_read_by_model,  # pyright: ignore[reportPrivateUsage]
@@ -224,11 +222,7 @@ def test_model_reads_match_the_dependencies_sqlmesh_parses() -> None:
 
     scanned = _relations_read_by_model()
     for path in sorted(_MODELS_DIR.rglob("*.sql")):
-        model = load_sql_based_model(
-            sqlmesh_parse(path.read_text(), default_dialect="duckdb"),
-            path=path,
-            dialect="duckdb",
-        )
+        model = load_model(path)
         name = model.name.lower()
         parsed = {
             dep.replace('"', "").lower()
@@ -254,9 +248,6 @@ def test_model_kind_matches_the_kind_sqlmesh_parses() -> None:
     CI can hold the cheap runtime scan to the expensive parser's answer, exactly
     as ``test_model_reads_match_the_dependencies_sqlmesh_parses`` does for reads.
     """
-    from sqlmesh.core.dialect import parse as sqlmesh_parse
-    from sqlmesh.core.model import load_sql_based_model
-
     from moneybin.sqlmesh_registry import (
         _MODELS_DIR,  # pyright: ignore[reportPrivateUsage]  # the scan under test
         _model_graph,  # pyright: ignore[reportPrivateUsage]
@@ -264,11 +255,7 @@ def test_model_kind_matches_the_kind_sqlmesh_parses() -> None:
 
     graph = _model_graph()
     for path in sorted(_MODELS_DIR.rglob("*.sql")):
-        model = load_sql_based_model(
-            sqlmesh_parse(path.read_text(), default_dialect="duckdb"),
-            path=path,
-            dialect="duckdb",
-        )
+        model = load_model(path)
         name = model.name.lower()
         assert graph[name].kind == model.kind.name, (
             f"{name}: scan says {graph[name].kind}, SQLMesh parses {model.kind.name}"

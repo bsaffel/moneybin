@@ -1,0 +1,1 @@
+MCP `reviews_decide` now returns `status: "error"` (code `mutation_constraint_violation`) when every auto-rule accept in a batch is refused by the broad or short-pattern guard, instead of an `ok` response with nothing applied; per-item results and reasons are kept, and a partially applied batch still returns `ok`.

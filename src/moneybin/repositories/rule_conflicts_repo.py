@@ -64,6 +64,19 @@ class RuleConflictsRepo(BaseRepo):
 
     table_ref = RULE_CONFLICTS
     pk_columns = ("conflict_id",)
+    # Snapshots of a rule's own category/subcategory text (existing_* from the
+    # live rule, proposed_* from the refused proposal). This repo uses the
+    # generic undo_event unmodified, so a restore of `set`'s DELETE-undo or
+    # `resolve`'s UPDATE-undo writes these columns back verbatim — the same
+    # #547 restore-path exposure as categorization_rules/proposed_rules,
+    # found by re-sweeping every BaseRepo table for a category/subcategory
+    # text column rather than trusting either the issue's or #547's own list.
+    _CATEGORY_TEXT_COLUMNS = (
+        "existing_category",
+        "existing_subcategory",
+        "proposed_category",
+        "proposed_subcategory",
+    )
 
     def _fetch_row(self, conflict_id: str) -> dict[str, Any] | None:
         return self._fetch_one(

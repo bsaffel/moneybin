@@ -111,7 +111,7 @@ class CaseOutcome:
 
     @property
     def passed(self) -> bool:
-        """Return whether every expected dimension passed."""
+        """Whether every expected dimension passed."""
         return (
             self.selection
             and self.arguments
@@ -192,7 +192,7 @@ class EvalComparison:
 
     @property
     def failed_gates(self) -> tuple[str, ...]:
-        """Return every regressed acceptance dimension."""
+        """Every regressed acceptance dimension."""
         failures: list[str] = []
         if self.selection_delta < 0:
             failures.append("selection")
@@ -212,7 +212,7 @@ class EvalComparison:
 
     @property
     def passed(self) -> bool:
-        """Return whether the candidate satisfies every comparison gate."""
+        """Whether the candidate satisfies every comparison gate."""
         return not self.failed_gates
 
     def to_dict(self) -> dict[str, object]:

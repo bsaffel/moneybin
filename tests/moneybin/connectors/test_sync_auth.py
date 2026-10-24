@@ -13,11 +13,13 @@ import keyring.errors
 import pytest
 from pydantic import SecretStr
 
+from moneybin import error_codes
 from moneybin.connectors.sync_auth import SyncAuthService
 from moneybin.connectors.sync_models import (
     DeviceAuthorizationChallenge,
     LoginPollResult,
 )
+from moneybin.errors import UserError
 from moneybin.secrets import SecretStore
 
 
@@ -65,7 +67,9 @@ def _service(
     client: object,
     store: SecretStore,
     lock_path: Path,
+    server_url: str = "https://a.example.test",
 ) -> SyncAuthService:
+    client.server_url = server_url  # type: ignore[attr-defined]  # MagicMock client
     return SyncAuthService(
         client=client,  # type: ignore[arg-type]
         secrets=store,
@@ -432,6 +436,7 @@ def test_status_upgrades_stored_session_without_poll_schedule_fields(
             "expiration": "2026-07-19T00:15:00+00:00",
             "device_code": "secret-device-code",
             "error_code": None,
+            "server_url": "https://a.example.test",
         }
     })
     client = MagicMock()
@@ -456,7 +461,7 @@ def test_slow_down_persists_and_enforces_increased_poll_interval(
     tmp_path: Path,
 ) -> None:
     now = [datetime(2026, 7, 19, tzinfo=UTC)]
-    client = MagicMock()
+    client = MagicMock(server_url="https://a.example.test")
     client.begin_login.return_value = _challenge(interval=5)
     client.poll_login.side_effect = [
         LoginPollResult(status="slow_down"),
@@ -494,7 +499,7 @@ def test_expired_session_never_calls_provider(
     patched_keyring: _PatchedKeyring,
     tmp_path: Path,
 ) -> None:
-    client = MagicMock()
+    client = MagicMock(server_url="https://a.example.test")
     client.begin_login.return_value = _challenge()
     times = iter([
         datetime(2026, 7, 19, tzinfo=UTC),
@@ -556,8 +561,16 @@ def test_failed_atomic_write_preserves_prior_collection(
     before = dict(patched_keyring.values)
     patched_keyring.fail_next_write = True
 
-    with pytest.raises(Exception, match="No OS keyring backend"):
+    from moneybin import error_codes
+    from moneybin.errors import classify_user_error
+    from moneybin.secrets import SecretStorageUnavailableError
+
+    with pytest.raises(SecretStorageUnavailableError) as error:
         service.begin()
+    classified = classify_user_error(error.value)
+    assert classified is not None
+    assert classified.code == error_codes.INFRA_SETUP_REQUIRED
+    assert "Unable to store secret" in classified.message
 
     assert patched_keyring.values == before
     assert first.auth_session_id in json.loads(next(iter(before.values())))
@@ -704,3 +717,78 @@ def test_profile_namespaces_do_not_share_sessions(
 
     assert set(patched_keyring.values) == {("moneybin-bob", "SYNC__AUTH_SESSIONS")}
     assert bob.status(bob_session.auth_session_id).status == "pending"
+
+
+def test_begin_reuses_a_supplied_challenge(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    """The address check already holds a device code; begin must not ask again."""
+    client = MagicMock()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    result = service.begin(challenge=_challenge())
+
+    client.begin_login.assert_not_called()
+    assert result.status == "pending"
+    assert result.user_code == "ABCD-EFGH"
+
+
+def test_status_never_sends_a_device_code_to_a_different_server(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    """A device code the user approves at one server would mint tokens for another."""
+    issuer_client = MagicMock()
+    issuer_client.begin_login.return_value = _challenge()
+    store = SecretStore(profile="alice")
+    lock_path = tmp_path / "alice.sync-auth"
+    started = _service(client=issuer_client, store=store, lock_path=lock_path).begin()
+    other_client = MagicMock()
+    other = _service(
+        client=other_client,
+        store=store,
+        lock_path=lock_path,
+        server_url="https://b.example.test",
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        other.status(started.auth_session_id)
+
+    assert excinfo.value.code == error_codes.SYNC_AUTH_SESSION_INVALID
+    other_client.poll_login.assert_not_called()
+
+
+def test_status_never_sends_a_device_code_with_no_recorded_server(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    """A session stored before sessions recorded their server may be another's."""
+    auth_session_id = "syncauth_unbound"
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps({
+        auth_session_id: {
+            "auth_session_id": auth_session_id,
+            "status": "pending",
+            "user_code": "ABCD-EFGH",
+            "verification_url": "https://auth.example/activate",
+            "expiration": "2026-07-19T00:15:00+00:00",
+            "device_code": "secret-device-code",
+            "error_code": None,
+        }
+    })
+    client = MagicMock()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        service.status(auth_session_id)
+
+    assert excinfo.value.code == error_codes.SYNC_AUTH_SESSION_INVALID
+    client.poll_login.assert_not_called()

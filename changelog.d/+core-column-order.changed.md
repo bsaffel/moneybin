@@ -1,0 +1,1 @@
+Every `core` table and view now lists its columns in one order — ids, then text, numbers, flags, dates, and timestamps — so `SELECT *`, `sql_query`, and exports return reordered columns for 13 of them, including `fct_transactions`, `dim_accounts`, `fct_balances_daily`, and `dim_holdings`. Column names, types, and values are unchanged; read columns by name, not position.

@@ -140,7 +140,7 @@ def test_the_scan_reaches_the_payloads_it_is_meant_to_guard() -> None:
     assert {
         "ReportResultPayload",
         "ImportInboxSyncPayload",
-        "NetWorthSnapshotPayload",
+        "ReportCatalogPayload",
         "ExportDestinationsOutput",
         "ReportResult",
     } <= carrying

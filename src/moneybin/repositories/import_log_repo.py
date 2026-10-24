@@ -1,22 +1,28 @@
-"""``ImportLogRepo`` — batch-lifecycle bookkeeping over ``raw.import_log``.
+"""``ImportLogRepo`` — batch-lifecycle bookkeeping over ``app.import_log``.
 
 Both tabular and OFX import paths call these methods to create batches
 (``begin_import``), finalize them with row counts (``finalize_import``),
 query history (``get_import_history``), and check for prior imports of a
-source file (``find_existing_import``).
+source file (``find_existing_import``). ``open_import``/``close_import``/
+``mark_reverted`` cover the callers that don't fit that shape (see their
+docstrings).
 
-``raw.import_log`` is not a protected ``app.*`` table under
-``docs/specs/app-integrity-invariant.md`` — it is raw ingestion bookkeeping
-the import pipeline writes to itself, not user-editable app state — so this
-repo deliberately does NOT subclass ``BaseRepo``: no paired audit row, no undo
+``app.import_log`` is bookkeeping the import pipeline writes to itself, not
+user-editable app state, so it is not a *protected* ``app.*`` table under
+``docs/specs/app-integrity-invariant.md`` Invariant 10 — this repo
+deliberately does NOT subclass ``BaseRepo``: no paired audit row, no undo
 dispatch. It lives under ``repositories/`` anyway, beside ``ImportsRepo``
 (which owns the ``app.imports`` labels overlay for the same logical entity),
 because "batch-lifecycle bookkeeping over one table" is exactly what every
 other repo in this package does — the audit/undo machinery is what a
 protected ``app.*`` mutation additionally needs, not what makes a class a
-repo. Whether ``raw.import_log`` should move to ``app.import_log`` is a
-separate, later decision (MB-255); this class owns the table wherever it
-lives.
+repo. Every write to this table still routes through this file (or
+``base.py``/``audit_service.py``/a migration script) — the same caller
+allowlist Invariant 10's lint rule enforces for protected tables — because
+MB-255 moved the table into ``app``, where the lint derives its protected set
+from every ``app.*`` ``TableRef`` and would otherwise flag a raw mutation
+written anywhere else (as it did for the two call sites this repo's
+``open_import``/``close_import``/``mark_reverted`` methods replaced).
 
 The module is also the single source of truth for which raw tables a given
 source_type populates — see ``REVERT_TABLES`` below.
@@ -109,7 +115,7 @@ class ImportHistoryPage:
 
 
 class ImportLogRepo:
-    """Batch-lifecycle bookkeeping over ``raw.import_log`` (see module docstring)."""
+    """Batch-lifecycle bookkeeping over ``app.import_log`` (see module docstring)."""
 
     def __init__(self, db: Database) -> None:
         """Bind to an open Database connection."""
@@ -175,6 +181,83 @@ class ImportLogRepo:
         logger.info(f"Created import batch: {import_id[:8]}...")
         return import_id
 
+    def open_import(
+        self,
+        import_id: str,
+        *,
+        source_file: str,
+        source_type: str,
+        source_origin: str,
+        account_names: list[str],
+        format_name: str | None = None,
+        format_source: str | None = None,
+    ) -> None:
+        """Create an import_log row in 'importing' state under a caller-minted id.
+
+        For callers that mint their own import_id before the row exists and
+        whose source_type sits outside REVERT_TABLES — gsheet pulls, whose
+        drift-vs-revert lifecycle (``app.gsheet_connections.status``) is
+        distinct from the tabular/OFX revert path. Most callers want
+        ``begin_import`` instead: it mints the id itself and validates
+        source_type against REVERT_TABLES.
+        """
+        self._db.execute(
+            f"""
+            INSERT INTO {IMPORT_LOG.full_name} (
+                import_id, source_file, source_type, source_origin,
+                format_name, format_source, account_names, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'importing')
+            """,
+            [
+                import_id,
+                source_file,
+                source_type,
+                source_origin,
+                format_name,
+                format_source,
+                json.dumps(account_names),
+            ],
+        )
+
+    def close_import(
+        self,
+        import_id: str,
+        *,
+        status: Literal["complete", "failed"],
+        rows_imported: int,
+    ) -> None:
+        """Finalize an import_log row opened via ``open_import``.
+
+        Narrower than ``finalize_import``: gsheet pulls carry no
+        rejection/format-detection metadata and never close 'partial'.
+        """
+        self._db.execute(
+            f"""
+            UPDATE {IMPORT_LOG.full_name}
+               SET status = ?,
+                   rows_imported = ?,
+                   completed_at = CURRENT_TIMESTAMP
+             WHERE import_id = ?
+            """,
+            [status, rows_imported, import_id],
+        )
+
+    def mark_reverted(self, import_id: str) -> None:
+        """Stamp an import_log row 'reverted' with a revert timestamp.
+
+        Called by ``ImportService.revert_confirmed`` inside its own
+        transaction, after the batch's raw rows have been deleted.
+        """
+        self._db.execute(
+            f"""
+            UPDATE {IMPORT_LOG.full_name} SET
+                status = 'reverted',
+                reverted_at = CURRENT_TIMESTAMP
+            WHERE import_id = ?
+            """,
+            [import_id],
+        )
+
     def update_format(
         self,
         import_id: str,
@@ -188,7 +271,7 @@ class ImportLogRepo:
         it in there. PDFs route AFTER ``begin_import`` so the format is unknown
         at that point — this helper closes the observability gap by stamping
         ``format_name`` and ``format_source`` once the routing decision is in.
-        Without it every PDF entry in ``raw.import_log`` has NULL format
+        Without it every PDF entry in ``app.import_log`` has NULL format
         columns and users can't tell whether a replay or auto-derive served
         that import.
         """

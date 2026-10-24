@@ -711,6 +711,11 @@ def _upsert_settings(
         archived_at=None,
         include_in_net_worth=True,
         default_cost_basis_method=None,
+        investment_source_type=None,
+        investment_source_type_changed_at=None,
+        archived_changed_at=None,
+        currency_code_changed_at=None,
+        default_cost_basis_method_changed_at=None,
         actor="cli",
     )
 

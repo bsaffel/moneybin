@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 from moneybin.cli.main import app
 from moneybin.cli.output import UNKNOWN_CURRENCY
 from moneybin.cli.render import MINUS
-from moneybin.services.demo_service import DemoResult
+from moneybin.services.demo_service import DemoCurrencySegment, DemoResult
 
 runner = CliRunner()
 
@@ -39,10 +39,8 @@ def _fake_result(**overrides: Any) -> DemoResult:
     return dataclasses.replace(base, **overrides)
 
 
-def _segment(code: str, net_worth: str) -> Any:
-    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
-
-    return NetWorthCurrencySegment(
+def _segment(code: str | None, net_worth: str) -> DemoCurrencySegment:
+    return DemoCurrencySegment(
         currency_code=code,
         net_worth=Decimal(net_worth),
         total_assets=Decimal(net_worth),
@@ -78,6 +76,23 @@ def test_demo_runs_and_prints_networth(mocker: Any) -> None:
 
 
 @pytest.mark.unit
+def test_demo_labels_the_single_currency_net_worth_too(mocker: Any) -> None:
+    """Requirement 9: a single-currency total still names its currency.
+
+    The single-total branch printed `Net worth: 211,413.05` with no currency,
+    unlike the multi-currency branch's `Net worth (EUR):` — `per_currency`
+    always carries the one segment behind the combined scalar, so the label
+    is available without inventing anything.
+    """
+    _patch_service(mocker, _fake_result())
+
+    result = runner.invoke(app, ["demo", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Net worth (USD):" in result.output
+
+
+@pytest.mark.unit
 def test_demo_formats_its_headline_the_way_networth_does(mocker: Any) -> None:
     """Requirements 3 and 11: one labelled block, one money formatter.
 
@@ -90,8 +105,9 @@ def test_demo_formats_its_headline_the_way_networth_does(mocker: Any) -> None:
     result = runner.invoke(app, ["demo", "--yes"])
 
     assert result.exit_code == 0, result.output
-    assert "EUR: 29,668.74" in result.output
-    assert f"GBP: {MINUS}1,278.75" in result.output
+    assert "Net worth (EUR):" in result.output
+    assert "29,668.74" in result.output
+    assert f"{MINUS}1,278.75" in result.output
 
 
 @pytest.mark.unit
@@ -106,6 +122,21 @@ def test_demo_json_uses_standard_envelope(mocker: Any) -> None:
     assert envelope["data"]["profile"] == "demo"
     assert envelope["data"]["net_worth"] == "12345.67"
     assert envelope["data"]["transaction_count"] == 900
+
+
+@pytest.mark.unit
+def test_demo_json_never_prompts_for_an_existing_demo_profile(mocker: Any) -> None:
+    """Agents cannot answer a rebuild prompt, so JSON refuses before a write."""
+    svc = _patch_service(mocker, _fake_result())
+    svc.profile_has_data.return_value = True
+    confirm = mocker.patch("typer.confirm")
+
+    result = runner.invoke(app, ["demo", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["error"] is not None
+    confirm.assert_not_called()
+    svc.run.assert_not_called()
 
 
 @pytest.mark.unit
@@ -152,21 +183,28 @@ def test_demo_json_carries_null_scalar_and_per_currency(mocker: Any) -> None:
 
 
 @pytest.mark.unit
-def test_demo_renders_the_unknown_currency_segment(mocker: Any) -> None:
-    """`reports.net_worth` pools unknown-currency accounts into a NULL segment.
-
-    Both its code and its totals are nullable, so rendering them raw prints a
-    bare "None" — or raises, formatting a null Decimal — at the headline.
-    """
-    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
-
-    unknown = NetWorthCurrencySegment(
-        currency_code=None,
-        net_worth=None,
-        total_assets=None,
-        total_liabilities=None,
-        account_count=1,
+def test_demo_json_doctor_failure_exits_nonzero(mocker: Any) -> None:
+    """JSON carries the same failed doctor outcome and process signal as text."""
+    _patch_service(
+        mocker,
+        _fake_result(doctor_failing=1, doctor_failing_names=["schema"]),
     )
+
+    result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["data"]["doctor_failing"] == 1
+
+
+@pytest.mark.unit
+def test_demo_renders_the_unknown_currency_segment(mocker: Any) -> None:
+    """`reports.net_worth_currencies` pools unknown-currency accounts into one segment.
+
+    Only its currency_code is null — the summed totals over that segment's own
+    accounts are real numbers (core:net_worth_currencies.total_assets is a
+    SUM, never NULL, for a group that exists at all).
+    """
+    unknown = _segment(None, "5.00")
     _patch_service(
         mocker,
         _fake_result(
@@ -186,24 +224,16 @@ def test_demo_renders_the_unknown_currency_segment(mocker: Any) -> None:
 
 
 @pytest.mark.unit
-def test_demo_json_null_segment_stays_null(mocker: Any) -> None:
-    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
-
+def test_demo_json_unknown_segment_carries_a_null_currency_code(
+    mocker: Any,
+) -> None:
     _patch_service(
         mocker,
         _fake_result(
             net_worth=None,
             total_assets=None,
             total_liabilities=None,
-            per_currency=[
-                NetWorthCurrencySegment(
-                    currency_code=None,
-                    net_worth=None,
-                    total_assets=None,
-                    total_liabilities=None,
-                    account_count=1,
-                )
-            ],
+            per_currency=[_segment(None, "5.00")],
         ),
     )
     result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
@@ -212,9 +242,9 @@ def test_demo_json_null_segment_stays_null(mocker: Any) -> None:
     assert envelope["data"]["per_currency"] == [
         {
             "currency_code": None,
-            "net_worth": None,
-            "total_assets": None,
-            "total_liabilities": None,
+            "net_worth": "5.00",
+            "total_assets": "5.00",
+            "total_liabilities": "0.00",
             "account_count": 1,
         }
     ]
@@ -319,8 +349,27 @@ def test_demo_quiet_suppresses_status_but_not_the_answer(mocker: Any) -> None:
     # The answer is the data — never suppressed.
     assert "12,345.67" in result.stdout
     # Status chatter is.
-    assert "Demo profile" not in result.output
+    assert "Demo profile ready" in result.output
     assert "Try next" not in result.output
+
+
+@pytest.mark.unit
+def test_demo_text_receipt_names_the_generated_persona_seed_and_counts(
+    mocker: Any,
+) -> None:
+    """The unpaged receipt must identify the dataset whose answer it prints."""
+    _patch_service(mocker, _fake_result(persona="family", seed=81))
+
+    result = runner.invoke(app, ["demo", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Profile:" in result.stdout
+    assert "Persona:" in result.stdout
+    assert "family" in result.stdout
+    assert "Seed:" in result.stdout
+    assert "81" in result.stdout
+    assert "Transactions saved:" in result.stdout
+    assert "900" in result.stdout
 
 
 @pytest.mark.unit
@@ -329,5 +378,17 @@ def test_demo_announces_the_default_profile_switch(mocker: Any) -> None:
     _patch_service(mocker, _fake_result(previous_default="personal"))
     result = runner.invoke(app, ["demo", "--yes"])
     assert result.exit_code == 0, result.output
-    assert "Default profile is now 'demo'" in result.output
+    assert "Default profile is now demo" in result.output
     assert "moneybin profile switch personal" in result.output
+
+
+@pytest.mark.unit
+def test_demo_receipt_names_where_it_wrote_the_inbox(mocker: Any) -> None:
+    """The inbox lives outside the data home; the receipt says where."""
+    from pathlib import Path
+
+    _patch_service(mocker, _fake_result(inbox_dir=Path("/synthetic/inbox-root/demo")))
+    result = runner.invoke(app, ["demo", "--yes"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    assert "Import inbox:" in result.stdout
+    assert "/synthetic/inbox-root/demo" in result.stdout

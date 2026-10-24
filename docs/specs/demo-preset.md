@@ -10,6 +10,17 @@ M3A (Productization & Distribution — evaluator/testing surface; a
 first-public-release deliverable per the "quiet distribution" step of
 [`roadmap.md`](../roadmap.md)).
 
+> **Superseded mechanism (2026-09-19):** every reference below to
+> `NetworthService.current()`, `moneybin reports networth`, and
+> `NetWorthSnapshotPayload` names code
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md)
+> deleted — the service, the two service-backed routes, and
+> `privacy/payloads/networth.py`. `DemoService` now reads
+> `core:net_worth_currencies` through the report catalog and builds
+> `per_currency` from its rows. The step order, the doctor gate, and the
+> "judge success on `per_currency`, never on the scalar" rule are unchanged;
+> only the call that produces those rows moved.
+
 ## Goal
 
 Give an evaluator a single command — `moneybin demo` — that takes a fresh

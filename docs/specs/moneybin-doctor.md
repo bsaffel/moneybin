@@ -101,7 +101,18 @@ The `account_id` scoping is load-bearing in both. A source-native id is unique o
 
 Remedy: `moneybin refresh --step match --step transform` proposes the pairs and reflects any auto-merges into the ledger; `moneybin review --type matches` decides the rest. An accepted account-link merge now re-runs matching automatically (`AccountLinksService.rematch_after_merge()`), so this check should only fire on ledgers whose merges predate that behavior, or where a match pass failed.
 
-**`categorization_coverage`** — What percentage of the transactions that need a category have one. The population is the one `core.uncategorized_queue` is drawn from — confirmed transfer legs, archived accounts, and transactions whose account never resolved are excluded — so the ratio measures work `moneybin review` will actually offer, and it agrees with `moneybin transactions categorize stats`. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
+**`categorization_coverage`** — What percentage of the transactions that need a category have one. The population is `core.fct_transactions.is_categorizable` — confirmed transfer legs, archived accounts, and transactions whose account never resolved are excluded — so the ratio measures work `moneybin review` will actually offer, and it agrees with `moneybin transactions categorize stats`. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
+
+**`account_archive_intent_ambiguous`** — An account whose `include_in_net_worth = FALSE` may have been written by the retired archive cascade rather than chosen. `warn` when the account's audit history holds a pre-V063 `account_settings.set` row recording `archived = TRUE` that also flipped `include_in_net_worth` from TRUE (or absent) to FALSE (at any point, so an unarchived account still counts; pre-V063 means its `after_value` carries no `archived_at` key, since a later archive cannot be the cascade) and no forward `account_settings.set` row written after the latest such row, and not since undone, proves a decision (a later cascade overwrote any earlier choice): the `confirms_include_in_net_worth` context marker `AccountService.settings_update` writes whenever the caller names the flag, or a pre-marker write that excluded the account without archiving it (`before_value.include_in_net_worth` TRUE or absent, `after_value.include_in_net_worth` FALSE, `after_value.archived` FALSE). `pass` otherwise. `accounts set --include` or `--exclude` clears it; a rename or currency edit does not, and undoing the deciding write brings the warning back (a redo carries no marker, so it warns until `accounts set` restates the choice). Reads `app.account_settings` and `app.audit_log` directly, so it reflects a settings write without a transform. See [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md) §Prerequisites.
+
+### Net worth (M2B.3)
+
+| Name | What it checks |
+|---|---|
+| `net_worth_unanchored_accounts` | `fail`. Accounts with a NULL `balance` and `in_net_worth` TRUE on the latest date of `core.fct_balances_daily` on which any account counts toward net worth — the date an unranged `reports.net_worth` read lands on: they count toward net worth on that date and hold value (a transaction, a trade, or a broker-reported position), but have no balance observation. Each one makes `reports.net_worth`'s total NULL. `affected_ids` are masked `account:<id>` entries. Sets the `moneybin_net_worth_unanchored_accounts` gauge. Clears after a rebuild (`moneybin refresh --step transform`, the command the remedy names — the same one the `accounts balance assert` receipt prints) once a balance is recorded, the account is excluded, or it is archived before a later date on which another account still counts. |
+| `net_worth_stale_balance` | `warn`. Accounts with `in_net_worth` TRUE and a known balance on that same latest counting date whose most recent observed balance is more than `doctor.balance_staleness_threshold_days` (default 30) days before today. Compares each account's own latest observed row, never a shared date. Warns only: the balance still counts toward the total. `affected_ids` are masked `account:<id>` entries. Sets the `moneybin_net_worth_stale_balance_accounts` gauge. |
+
+See [`net-worth-guard-on-daily-balances.md`](net-worth-guard-on-daily-balances.md) Requirement 7 for the derivation of both checks.
 
 ### Investment reconciliation (M1G.4)
 
@@ -109,14 +120,14 @@ Nine checks covering the Plaid investment ledger. They split into two families: 
 
 | Name | What it checks |
 |---|---|
-| `investment_staging_rejects` | Rows staging routed to review rather than the ledger. Three reasons today — `split_underivable`, `transfer_direction_underivable`, `unmapped_subtype` — all deliberate refusals. The query is deliberately open (`review_reason IS NOT NULL`), so a new reason added upstream surfaces without a code change. |
-| `investment_opening_lot_review` | Positions the opening-lot bootstrap refused to synthesize: short/non-positive quantity, NULL basis, and `sold_out_prewindow` gaps it declined to reconstruct rather than guess. |
+| `investment_staging_rejects` | Rows staging routed to review rather than the ledger. Three reasons today — `split_underivable`, `transfer_direction_underivable`, `unmapped_subtype` — all deliberate refusals. The query is deliberately open (`review_reason IS NOT NULL`), so a new reason added upstream surfaces without a code change. Skips Plaid rows in an account whose `investment_source_type` is another source, since those rows never reach its ledger. |
+| `investment_opening_lot_review` | Positions the opening-lot bootstrap refused to synthesize: short/non-positive quantity, NULL basis, and `sold_out_prewindow` gaps it declined to reconstruct rather than guess. Skips Plaid rows in an account whose `investment_source_type` is another source, as `investment_staging_rejects` does. |
 | `investment_unmodeled_legs` | Legs in the ledger stripped of lot-affecting quantity (option and short legs MoneyBin models no book for). An assignment that exercises away a covered-call position disposes of real shares; the held lot never closes. |
 | `investment_holdings_divergence` | Engine-derived held lots that disagree with the broker's newest snapshot, on positions MoneyBin *does* hold a lot for. |
 | `investment_unreported_holdings` | Broker-reported positions with no `core.dim_holdings` row — the opposite direction, and the more dangerous one. |
 | `investment_phantom_holdings` | Open lots MoneyBin holds that the broker's newest snapshot no longer reports. Keyed on the per-pull holdings-snapshot receipt (below), not on the presence of holdings rows. |
 | `investment_unresolved_securities` | Ledger rows whose provider security key never resolved to a canonical security. These are dropped from cost basis entirely, so they must not stay silent. |
-| `investment_source_overlap` | Accounts carrying both manual and Plaid investment history. **The one investment check that `fail`s** — see below. |
+| `investment_source_overlap` | Accounts carrying both manual and Plaid investment history and no `investment_source_type` choice, plus accounts with a choice whose built ledger still holds the other source (a restate that failed after the choice was saved; the fix is `moneybin refresh`). **The one investment check that `fail`s** — see below. |
 | `investment_conflicting_security_refs` | One provider security bound to two different canonical securities. The resolver refuses to repoint either binding on its own — a repoint is a reviewed merge, never a sync-time side effect — so it logs and moves on, which made the conflict visible only to whoever was reading server logs. |
 
 **`investment_source_overlap` is the only investment check that `fail`s, and
@@ -128,7 +139,7 @@ every event exists twice and lots, cost basis, gains and holdings are *all*
 wrong at once. There is no investment dedup to run (transactions have
 `prep.int_transactions__matched`; investments have no equivalent, and it is a
 future matching child), so no refresh, price pull, or reconciliation clears it.
-Only removing one of the two feeds does.
+Only choosing which source feeds the account's ledger does (below).
 
 `core.dim_holdings` withholds accordingly: every position in such an account
 carries `valuation_status = 'source_overlap'` and publishes no market value,
@@ -139,31 +150,42 @@ tell which repair applies.
 
 The check reads the RAW tables rather than the ledger, so it still fires before
 a first transform has run — the point at which the withhold does not yet exist.
-Its recipe emits exactly one `RecoveryAction`, `import_revert`, because that is
-the only remedy MoneyBin can run: `REVERT_TABLES['manual']` covers
-`raw.manual_investment_transactions`, so reverting the batch deletes those rows
-and leaves the account with one ledger. `sync_disconnect` is deliberately **not**
-offered beside it. It is a remote operation — `SyncService.disconnect_confirmed`
+**The remedy is a setting, not a delete.** The account's
+`investment_source_type` (`accounts set <account> --investment-source-type
+manual|plaid`, or `accounts_set`) picks the one source type whose rows feed its
+ledger; `core.fct_investment_transactions` drops the rest, so the overlap and
+the `source_overlap` withholding clear together. Nothing is deleted, sync keeps
+running, and clearing the setting restores both histories. A chosen account is
+skipped by the detector, so neither this check nor the sync warning raises it
+again until the setting is cleared. The recipe emits two `suggested`
+`accounts_set` actions per affected account, one per source present, with
+per-source trade counts and date ranges in the rationale; MoneyBin cannot know
+which history the user trusts, so no agent picks one unprompted. Full design:
+[`investment-source-choice.md`](investment-source-choice.md).
+
+`import_revert` is no longer the suggested fix. It remains available as a
+deliberate delete of recorded history (`REVERT_TABLES['manual']` covers
+`raw.manual_investment_transactions`), but as the suggested remedy it answered
+a question of trust with a permanent loss. `sync_disconnect` is deliberately
+**not** offered either. By default it is a remote operation — `SyncService.disconnect_confirmed`
 calls `client.disconnect` and deletes nothing locally, as its own confirmation
 says ("Previously pulled local rows remain") — and this check joins exactly
 those retained rows, as does `core.dim_holdings`'s `source_overlap_accounts`.
 Following it would cost the user their connection permanently and leave the
 check failing and the holdings withheld, which is worse than no suggestion: a
-`RecoveryAction` is a claim that running it fixes the failure. The fact still
-reaches the user, in the remedy's rationale and this check's `detail`, because
-someone whose file import is the ledger they want will reach for a disconnect
-on their own.
+`RecoveryAction` is a claim that running it fixes the failure. Its purging
+form (`state="absent"`, `--purge`) would clear the check, but it takes the
+whole connection and every account on it, so it is the same permanent loss
+`import_revert` was withdrawn for. Someone whose
+file import is the ledger they want may still reach for a disconnect on their
+own; choosing `manual` gets the same ledger and keeps the connection.
 
-**Open gap:** there is no local counterpart for the synced feed —
-`raw.plaid_investment_transactions` carries no `import_id` and no tool deletes
-it — so a user who wants to keep the file import and drop the connector has no
-remedy today. Closing it needs a way to remove locally-retained rows for one
-connection.
+A user who wants to keep the file import and drop the connector's history now
+chooses `manual`; one who wants the reverse chooses `plaid`. Both are reversible
+and neither needs a way to delete the locally-retained synced rows.
 
-The remedy does not carry its identifying argument: the check knows account ids
-and not an `import_id`, so it names the missing argument in the rationale at
-`confidence: suggested`, which is the shape `RecoveryAction` prescribes for a
-value unknown at construction time.
+Both actions are `suggested` because the choice is the user's, not because an
+argument is missing: each carries `account_id` and the source type.
 
 **The phantom check depends on `raw.plaid_investment_holdings_snapshots`.** Holdings *rows* cannot distinguish "this item reported and holds nothing" from "this item never reported" — an item whose pull returns an empty holdings array writes no rows at all, so a newest-snapshot join keyed on those rows silently keeps the last non-empty snapshot from an earlier pull. That reads a fully-liquidated broker as still holding its old positions: the largest possible net-worth overstatement, and precisely the phantom this check exists to catch. The receipt is written per (item, pull) **even when zero positions come back**, and both `core.dim_holdings` and this check derive "newest snapshot" from it.
 

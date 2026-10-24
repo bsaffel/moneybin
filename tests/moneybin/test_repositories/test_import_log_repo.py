@@ -1,4 +1,4 @@
-"""Tests for ``ImportLogRepo`` — batch-lifecycle bookkeeping over raw.import_log."""
+"""Tests for ``ImportLogRepo`` — batch-lifecycle bookkeeping over app.import_log."""
 
 import json
 from unittest.mock import MagicMock
@@ -46,7 +46,7 @@ class TestBeginImport:
         )
         row = db.execute(
             "SELECT source_file, source_type, source_origin, status, account_names "
-            "FROM raw.import_log WHERE import_id = ?",
+            "FROM app.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
         assert row is not None
@@ -75,7 +75,7 @@ class TestFinalizeImport:
         )
         row = db.execute(
             "SELECT status, rows_imported, completed_at "
-            "FROM raw.import_log WHERE import_id = ?",
+            "FROM app.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
         assert row is not None
@@ -108,7 +108,7 @@ class TestFinalizeImport:
             rejection_details=details,
         )
         row = db.execute(
-            "SELECT rejection_details FROM raw.import_log WHERE import_id = ?",
+            "SELECT rejection_details FROM app.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
         assert row is not None
@@ -135,7 +135,7 @@ class TestFinalizeImport:
             rejection_details=[],
         )
         row = db.execute(
-            "SELECT rejection_details FROM raw.import_log WHERE import_id = ?",
+            "SELECT rejection_details FROM app.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
         assert row is not None

@@ -93,7 +93,7 @@ os.environ["MONEYBIN_HOME"] = str(_worker_home)
 
 # Defensive isolation for the import-inbox root. Without this, any test that
 # constructs ImportSettings() without an explicit inbox_root — or triggers
-# code that does (e.g. ProfileService._init_inbox) — falls through to
+# code that does (e.g. ProfileService.ensure_inbox) — falls through to
 # Path.home() / "Documents" / "MoneyBin", leaking test directories into the
 # user's real ~/Documents/MoneyBin/. The triple-underscore is intentional:
 # the field name is `import_` (trailing underscore) and pydantic-settings
@@ -167,3 +167,28 @@ def _in_memory_keyring() -> Generator[None, None, None]:  # pyright: ignore[repo
         yield
     finally:
         keyring.set_keyring(previous)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_logging_config() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Undo the process-global logging a CLI invocation configured.
+
+    The root callback runs ``setup_logging``, whose console handler outlives
+    the test. A later test that invokes a sub-app directly (no callback) then
+    gets that handler's INFO lines in ``result.output`` ahead of its JSON —
+    so a test's output depended on which test ran before it in the worker.
+    pytest's own capture handlers are left for pytest to manage.
+    """
+    import logging
+
+    loggers = [logging.getLogger(), logging.getLogger("sqlmesh")]
+    before = [(lg, list(lg.handlers), lg.level, lg.propagate) for lg in loggers]
+    yield
+    for lg, handlers, level, propagate in before:
+        for handler in list(lg.handlers):
+            if handler in handlers or type(handler).__module__.startswith("_pytest"):
+                continue
+            lg.removeHandler(handler)
+            handler.close()
+        lg.setLevel(level)
+        lg.propagate = propagate

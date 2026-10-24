@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
+from moneybin import error_codes
 from moneybin.connectors.sync_client import SyncAPIError
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
@@ -20,10 +21,14 @@ from moneybin.connectors.sync_models import (
     SyncTriggerResponse,
 )
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.plaid import PlaidExtractor
+from moneybin.metrics.registry import SYNC_DISCONNECT_OUTCOMES
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services import sync_service
 from moneybin.services.sync_service import SyncService
+from moneybin.tables import ACCOUNT_LINKS, SECURITY_PRICES
+from tests.moneybin.db_helpers import spy_restate
 
 FIXTURE = (
     Path(__file__).parent.parent
@@ -288,8 +293,9 @@ def test_pull_with_unknown_institution_raises(
 ) -> None:
     mock_client.list_institutions.return_value = []
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="no connected institution"):
+    with pytest.raises(UserError, match="no connected institution") as exc_info:
         service.pull(institution="UnknownBank")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
 
 
 @pytest.mark.usefixtures("mock_sync_refresh")
@@ -309,8 +315,9 @@ def test_pull_rejects_both_institution_and_provider_item_id(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    with pytest.raises(UserError, match="mutually exclusive") as exc_info:
         service.pull(institution="Chase", provider_item_id="item_x")
+    assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
 
 
 @pytest.mark.usefixtures("mock_sync_refresh")
@@ -568,6 +575,38 @@ def test_link_no_pull_returns_without_pull_result(
     mock_client.trigger_sync.assert_not_called()
 
 
+def test_link_keeps_connection_result_when_default_auto_pull_raises(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed follow-up pull leaves the completed link available to the CLI."""
+    mock_client.initiate_link.return_value = LinkInitiateResponse(
+        session_id="sess_x",
+        link_url="https://hosted.plaid.com/link/x",
+        link_type="widget_flow",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client.poll_link_status.return_value = LinkStatusResponse(
+        session_id="sess_x",
+        status="linked",
+        provider_item_id="item_new",
+        institution_name="Bank",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    pull = MagicMock(side_effect=RuntimeError("unavailable"))
+    monkeypatch.setattr(service, "pull", pull)
+
+    result = service.link(auto_pull=True)
+
+    pull.assert_called_once_with(provider_item_id="item_new")
+    assert result.provider_item_id == "item_new"
+    assert result.institution_name == "Bank"
+    assert result.pull_result is None
+
+
 def test_link_re_auth_resolves_institution_name(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
@@ -664,7 +703,13 @@ def test_link_invokes_on_initiate_callback_before_polling(
 def test_resolve_institution_raises_on_ambiguous_name(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
-    """Two connections sharing institution_name must not silently map to one."""
+    """Two connections sharing institution_name must not silently map to one.
+
+    The message must be self-sufficient: it names both candidate ids and both
+    linked timestamps, and points at the one caller (disconnect) that can
+    actually target a single connection by provider_item_id — `pull`,
+    `initiate_link`, and `plan_disconnect` itself have no way to accept one.
+    """
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
             id="u1",
@@ -672,7 +717,7 @@ def test_resolve_institution_raises_on_ambiguous_name(
             provider="plaid",
             institution_name="Chase",
             status="active",
-            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
         ),
         ConnectedInstitution(
             id="u2",
@@ -680,12 +725,24 @@ def test_resolve_institution_raises_on_ambiguous_name(
             provider="plaid",
             institution_name="Chase",
             status="active",
-            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+            created_at=datetime(2026, 2, 10, 14, 30, tzinfo=UTC),
         ),
     ]
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="multiple connected institutions match"):
+    with pytest.raises(
+        UserError, match="multiple connected institutions match"
+    ) as exc_info:
         service.pull(institution="Chase")
+    assert exc_info.value.code == error_codes.SYNC_INSTITUTION_AMBIGUOUS
+    message = str(exc_info.value)
+    assert "item_a (linked 2026-01-05 09:00 UTC)" in message
+    assert "item_b (linked 2026-02-10 14:30 UTC)" in message
+    assert (
+        "Only disconnect can target one of several same-named connections: "
+        "remove the extra one by provider_item_id "
+        "(`moneybin sync disconnect --provider-item-id <id>`, or "
+        "`sync_disconnect` over MCP), then retry."
+    ) in message
 
 
 def test_list_connections_returns_views_with_guidance(
@@ -858,8 +915,99 @@ def test_disconnect_unknown_institution_raises(
 ) -> None:
     mock_client.list_institutions.return_value = []
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="no connected institution"):
+    with pytest.raises(UserError, match="no connected institution") as exc_info:
         service.disconnect(institution="UnknownBank")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+
+
+def _two_items_same_institution() -> list[ConnectedInstitution]:
+    """Two connections sharing an institution name (post-relink), one per item."""
+    return [
+        ConnectedInstitution(
+            id="conn_a",
+            provider_item_id="item_a",
+            provider="plaid",
+            institution_name="Chase",
+            status="revoked",
+            created_at=datetime(2026, 1, 5, tzinfo=UTC),
+        ),
+        ConnectedInstitution(
+            id="conn_b",
+            provider_item_id="item_b",
+            provider="plaid",
+            institution_name="Chase",
+            status="active",
+            created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        ),
+    ]
+
+
+def test_plan_disconnect_by_provider_item_id_resolves_among_duplicates(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """provider_item_id targets one exact item without hitting the name ambiguity guard."""
+    mock_client.list_institutions.return_value = _two_items_same_institution()
+    service = SyncService(client=mock_client, db=db, loader=loader)
+
+    resolved = service.plan_disconnect(provider_item_id="item_b")
+
+    assert resolved.id == "conn_b"
+    assert resolved.provider_item_id == "item_b"
+
+
+def test_disconnect_by_provider_item_id_deletes_the_correct_internal_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The client is called with the resolved internal id, not the item id."""
+    mock_client.list_institutions.return_value = _two_items_same_institution()
+    service = SyncService(client=mock_client, db=db, loader=loader)
+
+    result = service.disconnect(provider_item_id="item_a")
+
+    assert result.id == "conn_a"
+    mock_client.disconnect.assert_called_once_with("conn_a")
+
+
+def test_plan_disconnect_unknown_provider_item_id_raises(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    mock_client.list_institutions.return_value = _two_items_same_institution()
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(
+        UserError, match="no connected institution with provider_item_id"
+    ) as exc_info:
+        service.plan_disconnect(provider_item_id="item_missing")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+
+
+def test_plan_disconnect_rejects_both_institution_and_provider_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(UserError, match="mutually exclusive") as exc_info:
+        service.plan_disconnect(institution="Chase", provider_item_id="item_a")
+    assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+    mock_client.list_institutions.assert_not_called()
+
+
+def test_plan_disconnect_requires_institution_or_provider_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(UserError, match="required to disconnect") as exc_info:
+        service.plan_disconnect()
+    assert exc_info.value.code == error_codes.SYNC_INSTITUTION_REQUIRED
+
+
+def test_ambiguous_institution_error_names_provider_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The dead-end message must name a parameter the caller can actually use."""
+    mock_client.list_institutions.return_value = _two_items_same_institution()
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(UserError, match="provider_item_id") as exc_info:
+        service.plan_disconnect(institution="Chase")
+    assert exc_info.value.code == error_codes.SYNC_INSTITUTION_AMBIGUOUS
 
 
 class TestPullAutoRefreshes:
@@ -925,6 +1073,35 @@ class TestPullAutoRefreshes:
         result = service.pull()
 
         assert result.transfers_retired == 2
+
+    def test_pull_forwards_progress_to_refresh(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from moneybin.orchestration.refresh import RefreshResult
+        from moneybin.services import sync_service as mod
+
+        received: list[object] = []
+
+        def fake_refresh(_db: object, *, progress: object) -> RefreshResult:
+            received.append(progress)
+            return RefreshResult(applied=True, duration_seconds=0.05)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+        events: list[str] = []
+        service = SyncService(client=mock_client, db=db, loader=loader)
+
+        service.pull(progress=lambda event: events.append(event.stage))
+
+        assert received
+        assert events[:3] == [
+            "Syncing institutions",
+            "Loading synced data",
+            "Refreshing reports",
+        ]
 
     def test_pull_no_refresh_skips_pipeline(
         self,
@@ -1097,6 +1274,7 @@ class TestPullAutoRefreshes:
                 transactions_loaded=0,
                 balances_loaded=0,
                 security_prices_loaded=3,
+                rows_written=3,
             )
 
         monkeypatch.setattr(loader, "load", fake_load)
@@ -1582,3 +1760,462 @@ class TestPullResolvesAccounts:
 
         assert result.accounts_loaded == 2
         assert result.transactions_loaded == 3
+
+
+# ---------------------------------------------------------------------------
+# Purge: `sync disconnect --purge` / `sync_disconnect(state="absent")`
+# ---------------------------------------------------------------------------
+
+_CHASE_ITEM = "item_chase_abc"  # the fixture's item: 2 accounts, 3 txns, 2 balances
+_OTHER_ITEM = "item_other_xyz"
+
+
+def _chase_connection(
+    status: Literal["active", "error", "revoked"] = "active",
+) -> ConnectedInstitution:
+    return ConnectedInstitution(
+        id="conn_chase",
+        provider_item_id=_CHASE_ITEM,
+        provider="plaid",
+        institution_name="Chase",
+        status=status,
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+
+
+def _other_item_payload() -> SyncDataResponse:
+    """A second, unrelated item whose rows a purge of the fixture item must keep."""
+    return SyncDataResponse.model_validate({
+        "accounts": [
+            {
+                "account_id": "acc_other_check",
+                "persistent_account_id": "ppa_other_0001",
+                "account_type": "depository",
+                "account_subtype": "checking",
+                "institution_name": "Other Bank",
+                "name": "Other Checking",
+                "official_name": "Other Total Checking",
+                "mask": "9999",
+            }
+        ],
+        "transactions": [
+            {
+                "transaction_id": "txn_other_1",
+                "account_id": "acc_other_check",
+                "transaction_date": "2026-04-07",
+                "amount": "5.00",
+                "description": "OTHER COFFEE",
+                "pending": False,
+            }
+        ],
+        "balances": [],
+        "removed_transactions": [],
+        "metadata": {
+            "job_id": "job-other",
+            "synced_at": "2026-08-15T12:00:00Z",
+            "institutions": [
+                {
+                    "provider_item_id": _OTHER_ITEM,
+                    "institution_name": "Other Bank",
+                    "status": "completed",
+                    "transaction_count": 1,
+                }
+            ],
+        },
+    })
+
+
+def _pull_both_items(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> SyncService:
+    """Pull the fixture item and a second item so a purge has a bystander."""
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    service.pull(refresh=False)
+    other = MagicMock()
+    other.trigger_sync.return_value = SyncTriggerResponse(
+        job_id="job-other", status="completed", transaction_count=1
+    )
+    other.get_data.return_value = _other_item_payload()
+    SyncService(client=other, db=db, loader=loader).pull(refresh=False)
+    return service
+
+
+def _raw_counts(db: Database, item_id: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for table in ("plaid_accounts", "plaid_transactions", "plaid_balances"):
+        row = db.execute(
+            f"SELECT COUNT(*) FROM raw.{table} WHERE source_origin = ?",  # noqa: S608  # test table name
+            [item_id],
+        ).fetchone()
+        counts[table] = int(row[0]) if row else 0
+    return counts
+
+
+def _accepted_link_rows(db: Database, item_id: str) -> list[tuple[str, str]]:
+    return [
+        (str(r[0]), str(r[1]))
+        for r in db.execute(
+            "SELECT link_id, account_id FROM app.account_links "
+            "WHERE source_type = 'plaid' AND source_origin = ? "
+            "AND status = 'accepted' ORDER BY link_id",
+            [item_id],
+        ).fetchall()
+    ]
+
+
+def _propose_merge(db: Database, provisional: str, candidate: str) -> str:
+    from moneybin.repositories.account_link_decisions_repo import (
+        AccountLinkDecisionsRepo,
+    )
+
+    decision_id = f"dec_{provisional[:4]}_{candidate[:4]}"
+    AccountLinkDecisionsRepo(db).insert(
+        decision_id=decision_id,
+        provisional_account_id=provisional,
+        candidate_account_id=candidate,
+        confidence_score=0.5,
+        match_signals={"signal": "institution_last4", "value": "1234"},
+        decided_by="auto",
+        actor="system",
+        match_reason="institution_last4",
+    )
+    return decision_id
+
+
+def _remote_disconnects() -> float:
+    return SYNC_DISCONNECT_OUTCOMES.labels(scope="remote")._value.get()  # pyright: ignore[reportPrivateUsage]  # no public counter getter
+
+
+def _decision_status(db: Database, decision_id: str) -> tuple[str, str]:
+    row = db.execute(
+        "SELECT status, decided_by FROM app.account_link_decisions "
+        "WHERE decision_id = ?",
+        [decision_id],
+    ).fetchone()
+    assert row is not None
+    return str(row[0]), str(row[1])
+
+
+def test_plan_purge_counts_exactly_the_items_rows_and_links(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The plan quotes the fixture item's rows per table and nothing of the other's."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+
+    plan = service.plan_purge(institution="Chase")
+
+    counts = dict(plan.table_counts)
+    assert plan.provider_item_id == _CHASE_ITEM
+    assert plan.connection == _chase_connection()
+    assert counts["raw.plaid_accounts"] == 2
+    assert counts["raw.plaid_transactions"] == 3
+    assert counts["raw.plaid_balances"] == 2
+    assert counts["raw.security_prices"] == 0
+    assert plan.rows_to_delete == 7
+    assert (
+        len(plan.account_link_ids) == 4
+    )  # source_native + persistent_token per account
+    assert plan.decision_ids == ()
+    assert plan.blast_radius["institutions"] == 1
+    assert plan.blast_radius["total_rows"] == 7
+    assert plan.blast_radius["account_links_reversed"] == 4
+
+
+def test_purge_confirmed_removes_the_item_and_keeps_the_bystander(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """Server disconnect, raw deletes, link reversal, and proposal withdrawal in one go."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    chase_links = _accepted_link_rows(db, _CHASE_ITEM)
+    other_links = _accepted_link_rows(db, _OTHER_ITEM)
+    chase_account = chase_links[0][1]
+    other_account = other_links[0][1]
+    withdrawn = _propose_merge(db, chase_account, other_account)
+    verified: list[object] = []
+
+    live = service.purge_confirmed(
+        provider_item_id=_CHASE_ITEM, verify=verified.append, actor="cli"
+    )
+
+    assert verified == [live]
+    mock_client.disconnect.assert_called_once_with("conn_chase")
+    assert live.rows_to_delete == 7
+    assert live.decision_ids == (withdrawn,)
+    assert _raw_counts(db, _CHASE_ITEM) == {
+        "plaid_accounts": 0,
+        "plaid_transactions": 0,
+        "plaid_balances": 0,
+    }
+    assert _raw_counts(db, _OTHER_ITEM)["plaid_accounts"] == 1
+    assert _raw_counts(db, _OTHER_ITEM)["plaid_transactions"] == 1
+    assert _accepted_link_rows(db, _CHASE_ITEM) == []
+    assert _accepted_link_rows(db, _OTHER_ITEM) == other_links
+    reversed_rows = db.execute(
+        "SELECT reversed_by FROM app.account_links "
+        "WHERE source_origin = ? AND status = 'reversed'",
+        [_CHASE_ITEM],
+    ).fetchall()
+    assert [str(r[0]) for r in reversed_rows] == ["user"] * 4
+    assert _decision_status(db, withdrawn) == ("rejected", "user")
+
+
+def test_purge_keeps_a_proposal_another_source_still_feeds(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """An account an OFX statement also feeds is not orphaned, so its proposal stays."""
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    chase_account = _accepted_link_rows(db, _CHASE_ITEM)[0][1]
+    other_account = _accepted_link_rows(db, _OTHER_ITEM)[0][1]
+    AccountLinksRepo(db).insert(
+        link_id="lnk_ofx_same",
+        account_id=chase_account,
+        ref_kind="source_native",
+        ref_value="statement-acct",
+        source_type="ofx",
+        source_origin="chase_statements",
+        decided_by="user",
+        actor="cli",
+    )
+    kept = _propose_merge(db, chase_account, other_account)
+
+    plan = service.plan_purge(provider_item_id=_CHASE_ITEM)
+
+    assert plan.decision_ids == ()
+    service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+    assert _decision_status(db, kept) == ("pending", "auto")
+
+
+def test_purge_reaches_an_item_the_server_no_longer_lists(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The orphan a plain disconnect leaves behind is purgeable by its item id."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = []
+
+    plan = service.plan_purge(provider_item_id=_CHASE_ITEM)
+    assert plan.connection is None
+    assert plan.blast_radius["institutions"] == 0
+    assert plan.rows_to_delete == 7
+
+    live = service.purge_confirmed(
+        provider_item_id=_CHASE_ITEM, verify=lambda _: None, actor="mcp"
+    )
+
+    assert live.connection is None
+    mock_client.disconnect.assert_not_called()
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 0
+    assert _raw_counts(db, _OTHER_ITEM)["plaid_transactions"] == 1
+
+
+def test_purge_restates_the_tables_it_deleted_from_after_the_commit(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The materialized models read the purged raw rows and the reversed links."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    calls = spy_restate(
+        monkeypatch, lambda: _raw_counts(db, _CHASE_ITEM)["plaid_transactions"]
+    )
+
+    service.purge_confirmed(
+        provider_item_id=_CHASE_ITEM, verify=lambda _live: None, actor="cli"
+    )
+
+    purged = sync_service._PURGE_TABLES  # type: ignore[reportPrivateUsage]  # the list the purge deletes from
+    assert calls == [((ACCOUNT_LINKS, *purged, SECURITY_PRICES), "purge", 0)]
+
+
+def test_a_purge_that_deletes_nothing_restates_nothing(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection the server lists but nothing was ever pulled from."""
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    calls = spy_restate(
+        monkeypatch, lambda: _raw_counts(db, _CHASE_ITEM)["plaid_transactions"]
+    )
+
+    live = service.purge_confirmed(
+        provider_item_id=_CHASE_ITEM, verify=lambda _live: None, actor="cli"
+    )
+
+    assert live.rows_to_delete == 0
+    assert live.account_link_ids == ()
+    mock_client.disconnect.assert_called_once()
+    assert calls == []
+
+
+def test_plan_purge_refuses_an_item_with_neither_connection_nor_rows(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = []
+    with pytest.raises(UserError, match="no locally pulled rows") as exc_info:
+        service.plan_purge(provider_item_id="item_never_seen")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+
+
+def test_plan_purge_by_name_needs_the_server_and_hints_at_the_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """A name only resolves through the server; the hint names the orphan route."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = []
+    with pytest.raises(UserError, match="no connected institution") as exc_info:
+        service.plan_purge(institution="Chase")
+    assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+    assert "provider_item_id" in (exc_info.value.hint or "")
+
+
+def test_plan_purge_rejects_both_or_neither_selector(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(UserError, match="mutually exclusive"):
+        service.plan_purge(institution="Chase", provider_item_id=_CHASE_ITEM)
+    with pytest.raises(UserError, match="required to disconnect"):
+        service.plan_purge()
+    mock_client.list_institutions.assert_not_called()
+
+
+def test_purge_confirmed_removes_nothing_when_verification_fails(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    before_links = _accepted_link_rows(db, _CHASE_ITEM)
+
+    def refuse(_: object) -> None:
+        raise ValueError("confirmation mismatch")
+
+    with pytest.raises(ValueError, match="confirmation mismatch"):
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=refuse)
+
+    mock_client.disconnect.assert_not_called()
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
+    assert _accepted_link_rows(db, _CHASE_ITEM) == before_links
+
+
+def test_purge_confirmed_rolls_back_when_the_server_disconnect_fails(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The remote half goes first, so a remote failure leaves local state untouched."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    mock_client.disconnect.side_effect = SyncAPIError("server 503")
+    before_links = _accepted_link_rows(db, _CHASE_ITEM)
+
+    with pytest.raises(SyncAPIError):
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
+    assert _accepted_link_rows(db, _CHASE_ITEM) == before_links
+    pending = db.execute(
+        "SELECT COUNT(*) FROM app.account_links WHERE status = 'reversed'"
+    ).fetchone()
+    assert pending is not None and pending[0] == 0
+
+
+def test_purge_confirmed_names_the_orphan_when_the_local_half_fails(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """After the server half lands, the error carries the id that still reaches the rows."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+    before_links = _accepted_link_rows(db, _CHASE_ITEM)
+    remote_before = _remote_disconnects()
+
+    with (
+        patch.object(sync_service, "AccountLinksRepo") as links_repo,
+        pytest.raises(UserError) as exc_info,
+    ):
+        links_repo.return_value.reverse.side_effect = RuntimeError("disk full")
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+
+    assert exc_info.value.code == error_codes.SYNC_ERROR
+    assert _CHASE_ITEM in str(exc_info.value)
+    assert exc_info.value.hint is not None
+    assert f"--provider-item-id {_CHASE_ITEM} --purge" in exc_info.value.hint
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    mock_client.disconnect.assert_called_once_with("conn_chase")
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
+    assert _accepted_link_rows(db, _CHASE_ITEM) == before_links
+    # The server half did happen, so the metric records it under its own scope.
+    assert _remote_disconnects() == remote_before + 1
+
+
+def test_purge_confirmed_logs_the_orphan_when_interrupted_after_the_server_half(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An interrupt cannot be wrapped, so the log names the id to re-run with."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = [_chase_connection()]
+
+    with (
+        patch.object(sync_service, "AccountLinksRepo") as links_repo,
+        caplog.at_level("WARNING", logger="moneybin.services.sync_service"),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        links_repo.return_value.reverse.side_effect = KeyboardInterrupt()
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+
+    mock_client.disconnect.assert_called_once_with("conn_chase")
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3
+    assert any(
+        _CHASE_ITEM in record.getMessage() and "did not complete" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_purge_tables_cover_every_plaid_raw_schema_file() -> None:
+    """A raw.plaid_* table the loader writes but the purge skips would survive a purge that reports everything gone."""
+    import moneybin.extractors.plaid as plaid_package
+
+    schema_dir = Path(plaid_package.__file__).parent / "schema"
+    declared = {
+        path.stem.removeprefix("raw_"): path
+        for path in schema_dir.glob("raw_plaid_*.sql")
+    }
+    purged = {
+        table.full_name.removeprefix("raw.")
+        for table in sync_service._PURGE_TABLES  # pyright: ignore[reportPrivateUsage]
+    }
+
+    assert declared, "the Plaid raw schema directory moved; point this guard at it"
+    assert set(declared) == purged
+    for name, path in declared.items():
+        assert "source_origin" in path.read_text(), (
+            f"{name} has no source_origin column"
+        )
+
+
+def test_purge_confirmed_propagates_a_local_failure_for_an_orphan_as_is(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """With no server half to report, the local error is the whole story."""
+    service = _pull_both_items(mock_client, db, loader)
+    mock_client.list_institutions.return_value = []
+
+    with (
+        patch.object(sync_service, "AccountLinksRepo") as links_repo,
+        pytest.raises(RuntimeError, match="disk full"),
+    ):
+        links_repo.return_value.reverse.side_effect = RuntimeError("disk full")
+        service.purge_confirmed(provider_item_id=_CHASE_ITEM, verify=lambda _: None)
+
+    mock_client.disconnect.assert_not_called()
+    assert _raw_counts(db, _CHASE_ITEM)["plaid_transactions"] == 3

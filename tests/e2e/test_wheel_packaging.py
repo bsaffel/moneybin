@@ -33,6 +33,7 @@ REQUIRED_WHEEL_CONTENTS = {
     "moneybin/sql/migrations/*.py": "Python migrations — most of the ladder is .py",
     "moneybin/sqlmesh/config.py": "SQLMesh project config",
     "moneybin/sqlmesh/external_models.yaml": "SQLMesh external model defs",
+    "moneybin/sqlmesh/macros/*.py": "SQLMesh macros — models calling one fail to render",
     "moneybin/sqlmesh/models/**/*.sql": "SQL models — no transforms without them",
     "moneybin/sqlmesh/models/**/*.py": "Python models — core fct_* tables",
     "moneybin/sqlmesh/models/seeds/*.csv": "seed data for the category models",

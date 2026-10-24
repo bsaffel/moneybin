@@ -30,21 +30,25 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    applied_rates_note,
     currency_label,
-    echo_applied_rates,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
+    share_count,
     wide_option,
 )
 from moneybin.cli.render import (
     Money,
+    build_rows,
+    build_summary,
     column_view,
+    compose_human_result,
     format_money,
-    render_note,
-    render_rows,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
@@ -61,6 +65,7 @@ from moneybin.services.investment_service import (
 )
 
 from . import lots, matches, prices, securities
+from .securities import security_label
 
 logger = logging.getLogger(__name__)
 
@@ -173,35 +178,48 @@ def investments_add(
             cli_actor="investments_add",
         )
         return
+    policy = get_terminal_policy()
     for txn_id in ids:
-        typer.echo(f"✅ Recorded {txn_id}")
+        typer.echo(f"{policy.symbols.success} Recorded {txn_id}")
 
 
 _EVENTS_COLUMNS: tuple[tuple[str, Callable[[EventRow], object]], ...] = (
     ("date", lambda r: r.trade_date),
     ("type", lambda r: r.type),
-    ("security", lambda r: r.security_id or "-"),
-    ("quantity", lambda r: r.quantity),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
+    ("security id", lambda r: r.security_id or "-"),
+    ("quantity", lambda r: share_count(r.quantity)),
     ("amount", lambda r: r.amount),
     ("currency", lambda r: currency_label(r.currency_code)),
 )
 
 _EVENTS_DEFAULT = ("date", "type", "security", "quantity", "amount", "currency")
-"""Every declared column — this table has nothing to curate away.
+"""Every declared column but the security's catalog id.
 
-Six narrow columns fit 80 together, which puts this command in the bucket
-`fx list` and `securities list` are already in: show all of them and offer no
-`--wide`, rather than a flag whose help promises columns the default view is
-not holding back.
+`security` is the ticker, because a reader recognises a holding by it and not
+by a minted id; `security id` is the one column held back, for the reader who
+needs to pass it to `securities set`, and `--wide` carries it.
 
-`currency` is why the set is now the whole declaration. It repeats down a
-single-currency ledger, which is what argued for dropping it, but this command
-takes no currency filter, so one unfiltered call can span accounts denominated
-differently — and `multi-currency.md` makes the row's own `currency_code` the
-canonical unit of its `amount`. Two rows reading `1,500.00` are then not the
-same quantity, with nothing on screen to say so. `investments holdings` keeps
-it for that reason, and the two commands disagreeing was its own defect.
+`currency` stays in the default set. It repeats down a single-currency ledger,
+which is what argued for dropping it, but this command takes no currency
+filter, so one unfiltered call can span accounts denominated differently — and
+`multi-currency.md` makes the row's own `currency_code` the canonical unit of
+its `amount`. Two rows reading `1,500.00` are then not the same quantity, with
+nothing on screen to say so. `investments holdings` keeps it for that reason,
+and the two commands disagreeing was its own defect.
 """
+
+_EVENTS_OPTIONAL = ("security id",)
+"""What `--wide` omits, last first, when the whole table is wider than the terminal."""
 
 
 @app.command("list")
@@ -221,12 +239,14 @@ def investments_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list has no informational chatter; only data
+    wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List ledger events from the canonical investment-transaction fact table.
 
-    Shows the trade date, event type, security, quantity, and the signed amount
-    with the currency it is denominated in. There is no ``--wide``: all six
-    columns fit an 80-column terminal, so none is held back.
+    Shows the trade date, event type, security (its ticker, or its catalog name
+    when it has none), quantity, and the signed amount with the currency it is
+    denominated in. ``--wide`` adds the security's catalog id.
     """
     with handle_cli_errors(
         cli_actor="investments_list", payload_type=InvestmentEventsPayload
@@ -251,17 +271,40 @@ def investments_list(
         return
     if result.rows:
         view = column_view(
-            _EVENTS_COLUMNS, result.rows, default=_EVENTS_DEFAULT, wide=False
+            _EVENTS_COLUMNS, result.rows, default=_EVENTS_DEFAULT, wide=wide
         )
-        render_rows(
-            view.names,
-            view.rows,
-            # An event's amount is cash moving in or out, so it signs itself. The
-            # quantity is a share count, not an amount, and is left as stored.
-            money={"amount": Money("flow")},
-            numeric=("quantity",),
-            # No `total_columns`: the view is the whole declaration, so there is
-            # no narrowing to disclose and no flag that would widen it.
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            build_rows(
+                view.names,
+                view.rows,
+                # An event's amount is cash moving in or out, so it signs itself. The
+                # quantity is a share count, not an amount, so it is never rounded.
+                money={"amount": Money("flow")},
+                numeric=("quantity",),
+                total_columns=view.total,
+                optional=_EVENTS_OPTIONAL if wide else None,
+                terminal=policy,
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+            wide=wide,
+        )
+    else:
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            build_summary(
+                [("Investments", "No ledger events match these filters.")],
+                title=(
+                    "Try: moneybin investments list"
+                    if any((account, security, type_, from_, to))
+                    else "Try: moneybin sync status"
+                ),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
         )
 
 
@@ -270,8 +313,18 @@ def investments_list(
 # ---------------------------------------------------------------------------
 
 _HOLDINGS_COLUMNS: tuple[tuple[str, Callable[[HoldingRow], object]], ...] = (
-    ("security", lambda r: r.security_id),
-    ("quantity", lambda r: r.quantity),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
+    ("security id", lambda r: r.security_id),
+    ("quantity", lambda r: share_count(r.quantity)),
     ("cost basis", lambda r: r.cost_basis),
     # A per-unit cost is DECIMAL(28,10); `format_money` rounds to two places,
     # which renders a sub-cent price as 0.00. It is left as stored for the same
@@ -314,6 +367,18 @@ dropping one of the two feeds respectively. `InvestmentService.holdings` warns
 by telling the reader to see each row's `valuation_status`, so a default view
 without it names something not on screen — and that warning is a `render_note`,
 which `-q` drops.
+
+`security` is the ticker; the catalog id is `--wide` material like the rest of
+the audit trail.
+"""
+
+_HOLDINGS_OPTIONAL = ("cost basis", "as of", "avg cost", "security id")
+"""What `--wide` omits, last first, when all ten columns are wider than the terminal.
+
+The default set is never omitted: it is the answer, and a measured fit would
+drop `market value` from the middle. Cost basis is kept longest because it is
+what `unrealized` is computed from; the id goes first because the JSON output
+carries it and a reader rarely needs it beside a ticker.
 """
 
 
@@ -325,6 +390,7 @@ def investments_holdings(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Current positions: what you hold, what it is worth, and whether you are up.
 
@@ -333,8 +399,10 @@ def investments_holdings(
     known wrong, or one in an account whose investment ledger arrives from two
     sources at once shows ``-`` rather than a zero, and the ``status`` column
     beside it says which — it prints by default, because the three cases have
-    different remedies. ``--wide`` adds the cost basis, the average cost, and
-    the date the price was observed.
+    different remedies. A position is named by its ticker. ``--wide`` adds the
+    security's catalog id, the cost basis, the average cost, and the date the
+    price was observed, omitting those it cannot fit the terminal and saying
+    which.
 
     The closing portfolio line reports ``max_days_since_observed``: the age in
     days of the stalest close behind any figure above, or ``-`` when no
@@ -365,7 +433,8 @@ def investments_holdings(
         view = column_view(
             _HOLDINGS_COLUMNS, result.rows, default=_HOLDINGS_DEFAULT, wide=wide
         )
-        render_rows(
+        policy = get_terminal_policy(no_pager=no_pager)
+        table = build_rows(
             view.names,
             view.rows,
             # Both totals are positions, so they render unsigned and uncoloured;
@@ -378,10 +447,12 @@ def investments_holdings(
                 "unrealized": Money("delta", polarity="income"),
             },
             # Neither is an amount — one is a share count, the other a
-            # DECIMAL(28,10) per-unit cost — so both print as stored. They are
+            # DECIMAL(28,10) per-unit cost — so neither is rounded. They are
             # named here for the no-fold guarantee alone.
             numeric=("quantity", "avg cost"),
             total_columns=view.total,
+            optional=_HOLDINGS_OPTIONAL if wide else None,
+            terminal=policy,
         )
         # Portfolio-level disclosure, not a status line — `-q` keeps it, the
         # same rule that keeps result rows.
@@ -393,14 +464,14 @@ def investments_holdings(
         by_ccy = result.market_value_by_currency
         if result.total_market_value is not None:
             total = (
-                f"market_value={format_money(result.total_market_value, 'balance')} "
+                f"market_value={format_money(result.total_market_value, 'balance', minus=policy.minus)} "
                 f"{result.total_market_value_currency}"
             )
             if len(by_ccy) > 1:
                 # A converted total is an inference, so it never appears alone:
                 # the originals it was computed from print beside it.
                 split = " ".join(
-                    f"{code}={format_money(amount, 'balance')}"
+                    f"{code}={format_money(amount, 'balance', minus=policy.minus)}"
                     for code, amount in by_ccy.items()
                 )
                 total += f" (converted from {split})"
@@ -411,7 +482,7 @@ def investments_holdings(
             # tell them apart — an unset home currency wants `moneybin profile
             # set`, a missing rate wants `moneybin refresh`.
             split = " ".join(
-                f"{code}={format_money(amount, 'balance')}"
+                f"{code}={format_money(amount, 'balance', minus=policy.minus)}"
                 for code, amount in by_ccy.items()
             )
             total = (
@@ -420,20 +491,59 @@ def investments_holdings(
             )
         else:
             total = "market_value=- (no position is priced)"
-        typer.echo(f"portfolio {total} max_days_since_observed={stalest}")
-        # The originals above say what was converted; this says what converted
-        # it. Not gated on `quiet`, for the same reason the total is not: it is
-        # part of the disclosure, not a status line. Empty unless a rate was
-        # actually applied, so the single-currency case stays silent.
-        echo_applied_rates(result.applied_rates, result.total_market_value_currency)
-    for w in result.warnings:
-        render_note(f"⚠️  {w}", quiet=quiet, warn=True)
+        disclosures = [f"portfolio {total} max_days_since_observed={stalest}"]
+        rate_note = applied_rates_note(
+            result.applied_rates, result.total_market_value_currency
+        )
+        if rate_note is not None:
+            disclosures.append(rate_note)
+        disclosures.extend(result.warnings)
+        emit_human_result(
+            compose_human_result(
+                [table],
+                disclosures=disclosures,
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+            wide=wide,
+        )
+    else:
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Holdings", "No positions match this scope.")],
+                        title=(
+                            "Try: moneybin investments holdings"
+                            if account
+                            else "Try: moneybin accounts list"
+                        ),
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
 
 _GAINS_COLUMNS: tuple[tuple[str, Callable[[RealizedGainRow], object]], ...] = (
     ("disposed", lambda r: r.disposal_date),
-    ("security", lambda r: r.security_id),
-    ("quantity", lambda r: r.quantity),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
+    ("security id", lambda r: r.security_id),
+    ("quantity", lambda r: share_count(r.quantity)),
     ("proceeds", lambda r: r.proceeds),
     ("basis", lambda r: r.cost_basis),
     ("gain", lambda r: r.gain_loss),
@@ -450,7 +560,8 @@ Quantity and cost basis are the arithmetic behind the gain rather than the
 answer, so `--wide` carries them, and `note` goes with them for a width reason
 rather than a relevance one. `investments lots list` keeps its identical marker
 in the default view because six columns fit there; measured at 80 with a
-production-width security id, a seventh column here folds the disposal date and
+12-character security cell (an id, or a catalog name standing in for a missing
+ticker), a seventh column here folds the disposal date and
 the security id and breaks `⚠️ basis_incomplete` itself across three lines. The
 requirement both tables answer is that an incomplete basis must survive `-q` —
 the marker is how `lots list` meets it, and the ungated warning below is how
@@ -462,6 +573,14 @@ filter, so one unfiltered call can span accounts denominated differently, and
 its `proceeds`, `basis` and `gain`. Two rows reading `+200.00` are then not the
 same quantity, with nothing on screen to say so — the same reason
 `investments list` and `investments holdings` keep it.
+"""
+
+_GAINS_OPTIONAL = ("basis", "note", "quantity", "security id")
+"""What `--wide` omits, last first, when all ten columns are wider than the terminal.
+
+The basis is kept longest because it is what the gain is computed from, and
+`note` next because it qualifies that basis; the incomplete-basis warning
+survives either way, ungated on stderr. The id goes first, as in `holdings`.
 """
 
 
@@ -485,14 +604,17 @@ def investments_gains(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # the one note here is a disclosure
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Realized gain/loss (the 1099-B surface) from the realized-gains fact table.
 
     Shows when each position was disposed, what it was, what it fetched, the
     gain or loss, the currency those figures are denominated in, and whether
-    the holding term was short or long. ``--wide`` adds the quantity and cost
-    basis the gain was computed from, and a ``note`` column marking each row
-    whose basis is known to be incomplete.
+    the holding term was short or long. A security is named by its ticker.
+    ``--wide`` adds its catalog id, the quantity and cost basis the gain was
+    computed from, and a ``note`` column marking each row whose basis is known
+    to be incomplete, omitting those it cannot fit the terminal and saying
+    which.
 
     When any row's basis is incomplete the command says so on stderr, and
     ``-q`` does not silence it: the gain shown for such a row is a conservative
@@ -532,29 +654,49 @@ def investments_gains(
         view = column_view(
             _GAINS_COLUMNS, result.rows, default=_GAINS_DEFAULT, wide=wide
         )
-        render_rows(
-            view.names,
-            view.rows,
-            # Proceeds and basis are positive by construction; the gain is the
-            # signed answer, and up is the good direction on a realized gain.
-            money={
-                "proceeds": Money("magnitude"),
-                "basis": Money("balance"),
-                "gain": Money("delta", polarity="income"),
-            },
-            numeric=("quantity",),
-            total_columns=view.total,
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_rows(
+                        view.names,
+                        view.rows,
+                        # Proceeds and basis are positive by construction; the gain is the
+                        # signed answer, and up is the good direction on a realized gain.
+                        money={
+                            "proceeds": Money("magnitude"),
+                            "basis": Money("balance"),
+                            "gain": Money("delta", polarity="income"),
+                        },
+                        numeric=("quantity",),
+                        total_columns=view.total,
+                        optional=_GAINS_OPTIONAL if wide else None,
+                        terminal=policy,
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+            wide=wide,
         )
-    for w in result.warnings:
-        # Not gated on `quiet`. Both warnings `gains` can raise — that some
-        # row's cost basis is incomplete, and that the account's ledger arrives
-        # from two sources at once — are disclosures about the figures rather
-        # than status lines about the run: `-q` output would otherwise show a
-        # conservative or a double-counted gain as an authoritative one. The
-        # `note` column names which rows, but only under `--wide`, because a
-        # seventh column does not fit 80 columns. `investments lots list` meets
-        # the same requirement with its marker in the default view instead.
-        render_note(f"⚠️  {w}", warn=True)
+    else:
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Realized gains", "No gains match these filters.")],
+                        title="Try: moneybin investments holdings",
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
 
 app.add_typer(lots.app, name="lots")

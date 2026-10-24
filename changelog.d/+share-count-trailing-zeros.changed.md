@@ -1,0 +1,1 @@
+Share counts in `moneybin investments list`, `holdings`, `gains`, and `lots list` text tables print without trailing zeros (`41.5`, not `41.5000000000`), so `investments holdings` fits 80 columns; nothing is rounded, per-unit prices still print as stored, and `--output json` is unchanged.

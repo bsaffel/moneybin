@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
 
@@ -29,6 +29,7 @@ from moneybin.adapters.sync_adapters import (
     sync_status_envelope,
 )
 from moneybin.config import get_settings
+from moneybin.connectors.sync_auth import SyncAuthResult, SyncAuthService
 from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
@@ -38,6 +39,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.metrics.registry import SYNC_SERVER_ADDRESS_OUTCOMES
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.sync import (
     SyncAuthView,
@@ -60,36 +62,37 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
+from moneybin.services import sync_server_address
+from moneybin.services.sync_server_address import AddressPlan
+
+if TYPE_CHECKING:
+    from moneybin.services.sync_service import SyncPurgePlan
 
 
 def _build_sync_client() -> Any:
-    """Construct a SyncClient from current settings.
+    """Construct a SyncClient from current settings. Extracted for test mocking."""
+    try:
+        return sync_server_address.build_sync_client()
+    except UserError as e:
+        raise _agent_facing(e) from e
 
-    Mirrors the CLI builder (``cli/commands/sync.py``) exactly — including the
-    per-profile identity — so MCP and CLI read and write the same scoped token
-    slot. (The two builders are duplicated; consolidating them is tracked as a
-    follow-up.)
-    """
-    from moneybin.config import get_settings
-    from moneybin.connectors.sync_client import SyncClient
-    from moneybin.utils.user_config import get_or_create_profile_id
 
-    settings = get_settings()
-    if settings.sync.server_url is None:
-        raise ValueError(
-            "sync.server_url is not configured. "
-            "Set MONEYBIN_SYNC__SERVER_URL in your environment."
-        )
-    # Scope the broker identity to the active profile so each profile
-    # authenticates as a distinct user.
-    profile_id = get_or_create_profile_id(settings.profile_dir)
-    return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
+_ASK_FOR_ADDRESS = (
+    "Ask the user for their moneybin-sync server's address, then call "
+    "sync_link(mode='login', server_url=<that address>). Never choose "
+    "or guess the address yourself."
+)
+
+
+def _agent_facing(error: UserError) -> UserError:
+    """Swap the terminal-command hint for one an agent can act on."""
+    if error.code != error_codes.SYNC_SERVER_NOT_CONFIGURED:
+        return error
+    return UserError(error.message, code=error.code, hint=_ASK_FOR_ADDRESS)
 
 
 def _build_sync_auth_service() -> Any:
     """Construct profile-scoped nonblocking authentication orchestration."""
-    from moneybin.connectors.sync_auth import SyncAuthService
-
     return SyncAuthService(client=_build_sync_client())
 
 
@@ -186,8 +189,9 @@ def _pull_actions(result: PullResult) -> list[str]:
         actions.append(
             f"{len(result.investment_source_overlap_accounts)} account(s) have "
             "both manual and Plaid investment history — lots and gains "
-            "double-count until one source is chosen per account "
-            "(see system_status(sections=['doctor']))."
+            "double-count until one source is chosen per account with "
+            "accounts_set(investment_source_type=...); "
+            "system_status(sections=['doctor']) shows each source's trade counts."
         )
     actions.extend(refresh_rate_gap_hints(result.refresh_steps))
     actions.append("Use sync_status to see connection health going forward.")
@@ -230,8 +234,11 @@ def sync_link(
                 error=UserError(
                     f"multiple connected institutions match '{institution}' ({ids})",
                     code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
-                    hint="Run sync_status to identify them; the duplicate name "
-                    "must be disambiguated before sync_link can target one.",
+                    hint="Run sync_status to see each connection's "
+                    "provider_item_id and created_at. sync_link cannot target "
+                    "one of several same-named connections yet — use "
+                    "sync_disconnect(provider_item_id=...) to remove the "
+                    "extra one, then retry.",
                 ),
                 actions=["Run sync_status to list connected institutions."],
             )
@@ -336,19 +343,130 @@ def sync_status_coarse(
     return build_classified_envelope(data, actions=actions)
 
 
+def _server_address_binding(plan: AddressPlan) -> ConfirmationBinding:
+    return ConfirmationBinding(
+        arguments={"mode": "login", "server_url": plan.url, "change": plan.change},
+        resolved_ids=(plan.url,),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="sync_server_address_set",
+        blast_radius={"profiles": 1},
+    )
+
+
+def _server_address_message(plan: AddressPlan, *, suggested: bool) -> str:
+    if suggested:
+        lines = [
+            "No sync server is set for this profile. Use the local default, "
+            f"{plan.url}? You will be sent there to sign in, and bank linking "
+            "runs through it. Confirm only if you run moneybin-sync on this "
+            "machine; otherwise decline and give your assistant your server's "
+            "address."
+        ]
+    else:
+        lines = [
+            f"Use {plan.url} as this profile's sync server? You will be sent "
+            "there to sign in, and bank linking runs through it. Confirm only "
+            "if you gave this address yourself."
+        ]
+    if plan.change == "replace":
+        lines.append(
+            "This replaces the profile's current server and signs it out of that one."
+        )
+    if plan.unencrypted:
+        lines.append("The connection to this address is not encrypted.")
+    return " ".join(lines)
+
+
+async def _begin_login_at(
+    server_url: str, *, suggested: bool = False
+) -> SyncAuthResult:
+    """Begin login at an address, saving it only with consent."""
+    plan = await asyncio.to_thread(
+        sync_server_address.plan_server_address, server_url, surface="mcp"
+    )
+    if plan.change != "unchanged":
+        try:
+            # elicitation_only: a fallback token would go back to the calling
+            # agent, which could then approve its own choice of server.
+            grant = await grant_confirmation_or_raise(
+                binding=_server_address_binding(plan),
+                message=_server_address_message(plan, suggested=suggested),
+                confirmation_token=None,
+                elicitation_only=True,
+                cli_equivalent=(
+                    "moneybin sync login"
+                    if suggested
+                    else sync_server_address.LOGIN_COMMAND
+                ),
+            )
+        except UserError as e:
+            # A timeout shares the declined code; nobody answered, so the
+            # local address was not ruled out.
+            timed_out = (e.details or {}).get("reason") == "timeout"
+            declined = (
+                e.code == error_codes.MUTATION_CONFIRMATION_DECLINED and not timed_out
+            )
+            outcome = (
+                "timed_out"
+                if timed_out
+                else "declined"
+                if declined
+                else "prompt_unavailable"
+            )
+            SYNC_SERVER_ADDRESS_OUTCOMES.labels(surface="mcp", outcome=outcome).inc()
+            if declined and suggested:
+                # Declining the default means the server is elsewhere.
+                raise UserError(
+                    e.message, code=e.code, details=e.details, hint=_ASK_FOR_ADDRESS
+                ) from e
+            raise
+        # The prompt can sit open while the CLI saves another address; what
+        # the person approved must still be what saving does now.
+        plan = await asyncio.to_thread(
+            sync_server_address.plan_server_address, server_url, surface="mcp"
+        )
+        grant.verify(_server_address_binding(plan))
+    start = await asyncio.to_thread(
+        sync_server_address.start_login, plan, surface="mcp"
+    )
+    return await asyncio.to_thread(
+        SyncAuthService(client=start.client).begin, challenge=start.challenge
+    )
+
+
 @mcp_tool(read_only=False, idempotent=False, open_world=True)
-def sync_link_coarse(
+async def sync_link_coarse(
     institution: str | None = None,
     mode: Literal["institution", "login"] = "institution",
+    server_url: str | None = None,
 ) -> ResponseEnvelope[SyncLinkCoarsePayload]:
     """Start an institution-link or nonblocking device-login session."""
+    if server_url is not None and mode != "login":
+        raise UserError(
+            "server_url is valid only when mode='login'.",
+            code=error_codes.SYNC_LINK_MODE_CONFLICT,
+        )
     if mode == "login":
         if institution is not None:
             raise UserError(
                 "institution is valid only when mode='institution'.",
                 code=error_codes.SYNC_LINK_MODE_CONFLICT,
             )
-        result = _build_sync_auth_service().begin()
+        if server_url is not None:
+            result = await _begin_login_at(server_url)
+        else:
+            try:
+                result = await asyncio.to_thread(
+                    lambda: _build_sync_auth_service().begin()
+                )
+            except UserError as e:
+                if e.code != error_codes.SYNC_SERVER_NOT_CONFIGURED:
+                    raise
+                result = await _begin_login_at(
+                    sync_server_address.SUGGESTED_SERVER_URL, suggested=True
+                )
         data: SyncLinkCoarsePayload = SyncAuthView(
             auth_session_id=result.auth_session_id,
             status=result.status,
@@ -366,7 +484,7 @@ def sync_link_coarse(
                 "after the user completes authorization.",
             ],
         )
-    response = sync_link(institution=institution)
+    response = await asyncio.to_thread(sync_link, institution=institution)
     if response.error is not None:
         return cast(ResponseEnvelope[SyncLinkCoarsePayload], response)
     return build_envelope(
@@ -391,15 +509,19 @@ def sync_pull_coarse(
     return sync_pull(institution=institution)
 
 
-def _sync_disconnect_binding(
-    institution: str,
-    connection: ConnectedInstitution,
-) -> ConfirmationBinding:
-    """Bind confirmation to one exact live remote institution connection."""
+def _sync_disconnect_binding(connection: ConnectedInstitution) -> ConfirmationBinding:
+    """Bind confirmation to one exact live remote institution connection.
+
+    Bound on the resolved connection's own stable identity
+    (``provider_item_id`` / ``id``), not the caller's raw ``institution``
+    input — that stays correct whether the caller targeted by name or by
+    item id, and it is what actually changes if the live connection set
+    shifts between plan and confirm (see ``ConfirmationGrant.verify``).
+    """
     return ConfirmationBinding(
         arguments={
-            "institution": institution.casefold(),
             "mode": "institution",
+            "provider_item_id": connection.provider_item_id,
             "institution_name": connection.institution_name,
             "provider": connection.provider,
             "status": connection.status,
@@ -413,30 +535,133 @@ def _sync_disconnect_binding(
     )
 
 
+def _sync_disconnect_message(connection: ConnectedInstitution) -> str:
+    """Name the exact connection a disconnect confirmation would remove.
+
+    Two connections at the same institution (e.g. after a relink) render
+    identically without this — the confirm must let the user tell them
+    apart rather than trust a bare institution name (design-principles.md
+    -> "Magic stays visible").
+    """
+    name = connection.institution_name or "this institution"
+    linked = connection.created_at.date().isoformat()
+    return (
+        f"Permanently disconnect {name} (provider_item_id="
+        f"{connection.provider_item_id}, linked {linked})? Previously "
+        "pulled local rows remain."
+    )
+
+
 def _sync_logout() -> Any:
     """Run blocking credential cleanup outside the MCP event loop."""
     return _build_sync_auth_service().logout()
 
 
-def _plan_sync_disconnect(institution: str) -> ConnectedInstitution:
+def _plan_sync_disconnect(
+    institution: str | None, provider_item_id: str | None
+) -> ConnectedInstitution:
     """Resolve one live disconnect target outside the MCP event loop."""
     with _build_sync_service() as service:
-        return service.plan_disconnect(institution=institution)
+        return service.plan_disconnect(
+            institution=institution, provider_item_id=provider_item_id
+        )
 
 
 def _disconnect_sync_confirmed(
-    institution: str,
+    institution: str | None,
+    provider_item_id: str | None,
     grant: ConfirmationGrant,
 ) -> ConnectedInstitution:
     """Re-resolve, verify, and delete one connection outside the event loop."""
 
     def verify(live: ConnectedInstitution) -> None:
-        grant.verify(_sync_disconnect_binding(institution, live))
+        grant.verify(_sync_disconnect_binding(live))
 
     with _build_sync_service() as service:
         return service.disconnect_confirmed(
             institution=institution,
+            provider_item_id=provider_item_id,
             verify=verify,
+        )
+
+
+def _sync_purge_binding(plan: SyncPurgePlan) -> ConfirmationBinding:
+    """Bind a purge to the exact item, its live connection, and every count.
+
+    The counts are part of the binding, so a pull that lands between the
+    preview and the confirm — adding rows the user never saw quoted — changes
+    the digest and the confirm is refused rather than deleting more than it
+    described. The fields are exactly ``SyncPurgePlan.binding``'s, so the CLI
+    and MCP surfaces bind one purge to the same facts and volatile connection
+    metadata (``status``, ``last_sync``) cannot spuriously refuse a confirm.
+    """
+    connection = plan.connection
+    return ConfirmationBinding(
+        arguments={
+            "mode": "institution",
+            "state": "absent",
+            "provider_item_id": plan.provider_item_id,
+            "connection_id": None if connection is None else connection.id,
+            "table_counts": [[name, int(count)] for name, count in plan.table_counts],
+            "account_link_ids": list(plan.account_link_ids),
+            "decision_ids": list(plan.decision_ids),
+        },
+        resolved_ids=(plan.provider_item_id,),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="sync_disconnect_absent",
+        blast_radius=plan.blast_radius,
+    )
+
+
+def _sync_purge_message(plan: SyncPurgePlan) -> str:
+    """Name the item, the server half, and the exact local rows a purge removes."""
+    connection = plan.connection
+    local = (
+        f"delete its {plan.rows_to_delete} locally pulled rows, reverse "
+        f"{len(plan.account_link_ids)} account links, and withdraw "
+        f"{len(plan.decision_ids)} merge proposals? This is permanent."
+    )
+    if connection is None:
+        return (
+            f"The sync server no longer lists provider_item_id="
+            f"{plan.provider_item_id}. Permanently {local}"
+        )
+    name = connection.institution_name or "this institution"
+    linked = connection.created_at.date().isoformat()
+    return (
+        f"Permanently disconnect {name} (provider_item_id="
+        f"{plan.provider_item_id}, linked {linked}) and {local}"
+    )
+
+
+def _plan_sync_purge(
+    institution: str | None, provider_item_id: str | None
+) -> SyncPurgePlan:
+    """Resolve one purge target outside the MCP event loop."""
+    with _build_sync_service() as service:
+        return service.plan_purge(
+            institution=institution, provider_item_id=provider_item_id
+        )
+
+
+def _purge_sync_confirmed(
+    institution: str | None,
+    provider_item_id: str | None,
+    grant: ConfirmationGrant,
+) -> SyncPurgePlan:
+    """Re-plan, verify, disconnect, and purge outside the event loop."""
+
+    def verify(live: SyncPurgePlan) -> None:
+        grant.verify(_sync_purge_binding(live))
+
+    with _build_sync_service() as service:
+        return service.purge_confirmed(
+            institution=institution,
+            provider_item_id=provider_item_id,
+            verify=verify,
+            actor="mcp",
         )
 
 
@@ -449,19 +674,35 @@ def _disconnect_sync_confirmed(
 )
 async def sync_disconnect(
     institution: str | None = None,
+    provider_item_id: str | None = None,
     mode: Literal["institution", "logout"] = "institution",
+    state: Literal["disconnected", "absent"] = "disconnected",
     confirmation_token: str | None = None,
 ) -> ResponseEnvelope[SyncDisconnectCoarsePayload]:
-    """Disconnect an institution or clear scoped sync credentials.
+    """Disconnect one institution connection or clear scoped sync credentials.
 
-    Institution disconnect is permanent on moneybin-sync; local pulled rows
-    remain. Logout clears profile-scoped credentials and pending auth sessions
-    but is recoverable through ``sync_link(mode="login")``.
+    Institution disconnect is permanent on moneybin-sync; with the default
+    ``state="disconnected"`` local pulled rows remain. ``state="absent"``
+    also deletes every locally pulled row of the item, reverses its account
+    links, and withdraws merge proposals only its accounts describe — and,
+    by ``provider_item_id``, reaches an item the server no longer lists.
+    Pass `provider_item_id` (from sync_status) to target one exact
+    connection — required when an institution has more than one (e.g. after
+    a relink), where `institution` alone is ambiguous and gets refused.
+    `institution` and `provider_item_id` are mutually exclusive. Logout
+    clears profile-scoped credentials and pending auth sessions but is
+    recoverable through ``sync_link(mode="login")``.
     """
     if mode == "logout":
-        if institution is not None:
+        if institution is not None or provider_item_id is not None:
             raise UserError(
-                "institution is valid only when mode='institution'.",
+                "institution and provider_item_id are valid only when "
+                "mode='institution'.",
+                code=error_codes.SYNC_DISCONNECT_MODE_CONFLICT,
+            )
+        if state != "disconnected":
+            raise UserError(
+                "state='absent' is valid only when mode='institution'.",
                 code=error_codes.SYNC_DISCONNECT_MODE_CONFLICT,
             )
         if confirmation_token is not None:
@@ -479,35 +720,89 @@ async def sync_disconnect(
                 "Use sync_link(mode='login') to authenticate this profile again.",
             ],
         )
-    if institution is None:
+    if institution is None and provider_item_id is None:
         raise UserError(
-            "institution is required when mode='institution'.",
+            "institution or provider_item_id is required when mode='institution'.",
             code=error_codes.SYNC_INSTITUTION_REQUIRED,
         )
+    if institution is not None and provider_item_id is not None:
+        raise UserError(
+            "institution and provider_item_id are mutually exclusive — "
+            "pass exactly one",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if state == "absent":
+        return await _sync_disconnect_absent(
+            institution, provider_item_id, confirmation_token
+        )
     binding: ConfirmationBinding | None = None
+    message = (
+        "Permanently disconnect this connection? Previously pulled local rows remain."
+    )
     if confirmation_token is None:
-        plan = await asyncio.to_thread(_plan_sync_disconnect, institution)
-        binding = _sync_disconnect_binding(institution, plan)
+        plan = await asyncio.to_thread(
+            _plan_sync_disconnect, institution, provider_item_id
+        )
+        binding = _sync_disconnect_binding(plan)
+        message = _sync_disconnect_message(plan)
     grant: ConfirmationGrant = await grant_confirmation_or_raise(
         binding=binding,
-        message=(
-            "Permanently disconnect this exact institution from future syncs? "
-            "Previously pulled local rows remain."
-        ),
+        message=message,
         confirmation_token=confirmation_token,
     )
 
     disconnected = await asyncio.to_thread(
         _disconnect_sync_confirmed,
         institution,
+        provider_item_id,
         grant,
     )
     return build_envelope(
         data=SyncInstitutionDisconnectView(
             status="disconnected",
-            institution=disconnected.institution_name or institution,
+            institution=disconnected.institution_name,
+            provider_item_id=disconnected.provider_item_id,
         ),
         actions=["Use sync_status to inspect remaining institution connections."],
+    )
+
+
+async def _sync_disconnect_absent(
+    institution: str | None,
+    provider_item_id: str | None,
+    confirmation_token: str | None,
+) -> ResponseEnvelope[SyncDisconnectCoarsePayload]:
+    """The state='absent' branch: confirm the exact purge, then apply it."""
+    binding: ConfirmationBinding | None = None
+    message = (
+        "Permanently disconnect this connection and delete every locally "
+        "pulled row it owns?"
+    )
+    if confirmation_token is None:
+        plan = await asyncio.to_thread(_plan_sync_purge, institution, provider_item_id)
+        binding = _sync_purge_binding(plan)
+        message = _sync_purge_message(plan)
+    grant: ConfirmationGrant = await grant_confirmation_or_raise(
+        binding=binding,
+        message=message,
+        confirmation_token=confirmation_token,
+    )
+    live = await asyncio.to_thread(
+        _purge_sync_confirmed, institution, provider_item_id, grant
+    )
+    connection = live.connection
+    return build_envelope(
+        data=SyncInstitutionDisconnectView(
+            status="purged",
+            institution=None if connection is None else connection.institution_name,
+            provider_item_id=live.provider_item_id,
+            purged=True,
+            rows_deleted=live.rows_to_delete,
+            account_links_reversed=len(live.account_link_ids),
+        ),
+        actions=[
+            "Use sync_status to inspect remaining institution connections.",
+        ],
     )
 
 
@@ -520,7 +815,13 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
             "Start a hosted institution-link or nonblocking device-login session. "
             "Returned link_url and user_code values are sensitive one-time "
             "credentials; present them to the user, but never include them in "
-            "logs or summaries.",
+            "logs or summaries. In login mode, server_url names this profile's "
+            "sync server: pass only an address the user gave you; omit it and, "
+            "if none is saved, the user is offered "
+            f"{sync_server_address.SUGGESTED_SERVER_URL}. A new or "
+            "changed address is saved to the profile's config.yaml only after "
+            "the user confirms a prompt, and signs the profile out of the "
+            "previous server; log in with another address to change it back.",
         ),
         (
             sync_status_coarse,
@@ -539,7 +840,18 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
         (
             sync_disconnect,
             "sync_disconnect",
-            "Disconnect one institution or clear profile-scoped sync credentials.",
+            "Disconnect one institution connection or clear profile-scoped "
+            "sync credentials. Institution disconnect is permanent (no revert); "
+            "logout is recoverable via sync_link(mode='login'). "
+            "provider_item_id (from sync_status) targets one exact connection "
+            "— required when an institution has more than one (e.g. after a "
+            "relink), where institution alone is ambiguous. Mutually "
+            "exclusive with institution. state='absent' also deletes the "
+            "item's locally pulled raw rows (raw.plaid_* and its prices), "
+            "reverses its account links, and withdraws merge proposals only "
+            "its accounts describe; by provider_item_id it also reaches an "
+            "item the server no longer lists. Confirmed destructive write; "
+            "run refresh_run afterwards.",
         ),
     ):
         register(

@@ -22,31 +22,39 @@ hygiene — importing this module must stay cheap enough for `--help`.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import accumulate
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import typer
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
+    from moneybin.cli.terminal import TerminalPolicy
     from moneybin.reports._framework.contract import MoneyKind, Polarity
 
 __all__ = [
     "UNCATEGORIZED_LABEL",
     "ColumnView",
     "Money",
+    "MoneyWithCurrency",
     "Placeholder",
     "Style",
     "color_enabled",
+    "build_rows",
+    "build_summary",
+    "compose_human_result",
     "column_view",
     "count_wide_request",
     "format_money",
+    "format_percent",
+    "render_human_text",
     "render_note",
     "render_rows",
     "render_summary",
@@ -58,6 +66,11 @@ MINUS = "\N{MINUS SIGN}"
 The design system's ``Amount`` component signs money with this glyph; matching
 it keeps a CLI amount and a web amount the same string.
 """
+
+_TERMINAL_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|.)"
+)
+_TERMINAL_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 
 
 class Style(StrEnum):
@@ -83,6 +96,9 @@ class Style(StrEnum):
     POSITIVE = "green"
     NEGATIVE = "red"
     WARNING = "yellow"
+    HIERARCHY = "bold"
+    CONTEXT = "dim"
+    ACTION = "cyan"
     NEUTRAL = ""
 
 
@@ -134,7 +150,15 @@ class Money:
         return Style.NEUTRAL
 
 
-def format_money(value: object, kind: MoneyKind) -> str:
+@dataclass(frozen=True, slots=True)
+class MoneyWithCurrency:
+    """A monetary value and its normalized currency, rendered atomically."""
+
+    amount: object
+    currency: str
+
+
+def format_money(value: object, kind: MoneyKind, *, minus: str = MINUS) -> str:
     """Stringify one amount — the only place text output does so (req 11).
 
     Thousands separators always, two decimal places always. A missing amount
@@ -142,9 +166,9 @@ def format_money(value: object, kind: MoneyKind) -> str:
     number nobody stored. It is a dash rather than a blank because that is what
     absence is already spelled as across this CLI — ``confidence_cell``, the
     review queues, ``accounts list`` — and because a blank money cell beside a
-    dashed one reads as two different facts. The first period of a
-    ``networth history`` series has no prior to difference against, so this is
-    the common case, not an edge.
+    dashed one reads as two different facts. The first bucket of a
+    ``net-worth --interval`` series has no prior to difference against, so this
+    is the common case, not an edge.
 
     A ``−`` is never dropped, whatever the kind. "Balances unsigned" exists so
     a checking balance carries no decorative ``+``; read as licence to drop the
@@ -163,12 +187,29 @@ def format_money(value: object, kind: MoneyKind) -> str:
         return "-"
     digits = f"{abs(amount):,.2f}"
     if amount < 0:
-        return f"{MINUS}{digits}"
+        return f"{minus}{digits}"
     # `flow` and `delta` state their direction; a zero has none to state, so it
     # goes unsigned rather than claiming income with a `+`.
     if kind in ("flow", "delta") and amount > 0:
         return f"+{digits}"
     return digits
+
+
+def format_percent(value: object, *, minus: str = MINUS) -> str:
+    """Stringify one stored ratio as a percent to one place: ``0.0943`` → ``+9.4%``.
+
+    Always signed, like a ``delta``: the sign is the stored ratio's, so a ratio
+    over a negative base reads opposite to its numerator. A value that rounds
+    to zero states none. Rounds half-even, as ``format_money`` does. A missing
+    ratio renders ``-``, as a missing amount does in ``format_money``.
+    """
+    ratio = _as_decimal(value)
+    if ratio is None:
+        return value if isinstance(value, str) and value else "-"
+    pct = (ratio * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_EVEN)
+    if pct == 0:
+        return "0.0%"
+    return f"{minus if pct < 0 else '+'}{abs(pct):,}%"
 
 
 def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
@@ -181,6 +222,52 @@ def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
         return False
     isatty = getattr(stream, "isatty", None)
     return bool(isatty and isatty())
+
+
+def render_human_text(result: RenderableType, *, terminal: TerminalPolicy) -> str:
+    """Render one answer once at the selected width for output or paging."""
+    from rich.console import Console
+    from rich.segment import Segment, Segments
+
+    console = Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
+    )
+    renderable = result.table if isinstance(result, _RowsAnswer) else result
+    # `render` + `split_lines`, not `render_lines`: the latter crops every
+    # line to the console width, which would silently truncate a `build_code`
+    # token wider than the terminal. Nothing else can exceed the width — a
+    # table is sized to it and prose wraps inside it — so the only wider line
+    # is one that asked to stay whole, and the pager decides how to show it.
+    lines = Segment.split_lines(console.render(renderable, console.options))
+    safe_segments = (
+        Segment(
+            _TERMINAL_CONTROL.sub("", _TERMINAL_ESCAPE.sub("", segment.text)),
+            segment.style,
+            segment.control,
+        )
+        for line in lines
+        for segment in (*line, Segment.line())
+    )
+    with console.capture() as capture:
+        # crop=False for the same reason as `render` above: `print` crops to
+        # the console width by default, and would take the tail of the one
+        # line the block deliberately left wider than the terminal.
+        console.print(Segments(safe_segments), end="", crop=False)
+    # A `Table.grid()` cell (`build_summary`'s label/value layout) pads a
+    # shorter value with spaces to the column's own widest row, so the
+    # padding lives inside the table's segments before this function ever
+    # sees them — `render` above never pads to the *console* width and cannot
+    # remove it either. Stripped per physical line
+    # rather than from the joined text so an intentional blank line survives.
+    text = "\n".join(line.rstrip(" ") for line in capture.get().split("\n"))
+    return (
+        text if not isinstance(result, _RowsAnswer) else text + result.disclosure + "\n"
+    )
 
 
 #: Stands in for the columns a width fit dropped, in the position it dropped
@@ -216,6 +303,20 @@ class Placeholder:
 
     column: str
     value: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RowsAnswer:
+    """A table and its one-line disclosure, rendered as one answer."""
+
+    table: RenderableType
+    disclosure: str
+
+    def __rich_console__(self, console: object, options: object):
+        from rich.segment import Segment
+
+        yield self.table
+        yield Segment(self.disclosure + "\n")
 
 
 def _cell_width(cell: RenderableType) -> int:
@@ -290,6 +391,27 @@ def _fit_columns(widths: Sequence[int], available: int) -> tuple[int, ...]:
             best = (head, tail)
     head, tail = best
     return (*range(head), *range(total - tail, total))
+
+
+def _drop_optional(
+    columns: Sequence[str],
+    widths: Sequence[int],
+    optional: Sequence[str],
+    available: int,
+) -> tuple[int, ...]:
+    """Indices left after dropping ``optional`` columns, last first, until it fits.
+
+    Every other column is essential and stays even when the table still does
+    not fit, because the essential set is the command's answer and Rich can
+    still wrap its text. Unlike ``_fit_columns`` this chooses by declared
+    importance rather than by position, so a measure in the middle survives.
+    """
+    kept = list(range(len(columns)))
+    for name in reversed(optional):
+        if _table_width([widths[i] for i in kept]) <= available:
+            break
+        kept.remove(columns.index(name))
+    return tuple(kept)
 
 
 @dataclass(frozen=True)
@@ -382,19 +504,25 @@ def column_view[T](
     )
 
 
-def render_rows(
+def build_rows(
     columns: Sequence[str],
     rows: Iterable[Sequence[object]],
     *,
     money: Mapping[str, Money] | None = None,
     numeric: Sequence[str] | None = None,
+    grouped: Sequence[str] | None = None,
+    percent: Sequence[str] | None = None,
+    nowrap: Sequence[str] | None = None,
     total_columns: int | None = None,
     total_rows: int | None = None,
     has_more: bool = False,
     placeholder: Placeholder | None = None,
+    framing: Sequence[str] = (),
     fit: bool = False,
-) -> None:
-    """Render ``rows`` as a table to stdout (requirement 2).
+    optional: Sequence[str] | None = None,
+    terminal: TerminalPolicy | None = None,
+) -> RenderableType:
+    """Build ``rows`` as a table renderable (requirement 2).
 
     ``money`` declares the columns holding amounts, keyed by header name.
     Declared columns are formatted by :func:`format_money`, right-aligned
@@ -403,9 +531,31 @@ def render_rows(
 
     ``numeric`` names the columns that hold a bare number that is not an
     amount — a share count, a per-unit price, an FX rate, a match score. They
-    are printed as stored and stay left-aligned, because requirement 13 covers
-    amounts only. What they take from ``money`` is the one guarantee that has
-    nothing to do with being an amount: they do not fold.
+    are right-aligned (requirement 9 covers every numeric column, not only
+    amounts) and never fold, matching ``money``'s no-fold guarantee. Values
+    print exactly as stored — no grouping — because many `numeric=` columns
+    already carry a deliberately un-grouped precision (`fx list`'s rate,
+    `investments holdings`' avg cost) that thousands-grouping would not change
+    the digits of but would visually clutter for no reason.
+
+    ``grouped`` is the strict subset of ``numeric`` whose `int`/`Decimal`
+    values should additionally get thousands grouping — `format_money`-style,
+    but without rounding or a sign glyph, since the column is not an amount.
+    Opt-in, not inferred from the type, because a `Decimal` FX rate and a
+    `Decimal` row count share a Python type but not a formatting convention;
+    a caller with no per-row semantics to protect (`sql query`'s dynamic
+    result columns, `db info`'s table row counts) passes the same sequence to
+    both. A value that arrives as `str` (a per-unit price stored at more
+    precision than `int`/`Decimal` would preserve, e.g. `"8.2987654321"`)
+    is never grouped regardless of this declaration.
+
+    ``percent`` is the subset of ``numeric`` holding a stored ratio, rendered
+    by :func:`format_percent` as ``+9.4%`` rather than as stored.
+
+    ``nowrap`` names a column that holds ordinary text this table must not fold
+    — a timestamp, a status word — where requirement 13's right-alignment does
+    not apply because the column is not a number. It shares ``numeric``'s
+    no-fold guarantee only; it stays left-aligned and is never grouped.
 
     Measured, not assumed. While a table fits its terminal nothing is squeezed
     and this declaration changes no output at all. It decides only what gives
@@ -426,6 +576,9 @@ def render_rows(
     (requirement 10). A caller with no column policy leaves it ``None`` and
     frames nothing.
 
+    ``framing`` adds the caller's own clauses to that line — a fact every row
+    shares and the table therefore omits, such as the one currency they are in.
+
     ``total_rows`` is the size of the whole result when ``rows`` is one page of
     it, and frames the remainder (requirement 34). ``has_more`` says whether a
     further page exists, and gates the continuation the frame offers: the
@@ -442,23 +595,43 @@ def render_rows(
     omitted columns, so a complete projection under ``--wide`` still discloses
     a taxonomy gap.
 
+    ``optional`` names the columns a ``--wide`` view may omit when the whole
+    projection is wider than the terminal, listed most important first; the
+    last is dropped first, and every column not named stays. A `--wide` table
+    has no wider view to point at, so the frame names what it omitted and
+    points at a wider terminal or JSON instead (requirement 10). Exclusive with
+    ``fit``, which chooses by position rather than by importance.
+
     Every clause shares one line. Four lines beneath a two-row table would cost
     more screen than the result they describe.
 
     **One line per record, always** (requirement 35). This renderer never
-    deduplicates, merges, or suppresses a row. `reports networth` currently
-    sums an account once per balance source, so a doubled account shows as
-    repeated rows; collapsing them here would make the output look right while
-    the total stayed wrong, removing the symptom that finds the defect.
+    deduplicates, merges, or suppresses a row. `reports net-worth-accounts` is
+    one row per (account, date), so one real account that cross-source dedup
+    left as two unlinked accounts shows as two rows on the same date;
+    collapsing them here would make the output look right while the total
+    stayed wrong, removing the symptom that finds the defect.
     """
-    from rich.console import Console  # defer heavy import
+    from rich import box  # defer heavy import
+    from rich.console import (
+        Console,  # defer heavy import
+    )
     from rich.table import Table  # defer heavy import
+    from rich.text import Text  # defer heavy import
+
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
 
     declared = money or {}
+    declared_numeric = set(numeric or ())
     # Formatting and atomicity are separate declarations. A per-unit price is
     # deliberately absent from `money` so `format_money` cannot round it to
     # `0.00`, and that exclusion silently took the no-fold guarantee with it.
-    unwrappable = set(declared) | set(numeric or ())
+    # `nowrap` shares only the no-fold guarantee — it is ordinary text, not a
+    # number, so it never joins `declared_numeric` and never right-aligns.
+    unwrappable = set(declared) | declared_numeric | set(nowrap or ())
     # markup=False because every cell is data, much of it user-authored — a
     # merchant name, a report description. Rich reads `[...]` as a style tag, so
     # a default console drops "spend [excluding rent]" to "spend " and lets
@@ -468,7 +641,10 @@ def render_rows(
     console = Console(
         markup=False,
         highlight=False,
-        no_color=not color_enabled(sys.stdout, os.environ),
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
     )
     absent_at: int | None = None
     absent_as = ""
@@ -487,10 +663,26 @@ def render_rows(
         absent_at = columns.index(placeholder.column)
         absent_as = placeholder.value
     cells_source: Iterable[tuple[list[RenderableType], bool]] = (
-        _cells(columns, row, declared, absent_at, absent_as) for row in rows
+        _cells(
+            columns,
+            row,
+            declared,
+            absent_at,
+            absent_as,
+            grouped=frozenset(grouped or ()) & declared_numeric,
+            percent=frozenset(percent or ()) & declared_numeric,
+            minus=terminal.minus,
+        )
+        for row in rows
     )
+    if fit and optional:
+        raise ValueError("fit and optional are exclusive")
+    unknown_optional = [name for name in optional or () if name not in columns]
+    if unknown_optional:
+        # Refused for the reason `column_view` gives an unknown column.
+        raise ValueError(f"undeclared optional column(s) {unknown_optional}")
     kept = tuple(range(len(columns)))
-    if fit and columns:
+    if (fit or optional) and columns:
         # The one path that buffers the whole result, and it has no choice: a
         # column is as wide as its widest value, so every record has to be
         # rendered before the first column can be sized. Every other path
@@ -506,22 +698,35 @@ def render_rows(
             )
             for i, name in enumerate(columns)
         ]
-        kept = _fit_columns(widths, console.width)
+        kept = (
+            _drop_optional(columns, widths, optional, console.width)
+            if optional
+            else _fit_columns(widths, console.width)
+        )
+    omitted = [name for i, name in enumerate(columns) if i not in kept]
     # The single gap in a prefix-plus-suffix selection, or None when nothing
-    # was dropped.
-    gap = next(
-        (at for at, i in enumerate(kept[:-1]) if kept[at + 1] != i + 1),
-        None,
+    # was dropped. An optional drop can leave several gaps, so it marks none
+    # and names the omitted columns in the frame instead.
+    gap = (
+        None
+        if optional
+        else next(
+            (at for at, i in enumerate(kept[:-1]) if kept[at + 1] != i + 1),
+            None,
+        )
     )
 
-    table = Table()
+    table = Table(box=box.ASCII if terminal.ascii else box.HEAVY_HEAD)
     for at, i in enumerate(kept):
         name = columns[i]
         is_money = name in declared
         is_number = name in unwrappable
+        # Requirement 9 right-aligns every numeric column, not only amounts;
+        # `nowrap` is text (a timestamp, a status word) and stays left.
+        is_right_aligned = is_money or name in declared_numeric
         table.add_column(
-            name,
-            justify="right" if is_money else "left",
+            Text(name),
+            justify="right" if is_right_aligned else "left",
             # Text folds; a number does not. Folding only saves a value that
             # has a space to break on, and the text values most likely to
             # overflow here have none — an account id, a checksum, a display
@@ -548,7 +753,7 @@ def render_rows(
             no_wrap=is_number,
         )
         if at == gap:
-            table.add_column(ELISION, justify="center", overflow="fold")
+            table.add_column(Text(ELISION), justify="center", overflow="fold")
     # Counted off the kept columns, not the caller's whole projection: the
     # disclosure is about what this table shows, and a placeholder in a column
     # the fit dropped is not on screen to be misread.
@@ -566,7 +771,6 @@ def render_rows(
     # Rich holds every cell now, so let a buffered measurement copy go before
     # rendering allocates its own.
     del cells_source
-    console.print(table)
     # Counted from what was actually printed, so a caller's declared narrowing
     # and the renderer's own width fit are disclosed by one line rather than
     # two — and a fit the caller never asked about still cannot happen silently.
@@ -582,21 +786,164 @@ def render_rows(
         # error. Offered only against a page that exists, because a remedy
         # that fetches nothing is worse than no remedy at all.
         clauses.append("raise --limit for more")
-    if whole > len(kept):
+    if optional and omitted:
+        _count_columns_omitted()
+        clauses.append(
+            f"{len(kept)} of {whole} columns fit — {', '.join(omitted)} "
+            "omitted; widen the terminal or use --output json"
+        )
+    elif whole > len(kept):
         _count_columns_omitted()
         clauses.append(f"{len(kept)} of {whole} columns shown — --wide for all")
     if placeholder is not None and flagged:
         clauses.append(f"{flagged} {placeholder.value.lower()}")
+    clauses.extend(framing)
     if clauses:
         # stdout, and reachable under `-q` (this renderer takes no such
         # parameter): both are load-bearing. `moneybin reports spending-trend >
         # report.txt` has to capture the disclosure with the table it describes,
         # or the file records a truncated result that reads as a whole one.
-        typer.echo(" · ".join(clauses))
+        return _RowsAnswer(table, " · ".join(clauses))
+    return table
+
+
+def render_rows(
+    columns: Sequence[str],
+    rows: Iterable[Sequence[object]],
+    *,
+    money: Mapping[str, Money] | None = None,
+    numeric: Sequence[str] | None = None,
+    grouped: Sequence[str] | None = None,
+    percent: Sequence[str] | None = None,
+    nowrap: Sequence[str] | None = None,
+    total_columns: int | None = None,
+    total_rows: int | None = None,
+    has_more: bool = False,
+    placeholder: Placeholder | None = None,
+    framing: Sequence[str] = (),
+    fit: bool = False,
+    optional: Sequence[str] | None = None,
+    terminal: TerminalPolicy | None = None,
+) -> None:
+    """Render ``rows`` as a table to stdout using :func:`build_rows`."""
+    from rich.console import Console
+
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
+    console = Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
+    )
+    result = build_rows(
+        columns,
+        rows,
+        money=money,
+        numeric=numeric,
+        grouped=grouped,
+        percent=percent,
+        nowrap=nowrap,
+        total_columns=total_columns,
+        total_rows=total_rows,
+        has_more=has_more,
+        placeholder=placeholder,
+        framing=framing,
+        fit=fit,
+        optional=optional,
+        terminal=terminal,
+    )
+    if isinstance(result, _RowsAnswer):
+        console.print(result.table)
+        typer.echo(result.disclosure)
+        return
+    console.print(result)
+
+
+def build_summary(
+    pairs: Sequence[tuple[str, str]],
+    *,
+    title: str | None = None,
+    terminal: TerminalPolicy | None = None,
+) -> RenderableType:
+    """Build labelled scalars for composition with rows in one answer (requirement 10).
+
+    A long single-token value (an id, a path) that does not fit beside its
+    label moves to a line of its own, whole, the moment that line is wide
+    enough to hold it — Rich's own greedy wrap, no special casing needed. A
+    value wider than the terminal itself has no line that could hold it and
+    folds; that is deliberate. Folding a path is lossless (join the lines and
+    it is the path again), while marking it truncated with ``…`` discards the
+    one thing the reader came for — `import files`' ``Saved:`` path under a
+    deep temporary directory lost its filename that way. Numbers get the
+    ellipsis treatment in `build_rows` because a partial number misreads as a
+    whole one; a partial path cannot.
+
+    Each pair is its own `Text` (a `Group`, not one combined multi-line
+    `Text`) so one line's wrap never depends on another's.
+    """
+    from rich.console import Group
+    from rich.text import Text
+
+    if not pairs:
+        return Text()
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
+    width = max(len(label) for label, _ in pairs) + 1
+    lines: list[RenderableType] = []
+    if title is not None:
+        title_line = Text()
+        title_line.append(title, style=str(Style.HIERARCHY))
+        lines.append(title_line)
+    for label, value in pairs:
+        line = Text()
+        line.append(f"{label}:", style=str(Style.CONTEXT))
+        line.append(" " * (width - len(label) - 1))
+        line.append(f" {value}")
+        lines.append(line)
+    return Group(*lines)
+
+
+def build_code(text: str) -> RenderableType:
+    """A code block — SQL, a template — carried inside one answer.
+
+    `overflow="ignore"`, which in Rich also means no wrapping: every line
+    reaches the terminal exactly as written. The default `fold` would break
+    an identifier wider than the terminal across two physical lines, and a
+    statement copied back from that no longer parses — a token is the one
+    thing a code block must never split. `render_human_text` does not crop,
+    so a line wider than the terminal is the pager's to show, not lost. Not
+    `build_summary`, whose label grid pads and reflows a value as prose.
+    """
+    from rich.text import Text
+
+    return Text(text, overflow="ignore")
+
+
+def compose_human_result(
+    parts: Sequence[object], *, disclosures: Sequence[str] = ()
+) -> RenderableType:
+    """Compose scalars, rows, and disclosures before terminal paging."""
+    from rich.console import Group
+    from rich.text import Text
+
+    rendered = list(parts)
+    if disclosures:
+        rendered.append(Text("\n".join(disclosures)))
+    return Group(*cast("Sequence[RenderableType]", rendered))
 
 
 def render_summary(
-    pairs: Sequence[tuple[str, str]], *, title: str | None = None
+    pairs: Sequence[tuple[str, str]],
+    *,
+    title: str | None = None,
+    terminal: TerminalPolicy | None = None,
 ) -> None:
     """Render labelled scalars to stdout as aligned pairs (requirement 3).
 
@@ -604,16 +951,24 @@ def render_summary(
     :func:`format_money`, so this renderer never stringifies one itself.
 
     ``title`` heads the block when a command prints more than one of them and
-    the reader needs to know which is which; `reports networth` emits one per
-    currency the profile holds.
+    the reader needs to know which is which; `stats` emits one per metric
+    domain.
     """
-    if not pairs:
-        return
-    if title is not None:
-        typer.echo(title)
-    width = max(len(label) for label, _ in pairs) + 1
-    for label, value in pairs:
-        typer.echo(f"{label + ':':<{width}} {value}")
+    from rich.console import Console
+
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
+
+    Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
+    ).print(build_summary(pairs, title=title, terminal=terminal))
 
 
 def render_note(message: str, *, quiet: bool = False, warn: bool = False) -> None:
@@ -628,8 +983,13 @@ def render_note(message: str, *, quiet: bool = False, warn: bool = False) -> Non
     if warn and color_enabled(sys.stderr, os.environ):
         from rich.console import Console  # defer heavy import
 
+        # soft_wrap=True disables Rich's own word-wrap and crop for this print:
+        # without it, Console.print folds a long note mid-token at the terminal
+        # width and leaves a trailing space on the broken line — a note is one
+        # line of prose, not a table cell, so there is nothing to gain from
+        # Rich reflowing it and a real cost (rule 10) if it does.
         Console(stderr=True, markup=False, highlight=False).print(
-            message, style=Style.WARNING
+            message, style=Style.WARNING, soft_wrap=True
         )
         return
     typer.echo(message, err=True)
@@ -641,6 +1001,10 @@ def _cells(
     declared: Mapping[str, Money],
     absent_at: int | None = None,
     absent_as: str = "",
+    *,
+    grouped: Sequence[str] | frozenset[str] = (),
+    percent: Sequence[str] | frozenset[str] = (),
+    minus: str = MINUS,
 ) -> tuple[list[RenderableType], bool]:
     """Render one record's cells, and report whether the declared value was absent.
 
@@ -654,6 +1018,14 @@ def _cells(
     stored value, so the count cannot be confused by a *stored* string that
     happens to equal the placeholder — which is the distinction ``--output
     json`` preserves by carrying the NULL through untouched.
+
+    ``grouped`` names the columns from ``build_rows``' own ``grouped=``
+    declaration. An ``int`` (never ``bool``) or ``Decimal`` value there is
+    grouped by thousands with Python's ``,`` format spec, which changes
+    nothing about the value's scale or sign — only how the digits before the
+    point are punctuated. A ``str`` value (a per-unit price already stringified
+    at a precision `int`/`Decimal` construction would not preserve) is left
+    exactly as stored, and so is any column not named here at all.
     """
     from rich.text import Text  # defer heavy import
 
@@ -669,20 +1041,32 @@ def _cells(
             if value is None and at == absent_at:
                 # NULL only, deliberately. A whitespace-only category is
                 # reachable and is *not* treated as absent here, because
-                # `core.uncategorized_queue` selects `WHERE category IS NULL`
+                # the queue filter selects `category IS NULL`
                 # and would not surface it: labelling it would advertise a row
                 # `transactions categorize run` cannot act on. Making the two
                 # agree means normalizing blanks in staging, which is a change
                 # to what the queue contains rather than to how it renders.
                 absent = True
-                cells.append(absent_as)
+                cells.append(Text(absent_as))
+            elif name in percent and not isinstance(value, bool):
+                cells.append(Text(format_percent(value, minus=minus)))
+            elif (
+                name in grouped
+                and not isinstance(value, bool)
+                and isinstance(value, (int, Decimal))
+            ):
+                cells.append(Text(f"{value:,}"))
             else:
-                cells.append("" if value is None else str(value))
+                cells.append(Text("" if value is None else str(value)))
             continue
+        raw_amount = value.amount if isinstance(value, MoneyWithCurrency) else value
+        text = format_money(raw_amount, column_money.kind, minus=minus)
+        if isinstance(value, MoneyWithCurrency):
+            text = f"{text} {value.currency}"
         cells.append(
             Text(
-                format_money(value, column_money.kind),
-                style=str(column_money.style_for(value)),
+                text,
+                style=str(column_money.style_for(raw_amount)),
             )
         )
     return cells, absent
@@ -722,3 +1106,36 @@ def _as_decimal(value: object) -> Decimal | None:
             return None
         return parsed if parsed.is_finite() else None
     return None
+
+
+def render_command_menu(
+    sections: Sequence[tuple[str, Sequence[tuple[str, str]]]],
+    *,
+    terminal: TerminalPolicy,
+) -> None:
+    """Print a compact discovery menu using the shared terminal styles."""
+    from rich.console import Group
+    from rich.padding import Padding
+    from rich.table import Table
+    from rich.text import Text
+
+    parts: list[RenderableType] = [
+        Text("MoneyBin - understand your finances", style=str(Style.HIERARCHY))
+    ]
+    name_width = max(len(name) for _, commands in sections for name, _ in commands)
+    for title, commands in sections:
+        if not commands:
+            continue
+        parts.extend([Text(), Text(title, style=str(Style.HIERARCHY))])
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style=str(Style.ACTION), no_wrap=True, width=name_width)
+        table.add_column()
+        for name, description in commands:
+            table.add_row(name, description)
+        parts.append(Padding(table, (0, 0, 0, 2)))
+    parts.extend([
+        Text(),
+        Text("Run moneybin --help for all commands."),
+        Text("Run moneybin <command> --help for details."),
+    ])
+    typer.echo(render_human_text(Group(*parts), terminal=terminal), nl=False)

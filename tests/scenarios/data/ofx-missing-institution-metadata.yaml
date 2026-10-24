@@ -29,7 +29,7 @@ assertions:
   - name: import_log_single_successful_batch
     fn: assert_row_count_exact
     args:
-      table: raw.import_log
+      table: app.import_log
       expected: 1
   - name: ofx_transactions_present
     fn: assert_row_count_exact

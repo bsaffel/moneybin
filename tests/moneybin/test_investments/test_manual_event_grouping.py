@@ -152,7 +152,7 @@ def test_reinvest_failure_never_leaves_one_leg(
         "SELECT COUNT(*) FROM app.audit_log WHERE action = 'investment.record'"
     ).fetchone() == (0,)
     assert db.execute(
-        "SELECT status FROM raw.import_log WHERE format_name = 'manual_investment_entry'"
+        "SELECT status FROM app.import_log WHERE format_name = 'manual_investment_entry'"
     ).fetchall() == [("failed",)]
 
 

@@ -26,20 +26,21 @@ Usage: `moneybin merchants list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin merchants create
 
 Create a merchant mapping.
 
-Usage: `moneybin merchants create [OPTIONS] PATTERN CANONICAL_NAME`
+Usage: `moneybin merchants create [OPTIONS] {pattern} {canonical_name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `PATTERN` | text | yes | Merchant name pattern |
-| `CANONICAL_NAME` | text | yes | Canonical merchant name |
+| `pattern` | text | yes | Merchant name pattern |
+| `canonical_name` | text | yes | Canonical merchant name |
 
 **Options**
 
@@ -78,7 +79,8 @@ Usage: `moneybin merchants links pending [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin merchants links set
 
@@ -98,13 +100,13 @@ moneybin merchants links set dec001 --into merch0001aa
 moneybin merchants links set dec001 --new
 ```
 
-Usage: `moneybin merchants links set [OPTIONS] DECISION_ID`
+Usage: `moneybin merchants links set [OPTIONS] {decision_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `DECISION_ID` | text | yes | Decision ID to act on (from `merchants links pending`) |
+| `decision_id` | text | yes | Decision ID to act on (from `merchants links pending`) |
 
 **Options**
 
@@ -125,7 +127,8 @@ Usage: `moneybin merchants links history [OPTIONS]`
 |---|---|---|---|
 | `--limit, -n` | int (≥ 1) | `50` | Max records to show |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin merchants links run
 

@@ -29,31 +29,6 @@ is told a report returns. An agent that reads the description and then the
 result sees two different orders unless the mirror rule below holds them
 together. Reordering the tuple is a visible change to the catalog, not a no-op.
 
-**A service-backed report is the exception: there, the tuple *is* the
-projection.** `service_reports.py` passes `columns=[column.name for column in
-_SNAPSHOT_COLUMNS]` directly into its execution, so for `core:networth` and
-`core:networth_history` the declared order is what JSON, MCP, `--wide`, and every
-export emit. Reordering that tuple is a user-visible change, not a cosmetic one.
-
-A service report in fact carries **three** positions that must stay in
-agreement, but only two of them are separate lists an author reorders by hand:
-
-1. The `columns` tuple — sets `result.columns`, drives `--wide`.
-2. A `column_types` sequence. Both `core:networth` and `core:networth_history`
-   key their types by column name (`_SNAPSHOT_COLUMN_TYPES_BY_NAME`,
-   `_execute_networth_history`'s local `types_by_name`) and project them
-   through their own columns tuple (`_SNAPSHOT_COLUMNS`, `_HISTORY_COLUMNS`),
-   so this one is derived, not a second hand-kept ordering — reordering the
-   columns tuple carries the types with it automatically.
-   `core:networth_history`'s `_decimal_column_type(rows, "net_worth", …)`
-   entries additionally name their column in an argument, since its types
-   depend on the resolved `Decimal` precision rather than being static.
-3. The **record dict literals** built in the row comprehensions. The envelope
-   carries `data=records` and Python dicts preserve insertion order, so those
-   keys — not the `columns` tuple — are what `--output json` and every MCP caller
-   serialize. Miss this one and a single response reports a column order its own
-   JSON body disagrees with.
-
 Reordering a shipped `core` or `reports` column is a public-contract change
 under `design-principles.md`'s trigger list. Pre-launch posture permits it;
 disclose it in the CHANGELOG rather than shipping it silently.
@@ -71,7 +46,21 @@ is no source-fidelity argument for carving them out.
 
 Within a category, keep related columns adjacent. A column and the column that
 qualifies it belong together: `amount` beside `currency_code`, `last_four`
-beside `institution_name`.
+beside `institution_name`. When the pair spans two categories, put the
+qualifier at the boundary: `currency_code` ends the strings so `amount` can
+open the numerics.
+
+Three classifications the dbt sentence leaves open:
+
+- **An id is a key.** A `*_id` column that references a row ranks as an id. A
+  `*_id` that is a lookup value with no row behind it — `dim_securities.
+  coingecko_id`, a price-lookup slug — is a string, beside the other external
+  identifiers (`cusip`, `isin`, `figi`).
+- **Derived calendar parts rank by type.** `transaction_year` (BIGINT) is a
+  numeric and `transaction_year_month` (VARCHAR) a string, each kept together
+  inside its own block, not grouped with the date they derive from.
+- **Nested types are unranked.** A `LIST` or `STRUCT` column sits beside the
+  scalar it belongs with — `notes` immediately before `note_count`.
 
 ## Rule B — `reports`: grain-first
 
@@ -95,6 +84,13 @@ a JSON record, an export header, and the catalog description are all read in
 order; each puts the last column where a scanner stops. Metadata therefore sits
 between the dates and the measures and never at the tail, because ending a row
 on provenance anchors it on the column that answers nothing.
+
+On a terminal too narrow for the whole projection, `--wide` omits the columns
+outside `default_columns`, first in projection order first
+(`cli_register.py::optional_columns`) — the same rule read backwards: the
+projection leads with the id and ends on the headline, so the id is the first
+extra to go and the last measure is the last. The order of what remains still
+comes from the projection; only what fits changes.
 
 The `reports` schema is read by humans and by agents answering a human's
 question, so it orders by *importance*, not by storage type. Nielsen Norman
@@ -190,11 +186,15 @@ Two reports already satisfy this and are the models to copy:
 - `core:balance_drift` — `asserted_balance`, `computed_balance`, `drift`. The
   two positions being reconciled, then the discrepancy.
 
-Two inverted it before this rule, and are why it is written down:
+`core:net_worth`'s base projection — the `reports.net_worth` view and the
+unbucketed read — now ends on `net_worth` too, where the service-backed report
+it replaced was the counter-example this section used to name. Its declared
+`ReportSpec.columns` and its `--interval` SQL end on `change_pct` instead,
+because the bucketed read appends `change_abs` and `change_pct` after the base
+columns; that is Rule C's base-wins clause, not an exception to this one.
 
-- `core:networth` — `net_worth`, `total_assets`, `total_liabilities`. The bottom
-  line leads and its components trail, so the row reads backwards and the
-  fitter's kept tail is a component rather than the answer.
+One inverted it before this rule, and is why it is written down:
+
 - `core:merchant_activity` — `total_spend` precedes `total_inflow` and `total_outflow`.
 
 **A runtime-attached column obeys Rule B too.** A display-currency conversion
@@ -245,34 +245,34 @@ subsequence of the projection.
 
 ## `ReportSpec.columns` mirrors the projection
 
-A **SQL-backed** report's declared `columns` tuple must be in the same order as
-the SQL its runner projects. The declaration is metadata there, not a
-projection: making it mirror costs nothing and removes the trap where an author
-reorders it expecting an effect and gets none.
-
-A **service-backed** report has nothing to mirror against — its tuple is already
-the projection, per the exception above. Rules B and C govern it directly, and
-the derived `column_types` moves with it automatically.
+A report's declared `columns` tuple must be in the same order as the SQL its
+runner projects. The declaration is metadata there, not a projection: making
+it mirror costs nothing and removes the trap where an author reorders it
+expecting an effect and gets none.
 
 ## Enforcement
 
-Two things are machine-checked, both at unit tier off `OutputColumn`:
+Rule A in `core` is machine-checked at integration tier:
+`tests/integration/test_core_column_order.py` builds every model and reads
+each `core` relation's real types from `duckdb_columns()`. A new lookup-value
+`*_id` goes in its `_NON_KEY_IDS`, and a type it does not rank fails the run
+until it is classified there.
+
+Two things are machine-checked at unit tier off `OutputColumn`:
 `ReportSpec.columns` and `default_columns` are each non-decreasing under Rule B.
-Each **SQL-backed** report's own execution test additionally asserts that the
-result's columns mirror its declared order — a stronger check than a static
-read, because it sees what the report actually returned. Service-backed
-reports (`networth`, `networth_history`) have no equivalent execution test. A
-green run still says nothing about
-whether the declarations are right: the guard cannot notice a **mis-declared**
-class, and `balance_drift.days_since_assertion` is declared `TXN_DATE` while
-holding an integer day count, so the guard files it among the dates and is
-satisfied.
+Each report's own execution test additionally asserts that the result's
+columns mirror its declared order — a stronger check than a static read,
+because it sees what the report actually returned. A green run still says
+nothing about whether the declarations are right: the guard cannot notice a
+**mis-declared** class, and `balance_drift.days_since_assertion` is declared
+`TXN_DATE` while holding an integer day count, so the guard files it among the
+dates and is satisfied.
 
 Everything else is **review-enforced, deliberately**: `AGGREGATE` placement,
-all of Rule C, the `reports/*.sql` model projections, and Rule A in `prep` and
-`core`. Three different reasons, not one: a guard cannot see the semantic
-relationships Rule C names; Rule A needs real types, which only a built database
-resolves; and the `reports/*.sql` projections *do* resolve their column names
+all of Rule C, the `reports/*.sql` model projections, Rule A in `prep`, and
+adjacency inside each Rule A block. Different reasons, not one: a guard cannot
+see the semantic relationships Rule C names or which columns are related; the
+`core` guard covers only `core`; and the `reports/*.sql` projections *do* resolve their column names
 offline, but not their Rule B category, because that same derivation
 deliberately over-classifies computed columns. What is guarded, what
 cannot be, and why each gap is a stopping point rather than an oversight:

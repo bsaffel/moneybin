@@ -202,10 +202,12 @@ Numbered, testable. Tagged by phase.
    **Implemented 2026-07-25.** Every `reports.*` model that sums money projects and
    groups by `currency_code`; `reports.balance_drift` projects it without regrouping
    (asserted and computed balances are the same account's, so the comparison is
-   single-currency by construction). Two consumers re-aggregate the segmented views
-   and had to segment too: the `core:cash_flow` runner (`currency_code` is in
-   `select_cols`/`group_cols` unconditionally, for every `by` value) and
-   `NetworthService` (see Requirement 7). `reports.large_transactions` additionally
+   single-currency by construction). At the time, one further consumer re-aggregated
+   the segmented views and had to segment too: the `core:cash_flow` runner
+   (`currency_code` is in `select_cols`/`group_cols` unconditionally, for every `by`
+   value). `NetworthService` did the same (see Requirement 7); it retired with the
+   service-backed net-worth kind, and `reports.net_worth_currencies` now segments
+   by `currency_code` directly in SQL. `reports.large_transactions` additionally
    scopes its median/MAD baselines and its top-100 rank per currency — a pooled
    baseline compares unlike units and scores a typical charge in the
    smaller-denominated currency as an anomaly. That per-currency scoping is also
@@ -234,7 +236,7 @@ Numbered, testable. Tagged by phase.
    rationale the next paragraph retracts.) Separately, `core.fct_transaction_lines` — the
    canonical split-expanded grain — projected every parent column except the
    denomination, so an agent on it could not tell a EUR line from a USD one; it
-   now carries `currency_code`, as does `core.uncategorized_queue`, whose review
+   now carries `currency_code`, as does the categorization queue, whose review
    surface asks a user to act on the amount it shows. The curated `sql_schema`
    examples that sum money across `core.*` group by currency, held by
    `test_every_money_aggregating_example_names_its_currency`, which derives its
@@ -270,8 +272,8 @@ Numbered, testable. Tagged by phase.
    currency opened partway through the window vanished from a capped response
    instead of showing a shorter series. And the `sort="impact"` branch of
    `CategorizationQueries.list_uncategorized_transactions` ranks `priority_score`
-   — `ABS(amount) * age_days`, which `core.uncategorized_queue`'s own column
-   comment calls meaningful only within one currency — across denominations
+   — `ABS(amount) * age_days`, which the categorization queue's own query comment
+   calls meaningful only within one currency — across denominations
    before `LIMIT`, so the highest-denomination currency filled the whole queue.
    That last one names no `currency_code` in its sort at all. The class has two
    limbs, and only one is a property of the sort keys:
@@ -463,15 +465,21 @@ Numbered, testable. Tagged by phase.
    segment (default) or return an explicit "cross-currency total unavailable until
    conversion ships" signal — never a silent blend. Single-currency profiles (the
    common case, including USD-only users) see **zero behavior change**.
-   **Implemented 2026-07-25.** Segmentation is the default everywhere. The one place
-   that takes the explicit-signal branch is `core:networth`'s scalar headline, which
-   has no room for a sub-total per currency: `NetWorthSnapshotPayload` nulls
-   `net_worth`/`total_assets`/`total_liabilities`/`currency_code` when more than one
-   currency contributes and carries each currency's totals in `per_currency`; its
-   report records attach each account row to its own currency's totals.
-   `NetworthService.history` partitions both its bucketing and its period-over-period
-   `LAG` by `currency_code`, so a change is never the difference between two
-   currencies' positions. Zero-behavior-change is held by fixtures, not assertion: the
+   **Implemented 2026-07-25.** Segmentation is the default everywhere. At the time,
+   the one place that took the explicit-signal branch was `core:networth`'s scalar
+   headline, which had no room for a sub-total per currency: `NetWorthSnapshotPayload`
+   nulled `net_worth`/`total_assets`/`total_liabilities`/`currency_code` when more than
+   one currency contributed and carried each currency's totals in `per_currency`; its
+   report records attached each account row to its own currency's totals.
+   `NetworthService.history` partitioned both its bucketing and its period-over-period
+   `LAG` by `currency_code`, so a change was never the difference between two
+   currencies' positions. **Superseded (2026-09-19):** the service-backed kind
+   retired onto three SQL-backed rungs
+   ([`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md)).
+   `core:net_worth` still gives no combined figure when a held currency cannot be
+   priced — `net_worth` is `NULL` whenever `unpriced_currency_count > 0` — and
+   `core:net_worth_currencies` carries each currency's own totals as SQL rows
+   instead of a `per_currency` map. Zero-behavior-change is held by fixtures, not assertion: the
    pre-existing single-currency report and net-worth tests assert the same figures
    unchanged, and `tests/scenarios/test_multi_currency_report_segmentation.py` proves
    the mixed case is what discriminates a segmented model from a blending one
@@ -522,7 +530,7 @@ Numbered, testable. Tagged by phase.
     projects it. Present only on a read that actually priced something: on a
     segmented or already-in-target result it would restate `currency_code` and
     imply a conversion that did not happen. The one row it cannot describe is
-    `core:networth`'s collapsed headline, which sums several currencies and so
+    `core:net_worth`'s collapsed headline, which sums several currencies and so
     carries null rather than name whichever one sorted first.
     The published set is also narrowed to the rows that survive a row cap. A
     capped read prices one row past the cap to decide `has_more`, so a rate
@@ -551,6 +559,40 @@ Numbered, testable. Tagged by phase.
     today's rate or `1.0`.
 13. **Weekend/holiday handling.** A non-trading date resolves to the ECB last-published
     business day; the resolution is recorded in `rate_date` provenance, not hidden.
+
+    From stored rates alone, a weekend resolves to its calendar Friday, and a
+    weekday with no row resolves to the publication before it only when it sits
+    inside a **market closure**. Two proofs are required. First, a recorded
+    provider answer must cover the date: `raw.exchange_rate_coverage` holds the
+    span from the first to the last publication a refresh's range answer kept
+    (only when nothing was dropped from its middle), and the span a single `fx
+    rate` fetch proves when the provider resolves a date back to its
+    publication. Inside such a span, a date with no row was a closed market.
+    Stored rows alone cannot prove that, because two separate `fx rate` lookups
+    on a Monday and a Wednesday leave the same rows as a full fetch, with a
+    Tuesday nobody asked for between them. Second, stored provider publications
+    must bracket the date no more than `MAX_MARKET_CLOSURE_DAYS` (7) apart, so a
+    stopped series is not carried forward. Both proofs come from one provider:
+    the span and the bracketing rows carry the same `source_type`, and the
+    carried rate is that provider's. One provider's answer says nothing about a
+    gap in another's sparser cache, so a date covered only by provider A while
+    provider B holds the nearer rows is not a closure for B. Past the newest stored rate, or
+    outside any recorded span, the date stays unpriced. A cache filled before
+    coverage was recorded gains its spans on the next refresh, which
+    re-requests the whole window. The
+    bound is a week because ECB's longest closure, Easter, runs Thursday to
+    Tuesday (five days between publications) and Christmas runs at most the
+    same. A wider gap is likelier a hole in the cache than a closed market, so
+    pricing across it would be the substitution Requirement 12 forbids. It is
+    not `MAX_BACKWARD_RESOLUTION_DAYS` (14), which bounds how far a provider's
+    own answer may sit from the day asked about. User overrides never count as
+    either side of the bracket, since a correction says nothing about whether
+    the market was open. The publication the closure carries is still read
+    override-first. `core.fct_exchange_rates_daily` densifies by the same rule,
+    so the SQL net-worth rungs and the read-time conversion price the same days
+    from the same publication. The live path (`moneybin fx rate`) asks the
+    provider instead, because the provider can tell a holiday from an unfetched
+    day and the cache cannot.
 14. **User rate override.** A user may override an auto-fetched rate (the bank's actual rate
     differs from the ECB mid-rate). An override is **mutable user-authored state**, so it
     lives in `app.*` (e.g. `app.exchange_rate_overrides`), mutated only via a `*Repo` with
@@ -648,6 +690,23 @@ Numbered, testable. Tagged by phase.
     unsupported through an ordinary base — and when that list cannot be read,
     neither kind is claimed.
 
+    A report read has no provider to ask, so the rates step reads that list once
+    on every refresh that plans a pair, whatever the pairs answer, and `fx rate`
+    reads it when a lookup comes back empty. Each read is recorded in
+    `raw.exchange_rate_currencies`, replaced whole per provider so a currency the
+    provider stops carrying stops counting. A report that cannot price a
+    pair names the pair and one of two kinds from it. *Unsupported* means a
+    recorded list lacks one side, and the fix is `moneybin fx set`. *Unfetched*
+    covers everything else, and the fix is `moneybin refresh`. When refresh
+    never plans the target, because it is neither the home currency nor a
+    declared display target, the fix is the `profile set
+    display_currency_targets` command that adds it, then a refresh. If the
+    profile already declares the maximum number of targets, it names `fx set`
+    instead, since a longer list would be refused. With no
+    recorded list, unsupported is never claimed. A market closure is never the
+    reason, because Requirement 13 already prices any closure the cache
+    brackets.
+
     A *discarded* pair is the third: the provider answered, and the answer did
     not cover the window. Either MoneyBin threw part of it away — the rate fell
     outside the requested range, or the rate column could not hold it — or the
@@ -664,9 +723,14 @@ Numbered, testable. Tagged by phase.
     in leaves those dates needing a live fetch, and waiting cannot fill the gap:
     the window opens at the profile's earliest row and moves back only when
     earlier data is imported. The publication slack lives in the *request*
-    instead, which opens `MAX_BACKWARD_RESOLUTION_DAYS` before the window does,
-    so a profile whose earliest row falls on a closed market is covered by the
-    last publication day before it rather than reported short forever. The
+    instead, which opens `MAX_BACKWARD_RESOLUTION_DAYS` before the window does
+    — stepped back to the Friday when that day is a weekend, because the
+    provider resolves a closed request start to the publication before it. A
+    weekday holiday start the calendar cannot rule out resolves the same way, so
+    the lower bound accepts a publication up to `MAX_MARKET_CLOSURE_DAYS` before
+    the request start. Either way a profile whose earliest row falls on a closed
+    market is covered by the last publication day before it rather than
+    reported short forever. The
     closing bound allows that same span, because a missing recent date is
     routine and self-healing — no rate is published on a weekend, often none for
     today until the afternoon, and the window's end moves forward on its own —
@@ -690,8 +754,9 @@ Numbered, testable. Tagged by phase.
     absent. Nothing files a rate under a wrong date, so Requirement 12 holds
     either way; what is missing is the warning. Closing it means verifying
     stored coverage against the dates the profile actually needs rather than
-    against the answer's bounds — the span model the hole below already calls
-    for.
+    against the answer's bounds. Requirement 13's closure rule does not close
+    it: an interior hole of a week or less reads as a closure and prices at the
+    publication before it, with that day named.
 
     **Closed for the conversion layer — the read path cannot reach the
     weekday-holiday hole.** A complete backfill still leaves no row on a weekday
@@ -703,20 +768,19 @@ Numbered, testable. Tagged by phase.
     never gets the chance: report execution and the holdings portfolio total
     both build their service through `build_cache_only_currency_service`, which
     passes no adapter, and `_fetch` raises `RateUnavailableError` at its
-    `self._adapter is None` check before the adapter is touched. The row
-    degrades instead — a report segments under Requirement 15, and the holdings
-    total reports no combined figure rather than a wrong one.
+    `self._adapter is None` check before the adapter is touched.
 
-    **Still open — pricing a holiday-dated row instead of degrading it.** The
-    backfill is what makes this fixable. `_last_publication_day`'s docstring
-    rejects a general "nearest earlier stored day" fallback because a missing
-    weekday is ambiguous — closed market, or nobody fetched it yet. Coverage
-    recorded as a span removes the ambiguity: **inside** `[earliest stored,
-    newest stored]` for a pair, a missing date is provably a non-publication
-    day and may resolve back to the last stored one; **outside** that span it is
-    genuinely unfetched and stays an error. Resolving backward within proven
-    coverage is not a guess, and it is what lets Requirement 17 price a
-    holiday-dated row offline.
+    **Closed — a holiday-dated row is priced offline.** Requirement 13's
+    market-closure rule answers it from the cache before `_fetch` is reached:
+    a weekday a recorded provider answer covers, bracketed by stored
+    publications at most a week apart, prices at the publication before it,
+    and the applied rate
+    names that day. Verified live 2026-10-07: ECB published nothing on
+    2025-12-25 or 2025-12-26, and a 2025-12-27 balance now converts at the
+    2025-12-24 rate in both the SQL rungs and the read-time conversion. A
+    weekday outside any bracket, such as one past the newest stored rate,
+    still degrades — a report segments under Requirement 15, and the holdings
+    total reports no combined figure rather than a wrong one.
 
 ### M1K.3 — Realized FX gain/loss
 

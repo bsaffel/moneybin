@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-10-07 -->
 
 # Profiles
 
@@ -31,7 +31,7 @@ What lives inside a profile:
 - **Logs.** `<base>/profiles/<name>/logs/` — daily-rotating files written by the `SanitizedLogFormatter`. One profile's logs never mix with another's.
 - **Metrics.** The `app.metrics` table lives inside each profile's database, so metric counters are profile-internal.
 - **Audit trail.** The `app.audit_log` table is also profile-internal — privacy consent grants, redaction decisions, and tool invocations are scoped to the profile that recorded them.
-- **Config.** A profile-level `<base>/profiles/<name>/config.yaml` holds overridable defaults (logging level, sync enable flag, encryption mode); the user-level `<base>/config.yaml` holds the active-profile pointer.
+- **Config.** A profile-level `<base>/profiles/<name>/config.yaml` holds overridable defaults (logging level, sync server address, encryption mode); the user-level `<base>/config.yaml` holds the active-profile pointer.
 - **Backups.** `db backup` writes into `<base>/profiles/<name>/backups/` by default; `profile delete` removes the entire profile directory, including backups stored there.
 
 ### Base directory resolution
@@ -60,20 +60,21 @@ Creates a new profile end-to-end:
 - Writes a default `config.yaml` into the profile directory.
 - Generates a fresh AES-256 encryption key and stores it under the keychain service `moneybin-<name>`.
 - Initializes the encrypted DuckDB file at `<base>/profiles/<name>/moneybin.duckdb` and runs the baseline schema.
-- Optionally creates the import-inbox layout at `~/Documents/MoneyBin/<name>/{inbox,processed,failed}/` (`--init-inbox` to force, `--no-init-inbox` to skip; prompts interactively when neither is set).
+- Optionally creates the import-inbox layout at `<inbox_root>/<name>/{inbox,processed,failed,pending}/` (`--init-inbox` to force, `--no-init-inbox` to skip; prompts interactively when neither is set). `<inbox_root>` is `~/Documents/MoneyBin` unless `MONEYBIN_IMPORT___INBOX_ROOT` moves it, and the receipt prints the path it used. The inbox is created before the database, so a denied directory — macOS privacy controls on `~/Documents` are the usual cause — fails the command before any schema is built.
+- Makes the new profile the active one, so the next command runs against it. When another profile was active, the receipt ends with a `›` line naming the `profile switch` command back to it.
 
 ```bash
 moneybin profile create personal
 moneybin profile create business --init-inbox
 ```
 
-If any step fails while creating a brand-new profile, the directory `profile create` made is rolled back so you can retry without hitting a "profile already exists" error. A directory it did not make — see "Name collisions" below — is never rolled back, since it may already hold a database.
+If any step fails while creating a brand-new profile, the directory `profile create` made is rolled back so you can retry without hitting a "profile already exists" error, and the active profile is left where it was. A directory it did not make — see "Name collisions" below — is never rolled back, since it may already hold a database.
 
 #### Name collisions
 
 `ProfileExistsError` means a *registered* profile — one with a `config.yaml` — already exists at `<base>/profiles/<normalized_name>/`; only that case is refused. A directory with no `config.yaml` — left behind by a bare `moneybin db init`, a hand `mkdir`, or an interrupted `profile delete` — is *adopted* instead: `profile create <name>` completes it in place, tightening its permissions to `0700`, initializing a database only if one isn't already there, and writing `config.yaml` last as the commit marker. An adopted directory's existing database is never touched, and a failure partway through leaves it unregistered but intact — retry `profile create <name>` to finish it.
 
-A **stale keychain entry** from a previously-deleted profile is the more interesting failure mode: `profile delete` removes the directory but best-effort-deletes the keychain entry (silent debug-log on keyring failure). If keyring cleanup failed at delete time, the next `profile create <same-name>` overwrites the entry with the new key, which is the intended behavior. To verify or hand-clean before recreating, target the service name `moneybin-<name>`:
+A **stale keychain entry** can remain after a failed deletion: `profile delete` removes the directory before clearing the database keychain entries and reports an error if that cleanup is denied. If keyring cleanup failed at delete time, the next `profile create <same-name>` overwrites the entry with the new key, which is the intended behavior. To verify or hand-clean before recreating, target the service name `moneybin-<name>`:
 
 - **macOS:** `security delete-generic-password -s moneybin-<name> -a DATABASE__ENCRYPTION_KEY` (and `-a DATABASE__PASSPHRASE_SALT` for passphrase-mode entries).
 - **Linux (Secret Service):** `secret-tool clear service moneybin-<name> username DATABASE__ENCRYPTION_KEY`.
@@ -111,26 +112,26 @@ Prints the resolved settings for a profile (defaults to the active one). Fields:
 
 ### `moneybin profile set <section>.<field> <value>`
 
-Writes a value into the profile-level `config.yaml`. Keys are two-level dotted (`logging.level`, `logging.log_to_file`, `database.encryption_key_mode`). Boolean strings (`true`, `false`) and digit-only strings are coerced to native types before writing. Targets the active profile unless `--profile/-p` overrides it.
+Writes a value into the profile-level `config.yaml`, which settings read on every command. Keys are two-level dotted (`logging.level`, `logging.log_to_file`, `database.encryption_key_mode`) and must name a setting in the [configuration reference](../reference/configuration.md): an unknown key is refused with the valid fields in that section, a value the setting rejects is refused before the file changes, and a secret (an API key, a client secret) is refused because the file is plain text. Targets the active profile unless `--profile/-p` overrides it.
 
 ```bash
 moneybin profile set logging.level DEBUG
 moneybin profile set logging.log_to_file false --profile business
 ```
 
-This only updates the per-profile YAML — env-var overrides like `MONEYBIN_DATABASE__PATH` still take precedence at load time. Every variable, with its type and default, is in the [configuration reference](../reference/configuration.md).
+An environment variable or dotenv line for the same setting (`MONEYBIN_LOGGING__LEVEL`) takes precedence over the saved value for as long as it is set. Every variable, with its type and default, is in the [configuration reference](../reference/configuration.md).
 
 ### `moneybin profile delete <name>`
 
 Removes a profile permanently:
 
 - Deletes the entire `<base>/profiles/<name>/` tree, including `logs/`, `backups/`, `temp/`, the `config.yaml`, and the encrypted database file.
-- Best-effort-clears the profile's keychain entries (`DATABASE__ENCRYPTION_KEY` and `DATABASE__PASSPHRASE_SALT` under service `moneybin-<name>`). Sibling profiles' keychain entries are never touched.
-- Best-effort-clears the profile's sync auth tokens (JWT + refresh token) from a separate keyring service, keyed by the profile's internal `profile_id` (a local, opaque id in `<base>/profiles/<name>/profile_id`, unrelated to the sync server's own user identity).
+- Clears the profile's keychain entries (`DATABASE__ENCRYPTION_KEY` and `DATABASE__PASSPHRASE_SALT` under service `moneybin-<name>`) after removing the directory's contents, then removes the empty directory. Missing entries are harmless. Denied cleanup reports an error and leaves the empty directory so `moneybin profile delete <name>` can retry after the keychain is unlocked. The empty directory is not shown by `profile list`. Sibling profiles' keychain entries are never touched.
+- Clears the profile's sync auth tokens through `SecretStore` before removing the directory. The existing keychain service is keyed by the profile's internal `profile_id` (a local, opaque id in `<base>/profiles/<name>/profile_id`, unrelated to the sync server's own user identity). If cleanup is denied, the directory and identity remain available for retry.
 - Refuses to delete the currently active profile — switch away first.
 - Prompts for confirmation; pass `--yes/-y` to skip the prompt for scripting.
 
-> **There is no undelete.** No grace period, no trash directory, no "are you sure" re-typing of the profile name beyond the single confirm prompt. The directory tree is removed with `shutil.rmtree`. The keychain entry — and therefore the only copy of the encryption key — is removed immediately after. If you deleted in error: check `~/.Trash` on macOS or your filesystem snapshot tool (Time Machine, ZFS / Btrfs snapshots, restic, Borg) before doing anything else. The OS keychain entry is gone the moment delete finishes; restoring the `.duckdb` file alone is not enough — you must also have an off-profile copy of the key. **Before deleting any profile you care about, run `db backup -o <path-outside-profile>` to a location that won't be swept by the delete, and save the key (`db key show`) somewhere safe.**
+> **There is no undelete.** No grace period, no trash directory, no "are you sure" re-typing of the profile name beyond the single confirm prompt. The directory's contents are removed first, then its keychain entries — including the only copy of the encryption key — and finally the empty directory. If you deleted in error: check `~/.Trash` on macOS or your filesystem snapshot tool (Time Machine, ZFS / Btrfs snapshots, restic, Borg) before doing anything else. The OS keychain entry is gone the moment delete finishes; restoring the `.duckdb` file alone is not enough — you must also have an off-profile copy of the key. **Before deleting any profile you care about, run `db backup -o <path-outside-profile>` to a location that won't be swept by the delete, and save the key (`db key show`) somewhere safe.**
 
 ```bash
 moneybin profile switch personal
@@ -148,7 +149,7 @@ Three ways to pick the profile a command runs against, in precedence order:
 
 1. **`--profile <name>` / `-p <name>` flag** — top-level flag, wins over everything (including an exported `MONEYBIN_PROFILE`). Use for one-off invocations against a non-active profile without changing the saved default or your shell environment.
 2. **`MONEYBIN_PROFILE` env var** — shell-session-scoped override. Wins over the saved default, loses to the flag.
-3. **Saved active profile** — the value persisted by `profile switch` (or set by the first-run wizard) in `<base>/config.yaml`.
+3. **Saved active profile** — the value persisted by `profile switch` or `profile create` (or set by the first-run wizard or `moneybin demo`) in `<base>/config.yaml`.
 
 ```bash
 # One-off: import into 'business' without changing the active profile,
@@ -199,7 +200,7 @@ The MCP server is bound to **one profile per process**. `moneybin mcp serve` res
 
 A profile's encrypted DuckDB file is portable across machines; the OS keychain entry is not. The supported moves:
 
-- **Same profile on a second machine.** Copy `<base>/profiles/<name>/moneybin.duckdb` (and any backups you want to keep) to the second machine. Transfer the key out of band: `moneybin db key show` on the source, then on the target either run `db init` with `MONEYBIN_DATABASE__ENCRYPTION_KEY=<hex>` set (this re-persists the key into the local keychain) or keep the env var set for every invocation. See [`database-security.md`](database-security.md) "Multi-machine sync" for the full walkthrough.
+- **Same profile on a second machine.** Copy `<base>/profiles/<name>/moneybin.duckdb` (and any backups you want to keep) to the second machine. Transfer the key out of band: `moneybin db key show` on the source, then on the target either run `db init` with `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY=<hex>` set (this re-persists the key into the local keychain) or keep the env var set for every invocation. See [`database-security.md`](database-security.md) "Multi-machine sync" for the full walkthrough.
 - **Sync to moneybin-sync from two machines under the same profile name.** moneybin-sync treats the upload identity as the authenticated user; the profile name on each machine is a local label, not part of the remote identity. Sync cursor state is tracked per local profile in `app.*` tables, so two machines syncing the same logical user will each maintain their own cursors and last-sync timestamps. Conflicts at the row level are resolved server-side per the sync contract.
 - **What is NOT supported: shared live access to one file from two machines.** DuckDB is single-writer. A `.duckdb` file on NFS, SMB, Dropbox, iCloud, or any sync-on-save folder is a corruption hazard the moment a second process opens it. Active-passive (snapshot, copy, restore on the other end) is fine; concurrent open is not.
 
@@ -207,20 +208,24 @@ A profile's encrypted DuckDB file is portable across machines; the OS keychain e
 
 Auto-key mode (the default) requires a working OS keyring backend. Self-hosters running MoneyBin in a place that has no keyring — Docker containers, headless Linux servers without GNOME Keyring or KWallet running, CI runners, NAS appliances — need to know what fails and what falls through.
 
+Use `MONEYBIN_PROFILE__<PROFILE>__DATABASE__ENCRYPTION_KEY`, with the normalized profile name uppercased and hyphens replaced by underscores. Examples here use `DEFAULT`; replace it with the profile being opened. The old global variable is refused for named profiles.
+
 The actual code path (`src/moneybin/secrets.py`):
 
-- **Reads** (`SecretStore.get_key`) — try keychain first; if the backend raises `NoKeyringError`, fall through to the `MONEYBIN_<name>` env var. So an env-supplied key works for every read path even with no keyring at all.
+- **Reads** (`SecretStore.get_key`) — try keychain first; if the backend raises `NoKeyringError`, fall through to that profile's `MONEYBIN_PROFILE__<PROFILE>__<SECRET_NAME>` env var. So an env-supplied key works for every read path even with no keyring at all.
 - **Writes** (`SecretStore.set_key`) — try keychain; if no backend, raise `SecretStorageUnavailableError`. There is no file-backed or in-memory fallback. **This means `profile create` and `db init` cannot mint and persist a fresh random key on a no-keyring host** — the freshly minted key would be lost on process exit.
-- **Deletes** (`SecretStore.delete_key`) — best-effort; no-keyring becomes a no-op.
+- **Deletes** (`SecretStore.delete_key`) — missing entries are harmless. Denied or unverified deletion raises a storage error; sync credentials require an available keychain to confirm cleanup.
 
 The practical recipe for headless deployments:
 
 1. On a machine that *does* have a keyring, run `moneybin profile create <name>` and capture the key: `moneybin --profile <name> db key show`.
 2. Copy `<base>/profiles/<name>/moneybin.duckdb` to the headless target.
-3. On the target, export `MONEYBIN_DATABASE__ENCRYPTION_KEY=<hex>` before invoking moneybin. Every command — CLI, `mcp serve`, cron jobs — needs the env var set in its environment.
+3. On the target, export `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY=<hex>` before invoking moneybin. Every command — CLI, `mcp serve`, cron jobs — needs the env var set in its environment.
 4. If the headless target *does* have a keyring (unusual but possible), `db init` with the env var set will persist the key into it and you can stop exporting the env var afterwards.
 
-Passphrase mode (`profile create --passphrase` once it lands; today via `db init --passphrase` on a freshly created profile) sidesteps the auto-key trap: the passphrase is the input, the derived key is held in memory for the command's lifetime, and an env-var fallback is still available via `MONEYBIN_DATABASE__ENCRYPTION_KEY` after `db unlock`. See [`database-security.md`](database-security.md) "Headless and cron deployments" for Docker, systemd, and cron patterns.
+Passphrase mode (`profile create --passphrase` once it lands; today via `db init --passphrase` on a freshly created profile) sidesteps the auto-key trap: the passphrase is the input, the derived key is held in memory for the command's lifetime, and an env-var fallback is still available via `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` after `db unlock`. `db init` records the mode it used as `database.encryption_key_mode` in the profile's `config.yaml`, which is where `profile show` and `db info` read it. See [`database-security.md`](database-security.md) "Headless and cron deployments" for Docker, systemd, and cron patterns.
+
+Sync login and token refresh require a writable OS keychain, including on headless hosts. Existing profile-specific plaintext sync token files are deleted without being used, and a keychain token pair that records no issuing server is never sent to any server. Run `moneybin sync login` once after upgrading to sign in again.
 
 ## Multi-user on one machine
 
@@ -229,7 +234,7 @@ A profile's keychain entry belongs to the OS user that ran `profile create`. Two
 The honest current state for shared-host deployments:
 
 - **Per-user profile trees (default).** Each user runs MoneyBin under their own account; `<base>` resolves to `~/.moneybin/profiles/...` per user; keychain entries are per-user. Profiles are fully isolated by Unix ownership; nothing else to do.
-- **Shared profile tree.** Set `MONEYBIN_HOME=/var/lib/moneybin` (or similar) in every user's environment. Use passphrase mode, or supply the key via `MONEYBIN_DATABASE__ENCRYPTION_KEY` (e.g., from a root-owned `/etc/moneybin/env` that each authorized user can source). Lock down `/var/lib/moneybin` with Unix permissions: typically `chown root:moneybin /var/lib/moneybin && chmod 2770 /var/lib/moneybin` so only group members read or write.
+- **Shared profile tree.** Set `MONEYBIN_HOME=/var/lib/moneybin` (or similar) in every user's environment. Use passphrase mode, or supply the key via `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` (e.g., from a root-owned `/etc/moneybin/env` that each authorized user can source). Lock down `/var/lib/moneybin` with Unix permissions: typically `chown root:moneybin /var/lib/moneybin && chmod 2770 /var/lib/moneybin` so only group members read or write.
 - **Concurrent writes to the same profile remain unsafe.** DuckDB enforces single-writer per file; two simultaneous writers from two OS users to the same profile will serialize at best and corrupt at worst. Use separate profiles per user even when the tree is shared.
 
 ### File permissions
@@ -248,13 +253,13 @@ Every profile has its own key, stored under its own keychain service name. The k
 
 - `profile create` generates a fresh key (auto-key mode) or derives one from your passphrase (passphrase mode) and stores it under `moneybin-<name>`.
 - `profile switch` does not touch keys — the next command that opens the database re-attaches with the new profile's key.
-- `profile delete` removes the encrypted file and best-effort-removes the keychain entry.
+- `profile delete` clears scoped sync credentials, removes the profile's contents, then clears the database keychain entries and removes the empty directory. Denied keychain cleanup leaves the directory available for retry.
 
 See [`database-security.md`](database-security.md) for the full key lifecycle, passphrase mode, headless deployments, key rotation, and cross-machine transfer.
 
 ## Profile and sync
 
-Each profile owns its own sync identity: its own `sync.server_url`, its own server credentials, its own list of remote connections (Plaid items, future cloud sources). Switching profiles switches the sync identity entirely — a `moneybin sync pull` after `profile switch` talks to whatever server and credentials the new profile has configured, with no leak from the previous profile.
+Each profile owns its own sync identity: its own `sync.server_url` (saved to that profile's `config.yaml` by `moneybin sync login --server <url>`), its own server credentials, its own list of remote connections (Plaid items, future cloud sources). Switching profiles switches the sync identity entirely — a `moneybin sync pull` after `profile switch` talks to whatever server and credentials the new profile has configured, with no leak from the previous profile.
 
 ## Migration between profiles
 

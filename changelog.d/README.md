@@ -23,7 +23,26 @@ in the PR description for internal-only work. A `release-preparation` label
 identifies a PR that assembles notes and permits editing `CHANGELOG.md`.
 Reviewers verify the exemption reason and release scope; labels are not a
 substitute for that review. Even exempt PRs validate pending fragment names
-and rendering. Add the label in GitHub if it does not yet exist.
+and rendering. Add the label in GitHub if it does not yet exist. The one
+exemption that needs no per-PR reason is the standing one below.
+
+### Standing exemption: Dependabot's GitHub Actions bumps
+
+One class of PR is exempt without a per-PR reason. `.github/dependabot.yml`
+applies `skip-changelog` to Dependabot's GitHub Actions bumps when it opens
+them. The reason is recorded once, here: that ecosystem edits only the `uses:`
+version pins in workflow files, which change how CI runs and nothing a MoneyBin
+user can observe. The label lands a moment after the PR opens, so the check
+reads labels from the API when it runs rather than from the event payload,
+which for the `opened` event predates the label.
+
+The exemption waives the fragment and the written reason. It does not waive the
+review: a human still reviews and merges each bump, and removes the label if
+the PR changes anything besides an action version. This is the only automatic
+exemption; adding another means editing this section.
+
+Dependabot's Python bumps get no label. Decide each one, and add a fragment
+when the bump changes behavior or fixes a vulnerability.
 
 ## Prepare a release
 
@@ -39,7 +58,19 @@ and rendering. Add the label in GitHub if it does not yet exist.
    Towncrier does not import those bullets. Keep one heading per category and
    leave the `[Unreleased]` heading, pending-fragment link, and marker above
    the generated release. Preserve all older dated milestone sections.
-4. Run `uv run pytest tests/test_documentation_policy.py` and
+4. **Reconcile stale claims.** No ordinary PR may edit `CHANGELOG.md` (the
+   rule above), so a fact a bullet states — a count, a column or table name,
+   a class — can go stale between releases with nothing catching it: guards
+   like `tests/moneybin/test_docs/test_internal_critical_docs.py` bind that
+   kind of claim to live code everywhere *except* `CHANGELOG.md`, which they
+   exclude for exactly this reason. Release prep is where that drift gets
+   corrected instead. Before merging the release PR, re-read every bullet
+   being moved out of `[Unreleased]` (step 3) and every bullet in the newly
+   generated section against current code, and fix wording that a later
+   change invalidated — update the fact, keep the bullet's shape and intent.
+   This is a correction, not a rewrite: don't relitigate old phrasing that
+   is still accurate.
+5. Run `uv run pytest tests/test_documentation_policy.py` and
    `uv run python scripts/check_release_metadata.py --tag v0.1.0` with the
    actual version. Confirm every pending change is accounted for, then review
    and merge the release PR before creating its version tag.

@@ -1,0 +1,1 @@
+Read-only transaction, SQL, account-list, and report commands now use the shared terminal result path, preserve large and high-precision numeric values, and offer `--no-pager` on migrated finite reads.

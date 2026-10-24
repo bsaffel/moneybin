@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
     InstitutionResult,
@@ -15,8 +16,10 @@ from moneybin.connectors.sync_models import (
     PullResult,
     SyncConnectionView,
 )
+from moneybin.errors import UserError
 from moneybin.mcp.tools.sync import register_sync_tools
 from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
+from moneybin.services.sync_service import SyncPurgePlan
 
 
 @pytest.mark.unit
@@ -130,6 +133,30 @@ async def test_sync_pull_coarse_preserves_partial_failure_recovery_actions(
 
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_coarse_surfaces_mutual_exclusion_as_mutation_error(
+    mock_build: MagicMock,
+) -> None:
+    """The service's mutual-exclusion guard must classify as mutation_invalid_input.
+
+    A bare ValueError would classify as infra_invalid_input via the generic
+    exception classifier — the service raises UserError directly instead.
+    """
+    service = MagicMock()
+    service.pull.side_effect = UserError(
+        "institution and provider_item_id are mutually exclusive — pass one or neither",
+        code=error_codes.MUTATION_INVALID_INPUT,
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull_coarse
+
+    envelope = await sync_pull_coarse(institution="Chase")
+
+    assert envelope.error is not None
+    assert envelope.error.code == error_codes.MUTATION_INVALID_INPUT
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
 async def test_sync_pull_flags_pending_security_review(mock_build: MagicMock) -> None:
     """Identities awaiting review must reach the agent, with the review tool named."""
     service = MagicMock()
@@ -174,6 +201,8 @@ async def test_sync_pull_flags_manual_plaid_overlap(mock_build: MagicMock) -> No
     assert envelope.data.investment_source_overlap_accounts == ["acc_a", "acc_b"]
     actions_text = " ".join(envelope.actions)
     assert "both manual and Plaid" in actions_text
+    assert "accounts_set(investment_source_type=...)" in actions_text
+    assert "system_status(sections=['doctor'])" in actions_text
 
 
 @pytest.mark.unit
@@ -188,6 +217,7 @@ async def test_sync_status_returns_low_sensitivity(mock_build: MagicMock) -> Non
             provider="plaid",
             status="active",
             last_sync=datetime(2026, 4, 7, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, tzinfo=UTC),
             guidance=None,
         ),
     ]
@@ -284,10 +314,12 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
 
     def disconnect_confirmed(
         *,
-        institution: str,
+        institution: str | None,
+        provider_item_id: str | None,
         verify: object,
     ) -> ConnectedInstitution:
         assert institution == "Chase"
+        assert provider_item_id is None
         verify(connection)  # type: ignore[operator]
         return connection
 
@@ -308,7 +340,8 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
     )
 
     service.disconnect_confirmed.assert_called_once()
-    # SyncDisconnectPayload has only TXN_TYPE + INSTITUTION → Tier.LOW derived sensitivity
+    # SyncInstitutionDisconnectView has only TXN_TYPE + INSTITUTION + RECORD_ID
+    # fields → Tier.LOW derived sensitivity
     assert envelope.summary.sensitivity == "low"
 
 
@@ -331,10 +364,12 @@ async def test_sync_disconnect_refuses_confirmation_after_live_target_changes(
 
     def disconnect_confirmed(
         *,
-        institution: str,
+        institution: str | None,
+        provider_item_id: str | None,
         verify: object,
     ) -> ConnectedInstitution:
         assert institution == "Chase"
+        assert provider_item_id is None
         verify(changed)  # type: ignore[operator]
         return changed
 
@@ -353,6 +388,319 @@ async def test_sync_disconnect_refuses_confirmation_after_live_target_changes(
 
     assert result.error is not None
     assert result.error.code == "mutation_confirmation_mismatch"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_by_provider_item_id_threads_through_to_service(
+    mock_build: MagicMock,
+) -> None:
+    """provider_item_id resolves and disconnects one exact item, not by name."""
+    connection = ConnectedInstitution(
+        id="conn_b",
+        provider_item_id="item_b",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 4, 1, tzinfo=UTC),
+    )
+    service = MagicMock()
+    service.plan_disconnect.return_value = connection
+
+    def disconnect_confirmed(
+        *,
+        institution: str | None,
+        provider_item_id: str | None,
+        verify: object,
+    ) -> ConnectedInstitution:
+        assert institution is None
+        assert provider_item_id == "item_b"
+        verify(connection)  # type: ignore[operator]
+        return connection
+
+    service.disconnect_confirmed.side_effect = disconnect_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(provider_item_id="item_b")
+    service.plan_disconnect.assert_called_once_with(
+        institution=None, provider_item_id="item_b"
+    )
+    assert required.error is not None
+
+    envelope = await sync_disconnect(
+        provider_item_id="item_b",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+    assert envelope.error is None
+    assert envelope.data.institution == "Chase"
+    assert envelope.data.provider_item_id == "item_b"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_keeps_nameless_institution_null(
+    mock_build: MagicMock,
+) -> None:
+    """A nameless connection's institution stays null, never the raw id.
+
+    Regression: the result used to fall back to provider_item_id for
+    institution when institution_name was None.
+    """
+    connection = ConnectedInstitution(
+        id="conn_c",
+        provider_item_id="item_c",
+        provider="plaid",
+        institution_name=None,
+        status="active",
+        created_at=datetime(2026, 4, 1, tzinfo=UTC),
+    )
+    service = MagicMock()
+    service.plan_disconnect.return_value = connection
+
+    def disconnect_confirmed(
+        *,
+        institution: str | None,
+        provider_item_id: str | None,
+        verify: object,
+    ) -> ConnectedInstitution:
+        assert institution is None
+        assert provider_item_id == "item_c"
+        verify(connection)  # type: ignore[operator]
+        return connection
+
+    service.disconnect_confirmed.side_effect = disconnect_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(provider_item_id="item_c")
+    assert required.error is not None
+
+    envelope = await sync_disconnect(
+        provider_item_id="item_c",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+    assert envelope.error is None
+    assert envelope.data.institution is None
+    assert envelope.data.provider_item_id == "item_c"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_result_distinguishes_same_named_connections(
+    mock_build: MagicMock,
+) -> None:
+    """Two same-named connections (e.g. after a relink) must be distinguishable.
+
+    Both share institution="Chase"; only provider_item_id tells them apart.
+    """
+    item_a = ConnectedInstitution(
+        id="conn_a",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 1, tzinfo=UTC),
+    )
+    item_b = item_a.model_copy(update={"id": "conn_b", "provider_item_id": "item_b"})
+    service = MagicMock()
+
+    async def _run(target: ConnectedInstitution):
+        service.plan_disconnect.return_value = target
+
+        def disconnect_confirmed(
+            *,
+            institution: str | None,
+            provider_item_id: str | None,
+            verify: object,
+        ) -> ConnectedInstitution:
+            verify(target)  # type: ignore[operator]
+            return target
+
+        service.disconnect_confirmed.side_effect = disconnect_confirmed
+        mock_build.return_value.__enter__.return_value = service
+        from moneybin.mcp.tools.sync import sync_disconnect
+
+        required = await sync_disconnect(provider_item_id=target.provider_item_id)
+        assert required.error is not None
+        assert required.error.details is not None
+        return await sync_disconnect(
+            provider_item_id=target.provider_item_id,
+            confirmation_token=str(required.error.details["confirmation_token"]),
+        )
+
+    envelope_a = await _run(item_a)
+    envelope_b = await _run(item_b)
+
+    assert envelope_a.data.institution == envelope_b.data.institution == "Chase"
+    assert envelope_a.data.provider_item_id == "item_a"
+    assert envelope_b.data.provider_item_id == "item_b"
+
+
+@pytest.mark.unit
+async def test_sync_disconnect_rejects_both_institution_and_provider_item_id() -> None:
+    """Mirrors pull()'s mutual-exclusion guard shape.
+
+    The MCP tool now rejects this before planning, so the service is never
+    reached — the mock's side_effect stands ready as defense in depth but
+    should not fire.
+    """
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    with patch("moneybin.mcp.tools.sync._build_sync_service") as mock_build:
+        service = MagicMock()
+        service.plan_disconnect.side_effect = UserError(
+            "institution and provider_item_id are mutually exclusive — pass exactly one",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+        mock_build.return_value.__enter__.return_value = service
+        envelope = await sync_disconnect(institution="Chase", provider_item_id="item_a")
+
+    assert envelope.error is not None
+    assert envelope.error.code == error_codes.MUTATION_INVALID_INPUT
+    service.plan_disconnect.assert_not_called()
+    service.disconnect_confirmed.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_both_selectors_retry_does_not_consume_token(
+    mock_build: MagicMock,
+) -> None:
+    """A malformed both-selectors retry must not burn a valid confirmation token.
+
+    Regression: previously the both-selectors case skipped straight to
+    `grant_confirmation_or_raise` (consuming the single-use token) and only
+    the service's own guard caught it afterward — leaving a corrected retry
+    unable to reuse the token. The tool must reject before token consumption.
+    """
+    connection = ConnectedInstitution(
+        id="conn_x",
+        provider_item_id="item_x",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 4, 1, tzinfo=UTC),
+    )
+    service = MagicMock()
+    service.plan_disconnect.return_value = connection
+
+    def disconnect_confirmed(
+        *,
+        institution: str | None,
+        provider_item_id: str | None,
+        verify: object,
+    ) -> ConnectedInstitution:
+        assert institution is None
+        assert provider_item_id == "item_x"
+        verify(connection)  # type: ignore[operator]
+        return connection
+
+    service.disconnect_confirmed.side_effect = disconnect_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(provider_item_id="item_x")
+    assert required.error is not None
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+
+    malformed = await sync_disconnect(
+        institution="Chase",
+        provider_item_id="item_x",
+        confirmation_token=token,
+    )
+    assert malformed.error is not None
+    assert malformed.error.code == error_codes.MUTATION_INVALID_INPUT
+    service.disconnect_confirmed.assert_not_called()
+
+    envelope = await sync_disconnect(
+        provider_item_id="item_x",
+        confirmation_token=token,
+    )
+    assert envelope.error is None
+    assert envelope.data.institution == "Chase"
+    assert envelope.data.provider_item_id == "item_x"
+    service.disconnect_confirmed.assert_called_once()
+
+
+@pytest.mark.unit
+async def test_sync_disconnect_surfaces_unknown_provider_item_id_as_not_found() -> None:
+    """An unknown provider_item_id classifies as mutation_not_found, not infra."""
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    with patch("moneybin.mcp.tools.sync._build_sync_service") as mock_build:
+        service = MagicMock()
+        service.plan_disconnect.side_effect = UserError(
+            "no connected institution with provider_item_id 'item_missing' — "
+            "run `moneybin sync status` to list connected banks",
+            code=error_codes.MUTATION_NOT_FOUND,
+        )
+        mock_build.return_value.__enter__.return_value = service
+        envelope = await sync_disconnect(provider_item_id="item_missing")
+
+    assert envelope.error is not None
+    assert envelope.error.code == error_codes.MUTATION_NOT_FOUND
+    service.disconnect_confirmed.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_sync_disconnect_requires_institution_or_provider_item_id() -> None:
+    """Neither target given must refuse before any service call is made."""
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    with patch("moneybin.mcp.tools.sync._build_sync_service") as mock_build:
+        service = MagicMock()
+        mock_build.return_value.__enter__.return_value = service
+        envelope = await sync_disconnect()
+
+    assert envelope.error is not None
+    assert envelope.error.code == "sync_institution_required"
+    service.plan_disconnect.assert_not_called()
+
+
+@pytest.mark.unit
+def test_sync_disconnect_binding_and_message_name_the_specific_item() -> None:
+    """The confirmation binding and message must distinguish same-named items.
+
+    Two connections at one institution (a relink) must not collapse into one
+    indistinguishable confirmation — see design-principles.md "Magic stays
+    visible".
+    """
+    from moneybin.mcp.tools.sync import (
+        _sync_disconnect_binding,  # pyright: ignore[reportPrivateUsage]
+        _sync_disconnect_message,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    item_a = ConnectedInstitution(
+        id="conn_a",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 1, 5, tzinfo=UTC),
+    )
+    item_b = item_a.model_copy(
+        update={
+            "id": "conn_b",
+            "provider_item_id": "item_b",
+            "created_at": datetime(2026, 6, 1, tzinfo=UTC),
+        }
+    )
+
+    message_a = _sync_disconnect_message(item_a)
+    message_b = _sync_disconnect_message(item_b)
+    assert "item_a" in message_a
+    assert "2026-01-05" in message_a
+    assert "item_b" in message_b
+    assert "2026-06-01" in message_b
+    assert message_a != message_b
+
+    binding_a = _sync_disconnect_binding(item_a)
+    binding_b = _sync_disconnect_binding(item_b)
+    assert binding_a.resolved_ids == ("conn_a", "item_a")
+    assert binding_b.resolved_ids == ("conn_b", "item_b")
+    assert binding_a.canonical_bytes() != binding_b.canonical_bytes()
 
 
 @pytest.mark.unit
@@ -462,3 +810,176 @@ async def test_sync_pull_withholds_retries_when_the_apply_failed(
     from moneybin.mcp.tools.sync import sync_pull
 
     assert not sync_pull().recovery_actions
+
+
+def _purge_plan(*, connected: bool = True, rows: int = 3) -> SyncPurgePlan:
+    return SyncPurgePlan(
+        provider_item_id="item_a",
+        connection=(
+            ConnectedInstitution(
+                id="conn_a",
+                provider_item_id="item_a",
+                provider="plaid",
+                institution_name="Chase",
+                status="active",
+                created_at=datetime(2026, 3, 15, tzinfo=UTC),
+            )
+            if connected
+            else None
+        ),
+        table_counts=(
+            ("raw.plaid_accounts", 1),
+            ("raw.plaid_transactions", rows),
+            ("raw.security_prices", 0),
+        ),
+        account_link_ids=("l1", "l2"),
+        decision_ids=("d1",),
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_absent_confirms_then_purges(
+    mock_build: MagicMock,
+) -> None:
+    """state='absent' is a two-call confirm whose confirmed call purges."""
+    service = MagicMock()
+    plan = _purge_plan()
+    service.plan_purge.return_value = plan
+
+    def purge_confirmed(**kwargs: object) -> object:
+        assert kwargs["institution"] == "Chase"
+        assert kwargs["provider_item_id"] is None
+        assert kwargs["actor"] == "mcp"
+        kwargs["verify"](plan)  # type: ignore[operator]
+        return plan
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(institution="Chase", state="absent")
+
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+    assert required.error.details is not None
+    service.purge_confirmed.assert_not_called()
+    service.disconnect_confirmed.assert_not_called()
+
+    envelope = await sync_disconnect(
+        institution="Chase",
+        state="absent",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    service.purge_confirmed.assert_called_once()
+    assert envelope.error is None
+    assert envelope.data.kind == "institution"
+    assert envelope.data.status == "purged"
+    assert envelope.data.purged is True
+    assert envelope.data.rows_deleted == 4
+    assert envelope.data.account_links_reversed == 2
+    assert envelope.data.institution == "Chase"
+    assert envelope.data.provider_item_id == "item_a"
+    # The purge rebuilds the models it fed, so nothing is left to refresh.
+    assert not any("refresh_run" in action for action in envelope.actions)
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_absent_refuses_when_the_counts_change(
+    mock_build: MagicMock,
+) -> None:
+    """A pull between preview and confirm changes the digest; the confirm is refused."""
+    service = MagicMock()
+    service.plan_purge.return_value = _purge_plan(rows=3)
+
+    def purge_confirmed(**kwargs: object) -> object:
+        kwargs["verify"](_purge_plan(rows=9))  # type: ignore[operator]
+        raise AssertionError("verify must have refused the changed plan")
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(provider_item_id="item_a", state="absent")
+    assert required.error is not None
+    assert required.error.details is not None
+
+    result = await sync_disconnect(
+        provider_item_id="item_a",
+        state="absent",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert result.error is not None
+    assert result.error.code == "mutation_confirmation_mismatch"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_absent_reaches_an_item_the_server_no_longer_lists(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    plan = _purge_plan(connected=False)
+    service.plan_purge.return_value = plan
+
+    def purge_confirmed(**kwargs: object) -> object:
+        kwargs["verify"](plan)  # type: ignore[operator]
+        return plan
+
+    service.purge_confirmed.side_effect = purge_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(provider_item_id="item_a", state="absent")
+    assert required.error is not None
+    assert required.error.details is not None
+    assert required.error.details["operation_kind"] == "sync_disconnect_absent"
+    blast_radius = required.error.details["blast_radius"]
+    assert isinstance(blast_radius, dict)
+    assert blast_radius["institutions"] == 0
+
+    envelope = await sync_disconnect(
+        provider_item_id="item_a",
+        state="absent",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert envelope.error is None
+    assert envelope.data.status == "purged"
+    assert envelope.data.institution is None
+
+
+@pytest.mark.unit
+def test_sync_purge_binding_and_message_quote_the_exact_item_and_counts() -> None:
+    from moneybin.mcp.tools.sync import (
+        _sync_purge_binding,  # pyright: ignore[reportPrivateUsage]
+        _sync_purge_message,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    plan = _purge_plan()
+    binding = _sync_purge_binding(plan)
+
+    assert binding.operation_kind == "sync_disconnect_absent"
+    assert binding.resolved_ids == ("item_a",)
+    assert binding.arguments["state"] == "absent"
+    assert binding.arguments["table_counts"] == [
+        ["raw.plaid_accounts", 1],
+        ["raw.plaid_transactions", 3],
+        ["raw.security_prices", 0],
+    ]
+    assert binding.blast_radius["total_rows"] == 4
+    assert binding.blast_radius["institutions"] == 1
+    assert binding.blast_radius["account_links_reversed"] == 2
+    assert binding.blast_radius["proposals_withdrawn"] == 1
+    message = _sync_purge_message(plan)
+    assert "Chase" in message
+    assert "item_a" in message
+    assert "4 locally pulled rows" in message
+    assert "2 account links" in message
+    assert _sync_purge_binding(_purge_plan(rows=9)) != binding
+    orphan = _sync_purge_message(_purge_plan(connected=False))
+    assert "no longer lists" in orphan
+    assert "item_a" in orphan

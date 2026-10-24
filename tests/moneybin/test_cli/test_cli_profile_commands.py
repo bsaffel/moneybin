@@ -8,8 +8,52 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.profile import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _interactive_profile_terminal(  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Profile tests default to the runner's noninteractive text contract."""
+    policy = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+    def get_policy(**_kwargs: object) -> TerminalPolicy:
+        return policy
+
+    monkeypatch.setattr("moneybin.cli.commands.profile.get_terminal_policy", get_policy)
+
+
+def _interactive_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
 
 
 class TestProfileCreate:
@@ -70,8 +114,8 @@ class TestProfileCreate:
             result = runner.invoke(app, ["create", "alice"])
 
         assert result.exit_code == 0
-        assert "Completed setup" in caplog.text
-        assert "Created profile" not in caplog.text
+        assert "Profile setup completed" in result.stdout
+        assert "Profile created" not in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_says_created_for_a_fresh_profile(
@@ -85,7 +129,7 @@ class TestProfileCreate:
             result = runner.invoke(app, ["create", "alice"])
 
         assert result.exit_code == 0
-        assert "Created profile" in caplog.text
+        assert "Profile created" in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_does_not_claim_to_preserve_a_database_that_never_existed(
@@ -106,8 +150,8 @@ class TestProfileCreate:
             result = runner.invoke(app, ["create", "alice"])
 
         assert result.exit_code == 0
-        assert "Completed setup" in caplog.text
-        assert "left untouched" not in caplog.text
+        assert "Profile setup completed" in result.stdout
+        assert "preserved" not in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_reports_a_preserved_database_when_one_was_adopted(
@@ -122,7 +166,97 @@ class TestProfileCreate:
             result = runner.invoke(app, ["create", "alice"])
 
         assert result.exit_code == 0
-        assert "left untouched" in caplog.text
+        assert "preserved" in result.stdout
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_activates_the_new_profile(self, mock_cls: MagicMock) -> None:
+        """The next command runs against the profile just created, not the old one."""
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.list.return_value = []
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+
+        result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 0
+        mock_svc.switch.assert_called_once_with("alice")
+        assert "alice (active)" in result.stdout
+        assert "Switch back" not in result.stdout
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_names_the_way_back_to_the_displaced_profile(
+        self, mock_cls: MagicMock
+    ) -> None:
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.list.return_value = [{"name": "demo", "active": True, "path": "/f"}]
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+
+        result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 0
+        assert "> Switch back to demo: moneybin profile switch demo" in result.stdout
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_failed_activation_reports_the_created_profile_and_the_fix(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A read-only user config must not read as a failed create."""
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.list.return_value = [{"name": "demo", "active": True, "path": "/f"}]
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+        mock_svc.switch.side_effect = PermissionError(13, "Permission denied")
+
+        with caplog.at_level(logging.ERROR):
+            result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 1
+        assert "Profile created" in result.stdout
+        assert "(active)" not in result.stdout
+        assert "Switch back" not in result.stdout
+        assert "was created but could not be made active" in caplog.text
+        assert "active profile is still demo" in caplog.text
+        assert "moneybin profile switch alice" in result.stderr
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_failed_create_does_not_activate(self, mock_cls: MagicMock) -> None:
+        from moneybin.services.profile_service import ProfileExistsError
+
+        mock_svc = mock_cls.return_value
+        mock_svc.create.side_effect = ProfileExistsError("exists")
+
+        result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 1
+        mock_svc.switch.assert_not_called()
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_inbox_receipt_names_the_root_it_used_and_every_folder(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Not a hardcoded ~/Documents path: MONEYBIN_IMPORT___INBOX_ROOT moves it."""
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.list.return_value = []
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+        mock_svc.inbox_root.return_value = Path("/custom/inbox-root/alice")
+
+        result = runner.invoke(app, ["create", "alice", "--init-inbox"])
+
+        assert result.exit_code == 0
+        assert "/custom/inbox-root/alice" in result.stdout
+        assert "Documents" not in result.stdout
+        assert "inbox/, processed/, failed/, pending/" in result.stdout
+
+    def test_init_inbox_help_lists_every_layout_directory(self) -> None:
+        from moneybin.services.inbox_service import INBOX_LAYOUT
+
+        result = runner.invoke(app, ["create", "--help"], env={"COLUMNS": "200"})
+
+        assert result.exit_code == 0
+        listed = " ".join(result.stdout.split())
+        assert "{" + ",".join(INBOX_LAYOUT) + "}" in listed
 
 
 class TestProfileList:
@@ -140,7 +274,7 @@ class TestProfileList:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["list"])
         assert result.exit_code == 0
-        assert "alice" in caplog.text
+        assert "alice" in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_list_empty(
@@ -151,7 +285,7 @@ class TestProfileList:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["list"])
         assert result.exit_code == 0
-        assert "No profiles found" in caplog.text
+        assert "No profiles found" in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_list_marks_active(
@@ -165,7 +299,7 @@ class TestProfileList:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["list"])
         assert result.exit_code == 0
-        assert "(active)" in caplog.text
+        assert "(active)" in result.stdout
 
 
 class TestProfileSwitch:
@@ -192,8 +326,13 @@ class TestProfileDelete:
     """Tests for 'profile delete' command."""
 
     @patch("moneybin.cli.commands.profile.ProfileService")
-    def test_delete_requires_confirmation(self, mock_cls: MagicMock) -> None:
+    def test_delete_requires_confirmation(
+        self, mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         mock_svc = mock_cls.return_value
+        monkeypatch.setattr(
+            "moneybin.cli.commands.profile.get_terminal_policy", _interactive_policy
+        )
         result = runner.invoke(app, ["delete", "alice"], input="n\n")
         assert result.exit_code == 0
         mock_svc.delete.assert_not_called()
@@ -206,8 +345,13 @@ class TestProfileDelete:
         mock_svc.delete.assert_called_once_with("alice")
 
     @patch("moneybin.cli.commands.profile.ProfileService")
-    def test_delete_confirmed_interactively(self, mock_cls: MagicMock) -> None:
+    def test_delete_confirmed_interactively(
+        self, mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         mock_svc = mock_cls.return_value
+        monkeypatch.setattr(
+            "moneybin.cli.commands.profile.get_terminal_policy", _interactive_policy
+        )
         result = runner.invoke(app, ["delete", "alice"], input="y\n")
         assert result.exit_code == 0
         mock_svc.delete.assert_called_once_with("alice")
@@ -220,6 +364,22 @@ class TestProfileDelete:
         mock_svc.delete.side_effect = ProfileNotFoundError("not found")
         result = runner.invoke(app, ["delete", "ghost", "--yes"])
         assert result.exit_code == 1
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_delete_denied_cleanup_uses_error_boundary(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from moneybin.secrets import SecretStorageUnavailableError
+
+        mock_cls.return_value.delete.side_effect = SecretStorageUnavailableError(
+            "Unlock the OS keychain and retry."
+        )
+        with caplog.at_level(logging.ERROR):
+            result = runner.invoke(app, ["delete", "alice", "--yes"])
+        assert result.exit_code != 0
+        assert not isinstance(result.exception, SecretStorageUnavailableError)
+        assert "keychain" in (result.output + caplog.text).lower()
+        assert "Profile deleted" not in result.stdout
 
 
 class TestProfileShow:
@@ -241,7 +401,7 @@ class TestProfileShow:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["show"])
         assert result.exit_code == 0
-        assert "alice" in caplog.text
+        assert "alice" in result.stdout
         # CLI resolves the current profile before delegating to the service
         mock_svc.show.assert_called_once()
 
@@ -296,7 +456,7 @@ class TestProfileShow:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["show"])
         assert result.exit_code == 0
-        assert "not created" in caplog.text
+        assert "not created" in result.stdout
 
 
 class TestProfileSet:

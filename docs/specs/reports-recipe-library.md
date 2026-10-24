@@ -6,23 +6,39 @@
 - **Status:** implemented
 - **Milestone:** M2A ("brand surface" cluster — recipe library + `moneybin doctor`)
 
-> **Current categorization queue (2026-07-18):**
-> `core.uncategorized_queue` is an internal categorization-review queue. Its
-> only runtime reader is `services/categorization/queries.py`, backing
-> `reviews(kind="categorization", status="pending")`; it has no registered
-> report route. The live model is
-> `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`, and its
-> `TableRef` is `CORE_UNCATEGORIZED_QUEUE`.
+> **Current categorization queue (2026-10-14):**
+> the internal categorization-review queue is no longer a relation. It is
+> `core.fct_transactions` filtered `WHERE is_categorizable AND category IS NULL`,
+> read by `services/categorization/queries.py` behind
+> `reviews(kind="categorization", status="pending")`, with no registered report
+> route ([`categorizable-transactions.md`](categorizable-transactions.md)).
+> References below to `core.uncategorized_queue` record what this spec shipped.
+
+> **Superseded surface (2026-09-18):**
+> every `networth` / `networth-history` recipe below is retired. The net-worth
+> recipes now target three `@report` SQL runners: `core:net_worth` (day grain,
+> one home-currency total), `core:net_worth_currencies` (currency × day), and
+> `core:net_worth_accounts` (account × day), reached as `reports net-worth`,
+> `reports net-worth-currencies`, and `reports net-worth-accounts`.
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md) holds
+> the current contract; what follows records what M2A shipped.
 
 ## Goal
 
 Ship the first wave of seven `reports.*` SQLMesh views and eight registered report routes. Seven SQLMesh report views back eight report routes: six `@report` SQL runners plus two service-backed net-worth routes that share `reports.net_worth`. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)).
 
-The current catalog has since grown: eight SQLMesh report views back nine report
-routes, with seven `@report` SQL runners plus the same two service-backed
-net-worth routes. The added `reports.realized_fx` view is specified by
+The current catalog has since grown: ten SQLMesh report views back ten
+report routes, every one now a `@report` SQL runner — no service-backed
+route survives. The added `reports.realized_fx` view is specified by
 [`multi-currency.md`](multi-currency.md), not by this initial recipe-library
-slice.
+slice. `reports.net_worth_accounts`, `reports.net_worth_currencies`, and
+`reports.net_worth`, specified by
+[`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md), now
+back their own `@report` SQL runners (`core:net_worth_accounts` /
+`core:net_worth_currencies` / `core:net_worth`), so every view is accounted
+for. That spec's §Files to Delete retired `NetworthService`, `core:networth`,
+and `core:networth_history` — the last of the service-backed routes this
+section originally shipped.
 
 Bundle in three migrations that should ship alongside the inaugurating `reports.*` work:
 
@@ -352,13 +368,31 @@ on the first observation, so `is_observed` is required to distinguish them.
 The first observation has no prior transaction-derived anchor and remains
 `status = 'no-data'`; a missing daily row does as well.
 
+**Investment accounts (decided 2026-10, after the investments guide).** An
+account with any row in `core.fct_investment_transactions` reports
+`status = 'investment-ledger'` with `computed_balance`, `drift`, and
+`drift_pct` NULL. The comparison cannot be made honestly there: the ledger's
+cash legs (buys, sells, dividends) never reach `core.fct_transactions`, so the
+transaction-derived position is the deposits alone, and an assertion on a
+brokerage states cash plus positions at market value. Folding the cash legs in
+was rejected — it would still omit the positions, which need a daily valuation
+series that does not exist (see `investments-overview.md`), so it would trade
+one false drift for a smaller false drift. The status is magnitude-free, like
+`currency-mismatch`: display conversion never re-buckets it. When both hold,
+`investment-ledger` wins: a currency mismatch is a defect the user can repair,
+and after the repair the ledger still leaves nothing to compare, so the row
+names the condition that outlasts the fix and `--status investment-ledger`
+lists every account with a ledger row. When positions
+fold into net worth with a past-dated valuation, this status is what that work
+replaces.
+
 **Columns:**
 
 | Column | Type | Comment |
 |---|---|---|
 | `account_id` | `VARCHAR` | Joinable to core.dim_accounts |
 | `account_name` | `VARCHAR` | Account display name |
-| `status` | `VARCHAR` | 'clean' if `drift_abs < 1.00`, 'warning' if `< 10.00`, 'drift' if `≥ 10.00`, 'no-data' if computed_balance IS NULL |
+| `status` | `VARCHAR` | 'clean' if `drift_abs < 1.00`, 'warning' if `< 10.00`, 'drift' if `≥ 10.00`, 'no-data' if computed_balance IS NULL, 'currency-mismatch' when the account's and the observation's known currencies disagree, 'investment-ledger' when the account has investment ledger events |
 | `assertion_date` | `DATE` | User-asserted balance date |
 | `days_since_assertion` | `INTEGER` | today - assertion_date |
 | `asserted_balance` | `DECIMAL(18,2)` | User-entered balance for this date |
@@ -369,7 +403,7 @@ The first observation has no prior transaction-derived anchor and remains
 
 Thresholds (`$1`, `$10`) are hardcoded in v1 with a docstring noting they are intentional defaults; future iterations may move them to `MoneyBinSettings.reports.balance_drift_thresholds`.
 
-CLI: `moneybin reports balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]`.
+CLI: `moneybin reports balance-drift [--account NAME] [--status drift|warning|clean|no-data|currency-mismatch|investment-ledger] [--since DATE]`.
 MCP: `reports(report_id="core:balance_drift", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 

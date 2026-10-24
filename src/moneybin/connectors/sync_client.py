@@ -3,11 +3,9 @@
 Pure transport — no business logic, no database access. Methods correspond
 1:1 to server endpoints. Service-layer orchestration lives in SyncService.
 
-Token storage:
-- Primary: OS keyring via `keyring` library
-- Fallback: ~/.moneybin/.sync_token (0600), JSON {"jwt": ..., "refresh_token": ...}
-The fallback handles environments without an OS keychain (headless Linux without
-Secret Service, some Docker setups).
+Token storage uses SecretStore and requires a writable secure OS keychain.
+A legacy plaintext token file records no issuing server, so it is removed, never
+imported; new credentials are never written to plaintext files.
 
 Timeouts:
 - _DEFAULT_TIMEOUT (15s) for most endpoints
@@ -19,18 +17,13 @@ Per design — no per-endpoint configuration knobs unless evidence demands them.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import stat
 import sys
 import time
 import webbrowser
 from pathlib import Path
 
 import httpx
-import keyring
-from keyring.errors import KeyringError
 
 from moneybin.connectors.sync_errors import (
     SyncAPIError,
@@ -50,12 +43,22 @@ from moneybin.connectors.sync_models import (
     SyncTriggerResponse,
 )
 from moneybin.metrics.registry import SYNC_AUTH_REFRESH_OUTCOMES
+from moneybin.secrets import (
+    SecretNotFoundError,
+    SecretStorageUnavailableError,
+    SecretStore,
+    SecretUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
-_KEYRING_SERVICE = "moneybin-sync"
 _KEYRING_JWT_KEY = "jwt"
 _KEYRING_REFRESH_KEY = "refresh_token"
+_PENDING_KEY = "pending"
+# The server that issued the stored pair. The address can change by five routes
+# (login, `profile set`, a hand edit, a dotenv, the environment) and only one of
+# them clears credentials, so the pair itself records where it may be presented.
+_KEYRING_SERVER_KEY = "server"
 
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 _LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
@@ -67,152 +70,156 @@ _LINK_POLL_DEADLINE = 300.0
 
 
 class SyncClient:
-    """HTTP client wrapping moneybin-sync endpoints.
+    """HTTP client using profile-scoped SecretStore credentials."""
 
-    Construction:
-        SyncClient(server_url, token_path=None)
-    For tests, pass an explicit `token_path` to use a tmp file (bypasses keyring).
-    """
-
-    # Test hook — overridable for fast tests (e.g. client._sleep = list.append)
     _sleep = staticmethod(time.sleep)
 
     def __init__(
         self,
         server_url: str,
-        token_path: Path | None = None,
         profile_id: str | None = None,
+        *,
+        secret_store: SecretStore | None = None,
     ) -> None:
-        """Set up the HTTP client and optional test-only token path override."""
+        """Bind transport to a broker identity and its secure credential store."""
         self._server_url = server_url.rstrip("/")
-        self._token_path = token_path  # if set, bypass keyring entirely (tests)
         self._profile_id = profile_id
-        # Namespace token storage by profile so two profiles never share a slot —
-        # each profile's token encodes a distinct broker subject. Absent a
-        # profile_id, fall back to the legacy unscoped keys.
-        self._jwt_key = (
-            f"{profile_id}:{_KEYRING_JWT_KEY}" if profile_id else _KEYRING_JWT_KEY
-        )
-        self._refresh_key = (
-            f"{profile_id}:{_KEYRING_REFRESH_KEY}"
-            if profile_id
-            else _KEYRING_REFRESH_KEY
-        )
+        self._store = secret_store or SecretStore.for_sync(profile_id)
         self._client = httpx.Client(base_url=self._server_url, timeout=_DEFAULT_TIMEOUT)
 
-    # ------------------------------ Token storage ------------------------------
+    @property
+    def server_url(self) -> str:
+        """The server this client talks to, without a trailing slash."""
+        return self._server_url
+
+    def _optional_key(self, name: str) -> str | None:
+        try:
+            return self._store.get_key(name)
+        except SecretUnavailableError:
+            raise
+        except SecretNotFoundError:
+            return None
 
     def _store_tokens(self, *, access_token: str, refresh_token: str) -> None:
-        if self._token_path is not None:
-            self._write_token_file(access_token, refresh_token)
-            return
+        """Publish a verified pair; interrupted writes remain unavailable."""
+        if not access_token.strip() or not refresh_token.strip():
+            raise SecretStorageUnavailableError("Sync credential pair is incomplete.")
+        # Separate keychain writes are not atomic. Readers must refuse a pair
+        # until both new values have been verified and the marker is removed.
+        self._store.set_key(_PENDING_KEY, "1")
+        if self._optional_key(_PENDING_KEY) != "1":
+            raise SecretStorageUnavailableError(
+                "Sync credential write could not start safely."
+            )
         try:
-            keyring.set_password(_KEYRING_SERVICE, self._jwt_key, access_token)
-            keyring.set_password(_KEYRING_SERVICE, self._refresh_key, refresh_token)
-        except KeyringError as e:
-            logger.warning(f"Keyring unavailable ({e}); falling back to file storage.")
-            self._write_token_file(access_token, refresh_token)
+            self._store.set_key(_KEYRING_JWT_KEY, access_token)
+            self._store.set_key(_KEYRING_REFRESH_KEY, refresh_token)
+            self._store.set_key(_KEYRING_SERVER_KEY, self._server_url)
+            if (
+                self._optional_key(_KEYRING_JWT_KEY) != access_token
+                or self._optional_key(_KEYRING_REFRESH_KEY) != refresh_token
+                or self._optional_key(_KEYRING_SERVER_KEY) != self._server_url
+            ):
+                raise SecretStorageUnavailableError(
+                    "Sync credential verification failed."
+                )
+            self._store.delete_key(_PENDING_KEY)
+            if self._optional_key(_PENDING_KEY) is not None:
+                raise SecretStorageUnavailableError(
+                    "Sync credential publication failed."
+                )
+        except (SecretNotFoundError, SecretStorageUnavailableError):
+            # Leave the pending marker if any part of cleanup fails. A fresh
+            # client then refuses a mixed pair, even when both slots exist.
+            try:
+                self._delete_pair(self._store)
+            except (SecretNotFoundError, SecretStorageUnavailableError):
+                pass
+            raise SecretStorageUnavailableError(
+                "Sync credentials could not be safely stored. Unlock the OS "
+                "keychain and run `moneybin sync login` again."
+            ) from None
+
+    @staticmethod
+    def _delete_pair(store: SecretStore) -> None:
+        for name in (
+            _KEYRING_JWT_KEY,
+            _KEYRING_REFRESH_KEY,
+            _KEYRING_SERVER_KEY,
+            _PENDING_KEY,
+        ):
+            try:
+                store.delete_key(name)
+            except SecretUnavailableError:
+                raise
+            except SecretNotFoundError:
+                pass
+            try:
+                store.get_key(name)
+            except SecretUnavailableError:
+                raise
+            except SecretNotFoundError:
+                continue
+            raise SecretStorageUnavailableError(
+                "Sync credential removal could not be verified."
+            )
+
+    def _read_pair(self) -> tuple[str, str] | None:
+        if self._optional_key(_PENDING_KEY) is not None:
+            raise SecretStorageUnavailableError(
+                "Sync credential storage was interrupted. Run `moneybin sync login` again."
+            )
+        access = self._optional_key(_KEYRING_JWT_KEY)
+        refresh = self._optional_key(_KEYRING_REFRESH_KEY)
+        if self._profile_id is not None:
+            # A plaintext file from before keychain storage records no issuer. It
+            # can never be presented, so remove it rather than leave a token on
+            # disk, whether or not a keychain pair exists beside it.
+            path = self._legacy_token_path(self._profile_id)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(f"Could not remove the legacy sync token file {path}")
+        if access is not None or refresh is not None:
+            if not access or not refresh or not access.strip() or not refresh.strip():
+                raise SecretStorageUnavailableError(
+                    "Sync credential pair is incomplete. Run `moneybin sync login` again."
+                )
+            # A pair stored before pairs recorded their issuer counts as absent:
+            # the address may have changed since, so no server is known to own it.
+            # Kept, not deleted: an override that points elsewhere for one run
+            # must not log the profile out of its own server.
+            if self._optional_key(_KEYRING_SERVER_KEY) != self._server_url:
+                return None
+            return access, refresh
+        return None
 
     def _read_token(self) -> str | None:
-        if self._token_path is not None:
-            return self._read_token_file().get("jwt")
-        try:
-            return keyring.get_password(_KEYRING_SERVICE, self._jwt_key)
-        except KeyringError:
-            return self._read_token_file().get("jwt")
+        pair = self._read_pair()
+        return pair[0] if pair else None
 
     def _read_refresh_token(self) -> str | None:
-        if self._token_path is not None:
-            return self._read_token_file().get("refresh_token")
-        try:
-            return keyring.get_password(_KEYRING_SERVICE, self._refresh_key)
-        except KeyringError:
-            return self._read_token_file().get("refresh_token")
+        pair = self._read_pair()
+        return pair[1] if pair else None
+
+    @staticmethod
+    def _legacy_token_path(profile_id: str | None) -> Path:
+        name = f".sync_token-{profile_id}" if profile_id else ".sync_token"
+        return Path.home() / ".moneybin" / name
 
     def logout(self) -> None:
-        """Remove stored tokens from keychain (or fallback file)."""
+        """Remove local credentials; this does not revoke the broker session."""
         self._clear_tokens()
 
     @classmethod
     def clear_tokens_for_profile(cls, profile_id: str) -> None:
-        """Delete a single profile's scoped broker tokens (keyring + fallback file).
-
-        For profile deletion: removes only that profile's scoped slots — never the
-        legacy unscoped slots (which may belong to another or legacy identity) or
-        another profile's slots. Best-effort; missing entries are ignored.
-        """
-        for key in (
-            f"{profile_id}:{_KEYRING_JWT_KEY}",
-            f"{profile_id}:{_KEYRING_REFRESH_KEY}",
-        ):
-            try:
-                keyring.delete_password(_KEYRING_SERVICE, key)
-            except KeyringError:
-                pass
-        fallback = Path.home() / ".moneybin" / f".sync_token-{profile_id}"
-        if fallback.exists():
-            fallback.unlink()
+        """Remove only the named broker identity's credentials and legacy file."""
+        cls._delete_pair(SecretStore.for_sync(profile_id))
+        cls._legacy_token_path(profile_id).unlink(missing_ok=True)
 
     def _clear_tokens(self) -> None:
-        if self._token_path is not None:
-            if self._token_path.exists():
-                self._token_path.unlink()
-            return
-        # Clear this profile's scoped slots AND the legacy unscoped slots, so a
-        # user upgrading from the pre-per-profile version doesn't leave an
-        # orphaned token behind on logout. The set dedups when no profile is set
-        # (scoped keys == legacy keys).
-        for key in {
-            self._jwt_key,
-            self._refresh_key,
-            _KEYRING_JWT_KEY,
-            _KEYRING_REFRESH_KEY,
-        }:
-            try:
-                keyring.delete_password(_KEYRING_SERVICE, key)
-            except KeyringError:
-                pass
-        for path in {
-            self._effective_token_path(),
-            Path.home() / ".moneybin" / ".sync_token",
-        }:
-            if path.exists():
-                path.unlink()
-
-    def _write_token_file(
-        self,
-        access_token: str,
-        refresh_token: str,
-    ) -> None:
-        path = self._effective_token_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Tighten parent dir to 0o700 — mkdir respects umask, which on many
-        # systems leaves the directory traversable by group/other.
-        os.chmod(path.parent, stat.S_IRWXU)  # 0o700
-        payload = json.dumps({"jwt": access_token, "refresh_token": refresh_token})
-        # Atomic create with 0o600 permissions — never world-readable, even for
-        # the brief window between create and chmod. The JWT + refresh token
-        # gate every connected bank's data; the cost of getting this right is
-        # small relative to the blast radius.
-        flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
-        fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-        with os.fdopen(fd, "w") as f:
-            f.write(payload)
-
-    def _read_token_file(self) -> dict[str, str]:
-        path = self._effective_token_path()
-        if not path.exists():
-            return {}
-        try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError:
-            return {}
-
-    def _effective_token_path(self) -> Path:
-        if self._token_path is not None:
-            return self._token_path
-        name = f".sync_token-{self._profile_id}" if self._profile_id else ".sync_token"
-        return Path.home() / ".moneybin" / name
+        self._delete_pair(self._store)
+        self._legacy_token_path(self._profile_id).unlink(missing_ok=True)
 
     # ------------------------------ Login ------------------------------
 
@@ -258,9 +265,15 @@ class SyncClient:
             f"unexpected status {poll.status_code} from /auth/device/token"
         )
 
-    def login(self, *, open_browser: bool = True) -> None:
+    def login(
+        self,
+        *,
+        open_browser: bool = True,
+        challenge: DeviceAuthorizationChallenge | None = None,
+    ) -> None:
         """Run the blocking CLI wrapper over the nonblocking device flow."""
-        challenge = self.begin_login()
+        if challenge is None:
+            challenge = self.begin_login()
         uri = challenge.verification_uri_complete or challenge.verification_uri
         if uri is None:  # pragma: no cover — validated by the response model
             raise SyncAPIError("device authorization response omitted verification URI")

@@ -6,6 +6,7 @@ and subprocess command building for DuckDB CLI wrapper commands.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess  # noqa: S404  # test executes the installed DuckDB CLI with static arguments
@@ -19,14 +20,41 @@ from typer.testing import CliRunner
 
 from moneybin.cli.commands import db as db_commands
 from moneybin.cli.commands.db import app
-from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
+from moneybin.secrets import (
+    SecretNotFoundError,
+    SecretStorageUnavailableError,
+    SecretUnavailableError,
+)
+
+
+def test_unlock_refuses_redirected_passphrase_before_derivation(
+    mocker: Any,
+    tmp_path: Path,
+) -> None:
+    _make_settings_mock(tmp_path / "test.duckdb", mocker)
+    store = mocker.patch("moneybin.secrets.SecretStore").return_value
+    store.get_key.return_value = "c3ludGhldGljLXNhbHQ="
+    mocker.patch("typer.prompt", side_effect=AssertionError("must not prompt"))
+    mocker.patch(
+        "moneybin.database.derive_key_from_passphrase",
+        side_effect=AssertionError("must not derive a key"),
+    )
+
+    result = CliRunner().invoke(app, ["unlock"], input="synthetic passphrase\n")
+
+    assert result.exit_code == 1, result.output
+    assert "requires an interactive terminal" in result.stderr
+    assert "never reads passphrases from redirected input" in result.stderr
+    store.set_key.assert_not_called()
 
 
 def _make_settings_mock(db_path: Path, mocker: Any) -> MagicMock:
     """Create a mock settings object with a database.path set to db_path."""
     mock_settings = MagicMock()
+    mock_settings.profile = "alice"
     mock_settings.database.path = db_path
     mock_settings.database.encryption_key_mode = "auto"
+    mock_settings.database.model_fields_set = set()
     mock_settings.database.backup_path = None
     # get_settings is imported lazily inside each command function, so we patch
     # the canonical source rather than a module-level reference in db.py.
@@ -157,6 +185,110 @@ class TestDuckDBCLIInitialization:
             )
 
         assert not init_script.exists()
+
+    def test_launcher_presents_start_and_cancelled_outcome_on_stderr(
+        self, mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Native child commentary must not depend on filtered INFO logging."""
+        database = tmp_path / "test.duckdb"
+        database.touch()
+        mocker.patch("moneybin.cli.commands.db.shutil.which", return_value="duckdb")
+        mocker.patch(
+            "moneybin.cli.commands.db._duckdb_cli_environment", return_value={}
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.subprocess.run", side_effect=KeyboardInterrupt
+        )
+
+        with pytest.raises(typer.Exit) as exit_info:
+            db_commands._run_duckdb_cli(  # pyright: ignore[reportPrivateUsage]
+                database, start_msg="Opening DuckDB shell", hint_msg="Type .help"
+            )
+
+        assert exit_info.value.exit_code == 130
+        stderr = capsys.readouterr().err
+        assert "Opening DuckDB shell" in stderr
+        assert "Type .help" in stderr
+        assert "cancelled" in stderr.lower()
+
+    def test_launcher_keeps_cancelled_outcome_when_quiet(
+        self, mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Quiet hides launch chatter but not the child's interrupted outcome."""
+        from moneybin.cli.output import OutputFormat
+        from moneybin.cli.utils import set_output_flag, set_quiet_flag
+
+        database = tmp_path / "test.duckdb"
+        database.touch()
+        mocker.patch("moneybin.cli.commands.db.shutil.which", return_value="duckdb")
+        mocker.patch(
+            "moneybin.cli.commands.db._duckdb_cli_environment", return_value={}
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.subprocess.run", side_effect=KeyboardInterrupt
+        )
+        set_output_flag(OutputFormat.TEXT)
+        set_quiet_flag(True)
+        try:
+            with pytest.raises(typer.Exit) as exit_info:
+                db_commands._run_duckdb_cli(  # pyright: ignore[reportPrivateUsage]
+                    database, start_msg="Opening DuckDB shell", hint_msg="Type .help"
+                )
+        finally:
+            set_quiet_flag(False)
+
+        assert exit_info.value.exit_code == 130
+        stderr = capsys.readouterr().err
+        assert "Opening DuckDB shell" not in stderr
+        assert "Type .help" not in stderr
+        assert "DuckDB shell cancelled" in stderr
+
+    def test_direct_db_banner_uses_the_active_attention_marker(
+        self, mocker: Any
+    ) -> None:
+        """The direct-DB safety disclosure follows ASCII terminal policy."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        policy = TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=24,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch("moneybin.cli.utils.get_terminal_policy", return_value=policy)
+
+        banner = db_commands._direct_db_banner()  # pyright: ignore[reportPrivateUsage]
+
+        assert banner.startswith("! Direct DB access")
+        assert "⚠️" not in banner
+
+    def test_launcher_missing_database_keeps_recovery_on_stderr(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A launcher refusal keeps its recovery command outside filtered INFO."""
+        database = tmp_path / "missing.duckdb"
+
+        with caplog.at_level("ERROR"), pytest.raises(typer.Exit) as exit_info:
+            db_commands._run_duckdb_cli(  # pyright: ignore[reportPrivateUsage]
+                database, start_msg="", hint_msg=""
+            )
+
+        assert exit_info.value.exit_code == 1
+        assert "Database file not found" in caplog.text
+        assert "moneybin db init" in capsys.readouterr().err
 
 
 class TestShellCommand:
@@ -299,7 +431,7 @@ class TestShellCommand:
         mock_subprocess_run.side_effect = KeyboardInterrupt()
 
         result = runner.invoke(app, ["shell"])
-        assert result.exit_code == 0
+        assert result.exit_code == 130
 
 
 class TestUiCommand:
@@ -441,7 +573,7 @@ class TestUiCommand:
         mock_subprocess_run.side_effect = KeyboardInterrupt()
 
         result = runner.invoke(app, ["ui"])
-        assert result.exit_code == 0
+        assert result.exit_code == 130
 
 
 class TestQueryCommand:
@@ -628,7 +760,7 @@ class TestQueryCommand:
 
         assert result.exit_code == 1
         assert "db unlock" in caplog.text
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in caplog.text
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in caplog.text
         assert "db init" not in caplog.text
 
     def test_query_denied_keychain_message_is_confident_not_a_hedge(
@@ -663,6 +795,10 @@ class TestDbInitCommand:
     @pytest.fixture
     def runner(self) -> CliRunner:
         return CliRunner()
+
+    @pytest.fixture(autouse=True)
+    def interactive_prompt(self, mocker: Any) -> None:
+        mocker.patch("moneybin.cli.commands.db._require_interactive_prompt")
 
     def _mock_deps(self, mocker: Any, tmp_path: Path) -> tuple[MagicMock, MagicMock]:
         """Return (mock_store, mock_db_class) with settings patched."""
@@ -751,6 +887,140 @@ class TestDbInitCommand:
         assert result.exit_code == 0
         mock_store.set_key.assert_called_once()
 
+    @pytest.mark.parametrize(
+        ("args", "stdin", "mode"),
+        [
+            (["--passphrase"], "mypassphrase\nmypassphrase\n", "passphrase"),
+            ([], "", "auto"),
+        ],
+    )
+    def test_init_records_the_key_mode_it_chose(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        args: list[str],
+        stdin: str,
+        mode: str,
+    ) -> None:
+        """`profile show` and `db info` read the mode `db init` actually used."""
+        from moneybin.services.profile_service import ProfileService
+        from moneybin.utils.user_config import generate_profile_config
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        generate_profile_config(profile_dir, "alice")
+        stale = "auto" if mode == "passphrase" else "passphrase"
+        ProfileService().set("alice", "database.encryption_key_mode", stale)
+        self._mock_deps(mocker, profile_dir)
+        mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\x01" * 32)
+
+        result = runner.invoke(app, ["init", *args, "--yes"], input=stdin)
+
+        assert result.exit_code == 0, result.output
+        assert ProfileService().recorded_key_mode("alice") == mode
+        assert f"Key mode: {mode}" in result.output
+
+    def test_init_reports_an_unrecordable_key_mode_with_the_fix(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The database exists; only the record failed, and the hint finishes it."""
+        from moneybin.services.profile_service import ProfileService
+        from moneybin.utils.user_config import generate_profile_config
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        generate_profile_config(profile_dir, "alice")
+        mock_store, _ = self._mock_deps(mocker, profile_dir)
+        mocker.patch.object(
+            ProfileService, "set", side_effect=PermissionError(13, "Permission denied")
+        )
+
+        result = runner.invoke(app, ["init", "--yes"])
+
+        assert result.exit_code == 1
+        mock_store.set_key.assert_called_once()  # the key was stored before
+        assert "Encrypted database created" in result.stdout
+        assert "could not be recorded" in caplog.text
+        assert "moneybin profile set database.encryption_key_mode auto" in result.stderr
+
+    def test_init_elsewhere_or_unregistered_records_nothing(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No config.yaml is written: it is an unregistered profile's commit marker."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        self._mock_deps(mocker, profile_dir)
+
+        result = runner.invoke(app, ["init", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert not (profile_dir / "config.yaml").exists()
+        assert "Key mode" not in result.output
+
+
+class TestReportedKeyMode:
+    """`db info` reports the profile's recorded key mode unless overridden."""
+
+    def _settings(self, db_path: Path, *, explicit: bool) -> MagicMock:
+        settings = MagicMock()
+        settings.profile = "alice"
+        settings.database.path = db_path
+        settings.database.encryption_key_mode = "auto"
+        settings.database.model_fields_set = (
+            {"encryption_key_mode"} if explicit else set()
+        )
+        return settings
+
+    @pytest.fixture
+    def recorded_passphrase(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Path:
+        from moneybin.services.profile_service import ProfileService
+        from moneybin.utils.user_config import generate_profile_config
+
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        generate_profile_config(profile_dir, "alice")
+        ProfileService().set("alice", "database.encryption_key_mode", "passphrase")
+        return profile_dir / "moneybin.duckdb"
+
+    def test_profile_database_reports_the_recorded_mode(
+        self, recorded_passphrase: Path
+    ) -> None:
+        settings = self._settings(recorded_passphrase, explicit=False)
+        assert (
+            db_commands._reported_key_mode(settings, recorded_passphrase)  # pyright: ignore[reportPrivateUsage]  # unit under test
+            == "passphrase"
+        )
+
+    def test_explicit_setting_wins(self, recorded_passphrase: Path) -> None:
+        settings = self._settings(recorded_passphrase, explicit=True)
+        assert (
+            db_commands._reported_key_mode(settings, recorded_passphrase)  # pyright: ignore[reportPrivateUsage]  # unit under test
+            == "auto"
+        )
+
+    def test_other_database_file_ignores_the_profile_record(
+        self, recorded_passphrase: Path, tmp_path: Path
+    ) -> None:
+        settings = self._settings(recorded_passphrase, explicit=False)
+        assert (
+            db_commands._reported_key_mode(settings, tmp_path / "other.duckdb")  # pyright: ignore[reportPrivateUsage]  # unit under test
+            == "auto"
+        )
+
 
 class TestDbUnlockCommand:
     """Tests for 'moneybin db unlock'."""
@@ -758,6 +1028,10 @@ class TestDbUnlockCommand:
     @pytest.fixture
     def runner(self) -> CliRunner:
         return CliRunner()
+
+    @pytest.fixture(autouse=True)
+    def interactive_prompt(self, mocker: Any) -> None:
+        mocker.patch("moneybin.cli.commands.db._require_interactive_prompt")
 
     def test_unlock_no_salt_exits_1(self, runner: CliRunner, mocker: Any) -> None:
         """Unlock fails when no passphrase salt is found in keychain."""
@@ -809,6 +1083,9 @@ class TestDbUnlockCommand:
 
         mock_store = MagicMock()
         mock_store.get_key.side_effect = SecretNotFoundError("no salt")
+        mock_store.env_var_name.return_value = (
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY"
+        )
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
         existing = tmp_path / "moneybin.duckdb"
         existing.write_bytes(b"")
@@ -819,7 +1096,7 @@ class TestDbUnlockCommand:
 
         assert result.exit_code == 1
         assert "already exists" in caplog.text
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in caplog.text
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in caplog.text
 
     def test_unlock_database_not_found_deletes_key_and_exits_1(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -861,6 +1138,29 @@ class TestDbUnlockCommand:
 
         assert result.exit_code == 1
         mock_store.delete_key.assert_called_once_with("DATABASE__ENCRYPTION_KEY")
+        assert "derived key was removed" in result.output
+
+    def test_unlock_reports_uncertain_cleanup_without_claiming_locked(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A failed keychain cleanup leaves the lock state unknown."""
+        import base64
+
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.touch()
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = base64.b64encode(b"\x00" * 16).decode()
+        mock_store.delete_key.side_effect = Exception("keychain unavailable")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\x00" * 32)
+        _make_settings_mock(db_path, mocker)
+        mocker.patch("moneybin.database.Database", side_effect=Exception("bad key"))
+
+        result = runner.invoke(app, ["unlock"], input="wrongpass\n")
+
+        assert result.exit_code == 1
+        assert "could not confirm removal" in result.output
+        assert "remains locked" not in result.output
 
     def test_unlock_correct_passphrase_exits_0(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -895,6 +1195,10 @@ class TestDbRotateKeyCommand:
     def runner(self) -> CliRunner:
         return CliRunner()
 
+    @pytest.fixture(autouse=True)
+    def interactive_prompt(self, mocker: Any) -> None:
+        mocker.patch("moneybin.cli.commands.db._require_interactive_prompt")
+
     def _mock_rotate_deps(
         self, mocker: Any, tmp_path: Path
     ) -> tuple[MagicMock, MagicMock]:
@@ -905,6 +1209,9 @@ class TestDbRotateKeyCommand:
 
         mock_store = MagicMock()
         mock_store.get_key.return_value = "oldkey" * 10  # 60 hex chars
+        mock_store.env_var_name.return_value = (
+            "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY"
+        )
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
 
         mock_conn = MagicMock()
@@ -953,6 +1260,27 @@ class TestDbRotateKeyCommand:
         assert result.exit_code == 1
         mock_store.set_key.assert_not_called()
 
+    def test_rotate_key_copy_interrupt_removes_partial_candidate(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """An interrupted COPY leaves no temporary rotated database behind."""
+        mock_store, mock_conn = self._mock_rotate_deps(mocker, tmp_path)
+        rotated_path = tmp_path / "moneybin.rotated.duckdb"
+
+        def interrupt_copy(sql: str, *_args: object, **_kwargs: object) -> MagicMock:
+            if "COPY FROM DATABASE" in sql:
+                rotated_path.write_bytes(b"partial")
+                raise KeyboardInterrupt
+            return MagicMock()
+
+        mock_conn.execute.side_effect = interrupt_copy
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        assert not rotated_path.exists()
+        mock_store.set_key.assert_not_called()
+
     def test_rotate_key_keychain_update_fails_exits_1(
         self,
         runner: CliRunner,
@@ -968,7 +1296,176 @@ class TestDbRotateKeyCommand:
         assert result.exit_code == 1
         # Recovery key is printed via typer.echo(err=True), which CliRunner
         # captures in result.output (stderr is mixed in by default)
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in result.output
+
+    def test_rotate_key_interrupt_after_swap_keeps_recovery_channel(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """An interrupted keychain update has the same recovery boundary."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        mock_store.set_key.side_effect = KeyboardInterrupt
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in result.output
+        assert "keychain update is unconfirmed" in result.output
+
+    def test_rotate_key_interrupt_after_keychain_update_reports_completed_write(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """An interrupt after set_key returns must not describe it as unconfirmed."""
+        import contextlib
+
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+
+        def report_event(_event: object) -> None:
+            return None
+
+        @contextlib.contextmanager
+        def interrupt_after_rotation_progress(*_args: object, **_kwargs: object) -> Any:
+            yield report_event
+            raise KeyboardInterrupt
+
+        mocker.patch(
+            "moneybin.cli.commands.db.operation_progress",
+            interrupt_after_rotation_progress,
+        )
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        mock_store.set_key.assert_called_once()
+        assert "keychain update completed" in result.output.lower()
+        assert "keychain update is unconfirmed" not in result.output.lower()
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" not in result.output
+
+    def test_rotate_key_interrupt_before_replacement_retains_recovery_artifacts(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """An interrupted replacement reports each retained recovery artifact."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        db_path = tmp_path / "moneybin.duckdb"
+        old_backup = tmp_path / "moneybin.old.duckdb"
+        rotated_path = tmp_path / "moneybin.rotated.duckdb"
+        rotated_path.write_bytes(b"rotated candidate")
+        moves = 0
+
+        def interrupt_before_replacement(source: str, destination: str) -> str:
+            nonlocal moves
+            moves += 1
+            if moves == 2:
+                raise KeyboardInterrupt
+            return str(Path(source).replace(destination))
+
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.move",
+            side_effect=interrupt_before_replacement,
+        )
+        synthetic_new_key = "synthetic-new-key"
+        mocker.patch("secrets.token_hex", return_value=synthetic_new_key)
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        assert old_backup.read_bytes() == b""
+        assert rotated_path.read_bytes() == b"rotated candidate"
+        assert not db_path.exists()
+        assert "original backup is retained" in result.output.lower()
+        assert "replacement is unconfirmed" in result.output.lower()
+        assert str(old_backup) in result.output
+        assert str(rotated_path) in result.output
+        assert str(db_path) in result.output
+        assert "original backup requires the old key" in result.output.lower()
+        assert "only access a confirmed rotated candidate" in result.output.lower()
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in result.output
+        assert synthetic_new_key not in result.stdout
+        assert synthetic_new_key in result.stderr
+        assert synthetic_new_key not in caplog.text
+        mock_store.set_key.assert_not_called()
+
+    def test_rotate_key_interrupt_after_replacement_keeps_backup_and_candidate_guidance(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """A post-move interrupt keeps the original backup and bounds new-key recovery."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        db_path = tmp_path / "moneybin.duckdb"
+        old_backup = tmp_path / "moneybin.old.duckdb"
+        rotated_path = tmp_path / "moneybin.rotated.duckdb"
+        rotated_path.write_bytes(b"rotated candidate")
+        moves = 0
+
+        def interrupt_after_replacement(source: str, destination: str) -> str:
+            nonlocal moves
+            moves += 1
+            result = str(Path(source).replace(destination))
+            if moves == 2:
+                raise KeyboardInterrupt
+            return result
+
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.move",
+            side_effect=interrupt_after_replacement,
+        )
+        synthetic_new_key = "synthetic-new-key"
+        mocker.patch("secrets.token_hex", return_value=synthetic_new_key)
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        assert old_backup.read_bytes() == b""
+        assert db_path.read_bytes() == b"rotated candidate"
+        assert not rotated_path.exists()
+        assert "original backup is retained" in result.output.lower()
+        assert "replacement is unconfirmed" in result.output.lower()
+        assert "original backup requires the old key" in result.output.lower()
+        assert "only access a confirmed rotated candidate" in result.output.lower()
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in result.output
+        assert synthetic_new_key not in result.stdout
+        assert synthetic_new_key in result.stderr
+        assert synthetic_new_key not in caplog.text
+        mock_store.set_key.assert_not_called()
+
+    def test_rotate_key_second_move_failure_reports_archived_original(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The swap's first completed move is a partial outcome, not a silent error."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        move = mocker.patch("moneybin.cli.commands.db.shutil.move")
+        move.side_effect = [None, OSError("synthetic replacement move failure")]
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 1
+        assert "original database was archived" in result.output.lower()
+        assert "replacement state is unknown" in result.output.lower()
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" not in result.output
+        mock_store.set_key.assert_not_called()
+
+    def test_rotate_key_first_move_failure_has_recovery_guidance(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A failed first swap move must not surface as an uncontextualized error."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.move",
+            side_effect=OSError("synthetic archive move failure"),
+        )
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 1
+        assert "file state is unknown" in result.output.lower()
+        assert "inspect" in result.output.lower()
+        mock_store.set_key.assert_not_called()
 
     def test_rotate_key_confirmation_prompt_declined_exits_0(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -1000,14 +1497,47 @@ class TestDbLockCommand:
 
     def test_lock_already_locked(self, runner: CliRunner, mocker: Any) -> None:
         """Lock command succeeds gracefully when already locked."""
+        import moneybin.database as db_module
         from moneybin.secrets import SecretNotFoundError
 
         mock_store = MagicMock()
         mock_store.delete_key.side_effect = SecretNotFoundError("not found")
         mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mocker.patch.object(db_module, "_cached_encryption_key", ("test", "cached-key"))
 
         result = runner.invoke(app, ["lock"])
         assert result.exit_code == 0
+        assert db_module._cached_encryption_key is None  # pyright: ignore[reportPrivateUsage]  # lock must clear process key
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [
+            pytest.param(SecretUnavailableError, id="read-denial-subtype"),
+            pytest.param(SecretStorageUnavailableError, id="storage-denial"),
+        ],
+    )
+    def test_lock_denied_delete_keeps_cache_and_reports_failure(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+        error_type: type[Exception],
+    ) -> None:
+        """A denied keychain delete cannot claim the database is locked."""
+        import moneybin.database as db_module
+
+        mock_store = MagicMock()
+        mock_store.delete_key.side_effect = error_type("delete denied")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        cached = ("test", "cached-key")
+        mocker.patch.object(db_module, "_cached_encryption_key", cached)
+
+        result = runner.invoke(app, ["lock"])
+
+        assert result.exit_code == 1
+        assert "Failed to lock" in caplog.text
+        assert "already locked" not in result.output
+        assert db_module._cached_encryption_key == cached  # pyright: ignore[reportPrivateUsage]  # deletion did not succeed
 
 
 class TestDbKeyCommand:
@@ -1157,6 +1687,103 @@ class TestDbInfoCommand:
         # Database should not be opened when locked
         mock_database_cls.assert_not_called()
 
+    def test_info_pages_long_unlocked_metadata(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The composed metadata/table answer is eligible for the shared pager."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"data")
+        _make_settings_mock(db_path, mocker)
+        store = MagicMock()
+        store.get_key.return_value = "synthetic"
+        mocker.patch("moneybin.secrets.SecretStore", return_value=store)
+        database = MagicMock()
+        database.__enter__ = lambda self: self  # type: ignore[assignment]
+        database.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[("core", "fct_transactions")])),
+            MagicMock(
+                fetchall=MagicMock(return_value=[("core", "fct_transactions", 1)])
+            ),
+        ]
+        database.sql.return_value.fetchone.return_value = ("v1",)
+        mocker.patch("moneybin.database.Database", return_value=database)
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=1,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.get_terminal_policy", return_value=policy
+        )
+        page = mocker.patch("moneybin.cli.pager.page_text", return_value=True)
+
+        result = runner.invoke(app, ["info"])
+
+        assert result.exit_code == 0
+        page.assert_called_once()
+
+    def test_info_keeps_large_row_count_whole_in_a_narrow_table(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A row count is numeric data.
+
+        Narrow rendering cannot split its digits, and it groups by thousands
+        like every other numeric cell.
+        """
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"data")
+        _make_settings_mock(db_path, mocker)
+        store = MagicMock()
+        store.get_key.return_value = "synthetic"
+        mocker.patch("moneybin.secrets.SecretStore", return_value=store)
+        database = MagicMock()
+        database.__enter__ = lambda self: self  # type: ignore[assignment]
+        database.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[("core", "fct")])),
+            MagicMock(fetchall=MagicMock(return_value=[("core", "fct", 123456789)])),
+        ]
+        database.sql.return_value.fetchone.return_value = ("v1",)
+        mocker.patch("moneybin.database.Database", return_value=database)
+        policy = TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=24,
+            height=24,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.get_terminal_policy", return_value=policy
+        )
+
+        result = runner.invoke(app, ["info", "--no-pager"])
+
+        assert result.exit_code == 0, result.output
+        assert "123,456,789" in result.output
+
     def test_info_fails_when_database_not_found(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
@@ -1164,6 +1791,70 @@ class TestDbInfoCommand:
         _make_settings_mock(tmp_path / "missing.duckdb", mocker)
         result = runner.invoke(app, ["info"])
         assert result.exit_code == 1
+
+    def test_info_caps_the_default_table_listing_and_discloses_the_omission(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A large schema shows the biggest tables by default; `--limit 0` shows all.
+
+        Requirement 12: a capped listing must disclose the cap. `db info` on a
+        demo database dumped every one of 81 tables with no indication anything
+        was omitted; the default listing now caps at 20, largest first.
+        """
+        test_db = tmp_path / "test.duckdb"
+        test_db.write_bytes(b"x" * 2048)
+        _make_settings_mock(test_db, mocker)
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = "abc123"
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+
+        table_names = [f"table_{i:02d}" for i in range(25)]
+
+        def execute_side_effect(sql: str, *_args: Any, **_kw: Any) -> MagicMock:
+            result = MagicMock()
+            if "information_schema" in sql:
+                result.fetchall.return_value = [("core", name) for name in table_names]
+            else:
+                # Row counts are the reverse of listing order, so "largest
+                # first" is a real reordering the test can detect.
+                result.fetchall.return_value = [
+                    ("core", name, len(table_names) - i)
+                    for i, name in enumerate(table_names)
+                ]
+            return result
+
+        mock_db = MagicMock()
+        mock_db.__enter__ = lambda self: self  # type: ignore[assignment]
+        mock_db.execute.side_effect = execute_side_effect
+        mock_db.sql.return_value.fetchone.return_value = ("v1",)
+        mocker.patch("moneybin.database.Database", return_value=mock_db)
+
+        default_result = runner.invoke(app, ["info", "--no-pager"])
+        wide_result = runner.invoke(app, ["info", "--no-pager", "--limit", "0"])
+        json_result = runner.invoke(app, ["info", "--output", "json"])
+
+        assert default_result.exit_code == 0, default_result.output
+        assert "20 of 25 shown, largest first" in default_result.output
+        assert "--limit 0 for all" in default_result.output
+        assert "table_00" in default_result.output  # rows=25, the largest
+        assert "table_24" not in default_result.output  # rows=1, dropped
+
+        assert wide_result.exit_code == 0, wide_result.output
+        assert "table_24" in wide_result.output
+        assert "shown, largest first" not in wide_result.output
+
+        assert json_result.exit_code == 0, json_result.output
+        payload = json.loads(json_result.output)
+        assert len(payload["tables"]) == 25
+
+    def test_info_rejects_a_negative_limit_as_a_usage_error(
+        self, runner: CliRunner
+    ) -> None:
+        """`--limit -1` is refused at the option, not read as "show everything"."""
+        result = runner.invoke(app, ["info", "--limit", "-1"])
+
+        assert result.exit_code == 2, result.output
+        assert "--limit" in result.output
 
 
 class TestDbRestoreCommand:
@@ -1255,6 +1946,39 @@ class TestDbRestoreCommand:
 
         result = runner.invoke(app, ["restore", "--from", str(backup), "--yes"])
         assert result.exit_code == 1
+        assert test_db.read_bytes() == b"backup"
+        assert "Database was replaced" in result.output
+        assert "Pre-restore backup saved" in result.output
+
+    def test_restore_copy_failure_does_not_claim_replacement(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A normal replacement-copy error leaves the target state unconfirmed."""
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"current")
+        source = tmp_path / "backup.duckdb"
+        source.write_bytes(b"restore")
+        _make_settings_mock(db_path, mocker)
+        original_copy = shutil.copy2
+        calls = 0
+
+        def fail_replacement(source_path: str, target_path: str) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("synthetic replacement failure")
+            return str(original_copy(source_path, target_path))
+
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.copy2", side_effect=fail_replacement
+        )
+
+        result = runner.invoke(app, ["restore", "--from", str(source), "--yes"])
+
+        assert result.exit_code == 1
+        assert "Pre-restore backup saved" in result.output
+        assert "replacement may be incomplete" in result.output.lower()
+        assert "Database was replaced" not in result.output
 
 
 class TestDatabaseCommandsIntegration:
@@ -1291,14 +2015,23 @@ class TestDbPsCommand:
     def runner(self) -> CliRunner:
         return CliRunner()
 
+    @pytest.fixture(autouse=True)
+    def interactive_prompt(self, mocker: Any) -> None:
+        mocker.patch("moneybin.cli.commands.db._require_interactive_prompt")
+
     @pytest.fixture
     def two_processes(self, mocker: Any) -> MagicMock:
+        processes = [
+            {"pid": 101, "command": "duckdb", "cmdline": "duckdb moneybin.duckdb"},
+            {"pid": 202, "command": "python", "cmdline": "python -m etl"},
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            return_value={101: MagicMock(), 202: MagicMock()},
+        )
         return mocker.patch(
             "moneybin.cli.commands.db._find_db_processes",
-            return_value=[
-                {"pid": 101, "command": "duckdb", "cmdline": "duckdb moneybin.duckdb"},
-                {"pid": 202, "command": "python", "cmdline": "python -m etl"},
-            ],
+            return_value=processes,
         )
 
     def test_ps_renders_the_process_roll_through_the_shared_renderer(
@@ -1339,6 +2072,83 @@ class TestDbPsCommand:
         for cell in ("101", "duckdb moneybin.duckdb", "202", "python -m etl"):
             assert cell in result.output
 
+    def test_ps_pages_a_long_finite_roll(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        two_processes: MagicMock,
+    ) -> None:
+        """Finite process results use the shared pager only when they exceed height."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=1,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.get_terminal_policy", return_value=policy
+        )
+        page = mocker.patch("moneybin.cli.pager.page_text", return_value=True)
+
+        result = runner.invoke(app, ["ps", "--database", str(db_file)])
+
+        assert result.exit_code == 0
+        page.assert_called_once()
+
+    def test_ps_no_pager_prints_the_same_finite_roll(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        two_processes: MagicMock,
+    ) -> None:
+        """The explicit flag overrides automatic paging without changing rows."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=1,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.get_terminal_policy", return_value=policy
+        )
+        page = mocker.patch("moneybin.cli.pager.page_text", return_value=True)
+
+        result = runner.invoke(app, ["ps", "--database", str(db_file), "--no-pager"])
+
+        assert result.exit_code == 0
+        page.assert_not_called()
+        assert "101" in result.output
+
     def test_kill_lists_the_same_table_before_asking(
         self,
         runner: CliRunner,
@@ -1358,3 +2168,239 @@ class TestDbPsCommand:
 
         assert "┃" in result.output
         assert "101" in result.output
+
+
+class TestDbKillProcessIdentity:
+    """`db kill` binds the confirmed roll to psutil process identities."""
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    @staticmethod
+    def _processes() -> list[dict[str, str | int]]:
+        return [
+            {"pid": 101, "command": "duckdb", "cmdline": "duckdb moneybin.duckdb"},
+            {"pid": 202, "command": "python", "cmdline": "python -m etl"},
+        ]
+
+    def test_kill_noop_receipts_name_absent_database_and_no_processes(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Successful no-op kills are visible answers, not filtered INFO."""
+        missing = tmp_path / "missing.duckdb"
+        missing_result = runner.invoke(app, ["kill", "--database", str(missing)])
+
+        present = tmp_path / "present.duckdb"
+        present.touch()
+        mocker.patch("moneybin.cli.commands.db._find_db_processes", return_value=[])
+        no_processes_result = runner.invoke(app, ["kill", "--database", str(present)])
+
+        assert missing_result.exit_code == 0, missing_result.output
+        assert "Database file does not exist yet" in missing_result.stdout
+        assert no_processes_result.exit_code == 0, no_processes_result.output
+        assert (
+            "No other processes have present.duckdb open" in no_processes_result.stdout
+        )
+
+    def test_kill_rescans_and_uses_original_identity_bound_processes(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The post-confirmation signal goes through the original snapshots."""
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        processes = self._processes()
+        mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            side_effect=[processes, processes],
+        )
+        first = {101: MagicMock(), 202: MagicMock()}
+        second = {101: MagicMock(), 202: MagicMock()}
+        for process in first.values():
+            process.is_running.return_value = True
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            side_effect=[first, second],
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._same_process_selection", return_value=True
+        )
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file), "--yes"])
+
+        assert result.exit_code == 0
+        first[101].terminate.assert_called_once_with()
+        first[202].terminate.assert_called_once_with()
+        second[101].terminate.assert_not_called()
+        assert "Sent SIGTERM to 2 processes" in result.output
+
+    def test_kill_refuses_changed_selection_without_signaling(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A changed second scan is stale even when `--yes` waived the prompt."""
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        preview = self._processes()
+        changed = [preview[0]]
+        mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            side_effect=[preview, changed],
+        )
+        first = {101: MagicMock(), 202: MagicMock()}
+        second = {101: MagicMock()}
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            side_effect=[first, second],
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._same_process_selection", return_value=False
+        )
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file), "--yes"])
+
+        assert result.exit_code == 1
+        first[101].terminate.assert_not_called()
+        assert "scope changed" in result.output.lower()
+        assert "rerun" in result.output.lower()
+
+    def test_kill_reports_sent_exited_and_denied_without_claiming_termination(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A SIGTERM dispatch is not presented as a completed process kill."""
+        import psutil
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        processes = self._processes() + [
+            {"pid": 303, "command": "other", "cmdline": "other"}
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            side_effect=[processes, processes],
+        )
+        sent = MagicMock()
+        exited = MagicMock()
+        denied = MagicMock()
+        sent.is_running.return_value = True
+        exited.is_running.return_value = False
+        denied.is_running.return_value = True
+        denied.terminate.side_effect = psutil.AccessDenied(pid=303)
+        first = {101: sent, 202: exited, 303: denied}
+        second = {101: MagicMock(), 202: MagicMock(), 303: MagicMock()}
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            side_effect=[first, second],
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._same_process_selection", return_value=True
+        )
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file), "--yes"])
+
+        assert result.exit_code == 1
+        assert "Sent SIGTERM to 1 process" in result.output
+        assert "1 already exited or was reused" in result.output
+        assert "1 permission denied" in result.output
+        assert "killed" not in result.output.lower()
+
+    def test_kill_guarded_terminate_no_such_process_is_not_counted_as_sent(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Psutil can detect PID reuse at the final guarded terminate call."""
+        import psutil
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        processes = [{"pid": 101, "command": "duckdb", "cmdline": "duckdb db"}]
+        mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            side_effect=[processes, processes],
+        )
+        captured = MagicMock()
+        captured.is_running.return_value = True
+        captured.terminate.side_effect = psutil.NoSuchProcess(pid=101)
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            side_effect=[{101: captured}, {101: MagicMock()}],
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._same_process_selection", return_value=True
+        )
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file), "--yes"])
+
+        assert result.exit_code == 1
+        assert "already exited or was reused" in result.output
+        assert "Sent SIGTERM" not in result.output
+
+
+class TestDbPromptPolicy:
+    """Maintenance prompts do not consume redirected stdin."""
+
+    def test_init_passphrase_refuses_redirected_input_even_with_yes(
+        self, mocker: Any, tmp_path: Path
+    ) -> None:
+        _make_settings_mock(tmp_path / "moneybin.duckdb", mocker)
+        mocker.patch("moneybin.cli.commands.db.sys.stdin.isatty", return_value=False)
+        mocker.patch("moneybin.cli.commands.db.sys.stdout.isatty", return_value=False)
+
+        result = CliRunner().invoke(
+            app,
+            ["init", "--passphrase", "--yes"],
+            input="not-a-passphrase-prompt\n",
+        )
+
+        assert result.exit_code == 1
+        assert "never reads passphrases from redirected input" in result.output
+        assert "never reads passphrases from redirected input" in result.stderr
+        assert "never reads passphrases from redirected input" not in result.stdout
+
+
+class TestDbMaintenanceInterrupts:
+    """Long maintenance operations state only their known interrupted facts."""
+
+    def test_backup_interrupt_does_not_claim_a_created_backup(
+        self, mocker: Any, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"source")
+        _make_settings_mock(db_path, mocker)
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.copy2", side_effect=KeyboardInterrupt
+        )
+
+        result = CliRunner().invoke(
+            app, ["backup", "--output", str(tmp_path / "copy.duckdb")]
+        )
+
+        assert result.exit_code == 130
+        assert "interrupted" in result.output.lower()
+        assert "Backup created" not in result.output
+
+    def test_restore_interrupt_after_auto_backup_names_saved_backup(
+        self, mocker: Any, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"current")
+        source = tmp_path / "backup.duckdb"
+        source.write_bytes(b"restore")
+        _make_settings_mock(db_path, mocker)
+        original_copy = shutil.copy2
+        calls = 0
+
+        def interrupt_replacement(source_path: str, target_path: str) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise KeyboardInterrupt
+            return str(original_copy(source_path, target_path))
+
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.copy2", side_effect=interrupt_replacement
+        )
+
+        result = CliRunner().invoke(app, ["restore", "--from", str(source), "--yes"])
+
+        assert result.exit_code == 130
+        assert "Pre-restore backup saved" in result.output
+        assert "replacement may be incomplete" in result.output.lower()

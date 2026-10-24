@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-27 -->
 # Account Matching
 
 One real-world account shows up as many records — a QFX statement this month, a
@@ -75,17 +75,20 @@ wrong. A wrong account *merge* is hard to notice and undo, so the bar for acting
 without asking is deliberately high. A new account is the cheap mistake by
 comparison — it shows up in `moneybin accounts` and corrects with a rename or a
 merge — so rung 4 reports instead of asking. Each created account is listed by
-name and id when the import finishes, together with both recoveries:
+name and id when the import finishes, together with its recoveries:
 
 ```console
 $ moneybin import files statement.ofx
-  Institutions: 1
-  Accounts: 1
-  Transactions: 2
-✅ statement.ofx [ofx] — 2 rows
-👀 Created account: SAMPLE BANK checking …1111 (e3a84714695d)
-   Rename with 'moneybin accounts set <account_id> --display-name <name>'; if it duplicates an account you already have, 'moneybin accounts links run' proposes the merge.
+✓ Import complete
+Files:        1 of 1 imported
+Saved:        statement.ofx — 3 rows loaded (import 559f5441-ae3d-470c-980e-6d583890213e)
+Derived data: Core tables rebuilt
+! Created account: Example Bank checking …4321 (f6d00a3b4665)
+   Rename with 'moneybin accounts set <account_id> --display-name <name>'; if it duplicates an account you already have, 'moneybin accounts links run' proposes the merge — and if that proposes nothing, the pair shares no signal, so name it yourself with 'moneybin accounts links run <account_id> <candidate_account_id>'.
 ```
+
+Two lines are trimmed from that transcript: the pandas `FutureWarning` SQLMesh
+emits while rebuilding.
 
 The name is the one `moneybin accounts` will show for that account — MoneyBin
 derives it at mint time by the same rules the accounts table is built from, so

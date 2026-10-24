@@ -16,7 +16,7 @@ def _make_review_service(
     match_service = MagicMock()
     match_service.count_pending.return_value = matches
     cat_service = MagicMock()
-    cat_service.count_uncategorized.return_value = categorize
+    cat_service.count_pending_review.return_value = categorize
     links_service = MagicMock()
     links_service.count_pending.return_value = account_links
     merchant_links_service = MagicMock()
@@ -65,7 +65,7 @@ def test_review_status_delegates_to_services() -> None:
     match_service = MagicMock()
     match_service.count_pending.return_value = 5
     cat_service = MagicMock()
-    cat_service.count_uncategorized.return_value = 7
+    cat_service.count_pending_review.return_value = 7
     links_service = MagicMock()
     links_service.count_pending.return_value = 2
     merchant_links_service = MagicMock()
@@ -83,7 +83,7 @@ def test_review_status_delegates_to_services() -> None:
     svc.status()
 
     match_service.count_pending.assert_called_once()
-    cat_service.count_uncategorized.assert_called_once()
+    cat_service.count_pending_review.assert_called_once()
     links_service.count_pending.assert_called_once()
     merchant_links_service.count_pending.assert_called_once()
     security_links_service.count_pending.assert_called_once()

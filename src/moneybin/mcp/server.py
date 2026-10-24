@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import textwrap
+import time
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -34,7 +35,7 @@ mcp = FastMCP(
 
         Every tool returns {status, summary, data, actions}. status is 'ok' or 'error' — check it before reading data, because a refused mutation reports 'error' and changed nothing; a failure also carries error, and sometimes recovery_actions you can execute directly. Prefer batch tools; list parameters are capped per call, and summary.has_more plus actions explain continuation.
 
-        Money amounts are JSON numbers. summary.display_currency names the currency of the rows in that response when they all share one; it is null when they span more than one currency or the currency is unknown, and each row's own currency_code is then the authority. It describes the returned rows only — when summary.has_more is true, later pages may carry other currencies. Never add amounts whose currency_code differs; pass display_currency to reports() to price its rows into one currency instead, which defaults to the currency the user treats as home. Refresh gathers stored provider pairs for the home currency and any display targets declared through profile_set(display_currency_targets=["EUR"]), so a read target has offline evidence without changing accounting. Each priced row also carries original_currency_code, naming which entry in summary.applied_rates converted it; it is null on core:networth's summed headline. A report that aggregates per currency cannot be priced, and says why in summary.degraded_reason. The accounting convention is negative = expense, positive = income; transfers are exempt.
+        Money amounts are JSON numbers. summary.display_currency names the currency of the rows in that response when they all share one; it is null when they span more than one currency or the currency is unknown, and each row's own currency_code is then the authority. It describes the returned rows only — when summary.has_more is true, later pages may carry other currencies. Never add amounts whose currency_code differs; pass display_currency to reports() to price its rows into one currency instead, which defaults to the currency the user treats as home. Refresh gathers stored provider pairs for the home currency and any display targets declared through profile_set(display_currency_targets=["EUR"]), so a read target has offline evidence without changing accounting. Each priced row also carries original_currency_code, naming which entry in summary.applied_rates converted it, and it is present on every priced row. summary.home_currency names the home currency actually priced into a home-basis column on that response — the net-worth reports carry such columns, like net_worth_home — and is absent when no conversion put a value in one, so read it as the second unit on a response that carries two. A report whose rows lack a single currency and a single date to price from cannot be priced, and says why in summary.degraded_reason. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
         Privacy tiers are low, medium, high, and critical and are logged per call. Critical account and routing fields remain masked; all other declared fields — including amounts, descriptions, and dates — reach the model provider as-is. The raw and prep schemas that sql_query also reads are largely undeclared; masking there falls back to a value-shape scan, and sql_query's own description states what that scan does and does not catch. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
 
@@ -54,6 +55,16 @@ mcp.add_middleware(ValidationErrorMiddleware(server=mcp))
 
 
 _tools_registered = False
+
+# Longest a starting server waits for another server's schema heal on the same
+# profile. Must stay under the MCP host's initialize timeout: the MCP TypeScript
+# SDK's default request timeout, which Claude Desktop uses, is 60 s. Deliberately
+# not a setting, for the reason the 10 s write-lock ceiling isn't one
+# (database-writer-coordination.md): the bound comes from the host's protocol
+# timeout rather than from anything a user tunes, so a host shipping a shorter
+# one is a change to this line, not a knob to turn.
+_PEER_HEAL_WAIT_SECONDS = 45.0
+_PEER_HEAL_POLL_SECONDS = 0.5
 
 
 def get_db_path() -> Path:
@@ -94,6 +105,30 @@ def init_db() -> None:
     register_core_tools()
 
 
+def _peer_heal_running(db_path: Path) -> bool:
+    """Whether another process holds the write lock for a schema heal."""
+    from moneybin.db_lock import live_writer
+
+    writer = live_writer(db_path)
+    return writer is not None and writer["operation_type"] == "transform_apply"
+
+
+def _wait_out_peer_heal(db_path: Path, deadline: float) -> bool:
+    """Poll until no peer heal holds the lock; False if ``deadline`` passes first."""
+    waiting = False
+    while _peer_heal_running(db_path):
+        if not waiting:
+            logger.info(
+                "Another MoneyBin process is updating this profile's database "
+                "schema; waiting for it to finish."
+            )
+            waiting = True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_PEER_HEAL_POLL_SECONDS)
+    return True
+
+
 def check_schema_at_boot() -> None:
     """Verify core.* materialized tables aren't stale vs. EXPECTED_CORE_COLUMNS.
 
@@ -104,7 +139,37 @@ def check_schema_at_boot() -> None:
     behind a chicken-and-egg: the server can't boot to expose the fix.
     Re-verifies with a fresh read-only connection after the heal; raises
     SchemaDriftError only if drift persists.
+
+    MCP hosts routinely start several servers on one profile at once, and a
+    heal holds the database read-write, which blocks the others' reads too.
+    A server that finds another one healing waits for it (up to
+    ``_PEER_HEAL_WAIT_SECONDS``) and re-checks instead of failing at the
+    default lock wait — the peer's heal usually leaves nothing to fix. Any
+    other lock holder still fails at the default wait.
     """
+    from moneybin.database import DatabaseLockError
+
+    db_path = get_db_path()
+    deadline = time.monotonic() + _PEER_HEAL_WAIT_SECONDS
+    while True:
+        if not _wait_out_peer_heal(db_path, deadline):
+            raise DatabaseLockError(
+                "Another MoneyBin process was still updating the database "
+                f"schema after {_PEER_HEAL_WAIT_SECONDS:.0f}s. Retry once it "
+                "finishes; run 'moneybin db ps' for details."
+            )
+        try:
+            _check_and_heal_schema()
+            return
+        except DatabaseLockError:
+            # A heal that started after the wait above blocked this open; loop
+            # back to wait it out. Any other holder fails fast.
+            if not _peer_heal_running(db_path):
+                raise
+
+
+def _check_and_heal_schema() -> None:
+    """One drift check, plus a self-heal and re-verify when drift is found."""
     from moneybin.database import (
         DatabaseNotInitializedError,
         SchemaDriftError,
@@ -125,8 +190,8 @@ def check_schema_at_boot() -> None:
     from moneybin.services.transform_service import TransformService
 
     logger.info(
-        f"Stale snapshots detected for {sorted(drift)}; "
-        "running transform apply to self-heal."
+        f"Stale snapshots detected for {sorted(drift)}; running transform apply "
+        "to self-heal. This can take a minute after an upgrade."
     )
     # Plain apply (no restate_models): a regular SQLMesh plan picks up
     # model-fingerprint changes, which is exactly the production drift

@@ -29,10 +29,16 @@ def test_transform_materializes_exact_single_row_currency_conversion(
         )
         """
     )
+    # A currency write stamps currency_code_changed_at as AccountService does;
+    # the materialized conversion folds that stamp, not the row's updated_at.
     db.execute(
         """
-        INSERT INTO app.account_settings (account_id, currency_code, updated_at)
-        VALUES ('acct-eur', 'EUR', '2026-03-17 15:00:00'::TIMESTAMP)
+        INSERT INTO app.account_settings (
+            account_id, currency_code, currency_code_changed_at, updated_at
+        ) VALUES (
+            'acct-eur', 'EUR', '2026-03-17 15:00:00'::TIMESTAMP,
+            '2026-03-17 15:00:00'::TIMESTAMP
+        )
         """
     )
     db.execute(

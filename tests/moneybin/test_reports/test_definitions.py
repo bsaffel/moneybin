@@ -8,11 +8,13 @@ and the enum-allowlist ValueError branches the surfaces rely on.
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import next_step_text
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -42,10 +44,35 @@ _CORE_REPORT_IDS = {
     "large_transactions": "core:large_transactions",
     "balance_drift": "core:balance_drift",
     "realized_fx": "core:realized_fx",
+    "net_worth_currencies": "core:net_worth_currencies",
+    "net_worth_accounts": "core:net_worth_accounts",
+    "net_worth": "core:net_worth",
 }
-_FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
+#: Position reports whose comparison-window/denominator shape is balance_drift's
+#: own (asserted vs. computed as of one date) rather than a flow's.
+_POSITION_COMPARISON_REPORTS = frozenset({"balance_drift"})
+#: Position reports with no comparison baseline at all — net worth's own two
+#: rungs are a plain sum, not a comparison against a prior period.
+_POSITION_PLAIN_REPORTS = frozenset({"net_worth_currencies", "net_worth_accounts"})
+#: The day-grain rung: a position report like the two above, but the one that
+#: *does* carry a comparison — change_abs/change_pct against the immediately
+#: preceding bucket — so it needs its own branch below rather than either of
+#: theirs. Also the one report priced in `home_currency_code`, not
+#: `currency_code`, because every account and currency has already collapsed
+#: into one home-currency total by the time this rung reads them.
+_HOME_TOTAL_REPORTS = frozenset({"net_worth"})
+#: The net-worth ladder's own rungs declare the underlying core.* tables they
+#: read too, beside the view itself — reports-net-worth-sql-surface.md
+#: Requirement 10's deeper lineage disclosure. Shared by all three rungs.
+_DEEP_LINEAGE_REPORTS = _POSITION_PLAIN_REPORTS | _HOME_TOTAL_REPORTS
+_FLOW_REPORTS = (
+    frozenset(_CORE_REPORT_IDS)
+    - _POSITION_COMPARISON_REPORTS
+    - _POSITION_PLAIN_REPORTS
+    - _HOME_TOTAL_REPORTS
+)
 #: The one promise every report's `fx_basis` makes, however it converts. What
-#: each report does with a display currency differs — three price their rows,
+#: each report does with a display currency differs — five price their rows,
 #: five aggregate per currency and cannot — and which reports do which is pinned
 #: by set equality in `test_only_reports_whose_rows_price_exactly_declare_an_fx_date`.
 #: What none of them may do is put two currencies behind one figure.
@@ -178,7 +205,17 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         assert semantics.exclusions
         # Decorated reports are graph-backed; only a dynamic report has no view.
         assert spec.view is not None
-        assert semantics.provenance == (spec.view.full_name,)
+        if name in _DEEP_LINEAGE_REPORTS:
+            assert semantics.provenance[0] == spec.view.full_name
+            expected_provenance = (
+                spec.view.full_name,
+                "core.fct_balances_daily",
+                "core.dim_accounts",
+                "core.fct_exchange_rates_effective",
+            )
+            assert semantics.provenance == expected_provenance
+        else:
+            assert semantics.provenance == (spec.view.full_name,)
 
         monetary_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
         assert monetary_classes.intersection(spec.classes.values())
@@ -191,6 +228,10 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
             assert semantics.currency is None
             assert semantics.fx_date is None
             assert "mixed-unit" in semantics.fx_basis
+        elif name in _HOME_TOTAL_REPORTS:
+            # Already blended into one home-currency total — there is no
+            # per-row currency_code left to be the authority.
+            assert semantics.currency == "home_currency_code"
         else:
             # Rows are segmented, so the per-row column is the authority for
             # which currency an amount is in — not one envelope-level field.
@@ -200,6 +241,23 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         if name in _FLOW_REPORTS:
             assert semantics.kind == "flow"
             assert "inclusive" in semantics.time_basis
+        elif name in _POSITION_PLAIN_REPORTS:
+            # Net worth's currency/account rungs are a plain sum, not a
+            # comparison against a prior period, so neither a comparison
+            # window nor a ratio denominator is declared.
+            assert semantics.kind == "position"
+            assert semantics.comparison_window is None
+            assert semantics.denominator is None
+            assert "one row per" in semantics.time_basis
+        elif name in _HOME_TOTAL_REPORTS:
+            # The day-grain rung's change_abs/change_pct compare consecutive
+            # buckets, so — unlike its two sibling rungs above — it declares
+            # both a comparison window and a denominator.
+            assert semantics.kind == "position"
+            assert semantics.comparison_window
+            assert semantics.denominator
+            assert "one row per" in semantics.time_basis
+            assert "bucket" in semantics.time_basis
         else:
             assert semantics.kind == "position"
             assert semantics.comparison_window
@@ -321,7 +379,7 @@ def test_cashflow_never_blends_currencies_whichever_by_is_chosen(
 def test_cashflow_defaults_to_12_month_window() -> None:
     rq = cash_flow(None)  # type: ignore[arg-type]  # runner builds pure SQL, ignores db
     assert rq.period is not None
-    assert any("last 12 months" in a for a in rq.actions)
+    assert any("last 12 months" in next_step_text(a) for a in rq.actions)
     assert len(rq.params) == 2  # from + to bounds applied
 
 
@@ -893,3 +951,109 @@ def test_returned_columns_mirror_the_declared_order(
     assert returned == [name for name in declared if name in rows[0]], (
         f"{spec_of(runner).report_id} returns {returned}, but declares {declared}"
     )
+
+
+_RETIRED_NETWORTH_LITERALS = ("core:networth", '"networth"', '"networth-history"')
+
+
+def test_no_retired_net_worth_id_or_command_survives_in_src() -> None:
+    """Spec Tier 3: the service-backed ids and the hand-written command are gone."""
+    src = Path(__file__).resolve().parents[3] / "src" / "moneybin"
+    hits = [
+        f"{path.relative_to(src)}: {literal}"
+        for path in sorted(src.rglob("*.py"))
+        for literal in _RETIRED_NETWORTH_LITERALS
+        if literal in path.read_text(encoding="utf-8")
+    ]
+    assert not hits, hits
+
+
+#: AGGREGATE columns that are not numbers. `is_top_100` is a boolean flag:
+#: `build_rows` never groups a bool and right-aligning "true" reads wrong.
+_NON_NUMERIC_AGGREGATES = frozenset({("large_transactions", "is_top_100")})
+
+
+def test_every_bare_number_column_declares_numeric() -> None:
+    """`.claude/rules/cli.md` "Two declarations": there is no third state.
+
+    A column holding a bare number declares `money_kind` or `numeric`. This
+    is the contract check the rule asked for, so a new count or ratio cannot
+    ship left-aligned and ungrouped beside the columns that declare it.
+    """
+    undeclared = sorted(
+        (spec.name, column.name)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+        if column.data_class is DataClass.AGGREGATE
+        and column.money_kind is None
+        and not column.numeric
+        and (spec.name, column.name) not in _NON_NUMERIC_AGGREGATES
+    )
+
+    assert undeclared == [], f"bare-number columns with no declaration: {undeclared}"
+
+
+#: `numeric` columns that are counts without a `_count` suffix.
+_COUNTS_BY_NAME = frozenset({"active_months", "days_since_observed"})
+
+
+def test_every_count_is_grouped_and_nothing_else_is() -> None:
+    """`.claude/rules/cli.md`: `grouped=` is the count subset of `numeric=`.
+
+    A row count reads `1,381` beside an amount that reads `1,381.00`; a rate
+    at or above 1000 (an IDR or JPY valuation) prints as stored, never
+    `16,000.1234`. Equating the two sets grouped `realized_fx`'s rates once.
+    """
+    numeric = [
+        (spec.name, column)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+        if column.numeric
+    ]
+    grouped = sorted((name, c.name) for name, c in numeric if c.grouped)
+    counts = sorted(
+        (name, c.name)
+        for name, c in numeric
+        if c.name.endswith("_count") or c.name in _COUNTS_BY_NAME
+    )
+
+    assert grouped == counts
+    assert ("realized_fx", "executed_rate") not in grouped
+
+
+def test_every_ratio_is_a_percent_and_nothing_else_is() -> None:
+    """A `_pct` column stores a fraction and renders as `+9.4%`, never as a float.
+
+    Set equality rather than a subset: a ratio left undeclared prints eighteen
+    binary-float digits, and a non-ratio declared `percent` is multiplied by 100.
+    """
+    columns = [
+        (spec.name, column)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+    ]
+    percent = sorted((name, c.name) for name, c in columns if c.percent)
+    ratios = sorted((name, c.name) for name, c in columns if c.name.endswith("_pct"))
+
+    assert percent == ratios
+    assert ("spending_trend", "yoy_pct") in percent
+
+
+def test_every_assigned_category_column_declares_uncategorized() -> None:
+    """A NULL `category` or `top_category` is a taxonomy gap, printed `Uncategorized`.
+
+    Set equality: an undeclared one prints a blank cell, and a declaration on
+    any other column would relabel a NULL that means something else.
+    """
+    columns = [
+        (spec.name, column)
+        for spec in map(spec_of, ALL_REPORTS)
+        for column in spec.columns
+    ]
+    declared = sorted((name, c.name) for name, c in columns if c.uncategorized)
+    categories = sorted(
+        (name, c.name) for name, c in columns if c.name in {"category", "top_category"}
+    )
+
+    assert declared == categories
+    assert ("spending_trend", "category") in declared

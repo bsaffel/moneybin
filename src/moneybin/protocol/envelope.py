@@ -131,6 +131,13 @@ class SummaryMeta:
     # display_currency because the two answer one question together — that
     # names the unit, this says how the unit was reached.
     applied_rates: list[dict[str, Any]] | None = None
+    # The profile currency a `currency_basis="home"` column was priced FROM
+    # (contract.py's `CurrencyBasis`). Set only when a converted result's spec
+    # declares such a column and a surviving row actually holds a value in it
+    # — `applied_rates` alone names each rate's own pair, never which basis it
+    # priced, so a report with two source currencies per row (its own plus the
+    # home currency) would otherwise leave that half unattributed.
+    home_currency: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict, omitting a null ``period`` and a false ``degraded``.
@@ -157,6 +164,8 @@ class SummaryMeta:
                 d["degraded_reason"] = self.degraded_reason
         if self.applied_rates:
             d["applied_rates"] = self.applied_rates
+        if self.home_currency is not None:
+            d["home_currency"] = self.home_currency
         return d
 
 
@@ -316,6 +325,7 @@ def build_envelope(
     recovery_actions: list[RecoveryAction] | None = None,
     classes_returned: list[str] | None = None,
     applied_rates: list[dict[str, Any]] | None = None,
+    home_currency: str | None = None,
 ) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope with computed metadata.
 
@@ -364,6 +374,9 @@ def build_envelope(
             (multi-currency.md Requirement 10). Pass it only when a conversion
             actually happened: omitted means nothing was converted, which is a
             different claim from "converted, rate unrecorded".
+        home_currency: The profile currency a `currency_basis="home"` column
+            was priced FROM, when the report declares one and a surviving row
+            actually holds a value in it. Omitted otherwise.
         classes_returned: Internal observability only — DataClass value strings
             for dynamic-SQL tools that self-classify per call (``dynamic_classification``
             mode). Read by the ``@mcp_tool`` decorator for privacy audit logging.
@@ -407,6 +420,7 @@ def build_envelope(
         degraded=degraded,
         degraded_reason=degraded_reason,
         applied_rates=applied_rates,
+        home_currency=home_currency,
     )
 
     return ResponseEnvelope(

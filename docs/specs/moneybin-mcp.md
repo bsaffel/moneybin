@@ -72,7 +72,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `profile_set` | `display_currency_targets`, `home_currency` | Set profile currency settings | Audited write / at least low |
 | `reports` | `display_currency`, `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / up to critical / report-derived |
 | `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / up to critical / view-derived |
-| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / at least critical |
+| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `investment_source_type`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / at least critical |
 | `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / up to high / balance-derived |
 | `accounts_balance_assert` | `account`, `amount`, `as_of`, `confirmation_token`, `state` | Record a balance assertion | Audited write / at least medium |
 | `accounts_links_run` | `account_id`, `candidate_account_id` | Propose account merges — sweep, or one named pair | Audited write / at least low |
@@ -89,21 +89,21 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_rules` | `view` | Current categorization rules | Read / at least high |
 | `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state; fails the whole batch with `taxonomy_rule_conflict` when a target claims an active rule's matcher under a different category | Confirmed write / at least low |
 | `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows and both sides of each `kind='rule_conflicts'` row | Read / dynamic / up to critical / queue-derived |
-| `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad`, `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least low |
+| `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` (an accept refused by the broad or short-pattern guard stays `pending`, `changed: false`, with a result `reason` naming the guard; a batch that applied nothing returns `status: "error"` with code `mutation_constraint_violation` and `details.refused_broad` / `refused_unselective`, still carrying `data.results[]`, while a partial batch stays `ok`), `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least low |
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / at least medium (prompt-disclosed) |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / up to medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / at least low |
 | `import_files` | `account_bindings`, `force`, `paths`, `refresh` | Import files | Audited workflow / at least critical / file-derived |
-| `import_preview` | `file_path`, `mapping` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / up to critical / file-derived |
+| `import_preview` | `file_path`, `mapping`, `omit_fields` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / up to critical / file-derived |
 | `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / up to critical / preview-derived |
 | `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / up to medium / import-derived |
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch or delete a saved format | Confirmed destructive / at least low — rollback is permanent with no undo; format deletion is audited and `system_audit_undo`-recoverable |
 | `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / at least critical |
 | `import_labels_set` | `import_id`, `labels` | Import-label target state | Audited write / at least medium |
-| `sync_link` | `institution`, `mode` | Start mediated provider linking | Credential flow / at least medium |
+| `sync_link` | `institution`, `mode`, `server_url` | Start mediated provider linking | Credential flow / at least medium |
 | `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / up to medium / session-derived |
 | `sync_pull` | `institution` | Pull linked-provider data | External mutation / at least medium |
-| `sync_disconnect` | `confirmation_token`, `institution`, `mode` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / at least low |
+| `sync_disconnect` | `confirmation_token`, `institution`, `mode`, `provider_item_id`, `state` | Disconnect provider or credentials; `state="absent"` also purges the item's local rows | Institution disconnect is a confirmed destructive write; logout is recoverable / at least low |
 | `gsheet` | `connection_id`, `view` | Google Sheets connections | Read / dynamic / up to medium / connection-derived |
 | `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `url` | Bind user-controlled storage | Credential flow / dynamic / up to medium / connection-derived |
 | `gsheet_pull` | `connection_id` | Pull sheet data | External mutation / at least medium |
@@ -213,7 +213,7 @@ and confirmation contracts.
 
   A value **derived** from a converted amount is restated so it cannot describe
   the old currency: `core:balance_drift` re-buckets its clean/warning/drift
-  verdict against the converted drift, and `core:networth` recomputes
+  verdict against the converted drift, and `core:net_worth` recomputes
   `net_worth` from its own converted parts so per-column rounding cannot leave
   the total disagreeing with assets plus liabilities. `no-data` and
   `currency-mismatch` are left alone — neither states a magnitude. The
@@ -392,6 +392,12 @@ sits at the 50-tool hard limit exactly — admitting another means retiring one:
 - `system_status(sections=["exports"])` reports destination readiness through
   the existing orientation tool, so status does not consume a third export
   slot.
+- `moneybin system status --output json` returns the same `data` and
+  `summary` as `system_status(sections=["overview", "exports"])`: one
+  sectioned payload, built once in `moneybin.adapters.system_status_adapters`,
+  and one derived sensitivity. Only `actions` differ: MCP names tools, and
+  the CLI emits none. Under a held write lock MCP degrades to a zero-filled
+  overview naming the holder; the CLI returns an error envelope instead.
 
 Sheets destinations are output-only and cannot overlap an inbound `gsheet`
 connection. Publication replaces only MoneyBin-managed tabs after staging and

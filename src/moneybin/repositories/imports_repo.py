@@ -6,7 +6,7 @@ this table flows through a ``*Repo`` that pairs the write with an
 composes this instead of issuing raw mutation SQL for the labels write.
 
 ``app.imports`` holds only the labels overlay (one row per labeled import); the
-import *lifecycle* writes ``raw.import_log`` (out of scope). ``set`` emits one
+import *lifecycle* writes ``app.import_log`` (out of scope). ``set`` emits one
 full-row ``import.set`` audit (Req 4) — the same idempotent-upsert shape every
 other repo uses — rather than per-label semantic events; the full before/after
 ``labels`` lists make a label change fully reconstructable for Phase 2 undo.

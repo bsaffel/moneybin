@@ -369,6 +369,24 @@ _Avoid_: bare "package", plugin, module, add-on
 The declared maturity level an extension ships at, from bronze to platinum.
 _Avoid_: tier, level, grade, rating
 
+### Releases
+
+**Public Beta**:
+The first public release: an installable test build with guided CLI setup and
+sync the user hosts themselves. Public contracts may still change without a
+migration path.
+_Avoid_: first public release, quiet release, alpha, preview
+
+**Early Access**:
+The feature-complete release that adds the minimal browser surface and
+MoneyBin-hosted sync. Public contracts freeze here.
+_Avoid_: EA without first spelling it out, hosted launch, v1
+
+**General Availability**:
+The publicized release: Early Access plus every feature wave the roadmap
+assigns to it. It is what "v1" means.
+_Avoid_: launch, 1.0 without context, hosted launch
+
 ## Relationships
 
 - An **Institution** holds many **Accounts**; an **Account** has many

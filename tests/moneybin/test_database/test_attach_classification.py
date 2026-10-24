@@ -7,12 +7,14 @@ silent regression where raw IOExceptions leak to MCP / CLI callers.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import duckdb
 import pytest
 
 from moneybin.database import (
+    Database,
     DatabaseLockError,
     _attach_encrypted,  # pyright: ignore[reportPrivateUsage]
 )
@@ -62,6 +64,41 @@ def test_duckdb_1_5_2_catalog_message_still_classified() -> None:
     conn = _make_mock_conn(duckdb.CatalogException(msg))
     with pytest.raises(DatabaseLockError):
         _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)", _KEY)
+
+
+def test_same_process_attach_conflict_classified_as_lock_error(
+    tmp_path: Path, mock_secret_store: MagicMock
+) -> None:
+    """A second in-process attach of a held file is contention, not a bind bug.
+
+    Uses real DuckDB so the matcher stays pinned to its actual phrasing.
+    """
+    db_path = tmp_path / "held.duckdb"
+    Database(
+        db_path, read_only=False, secret_store=mock_secret_store, no_auto_upgrade=True
+    ).close()
+    held = Database(
+        db_path, read_only=True, secret_store=mock_secret_store, no_auto_upgrade=True
+    )
+    try:
+        with pytest.raises(DatabaseLockError, match="Unique file handle conflict"):
+            Database(
+                db_path,
+                read_only=False,
+                secret_store=mock_secret_store,
+                no_auto_upgrade=True,
+            )
+    finally:
+        held.close()
+
+
+def test_unrelated_binder_exception_reraised_unchanged() -> None:
+    """Other binder errors are real failures and keep their type."""
+    exc = duckdb.BinderException('Binder Error: Referenced column "x" not found')
+    conn = _make_mock_conn(exc)
+    with pytest.raises(duckdb.BinderException) as excinfo:
+        _attach_encrypted(conn, "ATTACH '/tmp/probe.duckdb' AS m (TYPE DUCKDB)", _KEY)
+    assert excinfo.value is exc
 
 
 def test_unrelated_ioexception_reraised_unchanged() -> None:

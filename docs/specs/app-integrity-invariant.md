@@ -20,6 +20,25 @@ implemented
 > control-flow bindings conservatively, and preserves the caller and table
 > exemptions in Requirements 7–8.
 
+> **MB-255 reconciliation (2026-09-17).** Resolved Decision 2 below said
+> `raw.import_log` sits outside Invariant 10 "by design (the schema boundary
+> is load-bearing)." MB-255 moved the table to `app.import_log` —
+> `architecture-shared-primitives.md`'s own `raw`/`app` definitions place it
+> there: it is MoneyBin-written lifecycle bookkeeping, not re-importable from
+> a source file. The schema boundary that decision leaned on therefore no
+> longer excludes it: the lint rule derives its protected set from every
+> `app.*` `TableRef` (per the Final enforcement reconciliation above), so
+> `app.import_log` is now lint-protected — every write must route through
+> `repositories/*_repo.py`, `repositories/base.py`,
+> `services/audit_service.py`, or a migration script. It stays *unaudited*,
+> though: `import_log` remains system-written bookkeeping, not user-editable
+> state, so `ImportLogRepo` still does not subclass `BaseRepo` and no
+> `app.audit_log` row pairs with its writes — only the routing requirement
+> (caller allowlist) applies now, not the audit requirement (Req 1). The two
+> call sites that wrote it directly (`connectors/gsheet/pull_service.py`,
+> `ImportService.revert_confirmed`) moved onto new `ImportLogRepo` methods
+> (`open_import`/`close_import`/`mark_reverted`) to satisfy the allowlist.
+>
 > **Drift note (2026-05-17).** Bypass-map line numbers below reference the single-file `services/categorization_service.py` at HEAD `f13f3c7`. PR #155 (post-spec) split that module into a facade + collaborators under `src/moneybin/services/categorization/` (`__init__.py`, `_shared.py`, `applier.py`, `assist.py`, `matcher.py`, `orchestrator.py`, `queries.py`). The protected-tables list (Req 6), repository contract (Req 2–5), lint rule (Req 8), doctor invariants (Req 9), and PR ordering (Req 10) are unaffected — only the source file the implementation PRs will edit changes. Each PR-by-PR mutation-site call-out below should be re-located against the post-split files at implementation time; the mutations themselves (and their target tables) are unchanged. PR #166 (the category-delete cascade) and PR #174 (`category_id` FK migration) also landed post-spec; both touch the same `categorization_service` paths but do not change the bypass-map shape.
 
 > **Batch B reconciliation (2026-05-22).** Implementing PRs 3–5 (`UserMerchantsRepo`, `CategorizationRulesRepo`, `ProposedRulesRepo`, `TransactionCategoriesRepo`) surfaced four spec↔code drifts, resolved as follows:

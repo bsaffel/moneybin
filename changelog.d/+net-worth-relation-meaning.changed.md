@@ -1,0 +1,1 @@
+`reports.net_worth` changes meaning: it is now one home-currency total per day rather than the per-currency relation, which moves to `reports.net_worth_currencies` with its columns reordered. A query or export reading `reports.net_worth` for per-currency rows must switch to `reports.net_worth_currencies`.

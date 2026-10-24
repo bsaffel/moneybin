@@ -1,0 +1,1 @@
+`moneybin reports … --wide` on a terminal narrower than the whole report now omits the columns outside the report's default view, ids before measures, until the table fits, and names them beneath it, instead of squeezing every column until headers print one character per line.

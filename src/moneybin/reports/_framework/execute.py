@@ -25,7 +25,7 @@ from pydantic import JsonValue
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import RecoveryAction, UserError
+from moneybin.errors import NextStep, RecoveryAction, UserError, next_step_text
 from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
 from moneybin.privacy.sensitivity import tier_to_sensitivity
@@ -78,7 +78,11 @@ class ReportResult:
     tier: Tier
     total_count: int
     truncated: bool
-    actions: list[str] = field(default_factory=list)
+    #: A `NextStep` from a runner or the framework, or a legacy pre-formatted
+    #: string from a dedup caveat (`catalog.py`'s `pending_dedup_caveat`,
+    #: sourced outside this module's allotment) — `next_step_text` renders
+    #: either for the MCP envelope.
+    actions: list[NextStep | str] = field(default_factory=list)
     period: str | None = None
     # Unknown, never a currency: a result built without one has not been told a
     # denomination, and a literal here would speak for every report that never
@@ -93,6 +97,11 @@ class ReportResult:
     #: converted. Rides the response only — never the durable log, which is why
     #: ``degraded_reason`` still names no date (see ``convert._missing_reason``).
     applied_rates: tuple[ResolvedRate, ...] = ()
+    #: The profile home currency a `currency_basis="home"` column was priced
+    #: FROM, or ``None``. Set by ``_priced_home_currency`` only when a report
+    #: declaring such a column actually had a value in it priced — see
+    #: ``contract.py``'s ``CurrencyBasis``.
+    home_currency: str | None = None
     #: Structured next steps for an agent, beside the prose ``actions`` the CLI
     #: prints — a caveat's remedy an agent can call without parsing a hint.
     recovery_actions: tuple[RecoveryAction, ...] = ()
@@ -117,13 +126,14 @@ class ReportResult:
             total_count=self.total_count,
             returned_count=len(self.records),
             classes_returned=self.classes_returned,
-            actions=self.actions or None,
+            actions=[next_step_text(action) for action in self.actions] or None,
             period=self.period,
             display_currency=self.display_currency,
             degraded=self.degraded,
             degraded_reason=self.degraded_reason,
             recovery_actions=list(self.recovery_actions) or None,
             applied_rates=[rate.as_provenance() for rate in self.applied_rates] or None,
+            home_currency=self.home_currency,
         )
 
 
@@ -155,7 +165,8 @@ class CatalogReportExecution:
     tier: Tier
     total_count: int
     truncated: bool
-    actions: list[str]
+    #: See ``ReportResult.actions`` for the ``NextStep | str`` split.
+    actions: list[NextStep | str]
     period: str | None
     semantics: ReportSemantics
     provenance: tuple[str, ...]
@@ -304,11 +315,12 @@ def convert_execution(
         columns=columns,
         column_types=column_types,
         output_classes=output_classes,
-        # `total_count` was fixed before conversion ran, so a callback that
-        # collapses rows — `core:networth` merging its per-currency totals —
-        # would leave the envelope deriving `has_more` from rows that no longer
-        # exist, reporting an untruncated result as truncated. Floored at what
-        # is actually being returned, since a total below that is never true.
+        # `total_count` was fixed before conversion ran, so a report whose own
+        # `on_converted` callback collapses rows (e.g. merging several
+        # per-currency totals into one once they share a unit) would leave the
+        # envelope deriving `has_more` from rows that no longer exist,
+        # reporting an untruncated result as truncated. Floored at what is
+        # actually being returned, since a total below that is never true.
         total_count=max(execution.total_count - removed, len(outcome.records)),
         applied_rates=outcome.applied_rates,
         # A fallback leaves the rows in their own currencies, so the currency
@@ -325,13 +337,14 @@ def convert_execution(
 def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecution:
     """Apply the row cap an execution deferred, once conversion has finished.
 
-    The cap describes the answer, not conversion's inputs. ``core:networth``
-    emits one totals row per currency held and merges them only after pricing
-    has put them in one unit, so cutting first hands that merge a subset: a
-    two-currency profile read at ``limit=1`` would publish one currency's
-    subtotal as the whole position. Blend by omission is the same defect as
-    blend by summation, and it is what the per-currency row split exists to
-    prevent.
+    The cap describes the answer, not conversion's inputs. A report whose own
+    ``on_converted`` callback emits one totals row per currency held and
+    merges them only after pricing has put them in one unit needs the cap
+    applied after that merge, not before: cutting first hands the merge a
+    subset — a two-currency profile read at ``limit=1`` would publish one
+    currency's subtotal as the whole position. Blend by omission is the same
+    defect as blend by summation, and it is what a per-currency row split
+    exists to prevent.
 
     A no-op for an execution that already applied its own cap, which is every
     execution that never converted.
@@ -377,7 +390,7 @@ def _resolve_display_currency(
 
 
 class _CatalogSpec(Protocol):
-    """The result-building fields shared by SQL and service report specs."""
+    """The result-building fields a catalog report spec exposes."""
 
     @property
     def report_id(self) -> str: ...
@@ -445,7 +458,7 @@ def build_catalog_result(
     records: list[dict[str, Any]],
     columns: list[str],
     max_rows: int,
-    actions: list[str] | None = None,
+    actions: list[NextStep | str] | None = None,
     period: str | None = None,
 ) -> CatalogReportResult:
     """Redact and truncate tabular rows using the shared report rules."""
@@ -472,7 +485,7 @@ def build_catalog_execution(
     columns: list[str],
     column_types: list[str],
     max_rows: int | None,
-    actions: list[str] | None = None,
+    actions: list[NextStep | str] | None = None,
     period: str | None = None,
     defer_truncation: bool = False,
 ) -> CatalogReportExecution:
@@ -487,9 +500,10 @@ def build_catalog_execution(
     )
     limited = records if max_rows is None or defer_truncation else records[:max_rows]
 
-    # ServiceReportSpec intentionally matches the classification-facing subset
-    # of ReportSpec. The cast keeps classify_columns' existing public signature
-    # stable while both kinds use its fail-closed undeclared-column behavior.
+    # `spec` is typed as the structural `_CatalogSpec` Protocol here, not the
+    # nominal `ReportSpec`; the cast keeps `classify_columns`' existing public
+    # signature (which takes `ReportSpec`) stable while this function's
+    # fail-closed undeclared-column behavior stays reachable from either type.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
     # A report that declares one currency field is authoritative about its own
     # denomination, including when the answer is "no single one". A mixed-unit
@@ -565,18 +579,64 @@ def masked_columns(output_classes: Mapping[str, DataClass]) -> tuple[str, ...]:
     )
 
 
-def inspection_hint(report_id: str, columns: tuple[str, ...]) -> str:
+def inspection_hint(report_id: str, columns: tuple[str, ...]) -> NextStep:
     """R3's masked-output hint — a ``'*****'`` with no explanation is a two-call fix.
 
     Names the CLI command, not an MCP tool: R3 requires the hint bind only to an
     admitted surface, the verify surface has no MCP identity, and pointing an
-    agent at a tool that does not exist is worse than saying nothing.
+    agent at a tool that does not exist is worse than saying nothing — so
+    ``mcp`` carries the same CLI command an MCP-side agent is told to run.
     """
-    return (
-        f"Run `moneybin reports explain {report_id}` to see the derived class of "
-        f"each column and why {', '.join(columns)} "
-        f"{'is' if len(columns) == 1 else 'are'} masked"
+    return NextStep(
+        reason=(
+            f"the derived class of each column and why {', '.join(columns)} "
+            f"{'is' if len(columns) == 1 else 'are'} masked"
+        ),
+        cli=("reports", "explain", report_id),
+        mcp=f"moneybin reports explain {report_id}",
     )
+
+
+#: The unset-home-currency hint. A profile that never chose one — every new
+#: profile — reads a converting report as a NULL total beside an unpriced
+#: count, and nothing else on the response names the setting that fills it.
+#: "no usable" rather than "none set": `_conversion_target` falls back to None on
+#: a stored code that fails validation too, so a profile with a malformed setting
+#: reaches this hint with one set. Both states have the same remedy.
+HOME_CURRENCY_HINT = NextStep(
+    reason="converted totals; this profile has no usable home currency",
+    cli=("profile", "set", "home_currency", "<CODE>"),
+    mcp="profile_set(home_currency='<CODE>')",
+)
+
+
+def home_basis_columns(columns: Sequence[OutputColumn]) -> set[str]:
+    """The declared output columns priced FROM the profile home currency."""
+    return {column.name for column in columns if column.currency_basis == "home"}
+
+
+def _priced_home_currency(execution: CatalogReportExecution) -> str | None:
+    """The profile home currency actually priced into a home-basis column.
+
+    ``None`` unless conversion applied at least one real (non-identity) rate
+    to this response — ``execution.applied_rates`` is the same "a rate was
+    actually applied" signal ``ORIGINAL_CURRENCY_COLUMN`` gates on — *and* a
+    surviving row holds a value in a column whose declared ``currency_basis``
+    is ``"home"``. A home-basis column being declared is not evidence any row
+    carries a value in it (``account_balance_home`` is documented nullable),
+    so this mirrors the exact ``needs_home`` test ``convert_records`` applies
+    before it ever resolves a home rate.
+    """
+    if not execution.applied_rates or execution.home_currency is None:
+        return None
+    home_basis = home_basis_columns(execution.output_columns)
+    if not home_basis:
+        return None
+    if any(
+        row.get(name) is not None for row in execution.records for name in home_basis
+    ):
+        return execution.home_currency
+    return None
 
 
 def redact_catalog_execution(
@@ -597,6 +657,13 @@ def redact_catalog_execution(
     if masked:
         actions.append(inspection_hint(execution.report_id, masked))
 
+    # The same shape for the other silently-empty result: a report that declares
+    # a home-basis column on a profile that has chosen no home currency returns
+    # NULL in it and names no cause. Gated on the *declared* column rather than
+    # on `applied_rates`, which is false precisely in the case being explained.
+    if execution.home_currency is None and home_basis_columns(execution.output_columns):
+        actions.append(HOME_CURRENCY_HINT)
+
     return CatalogReportResult(
         report_id=execution.report_id,
         parameters=redact_report_parameters(spec, execution.parameters),
@@ -614,6 +681,7 @@ def redact_catalog_execution(
         degraded=execution.degraded_reason is not None,
         degraded_reason=execution.degraded_reason,
         applied_rates=execution.applied_rates,
+        home_currency=_priced_home_currency(execution),
         recovery_actions=execution.recovery_actions,
     )
 

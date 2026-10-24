@@ -22,9 +22,20 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import confidence_cell, handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    no_pager_option,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import (
+    confidence_cell,
+    format_cli_failure,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     SecurityLinksHistoryPayload,
@@ -44,6 +55,7 @@ logger = logging.getLogger(__name__)
 def links_pending(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List pending security merge decisions, grouped by provider ref.
 
@@ -77,34 +89,56 @@ def links_pending(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary([("Pending decisions", str(n_pending))], title="Security links")
+    ]
     if not groups:
-        if not quiet:
-            logger.info("No pending security-link decisions")
-        return
-
+        parts.append(build_summary([("Result", "No pending security-link decisions.")]))
     for group in groups:
-        typer.echo(
-            f"\n── {group.ref_kind}:{group.ref_value[:20]} "
-            f"provider=({group.provider_ticker or '-'} / "
-            f"{group.provider_name or '-'}) "
-            f"[{group.source_type}] "
-            f"— {len(group.candidates)} candidate(s) ──"
-        )
-        render_rows(
-            ["decision id", "candidate id", "ticker", "conf", "reason", "name"],
-            [
+        parts.extend([
+            build_summary([
+                ("Provider reference", f"{group.ref_kind}: {group.ref_value}"),
                 (
-                    c.decision_id[:12],
-                    c.candidate_security_id[:12],
-                    c.candidate_ticker or "-",
-                    confidence_cell(c.confidence),
-                    c.match_reason or "-",
-                    c.candidate_name or "-",
-                )
-                for c in group.candidates
-            ],
-            numeric=("conf",),
-        )
+                    "Provider",
+                    f"{group.provider_ticker or '-'} / {group.provider_name or '-'}",
+                ),
+                ("Source", group.source_type),
+                ("Candidates", str(len(group.candidates))),
+            ]),
+            build_rows(
+                ["decision id", "candidate id", "ticker", "conf", "reason", "name"],
+                [
+                    (
+                        c.decision_id[:12],
+                        c.candidate_security_id[:12],
+                        c.candidate_ticker or "-",
+                        confidence_cell(c.confidence),
+                        c.match_reason or "-",
+                        c.candidate_name or "-",
+                    )
+                    for c in group.candidates
+                ],
+                numeric=("conf",),
+                terminal=policy,
+            ),
+        ])
+    emit_human_result(
+        compose_human_result(
+            parts,
+            disclosures=(
+                [
+                    "Next: decide with moneybin investments securities links set "
+                    "<decision-id> --accept --into <candidate-security-id>."
+                ]
+                if groups and not quiet
+                else []
+            ),
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("set")
@@ -168,16 +202,18 @@ def links_set(
       moneybin investments securities links set dec001 --reject
     """
     if accept and reject:
-        logger.error("❌ --accept and --reject are mutually exclusive")
+        logger.error(format_cli_failure("--accept and --reject are mutually exclusive"))
         raise typer.Exit(2)
     if not accept and not reject:
-        logger.error("❌ Specify either --accept or --reject")
+        logger.error(format_cli_failure("Specify either --accept or --reject"))
         raise typer.Exit(2)
     if reject and into is not None:
-        logger.error("❌ --into is only valid with --accept")
+        logger.error(format_cli_failure("--into is only valid with --accept"))
         raise typer.Exit(2)
     if accept and not into:
-        logger.error("❌ --accept requires --into <candidate_security_id>")
+        logger.error(
+            format_cli_failure("--accept requires --into <candidate_security_id>")
+        )
         raise typer.Exit(2)
 
     with handle_cli_errors():
@@ -197,7 +233,18 @@ def links_set(
         action = "rejected"
     else:
         action = f"{'bound to' if outcome == 'bound' else 'merged into'} {into}"
-    logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
+    policy = get_terminal_policy()
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Decision", decision_id), ("Outcome", action)],
+                title="Security link decision recorded",
+            )
+        ]),
+        policy=policy,
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("history")
@@ -205,6 +252,7 @@ def links_history(
     limit: int = typer.Option(50, "--limit", "-n", min=1, help="Max records to show"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show recent security-link decisions (all statuses), newest first."""
     with handle_cli_errors():
@@ -223,32 +271,40 @@ def links_history(
         )
         return
 
-    if not rows:
-        if not quiet:
-            logger.info("No security-link decisions found")
-        return
-
-    render_rows(
-        [
-            "decision id",
-            "ref value",
-            "candidate",
-            "status",
-            "decided by",
-            "reason",
-            "conf",
-        ],
-        [
-            (
-                d.decision_id[:12],
-                d.ref_value[:20],
-                d.candidate_security_id[:12],
-                d.status,
-                d.decided_by,
-                d.match_reason or "-",
-                confidence_cell(d.confidence),
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary([("Maximum records", str(limit))], title="Security-link history")
+    ]
+    if rows:
+        parts.append(
+            build_rows(
+                [
+                    "decision id",
+                    "ref value",
+                    "candidate",
+                    "status",
+                    "decided by",
+                    "reason",
+                    "conf",
+                ],
+                [
+                    (
+                        d.decision_id[:12],
+                        d.ref_value[:20],
+                        d.candidate_security_id[:12],
+                        d.status,
+                        d.decided_by,
+                        d.match_reason or "-",
+                        confidence_cell(d.confidence),
+                    )
+                    for d in payload.decisions
+                ],
+                numeric=("conf",),
+                terminal=policy,
             )
-            for d in payload.decisions
-        ],
-        numeric=("conf",),
+        )
+    else:
+        parts.append(build_summary([("Result", "No security-link decisions found.")]))
+    emit_human_result(
+        compose_human_result(parts), policy=policy, finite_read=True, no_pager=no_pager
     )

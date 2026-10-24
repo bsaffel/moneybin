@@ -39,11 +39,6 @@ BRIDGE_MERCHANT_ENTITIES = TableRef(
 )
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
-# Service-internal curator-impact queue (moved out of reports.* — reports-foundation.md
-# R5: membership in reports.* means "user-facing report," and this view's only
-# runtime reader is services/categorization/queries.py, backing
-# transactions_categorize_pending).
-CORE_UNCATEGORIZED_QUEUE = TableRef("core", "uncategorized_queue", audience="interface")
 
 # -- Raw tables (used until core models are built for these entities) --
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")
@@ -56,7 +51,6 @@ PLAID_BALANCES = TableRef("raw", "plaid_balances")
 # -- Raw tabular tables (replaces csv_* tables) --
 TABULAR_TRANSACTIONS = TableRef("raw", "tabular_transactions")
 TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
-IMPORT_LOG = TableRef("raw", "import_log")
 MANUAL_TRANSACTIONS = TableRef("raw", "manual_transactions")
 GSHEET_SEEDS = TableRef("raw", "gsheet_seeds")
 PDF_SEEDS = TableRef("raw", "pdf_seeds")
@@ -72,6 +66,7 @@ BUDGETS = TableRef("app", "budgets", audience="interface")
 TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
 TRANSACTION_TAGS = TableRef("app", "transaction_tags", audience="interface")
 TRANSACTION_SPLITS = TableRef("app", "transaction_splits", audience="interface")
+IMPORT_LOG = TableRef("app", "import_log")
 IMPORTS = TableRef("app", "imports", audience="interface")
 IMPORT_PREVIEWS = TableRef("app", "import_previews")
 IMPORT_PREVIEW_SNAPSHOTS = TableRef("raw", "import_preview_snapshots")
@@ -143,6 +138,9 @@ FCT_INVESTMENT_TRANSACTIONS = TableRef(
 FCT_INVESTMENT_LOTS = TableRef("core", "fct_investment_lots", audience="interface")
 FCT_REALIZED_GAINS = TableRef("core", "fct_realized_gains", audience="interface")
 DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
+DIM_HOLDINGS_BROKER_REPORTED = TableRef(
+    "core", "dim_holdings_broker_reported", audience="interface"
+)
 SECURITY_PRICES = TableRef("raw", "security_prices")
 SECURITY_PRICE_OVERRIDES = TableRef("app", "security_price_overrides")
 FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interface")
@@ -151,6 +149,8 @@ FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interfac
 # Internal audience: the cache is read through CurrencyService, never queried
 # directly, so it carries no schema-catalog examples.
 EXCHANGE_RATES = TableRef("raw", "exchange_rates")
+EXCHANGE_RATE_CURRENCIES = TableRef("raw", "exchange_rate_currencies")
+EXCHANGE_RATE_COVERAGE = TableRef("raw", "exchange_rate_coverage")
 EXCHANGE_RATE_OVERRIDES = TableRef("app", "exchange_rate_overrides")
 BRIDGE_CURRENCY_CONVERSIONS = TableRef("core", "bridge_currency_conversions")
 FCT_CURRENCY_LOTS = TableRef("core", "fct_currency_lots")
@@ -173,10 +173,11 @@ SEED_ACCOUNT_TYPE_MAP = TableRef("seeds", "account_type_map")
 SEED_INSTITUTIONS = TableRef("seeds", "institutions")
 SEED_PRICE_SOURCE_MAP = TableRef("seeds", "price_source_map")
 
-# -- Prep / staging views (built by SQLMesh transforms) --
+# -- Prep / staging models (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
 INT_TRANSACTIONS_MERGED = TableRef("prep", "int_transactions__merged")
+INT_ACCOUNTS_MERGED = TableRef("prep", "int_accounts__merged")
 STG_OFX_ACCOUNTS = TableRef("prep", "stg_ofx__accounts")
 STG_PLAID_ACCOUNTS = TableRef("prep", "stg_plaid__accounts")
 STG_PLAID_TRANSACTIONS = TableRef("prep", "stg_plaid__transactions")
@@ -221,6 +222,12 @@ REPORTS_LARGE_TRANSACTIONS = TableRef(
 )
 REPORTS_BALANCE_DRIFT = TableRef("reports", "balance_drift", audience="interface")
 REPORTS_REALIZED_FX = TableRef("reports", "realized_fx", audience="interface")
+REPORTS_NET_WORTH_ACCOUNTS = TableRef(
+    "reports", "net_worth_accounts", audience="interface"
+)
+REPORTS_NET_WORTH_CURRENCIES = TableRef(
+    "reports", "net_worth_currencies", audience="interface"
+)
 
 
 def _all_table_refs() -> tuple[TableRef, ...]:

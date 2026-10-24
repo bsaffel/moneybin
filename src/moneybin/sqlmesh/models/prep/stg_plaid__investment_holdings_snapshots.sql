@@ -6,12 +6,15 @@ MODEL (
 /* One row per (item, holdings pull) — the receipt that the item reported, and
    as of when. Passthrough: the grain is the item and the snapshot, so there is
    no account or security id here to resolve. Every consumer that needs "the
-   newest holdings snapshot for this item" (core.dim_holdings, the doctor's
-   holdings checks) derives it from HERE and never from the presence of holdings
-   rows: an item whose pull returned zero positions writes no holdings rows at
-   all, so a row-derived newest snapshot silently keeps an earlier NON-EMPTY one
-   and a fully-liquidated broker reads as still holding its old positions
-   (raw_plaid_investment_holdings_snapshots.sql). */
+   newest holdings snapshot for this item" (core.dim_holdings,
+   core.dim_holdings_broker_reported, the doctor's holdings checks) reads
+   is_newest from HERE and never derives it from the presence of holdings rows:
+   an item whose pull returned zero positions writes no holdings rows at all, so
+   a row-derived newest snapshot silently keeps an earlier NON-EMPTY one and a
+   fully-liquidated broker reads as still holding its old positions
+   (raw_plaid_investment_holdings_snapshots.sql). is_newest breaks an
+   extracted_at tie by ingestion_sequence, so exactly one receipt per item is
+   newest. */
 SELECT
   s.source_origin,
   s.source_file,
@@ -20,6 +23,10 @@ SELECT
   s.ingestion_sequence,
   s.transactions_window_start,
   s.source_type,
+  ROW_NUMBER() OVER (
+    PARTITION BY s.source_origin
+    ORDER BY s.extracted_at DESC, s.ingestion_sequence DESC
+  ) = 1 AS is_newest,
   s.extracted_at,
   s.loaded_at
 FROM raw.plaid_investment_holdings_snapshots AS s

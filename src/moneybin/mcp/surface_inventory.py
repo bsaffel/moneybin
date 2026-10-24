@@ -37,8 +37,15 @@ class SurfaceInventory:
     @classmethod
     def from_tools(cls, tools: Sequence[Tool]) -> SurfaceInventory:
         """Create a stable inventory from the protocol tool definitions."""
+        # by_alias keeps the camelCase wire spelling: mcp 2 renamed the Python
+        # attributes to snake_case but left the JSON unchanged, so a bare dump
+        # would silently emit input_schema and zero out the per-field byte counts
+        # _inventory_row reads back under the protocol names.
         payloads = sorted(
-            (tool.model_dump(mode="json", exclude_none=True) for tool in tools),
+            (
+                tool.model_dump(mode="json", exclude_none=True, by_alias=True)
+                for tool in tools
+            ),
             key=lambda item: str(item["name"]),
         )
         canonical = _canonical_json(payloads)

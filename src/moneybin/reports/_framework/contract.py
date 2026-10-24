@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import MONEY_CLASSES, DataClass
 from moneybin.tables import TableRef
 
@@ -41,19 +42,26 @@ _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 #: it, into every cold start (`test_cli_main_import_does_not_load_heavy_deps`).
 ORIGINAL_CURRENCY_COLUMN = "original_currency_code"
 
-#: KNOWN GAP, deliberately open until the net-worth ladder needs it. A column
-#: declaring `currency_basis="home"` gives its row a second source currency, so
-#: the attribution problem above returns for that half: `applied_rates` holds
-#: both rates and this column names only the row's own. It is not closed the
-#: same way, because a home currency is report-level metadata — one value per
-#: call, resolved once by `ReportCatalog.execute` — and stamping a per-row
-#: column with a constant would publish the wrong shape to avoid a second
-#: lookup. Nothing reaches this today: no shipped report declares a home-basis
-#: column. The first one that does is `reports.net_worth`
-#: (`account_balance_home`, `net_worth_home` — reports-net-worth-sql-surface.md
-#: Requirement 10), and that is where the envelope has to start publishing the
-#: home currency alongside the rates, rather than leaving a caller to infer
-#: which rate priced which basis.
+#: A column declaring `currency_basis="home"` gives its row a second source
+#: currency, so the attribution problem above returns for that half:
+#: `applied_rates` holds both rates and `ORIGINAL_CURRENCY_COLUMN` names only
+#: the row's own. Closed differently, because a home currency is report-level
+#: metadata — one value per call, resolved once by `ReportCatalog.execute` —
+#: and stamping a per-row column with a constant would publish the wrong
+#: shape to avoid a second lookup. `summary.home_currency`
+#: (`protocol/envelope.py`'s `SummaryMeta.home_currency`, populated by
+#: `execute.py::_priced_home_currency`) publishes it instead, beside
+#: `applied_rates`, whenever a converted result's spec declares a
+#: `currency_basis="home"` column and a surviving row actually holds a value
+#: in one — first exercised by `reports.net_worth_accounts` /
+#: `reports.net_worth_currencies` (`account_balance_home`, `net_worth_home`,
+#: `total_assets_home`, `total_liabilities_home` — reports-net-worth-sql-
+#: surface.md Requirement 10). Two call sites publish it, and both must
+#: carry it: the CLI reads it for free through `ReportResult.to_envelope()`,
+#: but `mcp/tools/reports.py`'s `reports` tool builds its envelope by hand
+#: (its own comment there says every `ReportResult` field must be repeated)
+#: and must pass `home_currency=result.home_currency` explicitly, the same
+#: way it already repeats `applied_rates`.
 
 #: ``report_id`` namespace owned by the user tier — the one tier whose reports
 #: are database rows rather than code. ``mint_user_report_id`` produces it and
@@ -128,7 +136,10 @@ class ReportQuery:
     author's keyboard rather than in a test run. The runtime still accepts a
     bare value (see :func:`bound_class`) because an extension runner outside
     this repo is not checked against this contract."""
-    actions: Sequence[str] = ()
+    #: Every in-repo runner authors ``NextStep``; a bare ``str`` is accepted
+    #: for a dynamic/extension runner outside this repo (same rationale as
+    #: ``Binding`` above) and for test fixtures that stand in for one.
+    actions: Sequence[NextStep | str] = ()
     period: str | None = None
 
 
@@ -224,6 +235,37 @@ class OutputColumn:
     """How to render this column's amounts; ``None`` means it is not money."""
     polarity: Polarity | None = None
     """Required when ``money_kind`` is ``"delta"``; refused on the other kinds."""
+    numeric: bool = False
+    """A bare number that is not money — a count, a rate, an interval in days.
+
+    Right-aligned and never folded, like a money column
+    (``cli_register.py``'s ``numeric_columns`` feeds ``build_rows(numeric=...)``),
+    but through the plain-number path so `format_money` never rounds or signs
+    it, and printed exactly as stored — thousands grouping is ``grouped``
+    below. Mutually exclusive with ``money_kind`` per `.claude/rules/cli.md`'s
+    "Two declarations": every column holding a bare number declares one or the
+    other, never both.
+    """
+    grouped: bool = False
+    """A ``numeric`` column that is a count, grouped by thousands.
+
+    ``1,381`` beside an amount that reads ``1,381.00``. Declared on top of
+    ``numeric`` rather than inferred from the type, because a ``DECIMAL`` FX
+    rate and an integer row count share a Python type but not a convention:
+    `.claude/rules/cli.md` reserves grouping for counts and keeps a rate or a
+    per-unit price out of it. Requires ``numeric``.
+    """
+    percent: bool = False
+    """A ``numeric`` column storing a ratio, rendered as a percent: ``0.094`` → ``+9.4%``.
+
+    Text only — ``--output json`` and MCP carry the stored fraction. Requires
+    ``numeric``; exclusive with ``grouped``, since a ratio is not a count.
+    """
+    uncategorized: bool = False
+    """A NULL here means no category was assigned; the text table prints it
+    ``Uncategorized``. Declared rather than read off ``DataClass.CATEGORY``, which
+    also covers ``subcategory``, where a NULL means something else. Text only.
+    """
     currency_basis: CurrencyBasis | None = None
     """``None`` (default) — this amount is in the row's own currency, the one
     ``ReportSemantics.currency`` names, and ``convert_records`` prices it from
@@ -293,6 +335,26 @@ class OutputColumn:
             raise ValueError(
                 f"money column {self.name!r} is not a delta, so its polarity "
                 f"{self.polarity!r} would be ignored rather than applied"
+            )
+        if self.numeric and self.money_kind is not None:
+            raise ValueError(
+                f"column {self.name!r} declares both money_kind and numeric; "
+                "a column holding a bare number is one or the other"
+            )
+        if self.grouped and not self.numeric:
+            raise ValueError(
+                f"column {self.name!r} declares grouped without numeric; "
+                "thousands grouping refines a bare-number column"
+            )
+        if self.percent and (not self.numeric or self.grouped):
+            raise ValueError(
+                f"column {self.name!r} declares percent without numeric, or with "
+                "grouped; a percent refines a bare-number column that is not a count"
+            )
+        if self.uncategorized and self.data_class is not DataClass.CATEGORY:
+            raise ValueError(
+                f"column {self.name!r} declares uncategorized but its data_class "
+                f"{self.data_class.value!r} is not category"
             )
         if self.currency_basis is not None and self.data_class not in MONEY_CLASSES:
             raise ValueError(

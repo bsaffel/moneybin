@@ -159,7 +159,7 @@ def _insert_pdf_import(
     """Insert a PDF import_log row (bypasses ImportService for test speed)."""
     db.execute(
         """
-        INSERT INTO raw.import_log (
+        INSERT INTO app.import_log (
             import_id, source_file, source_type, source_origin,
             account_names, status
         ) VALUES (?, ?, 'pdf', ?, '[]', ?)

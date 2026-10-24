@@ -1,0 +1,1 @@
+`moneybin sync pull` now reports a concise outcome receipt with institution results, consequential changes, attention, and recovery commands. Partial, failed post-load refresh, and interrupted pulls no longer read as overall success.

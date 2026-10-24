@@ -69,6 +69,7 @@ def test_review_help_includes_standard_flags() -> None:
     out = result.output
     assert "--status" in out
     assert "--type" in out
+    assert "--no-pager" in out
 
 
 @patch("moneybin.cli.commands.transactions.review.get_database")

@@ -11,7 +11,7 @@ Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client
 ## Background
 
 - **Originating finding:** After importing 5 OFX accounts, `core.dim_accounts` showed only 3 of the 5 — the materialized FULL dim hadn't been refreshed since the most recent imports. `core.fct_transactions` (a view) correctly showed all 5. No surface warning; the FK audit only runs on `sqlmesh run`.
-- **Existing primitive:** every raw table already carries a landing stamp (`loaded_at`, `created_at`, or `extracted_at`), and SQLMesh already records, per model, the intervals it actually backfilled. Comparing the newest landing stamp against the *least recently built* model is the staleness heuristic. The original form compared `MAX(raw.import_log.completed_at)` against `MAX(core.dim_accounts.updated_at)`; PR #366 replaced it, because a dim-derived signal is blind to every source that does not write `dim_accounts` — manual entry among them. PR #366's own form read `sqlmesh._environments.finalized_ts`, which SQLMesh advances on *any* promotion of `prod`: restating one unrelated model reported the whole warehouse fresh. The apply side is now per-model, so a model nobody rebuilt keeps its true age.
+- **Existing primitive:** every raw table already carries a landing stamp (`loaded_at`, `created_at`, or `extracted_at`), and SQLMesh already records, per model, the intervals it actually backfilled. Comparing the newest landing stamp against the *least recently built* model is the staleness heuristic. The original form compared `MAX(app.import_log.completed_at)` against `MAX(core.dim_accounts.updated_at)`; PR #366 replaced it, because a dim-derived signal is blind to every source that does not write `dim_accounts` — manual entry among them. PR #366's own form read `sqlmesh._environments.finalized_ts`, which SQLMesh advances on *any* promotion of `prod`: restating one unrelated model reported the whole warehouse fresh. The apply side is now per-model, so a model nobody rebuilt keeps its true age.
 - **Related rules:** `.claude/rules/mcp.md` (thin tools over services, response envelope, sensitivity tiers), `.claude/rules/cli.md` (CLI is a first-class agent surface; `--output json` parity; non-interactive flag parity), `AGENTS.md` (`run_transforms()` lives in `ImportService` today; moves to the new `TransformService`).
 
 ## Requirements
@@ -23,7 +23,7 @@ Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client
 5. If the refresh itself fails after successful imports, raw rows stay durable; the envelope reports `transforms_applied=false` with a generic error message and an action hint to retry.
 6. `import_inbox_sync` internally builds the discovered-file list and calls the same batch path. New `refresh` parameter on the MCP tool and `--no-refresh` flag on the CLI.
 7. CLI command renamed to `moneybin import files PATHS...` (variadic). `--output json` parity for all transform commands and the renamed import command per `cli.md`.
-8. `system_status` adds a `transforms` block: `{"pending": bool, "last_apply_at": iso|None}`. Pending heuristic: the newest landing stamp across all 17 raw tables a SQLMesh model reads (`_RAW_LANDING_COLUMNS`, guarded set-equal against `raw_tables_read_by_models()`) is newer than `MIN(last_executed_at)` over the rows of `meta.model_freshness` a refresh actually rebuilds (`_UNREBUILT_MODEL_KINDS` excludes the symbolic kinds plus `VIEW` and `SEED`) — the oldest model execution, so an untouched model holds the comparison down. Rows belonging to a reverted or failed `raw.import_log` batch are excluded. When pending, `actions` includes a hint to run `refresh_run`. No SQLMesh Context init on the `system_status` hot path.
+8. `system_status` adds a `transforms` block: `{"pending": bool, "last_apply_at": iso|None}`. Pending heuristic: the newest landing stamp across all 17 raw tables a SQLMesh model reads (`_RAW_LANDING_COLUMNS`, guarded set-equal against `raw_tables_read_by_models()`) is newer than `MIN(last_executed_at)` over the rows of `meta.model_freshness` a refresh actually rebuilds (`_UNREBUILT_MODEL_KINDS` excludes the symbolic kinds plus `VIEW` and `SEED`) — the oldest model execution, so an untouched model holds the comparison down. Rows belonging to a reverted or failed `app.import_log` batch are excluded. When pending, `actions` includes a hint to run `refresh_run`. No SQLMesh Context init on the `system_status` hot path.
 9. A new `TransformService` owns SQLMesh interaction. `TransformService.apply()` replaces the prior inline transform call; source-priority seeding and `refresh_views` calls migrate with it. `ImportService` invokes the full refresh pipeline via `orchestration.refresh.refresh(db)` at end-of-batch (PR #151), which calls `TransformService(db).apply()` along with matching and categorization steps. `ImportService.run_transforms()` is retained as a thin compatibility shim.
 10. A scenario test imports multiple files and asserts `MAX(dim_accounts.updated_at)` advances and all imported accounts appear in `accounts` — regression guard for the originating finding.
 11. Metrics: a new `IMPORT_BATCH_SIZE` histogram per `AGENTS.md` observability requirement. The existing `SQLMESH_RUN_DURATION_SECONDS` is reused; no per-pending gauge (derived signal, not state to scrape).
@@ -39,7 +39,7 @@ Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client
 No schema changes. The spec leans on three existing columns/tables:
 
 - Raw landing stamps — `loaded_at`, `created_at`, or `extracted_at`, one per raw table, already populated by each loader.
-- `raw.import_log` — `completed_at` (with `status='complete'`) drives `latest_import_at`; `status IN ('reverted','failed')` excludes abandoned batches from the landing scan.
+- `app.import_log` — `completed_at` (with `status='complete'`) drives `latest_import_at`; `status IN ('reverted','failed')` excludes abandoned batches from the landing scan.
 - `meta.model_freshness.last_executed_at` — per-model backfill time, sourced from `sqlmesh._intervals`; read by a direct `SELECT` on the `system_status` hot path. Context init stays off that path; it costs seconds and opens a second state connection.
 
 ## Implementation Plan
@@ -180,7 +180,7 @@ flowchart TD
     SSvc --> TSF[TransformService.freshness]
     TSF -->|MAX updated_at for last_apply_at| Core
     TSF -->|MAX landing stamp, 17 tables| RawL[(raw.* landing columns)]
-    TSF -->|exclude reverted/failed batches| ImpLog[(raw.import_log)]
+    TSF -->|exclude reverted/failed batches| ImpLog[(app.import_log)]
     TSF -->|MIN last_executed_at, rebuildable models| SMState[(meta.model_freshness)]
 ```
 

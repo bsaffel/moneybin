@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # direct scans plus receipt-backed coverage equal `raw_tables_read_by_models()`,
 # so a new model input cannot go silently unwatched.
 _RAW_LANDING_COLUMNS: dict[str, str] = {
+    "exchange_rate_coverage": "loaded_at",
     "exchange_rates": "loaded_at",
     "ofx_accounts": "loaded_at",
     "ofx_balances": "loaded_at",
@@ -177,6 +178,12 @@ _SYMBOLIC_MODEL_KINDS: frozenset[str] = frozenset({"EMBEDDED", "EXTERNAL"})
 # What remains is exactly the set a refresh rebuilds: FULL today, plus the
 # INCREMENTAL_* kinds `apply()`'s `run()` step already covers.
 _UNREBUILT_MODEL_KINDS: frozenset[str] = _SYMBOLIC_MODEL_KINDS | {"SEED", "VIEW"}
+
+# The start every restatement plan passes. Without one SQLMesh takes the first
+# plan's day and refuses a plan whose end (now) precedes it, which a write made
+# under an earlier clock hits. No model reads the plan's dates, so it changes no
+# data: a FULL model rebuilds whole whatever the range.
+_RESTATE_START = "2000-01-01"
 
 
 def _oldest_execution_scan(model_count: int) -> str:
@@ -351,6 +358,7 @@ class TransformService:
                     if full_models and not initial_plan_backfills_full_models:
                         ctx.plan(
                             restate_models=full_models,
+                            start=_RESTATE_START,
                             auto_apply=True,
                             no_prompts=True,
                         )
@@ -428,6 +436,7 @@ class TransformService:
                 with sqlmesh_context(self._db) as ctx:
                     ctx.plan(
                         restate_models=requested,
+                        start=_RESTATE_START,
                         auto_apply=True,
                         no_prompts=True,
                     )
@@ -662,7 +671,7 @@ class TransformService:
                 f"WHERE status IN ('complete', 'partial')"  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
-            # CatalogException when raw.import_log not yet created (pre-first-import)
+            # CatalogException when app.import_log not yet created (pre-first-import)
             return None
         return row[0] if row and row[0] is not None else None
 
@@ -701,13 +710,20 @@ class TransformService:
         return row[0] if row and row[0] is not None else None
 
     def _present_raw_landing_tables(self) -> tuple[frozenset[str], bool]:
-        """Declared landing tables this catalog actually has, plus import_log."""
+        """Declared raw landing tables this catalog actually has, plus import_log.
+
+        import_log lives in ``app``, not ``raw`` (MB-255), so the presence
+        check spans both schemas in one query rather than two round trips.
+        """
         rows = self._db.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_catalog = current_database() AND table_schema = 'raw'"
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            "WHERE table_catalog = current_database() AND table_schema IN ('raw', 'app')"
         ).fetchall()
-        names = {str(row[0]) for row in rows}
-        return frozenset(names & set(_RAW_LANDING_COLUMNS)), "import_log" in names
+        raw_names = {str(name) for schema, name in rows if schema == "raw"}
+        has_import_log = any(
+            schema == "app" and name == "import_log" for schema, name in rows
+        )
+        return frozenset(raw_names & set(_RAW_LANDING_COLUMNS)), has_import_log
 
     def _oldest_model_execution_at(self) -> datetime | None:
         """When the least-recently-rebuilt SQLMesh model was last backfilled.
