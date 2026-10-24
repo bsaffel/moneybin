@@ -1341,7 +1341,7 @@ def test_a_feed_key_grant_is_verified_inside_the_write_transaction(
 ) -> None:
     """The bind path must check its grant where the merge path does — in the txn.
 
-    ``mcp.md`` requires a confirmation grant be verified "against live state
+    ``services.md`` requires a confirmation grant be verified "against live state
     inside the same write transaction, immediately before the first mutation" and
     forbids verifying and then opening a separate one. ``accept_merge`` obeys via
     ``verify_accept``; the feed-key branch verified in the MCP layer and *then*

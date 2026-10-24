@@ -1,5 +1,5 @@
 ---
-description: "MCP server: tool taxonomy, response envelope, sensitivity tiers, service layer architecture"
+description: "MCP server: tool taxonomy, response envelope, sensitivity tiers, adapter layering"
 paths: ["src/moneybin/mcp/**"]
 ---
 
@@ -231,7 +231,7 @@ and [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
 
 ## Service-layer rules
 
-Data access, error messages, entity resolution, and destructive confirmation live in [`services.md`](services.md); it loads for `services/**` and `mcp/**`.
+Data access, error messages, entity resolution, and destructive confirmation live in [`services.md`](services.md); it loads for `services/**`, `mcp/**`, and `cli/**`.
 
 ## Surface change discipline
 

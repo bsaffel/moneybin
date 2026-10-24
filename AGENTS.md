@@ -165,7 +165,7 @@ Security-critical parameters (crypto cost factors, key lengths, salt sizes) defi
 ## Security
 
 - **Encryption at rest**: AES-256-GCM on all DuckDB databases. See [`privacy-data-protection.md`](docs/specs/privacy-data-protection.md).
-- **No PII or financial data in logs.** The permitted list is `privacy-data-protection.md` §"What CAN appear" — record counts, entity ids, masked identifiers, category labels and institution names, status codes and operation names, and file paths (never file contents). Nothing outside it. The one exception — masked account labels, and its closed three-surface list — lives in `.claude/rules/identifiers.md` → "Account identifiers".
+- **No PII or financial data in logs.** The permitted list is `privacy-data-protection.md` §"What CAN appear" — record counts, entity ids, masked identifiers, category labels and institution names, status codes and operation names, and file paths (never file contents). Nothing outside it. One exception: a masked account label (`****1234`) in a refusal message — and masking does not make every key safe. The bound and its closed three-surface list live in `.claude/rules/identifiers.md` → "Account identifiers".
 - **Public text is stricter than logs.** Branch names, PR and issue titles and bodies, review comments, and commit messages pass through no sanitizer and are effectively permanent. The log list above does *not* transfer: it permits institution names and masked identifiers, which are exactly what must never identify a real holding in public. See `.claude/rules/branching.md` → "Branch names, PR and issue text, and comments are a public surface".
 - **Parameterized SQL** with `?` placeholders. See `.claude/rules/security.md` for full standards.
 
@@ -188,7 +188,7 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 | `documentation.md` | Diagram conventions (Mermaid over ASCII) |
 | `reports.md` | The SQL-backed default (a non-SQL report kind needs approval before you write it), the `@report` contract, declared privacy classes + derivation/CI verification, the `reports.*`-means-user-facing boundary — loads when touching `reports/**` or SQLMesh `reports` models |
 | `shipping.md` | Post-implementation checklist (CHANGELOG, roadmap, features, README, INDEX) — loads when editing those |
-| `surface-design.md` | Cross-surface operation-shape taxonomy, verb vocabulary, audience layering — loads when touching mcp/cli code or the moneybin-mcp/cli/capabilities + mcp-architecture specs |
+| `surface-design.md` | Cross-surface operation-shape taxonomy, verb vocabulary, audience layering — loads when touching mcp/cli/services code or the moneybin-mcp/cli/capabilities + mcp-architecture specs |
 | `column-ordering.md` | Column order on every dataset surface: dbt data-type order in `prep`/`core`, grain-first in `reports`, statement order inside the measure block, the SQL projection as the one source consumers read — loads when touching SQLMesh models, report specs, or exports |
 
 Unscoped rules (`design-principles.md`, `branching.md`, `sandboxing.md`, `agent-experience.md`) load every session.

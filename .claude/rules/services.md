@@ -1,6 +1,6 @@
 ---
 description: "Service layer: data access, error messages, entity resolution, destructive confirmation"
-paths: ["src/moneybin/services/**", "src/moneybin/mcp/**"]
+paths: ["src/moneybin/services/**", "src/moneybin/mcp/**", "src/moneybin/cli/**"]
 ---
 
 # Service Layer

@@ -79,4 +79,4 @@ The sandbox is a guard, not an obstacle. Default to fixing the policy, not bypas
 
 ## Known cases — don't re-derive these
 
-Before bypassing the sandbox or retrying a failed command, check [`.claude/references/sandbox-known-cases.md`](../references/sandbox-known-cases.md): most failures that look like sandbox blocks are listed there with the real fix.
+Before writing a compound command, formatting SQL, bypassing the sandbox, or retrying a failed command, check [`.claude/references/sandbox-known-cases.md`](../references/sandbox-known-cases.md): most failures that look like sandbox blocks are listed there with the real fix.

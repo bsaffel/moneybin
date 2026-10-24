@@ -484,7 +484,7 @@ class SecurityLinksService:
         auto-reject the ref's sibling candidates — accepting one answers them all.
 
         ``verify_accept`` is the confirmation-grant check, and it runs HERE rather
-        than in the caller for the reason ``mcp.md`` gives: a grant is verified
+        than in the caller for the reason ``services.md`` gives: a grant is verified
         against live state inside the same write transaction, immediately before
         the first mutation, never verified ahead of a transaction opened
         afterwards. The gap matters because of the sibling auto-reject below —
