@@ -172,47 +172,11 @@ provenance-aware replay.
 
 ## Durable data semantics
 
-Apply these contracts when changing ingestion, warehouse models, or result
-surfaces. Their linked homes carry the implementation details and limitations.
-
-1. **Types preserve meaning.** Keep business dates distinct from instants and
-   preserve meaningful identifier representation, including leading zeros.
-   Storage resolution does not establish source precision. Follow the
-   [UTC contract](../../docs/specs/warehouse-utc.md).
-2. **Precision has named boundaries.** Keep authoritative money arithmetic exact;
-   state the supported scale and rounding point separately for amounts,
-   quantities, prices, and rates. Preserve original currency and conversion
-   provenance. Follow [database numeric rules](database.md#numeric-boundaries).
-3. **Grain precedes joins and aggregation.** Describe one row, its key, expected
-   join multiplicity, and additive dimensions in the model's existing
-   description. Reuse constraints and SQLMesh audits; see
-   [model grain](../../docs/specs/architecture-shared-primitives.md).
-4. **Identity outlives labels.** Namespace native references and preserve
-   accepted bindings and curation when identity inputs change. Follow
-   [identifier conventions](identifiers.md) and the existing
-   [document-binding design](../../docs/specs/document-account-binding.md);
-   a draft design does not authorize its migration.
-5. **Evidence survives reinterpretation.** Keep corrections and removals
-   attributable under an explicit source retention/purge contract. Derive
-   current state from retained evidence where that contract supports it. Use
-   [existing observation primitives](../../docs/specs/source-observations.md).
-6. **Replay preserves business effect and multiplicity.** Repeated delivery must
-   not duplicate effects or erase legitimate identical transactions. Commit
-   ingestion and recovery evidence together before acknowledgment; preserve
-   [sync recovery boundaries](../../docs/specs/sync-simplefin.md).
-7. **Recovery includes irreplaceable state.** Rebuilding derived data requires
-   retained source evidence, authoritative App state, compatible code/reference
-   data, and separately retained keys. Verify semantic values and decisions,
-   not only counts. A provider re-fetch cannot recover expired history; follow
-   [migration and recovery scope](../../docs/specs/database-migration.md).
-8. **Uncertainty reaches the answer.** Preserve missing, zero, unavailable,
-   empty, and not-assessed distinctions. Declare the source, account, and date
-   scope of a completeness claim; an assessment of one source cannot establish
-   universal coverage. Use the [existing report contract](reports.md).
-9. **Clocks retain their roles.** Business occurrence, source as-of/update,
-   retrieval, local arrival, and row freshness answer different questions.
-   Follow the [row freshness convention](../../docs/specs/core-updated-at-convention.md);
-   UTC normalization alone does not make them interchangeable.
+For ingestion or warehouse changes, read the relevant source spec and
+[database](database.md), [identity](identifiers.md), and [report](reports.md)
+rules. Warehouse contracts define
+[grain and aggregation](../../docs/specs/architecture-shared-primitives.md#grain-keys-joins-and-aggregation)
+and [clock selection](../../docs/specs/core-updated-at-convention.md#distinct-clocks).
 
 ## Depth
 

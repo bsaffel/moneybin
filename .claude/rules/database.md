@@ -246,27 +246,18 @@ Claude defaults to PostgreSQL syntax. Use DuckDB equivalents:
 
 ## Numeric boundaries
 
-The types below define supported storage precision, not arbitrary currency
-minor-unit support. Preserve source amount/currency evidence when rejecting or
-withholding an unsupported value; make that outcome visible rather than silently
-rounding it into a valid fact. Source-specific policies remain in their specs.
-
-Keep authoritative arithmetic exact through intermediate operations and data
-frame boundaries. DuckDB DECIMAL division returns floating point; casting the
-result back cannot restore lost digits. Use a proven exact allocation boundary
-and round once under the domain's policy. Preserve Decimal values across pandas
-with the existing VARCHAR/Decimal conversion pattern when pandas is required.
-
-Check values near rounding ties and the declared type limits. Money, quantity,
-price, and rate scales differ; intermediate precision and residual allocation
-must preserve the accounting total. Domain rounding belongs in
-[investment accounting](../../docs/specs/investments-data-model.md) and
-[multi-currency accounting](../../docs/specs/multi-currency.md).
-
-The response envelope currently encodes Decimal as JSON numbers through binary
-floating point; it does not promise every stored decimal digit. Exact consumers
-can use decimal-preserving CSV or Parquet exports. Changing machine numeric
-representation is a separate public-contract decision.
+- DuckDB DECIMAL division returns floating point; casting back cannot recover
+  digits. Keep authoritative arithmetic exact and round allocations once. For
+  pandas, use the existing VARCHAR/Decimal conversion to preserve cents.
+- Amount, quantity, price and rate scales differ. Follow the
+  [investment](../../docs/specs/investments-data-model.md) and
+  [currency](../../docs/specs/multi-currency.md) rounding policies; test ties,
+  type limits and residual allocation totals.
+- Unsupported source precision needs an explicit source policy: preserve the
+  original amount/currency and disclose withheld values rather than silently
+  rounding them into valid facts.
+- Numeric JSON uses binary floating point; exact consumers need decimal-preserving
+  CSV or Parquet. Changing JSON representation is a separate contract decision.
 
 ## Anti-Patterns
 

@@ -48,16 +48,17 @@ Three corollaries:
 
 ### Distinct clocks
 
-Choose the clock that answers the consumer's question:
+For clock definitions, see [Financial time](../../CONTEXT.md#financial-time).
+The existing fields map to those roles as follows:
 
-| Clock | Meaning | Existing examples |
-|---|---|---|
-| Business or effective date | The source-defined calendar day to which a financial fact belongs. | Transaction posting date; `balance_date`. |
-| Source update or as-of time | When the source says a record changed or a value was observed. Update time and observation time retain their field-specific meanings. | Plaid `last_updated_datetime`; SimpleFIN `balance_at`. |
-| Broker fetch time | When the sync server obtained the source response, independent of client arrival. | SimpleFIN `fetched_at`; Plaid `extracted_at`. |
-| Local arrival time | When MoneyBin received or loaded the observation. | Raw `loaded_at`. |
-| Row freshness | Latest contributing per-row input timestamp under this model's formula, including applicable user-state changes. | Core `updated_at`. |
-| Model freshness | Definition, metadata-apply or execution time for a model, each exposed separately. | `meta.model_freshness.last_changed_at`, `last_applied_at`, `last_executed_at`. |
+| Clock | Existing fields |
+|---|---|
+| Business date | Transaction posting date; `balance_date`. |
+| Source update / source as-of time | Plaid `last_updated_datetime` / SimpleFIN `balance_at`. |
+| Broker fetch time | SimpleFIN `fetched_at`; Plaid `extracted_at`. |
+| Local arrival time | Raw `loaded_at`. |
+| Row freshness | Core `updated_at`. |
+| Model freshness | `meta.model_freshness.last_changed_at`, `last_applied_at`, `last_executed_at`. |
 
 A recent arrival or execution can contain an old source observation. Use the
 source's as-of time to assess source staleness; `updated_at` alone cannot answer
