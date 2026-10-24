@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -13,7 +14,12 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import SPENDING_COMPARES, resolve_window
+from moneybin.reports.definitions._shared import (
+    SPENDING_COMPARES,
+    resolve_window,
+    validate_month,
+)
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.tables import REPORTS_SPENDING_TREND
 
 #: The comparison a caller gets without asking. Named once because the runner
@@ -83,14 +89,22 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
         "compare": DataClass.TXN_TYPE,
     },
     columns=(
-        OutputColumn("category", "Spending category.", DataClass.CATEGORY),
+        OutputColumn(
+            "category", "Spending category.", DataClass.CATEGORY, uncategorized=True
+        ),
         OutputColumn(
             "currency_code",
             "ISO 4217 currency this row is denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
-        OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "txn_count",
+            "Outflow transaction count.",
+            DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
+        ),
         OutputColumn(
             "total_spend",
             "Absolute outflow in the month and category.",
@@ -120,6 +134,8 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "mom_pct",
             "Month-over-month delta divided by previous-month spend.",
             DataClass.AGGREGATE,
+            numeric=True,
+            percent=True,
         ),
         OutputColumn(
             "prev_year_spend",
@@ -138,6 +154,8 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
             "yoy_pct",
             "Year-over-year delta divided by prior-year spend.",
             DataClass.AGGREGATE,
+            numeric=True,
+            percent=True,
         ),
         OutputColumn(
             "trailing_3mo_avg",
@@ -218,10 +236,16 @@ def spending_trend(
     # (`_default_columns`), and the raise is reachable.
     if compare not in SPENDING_COMPARES:
         raise ValueError(f"Unknown compare: {compare}")
+    if from_month is not None:
+        validate_month(from_month, "from_month")
+    if to_month is not None:
+        validate_month(to_month, "to_month")
     from_month, to_month, period, hint = resolve_window(
         from_month,
         to_month,
+        reporting_timezone=ProfileSettingsRepo(db).get_reporting_timezone(),
         report_id="core:spending_trend",
+        cli=("reports", "spending-trend"),
     )
 
     ranked = f"""
@@ -268,11 +292,23 @@ def spending_trend(
         ORDER BY year_month, rank_in_currency, currency_code
     """  # noqa: S608  # subquery built from TableRef + allowlisted filters
 
-    actions = [
-        "Run reports(report_id='core:spending_trend', "
-        "parameters={'category': '<name>'}) to filter to one category",
-        "Run reports(report_id='core:cash_flow') for inflow, outflow, and net",
-        "Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="filtering to one category",
+            cli=("reports", "spending-trend", "--category", "<name>"),
+            mcp="reports(report_id='core:spending_trend', "
+            "parameters={'category': '<name>'})",
+        ),
+        NextStep(
+            reason="inflow, outflow, and net",
+            cli=("reports", "cash-flow"),
+            mcp="reports(report_id='core:cash_flow')",
+        ),
+        NextStep(
+            reason="recurring charge patterns",
+            cli=("reports", "recurring-subscriptions"),
+            mcp="reports(report_id='core:recurring_subscriptions')",
+        ),
     ]
     if hint:
         actions.insert(0, hint)

@@ -12,7 +12,7 @@ removed, all other rows survive.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -36,7 +36,7 @@ _SEED_ROWS: list[tuple[int, str, str, bool, int, datetime]] = [
         "a" * 64,
         True,
         12,
-        datetime(2025, 11, 1, 10, 0, 0),
+        datetime(2025, 11, 1, 10, 0, 0, tzinfo=UTC),
     ),
     (
         3,
@@ -44,7 +44,7 @@ _SEED_ROWS: list[tuple[int, str, str, bool, int, datetime]] = [
         "b" * 64,
         True,
         18,
-        datetime(2025, 11, 2, 10, 0, 0),
+        datetime(2025, 11, 2, 10, 0, 0, tzinfo=UTC),
     ),
     (
         4,
@@ -52,7 +52,7 @@ _SEED_ROWS: list[tuple[int, str, str, bool, int, datetime]] = [
         "c" * 64,
         True,
         9,
-        datetime(2025, 11, 3, 10, 0, 0),
+        datetime(2025, 11, 3, 10, 0, 0, tzinfo=UTC),
     ),
     (
         5,
@@ -60,7 +60,7 @@ _SEED_ROWS: list[tuple[int, str, str, bool, int, datetime]] = [
         "d" * 64,
         True,
         7,
-        datetime(2025, 11, 4, 10, 0, 0),
+        datetime(2025, 11, 4, 10, 0, 0, tzinfo=UTC),
     ),
     (
         6,
@@ -68,7 +68,7 @@ _SEED_ROWS: list[tuple[int, str, str, bool, int, datetime]] = [
         "e" * 64,
         True,
         24,
-        datetime(2025, 11, 5, 10, 0, 0),
+        datetime(2025, 11, 5, 10, 0, 0, tzinfo=UTC),
     ),
     (
         7,
@@ -76,7 +76,7 @@ _SEED_ROWS: list[tuple[int, str, str, bool, int, datetime]] = [
         "f" * 64,
         True,
         31,
-        datetime(2025, 11, 6, 10, 0, 0),
+        datetime(2025, 11, 6, 10, 0, 0, tzinfo=UTC),
     ),
 ]
 

@@ -184,8 +184,8 @@ status           TEXT     NOT NULL,      -- accepted | reversed
 decided_by       TEXT     NOT NULL,      -- auto | user | system
                                          --   ('user' = human OR agent ratification;
                                          --    actor_kind is runtime-only, not a value)
-decided_at       TIMESTAMP NOT NULL,
-reversed_at      TIMESTAMP,
+decided_at       TIMESTAMPTZ NOT NULL,
+reversed_at      TIMESTAMPTZ,
 reversed_by      TEXT
 ```
 
@@ -254,8 +254,8 @@ decided_by             TEXT  NOT NULL,     -- auto | user
 match_reason           TEXT,
 provisional_display_name TEXT,             -- both names as they stood when the decision was made;
 candidate_display_name   TEXT,             --   NULL while pending, when they resolve live
-decided_at             TIMESTAMP NOT NULL,
-reversed_at            TIMESTAMP,
+decided_at             TIMESTAMPTZ NOT NULL,
+reversed_at            TIMESTAMPTZ,
 reversed_by            TEXT
 ```
 
@@ -554,6 +554,34 @@ becomes `institution_name || ' ' || account_subtype || ' …' || last_four`, whe
 `last_four` is `COALESCE(`user-set `app.account_settings.last_four`, per-source
 **derived** last4`)` — **not user-set only** (corrected in Decision 8; the
 user-set-only reading is the live display + bridge bug).
+
+### Settings follow an accepted merge
+
+An accepted account link also reconciles `app.account_settings` from the
+absorbed account onto the survivor, in the same transaction that repoints the
+links. One rule applies per field: **the surviving account wins, the duplicate
+fills gaps**. A value only the absorbed account holds moves to the survivor; a
+value only the survivor holds stays; where both hold different values the
+survivor keeps its own. Nine fields follow that rule: `display_name`,
+`official_name`, `last_four`, `account_subtype`, `holder_category`,
+`currency_code`, `credit_limit`, `default_cost_basis_method`, and
+`investment_source_type`. `archived`, `archived_at`, and `include_in_net_worth`
+never move, because users archive or exclude a duplicate before merging it and
+carrying either flag over would hide or uncount the real account.
+
+The absorbed account's settings row is left in place, so undoing the merge has
+nothing to un-delete. Nothing is written when nothing would change. When the
+survivor's `investment_source_type` changes, its change time is stamped and the
+investment ledger is restated once the merge commits, as `accounts set` does; a
+moved currency or cost-basis method restates FX accounting. The confirmation
+for the merge (CLI prompt, MCP elicitation and grant, identity batch) names the
+fields that will move and the conflicting ones the survivor keeps, never their
+values, and the approval binds to that plan.
+
+Undoing a merge that created the survivor's first settings row restores it to
+"no settings": a row that carries an investment source change time is reset in
+place to the table defaults rather than deleted, with the change time advanced
+because the source choice clears.
 
 ## `transaction_id` stability under a mutable `account_id` (ADR-015)
 

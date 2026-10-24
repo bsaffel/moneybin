@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -11,7 +12,12 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import CASHFLOW_GROUPINGS, resolve_window
+from moneybin.reports.definitions._shared import (
+    CASHFLOW_GROUPINGS,
+    resolve_window,
+    validate_month,
+)
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.tables import REPORTS_CASH_FLOW
 
 
@@ -40,7 +46,9 @@ from moneybin.tables import REPORTS_CASH_FLOW
     columns=(
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
-        OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
+        OutputColumn(
+            "category", "Transaction category.", DataClass.CATEGORY, uncategorized=True
+        ),
         OutputColumn(
             "currency_code",
             "ISO 4217 currency these sums are denominated in; null means unknown.",
@@ -48,7 +56,11 @@ from moneybin.tables import REPORTS_CASH_FLOW
         ),
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn(
-            "txn_count", "Non-transfer transaction count.", DataClass.AGGREGATE
+            "txn_count",
+            "Non-transfer transaction count.",
+            DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
         OutputColumn(
             "inflow",
@@ -134,10 +146,16 @@ def cash_flow(
     """
     if by not in CASHFLOW_GROUPINGS:
         raise ValueError(f"Unknown by: {by}")
+    if from_month is not None:
+        validate_month(from_month, "from_month")
+    if to_month is not None:
+        validate_month(to_month, "to_month")
     from_month, to_month, period, hint = resolve_window(
         from_month,
         to_month,
+        reporting_timezone=ProfileSettingsRepo(db).get_reporting_timezone(),
         report_id="core:cash_flow",
+        cli=("reports", "cash-flow"),
     )
 
     # Assembled in Rule B order — grain key, label, dimensions, then the date —
@@ -195,10 +213,18 @@ def cash_flow(
         ORDER BY year_month, rank_in_currency, currency_code
     """  # noqa: S608  # select_cols allowlist
 
-    actions = [
-        "Rerun reports(report_id='core:cash_flow', "
-        "parameters={'by': 'category'}) to regroup by category",
-        "Run reports(report_id='core:spending_trend') for outflow-only MoM and YoY trends",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="regrouping by category",
+            cli=("reports", "cash-flow", "--by", "category"),
+            mcp="reports(report_id='core:cash_flow', parameters={'by': 'category'})",
+            verb="Rerun",
+        ),
+        NextStep(
+            reason="outflow-only MoM and YoY trends",
+            cli=("reports", "spending-trend"),
+            mcp="reports(report_id='core:spending_trend')",
+        ),
     ]
     if hint:
         actions.insert(0, hint)

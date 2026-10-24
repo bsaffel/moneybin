@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   fragments:
@@ -18,10 +19,26 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Validate fragments and release scope
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          SKIP_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
-          RELEASE_PREPARATION: ${{ contains(github.event.pull_request.labels.*.name, 'release-preparation') }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
+          # The event payload's labels are a snapshot taken when the event
+          # fired; read them as they are now. Dependabot PRs never depend on a
+          # label: they are classified from their diff below.
+          if ! LABELS="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.labels[].name')"; then
+            echo "Could not read the labels of PR #${PR_NUMBER}, so skip-changelog and release-preparation cannot be evaluated. Re-run this job." >&2
+            exit 1
+          fi
+          SKIP_CHANGELOG=false
+          RELEASE_PREPARATION=false
+          if grep -qx 'skip-changelog' <<< "$LABELS"; then
+            SKIP_CHANGELOG=true
+          fi
+          if grep -qx 'release-preparation' <<< "$LABELS"; then
+            RELEASE_PREPARATION=true
+          fi
           # actions/checkout builds the ephemeral GitHub merge commit for
           # pull_request events: HEAD^1 is the base branch's current tip and
           # HEAD^2 is the PR head. github.event.pull_request.base.sha is only
@@ -36,6 +53,12 @@ jobs:
             exit 1
           fi
           BASE_SHA="$(git rev-parse HEAD^1)"
+          # Label-based exemption left Dependabot PRs red on open (#671, #713).
+          # Its author and diff are fixed when the PR opens; decide from those.
+          DEPENDENCY_UPDATE="$(uv run --locked python scripts/check_changelog_exemption.py --author "$PR_AUTHOR" --base "$BASE_SHA" --head HEAD)"
+          if [ "$DEPENDENCY_UPDATE" = "true" ]; then
+            SKIP_CHANGELOG=true
+          fi
           if [ "$RELEASE_PREPARATION" != "true" ]; then
             if ! git diff --quiet "$BASE_SHA...HEAD" -- CHANGELOG.md; then
               echo 'CHANGELOG.md is assembled only in a release-preparation PR. Add a changelog.d fragment instead.'

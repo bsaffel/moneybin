@@ -9,7 +9,7 @@ would have narrowed the MCP field with every test still green.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -40,9 +40,9 @@ def _pdf_format(**overrides: Any) -> Any:
         "source": "detected",
         "version": 1,
         "times_used": 3,
-        "last_used_at": datetime(2026, 5, 30, 10, 15, 30),
-        "created_at": datetime(2026, 5, 1, 9, 0, 0),
-        "updated_at": datetime(2026, 5, 30, 10, 15, 30),
+        "last_used_at": datetime(2026, 5, 30, 10, 15, 30, tzinfo=UTC),
+        "created_at": datetime(2026, 5, 1, 9, 0, 0, tzinfo=UTC),
+        "updated_at": datetime(2026, 5, 30, 10, 15, 30, tzinfo=UTC),
     }
     defaults.update(overrides)
     return PdfFormat(**defaults)
@@ -51,13 +51,15 @@ def _pdf_format(**overrides: Any) -> Any:
 @pytest.mark.unit
 def test_row_keeps_the_full_last_used_timestamp() -> None:
     """`import_formats` has always emitted a timestamp — not the date half."""
-    assert pdf_format_row(_pdf_format()).last_used_at == "2026-05-30T10:15:30"
+    assert pdf_format_row(_pdf_format()).last_used_at == "2026-05-30T10:15:30.000000Z"
 
 
 @pytest.mark.unit
 def test_detail_keeps_the_full_last_used_timestamp() -> None:
     """`formats show` answers with the same precision the listing does."""
-    assert pdf_format_detail(_pdf_format()).last_used_at == "2026-05-30T10:15:30"
+    assert (
+        pdf_format_detail(_pdf_format()).last_used_at == "2026-05-30T10:15:30.000000Z"
+    )
 
 
 @pytest.mark.unit

@@ -21,10 +21,13 @@ A trailing ``-- text`` on a column definition line is attached by sqlglot to
 the ``ColumnDef`` expression and applied as ``COMMENT ON COLUMN``.
 """
 
+import json
 import logging
 from dataclasses import dataclass
+from functools import cache
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import sqlglot
@@ -48,6 +51,7 @@ _EXTRACTORS_DIR = Path(__file__).resolve().parent / "extractors"
 _PROVIDER_SCHEMA_DIRS: list[Path] = [
     _EXTRACTORS_DIR / "ofx" / "schema",
     _EXTRACTORS_DIR / "plaid" / "schema",
+    _EXTRACTORS_DIR / "simplefin" / "schema",
     _EXTRACTORS_DIR / "tabular" / "schema",
 ]
 
@@ -68,6 +72,64 @@ class _CommentPlan:
 _COMMENT_PLAN_CACHE: dict[tuple[Path, int, str], tuple[_CommentPlan, ...]] = {}
 
 
+_PACKAGE_DIR = Path(__file__).resolve().parent
+# Build-time comment plans keyed by package-relative DDL path. Regenerate with
+# ``make generate-schema-comment-plans``; a drift test fails CI when stale.
+COMMENT_PLANS_PATH = _SQL_DIR / "comment_plans.json"
+
+
+def plan_to_json(plan: tuple[_CommentPlan, ...]) -> list[dict[str, object]]:
+    """Serialise a comment plan to its JSON artifact shape."""
+    return [
+        {
+            "schema_name": p.schema_name,
+            "table_name": p.table_name,
+            "table_sql": p.table_sql,
+            "table_comment": p.table_comment,
+            "column_comments": [list(c) for c in p.column_comments],
+        }
+        for p in plan
+    ]
+
+
+def _plan_from_json(raw: list[dict[str, Any]]) -> tuple[_CommentPlan, ...]:
+    return tuple(
+        _CommentPlan(
+            schema_name=p["schema_name"],
+            table_name=p["table_name"],
+            table_sql=p["table_sql"],
+            table_comment=p["table_comment"],
+            column_comments=tuple((c[0], c[1]) for c in p["column_comments"]),
+        )
+        for p in raw
+    )
+
+
+@cache
+def _precomputed_plans() -> dict[str, Any]:
+    """Load the shipped plan artifact; empty when missing or unreadable."""
+    try:
+        data = json.loads(COMMENT_PLANS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _precomputed_plan(sql_path: Path, digest: str) -> tuple[_CommentPlan, ...] | None:
+    """Return the shipped plan only if it was computed from this exact SQL text."""
+    try:
+        key = sql_path.resolve().relative_to(_PACKAGE_DIR).as_posix()
+    except ValueError:
+        return None
+    entry: Any = _precomputed_plans().get(key)
+    if not isinstance(entry, dict) or entry.get("sha256") != digest:  # pyright: ignore[reportUnknownMemberType]
+        return None
+    try:
+        return _plan_from_json(entry["plan"])  # pyright: ignore[reportUnknownArgumentType]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 # Cross-cutting (non-provider-owned) DDL files resolved against ``_SQL_DIR``.
 # Order matters where dependencies exist: schema-create statements
 # (``raw_schema.sql``, etc.) must run before any table DDL inside that
@@ -79,7 +141,6 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "analytics_schema.sql",
     "meta_schema.sql",
     "reports_schema.sql",
-    "raw_import_log.sql",
     "raw_manual_transactions.sql",
     "app_categories.sql",
     "app_category_source_map.sql",
@@ -92,6 +153,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_metrics.sql",
     "app_schema_migrations.sql",
     "app_versions.sql",
+    "app_utc_upgrade_provenance.sql",
     "app_tabular_formats.sql",
     "app_match_decisions.sql",
     "app_investment_match_decisions.sql",
@@ -109,6 +171,8 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_audit_log.sql",
     "app_transaction_tags.sql",
     "app_transaction_splits.sql",
+    "app_import_log.sql",
+    "app_sync_job_state.sql",
     "app_imports.sql",
     "app_import_previews.sql",
     "raw_import_preview_snapshots.sql",
@@ -127,6 +191,8 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "raw_security_prices.sql",
     "app_security_price_overrides.sql",
     "raw_exchange_rates.sql",
+    "raw_exchange_rate_currencies.sql",
+    "raw_exchange_rate_coverage.sql",
     "app_exchange_rate_overrides.sql",
 ]
 
@@ -183,18 +249,17 @@ def _derive_comment_plan(sql: str) -> tuple[_CommentPlan, ...]:
 
 
 def _comment_plan(sql_path: Path, sql: str | None = None) -> tuple[_CommentPlan, ...]:
-    """Return a parsed comment plan, refreshing it when the DDL changes."""
+    """Return the comment plan: shipped if the SQL hash matches, else parsed."""
     sql = sql if sql is not None else sql_path.read_text()
-    cache_key = (
-        sql_path,
-        sql_path.stat().st_mtime_ns,
-        sha256(sql.encode()).hexdigest(),
-    )
+    digest = sha256(sql.encode()).hexdigest()
+    cache_key = (sql_path, sql_path.stat().st_mtime_ns, digest)
     cached = _COMMENT_PLAN_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    plan = _derive_comment_plan(sql)
+    plan = _precomputed_plan(sql_path, digest)
+    if plan is None:  # an empty shipped plan is valid, so test identity
+        plan = _derive_comment_plan(sql)
     _COMMENT_PLAN_CACHE[cache_key] = plan
     return plan
 

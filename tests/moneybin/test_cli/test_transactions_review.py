@@ -9,6 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.prompts import Choice
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.services.matching_service import PENDING_MATCHES_HINT
 
 runner = CliRunner()
@@ -67,11 +69,76 @@ def test_review_type_filter_without_status_prints_the_count(
     assert "matches pending" in out
 
 
-def test_interactive_is_the_only_stubbed_path() -> None:
-    """The unbuilt walk is reachable only by asking for it by name."""
+def test_interactive_requires_a_terminal() -> None:
+    """A scripted call fails before the terminal workflow can ask for input."""
     result = runner.invoke(app, ["review", "--interactive"])
-    assert result.exit_code == 0
-    assert "not yet implemented" in result.output.lower()
+    assert result.exit_code == 2
+    assert "requires a terminal" in result.output.lower()
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.cli.commands.transactions.review.get_terminal_policy")
+@patch("moneybin.cli.commands.transactions.review.choose_required")
+def test_missing_decision_queue_requires_an_explicit_choice(
+    choose: MagicMock,
+    _policy: MagicMock,
+    mock_get_db: MagicMock,
+    mock_service: MagicMock,
+) -> None:
+    """A decision never silently changes the first review queue."""
+    choose.return_value = "matches"
+    _policy.return_value = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="accepted", transfers_retired=0
+    )
+
+    result = runner.invoke(app, ["review", "--confirm", "tx_pending0001"])
+
+    assert result.exit_code == 0, result.output
+    assert choose.call_args.kwargs["flag"] == "--type"
+    assert choose.call_args.kwargs["choices"] == (Choice("matches", "Matches"),)
+    mock_service.return_value.set_status.assert_called_once_with(
+        "tx_pending0001", status="accepted", actor="cli"
+    )
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.cli.commands.transactions.review.choose_required")
+def test_explicit_decision_queue_bypasses_the_prompt(
+    choose: MagicMock, mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="accepted", transfers_retired=0
+    )
+
+    result = runner.invoke(
+        app, ["review", "--type", "matches", "--confirm", "tx_pending0001"]
+    )
+
+    assert result.exit_code == 0, result.output
+    choose.assert_not_called()
+    mock_service.return_value.set_status.assert_called_once()
 
 
 @patch("moneybin.cli.commands.transactions.review.get_database")
@@ -128,7 +195,44 @@ def _bulk_outcome(*, accepted: int, reversed_: int, retired: int) -> MagicMock:
     outcome.accepted = accepted
     outcome.reversed_by_reconciliation = reversed_
     outcome.transfers_retired = retired
+    outcome.accounting_stale = False
+    outcome.accounting_error_code = None
     return outcome
+
+
+def _selection(*ids: str, limit: int = 50) -> MagicMock:
+    selection = MagicMock()
+    selection.ids = ids
+    selection.limit = limit
+    selection.items = tuple(
+        MagicMock(
+            match_id=match_id,
+            match_type="dedup",
+            source_transaction_id_a=f"{match_id}-a",
+            source_transaction_id_b=f"{match_id}-b",
+            confidence_score=0.85,
+        )
+        for match_id in ids
+    )
+    return selection
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_preview_shows_existing_match_confidence(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Bulk confirmation exposes the matcher score already fetched for each row."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.preview_pending.return_value = _selection("match-1")
+    mock_service.return_value.accept_previewed.return_value = _bulk_outcome(
+        accepted=1, reversed_=0, retired=0
+    )
+
+    result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
+
+    assert result.exit_code == 0, result.output
+    assert "confidence 0.85" in result.stdout
 
 
 @patch("moneybin.services.matching_service.MatchingService")
@@ -143,7 +247,9 @@ def test_confirm_all_reports_only_the_rows_that_stayed_accepted(
     committed as ``reversed``.
     """
     mock_get_db.return_value.__enter__.return_value = MagicMock()
-    mock_service.return_value.accept_all_pending.return_value = _bulk_outcome(
+    selection = _selection("match-1", "match-2", "match-3")
+    mock_service.return_value.preview_pending.return_value = selection
+    mock_service.return_value.accept_previewed.return_value = _bulk_outcome(
         accepted=2, reversed_=1, retired=1
     )
 
@@ -152,7 +258,8 @@ def test_confirm_all_reports_only_the_rows_that_stayed_accepted(
     # Part of what the user asked for did not commit, so the exit code carries
     # it: --confirm-all is the surface most likely to be run unattended.
     assert result.exit_code == 1
-    assert "Accepted 2 pending match(es)" in result.output
+    assert "Match decisions saved" in result.output
+    assert "Accepted:     2" in result.output
     assert "Accepted 3" not in result.output
     assert "1 of them did not stand" in result.output
 
@@ -185,6 +292,42 @@ def test_targeted_confirm_exits_non_zero_when_the_accept_was_reversed(
 
 @patch("moneybin.services.matching_service.MatchingService")
 @patch("moneybin.cli.commands.transactions.review.get_database")
+def test_refused_confirm_json_is_parseable_before_its_nonzero_exit(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """A reconciliation refusal remains machine-readable for a caller on exit 1."""
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="reversed", transfers_retired=1
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            "tx_stale00001",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "error"
+    assert body["data"] == {
+        "match_id": "tx_stale00001",
+        "match_status": "reversed",
+        "transfers_retired": 1,
+    }
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
 def test_targeted_confirm_exits_zero_when_the_accept_stood(
     mock_get_db: MagicMock, mock_service: MagicMock
 ) -> None:
@@ -201,7 +344,243 @@ def test_targeted_confirm_exits_zero_when_the_accept_stood(
     )
 
     assert result.exit_code == 0
-    assert "Accepted match" in result.output
+    assert "Match decision saved" in result.output
+    assert "Decision: accepted" in result.output
+
+
+@pytest.mark.parametrize(
+    ("flag", "requested_status"),
+    [
+        pytest.param("--confirm", "accepted", id="confirm"),
+        pytest.param("--reject", "rejected", id="reject"),
+    ],
+)
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_targeted_decision_json_is_audited_match_set_envelope(
+    mock_get_db: MagicMock,
+    mock_service: MagicMock,
+    flag: str,
+    requested_status: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A JSON caller receives one typed result after its decision commits.
+
+    This fails if a receipt or preview reaches stdout after a mutation, which
+    would make the claimed JSON output unparsable and bypass its privacy audit.
+    """
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    audit_event: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", audit_event.update)
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status=requested_status, transfers_retired=0
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            flag,
+            "tx_pending0001",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.stdout)
+    assert body["data"] == {
+        "match_id": "tx_pending0001",
+        "match_status": requested_status,
+        "transfers_retired": 0,
+    }
+    assert audit_event["classes_returned"] == ["aggregate", "record_id", "txn_type"]
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_combined_decisions_json_returns_one_envelope_with_both_outcomes(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Two explicit decisions still produce one parseable JSON result."""
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.side_effect = [
+        MatchDecisionOutcome(match_status="accepted", transfers_retired=0),
+        MatchDecisionOutcome(match_status="rejected", transfers_retired=0),
+    ]
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            "tx_confirm0001",
+            "--reject",
+            "tx_reject0002",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"] == {
+        "outcomes": [
+            {
+                "match_id": "tx_confirm0001",
+                "match_status": "accepted",
+                "transfers_retired": 0,
+            },
+            {
+                "match_id": "tx_reject0002",
+                "match_status": "rejected",
+                "transfers_retired": 0,
+            },
+        ]
+    }
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_combined_decision_json_keeps_the_first_committed_outcome_on_error(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """A later failure cannot erase a prior durable decision from JSON output."""
+    from moneybin import error_codes
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.side_effect = [
+        MatchDecisionOutcome(match_status="accepted", transfers_retired=0),
+        ValueError("unable to reject this match"),
+    ]
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            "tx_confirm0001",
+            "--reject",
+            "tx_reject0002",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "error"
+    assert body["data"] == {
+        "outcomes": [
+            {
+                "match_id": "tx_confirm0001",
+                "match_status": "accepted",
+                "transfers_retired": 0,
+            }
+        ]
+    }
+    assert body["error"]["code"] == error_codes.INFRA_INVALID_INPUT
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_json_reports_committed_counts_and_stale_accounting(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Bulk JSON reports the post-reconciliation outcome instead of a receipt."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.preview_pending.return_value = _selection(
+        "match-1", "match-2", "match-3"
+    )
+    bulk = _bulk_outcome(accepted=2, reversed_=1, retired=4)
+    bulk.accounting_stale = True
+    bulk.accounting_hint = "Refresh FX accounting before relying on FX reports."
+    mock_service.return_value.accept_previewed.return_value = bulk
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm-all",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "error"
+    assert body["data"] == {
+        "requested": 3,
+        "accepted": 2,
+        "reversed_by_reconciliation": 1,
+        "transfers_retired": 4,
+        "accounting_stale": True,
+        "accounting_hint": "Refresh FX accounting before relying on FX reports.",
+    }
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_json_stale_accounting_is_an_error_without_reversals(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Committed matches do not make stale accounting a successful bulk result."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.preview_pending.return_value = _selection("match-1")
+    bulk = _bulk_outcome(accepted=1, reversed_=0, retired=0)
+    bulk.accounting_stale = True
+    bulk.accounting_hint = "Refresh FX accounting before relying on FX reports."
+    mock_service.return_value.accept_previewed.return_value = bulk
+
+    result = runner.invoke(
+        app,
+        ["review", "--type", "matches", "--confirm-all", "--output", "json"],
+    )
+
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "error"
+    assert body["data"] == {
+        "requested": 1,
+        "accepted": 1,
+        "reversed_by_reconciliation": 0,
+        "transfers_retired": 0,
+        "accounting_stale": True,
+        "accounting_hint": "Refresh FX accounting before relying on FX reports.",
+    }
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_text_keeps_stale_accounting_in_the_receipt(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """A saved but stale bulk result is visible even when stderr is redirected."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.preview_pending.return_value = _selection("match-1")
+    bulk = _bulk_outcome(accepted=1, reversed_=0, retired=0)
+    bulk.accounting_stale = True
+    bulk.accounting_hint = "Refresh FX accounting before relying on FX reports."
+    mock_service.return_value.accept_previewed.return_value = bulk
+
+    result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
+
+    assert result.exit_code == 1, result.output
+    assert "FX accounting is stale" in result.stdout
+    assert "Refresh FX accounting" in result.stdout
 
 
 @patch("moneybin.services.matching_service.MatchingService")
@@ -246,7 +625,8 @@ def test_a_refused_confirm_still_performs_the_reject_asked_for_beside_it(
     ]
     assert len(rejected) == 1
     assert rejected[0].args[0] == "tx_other00002"
-    assert "Rejected match" in result.output
+    assert "Match decision saved" in result.output
+    assert "Decision: rejected" in result.output
 
 
 @patch("moneybin.services.matching_service.MatchingService")
@@ -260,15 +640,56 @@ def test_confirm_all_is_silent_about_reversals_when_none_happened(
     above while telling every user that part of their bulk accept was refused.
     """
     mock_get_db.return_value.__enter__.return_value = MagicMock()
-    mock_service.return_value.accept_all_pending.return_value = _bulk_outcome(
+    mock_service.return_value.preview_pending.return_value = _selection(
+        "match-1", "match-2", "match-3"
+    )
+    mock_service.return_value.accept_previewed.return_value = _bulk_outcome(
         accepted=3, reversed_=0, retired=0
     )
 
     result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
 
     assert result.exit_code == 0
-    assert "Accepted 3 pending match(es)" in result.output
+    assert "Match decisions saved" in result.output
+    assert "Accepted:     3" in result.output
     assert "did not stand" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "expects_deprecation"),
+    [
+        pytest.param(["review"], False, id="top-level"),
+        pytest.param(["transactions", "review"], True, id="deprecated-alias"),
+    ],
+)
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_previews_and_accepts_the_same_limited_selection(
+    mock_get_db: MagicMock,
+    mock_service: MagicMock,
+    command: list[str],
+    expects_deprecation: bool,
+) -> None:
+    """Both review entry points use the service-owned bounded selection."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    selection = _selection("match-1", limit=1)
+    mock_service.return_value.preview_pending.return_value = selection
+    mock_service.return_value.accept_previewed.return_value = _bulk_outcome(
+        accepted=1, reversed_=0, retired=0
+    )
+
+    result = runner.invoke(
+        app, [*command, "--type", "matches", "--confirm-all", "--limit", "1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.index("match-1") < result.output.index("Accepted:     1")
+    if expects_deprecation:
+        assert "deprecated" in result.output
+    mock_service.return_value.preview_pending.assert_called_once_with(limit=1)
+    mock_service.return_value.accept_previewed.assert_called_once_with(
+        selection, actor="cli"
+    )
 
 
 @patch("moneybin.cli.commands.transactions.review.get_database")
@@ -450,3 +871,255 @@ def test_review_status_json_type_filter(
     assert "matches_pending" in payload
     assert "categorize_pending" not in payload
     assert "total" not in payload
+
+
+@pytest.mark.parametrize("output_args", [[], ["--output", "json"]])
+def test_categorization_reject_uses_versioned_service_without_prompt(
+    output_args: list[str],
+) -> None:
+    from moneybin.protocol.write_contracts import CategorizationDecisionRequest
+    from moneybin.services.review_decisions_service import (
+        OrdinaryApplyOutcome,
+        OrdinaryDecisionPlanItem,
+    )
+
+    request = CategorizationDecisionRequest(
+        kind="categorization", decision_id="cat_attempt", decision="reject"
+    )
+    with (
+        patch("moneybin.cli.commands.transactions.review.get_database"),
+        patch("moneybin.cli.commands.transactions.review.choose_required") as choose,
+        patch(
+            "moneybin.services.review_decisions_service.ReviewDecisionsService"
+        ) as service,
+    ):
+        service.return_value.apply_ordinary.return_value = OrdinaryApplyOutcome(
+            (OrdinaryDecisionPlanItem(request, True, "rejected"),), None
+        )
+        result = runner.invoke(
+            app,
+            ["review", "--type", "categorize", "--reject", "cat_attempt", *output_args],
+        )
+    assert result.exit_code == 0, result.output
+    choose.assert_not_called()
+    assert service.return_value.apply_ordinary.call_args.args[0] == [request]
+    if output_args:
+        receipt = json.loads(result.stdout)["data"]
+        assert receipt["results"][0]["decision_id"] == "cat_attempt"
+        assert receipt["results"][0]["status"] == "rejected"
+        assert receipt["applied_count"] == 1
+    else:
+        assert "rejected" in result.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--confirm", "other"], ["--confirm-all"], ["--interactive"], ["--status"]],
+)
+def test_categorize_reject_rejects_conflicting_modes_before_database(
+    extra: list[str],
+) -> None:
+    with patch("moneybin.cli.commands.transactions.review.get_database") as database:
+        result = runner.invoke(
+            app, ["review", "--type", "categorize", "--reject", "cat_attempt", *extra]
+        )
+    assert result.exit_code == 2
+    database.assert_not_called()
+
+
+def test_json_review_requires_explicit_queue_even_when_terminal_is_available() -> None:
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_terminal_policy"
+        ) as policy,
+        patch(
+            "moneybin.cli.commands.transactions.review.choose_required",
+            return_value="matches",
+        ) as choose,
+        patch("moneybin.cli.commands.transactions.review.get_database") as database,
+    ):
+        policy.return_value.interactive = True
+        result = runner.invoke(
+            app, ["review", "--reject", "cat_attempt", "--output", "json"]
+        )
+    assert result.exit_code == 2
+    choose.assert_not_called()
+    database.assert_not_called()
+
+
+def test_scripted_categorization_discovery_and_rejection_persists_versioned_status(
+    db: object,
+) -> None:
+    from contextlib import nullcontext
+    from typing import cast
+
+    from moneybin.database import Database
+    from moneybin.repositories.categorization_decisions_repo import (
+        CategorizationDecisionsRepo,
+    )
+    from tests.moneybin.db_helpers import create_core_tables
+
+    database = cast(Database, db)
+    create_core_tables(database)
+    database.execute("""
+        INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount,
+             currency_code, description, source_type)
+        VALUES ('scripted-transaction', 'synthetic-account', DATE '2026-10-15',
+                -1.00, 'USD', 'Synthetic purchase', 'manual')
+    """)
+    database.execute("""INSERT INTO core.dim_accounts (account_id, display_name, archived)
+                       VALUES ('synthetic-account', 'Synthetic account', FALSE)""")
+    from tests.moneybin.db_helpers import derive_is_categorizable
+
+    database.execute("UPDATE core.fct_transactions SET is_transfer = FALSE")
+    derive_is_categorizable(database)
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_database",
+            return_value=nullcontext(database),
+        ),
+        patch(
+            "moneybin.cli.commands.transactions.categorize.get_database",
+            return_value=nullcontext(database),
+        ) as read_database,
+        patch("moneybin.cli.commands.transactions.review.choose_required") as choose,
+    ):
+        pending = runner.invoke(
+            app, ["transactions", "categorize", "pending", "--output", "json"]
+        )
+        assert pending.exit_code == 0, pending.output
+        pending_row = json.loads(pending.stdout)["data"]["transactions"][0]
+        assert pending_row["transaction_id"] == "scripted-transaction"
+        decision_id = pending_row["decision_id"]
+        assert decision_id
+        repo = CategorizationDecisionsRepo(database)
+        assert repo.fetch_by_id(decision_id) is None
+        assert read_database.call_args.kwargs == {"read_only": True}
+        text_pending = runner.invoke(app, ["transactions", "categorize", "pending"])
+        assert text_pending.exit_code == 0, text_pending.output
+        assert decision_id in text_pending.stdout
+
+        rejected = runner.invoke(
+            app,
+            [
+                "review",
+                "--type",
+                "categorize",
+                "--reject",
+                decision_id,
+                "--output",
+                "json",
+            ],
+        )
+        assert rejected.exit_code == 0, rejected.output
+        receipt = json.loads(rejected.stdout)["data"]
+        stored = repo.fetch_by_id(decision_id)
+        assert stored is not None
+        assert stored["status"] == "rejected"
+        assert stored["attempt_number"] == 1
+        assert receipt["results"][0]["decision_id"] == decision_id
+        assert receipt["results"][0]["status"] == stored["status"]
+        audit_operation = database.execute(
+            "SELECT DISTINCT operation_id FROM app.audit_log WHERE target_table = 'categorization_decisions' AND target_id = ?",
+            [decision_id],
+        ).fetchall()
+        assert audit_operation == [(receipt["operation_id"],)]
+        after = runner.invoke(
+            app, ["transactions", "categorize", "pending", "--output", "json"]
+        )
+        after_row = json.loads(after.stdout)["data"]["transactions"][0]
+        assert after_row["transaction_id"] == "scripted-transaction"
+        assert after_row["decision_id"] is None
+
+        for invalid_id in (decision_id, "cat_missing"):
+            invalid = runner.invoke(
+                app,
+                [
+                    "review",
+                    "--type",
+                    "categorize",
+                    "--reject",
+                    invalid_id,
+                    "--output",
+                    "json",
+                ],
+            )
+            assert invalid.exit_code == 1, invalid.output
+            assert json.loads(invalid.stdout)["error"] is not None
+        assert database.execute(
+            "SELECT COUNT(*) FROM app.categorization_decisions"
+        ).fetchone() == (1,)
+        choose.assert_not_called()
+
+
+def test_scripted_categorization_rejection_refuses_transaction_no_longer_eligible(
+    db: object,
+) -> None:
+    """A queued decision cannot suppress categorization after eligibility moves."""
+    from contextlib import nullcontext
+    from typing import cast
+
+    from moneybin.database import Database
+    from moneybin.repositories.categorization_decisions_repo import (
+        CategorizationDecisionsRepo,
+    )
+    from tests.moneybin.db_helpers import (
+        create_core_tables,
+        derive_is_categorizable,
+    )
+
+    database = cast(Database, db)
+    create_core_tables(database)
+    database.execute("""
+        INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount,
+             currency_code, description, source_type, is_transfer)
+        VALUES ('stale-scripted-transaction', 'synthetic-account', DATE '2026-10-15',
+                -1.00, 'USD', 'Synthetic purchase', 'manual', FALSE)
+    """)
+    database.execute("""INSERT INTO core.dim_accounts (account_id, display_name, archived)
+                       VALUES ('synthetic-account', 'Synthetic account', FALSE)""")
+    derive_is_categorizable(database)
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_database",
+            return_value=nullcontext(database),
+        ),
+        patch(
+            "moneybin.cli.commands.transactions.categorize.get_database",
+            return_value=nullcontext(database),
+        ),
+    ):
+        pending = runner.invoke(
+            app, ["transactions", "categorize", "pending", "--output", "json"]
+        )
+        assert pending.exit_code == 0, pending.output
+        decision_id = json.loads(pending.stdout)["data"]["transactions"][0][
+            "decision_id"
+        ]
+        assert decision_id
+
+        database.execute("""
+            UPDATE core.fct_transactions
+            SET is_transfer = TRUE
+            WHERE transaction_id = 'stale-scripted-transaction'
+        """)
+        derive_is_categorizable(database)
+
+        rejected = runner.invoke(
+            app,
+            [
+                "review",
+                "--type",
+                "categorize",
+                "--reject",
+                decision_id,
+                "--output",
+                "json",
+            ],
+        )
+
+    assert rejected.exit_code == 1, rejected.output
+    assert json.loads(rejected.stdout)["error"] is not None
+    assert CategorizationDecisionsRepo(database).fetch_by_id(decision_id) is None

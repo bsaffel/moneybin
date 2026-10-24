@@ -304,75 +304,122 @@ def probe_ledger_overlap(
     Returns an unmeasurable overlap — rather than raising — when ``core`` is not
     yet materialized, which is a first import before any transform.
     """
+    (overlap,) = probe_ledger_overlaps(
+        db,
+        [(account_id, against_account_id)],
+        window_days=window_days,
+        unstated_currency_matches=unstated_currency_matches,
+    )
+    return overlap
+
+
+def probe_ledger_overlaps(
+    db: Database,
+    pairs: Sequence[tuple[str, str]],
+    *,
+    window_days: int = DEFAULT_POSTING_LAG_DAYS,
+    unstated_currency_matches: bool = False,
+) -> list[LedgerOverlap]:
+    """:func:`probe_ledger_overlap` for many ``(account_id, against_account_id)`` pairs.
+
+    One read of ``core.fct_transactions`` for every pair, returned in input
+    order. A review queue probing each pair separately re-read the fact twice per
+    candidate, which is what made ``accounts links pending`` take seconds.
+    """
+    if not pairs:
+        return []
+    values_sql = ", ".join(["(?, ?, ?)"] * len(pairs))
+    parameters: list[object] = []
+    for index, (account_id, against_account_id) in enumerate(pairs):
+        parameters.extend([index, account_id, against_account_id])
+    parameters.extend([
+        window_days,
+        window_days,
+        window_days,
+        unstated_currency_matches,
+    ])
     try:
-        row = db.execute(
+        rows = db.execute(
             f"""
-            WITH against AS (
+            WITH pairs(pair_index, account_id, against_account_id) AS (
+                VALUES {values_sql}
+            ),
+            ledger AS MATERIALIZED (
                 SELECT
+                    account_id,
+                    transaction_id,
                     transaction_date,
                     amount,
                     NULLIF(UPPER(TRIM(currency_code)), '') AS currency_code
                 FROM {FCT_TRANSACTIONS.full_name}
-                WHERE account_id = ?
+                WHERE account_id IN (
+                    SELECT account_id FROM pairs
+                    UNION
+                    SELECT against_account_id FROM pairs
+                )
             ),
             span AS (
-                SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi
-                FROM against
+                SELECT account_id, MIN(transaction_date) AS lo, MAX(transaction_date) AS hi
+                FROM ledger
+                GROUP BY account_id
             ),
             comparable AS (
-                SELECT
-                    probe.transaction_id,
-                    probe.transaction_date,
-                    probe.amount,
-                    NULLIF(UPPER(TRIM(probe.currency_code)), '') AS currency_code
-                FROM {FCT_TRANSACTIONS.full_name} AS probe, span
-                WHERE probe.account_id = ?
-                  AND span.lo IS NOT NULL
-                  AND probe.transaction_date
+                SELECT p.pair_index, probe.transaction_id, probe.transaction_date,
+                       probe.amount, probe.currency_code
+                FROM pairs AS p
+                JOIN span ON span.account_id = p.against_account_id
+                JOIN ledger AS probe ON probe.account_id = p.account_id
+                WHERE probe.transaction_date
                       BETWEEN span.lo - CAST(? AS INTEGER)
                           AND span.hi + CAST(? AS INTEGER)
+            ),
+            matched AS (
+                SELECT c.pair_index, COUNT(DISTINCT c.transaction_id) AS matched
+                FROM comparable AS c
+                JOIN pairs AS p ON p.pair_index = c.pair_index
+                JOIN ledger AS a
+                  ON a.account_id = p.against_account_id
+                 AND a.amount = c.amount
+                 AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
+                     <= CAST(? AS INTEGER)
+                 AND (
+                     a.currency_code IS NOT DISTINCT FROM c.currency_code
+                     OR (CAST(? AS BOOLEAN)
+                         AND (a.currency_code IS NULL OR c.currency_code IS NULL))
+                 )
+                GROUP BY c.pair_index
             )
             SELECT
-                (SELECT COUNT(*) FROM comparable),
-                (SELECT COUNT(*) FROM (
-                    SELECT c.transaction_id
-                    FROM comparable AS c
-                    JOIN against AS a
-                      ON a.amount = c.amount
-                     AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
-                         <= CAST(? AS INTEGER)
-                     AND (
-                         a.currency_code IS NOT DISTINCT FROM c.currency_code
-                         OR (CAST(? AS BOOLEAN)
-                             AND (a.currency_code IS NULL
-                                  OR c.currency_code IS NULL))
-                     )
-                    GROUP BY c.transaction_id
-                )),
-                (SELECT MIN(transaction_date) FROM comparable),
-                (SELECT MAX(transaction_date) FROM comparable)
-            """,  # TableRef constants + parameterized values
-            [
-                against_account_id,
-                account_id,
-                window_days,
-                window_days,
-                window_days,
-                unstated_currency_matches,
-            ],
-        ).fetchone()
+                p.pair_index,
+                COUNT(c.transaction_id),
+                COALESCE(ANY_VALUE(m.matched), 0),
+                MIN(c.transaction_date),
+                MAX(c.transaction_date)
+            FROM pairs AS p
+            LEFT JOIN comparable AS c ON c.pair_index = p.pair_index
+            LEFT JOIN matched AS m ON m.pair_index = p.pair_index
+            GROUP BY p.pair_index
+            """,  # TableRef constant + VALUES shape are code-owned; values parameterized
+            parameters,
+        ).fetchall()
     except duckdb.CatalogException:
         logger.debug("core.fct_transactions unavailable; ledger overlap unmeasurable")
-        row = None
-    comparable, matched, start, end = row or _EMPTY_WINDOW_ROW
-    overlap = LedgerOverlap(
-        comparable=int(comparable),
-        matched=int(matched),
-        window_start=start,
-        window_end=end,
-        window_days=window_days,
-    )
-    # Counted here rather than at the two call sites so a third one cannot forget:
+        rows = []
+    by_index = {int(row[0]): row[1:] for row in rows}
+    # Counted per pair rather than at the call sites so a new caller cannot forget:
     # the failure this instruments is every probe going unmeasurable at once, and
     # a counter that misses one caller cannot distinguish that from a quiet week.
-    return _record_probe(overlap)
+    return [
+        _record_probe(
+            LedgerOverlap(
+                comparable=int(comparable),
+                matched=int(matched),
+                window_start=start,
+                window_end=end,
+                window_days=window_days,
+            )
+        )
+        for comparable, matched, start, end in (
+            by_index.get(index, _EMPTY_WINDOW_ROW) for index in range(len(pairs))
+        )
+    ]

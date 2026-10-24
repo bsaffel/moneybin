@@ -37,9 +37,10 @@
    would be taken over the very set it filters and admit every row by construction.
    The failure a floor guards — valuing a 2018 position from a 2024 listing price —
    needs resolution to reach FORWARD in time, which the bounded-lookback rule forbids:
-   core.dim_holdings takes `price_date <= CURRENT_DATE` ordered `price_date DESC`. A
-   floor becomes meaningful only if C.3's fct_holdings_daily fills its spine backward,
-   and that model should not. See docs/specs/investments-price-feeds.md.
+   core.dim_holdings takes `price_date <= today` in the saved reporting calendar,
+   ordered `price_date DESC`. A floor becomes meaningful only if C.3's
+   fct_holdings_daily fills its spine backward, and that model should not.
+   See docs/specs/investments-price-feeds.md.
 
    The ORDER BY is a deterministic pick over every column this model exposes — not an
    unqualified total order over the raw input. source_rank picks a preferred source;
@@ -230,11 +231,11 @@ WITH provider AS (
 )
 SELECT
   security_id, /* FK to core.dim_securities (grain) */
-  price_date, /* The date this close applies to (grain) */
-  quote_currency, /* ISO 4217 the close is expressed in (grain); this model converts nothing — M1K.2 owns FX */
-  close, /* The winning close for one unit, in quote_currency */
   source_type, /* Which source supplied the winning close; seeds.price_source_map is the closed set it can name — see docs/specs/investments-price-feeds.md */
   price_basis, /* Always 'raw' here; adjusted provider observations are excluded upstream and stay visible in prep.stg_security_prices, and the two derived sources are raw by construction */
+  quote_currency, /* ISO 4217 the close is expressed in (grain); this model converts nothing — M1K.2 owns FX */
+  close, /* The winning close for one unit, in quote_currency */
+  price_date, /* The date this close applies to (grain) */
   extracted_at AS updated_at /* When the winning observation was served: the provider's own timestamp, the mark's last edit, or the trade's ledger timestamp */
 FROM ranked
 QUALIFY

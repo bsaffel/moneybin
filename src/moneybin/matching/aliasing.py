@@ -81,6 +81,24 @@ keys its ``decision_id`` on ``(transaction_id, attempt_number)`` and
 their live effect (the category itself) is forwarded through
 ``app.transaction_categories``. Re-keying history would have to re-mint ids for
 events that already occurred.
+
+``app.proposed_rules.sample_txn_ids`` is the same shape, and :func:`_curation_repos`
+deliberately excludes ``ProposedRulesRepo`` (issue #552). It is an evidence
+trail of which transactions triggered a pattern, not live curation attached to
+one transaction, and its live effect — the promoted rule — lives in
+``app.categorization_rules`` keyed on pattern, not on any transaction id. It is
+also a list-valued column, so "forwarding" it would need a repoint-in-array
+write plus undo-replay semantics no existing repo has, for a value this module
+already treats as history rather than state. A stored sample id can still be
+superseded by a later re-key, so counting it as fresh evidence again under its
+new canonical id would double-count one real transaction toward
+``trigger_count``. ``AutoRuleService.record_categorization`` guards against
+that by resolving every stored sample through
+:func:`resolve_curation_transaction_ids` before checking membership — reusing
+the module's one sanctioned way to ask "is this the same transaction now"
+rather than adding a second one, and narrow enough (one Python-side membership
+check, not a SQL join repeated per consumer) that it does not repeat the
+mistake "Forward at re-key, never resolve on read" warns against above.
 """
 
 from __future__ import annotations
@@ -102,7 +120,6 @@ from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.tables import (
     AUDIT_LOG,
-    FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
     MANUAL_TRANSACTIONS,
@@ -132,7 +149,7 @@ def resolve_curation_transaction_id(
 
     The single write-time resolution seam shared by every curation writer
     (notes, tags, splits, categories) — issue #538. Tries the id as given
-    first; if it names no row in ``core.fct_transactions`` OR an
+    first; if it names no live transaction (see :func:`_live_transaction_ids`) OR an
     un-aliased ``raw.manual_transactions`` row (so a manual transaction
     written moments before its ``refresh_run`` materializes it into
     ``core.fct_transactions`` never misreads as unresolvable, while one
@@ -195,7 +212,7 @@ def resolve_curation_transaction_id(
     curation write from being refused for a view that simply doesn't exist
     yet.
     """
-    if not _relations_exist(db, FCT_TRANSACTIONS, MANUAL_TRANSACTIONS):
+    if not _relations_exist(db, INT_TRANSACTIONS_MATCHED, MANUAL_TRANSACTIONS):
         logger.debug(
             f"Curation resolution skipped: liveness oracle absent for {transaction_id}"
         )
@@ -271,8 +288,8 @@ def resolve_curation_transaction_ids(
     loop is disqualifying at batch scale. Falls back to the alias-hop walk
     (:func:`_walk_alias_chain`) only for ids the bulk check didn't find live,
     which should be rare: every current caller either sources ids fresh from
-    ``core.fct_transactions`` (already live, resolved for free by the bulk
-    check) or is a caller-supplied id from an earlier preview. The fallback
+    the transformed ledger (already live, resolved for free by the bulk check)
+    or is a caller-supplied id from an earlier preview. The fallback
     set shares one ``reversed_edges`` scan across every stale id in the
     batch, rather than each one recomputing its own.
 
@@ -293,7 +310,7 @@ def resolve_curation_transaction_ids(
     ids = list(dict.fromkeys(transaction_ids))  # de-dup, preserve order
     if not ids:
         return {}
-    if not _relations_exist(db, FCT_TRANSACTIONS, MANUAL_TRANSACTIONS):
+    if not _relations_exist(db, INT_TRANSACTIONS_MATCHED, MANUAL_TRANSACTIONS):
         logger.debug(
             f"Curation resolution skipped: liveness oracle absent for {len(ids)} ids"
         )
@@ -320,8 +337,10 @@ def resolve_curation_transaction_ids(
 def _live_transaction_ids(db: Database, transaction_ids: Sequence[str]) -> set[str]:
     """Which of ``transaction_ids`` currently name a live transaction.
 
-    The one definition of liveness (``core.fct_transactions`` OR
-    ``raw.manual_transactions`` minus deduped-away manuals) shared by the
+    The one definition of liveness (a ``prep.int_transactions__matched`` id,
+    which is ``core.fct_transactions``' id set, current the moment a match
+    decision commits; OR ``raw.manual_transactions`` minus deduped-away
+    manuals) shared by the
     single-id and bulk resolvers — :func:`_is_live_transaction` delegates
     here rather than carrying a second copy of the union, so a future change
     to what counts as "live" has one place to land. Chunked so a large batch
@@ -358,7 +377,7 @@ def _live_transaction_ids(db: Database, transaction_ids: Sequence[str]) -> set[s
         placeholders = ", ".join("?" for _ in chunk)
         rows = db.execute(
             f"""
-            SELECT transaction_id FROM {FCT_TRANSACTIONS.full_name}
+            SELECT transaction_id FROM {INT_TRANSACTIONS_MATCHED.full_name}
              WHERE transaction_id IN ({placeholders})
             UNION
             SELECT m.transaction_id FROM {MANUAL_TRANSACTIONS.full_name} AS m
@@ -378,7 +397,7 @@ def _is_live_transaction(db: Database, transaction_id: str) -> bool:
     """Whether ``transaction_id`` names a row curation may legitimately attach to.
 
     Single-id convenience wrapper over :func:`_live_transaction_ids` — see
-    its docstring for the liveness definition (``core.fct_transactions`` OR
+    its docstring for the liveness definition (a transformed id OR
     an un-aliased ``raw.manual_transactions`` row, so a manual entry's
     predicted id resolves as live in the window before the next
     ``refresh_run`` materializes it into the fact view, but not once it has
@@ -470,7 +489,7 @@ ORDER BY old_id
 """  # noqa: S608  # TableRef constants and code-supplied column expressions only
 
 
-# Curation-bearing ids that currently join no live row in core.fct_transactions
+# Curation-bearing ids that currently join no live transaction
 # -- the seed set _heal_stranded_curation resolves in bulk every forwarding pass.
 _STRANDED_CURATION_IDS_SQL = f"""
 WITH curated AS (
@@ -484,7 +503,9 @@ WITH curated AS (
 )
 SELECT c.transaction_id
 FROM curated AS c
-LEFT JOIN {FCT_TRANSACTIONS.full_name} AS l ON l.transaction_id = c.transaction_id
+LEFT JOIN (
+  SELECT DISTINCT transaction_id FROM {INT_TRANSACTIONS_MATCHED.full_name}
+) AS l ON l.transaction_id = c.transaction_id
 WHERE l.transaction_id IS NULL
 ORDER BY c.transaction_id
 """  # noqa: S608  # TableRef constants only
@@ -502,9 +523,11 @@ ORDER BY c.transaction_id
 # transaction" (module docstring, "A second pass heals what the first cannot
 # see"). `UNION` (not `UNION ALL`) in the recursive term is the visited set --
 # it terminates at the fixpoint, so a cycle cannot hang the walk.
-# `core.fct_transactions` is the liveness oracle deliberately: it is what
-# `app_transaction_categories_fk` anti-joins, so a component this query calls
-# live is one the doctor will too.
+# `prep.int_transactions__matched` is the liveness oracle: its id set is
+# exactly `core.fct_transactions`', which `app_transaction_categories_fk`
+# anti-joins, so a component this query calls live is one the doctor will too
+# -- and unlike the fact, whose merge is materialized, it reflects a decision
+# the moment it commits, before the restate that follows.
 #
 # A component with no live member produces no row here at all (the JOIN drops
 # it), which is the "leave it alone" / "still unresolvable" case; `live_count`
@@ -539,7 +562,9 @@ SELECT
   MIN(c.member) AS live_id,
   COUNT(*) AS live_count
 FROM component AS c
-JOIN {FCT_TRANSACTIONS.full_name} AS l ON l.transaction_id = c.member
+JOIN (
+  SELECT DISTINCT transaction_id FROM {INT_TRANSACTIONS_MATCHED.full_name}
+) AS l ON l.transaction_id = c.member
 GROUP BY c.seed_id
 ORDER BY c.seed_id
 """  # noqa: S608  # TableRef constants + format holes; every value bound as a placeholder
@@ -1109,7 +1134,7 @@ def _heal_stranded_curation(
     alias row standing but the two ids are separate transactions again, so
     following it would move a user's edit onto one they never touched.
     """
-    if not _relations_exist(db, FCT_TRANSACTIONS, TRANSACTION_ID_ALIASES):
+    if not _relations_exist(db, INT_TRANSACTIONS_MATCHED, TRANSACTION_ID_ALIASES):
         # A first load precedes the transform that builds the fact view, and the
         # catalog is asked rather than the view for the same reason the
         # derivation asks it: a failed statement poisons a caller's transaction.

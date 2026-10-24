@@ -294,7 +294,7 @@ class TestDatabaseKeyErrorHint:
         hint = database_key_error_hint()
 
         assert "db unlock" in hint
-        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in hint
+        assert "MONEYBIN_PROFILE__TEST__DATABASE__ENCRYPTION_KEY" in hint
         assert "db init" not in hint
 
     def test_settings_load_failure_falls_back_to_db_init(
@@ -803,6 +803,51 @@ class TestEncryptionKeyCache:
         assert store.get_key.call_count == call_count_after_first
         # Cleanup cache
         monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+
+    def test_profile_switch_does_not_reuse_another_profiles_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cached key must never cross profile boundaries within one process."""
+        import moneybin.database as db_module
+
+        keys = {
+            "alice": "alice-encryption-key-aaaaaaaaaaaaaaaa",
+            "bob": "bob-encryption-key-bbbbbbbbbbbbbbbbbb",
+        }
+        active_profile = "alice"
+        reads: list[str] = []
+
+        class ProfileStore:
+            def __init__(self, profile: str) -> None:
+                self.profile = profile
+
+            def get_key(self, name: str) -> str:
+                assert name == "DATABASE__ENCRYPTION_KEY"
+                reads.append(self.profile)
+                return keys[self.profile]
+
+        for profile in ("alice", "bob"):
+            Database(
+                tmp_path / f"{profile}.duckdb",
+                secret_store=ProfileStore(profile),  # pyright: ignore[reportArgumentType]  # narrow fake for key retrieval
+                no_auto_upgrade=True,
+                read_only=False,
+            ).close()
+        reads.clear()
+
+        monkeypatch.setattr(
+            db_module, "SecretStore", lambda: ProfileStore(active_profile)
+        )
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+        for profile in ("alice", "bob", "alice"):
+            active_profile = profile
+            Database(
+                tmp_path / f"{profile}.duckdb",
+                no_auto_upgrade=True,
+                read_only=False,
+            ).close()
+
+        assert reads == ["alice", "bob", "alice"]
 
 
 class TestActiveWriteSlot:

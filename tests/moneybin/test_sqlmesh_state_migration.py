@@ -266,5 +266,28 @@ class TestSqlmeshStateDrift:
             ro.close()
 
 
+class TestSqlmeshContextReleasesCursor:
+    """sqlmesh_context() closes SQLMesh's cursor before MoneyBin writes again."""
+
+    def test_checkpoint_succeeds_after_sqlmesh_leaves_a_result_open(
+        self, tmp_path: Path, mock_secret_store: MagicMock
+    ) -> None:
+        """An undrained SQLMesh read must not block the next CHECKPOINT.
+
+        SQLMesh's cursor duplicates MoneyBin's connection, and an unconsumed
+        result keeps that cursor's transaction open. sqlmesh 0.236.3's
+        ``Context.migrate()`` ends with such a ``fetchone``; after MoneyBin
+        wrote, CHECKPOINT raised "other write transactions active".
+        """
+        db = _make_db(tmp_path, mock_secret_store)
+        with sqlmesh_context(db) as ctx:
+            ctx.migrate()
+            ctx.engine_adapter.cursor.execute("SELECT * FROM sqlmesh._versions")
+            ctx.engine_adapter.cursor.fetchone()
+        db.execute("CREATE TABLE app.after_sqlmesh (x INTEGER)")
+        db.checkpoint("post_transform")
+        db.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

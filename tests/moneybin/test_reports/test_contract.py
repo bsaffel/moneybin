@@ -344,6 +344,19 @@ def test_build_spec_rejects_quiet_reserved_param() -> None:
         )
 
 
+def test_build_spec_rejects_no_pager_reserved_param() -> None:
+    def runner(db: Database, *, no_pager: bool = False) -> ReportQuery:
+        """Summary."""
+        return ReportQuery("SELECT 1", [])
+
+    with pytest.raises(ValueError, match="no_pager"):
+        _build_spec(
+            runner,
+            name="r",
+            parameter_classes={"no_pager": DataClass.TXN_TYPE},
+        )
+
+
 def test_build_spec_rejects_display_currency_reserved_param() -> None:
     def runner(db: Database, *, display_currency: str | None = None) -> ReportQuery:
         """Summary."""
@@ -448,6 +461,90 @@ def test_a_money_kind_outside_the_vocabulary_is_refused() -> None:
             description="Aggregate value.",
             data_class=DataClass.AGGREGATE,
             money_kind="inflow",  # pyright: ignore[reportArgumentType]  # the runtime gate under test
+        )
+
+
+def test_numeric_defaults_to_false() -> None:
+    """Every column declared before this field existed renders as it always did."""
+    column = OutputColumn(
+        name="rows", description="A count.", data_class=DataClass.AGGREGATE
+    )
+
+    assert column.numeric is False
+
+
+def test_a_numeric_column_needs_no_money_kind() -> None:
+    column = OutputColumn(
+        name="rows",
+        description="A count.",
+        data_class=DataClass.AGGREGATE,
+        numeric=True,
+    )
+
+    assert column.numeric is True
+    assert column.money_kind is None
+
+
+def test_numeric_and_money_kind_together_are_refused() -> None:
+    """A bare number is one or the other, never both (`.claude/rules/cli.md`).
+
+    `format_money` would round a `numeric` column's value to two places and
+    add a sign glyph neither declaration asked for if both survived to the
+    renderer.
+    """
+    with pytest.raises(ValueError, match="numeric"):
+        OutputColumn(
+            name="value",
+            description="Confused.",
+            data_class=DataClass.AGGREGATE,
+            money_kind="magnitude",
+            numeric=True,
+        )
+
+
+def test_grouped_without_numeric_is_refused() -> None:
+    """Thousands grouping refines a bare-number column; it is not a third state."""
+    with pytest.raises(ValueError, match="grouped"):
+        OutputColumn(
+            name="rows",
+            description="Count.",
+            data_class=DataClass.AGGREGATE,
+            grouped=True,
+        )
+
+
+def test_uncategorized_on_a_non_category_column_is_refused() -> None:
+    """Only a category column has a NULL that means no category was assigned."""
+    with pytest.raises(ValueError, match="uncategorized"):
+        OutputColumn(
+            name="description",
+            description="Text.",
+            data_class=DataClass.DESCRIPTION,
+            uncategorized=True,
+        )
+
+
+def test_percent_without_numeric_is_refused() -> None:
+    """A percent refines a bare-number column, like thousands grouping does."""
+    with pytest.raises(ValueError, match="percent"):
+        OutputColumn(
+            name="yoy_pct",
+            description="Ratio.",
+            data_class=DataClass.AGGREGATE,
+            percent=True,
+        )
+
+
+def test_a_percent_column_cannot_also_be_grouped() -> None:
+    """A ratio is not a count; the two refinements format the same cell two ways."""
+    with pytest.raises(ValueError, match="percent"):
+        OutputColumn(
+            name="yoy_pct",
+            description="Ratio.",
+            data_class=DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
+            percent=True,
         )
 
 

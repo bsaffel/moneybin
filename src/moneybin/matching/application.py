@@ -185,6 +185,22 @@ class MatchDecisionApplication:
             self._seen.add(match_id)
             self._requested.append((match_id, "accepted", "pending", True))
 
+    def accept_ids(self, match_ids: tuple[str, ...]) -> None:
+        """Request acceptance of the already-validated ids in their preview order."""
+        self._ensure_open()
+        if self._requested:
+            raise ValueError("cannot accept ids after explicit match decision requests")
+        self._bulk_called = True
+        accepted_ids = self._decisions.accept_ids(
+            match_ids,
+            decided_by=self._decided_by,
+            actor=self._actor,
+            in_outer_txn=True,
+        )
+        for match_id in accepted_ids:
+            self._seen.add(match_id)
+            self._requested.append((match_id, "accepted", "pending", True))
+
     def finalize(self) -> MatchApplicationEffects:
         """Run reconciliation and alias forwarding; return transaction-local facts."""
         self._ensure_open()

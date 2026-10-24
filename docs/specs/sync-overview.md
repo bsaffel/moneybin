@@ -1,6 +1,6 @@
 # Sync — Overview
 
-> Last updated: 2026-07-03 — partial-payload provider guard + multi-device merge-at-matcher/provenance note
+> Last updated: 2026-10-14 — server address is saved per profile at login instead of requiring an environment variable; login offers the local server address
 > Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
@@ -16,9 +16,9 @@ Sync is MoneyBin's framework for pulling financial data from external providers 
 
 Three commitments, in order:
 
-1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The client never knows which aggregator backs a connection — that's a server implementation detail.
+1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The broker owns upstream requests and credentials; the client consumes the negotiated provider-tagged response for provider-native Raw ingestion.
 2. **Provider-specific raw schemas.** Each provider gets its own raw tables that preserve the provider's native data shape. No generic "sync schema" that forces every provider into a least-common-denominator format. The data warehouse layers (prep → core) handle homogenization through staging views and `UNION ALL`.
-3. **Financial-grade security.** E2E encryption is designed into the protocol from day one. v1 ships with TLS + encrypted-at-rest (acceptable baseline). v2 adds full zero-knowledge encryption where the server cannot read financial data, even under subpoena. The `EncryptionBackend` abstraction supports algorithm upgrades (X25519 → hybrid post-quantum) without protocol changes.
+3. **Financial-grade security.** Current broker contracts use JSON over TLS and encryption at rest; the broker can read credentials and financial payloads while processing them. Broker envelope `contract_version=2` adds provider batches and acknowledgement semantics, not E2E encryption. The E2E/`EncryptionBackend` material below remains the unimplemented Phase 3 design; its legacy “v2” labels describe that future encryption phase, not the current broker envelope version.
 
 ## Target users
 
@@ -57,7 +57,7 @@ Server behavior is documented in the moneybin-sync project. The client treats th
 - Staging views and core model integration per provider
 - Provider-specific testing strategies (e.g., Plaid Sandbox)
 
-These live in provider child specs: [`sync-plaid.md`](sync-plaid.md) (first provider), future `sync-simplefin.md`, `sync-mx.md`, etc.
+These live in provider child specs: [`sync-plaid.md`](sync-plaid.md) (first provider), [SimpleFIN](sync-simplefin.md) (in-progress), future `sync-mx.md`, etc.
 
 ---
 
@@ -107,15 +107,16 @@ sequenceDiagram
     CLI->>DB: Provider extractor → raw.{provider}_* tables
     CLI->>DB: Handle removed transactions
     CLI->>Server: POST /sync/ack (best effort)
-    CLI->>DB: sqlmesh run → prep → core
+    CLI->>DB: refresh cascade: SQLMesh apply → prep → core, then match, categorize, identity, rates
     CLI->>User: Summary: N transactions from M institutions
 ```
 
 ### Phase 1: Authenticate
 
+- Login needs a server address first. It comes from configuration (see [Server address](#server-address)) or is supplied at login and saved to the active profile.
 - Client calls `POST /auth/device/code`, displays verification URL and user code.
 - Client polls `POST /auth/device/token` until authorized, respecting `slow_down` backoff per RFC 8628 §3.5.
-- JWT stored in OS keychain (`keyring`). Falls back to `~/.moneybin/.token` with `0600` permissions if keychain unavailable.
+- JWT and refresh token are stored in the OS keychain through `SecretStore`. Login and refresh require writable keychain storage.
 - Automatic refresh via Auth0 refresh token when JWT expires.
 - One-time setup; subsequent commands use the stored token silently.
 
@@ -148,7 +149,7 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 - Provider-specific extractor parses JSON into provider-specific raw tables (e.g., `raw.plaid_*` for Plaid).
 - Extractor handles provider-specific semantics (e.g., Plaid's `removed_transactions` — deletes from raw).
 - After the raw writes are durable, client calls `POST /sync/ack` before transforming. Ack is best-effort: a failure is logged without failing the pull, leaving the broker cursor unadvanced so the next pull re-delivers a loss-free, deduplicated payload.
-- Runs `sqlmesh run` to propagate through staging → core.
+- Runs the refresh cascade, the same steps `moneybin refresh` runs: the SQLMesh apply (its `transform` step) propagates the raw rows through staging → core, and the matching, categorization, identity-resolution, and rate-backfill steps run over the result.
 - Connection health remains server-authoritative and is read through `GET /institutions`.
 
 ---
@@ -176,16 +177,119 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 
 **Auth handling:**
 
-- JWT stored in OS keychain via `keyring` (macOS Keychain, Linux Secret Service, Windows Credential Locker).
-- Falls back to `~/.moneybin/.token` with `0600` permissions if keychain unavailable.
+- JWT and refresh token are stored through `SecretStore`, preserving the `moneybin-sync` service and opaque profile-ID usernames.
+- No new plaintext token files are written. A legacy `~/.moneybin/.sync_token-<profile_id>` records no issuing server, so it is never imported or presented: reading credentials for that exact profile removes it, and the profile logs in again (see [Server address](#server-address) → Changing it). Existing keychain credentials are authoritative. Never touch an unscoped legacy file from a named profile.
+- Headless sync requires a working OS keychain (for example Linux Secret Service); an unavailable or locked backend produces an actionable error. Database environment-key injection does not provide storage for rotating sync tokens.
 - `Authorization: Bearer {token}` header on all authenticated requests.
 - Automatic refresh via refresh token when JWT expires (transparent to callers).
+- Logout and failed-refresh cleanup remove only the selected sync identity's credentials. A named profile never deletes unscoped legacy credentials or another profile's token file.
 - Same storage pattern as the DB encryption key (`privacy-data-protection.md`).
 
 **Configuration:**
 
 - `SyncConfig` in `src/moneybin/config.py` (already exists): `server_url`, request timeouts, polling intervals.
 - Env vars: `MONEYBIN_SYNC__SERVER_URL`, `MONEYBIN_SYNC__TIMEOUT`, etc. (`MONEYBIN_` prefix with `__` nesting per `CLAUDE.md`).
+
+#### Server address
+
+`sync.server_url` names the moneybin-sync server a profile talks to. The browser
+is sent there to authenticate and bank linking runs through it, so the address
+is a trust anchor: a wrong one is a phishing page, and a changed one must never
+inherit the old server's credentials.
+
+**Where it comes from.** Settings resolve the first source that supplies a
+value:
+
+| Priority | Source | Use |
+|---|---|---|
+| 1 | `MONEYBIN_SYNC__SERVER_URL` in the process environment | Override for CI, scripts, and development |
+| 2 | The same key in `<home>/.env.<profile>` or `<home>/.env` | Operator-managed override file |
+| 3 | `sync.server_url` in the profile's `config.yaml` | Where login saves it; the ordinary case |
+| 4 | Built-in default | Unset today. Becomes MoneyBin's hosted address when hosted sync ships, which makes login need no address at all |
+
+The profile `config.yaml` is a settings source for every setting, not only this
+one (see `moneybin-cli.md` → Profile config).
+
+**The offered address.** With nothing configured, login offers
+`http://127.0.0.1:8000`, where moneybin-sync's compose file publishes the
+server. It is offered, never assumed: the CLI prompt shows it as the default
+answer, and the MCP confirmation names it and asks the user to decline unless
+they run the server on this machine. An accepted offer is saved like a typed
+address, so a later change to the offer, such as the hosted address, never
+moves a profile that already chose. A silent built-in default was rejected for
+four reasons: it would skip the MCP confirmation entirely, it would never be
+saved and so would move with the next release, port 8000 is commonly held by
+another development server, and a user with no local server gains nothing from
+it.
+
+**Saving it.** Login is the one place an address is saved, on either surface.
+The address is written to the active profile's `config.yaml` only after the
+server at that address answers `POST /auth/device/code` with a valid challenge,
+so a typo or an unreachable host is never saved. A host that answers with
+anything else, such as another web server's 404, is refused with
+`mutation_invalid_input` rather than an unclassified HTTP error. A 5xx is the
+right server failing rather than the wrong one, so it is reported as
+unreachable and the address can be retried unchanged.
+
+The MCP path plans the save, shows the prompt, then plans again and verifies
+the result against what the person approved before saving, because the CLI can
+save another address while the prompt is open. Each plan reloads settings
+rather than reading the server's cached copy: a long-running MCP server would
+otherwise treat an address the CLI has since replaced as unchanged and skip
+the prompt.
+
+**Changing it.** A token or device code issued by one server is never sent to
+another. Two mechanisms hold that, because login is only one of five ways the
+address can change (login, `profile set`, a hand edit, a dotenv, the
+environment):
+
+- *At save.* Login clears the profile's stored tokens and pending device-login
+  sessions before it writes a new address — whether or not an address was
+  saved before, since credentials can outlive one that came from the
+  environment.
+- *At use.* Each stored token pair and each pending device-login session
+  records the server that issued it. A client bound to a different address
+  treats the pair as absent and refuses to poll the session. The pair is kept,
+  so an override that points elsewhere for one run does not sign the profile
+  out of its own server. A pair or session stored before issuers were
+  recorded counts as absent for every server, and a legacy plaintext token
+  file is removed rather than imported. The address may have changed since
+  either was written, and binding it to whichever server reads it first would
+  send it to that server. The cost is one `moneybin sync login` after
+  upgrading.
+
+**When an override is in force.** If source 1 or 2 supplies the address and
+login is asked to save a different one, login refuses and names the variable:
+the saved value would be shadowed and the next command would silently talk to
+the overriding server. Login asks the sources themselves whether they supply
+the key, so an override equal to the saved address, or set to the empty
+string, still counts.
+
+**Order of clearing and saving.** Credentials are cleared before the new
+address is written. If the write then fails, the profile is signed out and
+still names its old server, which fails safe: logging in again recovers it.
+The issuer binding already keeps the old pair from the new server; clearing
+removes credentials the profile has stopped using.
+
+**Shape.** `http` or `https` with a host; no credentials, query, or fragment.
+Scheme and host are lowercased and a default port (80, 443) is dropped, so one
+server has one spelling; a second spelling would read as a replacement and
+sign the profile out of the server it already uses.
+Plain `http` to a host other than loopback is accepted, because a self-hosted
+server on a home network is a supported setup, and the prompt that saves it
+says the connection is unencrypted.
+
+**Observability.** `moneybin_sync_server_address_outcomes_total{surface, outcome}`
+counts each attempt to save an address: `saved`, `replaced`, `unreachable`,
+`rejected` (it answered, but not with a device code), `declined`,
+`timed_out` (the prompt was shown and nobody answered), `prompt_unavailable`,
+`override_conflict`. The address itself is
+never a label.
+
+**When it is missing.** Every sync operation other than login fails with the code
+`sync_server_not_configured` and a hint naming
+`moneybin sync login --server <url>`. The message never tells a user to set an
+environment variable.
 
 **Response models** (Pydantic):
 
@@ -231,11 +335,11 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 
 | Command | Description |
 |---|---|
-| `moneybin sync login` | Authenticate with moneybin-sync via Device Authorization Flow |
+| `moneybin sync login [--server URL]` | Authenticate with moneybin-sync via Device Authorization Flow. With no server address configured, a terminal session is asked for one; `--server` supplies it without a prompt. Either way the address is saved to the active profile once the server answers |
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
 | `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
 | `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
-| `moneybin sync disconnect --institution NAME` | Remove an institution (resolves name → id via `GET /institutions`) |
+| `moneybin sync disconnect --institution NAME \| --provider-item-id ID \| --connection-id ID [--purge]` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink). Local rows are kept by default. Purge is supported only for Plaid; SimpleFIN purge is refused before disconnect or local mutation. `--purge` previews, then also deletes every row the item pulled (`raw.plaid_*` and its `raw.security_prices` observations, scoped by `source_origin`), reverses the item's accepted `app.account_links`, and rejects pending merge proposals that only its accounts still describe; with `--provider-item-id` it also reaches an item the server no longer lists, which is the orphan a plain disconnect leaves behind (the server still has to answer: the by-item lookup asks it first, and an unreachable server fails the plan before any local row is read). The server call runs first, so a remote failure changes nothing and a local failure before the delete commits leaves a re-runnable orphan, with the error naming the `provider_item_id` to re-run with. Once the delete commits, purge restates the materialized models the deleted rows feed; a warehouse that was never built has nothing to restate. If the rebuild fails, the purge remains committed and the error names `moneybin refresh` as the recovery step |
 | `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger a server-completed sync, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
 
@@ -256,8 +360,10 @@ Per `.claude/rules/cli.md`, every interactive behavior has a flag equivalent for
 | Interactive behavior | Flag equivalent |
 |---|---|
 | Browser opens for login | `--no-browser` (prints URL only — for headless/SSH) |
+| Server address prompt at login | `--server URL`. Without a terminal and without the flag, login fails with `sync_server_not_configured` rather than waiting on input |
 | Browser opens for link | `--no-browser` |
 | Confirmation before disconnect | `--yes` / `-y` |
+| Purge preview confirmation (`--purge`) | `--yes` / `-y` — required outside an interactive terminal; the preview still prints to stderr |
 | Institution selection when ambiguous | `--institution NAME` |
 
 All commands support `--output json` for AI agent consumption per `mcp-architecture.md` §7.
@@ -322,21 +428,57 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 |---|---|---|
 | `sync_pull` | Trigger a bank data sync, wait for completion, and load results | `institution: str \| None` |
 | `sync_status` | Show connected institutions and health, inspect one link session, or advance one device-login session | `session_id: str \| None` or `auth_session_id: str \| None` (mutually exclusive) |
-| `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`; returns session URL or device credentials |
-| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `mode: "institution" \| "logout"`, `confirmation_token: str \| None` |
+| `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`, `server_url: str \| None` (login only); returns session URL or device credentials |
+| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `provider_item_id: str \| None`, `connection_id: str \| None` (exactly one selector for institution mode), `mode: "institution" \| "logout"`, `state: "disconnected" \| "absent"` (institution mode only; `absent` purges Plaid local rows; SimpleFIN is refused), `confirmation_token: str \| None` |
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
 ### MCP authentication lifecycle
 
 - Start device login with `sync_link(mode="login")`.
+- When no server address is configured, that call offers the local address
+  (see [The offered address](#server-address)) through the same prompt as
+  below. If the user declines, the call fails with
+  `mutation_confirmation_declined` and a hint to ask the user for the address
+  and retry with `server_url=<address>`. An agent never chooses the address: the
+  value must come from the user.
+- A `server_url` that differs from the profile's current address — including
+  the first one — is saved only through a prompt answered by a person, which
+  shows the full address and says when it replaces an existing one or is
+  unencrypted. No confirmation token is issued or accepted for it, because a
+  token is returned to the calling agent and would let it approve its own
+  choice of server. A client that cannot prompt is refused and pointed at
+  `moneybin sync login --server <url>`. A `server_url` equal to the current
+  address needs no prompt.
 - After the user completes the verification URL, advance that session with
   `sync_status(auth_session_id=...)`.
 - Disconnecting an institution is a two-call confirmation flow. First call
-  `sync_disconnect(mode="institution", institution=<institution>)`; when it returns
-  `confirmation_required`, retry the same call with `confirmation_token=<token>`.
+  `sync_disconnect(mode="institution", institution=<institution>)` (or
+  `connection_id=<id>` or `provider_item_id=<id>` from `sync_status` to target
+  one exact connection
+  when the institution has more than one, e.g. after a relink); when it
+  returns `confirmation_required`, retry the same call with
+  `confirmation_token=<token>`. The confirmation message and binding name
+  the exact connection, credential generation, and complete account identity
+  set being removed.
+- `sync_disconnect(mode="institution", state="absent", ...)` is the purging
+  form for Plaid only; SimpleFIN purge is refused before mutation. The same
+  two-call flow applies, and the binding carries the credential generation,
+  complete account identity set, per-table row counts, link ids, and proposal
+  ids the purge will touch, so a pull that
+  lands between preview and confirm changes the digest and the confirm is
+  refused. The response reports `status="purged"`, `rows_deleted`, and
+  `account_links_reversed`; `institution` is `null` when the server no longer
+  listed the item and only its local rows were removed. Remote revocation is
+  reported from the broker response; orphan-only cleanup has no newly observed
+  revocation result. The server still has to answer for that orphan, because
+  the by-item lookup asks it before any
+  local row is read.
+  After the delete commits, purge restates the affected materialized models.
+  Rebuild failure preserves the committed purge and directs `moneybin refresh`;
+  successful purge needs no separate refresh action.
 - Clear profile-scoped credentials with `sync_disconnect(mode="logout")`. Logout
-  does not accept `institution` or `confirmation_token`.
+  does not accept `institution`, `confirmation_token`, or `state="absent"`.
 - Provider-specific operations remain abstracted behind the provider-agnostic
   tools above.
 
@@ -353,6 +495,11 @@ No additional sync-specific read tools are needed. Once data is pulled and trans
 ---
 
 ## E2E encryption design
+
+This is the unimplemented Phase 3 design. Its legacy “v2” labels describe a
+future encryption phase, separate from the current broker envelope
+`contract_version=2`, which uses JSON over TLS and encryption at rest while
+remaining readable by the broker.
 
 ### Threat model
 
@@ -483,6 +630,7 @@ Sync errors fall into three categories with distinct recovery paths.
 | `401 Unauthorized` | JWT expired or invalid | Attempt automatic refresh via refresh token. If refresh fails, prompt user to run `moneybin sync login`. |
 | `403 Forbidden` | User denied authorization during device flow | Log error, exit cleanly with guidance. |
 | Token not found | No stored credential | Direct user to `moneybin sync login`. |
+| `sync_server_not_configured` | No server address from any source | Direct user to `moneybin sync login --server <url>`; over MCP, to `sync_link(mode="login", server_url=...)` with an address the user supplies. |
 
 ### Connection errors
 
@@ -511,7 +659,7 @@ generic re-authentication guidance.
 | Server unreachable | Network or server down | Retry with exponential backoff (3 attempts). Clear error: "Cannot reach moneybin-sync at {url}." |
 | Sync job timeout | The synchronous trigger request exceeded its wait | Report that completion is unknown; no job id was returned. Retry `moneybin sync pull`. Use `moneybin sync status` only to inspect current connection health. |
 | Load failure | DuckDB write error during load | Roll back partial load (transaction). No raw data corruption. |
-| Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh`) independently. |
+| Transform failure | SQLMesh apply error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh`) independently. |
 
 ### Partial success handling
 
@@ -603,10 +751,12 @@ The client's response models in `src/moneybin/connectors/sync_models.py` are nam
 | `SyncTransaction.amount` | positive = expense (Plaid convention). The MoneyBin sign flip lives in `prep.stg_plaid__transactions`, NOT in the extractor or model. |
 | `SyncTransaction.category` | single flat string. We're collapsing Plaid's `personal_finance_category.primary` + `.detailed` somewhere in the server pipeline. |
 | `SyncTransaction.merchant_name` | populated by Plaid's merchant enrichment. SimpleFIN doesn't send this; OFX/MX use different sources. |
-| `SyncTransaction.pending` | meaningful (Plaid models pending → posted transitions). SimpleFIN doesn't surface pending. |
+| `SyncTransaction.pending` | meaningful (Plaid models pending → posted transitions). SimpleFIN also exposes optional pending rows; its approved child contract excludes them from the posted ledger. |
 | `SyncMetadata.institutions[].provider_item_id` | one item per institution per response — matches Plaid's item model. |
 
 The names suggest provider-agnostic; the contents don't.
+
+**SimpleFIN decision.** [M1G.5](sync-simplefin.md) retains the mediated boundary and selects Option B with an explicitly negotiated broker envelope, provider-specific batches, and durable per-scope acknowledgement. The implementation uses explicitly negotiated contract-v2 provider batches, provider-owned Raw ingestion and local completeness evidence; deployment and non-author live acceptance remain separate gates in the child spec.
 
 **Two paths when provider #2 lands.**
 
@@ -653,7 +803,7 @@ All unit tests and SQL tests run against mocked HTTP responses and in-memory Duc
 |---|---|
 | `SyncClient` methods | Mocked httpx responses: success, auth errors, server errors, timeouts, polling logic (including `slow_down` backoff) |
 | Provider extractors | JSON parsing, raw table loading, dedup on re-load, removed-record handling |
-| Auth flow | Device Authorization polling (success, timeout, denied, slow_down), token storage/retrieval (keychain mock + file fallback), refresh logic |
+| Auth flow | Device Authorization polling (success, timeout, denied, slow_down), token storage/retrieval (fake SecretStore, verified legacy-file import, denied/unavailable keychain), refresh logic |
 | Connection health | `GET /institutions` response mapping and error-code-to-guidance mapping |
 | Schedule management | Plist/cron generation and parsing, idempotent install/remove |
 | Staging views (SQL) | Sign convention flip, column mapping to core-compatible schema |
@@ -734,7 +884,7 @@ Phase 1 of this spec maps to **M1G — Plaid Transactions sync** in [`docs/roadm
 | Provider | Child spec | Status | Notes |
 |---|---|---|---|
 | Plaid | [`sync-plaid.md`](sync-plaid.md) | implemented | First provider. Transactions product shipped; investments is a separate implemented child. Liabilities remains a separate future child. |
-| SimpleFIN | `sync-simplefin.md` | Planned | Alternative aggregator used by Actual Budget. Lower coverage but no per-institution fees. |
+| SimpleFIN | [sync-simplefin.md](sync-simplefin.md) | In-progress | M1G.5: mediated cash/credit sync, pinned protocol versions, bounded history, durable acknowledgement and visible partial coverage; deployment and Early Access live acceptance remain open. |
 | MX | `sync-mx.md` | Planned | Enterprise-grade aggregator. Potential alternative to Plaid for hosted tier. |
 
 Adding a provider requires a child spec, the four artifacts from the

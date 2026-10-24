@@ -12,6 +12,17 @@ implemented
 > historical context; the live model lives at
 > `src/moneybin/sqlmesh/models/reports/net_worth.sql`.
 
+> **Superseded surface (2026-09-19):** the §MCP Interface paragraphs below
+> describing the two-row-kind envelope (a totals row per currency followed by
+> account rows), why the totals row leads, and the currency collapse applied
+> before `limit` describe the service-backed `core:networth` /
+> `core:networth_history` surface, retired by
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md).
+> The live surface is three SQL-backed reports at `core:net_worth`,
+> `core:net_worth_currencies`, and `core:net_worth_accounts`. Everything
+> else in this spec — the balance spine, carry-forward interpolation, and
+> reconciliation — stays in force.
+
 ## Goal
 
 Provide accurate, authoritative balance tracking per account and net worth computation over time. Balances are either sourced from authoritative observations (institution statements, Plaid snapshots, user assertions) or absent — never best-effort estimates from transaction sums alone.
@@ -61,7 +72,7 @@ CREATE TABLE IF NOT EXISTS app.balance_assertions (
     assertion_date DATE NOT NULL,   -- Date the balance was observed
     balance DECIMAL(18, 2) NOT NULL, -- Asserted balance amount
     notes VARCHAR,                  -- Optional user notes (e.g., "from paper statement")
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the assertion was entered
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the assertion was entered
     PRIMARY KEY (account_id, assertion_date)
 );
 ```
@@ -74,7 +85,7 @@ Per-account configuration. Initially just net worth inclusion; extensible for fu
 CREATE TABLE IF NOT EXISTS app.account_settings (
     account_id VARCHAR NOT NULL PRIMARY KEY, -- Foreign key to core.dim_accounts
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE, -- Whether this account contributes to net worth
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last modification time
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last modification time
 );
 ```
 
@@ -211,6 +222,12 @@ moneybin accounts balance assert <account_id> <date> <amount> [--notes "reason"]
 ```
 - Inserts or updates a row in `app.balance_assertions`
 - Validates `account_id` exists in `dim_accounts`
+- New assertions and unchanged balance/notes write without a prompt. Replacing
+  an existing balance or notes previews the account, date, previous value and
+  replacement, then requires interactive confirmation. `--yes` skips the
+  question, preserving validation. Without an interactive terminal, replacements
+  require `--yes`. The write verifies the exact prior assertion again after
+  confirmation, before changing it.
 
 ```
 moneybin accounts balance list [--account ACCOUNT_ID] [--output json|table]
@@ -221,7 +238,10 @@ moneybin accounts balance list [--account ACCOUNT_ID] [--output json|table]
 moneybin accounts balance assertion-delete <account_id> <date> [--yes]
 ```
 - Removes a manual assertion
-- `--yes` for non-interactive confirmation
+- Existing assertions preview their balance and notes before interactive
+  confirmation; `--yes` skips the question. Missing assertions remain a no-op
+  without a prompt. Non-interactive deletion of an existing assertion requires
+  `--yes`; confirmed deletion verifies the exact prior assertion before writing.
 
 ### `accounts balance reconcile` command
 

@@ -17,9 +17,10 @@ shipped model derives rather than ones the test invents.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Generator
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -1304,7 +1305,7 @@ class TestARepointBlocksUndoOfTheEditItMoved:
 
 
 class TestResolutionBeforeTheFactViewExists:
-    """A first load precedes the transform that builds ``core.fct_transactions``.
+    """A first load precedes the transform that builds the liveness oracle.
 
     The catalog lacks the liveness oracle entirely at that point (issue #593),
     not merely a row within it — the same absence :func:`_heal_stranded_curation`
@@ -1316,7 +1317,7 @@ class TestResolutionBeforeTheFactViewExists:
     def test_single_id_required_true_passes_through_unchanged(
         self, db: Database
     ) -> None:
-        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+        db.execute("DROP VIEW IF EXISTS prep.int_transactions__matched")
 
         assert resolve_curation_transaction_id(db, "plaid_abc123") == "plaid_abc123"
 
@@ -1324,7 +1325,7 @@ class TestResolutionBeforeTheFactViewExists:
     def test_single_id_required_false_passes_through_unchanged(
         self, db: Database
     ) -> None:
-        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+        db.execute("DROP VIEW IF EXISTS prep.int_transactions__matched")
 
         assert (
             resolve_curation_transaction_id(db, "plaid_abc123", required=False)
@@ -1335,7 +1336,7 @@ class TestResolutionBeforeTheFactViewExists:
     def test_bulk_resolution_returns_an_identity_map_for_every_id(
         self, db: Database
     ) -> None:
-        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+        db.execute("DROP VIEW IF EXISTS prep.int_transactions__matched")
         ids = ["plaid_abc123", "csv_def456", "ofx_ghi789"]
 
         assert resolve_curation_transaction_ids(db, ids) == dict(
@@ -1365,6 +1366,22 @@ def _insert_alias(db: Database, *, old_id: str, new_id: str) -> None:
     )
 
 
+def _seed_live(db: Database, transaction_id: str) -> None:
+    """Make an id live: the fact row and the matched row liveness reads."""
+    db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id) VALUES (?)",
+        [transaction_id],
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(transaction_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched VALUES (?)", [transaction_id]
+    )
+
+
 class TestDedupedAwayManualIsNotLive:
     """A manual transaction's raw row never rewrites its predicted id.
 
@@ -1383,9 +1400,7 @@ class TestDedupedAwayManualIsNotLive:
         _insert_manual_transaction(
             db, source_transaction_id="manual_src1", transaction_id="manual_abc"
         )
-        db.execute(
-            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('csv_xyz')"
-        )
+        _seed_live(db, "csv_xyz")
         _insert_alias(db, old_id="manual_abc", new_id="csv_xyz")
 
         assert resolve_curation_transaction_id(db, "manual_abc") == "csv_xyz"
@@ -1398,9 +1413,7 @@ class TestDedupedAwayManualIsNotLive:
         _insert_manual_transaction(
             db, source_transaction_id="manual_src2", transaction_id="manual_def"
         )
-        db.execute(
-            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('csv_uvw')"
-        )
+        _seed_live(db, "csv_uvw")
         _insert_alias(db, old_id="manual_def", new_id="csv_uvw")
 
         assert resolve_curation_transaction_ids(db, ["manual_def"]) == {
@@ -1435,9 +1448,7 @@ class TestBulkFallbackSharesOneReversedEdgeScan:
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         create_core_tables_raw(db.conn)
-        db.execute(
-            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('txn-live')"
-        )
+        _seed_live(db, "txn-live")
         _insert_alias(db, old_id="stale-a", new_id="txn-live")
         _insert_alias(db, old_id="stale-b", new_id="txn-live")
 
@@ -1458,3 +1469,72 @@ class TestBulkFallbackSharesOneReversedEdgeScan:
             "Expected exactly 1 reversed-edge scan for 2 stale ids in one "
             f"batch, got {len(audit_scan_calls)}"
         )
+
+
+@pytest.mark.unit
+def test_alias_forwarded_undo_uses_temporal_decoder(matched_db: Database) -> None:
+    from tests.moneybin.test_repositories.test_undo_event import legacy_note_policy
+
+    _insert_source_row(
+        matched_db,
+        source_transaction_id="csv_1234",
+        source_type="tabular",
+        source_file="export.csv",
+    )
+    old_id = _canonical_id("tabular", "csv_1234")
+    TransactionNotesRepo(matched_db).add(
+        transaction_id=old_id,
+        note_id="legacy-note",
+        text="historical",
+        actor="cli",
+    )
+    _insert_source_row(
+        matched_db,
+        source_transaction_id="ofx_5678",
+        source_type="ofx",
+        source_file="statement.qfx",
+    )
+    _seed_pending_dedup(matched_db, match_id="match0000009")
+    service = MatchingService(matched_db)
+    service.set_status("match0000009", status="accepted", actor="cli")
+    legacy_note_policy(matched_db)
+    moves = matched_db.execute(
+        "SELECT audit_id, before_value, after_value FROM app.audit_log "
+        "WHERE target_table = 'transaction_notes' AND parent_audit_id IS NOT NULL"
+    ).fetchall()
+    assert moves
+    for audit_id, before, after in moves:
+        images = [
+            json.loads(value) if value is not None else None
+            for value in (before, after)
+        ]
+        for image in images:
+            if image is not None:
+                image["created_at"] = "2024-07-01T12:00:00"
+        matched_db.execute(
+            "UPDATE app.audit_log SET before_value = ?, after_value = ?, "
+            "occurred_at = ? WHERE audit_id = ?",
+            [
+                *[json.dumps(image) if image is not None else None for image in images],
+                datetime(2025, 1, 1, tzinfo=UTC),
+                audit_id,
+            ],
+        )
+    evidence = matched_db.execute(
+        "SELECT audit_id, before_value, after_value FROM app.audit_log "
+        "WHERE target_table = 'transaction_notes' AND parent_audit_id IS NOT NULL "
+        "ORDER BY audit_id"
+    ).fetchall()
+    service.undo("match0000009", actor="cli")
+    assert matched_db.execute(
+        "SELECT transaction_id, created_at FROM app.transaction_notes "
+        "WHERE note_id = 'legacy-note'"
+    ).fetchone() == (old_id, datetime(2024, 7, 1, 16, tzinfo=UTC))
+    assert (
+        matched_db.execute(
+            "SELECT audit_id, before_value, after_value FROM app.audit_log "
+            "WHERE target_table = 'transaction_notes' AND parent_audit_id IS NOT NULL "
+            "ORDER BY audit_id"
+        ).fetchall()
+        == evidence
+    )

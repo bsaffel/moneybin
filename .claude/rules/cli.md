@@ -84,8 +84,10 @@ When a command modifies multiple persistent stores in sequence (e.g., file move 
 
 ## Command Group Registration
 
-- **Workflow ordering**: Top-level commands in `main.py` are registered in workflow order: setup → ingest → enrich → pipeline → analyze → output → integrations → ops. New commands should be inserted at the appropriate workflow stage.
-- **`no_args_is_help=True`**: Every `typer.Typer()` *group* must set this flag so bare invocation shows help text consistently. Leaf commands (registered via `app.command()` directly on the root app, like `stats` and `logs`) follow a different convention — see "Leaf Commands vs Sub-Groups" below. Do not use `invoke_without_command=True` callbacks as a substitute — that flag runs the callback even when a subcommand is provided, causing confusing side effects like duplicate setup or output.
+- **Root discovery**: `navigation.py` owns the top-level help sections, descriptions, and short-menu selection. Keep commands alphabetical within each section. Bare `moneybin` shows the short menu and exits successfully before runtime setup; `moneybin --help` shows every visible command in the same sections and order.
+- **Lazy registration**: A root command is declared in `_MoneyBinRoot.lazy_commands` (`cli/main.py`) as `LazyCommand(module, attr)` — never `app.add_typer(...)` or `app.command(...)` on the root, and never an import of its module in `main.py`. `RootGroup` imports the module the first time the command is resolved. A new root command also needs its `HELP_SECTIONS` entry (a hidden one excepted). A sub-group of another group is still attached with `add_typer` inside its parent module.
+- **Subgroups**: Set `no_args_is_help=True` so bare group invocation shows help. The root alone uses `invoke_without_command=True` with an early `ctx.invoked_subcommand is None` return; never print its menu or initialize runtime on a help path. Leaves with required arguments still report usage errors.
+
 ## Cold-Start Hygiene
 
 Every E2E test, every shell autocomplete, and every CLI invocation pays the full module-import cost for `moneybin.cli.main`. Keep that path light.
@@ -111,6 +113,8 @@ Every E2E test, every shell autocomplete, and every CLI invocation pays the full
   ```
 
   Should produce no output for `fastmcp`, `sqlmesh`, or `polars`.
+
+- **First-party modules count too.** Command groups import lazily (see "Lazy registration"), because each one drags in its service graph and `moneybin --help` needs none of it. Don't import a `moneybin.cli.commands.*` module from `cli/main.py` or `cli/navigation.py`. `tests/moneybin/test_cli/test_cold_start.py` fails if `--help` loads any.
 
 ## Leaf Commands vs Sub-Groups
 
@@ -153,30 +157,23 @@ Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `S
 
 ### Keeping the console readable
 
-WARNING and above always reach the console. Below that, a record is hidden only
-if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py`;
-everything else prints.
+WARNING and above always reach the console. Normal CLI invocations suppress
+routine INFO and DEBUG records; `--verbose` restores diagnostics. File handlers
+remain unfiltered, and non-CLI streams retain their own console behavior.
 
-**`logger.debug` is not "hide from console" — it is "drop everywhere."** The
-root logger sits at INFO, so a DEBUG record never reaches the log file either.
-Before demoting a line, name the other place the information survives — and
-note that `typer.echo` is not that place, because it writes to stderr and never
-reaches the log file. Reach for `logger.debug` only when a surviving
-`typer.echo` or INFO line already says it; when the detail belongs in the file
-but not the terminal, add a denylist prefix instead. Getting this backwards is
-easy and quiet: demoting the per-tier match counts looked like console cleanup,
-but `MatchResult.summary()` reports only run-wide totals, so the per-tier split
-left the log file entirely. Why the denylist is deliberate rather than an
-allowlist, and what `log_to_file: false` changes:
-[`.claude/references/console-log-routing.md`](../references/console-log-routing.md).
-Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`.
+**`logger.debug` is not "hide from console" — it is "drop everywhere" unless
+`--verbose` enables it.** Before demoting a line, name the result or recovery
+presenter that preserves the user-facing fact. `typer.echo` is not a durable
+log record, so use INFO when the detail belongs in configured file logs and
+make it visible with `--verbose`. Command results never depend on either INFO
+or DEBUG. Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`.
 
 ## Standard Flags on Read-Only Commands
 
 Every command that **reads but does not mutate** state MUST accept:
 
 - `-o, --output {text,json}` — output format. `text` is human-readable, `json` is machine-readable. The `json` branch must serialize the same **records and values** the text branch displays: the same rows, the same amounts, the same masking. It may carry more *fields* — where a text table renders a declared subset of its columns, JSON still carries every one (see `--wide` below). Narrowing is a reading aid for a terminal, never a difference in what the two branches know.
-- `-q, --quiet` — suppress informational output (status lines, progress, `✅`). Result rows are NEVER suppressed by `-q` — they are the data.
+- `-q, --quiet` — suppress informational output (status lines, progress, optional next-step hints). Preserve result rows and required recovery actions.
 - `--wide` — on a command whose text table renders a declared subset of its columns, restore the full projection. Text-only: `--output json` always carries every column. A command that renders everything by default does not need it.
 - `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. Added progressively as each read-only command is extended — declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`. Commands that implement it MUST enumerate available field names in their `--help` text (e.g. `"Available fields: id, date, amount, description, category, account_id"`).
 
@@ -209,10 +206,22 @@ data through this module and have it silenced.
 
 A command that accepts `-q` must forward it: `render_note` defaults to
 `quiet=False`, so a dropped flag is a flag that silently does nothing. Forward
-it to the chatter only — a next-step hint, a progress line, a `✅`. A statement
+it to the chatter only — an optional next-step hint or a progress line. A statement
 about how far the numbers can be trusted (truncated, degraded, converted)
 keeps printing under `-q`, because asking for less chatter is not a claim that
-the truncation stopped.
+the truncation stopped. Required recovery actions also remain visible. Commands
+that emit only results and recovery disclosures should document why quiet has
+no additional output to suppress.
+
+**Next-step hints.** A report runner authors one `NextStep` (`src/moneybin/errors.py`)
+per hint instead of a raw string, so MCP and CLI stop sharing one grammar:
+`NextStep.for_mcp()` renders `{verb} {mcp} for {reason}` for the MCP envelope's
+`actions[]`, and the CLI renders `› {Reason capitalized}: {generated_cli_command(*step.cli)}`
+— the command always last on the line, satisfying requirement 7's "explicit,
+executable CLI command" (`docs/specs/cli-human-experience.md`). A service
+raising `UserError(hint=...)` outside the report framework is not a `NextStep`:
+it authors its hint as prose that quotes the CLI form inline (`'moneybin ...'`),
+the pattern `account_service.py` and `services/restate.py` already use.
 
 **Amounts.** `format_money` is the only place an amount becomes text, and every
 money column declares a **money kind** — `flow`, `magnitude`, `delta`, or
@@ -231,13 +240,27 @@ it would let a redirected file record a truncated table that reads as whole.
 Pass `total_columns=` to `render_rows` to get that line; leave it out and
 nothing is framed.
 
-**Colour** is defined once, semantically, as `render.Style` — no colour literal
-belongs at a call site — and is emitted only when stdout is a TTY and `NO_COLOR`
-is unset. The sign glyph is always present, so the encoding survives a pipe.
+**Terminal policy** belongs to `moneybin.cli.terminal`. It resolves actual
+stdin/stdout/stderr capabilities and the supplied `CLISettings` without loading
+a profile or database. JSON disables human presentation; reduced motion keeps
+static stage labels while disabling animation; quiet suppresses those labels.
+`NO_COLOR` disables every style, including bold. `render.Style` names semantic
+roles (hierarchy, context, action, and states) with terminal palette names; no
+colour literal belongs at a call site. Rich may appear only in the centralized
+presentation helpers (`render.py`, `terminal.py`, and `progress.py`), never in a command-local
+renderer. The sign glyph is always present, so the encoding survives a pipe.
+
+`TerminalPolicy.symbols` provides `✓`, `!`, `×`, and `›` with `OK`, `!`, `X`,
+and `>` ASCII fallbacks. Use its `minus` when a terminal-facing formatter needs
+the portable hyphen-minus; preserve the number and sign meaning. Commands with
+legacy direct human output carry the searchable
+`DEPRECATED: direct-human-output` marker until they migrate through the shared
+presentation boundary.
 
 Three guards in `tests/moneybin/test_cli/test_render.py` enforce this
-structurally: Rich may be imported only by `render.py`, no `typer.echo` outside
-it carries an alignment format spec, and nothing calls `typer.secho`/`typer.style`.
+structurally: Rich may be imported only by centralized presentation helpers,
+no `typer.echo` outside them carries an alignment format spec, and nothing calls
+`typer.secho`/`typer.style`.
 
 **No module is exempt** — every CLI module is held to these three guards
 unconditionally. The `_AWAITING_RENDER_ROWS` set that once carried eight
@@ -251,6 +274,10 @@ stored. Requirement 11 governs amounts: a transaction total, a balance, a
 gain. If the column answers "how much is this worth", format it; if it
 answers "what does one unit cost", do not.
 
+A share count prints with trailing zeros trimmed (`output.share_count`:
+`41.5000000000` → `41.5`); a per-unit price never does, and prints as stored.
+The two are separate decisions — do not unify them in either direction.
+
 **Curate a wide table; do not let the renderer measure one.** A list command
 with more columns than an 80-column terminal holds declares its columns once as
 `(name, extractor)` pairs, a `_DEFAULT` subset, and takes `--wide` — the same
@@ -261,6 +288,20 @@ Reach for `render_rows(fit=True)` only where no author judgement exists to
 encode: it keeps the first and last columns, which on `investments holdings`
 elides `market value` — the figure the command exists to report. The default
 set is curated rather than measured because width knows nothing about meaning.
+
+`--wide` on a terminal too narrow for the whole projection is curated the same
+way: pass `build_rows(optional=...)` the columns the default view omits, most
+important first. The renderer drops them last-first until the table fits, never
+touches the default set, and names what it omitted beneath the table with a
+wider terminal or `--output json` as the remedy — never `--wide`, which is
+already in force. `investments holdings`/`gains`/`list`/`lots list` are the
+examples. Every `reports` command gets the same through
+`cli_register.py::optional_columns`, which treats the columns outside
+`default_columns` as optional in reverse projection order: a `reports`
+projection leads with its id and ends on its headline measure
+(`column-ordering.md`), so the first extra is the first to go and the last
+extra the last — on `balance_drift` at 100 columns, `account_id` leaves before
+`asserted_balance` does.
 
 The reason either is needed: Rich folds an over-narrow cell, and a folded
 amount is *misread*, not merely ugly — `1,200.00` becomes `1,200.` above `00`.
@@ -284,6 +325,18 @@ column it leaves Rich nothing wrappable to give up, and it then crops
 `1,234,567.89` to `1,234`, which is the same misread by another route. The
 ellipsis is the floor under that: a cell too narrow even after the squeeze
 reads `1,234,5…`, which cannot pass for a whole number.
+
+Three further keywords refine `numeric=`. `grouped=` names the subset of
+`numeric=` columns whose `int` or `Decimal` values are grouped by thousands —
+row counts, table sizes, a dynamic `sql query` column — so a count reads
+`1,381` beside an amount that reads `1,381.00`; a per-unit price or FX rate
+stays out of it. `percent=` names the subset storing a ratio, printed by
+`format_percent` as `+9.4%` — a report declares it as `OutputColumn(percent=True)`,
+and a `_pct` column that omits it prints eighteen float digits. `nowrap=` gives
+a text column the same no-fold guarantee without right-aligning it: a
+timestamp, an actor, an action name that would be misread split across two
+lines. A report column whose NULL means no category was assigned declares
+`OutputColumn(uncategorized=True)` and prints that NULL as `Uncategorized`.
 
 Curation is still the answer for a table that is simply too wide. The renderer
 guarantees no amount is *wrong*; only the author can decide which columns are
@@ -315,18 +368,12 @@ Every interactive prompt (confirmation, selection, wizard step) must have a flag
 
 Combined with `--output json` (see `mcp-architecture.md` §7), this makes every CLI command fully automatable by AI agents (Claude Code, Codex) and shell scripts.
 
-## Icon Usage
+## Terminal symbols and logging
 
-Use icons **sparingly** — only where they add scanability, not decoration.
+For console and file logging behavior, see "Keeping the console readable" above.
 
-| Signal | Icon | When to use |
-|--------|------|-------------|
-| Success | `✅` | Final line of a successful action command |
-| Error | `❌` | `logger.error(...)` messages |
-| Warning | `⚠️` | `logger.warning(...)` messages |
-| Working | `⚙️` | Start of a long-running operation (sync, load, transform) |
-| Hint | `💡` | Optional follow-up tips after an error |
-| Bug report | `🐛` | Link to issue tracker after an unexpected error |
-| Review | `👀` | Items that need user attention or review |
-
-Do **not** add icons to ordinary informational log lines (paths, counts, results rows). Query/display commands (`status`, `stats`, `list-*`) don't need a trailing ✅ — they just display data. No decorative icons (📈📊📁) — only the semantic icons in the table above.
+Use the active `TerminalPolicy` symbols for shared error and progress helpers:
+`OK`/`X`/`>` in ASCII mode and their functional Unicode counterparts otherwise.
+Do not hard-code pictographic prefixes in new terminal output. Essential
+recovery text goes directly to stderr and JSON commands keep stdout exclusively
+for their structured document or envelope.

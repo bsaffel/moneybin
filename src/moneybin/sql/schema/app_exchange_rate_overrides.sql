@@ -16,9 +16,9 @@ CREATE TABLE IF NOT EXISTS app.exchange_rate_overrides (
     rate DECIMAL(18, 8) NOT NULL              -- The user's rate; multiply a from_currency amount by this to get to_currency. (18,8) is the exchange-rate precision in database.md
         CHECK (rate > 0),                     -- Mirrors raw.exchange_rates: a zero or negative rate is never a real quote, and this one outranks the provider, so it would convert every balance to zero
     note VARCHAR,                             -- Why the user overrode the provider rate; the only provenance an override carries beyond its audit row
-    created_at TIMESTAMP                      -- When first entered; preserved across a later correction to the same date
+    created_at TIMESTAMPTZ                      -- When first entered; preserved across a later correction to the same date
         DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP                      -- When this override last changed value
+    updated_at TIMESTAMPTZ                      -- When this override last changed value
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (from_currency, to_currency, rate_date)
 );

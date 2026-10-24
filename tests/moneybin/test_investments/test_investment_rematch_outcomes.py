@@ -88,12 +88,15 @@ def test_cli_merge_exits_nonzero_when_planner_prevents_rebuild(
         )
     assert result.exit_code == 1
     assert set_link.call_count == 1
-    assert "not reflected" in caplog.text
+    assert "not reflected" in result.output
+    assert "moneybin refresh --step match" in result.output
     if deterministic:
+        assert "re-run 'moneybin refresh'" not in result.output
         assert "re-run 'moneybin refresh'" not in caplog.text
+        assert "moneybin refresh --step transform" not in result.output
         assert "Retrying unchanged inputs cannot succeed" in caplog.text
     else:
-        assert "moneybin refresh --step transform" in caplog.text
+        assert "moneybin refresh --step transform" in result.output
 
 
 @pytest.mark.parametrize("surface", ["accounts", "identity_batch"])

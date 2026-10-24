@@ -118,8 +118,12 @@ def _enrich_for_ofx_raw(
         pl
         .col("date")
         .str.strptime(pl.Date, "%Y-%m-%d")
-        .cast(pl.Datetime)
+        .cast(pl.Datetime(time_zone="UTC"))
         .alias("date_posted"),
+        pl
+        .col("date")
+        .str.strptime(pl.Date, "%Y-%m-%d")
+        .alias("date_posted_source_date"),
         pl.col("amount").cast(pl.Decimal(18, 2)),
         pl.col("payee"),
         pl.lit(None, dtype=pl.Utf8).alias("memo"),

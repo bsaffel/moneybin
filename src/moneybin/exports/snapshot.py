@@ -19,12 +19,13 @@ from moneybin.exports.catalog import BUNDLE_TABLES
 from moneybin.exports.models import RedactionMode
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.tables import TableRef
+from moneybin.temporal import format_utc
 
 if TYPE_CHECKING:
     from moneybin.database import Database
 
 
-ARTIFACT_VERSION = 1
+ARTIFACT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,17 +153,17 @@ class PreparedExport:
 
     @property
     def data_dictionary(self) -> dict[str, object]:
-        """Return a fresh JSON-safe standalone data-dictionary receipt."""
+        """A fresh JSON-safe standalone data-dictionary receipt."""
         return cast(dict[str, object], _json_safe(self._data_dictionary))
 
     @property
     def manifest(self) -> dict[str, object]:
-        """Return the JSON-safe receipt for this prepared snapshot."""
+        """The JSON-safe receipt for this prepared snapshot."""
         return {
             "artifact_version": self.artifact_version,
             "export_id": self.export_id,
             "profile": self.profile,
-            "created_at": self.created_at.isoformat(),
+            "created_at": format_utc(self.created_at),
             "subject": self.subject.as_manifest(),
             "redaction_mode": self.redaction_mode,
             "tables": [
@@ -287,6 +288,14 @@ def _source_name(source: TableRef | None) -> str | None:
     return None if source is None else source.full_name
 
 
+def format_export_datetime(value: datetime) -> str:
+    """Preserve SQL wall times while canonicalizing aware export instants."""
+    if value.utcoffset() is None and value not in (datetime.min, datetime.max):
+        return value.isoformat(timespec="microseconds")
+    # DuckDB infinity sentinels are naive min/max; keep their strict refusal.
+    return format_utc(value)
+
+
 def _json_safe(value: object) -> object:
     """Encode native cells deterministically without changing prepared rows."""
     if value is None or isinstance(value, (bool, int, float, str)):
@@ -294,7 +303,7 @@ def _json_safe(value: object) -> object:
     if isinstance(value, Decimal):
         return {"$decimal": str(value)}
     if isinstance(value, datetime):
-        return {"$datetime": value.isoformat()}
+        return {"$datetime": format_export_datetime(value)}
     if isinstance(value, date):
         return {"$date": value.isoformat()}
     if isinstance(value, time):
@@ -305,7 +314,12 @@ def _json_safe(value: object) -> object:
         return str(value)
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        return {str(key): _json_safe(item) for key, item in mapping.items()}
+        return {
+            (
+                format_export_datetime(key) if isinstance(key, datetime) else str(key)
+            ): _json_safe(item)
+            for key, item in mapping.items()
+        }
     if isinstance(value, (list, tuple)):
         sequence = cast(list[object] | tuple[object, ...], value)
         return [_json_safe(item) for item in sequence]

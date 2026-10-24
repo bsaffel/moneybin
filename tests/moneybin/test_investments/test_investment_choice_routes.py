@@ -184,10 +184,10 @@ async def test_acceptance_choice_validation_matches_across_routes_without_writes
             },
         )
         if selection == "duplicate":
-            assert result.isError is True
+            assert result.is_error is True
         else:
-            assert result.structuredContent is not None
-            error = result.structuredContent["error"]
+            assert result.structured_content is not None
+            error = result.structured_content["error"]
             assert error["code"] == "mutation_invalid_input"
             message = error["details"]["errors"][0]["reason"].lower()
             assert ("acceptance is unavailable" in message) == valid, message

@@ -247,3 +247,31 @@ def test_accept_pending_no_filter_accepts_all_pending(db: Database) -> None:
 
     assert set(flipped) == {"p1", "p2"}
     assert _statuses(db) == {"p1": "accepted", "p2": "accepted", "r1": "rejected"}
+
+
+def test_accept_ids_refuses_stale_member_before_any_write(db: Database) -> None:
+    """Exact-id acceptance is atomic even when a later id has gone terminal."""
+    repo = MatchDecisionsRepo(db)
+    _insert(repo, match_id="first", match_status="pending")
+    _insert(repo, match_id="second", match_status="rejected")
+
+    with pytest.raises(ValueError, match="every match must still be pending"):
+        repo.accept_ids(("first", "second"), decided_by="user", actor="cli")
+
+    assert _statuses(db) == {"first": "pending", "second": "rejected"}
+    updates = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log "
+        "WHERE action = 'match_decision.update_status'"
+    ).fetchone()
+    assert updates == (0,)
+
+
+def test_accept_ids_refuses_missing_member_before_any_write(db: Database) -> None:
+    """A deletion between preview and write cannot partially accept the batch."""
+    repo = MatchDecisionsRepo(db)
+    _insert(repo, match_id="first", match_status="pending")
+
+    with pytest.raises(ValueError, match="every match must still be pending"):
+        repo.accept_ids(("first", "missing"), decided_by="user", actor="cli")
+
+    assert _statuses(db) == {"first": "pending"}

@@ -13,9 +13,9 @@ CREATE TABLE IF NOT EXISTS app.security_price_overrides (
     close DECIMAL(28, 10) NOT NULL            -- The user's price for one unit in quote_currency; (28,10) matches raw.security_prices and the investments quantity/price precedent
         CHECK (close > 0),                    -- Mirrors raw.security_prices: zero is the value 'an unpriced holding is NULL, never zero' exists to refuse, so a mark must not be able to assert it
     note VARCHAR,                             -- Why the user set it; optional, and the only provenance a mark carries beyond the audit row
-    created_at TIMESTAMP                      -- When this mark was first entered; preserved across a later correction to the same date
+    created_at TIMESTAMPTZ                      -- When this mark was first entered; preserved across a later correction to the same date
         DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP                      -- When this mark last changed value
+    updated_at TIMESTAMPTZ                      -- When this mark last changed value
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (security_id, price_date, quote_currency)
 );

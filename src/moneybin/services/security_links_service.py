@@ -75,6 +75,27 @@ _SelectionSet = dict[str, list[tuple[str, Decimal]]]
 # deletes the provisional). Surfaces report the two differently.
 AcceptOutcome = Literal["bound", "merged"]
 
+#: Every input an accept can write: a bind adds a link; a merge also deletes
+#: the provisional security and re-points lots, manual events and price marks.
+_ACCEPT_INPUTS = (
+    SECURITIES,
+    SECURITY_LINKS,
+    LOT_SELECTIONS,
+    SECURITY_PRICE_OVERRIDES,
+    MANUAL_INVESTMENT_TRANSACTIONS,
+)
+
+
+def restate_after_accept(db: Database) -> None:
+    """Rebuild the investment models after committed security-link accepts.
+
+    Public so a caller that accepts inside its own transaction restates once,
+    after its commit.
+    """
+    from moneybin.services.restate import restate_after_write
+
+    restate_after_write(db, _ACCEPT_INPUTS, committed_change="security")
+
 
 @dataclass(frozen=True)
 class PendingSecurityLinkCandidate:
@@ -141,8 +162,12 @@ class SecurityLinksService:
         """Pending, non-reversed decisions ordered ``ref_value, decision_id``."""
         return self._decisions.list_pending()
 
-    def pending(self) -> list[PendingSecurityLinkGroup]:
+    def pending(
+        self, *, limit: int | None = None, decision_id: str | None = None
+    ) -> list[PendingSecurityLinkGroup]:
         """Pending decisions grouped by provider ref, candidates enriched with ticker/name.
+
+        ``limit`` selects complete groups; ``decision_id`` selects its full group.
 
         ``list_pending()`` rows carry only ``candidate_security_id`` — a bare
         id tells the reviewer nothing about whether the merge is right, so
@@ -153,7 +178,16 @@ class SecurityLinksService:
         row — is the review unit, mirroring
         ``MerchantLinksService.pending()``. Read-only — no audit emitted.
         """
-        rows = self._decisions.list_pending()
+        rows = (
+            self._decisions.list_pending()
+            if limit is None and decision_id is None
+            else self._decisions.list_pending_groups(
+                group_columns=("ref_kind", "ref_value"),
+                item_id_columns=("source_type", "ref_kind", "ref_value"),
+                limit=limit,
+                decision_id=decision_id,
+            )
+        )
         if not rows:
             return []
 
@@ -450,7 +484,7 @@ class SecurityLinksService:
         auto-reject the ref's sibling candidates — accepting one answers them all.
 
         ``verify_accept`` is the confirmation-grant check, and it runs HERE rather
-        than in the caller for the reason ``mcp.md`` gives: a grant is verified
+        than in the caller for the reason ``services.md`` gives: a grant is verified
         against live state inside the same write transaction, immediately before
         the first mutation, never verified ahead of a transaction opened
         afterwards. The gap matters because of the sibling auto-reject below —
@@ -508,6 +542,7 @@ class SecurityLinksService:
             f"feed key bound: decision={decision_id} security={into} "
             f"ref_kind={decision['ref_kind']}"
         )
+        restate_after_accept(self._db)
 
         from moneybin.services.security_resolver import (
             refresh_security_link_pending_gauge,
@@ -755,6 +790,7 @@ class SecurityLinksService:
             f"manual_events_repointed={manual_repointed} "
             f"price_marks_repointed={marks_repointed}"
         )
+        restate_after_accept(self._db)
 
         # Accepting changed the pending count (the named decision plus its
         # auto-rejected siblings) — refresh the gauge.

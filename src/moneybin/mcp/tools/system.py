@@ -3,22 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl  # POSIX-only: project targets macOS/Linux
 import inspect
-import json
 import logging
-import os
 from collections.abc import Callable
-from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
-import duckdb
 from fastmcp import FastMCP
 from pydantic import Field
 
 from moneybin import error_codes
-from moneybin.build_info import get_build_info
-from moneybin.db_lock import lock_path_for
+from moneybin.adapters import system_status_adapters as status_adapters
 from moneybin.errors import (
     UserError,
     classify_user_error,
@@ -37,7 +31,6 @@ from moneybin.privacy.payloads.system import (
     InvariantResultPayload,
     OverviewStatus,
     RecoveryActionPayload,
-    SchemaDriftTable,
     SectionUnavailable,
     SystemAuditCoarsePayload,
     SystemAuditEventPayload,
@@ -46,24 +39,9 @@ from moneybin.privacy.payloads.system import (
     SystemAuditHistoryPayload,
     SystemAuditUndoPayload,
     SystemDoctorPayload,
-    SystemStatusAccountLinksInfo,
-    SystemStatusAccountsInfo,
-    SystemStatusBuildInfo,
-    SystemStatusCategorizationInfo,
     SystemStatusCoarsePayload,
-    SystemStatusDatabaseConnectionsInfo,
-    SystemStatusExportDestination,
-    SystemStatusGsheetInfo,
     SystemStatusGsheetRow,
-    SystemStatusMatchesInfo,
-    SystemStatusMerchantLinksInfo,
     SystemStatusPayload,
-    SystemStatusReader,
-    SystemStatusSchemaDrift,
-    SystemStatusSecurityLinksInfo,
-    SystemStatusTransactionsInfo,
-    SystemStatusTransformsInfo,
-    SystemStatusWriter,
 )
 from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -76,59 +54,14 @@ from moneybin.protocol.pagination import (
     reject_inverted_keyset,
     validate_keyset_shape,
 )
-from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
-from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 logger = logging.getLogger(__name__)
 
 # Display order of both audit views: `ORDER BY occurred_at DESC, <id> DESC`.
 _AUDIT_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("desc", "desc")
 
-_HEALTHY_STATUSES = frozenset({"healthy"})
-_DISCONNECTED_STATUSES = frozenset({"disconnected"})
-# Re-reads of the write-lock metadata file to ride out write_lock's brief
-# in-place rewrite (ftruncate-then-write) window before treating it as absent.
-_METADATA_READ_ATTEMPTS = 3
 
-
-def _gsheet_block(db: Any) -> dict[str, Any]:
-    """Build the gsheet block: counts by status + per-attention rows.
-
-    Returns the zero-connections shape when the table is empty or absent;
-    healthy and disconnected connections are excluded from ``needs_attention``.
-    """
-    try:
-        connections = GSheetConnectionsRepo(db).list_all()
-    except duckdb.CatalogException:
-        # Table absent on bare DBs before init_schemas — report empty rather
-        # than error. Narrowed from a blanket except so real DB/query problems
-        # (corruption, permission, a broken schema) surface instead of being
-        # masked as total_connections=0 and suppressing recovery hints.
-        return {"total_connections": 0, "by_status": {}, "needs_attention": []}
-
-    by_status: dict[str, int] = {}
-    needs_attention: list[dict[str, Any]] = []
-    for connection in connections:
-        status = connection["status"]
-        by_status[status] = by_status.get(status, 0) + 1
-        if status in _HEALTHY_STATUSES or status in _DISCONNECTED_STATUSES:
-            continue
-        needs_attention.append({
-            "connection_id": connection["connection_id"],
-            "workbook_name": connection["workbook_name"],
-            "sheet_name": connection["sheet_name"],
-            "status": status,
-            "reason": connection["last_status_reason"],
-        })
-
-    return {
-        "total_connections": len(connections),
-        "by_status": by_status,
-        "needs_attention": needs_attention,
-    }
-
-
-def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
+def _gsheet_action_hints(needs_attention: list[SystemStatusGsheetRow]) -> list[str]:
     """Generate per-row action hints for connections that need attention.
 
     drift_detected → gsheet_reconnect hint (MCP-invokable). auth_expired →
@@ -138,8 +71,8 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
     """
     hints: list[str] = []
     for row in needs_attention:
-        status = row["status"]
-        cid = row["connection_id"]
+        status = row.status
+        cid = row.connection_id
         if status == "drift_detected":
             hints.append(
                 f"Run gsheet_connect(connection_id='{cid}') to re-detect "
@@ -159,190 +92,6 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
     return hints
 
 
-def _writer_is_live(lock_path: Path) -> bool:
-    """Return True iff a process currently holds the write lock.
-
-    The ``.write.lock`` metadata file is never unlinked — unlinking races
-    with the next opener, and ``fcntl`` auto-releases on crash — so the file
-    persists after a clean release carrying the *last* holder's pid, which may
-    still be a live process that is no longer writing. The mere existence of
-    the file (or a live pid in it) therefore does NOT mean a writer is active.
-
-    The only authoritative test is to try the lock ourselves, non-blocking. A
-    shared (``LOCK_SH``) probe is used rather than exclusive so two concurrent
-    ``system_status`` / ``db ps`` probes don't block each other and misreport a
-    peer prober as a writer; ``LOCK_SH`` still conflicts with a writer's
-    ``LOCK_EX``.
-
-    Conversely, this probe's brief ``LOCK_SH`` hold can make a writer's
-    concurrent ``LOCK_EX`` attempt fail once and take a single backoff retry
-    (~50 ms). That is harmless and expected — a spurious retry here is the probe
-    doing its job, not a symptom of deeper contention.
-    """
-    try:
-        fd = os.open(lock_path, os.O_RDONLY)
-    except OSError:
-        return False
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True  # a writer holds LOCK_EX
-        # Acquired — nobody holds an exclusive lock; release immediately.
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    finally:
-        os.close(fd)
-
-
-def _read_writer_metadata(lock_path: Path) -> dict[str, Any] | None:
-    """Read + parse the writer metadata, tolerating the brief rewrite window.
-
-    write_lock rewrites the metadata in place — ``ftruncate(0)`` then
-    ``write(payload)`` — so a diagnostic reader can momentarily observe an empty
-    or partial file and fail to parse it. That window is only a couple of
-    syscalls wide, so retry a few times before giving up; without the retry a
-    live writer would be reported with no metadata exactly while it is acquiring
-    the lock — the contention the DatabaseLockError recovery action sends the
-    agent here to diagnose. Returns the normalized writer dict, or None if the
-    file is absent or genuinely unparseable after the retries.
-    """
-    for _ in range(_METADATA_READ_ATTEMPTS):
-        try:
-            metadata = json.loads(lock_path.read_text(encoding="utf-8"))
-            return {
-                "pid": int(metadata["pid"]),
-                # The writer command is already a sanitized friendly name —
-                # write_lock runs it through describe_process before storing it,
-                # so the on-disk lock file never holds a raw argv. Pass it
-                # through as-is (re-sanitizing would mangle the friendly name).
-                "command": str(metadata["command"]),
-                "started_at": str(metadata["started_at"]),
-                "operation_type": str(metadata["operation_type"]),
-            }
-        except (OSError, ValueError, KeyError, TypeError):
-            # Empty/partial file (mid-rewrite), corrupted JSON, or non-dict JSON
-            # (null/list/scalar makes metadata["pid"] raise TypeError). Retry —
-            # the next read likely catches the completed write.
-            continue
-    return None
-
-
-def _database_connections_info(db_path: Path) -> SystemStatusDatabaseConnectionsInfo:
-    """Build the typed database_connections payload from the lock + lsof view."""
-    block = _database_connections_block(db_path)
-    return SystemStatusDatabaseConnectionsInfo(
-        writers=[SystemStatusWriter(**w) for w in block["writers"]],
-        readers=[SystemStatusReader(**r) for r in block["readers"]],
-    )
-
-
-def _database_connections_block(db_path: Path) -> dict[str, Any]:
-    """Merge file-lock writer metadata with lsof-derived reader enumeration.
-
-    Returns the empty-shape ``{"writers": [], "readers": []}`` when neither
-    source reports anything. A writer is reported only when a process actually
-    holds the file lock (``_writer_is_live``) — the persisted metadata file
-    alone is not enough, since it outlives the holder. Tolerates a corrupted
-    lock file by treating it as no-writer-info — the lock-file payload is
-    best-effort observability, not a correctness contract. The writer's pid is
-    filtered out of the reader list to avoid double-listing the writer process.
-    """
-    writers: list[dict[str, Any]] = []
-    writer_pid: int | None = None
-    # Resolve once for the lsof reader scan; lock_path_for resolves db_path
-    # itself for the lock file. Both resolve the same db_path, so the writer
-    # probe and the reader scan stay on one inode even for a symlinked or
-    # relative path — and neither re-resolves an already-resolved path.
-    resolved = db_path.resolve()
-    lock_path = lock_path_for(db_path)
-    # No separate exists() check: _writer_is_live opens the lock file and
-    # returns False if it is absent, so an exists() guard would be a redundant,
-    # TOCTOU-prone stat.
-    writer_is_live = _writer_is_live(lock_path)
-    if writer_is_live:
-        metadata = _read_writer_metadata(lock_path)
-        if metadata is not None:
-            writer_pid = metadata["pid"]
-            writers.append(metadata)
-        # If a live writer's metadata is still unreadable after the retries in
-        # _read_writer_metadata (genuinely corrupt, not just mid-rewrite), fall
-        # back to no writer entry — the lock-file payload is best-effort
-        # observability, not a correctness contract.
-
-    # A writer can time out and release the advisory lock while a DuckDB reader
-    # still blocks the next write, so recovery diagnostics must enumerate
-    # readers independently of the current writer-lock state.
-    readers: list[dict[str, Any]] = []
-    processes = find_blocking_processes(resolved)
-    for proc in processes:
-        if writer_pid is not None and proc["pid"] == writer_pid:
-            continue  # Avoid double-listing the writer as a reader
-        readers.append({
-            "pid": int(proc["pid"]),
-            "command": describe_process(
-                str(proc.get("cmdline") or proc.get("command", ""))
-            ),
-        })
-
-    return {"writers": writers, "readers": readers}
-
-
-def _build_info() -> SystemStatusBuildInfo:
-    """Name the build this process is running.
-
-    Derivation lives in ``moneybin.build_info`` — export manifest provenance
-    (``exports/service.py``) reuses the same source rather than a second one.
-    """
-    build = get_build_info()
-    return SystemStatusBuildInfo(version=build.version, revision=build.revision)
-
-
-def _locked_status_envelope(
-    db_connections: SystemStatusDatabaseConnectionsInfo,
-) -> ResponseEnvelope[SystemStatusPayload]:
-    """Degraded ``system_status`` for when a writer holds the database lock.
-
-    A read-only open cannot attach while a writer holds the lock, so the data
-    inventory is unavailable — but ``database_connections`` (read from the lock
-    file + lsof, no DB needed) still names the holder, which is exactly what the
-    ``DatabaseLockError`` recovery action needs. The inventory fields are
-    zero-filled and the envelope is flagged ``degraded`` so the agent trusts
-    only ``database_connections``.
-    """
-    return build_envelope(
-        data=SystemStatusPayload(
-            accounts=SystemStatusAccountsInfo(count=0),
-            transactions=SystemStatusTransactionsInfo(
-                count=0, date_range=[None, None], last_import_at=None
-            ),
-            matches=SystemStatusMatchesInfo(pending_review=0),
-            account_links=SystemStatusAccountLinksInfo(pending_review=0),
-            merchant_links=SystemStatusMerchantLinksInfo(pending_review=0),
-            security_links=SystemStatusSecurityLinksInfo(pending_review=0),
-            categorization=SystemStatusCategorizationInfo(uncategorized=0),
-            transforms=SystemStatusTransformsInfo(
-                pending=False, last_apply_at=None, missing_models=[]
-            ),
-            schema_drift=None,
-            gsheet=SystemStatusGsheetInfo(
-                total_connections=0, by_status={}, needs_attention=[]
-            ),
-            database_connections=db_connections,
-            build=_build_info(),
-        ),
-        degraded=True,
-        degraded_reason=(
-            "A writer holds the database lock; the data inventory is unavailable "
-            "until it releases. See database_connections for the holder."
-        ),
-        actions=[
-            "Inspect database_connections for the writer holding the lock, then "
-            "wait and retry or surface the contention to the user",
-        ],
-    )
-
-
 def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
 
@@ -356,7 +105,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """
     from moneybin.config import get_settings
     from moneybin.database import DatabaseLockError, get_database
-    from moneybin.services.system_service import SystemService
+    from moneybin.services.system_service import SystemService, database_connections
 
     # Collect the file-lock / lsof connection view BEFORE opening the DB: it
     # reads the lock file and lsof (no DB connection needed) and must stay
@@ -365,7 +114,9 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     # first would let a read-only open retry-then-fail under contention, so the
     # diagnostic would time out exactly when it is needed.
     db_path = get_settings().database.path
-    db_connections = _database_connections_info(db_path)
+    db_connections = status_adapters.database_connections_info(
+        database_connections(db_path)
+    )
 
     try:
         # Short max_wait: this is the DatabaseLockError recovery tool, so under
@@ -374,31 +125,38 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
         # read to succeed — db_connections is captured before the open and
         # recomputed in the except branch below.
         with get_database(read_only=True, max_wait=2.0) as db:
-            status = SystemService(db).status()
-            gsheet = _gsheet_block(db)
+            service = SystemService(db)
+            status = service.status()
+            gsheet = status_adapters.gsheet_info(service.gsheet_connections())
     except DatabaseLockError:
         # Re-snapshot before degrading: a writer can acquire the lock between the
         # preflight snapshot above and this read failing, so the preflight view
         # may predate the writer and report no holder. Recomputing here names the
         # writer that actually caused the lock — exactly what the
         # DatabaseLockError recovery action sends the agent to system_status for.
-        return _locked_status_envelope(_database_connections_info(db_path))
+        # Only database_connections is real in this payload; the inventory is
+        # zero-filled and flagged degraded so the agent trusts nothing else.
+        return build_envelope(
+            data=status_adapters.locked_overview_payload(
+                status_adapters.database_connections_info(database_connections(db_path))
+            ),
+            degraded=True,
+            degraded_reason=(
+                "A writer holds the database lock; the data inventory is "
+                "unavailable until it releases. See database_connections for "
+                "the holder."
+            ),
+            actions=[
+                "Inspect database_connections for the writer holding the lock, "
+                "then wait and retry or surface the contention to the user",
+            ],
+        )
 
-    min_date, max_date = status.transactions_date_range
-
-    schema_drift_payload: SystemStatusSchemaDrift | None = None
     actions = [
         "Use reviews for per-queue review counts",
         "Use reports(report_id='core:spending_trend') for a spending trend snapshot",
     ]
     if status.schema_drift:
-        schema_drift_payload = SystemStatusSchemaDrift(
-            tables=[
-                SchemaDriftTable(name=table, missing_columns=cols)
-                for table, cols in sorted(status.schema_drift.items())
-            ],
-            remediation="moneybin refresh",
-        )
         actions.append(
             "Run refresh_run to rebuild stale models — "
             f"{len(status.schema_drift)} core table(s) drifted"
@@ -414,61 +172,10 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
         )
         actions.append(f"Run refresh_run to refresh derived tables ({cause})")
 
-    actions.extend(_gsheet_action_hints(gsheet["needs_attention"]))
+    actions.extend(_gsheet_action_hints(gsheet.needs_attention))
 
     return build_envelope(
-        data=SystemStatusPayload(
-            accounts=SystemStatusAccountsInfo(count=status.accounts_count),
-            transactions=SystemStatusTransactionsInfo(
-                count=status.transactions_count,
-                date_range=[
-                    min_date.isoformat() if min_date else None,
-                    max_date.isoformat() if max_date else None,
-                ],
-                last_import_at=(
-                    status.last_import_at.isoformat() if status.last_import_at else None
-                ),
-            ),
-            matches=SystemStatusMatchesInfo(pending_review=status.matches_pending),
-            account_links=SystemStatusAccountLinksInfo(
-                pending_review=status.account_links_pending
-            ),
-            merchant_links=SystemStatusMerchantLinksInfo(
-                pending_review=status.merchant_links_pending
-            ),
-            security_links=SystemStatusSecurityLinksInfo(
-                pending_review=status.security_links_pending
-            ),
-            categorization=SystemStatusCategorizationInfo(
-                uncategorized=status.categorize_pending
-            ),
-            transforms=SystemStatusTransformsInfo(
-                pending=status.transforms_pending,
-                last_apply_at=(
-                    status.transforms_last_apply_at.isoformat()
-                    if status.transforms_last_apply_at
-                    else None
-                ),
-                missing_models=list(status.transforms_missing_models),
-            ),
-            schema_drift=schema_drift_payload,
-            gsheet=SystemStatusGsheetInfo(
-                total_connections=gsheet["total_connections"],
-                by_status=gsheet["by_status"],
-                needs_attention=[
-                    SystemStatusGsheetRow(
-                        connection_id=r["connection_id"],
-                        workbook_name=r["workbook_name"],
-                        sheet_name=r["sheet_name"],
-                        status=r["status"],
-                        reason=r["reason"],
-                    )
-                    for r in gsheet["needs_attention"]
-                ],
-            ),
-            database_connections=db_connections,
-            build=_build_info(),
-        ),
+        data=status_adapters.overview_payload(status, gsheet, db_connections),
         actions=actions,
     )
 
@@ -532,7 +239,7 @@ def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     )
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, timeout_seconds=180.0)
 def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayload]:
     """Reverse every app.* mutation in one operation as a unit, keyed on operation_id.
 
@@ -545,18 +252,21 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     Block-don't-cascade: if a *later* operation modified the same rows, this
     refuses with ``undo_cascade_blocked`` and lists the blocker operation ids in
     ``recovery_actions`` (newest first) — undo those first, then retry. Other
-    refusals: ``undo_operation_not_found``, ``undo_already_undone``, and
+    refusals: ``undo_operation_not_found``, ``undo_already_undone``,
     ``recovery_no_path`` (the operation touched a table outside the undoable
-    app.* surface, e.g. a manual import — re-import to recover instead).
+    app.* surface, e.g. a manual import — re-import to recover instead), and
+    ``undo_value_inadmissible`` (restoring the captured row would write back a
+    value the write path no longer admits, e.g. a pre-existing blank category —
+    not retryable; recreate the entity with a valid value instead).
 
     Writes app.audit_log plus the reversed app.* rows; revert this undo by
     calling system_audit_undo again on the returned undo_operation_id.
     """
     from moneybin.database import get_database
-    from moneybin.services.undo_service import UndoService
+    from moneybin.orchestration.account_mutations import undo_operation
 
     with get_database(read_only=False) as db:
-        result = UndoService(db).undo(operation_id, actor="mcp")
+        result = undo_operation(db, operation_id, actor="mcp")
     return build_envelope(
         data=SystemAuditUndoPayload(
             undo_operation_id=result.undo_operation_id,
@@ -771,18 +481,7 @@ def _export_status_section() -> ExportsStatus:
 
     with get_database(read_only=True) as db:
         readiness = ExportService(db).status()
-    return ExportsStatus(
-        destinations=[
-            SystemStatusExportDestination(
-                name=item.name,
-                kind=item.kind,
-                ready=item.ready,
-                write_capable=item.write_capable,
-                reasons=list(item.reasons),
-            )
-            for item in readiness.destinations
-        ]
-    )
+    return status_adapters.exports_status(readiness)
 
 
 def _audit_event_payload(event: Any) -> SystemAuditEventPayload:
@@ -816,10 +515,12 @@ def _audit_position(
         return decode_keyset_cursor(
             cursor,
             namespace="system_audit",
-            scope={"view": view},
+            scope={"view": view, "temporal_contract": 2},
         )
     except ValueError as exc:
-        raise ValueError("invalid audit cursor") from exc
+        raise ValueError(
+            "invalid audit cursor; restart pagination without a cursor"
+        ) from exc
 
 
 def _audit_bounds(
@@ -837,7 +538,9 @@ def _audit_bounds(
             _AUDIT_KEY_DIRECTIONS,
         )
     except ValueError as exc:
-        raise ValueError("invalid audit cursor") from exc
+        raise ValueError(
+            "invalid audit cursor; restart pagination without a cursor"
+        ) from exc
     return (
         snapshot,
         after,
@@ -845,15 +548,7 @@ def _audit_bounds(
 
 
 def _canonical_audit_key(key: tuple[object, ...]) -> tuple[str, str]:
-    """Return one audit key with its timestamp in canonical space-separated ISO.
-
-    ``datetime.fromisoformat`` accepts both ``2025-06-01T01:00:00`` and
-    ``2025-06-01 02:00:00``; lexicographically the space form sorts behind the
-    ``T`` form even when it is the later instant, so comparing raw keys would
-    let a forged cursor mixing the two defeat the ordering guard. An offset
-    would break the same ordering, and every timestamp this log stores is
-    naive, so an aware one is refused rather than converted.
-    """
+    """Return one audit key in canonical UTC before comparing its text."""
     occurred_at, row_id = cast(tuple[str, str], key)
     if not row_id:
         raise ValueError("audit cursor carries an empty id")
@@ -1038,7 +733,7 @@ async def system_audit_coarse(
         if has_more and page and snapshot_key is not None:
             next_cursor = encode_keyset_cursor(
                 namespace="system_audit",
-                scope={"view": "events"},
+                scope={"view": "events", "temporal_contract": 2},
                 snapshot=snapshot_key,
                 after=(str(page[-1].occurred_at), page[-1].audit_id),
                 total=total_count,
@@ -1089,7 +784,7 @@ async def system_audit_coarse(
         if has_more and page and snapshot_key is not None:
             next_cursor = encode_keyset_cursor(
                 namespace="system_audit",
-                scope={"view": "history"},
+                scope={"view": "history", "temporal_contract": 2},
                 snapshot=snapshot_key,
                 after=(str(page[-1].occurred_at), page[-1].operation_id),
                 total=total_count,

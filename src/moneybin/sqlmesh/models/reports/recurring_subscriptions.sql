@@ -28,9 +28,17 @@ WITH eligible AS (
     ON t.account_id = a.account_id
   WHERE
     t.amount < 0
-    AND NOT t.is_transfer
-    AND NOT a.archived
-    AND t.transaction_date >= CURRENT_DATE - INTERVAL '18' MONTHS
+    AND @report_eligible_transaction(t, a)
+    AND t.transaction_date >= timezone(
+      (
+        SELECT
+          ps.reporting_timezone
+        FROM app.profile_settings AS ps
+        WHERE
+          ps.scope = 'profile'
+      ),
+      CURRENT_TIMESTAMP
+    )::DATE - INTERVAL '18' MONTHS
 ), with_intervals AS (
   /* LAG partitions include account_id so two accounts paying the same
      merchant for the same amount are treated as separate subscriptions —
@@ -96,7 +104,16 @@ SELECT
     ELSE 'irregular'
   END AS cadence, /* weekly | biweekly | monthly | quarterly | yearly | irregular */
   CASE
-    WHEN CURRENT_DATE - last_seen <= GREATEST(60, interval_days_avg * 2)
+    WHEN timezone(
+      (
+        SELECT
+          ps.reporting_timezone
+        FROM app.profile_settings AS ps
+        WHERE
+          ps.scope = 'profile'
+      ),
+      CURRENT_TIMESTAMP
+    )::DATE - last_seen <= GREATEST(60, interval_days_avg * 2)
     THEN 'active'
     ELSE 'inactive'
   END AS status, /* 'active' if last_seen is within max(60 days, 2× cadence) — scales for yearly/quarterly */

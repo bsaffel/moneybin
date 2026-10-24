@@ -183,105 +183,39 @@ def _patched_resolve():
     )
 
 
-class TestPriceMarkRefresh:
-    """`set` and `delete` cross the same raw/core boundary `pull` does.
+class TestPriceMarkVisibility:
+    """A mark values holdings as soon as it is saved.
 
-    A mark lands in `app.security_price_overrides`; `core.fct_security_prices` is
-    a SQLMesh model built from it. So a corrective mark reports `✅ Marked` while
-    `prices list` and every holdings valuation keep serving the price the user
-    just overrode — indefinitely, until some unrelated refresh happens to run.
-    That is the failure `pull` already has both remedies for, and these commands
-    are the ones a user reaches for precisely *because* a price is wrong.
+    The service restates the price models after the write
+    (docs/specs/materialization-freshness-contract.md), so neither command
+    points at a refresh or accepts ``--refresh`` any more.
     """
 
+    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
     @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
-    def test_set_names_the_command_that_makes_the_mark_visible(
-        self, _set: MagicMock, _resolve: MagicMock, _db: MagicMock
+    def test_set_neither_hints_nor_runs_a_refresh(
+        self,
+        _set: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+        mock_refresh: MagicMock,
     ) -> None:
         result = runner.invoke(
             app, ["set", "PRIVCO", "2026-07-30", "42.50", "--currency", "USD"]
         )
 
         assert result.exit_code == 0
-        assert _REFRESH_HINT in result.output
-        assert _STALE_REFRESH_HINT not in result.output
-
-    @patch("moneybin.orchestration.refresh.refresh")
-    @patch("moneybin.cli.commands.investments.prices.get_database")
-    @_patched_resolve()
-    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
-    def test_set_refresh_rebuilds_only_the_transform_step(
-        self,
-        _set: MagicMock,
-        _resolve: MagicMock,
-        _db: MagicMock,
-        mock_refresh: MagicMock,
-    ) -> None:
-        """Same reasoning as `pull`: a mark cannot affect a transaction-side stage."""
-        mock_refresh.return_value = RefreshResult(applied=True, duration_seconds=1.5)
-
-        result = runner.invoke(
-            app,
-            ["set", "PRIVCO", "2026-07-30", "42.50", "--currency", "USD", "--refresh"],
-        )
-
-        assert result.exit_code == 0
-        assert mock_refresh.call_count == 1
-        assert mock_refresh.call_args.kwargs["steps"] == ["transform"]
         assert _REFRESH_HINT not in result.output
+        assert mock_refresh.call_count == 0
 
-    @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
     @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
-    def test_a_failed_apply_after_set_exits_nonzero(
-        self,
-        _set: MagicMock,
-        _resolve: MagicMock,
-        _db: MagicMock,
-        mock_refresh: MagicMock,
-        caplog: pytest.LogCaptureFixture,
+    def test_set_json_carries_the_mark_alone(
+        self, _set: MagicMock, _resolve: MagicMock, _db: MagicMock
     ) -> None:
-        """The mark is committed; only the propagation failed, so retry the apply."""
-        mock_refresh.return_value = RefreshResult(
-            applied=False, duration_seconds=None, error="model VTI not found"
-        )
-
-        with caplog.at_level(logging.WARNING):
-            result = runner.invoke(
-                app,
-                [
-                    "set",
-                    "PRIVCO",
-                    "2026-07-30",
-                    "42.50",
-                    "--currency",
-                    "USD",
-                    "--refresh",
-                ],
-            )
-
-        assert result.exit_code == 1
-        assert "model VTI not found" in caplog.text
-        assert _REFRESH_HINT in caplog.text
-        assert _STALE_REFRESH_HINT not in caplog.text
-
-    @patch("moneybin.orchestration.refresh.refresh")
-    @patch("moneybin.cli.commands.investments.prices.get_database")
-    @_patched_resolve()
-    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
-    def test_set_json_carries_the_refresh_outcome(
-        self,
-        _set: MagicMock,
-        _resolve: MagicMock,
-        _db: MagicMock,
-        mock_refresh: MagicMock,
-    ) -> None:
-        """An agent gets the same signal the text hint gives a human."""
-        mock_refresh.return_value = RefreshResult(applied=True, duration_seconds=1.5)
-
         result = runner.invoke(
             app,
             [
@@ -291,31 +225,42 @@ class TestPriceMarkRefresh:
                 "42.50",
                 "--currency",
                 "USD",
-                "--refresh",
                 "--output",
                 "json",
             ],
         )
 
         assert result.exit_code == 0
-        assert json.loads(result.output)["data"]["refreshed"] is True
+        data = json.loads(result.output)["data"]
+        assert data["security_id"] == "sec_privateco"
+        assert "refreshed" not in data
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["set", "PRIVCO", "2026-07-30", "42.50", "--currency", "USD", "--refresh"],
+            ["delete", "PRIVCO", "2026-07-30", "--currency", "USD", "--refresh"],
+        ],
+    )
+    def test_refresh_is_no_longer_an_option(self, args: list[str]) -> None:
+        result = runner.invoke(app, args)
+
+        assert result.exit_code == 2
 
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
     @patch(
         "moneybin.services.price_service.PriceService.delete_mark", return_value=True
     )
-    def test_delete_names_the_command_that_returns_the_date_to_provider_pricing(
+    def test_delete_neither_hints_nor_runs_a_refresh(
         self, _delete: MagicMock, _resolve: MagicMock, _db: MagicMock
     ) -> None:
-        """Removing a mark changes the resolved series exactly as writing one does."""
         result = runner.invoke(
             app, ["delete", "PRIVCO", "2026-07-30", "--currency", "USD"]
         )
 
         assert result.exit_code == 0
-        assert _REFRESH_HINT in result.output
-        assert _STALE_REFRESH_HINT not in result.output
+        assert _REFRESH_HINT not in result.output
 
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
@@ -325,42 +270,13 @@ class TestPriceMarkRefresh:
     def test_a_delete_that_removed_nothing_suggests_nothing(
         self, _delete: MagicMock, _resolve: MagicMock, _db: MagicMock
     ) -> None:
-        """No row removed means core is already current — the hint would be noise.
-
-        Mirrors `test_a_pull_that_wrote_nothing_suggests_nothing`.
-        """
+        """No row removed means core is already current — the hint would be noise."""
         result = runner.invoke(
             app, ["delete", "PRIVCO", "2026-07-30", "--currency", "USD"]
         )
 
         assert result.exit_code == 0
         assert _REFRESH_HINT not in result.output
-
-    @patch("moneybin.orchestration.refresh.refresh")
-    @patch("moneybin.cli.commands.investments.prices.get_database")
-    @_patched_resolve()
-    @patch(
-        "moneybin.services.price_service.PriceService.delete_mark", return_value=False
-    )
-    def test_a_delete_that_removed_nothing_does_not_pay_for_an_apply(
-        self,
-        _delete: MagicMock,
-        _resolve: MagicMock,
-        _db: MagicMock,
-        mock_refresh: MagicMock,
-    ) -> None:
-        """Nothing changed, so --refresh has nothing to propagate.
-
-        Unlike `pull --refresh`, which stays unconditional because an earlier
-        pull may have been left unapplied, a no-op delete cannot have stranded
-        anything: the mark it would have removed was never there.
-        """
-        result = runner.invoke(
-            app, ["delete", "PRIVCO", "2026-07-30", "--currency", "USD", "--refresh"]
-        )
-
-        assert result.exit_code == 0
-        assert mock_refresh.call_count == 0
 
 
 class TestMarkCurrencyDefault:
@@ -600,6 +516,95 @@ class TestPricesRenderThroughTheSharedRenderer:
         for header in ("date", "close", "currency", "source", "basis"):
             assert header in result.stdout
         assert "0.0000432100" in result.stdout
+
+    def test_list_offers_no_pager_for_a_finite_human_result(self) -> None:
+        """A long price series can be read through the shared pager boundary."""
+        result = runner.invoke(app, ["list", "--help"])
+
+        assert result.exit_code == 0
+        assert "--no-pager" in result.stdout
+
+    @patch("moneybin.services.price_service.build_price_service")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_list_no_pager_prints_a_long_answer_without_starting_a_pager(
+        self,
+        _db: MagicMock,
+        build: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The command itself passes the escape hatch through to the pager boundary."""
+        from moneybin.cli import pager
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=True,
+            ascii=True,
+            width=20,
+            height=1,
+            symbols=TerminalSymbols("OK", "!", "X", ">"),
+            minus="-",
+        )
+
+        def _pager_policy(**_kwargs: object) -> TerminalPolicy:
+            return policy
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.investments.prices.get_terminal_policy",
+            _pager_policy,
+        )
+        paged: list[str] = []
+
+        def _capture_page(text: str, *, color: bool, wide: bool) -> bool:
+            del color, wide
+            paged.append(text)
+            return True
+
+        monkeypatch.setattr(
+            pager,
+            "page_text",
+            _capture_page,
+        )
+        service = build.return_value
+        service.resolve_security.return_value = "sec_1"
+        service.list_prices.return_value.rows = [
+            SimpleNamespace(
+                price_date=date(2026, 7, 15),
+                close=1,
+                quote_currency="USD",
+                source_type="tiingo",
+                price_basis="close",
+            )
+        ]
+
+        paged_result = runner.invoke(app, ["list", "sec_1"])
+        result = runner.invoke(app, ["list", "sec_1", "--no-pager"])
+
+        assert paged_result.exit_code == 0, paged_result.output
+        assert paged
+        assert result.exit_code == 0, result.output
+        assert "sec_1" in result.stdout
+
+    @patch("moneybin.services.price_service.build_price_service")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_list_empty_names_the_filtered_scope(
+        self, _db: MagicMock, build: MagicMock
+    ) -> None:
+        """An empty resolved series distinguishes no matching prices from silence."""
+        service = build.return_value
+        service.resolve_security.return_value = "sec_1"
+        service.list_prices.return_value.rows = []
+
+        result = runner.invoke(app, ["list", "sec_1", "--source", "tiingo"])
+
+        assert result.exit_code == 0, result.output
+        assert "Prices" in result.stdout
+        assert "No prices match this security and filter." in result.stdout
 
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_pull(

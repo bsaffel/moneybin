@@ -114,7 +114,7 @@ moneybin import files my_export.csv
 moneybin refresh
 
 # 5. Query the result.
-moneybin reports networth          # canned report
+moneybin reports net-worth         # canned report
 moneybin db shell                  # interactive SQL against core.* / reports.*
 ```
 
@@ -143,7 +143,7 @@ under a declared maximum. → [`mcp-server.md`](../guides/mcp-server.md)
 
 ### SQL
 
-Read-only DuckDB query. `moneybin db shell` and any DuckDB-compatible client given the profile's encryption key reach every schema; the `sql_query` MCP tool and `moneybin sql query` admit five — `core`, `app`, `reports`, `raw`, and `prep` — refuse `meta` and `seeds`, and mask `raw`/`prep` through 34 hand-written CRITICAL declarations plus a value-shape scan over the string and integer values in every other column — a `DECIMAL` or `FLOAT` is not scanned. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key show` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
+Read-only DuckDB query. `moneybin db shell` and any DuckDB-compatible client given the profile's encryption key reach every schema; the `sql_query` MCP tool and `moneybin sql query` admit five — `core`, `app`, `reports`, `raw`, and `prep` — refuse `meta` and `seeds`, and mask `raw`/`prep` through 58 hand-written CRITICAL declarations plus a value-shape scan over the string and integer values in every other column — a `DECIMAL` or `FLOAT` is not scanned. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key show` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
 
 ## Lifecycle of an MCP tool call
 

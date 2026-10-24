@@ -4,9 +4,10 @@ Unified entry point for MoneyBin CLI operations. Commands are organized into
 top-level groups for entity management, workflows, reports, and infrastructure
 per `docs/specs/moneybin-cli.md` v2.
 
-Cold-start cost is kept down by deferring heavy transitive imports
-(``fastmcp``, ``sqlmesh``, ``polars``) inside the command function bodies
-that need them — see `.claude/rules/cli.md` → "Cold-Start Hygiene".
+Command modules import lazily (``_MoneyBinRoot.lazy_commands``), so ``--help``
+and the start menu load none of their service graphs. Heavy third-party
+imports (``fastmcp``, ``sqlmesh``, ``polars``) are also deferred inside command
+bodies — see `.claude/rules/cli.md` → "Cold-Start Hygiene".
 """
 
 import importlib.metadata
@@ -23,40 +24,49 @@ from ..config import (
     set_current_profile,
 )
 from ..observability import setup_observability
-from .commands import (
-    accounts,
-    assets,
-    categories,
-    db,
-    demo,
-    export,
-    fx,
-    gsheet,
-    import_cmd,
-    investments,
-    logs,
-    mcp,
-    merchants,
-    migrate,
-    privacy,
-    profile,
-    refresh,
-    reports,
-    review,
-    sql,
-    stats,
-    sync,
-    synthetic,
-    system,
-    transactions,
-    transform,
-)
-from .commands import (
-    budget as budget_cmd,
-)
+from .navigation import LazyCommand, RootGroup, show_start_menu
 from .utils import resolve_profile, stash_cli_flags
 
 logger = logging.getLogger(__name__)
+
+# DEPRECATED: direct-human-output — migrate this text path through the shared
+# terminal policy; docs/specs/cli-human-experience.md#implementation-boundary-and-migration.
+
+
+_COMMANDS = "moneybin.cli.commands"
+
+
+class _MoneyBinRoot(RootGroup):
+    """The root group; each command module imports when first resolved."""
+
+    lazy_commands = {
+        "accounts": LazyCommand(f"{_COMMANDS}.accounts", "app"),
+        "assets": LazyCommand(f"{_COMMANDS}.assets", "app"),
+        "investments": LazyCommand(f"{_COMMANDS}.investments", "app"),
+        "reports": LazyCommand(f"{_COMMANDS}.reports", "app"),
+        "transactions": LazyCommand(f"{_COMMANDS}.transactions", "app"),
+        "categories": LazyCommand(f"{_COMMANDS}.categories", "app"),
+        "fx": LazyCommand(f"{_COMMANDS}.fx", "app"),
+        "merchants": LazyCommand(f"{_COMMANDS}.merchants", "app"),
+        "review": LazyCommand(f"{_COMMANDS}.review", "review_command"),
+        "export": LazyCommand(f"{_COMMANDS}.export", "export_app"),
+        "gsheet": LazyCommand(f"{_COMMANDS}.gsheet", "app"),
+        "import": LazyCommand(f"{_COMMANDS}.import_cmd", "app"),
+        "refresh": LazyCommand(f"{_COMMANDS}.refresh", "refresh_command"),
+        "sync": LazyCommand(f"{_COMMANDS}.sync", "app"),
+        "demo": LazyCommand(f"{_COMMANDS}.demo", "demo_command"),
+        "mcp": LazyCommand(f"{_COMMANDS}.mcp", "app"),
+        "privacy": LazyCommand(f"{_COMMANDS}.privacy", "app"),
+        "profile": LazyCommand(f"{_COMMANDS}.profile", "app"),
+        "db": LazyCommand(f"{_COMMANDS}.db", "app"),
+        "logs": LazyCommand(f"{_COMMANDS}.logs", "logs_command"),
+        "sql": LazyCommand(f"{_COMMANDS}.sql", "app"),
+        "stats": LazyCommand(f"{_COMMANDS}.stats", "stats_command"),
+        "synthetic": LazyCommand(f"{_COMMANDS}.synthetic", "app"),
+        "system": LazyCommand(f"{_COMMANDS}.system", "app"),
+        "transform": LazyCommand(f"{_COMMANDS}.transform", "app"),
+        "budget": LazyCommand(f"{_COMMANDS}.budget", "app", hidden=True),
+    }
 
 
 app = typer.Typer(
@@ -64,7 +74,10 @@ app = typer.Typer(
     help="MoneyBin: Personal financial data aggregation and analysis tool",
     add_completion=True,
     rich_markup_mode="rich",
-    no_args_is_help=True,
+    cls=_MoneyBinRoot,
+    no_args_is_help=False,
+    invoke_without_command=True,
+    subcommand_metavar="[COMMAND] [ARGS]...",
     # Pinned, not merely inherited: frames on the database-open path hold the
     # plaintext encryption key and profile passphrases as locals, and a rich
     # traceback is not a log record, so SanitizedLogFormatter cannot redact it.
@@ -159,6 +172,17 @@ def main_callback(
     (``moneybin logs`` with no stream) never trigger the wizard or write
     profile dirs before the leaf command surfaces its own response.
     """
+    if ctx.invoked_subcommand is None:
+        if profile_name is not None:
+            from moneybin.utils.user_config import normalize_profile_name
+
+            try:
+                normalize_profile_name(profile_name)
+            except ValueError as e:
+                raise typer.BadParameter(str(e), param_hint="--profile") from e
+        show_start_menu()
+        return
+
     stash_cli_flags(profile_name, verbose)
     setup_observability(stream="cli", verbose=verbose, profile=None)
 
@@ -201,107 +225,6 @@ def main_callback(
     # the command runs unlogged with SQLMesh's per-statement INFO on stderr.
     if explicit:
         mark_profile_resolution_pending()
-
-
-# Command groups ordered by workflow: setup → ingest → enrich → pipeline → analyze → output → integrations → ops
-app.add_typer(
-    profile.app,
-    name="profile",
-    help="Manage user profiles (create, list, switch, delete, show, set)",
-)
-app.command(
-    name="demo",
-    help="Set up a demo profile with synthetic data and a first answer",
-)(demo.demo_command)
-app.add_typer(
-    import_cmd.app,
-    name="import",
-    help="Import financial files into MoneyBin",
-)
-app.add_typer(
-    sync.app,
-    name="sync",
-    help="Sync transactions from external services",
-)
-app.add_typer(
-    gsheet.app,
-    name="gsheet",
-    help="Connect Google Sheets workbooks (direct OAuth, user-controlled storage)",
-)
-app.add_typer(
-    accounts.app,
-    name="accounts",
-    help="Account listing, settings, and lifecycle ops",
-)
-app.add_typer(
-    reports.app,
-    name="reports",
-    help="Cross-domain analytical reports",
-)
-app.command(
-    name="review",
-    help=(
-        "Pending counts across all review queues (matches, categorize, "
-        "account-links, merchant-links, security-links)"
-    ),
-)(review.review_command)
-app.add_typer(transactions.app, name="transactions")
-app.add_typer(assets.app, name="assets")
-app.add_typer(
-    investments.app,
-    name="investments",
-    help="Investment ledger, positions, lots, gains, and securities catalog",
-)
-app.add_typer(categories.app, name="categories")
-app.add_typer(merchants.app, name="merchants")
-app.add_typer(
-    privacy.app, name="privacy", help="Privacy utilities: redaction and audit"
-)
-app.add_typer(budget_cmd.app, name="budget", hidden=True)
-app.add_typer(
-    fx.app,
-    name="fx",
-    help="Exchange rates: inspect cached reference rates and record corrections",
-)
-app.add_typer(system.app, name="system")
-app.command(
-    name="refresh",
-    help="Refresh derived tables: matching, transforms, categorization (leaf)",
-)(refresh.refresh_command)
-app.add_typer(
-    transform.app,
-    name="transform",
-    help="Run data transformations",
-)
-app.add_typer(
-    synthetic.app,
-    name="synthetic",
-    help="Generate and manage synthetic financial data for testing",
-)
-app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
-app.add_typer(
-    sql.app,
-    name="sql",
-    help="Privacy-safe ad-hoc SQL (lineage classification + CRITICAL masking)",
-)
-app.add_typer(export.export_app, name="export", help="Export data to external formats")
-app.add_typer(
-    mcp.app,
-    name="mcp",
-    help="MCP server for AI assistant integration",
-)
-app.add_typer(
-    db.app,
-    name="db",
-    help="Database management and exploration",
-)
-app.command(
-    name="logs",
-    help="View, prune, or locate MoneyBin log files for the active profile.",
-)(logs.logs_command)
-
-# Add db migrate as a sub-typer of db
-db.app.add_typer(migrate.app, name="migrate", help="Database migration management")
 
 
 def main() -> None:

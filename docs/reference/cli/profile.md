@@ -11,7 +11,7 @@ Usage: `moneybin profile [OPTIONS] COMMAND [ARGS]...`
 
 | Command | Purpose |
 |---|---|
-| [`moneybin profile create`](#moneybin-profile-create) | Create a profile, or finish setting up a half-made one. |
+| [`moneybin profile create`](#moneybin-profile-create) | Create a profile, or finish setting up a half-made one, and make it active. |
 | [`moneybin profile list`](#moneybin-profile-list) | List all profiles, marking the active one. |
 | [`moneybin profile switch`](#moneybin-profile-switch) | Set a different profile as the active default. |
 | [`moneybin profile delete`](#moneybin-profile-delete) | Delete a profile and all its data (database, logs, config). |
@@ -20,26 +20,30 @@ Usage: `moneybin profile [OPTIONS] COMMAND [ARGS]...`
 
 ## moneybin profile create
 
-Create a profile, or finish setting up a half-made one.
+Create a profile, or finish setting up a half-made one, and make it active.
 
 Creates the directory structure, config, and encrypted database. A directory
 left unregistered by a bare `db init`, a hand `mkdir`, or an interrupted delete
 is completed in place rather than refused — an existing database is preserved
 untouched. Refuses only when a fully registered profile already exists.
 
-Usage: `moneybin profile create [OPTIONS] NAME`
+The profile becomes the active default, so the next command runs against it.
+When another profile was active, the receipt names it and how to switch back.
+
+Usage: `moneybin profile create [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Profile name (will be normalized) |
+| `name` | text | yes | Profile name (will be normalized) |
 
 **Options**
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--init-inbox / --no-init-inbox` | flag |  | Create the import-inbox layout (~/Documents/MoneyBin/\<profile>/{inbox,processed,failed}/). If unset, prompts when interactive and skips when not. |
+| `--reporting-timezone` | text |  | IANA reporting timezone; fresh headless profiles use UTC. |
+| `--init-inbox / --no-init-inbox` | flag |  | Create the import-inbox layout (\<inbox_root>/\<profile>/{inbox,processed,failed,pending}/; inbox_root defaults to ~/Documents/MoneyBin). If unset, prompts when interactive and skips when not. |
 
 ## moneybin profile list
 
@@ -52,31 +56,32 @@ Usage: `moneybin profile list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin profile switch
 
 Set a different profile as the active default.
 
-Usage: `moneybin profile switch [OPTIONS] NAME`
+Usage: `moneybin profile switch [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Profile name to switch to |
+| `name` | text | yes | Profile name to switch to |
 
 ## moneybin profile delete
 
 Delete a profile and all its data (database, logs, config).
 
-Usage: `moneybin profile delete [OPTIONS] NAME`
+Usage: `moneybin profile delete [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Profile name to delete |
+| `name` | text | yes | Profile name to delete |
 
 **Options**
 
@@ -88,20 +93,21 @@ Usage: `moneybin profile delete [OPTIONS] NAME`
 
 Show resolved settings for a profile.
 
-Usage: `moneybin profile show [OPTIONS] [NAME]`
+Usage: `moneybin profile show [OPTIONS] [name]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[NAME]` | text | no | Profile name (defaults to active profile) |
+| `name` | text | no | Profile name (defaults to active profile) |
 
 **Options**
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin profile set
 
@@ -111,14 +117,14 @@ Dotted ``section.field`` keys write the profile's ``config.yaml``. Undotted
 managed keys (``home_currency``, ``display_currency_targets``) write ``app.profile_settings`` in the
 profile's database, where the report guards can read them.
 
-Usage: `moneybin profile set [OPTIONS] KEY VALUE`
+Usage: `moneybin profile set [OPTIONS] {key} {value}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `KEY` | text | yes | Config key (e.g., logging.level) or managed key (home_currency, display_currency_targets) |
-| `VALUE` | text | yes | Value to set |
+| `key` | text | yes | Config key (e.g., logging.level) or managed key (home_currency, display_currency_targets, reporting_timezone) |
+| `value` | text | yes | Value to set |
 
 **Options**
 

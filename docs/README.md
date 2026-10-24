@@ -9,7 +9,7 @@ Three recommended paths. Pick the row that matches you.
 
 | You are... | Read in this order |
 |---|---|
-| **First-time visitor, deciding whether MoneyBin fits** | [`audience.md`](audience.md) → [`features.md`](features.md) → [top-level README demo](../README.md#sixty-seconds-on-synthetic-data) |
+| **First-time visitor, deciding whether MoneyBin fits** | [`audience.md`](audience.md) → [`features.md`](features.md) → [top-level README demo](../README.md#try-it) |
 | **Power user setting up and running it daily** | [`guides/getting-started.md`](guides/getting-started.md) → [`guides/data-import.md`](guides/data-import.md) → [`guides/categorization.md`](guides/categorization.md) → [`guides/reports.md`](guides/reports.md) → [`guides/cli-reference.md`](guides/cli-reference.md) |
 | **Building agents on top of MoneyBin** | [`guides/mcp-server.md`](guides/mcp-server.md) (tool contract and sensitivity tiers) → [`guides/mcp-clients.md`](guides/mcp-clients.md) (per-client install) |
 
@@ -21,7 +21,7 @@ Every hand-written page carries a `<!-- Last reviewed: YYYY-MM-DD -->` header at
 - **[Comparison](comparison.md)** — The lane MoneyBin is built for, and the cases where another tool is the better answer.
 - **[Features](features.md)** — Capability snapshot of what works today, surface by surface.
 - **[Roadmap](roadmap.md)** — What's shipped, what's in flight, what's planned.
-- **[Top-level README demo](../README.md#sixty-seconds-on-synthetic-data)** — Clone, `make setup`, and evaluate against synthetic data before connecting anything real.
+- **[Top-level README demo](../README.md#try-it)** — Clone, `make setup`, and evaluate against synthetic data before connecting anything real.
 
 ## First hour
 
@@ -39,7 +39,7 @@ Getting data in and learning the command surface. Allow 30–60 minutes includin
 Working with data that is already loaded — categorizing it, understanding the pipeline that produced it, querying it directly.
 
 - **[Categorization](guides/categorization.md)** — Rule engine, merchant normalization, bulk edits, auto-rule learning, source precedence, and [carrying curated categories across from another tool](guides/categorization.md#migrating-curated-categories).
-- **[Reports](guides/reports.md)** — The nine built-in reports with their real output, `--wide` and JSON, saving your own SQL as a report, and which reports `--display-currency` can price into one currency.
+- **[Reports](guides/reports.md)** — The ten built-in reports with their real output, `--wide` and JSON, saving your own SQL as a report, and which reports `--display-currency` can price into one currency.
 - **[Data pipeline](guides/data-pipeline.md)** — How files become canonical tables: the raw / prep / core / app / reports layers, and where consumers should read from.
 - **[Direct SQL access](guides/sql-access.md)** — Open the encrypted DuckDB file from the DuckDB CLI, a UI, or your own scripts.
 - **[Export](guides/cli-reference.md#export)** — Publish the 13-table canonical bundle as CSV, Parquet, or XLSX to a local file or a Google Sheet.

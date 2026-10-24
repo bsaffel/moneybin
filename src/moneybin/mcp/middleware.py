@@ -30,6 +30,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.exceptions import NotFoundError
+from fastmcp.exceptions import ValidationError as FastMCPValidationError
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
 from pydantic import ValidationError
@@ -94,7 +95,12 @@ class ValidationErrorMiddleware(Middleware):
         started = time.monotonic()
         try:
             return await call_next(context)
-        except ValidationError as exc:
+        except (ValidationError, FastMCPValidationError) as raised:
+            # fastmcp >=3.4 wraps a FunctionTool's argument-binding error in its
+            # own ValidationError, keeping the pydantic error as __cause__.
+            exc = raised if isinstance(raised, ValidationError) else raised.__cause__
+            if not isinstance(exc, ValidationError):
+                raise
             accepted = await _accepted_params(context, tool_name, self._server)
             envelope = _build_validation_envelope(exc, tool_name, accepted)
             logger.info(

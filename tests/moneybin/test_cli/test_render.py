@@ -30,12 +30,18 @@ from moneybin.cli.render import (
     ELISION,
     MINUS,
     Money,
+    MoneyWithCurrency,
     Placeholder,
     Style,
     _fit_columns,  # pyright: ignore[reportPrivateUsage]  # the fit is a property, not a rendering
     _table_width,  # pyright: ignore[reportPrivateUsage]  # so the check agrees with it on "fits"
+    build_code,
+    build_rows,
+    build_summary,
     color_enabled,
     format_money,
+    format_percent,
+    render_human_text,
     render_note,
     render_rows,
     render_summary,
@@ -57,6 +63,26 @@ class _Terminal(io.StringIO):
         return True
 
 
+def _ascii_terminal_policy() -> Any:
+    """A non-styled terminal whose stdout accepts only ASCII bytes."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
 # --- format_money: separators and precision (requirement 11) ---
 
 
@@ -68,6 +94,19 @@ def test_format_money_always_separates_thousands() -> None:
 def test_format_money_always_shows_two_decimal_places() -> None:
     """Requirement 11: two decimal places always, even on a whole amount."""
     assert format_money(Decimal("42"), "balance") == "42.00"
+
+
+def test_money_with_currency_keeps_a_large_negative_value_atomic(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The denomination follows the exact signed value on a 40-column terminal."""
+    monkeypatch.setenv("COLUMNS", "40")
+    render_rows(
+        ["balance"],
+        [(MoneyWithCurrency(Decimal("-1234567.89"), "EUR"),)],
+        money={"balance": Money("balance")},
+    )
+    assert "−1,234,567.89 EUR" in capsys.readouterr().out
 
 
 def test_a_boolean_in_a_money_column_renders_absent_not_as_one() -> None:
@@ -144,9 +183,9 @@ def test_format_money_renders_a_missing_amount_as_a_dash() -> None:
     """A NULL money cell is absent, not zero — rendering 0.00 would invent data.
 
     A dash rather than a blank so one table spells absence one way: the first
-    period of a ``networth history`` series has no prior to difference against,
-    and its `change_abs` sits beside a `change_pct` that has always printed
-    ``-``.
+    bucket of a ``net-worth --interval`` series has no prior to difference
+    against, and its `change_abs` sits beside a `change_pct` that has always
+    printed ``-``.
     """
     assert format_money(None, "balance") == "-"
     assert format_money(None, "delta") == "-"
@@ -292,10 +331,9 @@ def test_every_money_column_in_the_catalog_declares_a_money_kind() -> None:
     from moneybin.privacy.taxonomy import DataClass
     from moneybin.reports._framework.registry import spec_of
     from moneybin.reports.definitions import ALL_REPORTS
-    from moneybin.reports.service_reports import SERVICE_REPORTS
 
     money_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
-    specs = [spec_of(runner) for runner in ALL_REPORTS] + list(SERVICE_REPORTS)
+    specs = [spec_of(runner) for runner in ALL_REPORTS]
     assert specs, "the catalog came back empty, so this guard checked nothing"
     undeclared = [
         f"{spec.report_id}.{column.name}"
@@ -318,9 +356,8 @@ def test_every_declared_delta_column_names_its_polarity() -> None:
     """
     from moneybin.reports._framework.registry import spec_of
     from moneybin.reports.definitions import ALL_REPORTS
-    from moneybin.reports.service_reports import SERVICE_REPORTS
 
-    specs = [spec_of(runner) for runner in ALL_REPORTS] + list(SERVICE_REPORTS)
+    specs = [spec_of(runner) for runner in ALL_REPORTS]
     declared_deltas = [
         column
         for spec in specs
@@ -418,10 +455,10 @@ def test_render_rows_never_collapses_identical_rows(
 ) -> None:
     """Requirement 35: two rows in, two rows out.
 
-    `reports networth` sums an account once per balance source, so a duplicated
-    account shows as repeated rows. Collapsing them here would make the output
-    look right while the total stayed wrong — removing the symptom that finds
-    the defect.
+    `reports net-worth-accounts` sums an account once per balance source, so a
+    duplicated account shows as repeated rows. Collapsing them here would make
+    the output look right while the total stayed wrong — removing the symptom
+    that finds the defect.
     """
     render_rows(
         ["account", "balance"],
@@ -625,6 +662,142 @@ def test_a_number_that_is_not_an_amount_never_folds_either(
             f"{number!r} was split across lines; a folded per-unit price or share "
             "count reads as a different, plausible number exactly as an amount does"
         )
+
+
+def test_a_numeric_int_or_decimal_value_is_grouped_by_thousands(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 9: every numeric cell reads in the same thousands convention.
+
+    `db info`'s table listing mixed a hand-grouped total beside raw row
+    counts because only `money=` grouped digits. `grouped=` now groups an
+    `int`/`Decimal` value too, without rounding or a sign glyph — opt-in (not
+    inferred from `numeric=` alone) so a declared FX rate or per-unit price
+    keeps its own convention; see
+    `test_a_numeric_value_outside_grouped_keeps_its_own_convention`.
+    """
+    render_rows(
+        ["label", "rows"],
+        [("core.fct_transactions", 2892), ("app.audit_log", 1381)],
+        numeric=("rows",),
+        grouped=("rows",),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert any("2,892" in line for line in lines)
+    assert any("1,381" in line for line in lines)
+
+
+def test_a_numeric_string_value_is_never_regrouped(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A per-unit price stored as `str` for precision is printed exactly as given.
+
+    Grouping only ever touches `int`/`Decimal`, not the column declaration, so
+    `avg cost`'s `"8.2987654321"` — a `DECIMAL(28,10)` string this test
+    predates `format_money` rounding for — is untouched even if a caller
+    (wrongly) named it in `grouped=`.
+    """
+    render_rows(
+        ["security", "avg cost"],
+        [("VTSAX", "8.2987654321")],
+        numeric=("avg cost",),
+        grouped=("avg cost",),
+    )
+
+    assert "8.2987654321" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("ratio", "expected"),
+    [
+        (0.09434186779842532, "+9.4%"),
+        (-0.007958851886049634, "−0.8%"),
+        (Decimal("1.9034869240348693"), "+190.3%"),
+        (0.0, "0.0%"),
+        # Rounds to zero, so it states no direction rather than a `−0.0%`.
+        (-0.0004, "0.0%"),
+        (None, "-"),
+    ],
+)
+def test_format_percent_renders_a_ratio_to_one_place(
+    ratio: object, expected: str
+) -> None:
+    """A stored ratio reads as a signed percent, not eighteen float digits."""
+    assert format_percent(ratio) == expected
+
+
+def test_a_percent_column_reaches_the_table_with_the_terminals_minus(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`percent=` routes a declared ratio column through `format_percent`."""
+    render_rows(
+        ["category", "yoy_pct"],
+        [("Food", 0.09434186779842532), ("Rent", -0.007958851886049634)],
+        numeric=("yoy_pct",),
+        percent=("yoy_pct",),
+        terminal=_ascii_terminal_policy(),
+    )
+
+    out = capsys.readouterr().out
+    assert "+9.4%" in out
+    assert "-0.8%" in out
+    assert "0.0943" not in out
+
+
+def test_a_numeric_value_outside_grouped_keeps_its_own_convention(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`numeric=` alone never groups — grouping is `grouped=`'s opt-in only.
+
+    `fx list`'s `rate` is a `Decimal` and is declared `numeric=` for the
+    no-fold guarantee, but grouping it would visually clutter a precise FX
+    rate for no reason; a caller that does not name a column in `grouped=`
+    gets exactly the pre-existing "printed as stored" behaviour.
+    """
+    render_rows(
+        ["pair", "rate"],
+        [("USD/EUR", Decimal("1234567890.12345678"))],
+        numeric=("rate",),
+    )
+
+    assert "1234567890.12345678" in capsys.readouterr().out
+
+
+def test_numeric_columns_right_align_like_money(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 9 covers every numeric column, not only declared amounts."""
+    render_rows(["label", "rows"], [("t", 5)], numeric=("rows",))
+
+    lines = capsys.readouterr().out.splitlines()
+    value_line = next(line for line in lines if "5" in line and "rows" not in line)
+    assert "    5 " in value_line, (
+        f"{value_line!r} is not right-aligned within its column, "
+        "the way a money column already is"
+    )
+
+
+def test_nowrap_column_never_folds_but_stays_left_aligned(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `nowrap` column (a timestamp) gets the no-fold guarantee, not right-align.
+
+    `privacy log`'s `When` column wrapped a full timestamp across rows at 100
+    columns. `nowrap=` fixes that without claiming the column is a number —
+    it stays left-aligned, unlike `money=`/`numeric=`.
+    """
+    monkeypatch.setenv("COLUMNS", "40")
+    render_rows(
+        ["When", "Details"],
+        [("2026-09-06T12:00:00+00:00", "a long details string that would wrap")],
+        nowrap=("When",),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert any("2026-09-06T12:00:00+00:00" in line for line in lines), (
+        "the timestamp was split across lines despite nowrap="
+    )
 
 
 def test_an_unfittable_money_cell_is_marked_truncated_rather_than_shortened(
@@ -902,7 +1075,7 @@ def test_a_blank_category_is_not_counted_as_absent(
 
     A whitespace-only category is reachable — Polars reads an empty CSV cell as
     NULL, but a cell holding spaces keeps them — and it is tempting to treat it
-    as a gap. `core.uncategorized_queue` selects `WHERE category IS NULL`, so
+    as a gap. The queue filter selects `category IS NULL`, so
     such a row is not in the queue: counting it would advertise a gap
     `transactions categorize run` cannot act on, which is the same class of lie
     as the provider code this milestone removed from the column. Making the two
@@ -1108,6 +1281,91 @@ def test_one_unkeepable_column_does_not_end_the_fit(
     assert "sprawling" not in out
 
 
+_OPTIONAL_COLUMNS = ["name", "extra_one", "answer", "extra_two", "extra_three"]
+_OPTIONAL_ROW = ("n" * 10, "1" * 20, "a" * 10, "2" * 20, "3" * 20)
+
+
+def test_an_optional_drop_keeps_every_essential_column_and_names_the_rest(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `--wide` table too wide for the terminal sheds declared extras, last first.
+
+    `answer` sits mid-projection, where a positional fit would drop it; an
+    optional drop never touches a column the caller did not name. The frame
+    names what went rather than pointing at `--wide`, which is already in force.
+    """
+    monkeypatch.setenv("COLUMNS", "80")
+
+    render_rows(
+        _OPTIONAL_COLUMNS,
+        [_OPTIONAL_ROW],
+        optional=("extra_one", "extra_two", "extra_three"),
+    )
+
+    out = capsys.readouterr().out
+    table = [line for line in out.splitlines() if line[:1] in "┏┃┡│└"]
+    assert max(len(line) for line in table) <= 80
+    assert "answer" in out
+    assert "extra_one" in out
+    # Last declared, first dropped: three 20-wide extras do not fit 80 beside
+    # the essentials, two do.
+    assert (
+        "4 of 5 columns fit — extra_three omitted; widen the terminal or use "
+        "--output json"
+    ) in out
+    assert "--wide for all" not in out
+    assert "…" not in out
+
+
+def test_an_optional_drop_leaves_a_table_that_fits_whole(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Optional columns are dropped only when the terminal cannot hold them."""
+    monkeypatch.setenv("COLUMNS", "200")
+
+    render_rows(
+        _OPTIONAL_COLUMNS,
+        [_OPTIONAL_ROW],
+        optional=("extra_one", "extra_two", "extra_three"),
+    )
+
+    out = capsys.readouterr().out
+    assert "extra_three" in out
+    assert "columns fit" not in out
+
+
+def test_an_optional_drop_never_sheds_an_essential_column(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past the last optional column the essentials stay, even if still too wide."""
+    monkeypatch.setenv("COLUMNS", "30")
+
+    render_rows(
+        _OPTIONAL_COLUMNS,
+        [_OPTIONAL_ROW],
+        optional=("extra_one", "extra_two", "extra_three"),
+    )
+
+    out = capsys.readouterr().out
+    assert "2 of 5 columns fit" in out
+    assert "extra_one, extra_two, extra_three omitted" in out
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"optional": ("extra_one",), "fit": True}, "exclusive"),
+        ({"optional": ("not_a_column",)}, "undeclared optional"),
+    ],
+)
+def test_an_optional_drop_refuses_an_ambiguous_declaration(
+    kwargs: dict[str, object], message: str
+) -> None:
+    """Refused, as an unknown column is: a silent no-op would never be noticed."""
+    with pytest.raises(ValueError, match=message):
+        build_rows(_OPTIONAL_COLUMNS, [_OPTIONAL_ROW], **kwargs)  # type: ignore[arg-type]  # parametrized kwargs
+
+
 def _widest_one_gap_fit(widths: Sequence[int], available: int) -> tuple[int, ...]:
     """The most columns any single-gap projection can show in ``available``.
 
@@ -1248,8 +1506,8 @@ def test_render_summary_prints_its_title_above_the_block(
 ) -> None:
     """A scalar block often answers a question the heading asks.
 
-    `reports networth` prints one block per currency the profile holds; without
-    a heading the second block's figures read as a continuation of the first.
+    `stats` prints one block per metric domain; without a heading the second
+    block's figures read as a continuation of the first.
     """
     render_summary([("Net worth", "12,480.22")], title="USD")
 
@@ -1266,6 +1524,181 @@ def test_render_summary_aligns_values_under_each_other(
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].index("1.00") == lines[1].index("2.00")
+
+
+def test_render_summary_honors_the_supplied_terminal_width(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A summary uses the same width policy as tables and receipts.
+
+    At width 12 the label wraps at its own word boundary like ordinary prose
+    (`Long`/`label:`), but the single-token value is never split mid-token —
+    see `test_a_single_token_summary_value_never_splits_mid_token`.
+    """
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=12,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+    render_summary([("Long label", "value")], terminal=terminal)
+
+    output = capsys.readouterr().out
+    assert "value" in output, "the single-token value was split mid-token"
+
+
+def test_a_summary_value_wider_than_the_terminal_folds_whole(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 10: a path wider than the terminal folds, never truncates.
+
+    `db info`'s ``Database:`` and `import files`' ``Saved:`` are exactly this
+    shape — one unbroken token that no line could hold. Folding keeps every
+    character, so joining the lines gives the path back; an `…` would discard
+    the filename, which is the part the reader needs.
+    """
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=20,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+    render_summary(
+        [("Database", "/very/long/single/token/path/that/exceeds/twenty/columns")],
+        terminal=terminal,
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) > 1
+    assert lines[0].startswith("Database:")
+    joined = "".join(line.strip() for line in lines)
+    assert joined.endswith("/very/long/single/token/path/that/exceeds/twenty/columns")
+    assert "…" not in joined
+    assert all(len(line) <= terminal.width for line in lines)
+
+
+def test_render_rows_uses_ascii_borders_for_an_ascii_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ASCII-only stdout must not receive Rich's default Unicode table border."""
+    render_rows(["status"], [("ready",)], terminal=_ascii_terminal_policy())
+
+    output = capsys.readouterr().out
+    output.encode("ascii")
+
+
+def test_render_rows_keeps_unicode_borders_without_ascii_policy(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The fallback does not change the normal Rich table presentation."""
+    render_rows(["status"], [("ready",)])
+
+    assert "┏" in capsys.readouterr().out
+
+
+def test_build_summary_styles_the_heading_and_labels_but_not_external_values() -> None:
+    """Receipt hierarchy must survive shared-summary composition.
+
+    Removing either semantic style makes a dense multi-section receipt flat;
+    styling the value would instead colour caller-provided text such as an
+    institution name or a recovery command. Each pair is now its own `Text`
+    (a `Group`, not one combined multi-line `Text`), so a rare oversized
+    value's `no_wrap` cannot also freeze every other line's ordinary wrap —
+    see `test_a_single_token_summary_value_never_splits_mid_token`.
+    """
+    from rich.console import Group
+    from rich.text import Span, Text
+
+    summary = build_summary(
+        [("Loaded", "28 transactions"), ("Next", "moneybin sync status")],
+        title="Sync complete",
+    )
+
+    assert isinstance(summary, Group)
+    title_line, loaded_line, next_line = summary.renderables
+    assert isinstance(title_line, Text)
+    assert isinstance(loaded_line, Text)
+    assert isinstance(next_line, Text)
+    assert title_line.plain == "Sync complete"
+    assert title_line.spans == [Span(0, len("Sync complete"), Style.HIERARCHY)]
+    assert loaded_line.plain == "Loaded: 28 transactions"
+    assert loaded_line.spans == [Span(0, len("Loaded:"), Style.CONTEXT)]
+    assert next_line.plain == "Next:   moneybin sync status"
+    assert next_line.spans == [Span(0, len("Next:"), Style.CONTEXT)]
+
+
+def test_summary_styles_are_visible_on_a_terminal_and_absent_from_plain_output() -> (
+    None
+):
+    """The shared receipt hierarchy must obey the terminal's one style decision."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    summary = build_summary(
+        [("Loaded", "28 transactions"), ("Next", "moneybin sync status")],
+        title="Sync complete",
+    )
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=False,
+        color=True,
+        style=True,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=False,
+        width=120,
+        height=24,
+        symbols=TerminalSymbols(success="✓", attention="!", failure="×", action="›"),
+        minus="−",
+    )
+    plain = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=False,
+        width=120,
+        height=24,
+        symbols=terminal.symbols,
+        minus="−",
+    )
+
+    styled = render_human_text(summary, terminal=terminal)
+    redirected = render_human_text(summary, terminal=plain)
+
+    assert "\x1b[1mSync complete" in styled
+    assert "\x1b[2mLoaded:" in styled
+    assert "moneybin sync status" in styled
+    assert (
+        redirected
+        == "Sync complete\nLoaded: 28 transactions\nNext:   moneybin sync status\n"
+    )
+    assert "\x1b" not in redirected
 
 
 # --- render_note (requirements 4, 5) ---
@@ -1287,6 +1720,34 @@ def test_render_note_is_suppressed_by_quiet(
     render_note("Converted from EUR at 1.08", quiet=True)
 
     assert capsys.readouterr().err == ""
+
+
+def test_a_warned_note_never_wraps_mid_token_or_leaves_trailing_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Requirement 10: a long `warn=True` note is one line, not a reflowed paragraph.
+
+    Rich's default word-wrap breaks a long note mid-token at the console width
+    and leaves a trailing space on the line it broke. `render_note` must not
+    exhibit either symptom regardless of terminal width.
+    """
+
+    def _always_colored(stream: object, env: object) -> bool:
+        return True
+
+    monkeypatch.setattr("moneybin.cli.render.color_enabled", _always_colored)
+    monkeypatch.setenv("COLUMNS", "40")
+    long_message = (
+        "› moneybin transactions matches pending --profile "
+        "very-long-single-token-profile-name-that-exceeds-a-narrow-terminal-width"
+    )
+
+    render_note(long_message, warn=True)
+
+    output = capsys.readouterr().err
+    assert output.rstrip("\n") == long_message
+    assert not any(line.endswith(" ") for line in output.splitlines())
 
 
 def test_quiet_does_not_suppress_result_rows(
@@ -1317,8 +1778,9 @@ def test_quiet_does_not_suppress_result_rows(
 
 
 def _cli_modules() -> list[Path]:
-    """Every CLI module the guards apply to — the renderer itself is exempt."""
-    return sorted(p for p in CLI_ROOT.rglob("*.py") if p != RENDERER)
+    """Every CLI module except the centralized presentation helpers."""
+    presentation_helpers = {RENDERER, CLI_ROOT / "terminal.py"}
+    return sorted(p for p in CLI_ROOT.rglob("*.py") if p not in presentation_helpers)
 
 
 def _imported_roots(module: Path) -> set[str]:
@@ -1381,21 +1843,22 @@ def _styling_calls(module: Path) -> list[str]:
     ]
 
 
-def test_only_the_render_module_imports_rich() -> None:
-    """Requirements 1 and 36: Rich is the render layer's private dependency.
+def test_only_presentation_helpers_import_rich() -> None:
+    """Requirements 1 and 36: Rich stays out of command-local renderers.
 
     A command that cannot import Rich cannot build a second table idiom beside
     `render_rows`, and cannot write a style literal beside the palette. One
     guard covers both requirements because both failures need the same import.
     """
+    presentation_helpers = {"render.py", "terminal.py", "progress.py"}
     offenders = [
         str(module.relative_to(CLI_ROOT))
         for module in _cli_modules()
-        if "rich" in _imported_roots(module)
+        if module.name not in presentation_helpers and "rich" in _imported_roots(module)
     ]
     assert offenders == [], (
         "these modules import Rich directly instead of calling "
-        f"moneybin.cli.render: {offenders}"
+        f"moneybin.cli presentation helpers: {offenders}"
     )
 
 
@@ -1447,6 +1910,9 @@ def test_the_palette_names_a_meaning_for_every_colour() -> None:
         "POSITIVE",
         "NEGATIVE",
         "WARNING",
+        "HIERARCHY",
+        "CONTEXT",
+        "ACTION",
         "NEUTRAL",
     }
 
@@ -1607,3 +2073,108 @@ def test_every_curated_default_fits_eighty_columns_on_headers_alone() -> None:
         if _table_width([len(name) for name in default]) > 80
     }
     assert too_wide == {}
+
+
+def test_a_code_block_never_splits_a_token_wider_than_the_terminal() -> None:
+    """`build_code` output is the statement, byte for byte.
+
+    Rich's default `fold` breaks an identifier wider than the terminal across
+    two physical lines, and a statement copied back from that no longer
+    parses. The block neither wraps nor folds, and `render_human_text` does
+    not crop it, so the whole token reaches the pager.
+    """
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    narrow = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=20,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+    statement = "SELECT this_is_a_very_long_identifier_name, b\nFROM t"
+
+    rendered = render_human_text(build_code(statement), terminal=narrow)
+
+    assert rendered == statement + "\n"
+
+
+def test_build_rows_groups_only_the_declared_count_subset() -> None:
+    """A rate declared `numeric` alone prints as stored beside a grouped count."""
+    policy = _ascii_terminal_policy()
+
+    rendered = render_human_text(
+        build_rows(
+            ["txn_count", "valuation_rate"],
+            [(1381, Decimal("16000.1234"))],
+            numeric=["txn_count", "valuation_rate"],
+            grouped=["txn_count"],
+            terminal=policy,
+        ),
+        terminal=policy,
+    )
+
+    assert "1,381" in rendered
+    assert "16000.1234" in rendered
+    assert "16,000.1234" not in rendered
+
+
+def test_human_instant_uses_profile_zone_and_preserves_dates_and_strings() -> None:
+    from datetime import UTC, date, datetime
+
+    from moneybin.cli.render import _cells  # pyright: ignore[reportPrivateUsage]  # typed cell formatting is the regression boundary
+
+    instant = datetime(2026, 3, 1, 0, 30, tzinfo=UTC)
+    cells, _ = _cells(
+        ["instant", "date", "string"],
+        [instant, date(2026, 3, 1), "2026-03-01T00:30:00Z"],
+        {},
+        reporting_timezone="America/New_York",
+    )
+    assert [str(cell) for cell in cells] == [
+        "2026-02-28 19:30:00-05:00 [America/New_York]",
+        "2026-03-01",
+        "2026-03-01T00:30:00Z",
+    ]
+
+
+def test_human_instant_distinguishes_dst_fold() -> None:
+    from datetime import UTC, datetime
+
+    from moneybin.cli.render import format_instant
+
+    first = format_instant(
+        datetime(2026, 11, 1, 5, 30, tzinfo=UTC), reporting_timezone="America/New_York"
+    )
+    second = format_instant(
+        datetime(2026, 11, 1, 6, 30, tzinfo=UTC), reporting_timezone="America/New_York"
+    )
+    assert first == "2026-11-01 01:30:00-04:00 [America/New_York]"
+    assert second == "2026-11-01 01:30:00-05:00 [America/New_York]"
+
+
+def test_human_instant_and_percentage_render_together() -> None:
+    """One report retains both its saved calendar and ratio presentation."""
+    from datetime import UTC, datetime
+
+    policy = _ascii_terminal_policy()
+    rendered = render_human_text(
+        build_rows(
+            ["instant", "change"],
+            [(datetime(2026, 3, 1, 0, 30, tzinfo=UTC), Decimal("0.094"))],
+            numeric=["change"],
+            percent=["change"],
+            reporting_timezone="America/New_York",
+            terminal=policy,
+        ),
+        terminal=policy,
+    )
+    assert "2026-02-28 19:30:00-05:00 [America/New_York]" in rendered
+    assert "+9.4%" in rendered

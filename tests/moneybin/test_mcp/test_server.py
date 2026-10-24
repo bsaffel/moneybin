@@ -207,17 +207,16 @@ def test_startup_purge_stays_read_only_when_nothing_needs_cleanup() -> None:
 
 
 @pytest.mark.parametrize(
-    ("missing_table", "purged"),
-    [
-        ("app.import_previews", 0),
-        ("raw.import_preview_snapshots", 1),
-    ],
+    "missing_table",
+    ["app.import_previews", "raw.import_preview_snapshots"],
 )
-def test_startup_repairs_partial_preview_schema_and_removes_orphan(
+def test_startup_refuses_partial_preview_schema_without_mutating_evidence(
     missing_table: str,
-    purged: int,
+    mcp_db: Path,
 ) -> None:
-    """A crash between schema files cannot strand staged financial bytes."""
+    """An incomplete UTC schema requires offline repair and preserves evidence."""
+    from moneybin.temporal_contract import UTCUpgradeRequiredError
+
     now = datetime.now(UTC)
     with get_database(read_only=False) as db:
         repo = ImportPreviewsRepo(db)
@@ -234,15 +233,28 @@ def test_startup_repairs_partial_preview_schema_and_removes_orphan(
         )
         db.execute(f"DROP TABLE {missing_table}")  # parametrized code-owned table names
 
-    assert server.purge_expired_import_previews_at_boot() == purged
+        surviving_table = (
+            "raw.import_preview_snapshots"
+            if missing_table == "app.import_previews"
+            else "app.import_previews"
+        )
+        before = db.execute(
+            f"SELECT * FROM {surviving_table}"  # noqa: S608  # closed fixture table pair
+        ).fetchall()
+        assert len(before) == 1
 
-    with get_database(read_only=True) as db:
-        app_count = db.execute("SELECT COUNT(*) FROM app.import_previews").fetchone()
-        raw_count = db.execute(
-            "SELECT COUNT(*) FROM raw.import_preview_snapshots"
-        ).fetchone()
-        assert app_count == (0,)
-        assert raw_count == (0,)
+        schema, table = missing_table.split(".")
+        assert db.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_schema = ? AND table_name = ?",
+            [schema, table],
+        ).fetchone() == (0,)
+
+    # Close and flush setup before refusal: a live writer would only test locking.
+    encrypted_before = mcp_db.read_bytes()
+    with pytest.raises(UTCUpgradeRequiredError, match="UTC compatibility"):
+        server.purge_expired_import_previews_at_boot()
+    assert mcp_db.read_bytes() == encrypted_before
 
 
 def test_server_instructions_orient_to_standard_surface() -> None:

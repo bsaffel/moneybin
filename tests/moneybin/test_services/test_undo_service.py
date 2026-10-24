@@ -9,8 +9,11 @@ real repos (no mocks). Operations are built by wrapping repo calls in
 from __future__ import annotations
 
 import json
-from datetime import date
+from collections.abc import Collection
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,7 +35,33 @@ from moneybin.services.account_resolver import refresh_account_link_pending_gaug
 from moneybin.services.audit_service import AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_service import UndoService
+from moneybin.tables import (
+    ACCOUNT_SETTINGS,
+    EXCHANGE_RATE_OVERRIDES,
+    MATCH_DECISIONS,
+    PROFILE_SETTINGS,
+    TableRef,
+)
 from tests.moneybin.db_helpers import create_core_tables
+
+_Restatement = tuple[Database, set[str], str]
+
+
+def _record_restatements(monkeypatch: pytest.MonkeyPatch) -> list[_Restatement]:
+    """Replace ``restate_after_write`` with a recorder of what each undo restated.
+
+    Inputs are recorded by qualified name: the undo builds its refs from the
+    audit rows, so they carry no ``audience``, and the restate keys on the name.
+    """
+    restated: list[_Restatement] = []
+
+    def record(
+        target_db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        restated.append((target_db, {t.full_name for t in inputs}, committed_change))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", record)
+    return restated
 
 
 def _pending_gauge() -> int:
@@ -124,6 +153,37 @@ def _edit_note_op(db: Database, note_id: str = "n1", text: str = "edited") -> st
 class TestUndo:
     """undo(operation_id) reverses every row in the operation as a unit."""
 
+    def test_expected_audit_ids_refuse_an_appended_operation_event_before_writes(
+        self, db: Database
+    ) -> None:
+        """A preview cannot authorize an operation whose event set later grows."""
+        op = _note_op(db)
+        previewed_ids = tuple(
+            event.audit_id for event in UndoService(db).get(op).events
+        )
+        before_audit_rows = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+        assert before_audit_rows is not None
+
+        with operation(op):
+            AuditService(db).record_audit_event(
+                action="note.preview_marker",
+                target=("app", "transaction_notes", None),
+                before=None,
+                after={"reason": "appended after preview"},
+                actor="test",
+            )
+
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(op, actor="cli", expected_audit_ids=previewed_ids)
+
+        assert exc.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+        assert db.execute(
+            "SELECT text FROM app.transaction_notes WHERE note_id = 'n1'"
+        ).fetchone() == ("hi",)
+        assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == (
+            before_audit_rows[0] + 1,
+        )
+
     def test_round_trip_removes_all_rows(self, db: Database) -> None:
         op = _note_and_tag_op(db)
         result = UndoService(db).undo(op, actor="cli")
@@ -143,25 +203,12 @@ class TestUndo:
         tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
         assert notes == (1,) and tags == (1,)
 
-    def test_fx_input_undo_triggers_one_post_commit_restatement(
+    def test_an_undo_restates_every_restating_table_it_touched_once(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         create_core_tables(db)
         _insert_dim_account(db, "acct-fx", "FX Account")
-        restated: list[tuple[Database, bool, str]] = []
-
-        def record_restatement(
-            target_db: Database,
-            *,
-            account_currency_changed: bool = False,
-            committed_change: str = "setting",
-        ) -> None:
-            restated.append((target_db, account_currency_changed, committed_change))
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        restated = _record_restatements(monkeypatch)
         with operation() as op:
             AccountSettingsRepo(db).set(
                 account_id="acct-fx",
@@ -176,6 +223,11 @@ class TestUndo:
                 archived_at=None,
                 include_in_net_worth=True,
                 default_cost_basis_method="average",
+                investment_source_type=None,
+                investment_source_type_changed_at=None,
+                archived_changed_at=None,
+                currency_code_changed_at=None,
+                default_cost_basis_method_changed_at=None,
                 actor="test",
             )
             ExchangeRateOverridesRepo(db).set(
@@ -189,50 +241,63 @@ class TestUndo:
 
         UndoService(db).undo(op, actor="test")
 
-        assert restated == [(db, True, "undo")]
+        assert restated == [
+            (
+                db,
+                {ACCOUNT_SETTINGS.full_name, EXCHANGE_RATE_OVERRIDES.full_name},
+                "undo",
+            ),
+        ]
 
-    def test_display_target_undo_does_not_restate_fx_accounting(
+    def test_undo_of_a_display_only_account_setting_restates_nothing(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Undoing a report preference must not alter ledger accounting."""
-        restated: list[Database] = []
-
-        def record_restatement(target_db: Database, **_kwargs: object) -> None:
-            restated.append(target_db)
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        """Only restating columns count; a rename's images differ in none."""
+        _settings_set(db, display_name="Brokerage")
+        restated = _record_restatements(monkeypatch)
         with operation() as op:
-            ProfileSettingsRepo(db).set_display_currency_targets(["EUR"], actor="test")
+            _settings_set(db, display_name="Renamed", last_four="1234")
 
         UndoService(db).undo(op, actor="test")
 
         assert restated == []
 
-    def test_home_currency_undo_still_restates_fx_accounting(
+    def test_undo_of_an_archive_restates_account_settings(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Undoing the accounting-currency setting retains its existing refresh."""
-        ProfileSettingsRepo(db).set_home_currency("USD", actor="test")
-        restated: list[Database] = []
-
-        def record_restatement(target_db: Database, **_kwargs: object) -> None:
-            restated.append(target_db)
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        _settings_set(db, display_name="Brokerage")
+        restated = _record_restatements(monkeypatch)
         with operation() as op:
-            ProfileSettingsRepo(db).set_home_currency("EUR", actor="test")
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                archived=True,
+                archived_at=date(2026, 1, 2),
+            )
 
         UndoService(db).undo(op, actor="test")
 
-        assert restated == [db]
+        assert restated == [(db, {ACCOUNT_SETTINGS.full_name}, "undo")]
 
-    def test_transfer_decision_undo_triggers_post_commit_fx_restatement(
+    @pytest.mark.parametrize("setting", ["display_currency_targets", "home_currency"])
+    def test_profile_setting_undo_restates_profile_settings(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch, setting: str
+    ) -> None:
+        """Display targets restate too: the currency lots fold the row's history."""
+        repo = ProfileSettingsRepo(db)
+        repo.set_home_currency("USD", actor="test")
+        restated = _record_restatements(monkeypatch)
+        with operation() as op:
+            if setting == "home_currency":
+                repo.set_home_currency("EUR", actor="test")
+            else:
+                repo.set_display_currency_targets(["EUR"], actor="test")
+
+        UndoService(db).undo(op, actor="test")
+
+        assert restated == [(db, {PROFILE_SETTINGS.full_name}, "undo")]
+
+    def test_transfer_decision_undo_restates_match_decisions(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         event = MatchDecisionsRepo(db).insert(
@@ -253,27 +318,13 @@ class TestUndo:
             decided_by="user",
             actor="test",
         )
-        restated: list[tuple[Database, str]] = []
-
-        def record_restatement(
-            target_db: Database,
-            *,
-            account_currency_changed: bool = False,
-            committed_change: str = "setting",
-        ) -> None:
-            assert account_currency_changed is False
-            restated.append((target_db, committed_change))
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        restated = _record_restatements(monkeypatch)
 
         UndoService(db).undo(event.operation_id, actor="test")
 
-        assert restated == [(db, "undo")]
+        assert restated == [(db, {MATCH_DECISIONS.full_name}, "undo")]
 
-    def test_transfer_endpoint_undo_restates_from_account_root(
+    def test_transfer_endpoint_undo_restates_match_decisions(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         MatchDecisionsRepo(db).insert(
@@ -300,28 +351,11 @@ class TestUndo:
                 to_account_id="acct-c",
                 actor="test",
             )
-        restated: list[tuple[Database, bool, str]] = []
-
-        def record_restatement(
-            target_db: Database,
-            *,
-            account_currency_changed: bool = False,
-            committed_change: str = "setting",
-        ) -> None:
-            restated.append((
-                target_db,
-                account_currency_changed,
-                committed_change,
-            ))
-
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            record_restatement,
-        )
+        restated = _record_restatements(monkeypatch)
 
         UndoService(db).undo(repoint_operation_id, actor="test")
 
-        assert restated == [(db, True, "undo")]
+        assert restated == [(db, {MATCH_DECISIONS.full_name}, "undo")]
 
     def test_not_found_raises(self, db: Database) -> None:
         with pytest.raises(UserError) as exc:
@@ -493,7 +527,7 @@ class TestUndo:
             "transaction_id": "txn_1",
             "text": "new",
             "author": "cli",
-            "created_at": "2026-05-24 00:00:00",
+            "created_at": "2026-05-24T00:00:00.000000Z",
         }
         db.execute(
             "INSERT INTO app.audit_log "
@@ -624,6 +658,359 @@ class TestUndo:
         assert rows == [("old",)]
 
 
+_SOURCE_SET_AT = datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC)
+
+
+def _assert_restated_account_settings_once(restate: MagicMock, db: Database) -> None:
+    restate.assert_called_once()
+    (called_db, inputs), kwargs = restate.call_args
+    assert called_db is db
+    assert [t.full_name for t in inputs] == [ACCOUNT_SETTINGS.full_name]
+    assert kwargs == {"committed_change": "undo"}
+
+
+def _settings_set(db: Database, **overrides: Any) -> None:
+    """One audited settings write for ``acc_choice`` with neutral defaults."""
+    kwargs: dict[str, Any] = {
+        "account_id": "acc_choice",
+        "display_name": None,
+        "official_name": None,
+        "last_four": None,
+        "account_subtype": None,
+        "holder_category": None,
+        "currency_code": None,
+        "credit_limit": None,
+        "archived": False,
+        "archived_at": None,
+        "include_in_net_worth": True,
+        "default_cost_basis_method": None,
+        "investment_source_type": None,
+        "investment_source_type_changed_at": None,
+        "archived_changed_at": None,
+        "currency_code_changed_at": None,
+        "default_cost_basis_method_changed_at": None,
+        "actor": "test",
+    }
+    kwargs.update(overrides)
+    AccountSettingsRepo(db).set(**kwargs)
+
+
+def _source_row(db: Database) -> tuple[str | None, datetime | None] | None:
+    row = db.execute(
+        "SELECT investment_source_type, investment_source_type_changed_at "
+        "FROM app.account_settings WHERE account_id = 'acc_choice'"
+    ).fetchone()
+    return None if row is None else (row[0], row[1])
+
+
+class TestUndoOfInvestmentSourceChoice:
+    """An undo that moves the source stamps a new change time and restates."""
+
+    def test_undo_of_a_source_change_advances_the_change_time(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.restate.restate_after_write", MagicMock()
+        )
+        _settings_set(db, display_name="Brokerage")
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                investment_source_type="manual",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+
+        result = UndoService(db).undo(op, actor="test")
+
+        source, changed_at = _source_row(db) or (None, None)
+        assert source is None
+        assert changed_at is not None and changed_at > _SOURCE_SET_AT
+        audit = db.execute(
+            "SELECT after_value FROM app.audit_log WHERE operation_id = ?",
+            [result.undo_operation_id],
+        ).fetchone()
+        assert audit is not None
+        stamped = json.loads(audit[0])["investment_source_type_changed_at"]
+        assert datetime.fromisoformat(stamped) == changed_at
+
+    @pytest.mark.parametrize("account_type", [None, "investment"])
+    def test_undo_of_a_source_change_restates_account_settings(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch, account_type: str | None
+    ) -> None:
+        restate = MagicMock()
+        monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
+        _settings_set(db, display_name="Brokerage")
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                investment_source_type="manual",
+                account_type=account_type,
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        _assert_restated_account_settings_once(restate, db)
+
+    def test_undo_of_an_unrelated_setting_leaves_the_change_time(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        restate = MagicMock()
+        monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
+        _settings_set(
+            db,
+            display_name="Brokerage",
+            investment_source_type="manual",
+            investment_source_type_changed_at=_SOURCE_SET_AT,
+        )
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Renamed",
+                investment_source_type="manual",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        assert _source_row(db) == ("manual", _SOURCE_SET_AT)
+        restate.assert_not_called()
+
+    def test_undo_that_would_delete_a_source_choice_resets_the_row_instead(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        restate = MagicMock()
+        monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                archived=True,
+                archived_at=date(2026, 1, 2),
+                include_in_net_worth=False,
+                investment_source_type="manual",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+
+        result = UndoService(db).undo(op, actor="test")
+
+        source, stamped = _source_row(db) or (None, None)
+        assert source is None
+        assert stamped is not None and stamped > _SOURCE_SET_AT
+        row = db.execute(
+            "SELECT display_name, archived, archived_at, include_in_net_worth "
+            "FROM app.account_settings WHERE account_id = 'acc_choice'"
+        ).fetchone()
+        assert row == (None, False, None, True)
+        assert result.reversed_row_count == 1
+        _assert_restated_account_settings_once(restate, db)
+
+    def test_the_reset_is_audited_as_the_row_that_remains_and_redo_restores_it(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.restate.restate_after_write", MagicMock()
+        )
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                investment_source_type="manual",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+        undo = UndoService(db).undo(op, actor="test")
+        reset_stamp = (_source_row(db) or (None, None))[1]
+
+        audit = db.execute(
+            "SELECT after_value FROM app.audit_log WHERE operation_id = ? AND is_undo",
+            [undo.undo_operation_id],
+        ).fetchone()
+        assert audit is not None
+        after = json.loads(audit[0]) if isinstance(audit[0], str) else audit[0]
+        assert after is not None
+        assert after["display_name"] is None
+        assert after["investment_source_type"] is None
+
+        UndoService(db).undo(undo.undo_operation_id, actor="test")
+
+        source, stamped = _source_row(db) or (None, None)
+        assert source == "manual"
+        assert stamped is not None and reset_stamp is not None
+        assert stamped > reset_stamp
+        name = db.execute(
+            "SELECT display_name FROM app.account_settings "
+            "WHERE account_id = 'acc_choice'"
+        ).fetchone()
+        assert name == ("Brokerage",)
+
+    def test_undo_that_would_drop_an_established_change_time_resets_the_row(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.restate.restate_after_write", MagicMock()
+        )
+        with operation() as op_a:
+            _settings_set(db, display_name="Brokerage")
+        with operation() as op_b:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                investment_source_type="plaid",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+        UndoService(db).undo(op_b, actor="test")
+        source, stamped = _source_row(db) or (None, None)
+        assert source is None and stamped is not None
+
+        UndoService(db).undo(op_a, actor="test")
+
+        # The type was already NULL, so the stamp is kept, not advanced.
+        assert _source_row(db) == (None, stamped)
+
+    def test_redo_of_a_reset_never_loses_the_change_time(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """First write has a NULL stamp; a later set and clear leaves stamp T."""
+        monkeypatch.setattr(
+            "moneybin.services.restate.restate_after_write", MagicMock()
+        )
+        with operation() as op_a:
+            _settings_set(db, display_name="Brokerage")
+        with operation() as op_b:
+            _settings_set(
+                db,
+                display_name="Brokerage",
+                investment_source_type="plaid",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+        UndoService(db).undo(op_b, actor="test")
+        _, stamp_t = _source_row(db) or (None, None)
+        assert stamp_t is not None
+        undo_a = UndoService(db).undo(op_a, actor="test")
+        assert _source_row(db) == (None, stamp_t)
+
+        UndoService(db).undo(undo_a.undo_operation_id, actor="test")
+
+        assert _source_row(db) == (None, stamp_t)
+
+    def test_a_restore_never_moves_the_change_time_backwards(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.restate.restate_after_write", MagicMock()
+        )
+        _settings_set(
+            db,
+            display_name="Brokerage",
+            investment_source_type="manual",
+            investment_source_type_changed_at=_SOURCE_SET_AT,
+        )
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Renamed",
+                investment_source_type="manual",
+                investment_source_type_changed_at=_SOURCE_SET_AT,
+            )
+        newer = _SOURCE_SET_AT.replace(year=_SOURCE_SET_AT.year + 1)
+        db.execute(
+            "UPDATE app.account_settings SET investment_source_type_changed_at = ? "
+            "WHERE account_id = 'acc_choice'",
+            [newer],
+        )
+
+        UndoService(db).undo(op, actor="test")
+
+        assert _source_row(db) == ("manual", newer)
+
+    def test_undo_of_a_never_chosen_first_write_still_deletes_the_row(
+        self, db: Database
+    ) -> None:
+        with operation() as op:
+            _settings_set(db, display_name="Brokerage")
+
+        UndoService(db).undo(op, actor="test")
+
+        assert _source_row(db) is None
+
+
+def _archive_row(db: Database) -> tuple[bool, datetime | None] | None:
+    row = db.execute(
+        "SELECT archived, archived_changed_at "
+        "FROM app.account_settings WHERE account_id = 'acc_choice'"
+    ).fetchone()
+    return None if row is None else (row[0], row[1])
+
+
+class TestUndoOfArchive:
+    """An undo that moves ``archived`` stamps a new archive change time.
+
+    The change time feeds ``core.fct_transactions.updated_at``, because
+    archiving moves ``is_categorizable`` on every row of the account.
+    """
+
+    def test_undo_of_an_archive_advances_the_change_time(self, db: Database) -> None:
+        _settings_set(db, display_name="Checking")
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Checking",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        archived, changed_at = _archive_row(db) or (None, None)
+        assert archived is False
+        assert changed_at is not None and changed_at > _SOURCE_SET_AT
+
+    def test_undo_of_an_unrelated_setting_keeps_the_change_time(
+        self, db: Database
+    ) -> None:
+        _settings_set(
+            db,
+            display_name="Checking",
+            archived=True,
+            archived_at=date(2026, 1, 1),
+            archived_changed_at=_SOURCE_SET_AT,
+        )
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Renamed",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        assert _archive_row(db) == (True, _SOURCE_SET_AT)
+
+    def test_undo_that_would_delete_an_archive_resets_the_row_instead(
+        self, db: Database
+    ) -> None:
+        """Deleting the first write would unarchive without a change time."""
+        with operation() as op:
+            _settings_set(
+                db,
+                display_name="Checking",
+                archived=True,
+                archived_at=date(2026, 1, 1),
+                archived_changed_at=_SOURCE_SET_AT,
+            )
+
+        UndoService(db).undo(op, actor="test")
+
+        archived, changed_at = _archive_row(db) or (None, None)
+        assert archived is False
+        assert changed_at is not None and changed_at > _SOURCE_SET_AT
+
+
 class TestHistory:
     """history() groups audit rows by operation, newest first, with undoability."""
 
@@ -723,6 +1110,52 @@ class TestMetrics:
             UndoService(db).undo("op_legacy_metric", actor="cli")
         assert self._outcome("no_path") - before == 1.0
 
+    def test_value_inadmissible_increments_its_outcome(self, db: Database) -> None:
+        # A blank category (the shape #517's write path refuses, #547) trips
+        # _require_admissible inside the reversal loop; that refusal must
+        # record its own outcome, not fall through to "no_path" or vanish.
+        from moneybin.repositories.user_categories_repo import UserCategoriesRepo
+
+        repo = UserCategoriesRepo(db)
+        with operation():
+            category_id = repo.insert(category="   ", actor="user").target_id
+        assert category_id is not None
+        with operation() as delete_op:
+            repo.delete(category_id, actor="user")
+        before = self._outcome("value_inadmissible")
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(delete_op, actor="user")
+        assert exc.value.code == error_codes.UNDO_VALUE_INADMISSIBLE
+        assert self._outcome("value_inadmissible") - before == 1.0
+        # Populated recovery_actions, not an empty list beside a non-no_path
+        # code (data-recovery-contract.md Resolved Design Decision 6).
+        assert exc.value.recovery_actions is not None
+        action = exc.value.recovery_actions[0]
+        assert action.tool == "system_audit"
+        assert action.arguments == {"view": "detail", "operation_id": delete_op}
+
+    def test_confirmation_mismatch_increments_its_outcome(self, db: Database) -> None:
+        """A stale preview is a refused undo, so its outcome cannot disappear."""
+        op = _note_op(db)
+        previewed_ids = tuple(
+            event.audit_id for event in UndoService(db).get(op).events
+        )
+        with operation(op):
+            AuditService(db).record_audit_event(
+                action="note.preview_marker",
+                target=("app", "transaction_notes", None),
+                before=None,
+                after={"reason": "appended after preview"},
+                actor="test",
+            )
+
+        before = self._outcome("confirmation_mismatch")
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(op, actor="cli", expected_audit_ids=previewed_ids)
+
+        assert exc.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+        assert self._outcome("confirmation_mismatch") - before == 1.0
+
 
 class TestGet:
     """get() returns full before/after for each row, with undoability flags."""
@@ -735,6 +1168,11 @@ class TestGet:
         assert detail.can_undo is True
         actions = {e.action for e in detail.events}
         assert actions == {"note.add", "tag.add"}
+        assert detail.reversible_source_event_count == 2
+        assert detail.source_tables == [
+            "app.transaction_notes",
+            "app.transaction_tags",
+        ]
 
     def test_not_found_raises(self, db: Database) -> None:
         with pytest.raises(UserError) as exc:
@@ -753,7 +1191,13 @@ class TestGet:
             " ?, ?, 'op_noopg')",
             [same, same],
         )
-        assert UndoService(db).get("op_noopg").can_undo is False
+        detail = UndoService(db).get("op_noopg")
+        assert detail.can_undo is False
+        assert detail.undo_refusal_code == error_codes.RECOVERY_NO_PATH
+        assert detail.undo_refusal_message == (
+            "Operation 'op_noopg' has no net effect to reverse "
+            "(all captured rows show before == after)."
+        )
 
     def test_marker_only_not_undoable(self, db: Database) -> None:
         # A marker-only operation (tag.rename matching zero rows) is refused by
@@ -769,6 +1213,42 @@ class TestGet:
             )
         detail = UndoService(db).get(op)
         assert detail.can_undo is False
+        assert detail.undo_refusal_code == error_codes.RECOVERY_NO_PATH
+        assert "only marker events" in (detail.undo_refusal_message or "")
+
+    def test_get_refusal_does_not_record_a_mutation_outcome(self, db: Database) -> None:
+        """Inspection projects undo's exact refusal without recording an undo."""
+        from prometheus_client import REGISTRY
+
+        with operation() as op:
+            AuditService(db).record_audit_event(
+                action="tag.rename",
+                target=("app", "transaction_tags", None),
+                before={"old_tag": "ghost"},
+                after={"new_tag": "x", "row_count": 0},
+                actor="cli",
+            )
+        before = (
+            REGISTRY.get_sample_value(
+                "moneybin_audit_undo_total", {"outcome": "no_path"}
+            )
+            or 0.0
+        )
+
+        detail = UndoService(db).get(op)
+
+        after = (
+            REGISTRY.get_sample_value(
+                "moneybin_audit_undo_total", {"outcome": "no_path"}
+            )
+            or 0.0
+        )
+        assert detail.undo_refusal_code == error_codes.RECOVERY_NO_PATH
+        assert detail.undo_refusal_message == (
+            f"Operation {op!r} has no reversible row mutations "
+            "(only marker events) — nothing to undo."
+        )
+        assert after == before
 
 
 class TestUndoRefreshesPendingGauges:
@@ -829,3 +1309,61 @@ class TestUndoRefreshesPendingGauges:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "investment_source_type_changed_at",
+        "archived_changed_at",
+    ],
+)
+def test_account_settings_rejects_naive_change_stamps_before_mutation(
+    db: Database,
+    column: str,
+) -> None:
+    _settings_set(db, display_name="Original")
+    before = db.execute("SELECT * FROM app.account_settings").fetchall()
+    audit_before = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    with pytest.raises(ValueError, match="explicit UTC offset"):
+        _settings_set(db, display_name="Changed", **{column: datetime(2024, 7, 1, 12)})
+    assert db.execute("SELECT * FROM app.account_settings").fetchall() == before
+    assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == audit_before
+
+
+def test_account_settings_normalizes_aware_change_stamps_without_moving_dates(
+    db: Database,
+) -> None:
+    stamp = datetime(2024, 7, 1, 23, tzinfo=timezone(timedelta(hours=-4)))
+    _settings_set(
+        db,
+        investment_source_type="manual",
+        archived=True,
+        investment_source_type_changed_at=stamp,
+        archived_changed_at=stamp,
+        archived_at=date(2024, 7, 1),
+    )
+    assert db.execute(
+        "SELECT investment_source_type_changed_at, archived_changed_at, archived_at "
+        "FROM app.account_settings"
+    ).fetchone() == (
+        datetime(2024, 7, 2, 3, tzinfo=UTC),
+        datetime(2024, 7, 2, 3, tzinfo=UTC),
+        date(2024, 7, 1),
+    )
+
+
+def test_undo_history_emits_canonical_utc_and_pages_offset_ties(db: Database) -> None:
+    """Operation output and continuation refer to the same absolute instant."""
+    db.execute("SET TimeZone = 'America/New_York'")
+    op = _tag_op(db, "utc")
+    db.execute(
+        "UPDATE app.audit_log SET occurred_at = TIMESTAMPTZ '2026-10-01 09:00:00-04:00' WHERE operation_id = ?",
+        [op],
+    )
+    service = UndoService(db)
+    rows = service.history(snapshot=("2026-10-01T13:00:00Z", op))
+    assert len(rows) == 1
+    assert rows[0].occurred_at == "2026-10-01T13:00:00.000000Z"
+    assert service.history_count(snapshot=("2026-10-01T13:00:00Z", op)) == 1
+    assert service.history(after=("2026-10-01T13:00:00Z", op)) == []

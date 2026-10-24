@@ -13,7 +13,11 @@ import logging
 import os
 
 import keyring
-import keyring.errors
+from keyring.errors import (
+    KeyringError,
+    NoKeyringError,
+    PasswordDeleteError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,23 +37,16 @@ GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY = "gsheet:write_access_token_expires_at"  
 TIINGO_API_TOKEN_KEY = "tiingo:api_token"  # noqa: S105  # keyring lookup name, not a secret value
 
 
-def _resolve_service_name(profile: str | None) -> str:
-    """Resolve the keychain service name for a profile.
+def _resolve_profile(profile: str | None) -> str | None:
+    from moneybin.config import get_current_profile
+    from moneybin.utils.user_config import normalize_profile_name
 
-    Each profile gets its own keychain entry under
-    ``service="moneybin-<profile>"`` so that creating, deleting, or rotating
-    one profile's key cannot clobber another's. When no profile is supplied,
-    falls back to the current profile, then to the legacy ``"moneybin"``
-    service for back-compat with pre-scoping tests.
-    """
     if profile is None:
-        from moneybin.config import get_current_profile
-
         try:
             profile = get_current_profile()
         except RuntimeError:
-            return _SERVICE_PREFIX
-    return f"{_SERVICE_PREFIX}-{profile}"
+            return None
+    return normalize_profile_name(profile)
 
 
 class SecretNotFoundError(Exception):
@@ -70,7 +67,7 @@ class SecretUnavailableError(SecretNotFoundError):
 
 
 class SecretStorageUnavailableError(Exception):
-    """Raised when no OS keyring backend is available to persist a secret.
+    """Raised when a keychain write or deletion cannot be completed safely.
 
     Distinct from ``SecretNotFoundError`` — read paths can fall back to env
     vars, but writes have nowhere to go and must surface a clear error
@@ -95,151 +92,149 @@ class SecretStore:
     """
 
     def __init__(self, profile: str | None = None) -> None:
-        """Initialize the store, scoping the keychain service to ``profile``.
+        """Capture one normalized profile for keychain and environment access."""
+        self._profile = _resolve_profile(profile)
+        self._service = (
+            f"{_SERVICE_PREFIX}-{self._profile}" if self._profile else _SERVICE_PREFIX
+        )
+        self._username_prefix = ""
+        self._allow_env_fallback = True
 
-        Args:
-            profile: Profile name. When None, resolves from the current
-                profile (``get_current_profile()``); falls back to the
-                unscoped legacy service name when no profile is set.
-        """
-        self._service = _resolve_service_name(profile)
+    @property
+    def profile(self) -> str | None:
+        """The normalized profile captured when this store was constructed."""
+        return self._profile
+
+    @classmethod
+    def for_sync(cls, profile_id: str | None) -> "SecretStore":
+        """Preserve broker credential addresses without environment fallback."""
+        if profile_id is not None and (
+            not profile_id or not profile_id.isascii() or not profile_id.isalnum()
+        ):
+            raise ValueError("Invalid sync profile ID")
+        # Broker identity does not depend on a resolved database profile.
+        store = cls.__new__(cls)
+        store._profile = profile_id
+        store._service = "moneybin-sync"
+        store._username_prefix = f"{profile_id}:" if profile_id else ""
+        store._allow_env_fallback = False
+        return store
+
+    def env_var_name(self, name: str) -> str:
+        """Name the environment fallback for this captured profile."""
+        if self._profile:
+            profile = self._profile.upper().replace("-", "_")
+            return f"{_ENV_PREFIX}PROFILE__{profile}__{name}"
+        return f"{_ENV_PREFIX}{name}"
 
     def get_key(self, name: str) -> str:
-        """Retrieve a secret from OS keychain, falling back to env var.
-
-        Args:
-            name: Secret name (e.g. "DATABASE__ENCRYPTION_KEY").
-                  Keychain lookup uses service="moneybin-<profile>",
-                  username=name. Env var lookup uses MONEYBIN_{name}.
-
-        Returns:
-            The secret value.
-
-        Raises:
-            SecretUnavailableError: If the keychain backend reports the read
-                as denied/locked (rather than a routine miss) and no env var
-                fallback is set.
-            SecretNotFoundError: If the secret is not in keychain or env var.
-        """
-        # Try OS keychain first; missing backend (headless CI, minimal
-        # containers) is treated as a keychain miss so the env-var fallback
-        # below can satisfy the read. A denied/locked keychain is tracked
-        # separately from a routine miss — env var fallback still applies,
-        # but if that's also unset we can raise a more specific error.
+        """Retrieve from keychain, then this profile's environment fallback."""
         denied = False
         try:
-            value = keyring.get_password(self._service, name)
-        except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            value = keyring.get_password(self._service, self._username_prefix + name)
+        except NoKeyringError:
+            if not self._allow_env_fallback:
+                raise SecretStorageUnavailableError(
+                    "Sync requires an available secure OS keychain."
+                ) from None
             value = None
-        except keyring.errors.KeyringLocked:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+        except KeyringError:
             value = None
             denied = True
         if value is not None:
             return value
 
-        # Fall back to environment variable
-        env_var = f"{_ENV_PREFIX}{name}"
-        value = os.environ.get(env_var)
-        if value is not None:
-            return value
-
+        env_var = self.env_var_name(name)
+        if self._allow_env_fallback:
+            value = os.environ.get(env_var)
+            if value is not None:
+                return value
         if denied:
-            raise SecretUnavailableError(
-                f"Secret '{name}' could not be read — the OS keychain "
-                f"denied access (locked or restricted), so whether the "
-                f"secret exists could not be determined. Set env var "
-                f"{env_var} to bypass the keychain."
+            guidance = (
+                f" Set env var {env_var} to bypass the keychain."
+                if self._allow_env_fallback
+                else " Unlock the OS keychain and retry."
             )
-        raise SecretNotFoundError(
-            f"Secret '{name}' not found. Set it via OS keychain "
-            f"(moneybin db init) or env var {env_var}."
+            raise SecretUnavailableError(
+                f"Secret '{name}' could not be read — the OS keychain denied "
+                f"access or is unavailable; existence could not be determined.{guidance}"
+            ) from None
+        guidance = (
+            f" Set it via OS keychain (moneybin db init) or env var {env_var}."
+            if self._allow_env_fallback
+            else " Run `moneybin sync login`."
         )
+        raise SecretNotFoundError(f"Secret '{name}' not found.{guidance}")
 
     def get_env(self, name: str) -> str:
-        """Retrieve a secret from environment variable only.
-
-        Use for secrets that don't need keychain storage (API keys,
-        server credentials).
-
-        Args:
-            name: Secret name (e.g. "SYNC__API_KEY").
-                  Looks up MONEYBIN_{name}.
-
-        Returns:
-            The secret value.
-
-        Raises:
-            SecretNotFoundError: If the env var is not set.
-        """
+        """Retrieve a configuration secret from its global environment name."""
         env_var = f"{_ENV_PREFIX}{name}"
         value = os.environ.get(env_var)
         if value is not None:
             return value
-
         raise SecretNotFoundError(f"Secret '{name}' not found. Set env var {env_var}.")
 
     def has_keychain_entry(self, name: str) -> bool:
-        """Check if a keychain entry exists for ``name`` (ignores env vars).
-
-        Useful when callers need to distinguish "key is stored in keychain"
-        from "key is only available via env var fallback" — e.g. ``init_db``
-        needs to persist env-provided keys so the DB stays openable after
-        the env var is unset.
-
-        Raises:
-            SecretUnavailableError: If the keychain backend reports the read
-                as denied/locked rather than a routine miss. A caller must
-                not treat this the same as "no entry" — proceeding as if
-                absent risks overwriting an entry that could not be read.
-        """
+        """Check keychain presence without consulting environment fallback."""
         try:
-            return keyring.get_password(self._service, name) is not None
-        except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            return (
+                keyring.get_password(self._service, self._username_prefix + name)
+                is not None
+            )
+        except NoKeyringError:
             return False
-        except keyring.errors.KeyringLocked as e:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+        except KeyringError:
             raise SecretUnavailableError(
-                f"Secret '{name}' could not be checked — the OS keychain "
-                f"denied access (locked or restricted), so whether an "
-                f"entry exists could not be determined."
-            ) from e
+                f"Secret '{name}' could not be checked — the OS keychain denied "
+                "access or is unavailable; existence could not be determined."
+            ) from None
 
     def set_key(self, name: str, value: str) -> None:
-        """Store a secret in the OS keychain.
-
-        Args:
-            name: Secret name (e.g. "DATABASE__ENCRYPTION_KEY").
-            value: Secret value to store.
-        """
+        """Store a secret in the OS keychain, never a fallback file."""
         try:
-            keyring.set_password(self._service, name, value)
-        except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
-            env_var = f"{_ENV_PREFIX}{name}"
+            keyring.set_password(self._service, self._username_prefix + name, value)
+        except KeyringError:
+            guidance = (
+                f" Or supply the value via env var {self.env_var_name(name)}."
+                if self._allow_env_fallback
+                else " Sync login and refresh require writable secure storage."
+            )
             raise SecretStorageUnavailableError(
-                f"No OS keyring backend available to store secret '{name}'. "
-                f"Install a backend (e.g. 'keyrings.alt') or supply the value "
-                f"via env var {env_var}."
+                f"Unable to store secret '{name}' in the OS keychain. "
+                f"Configure or unlock a secure OS keychain and retry.{guidance}"
             ) from None
         logger.debug(f"Stored secret '{name}' in OS keychain")
 
     def delete_key(self, name: str) -> None:
-        """Remove a secret from the OS keychain.
-
-        Args:
-            name: Secret name to remove.
-
-        Raises:
-            SecretNotFoundError: If the secret does not exist in the keychain.
-        """
+        """Clear a keychain entry; refusal is distinct from absence."""
         try:
-            keyring.delete_password(self._service, name)
-        except keyring.errors.PasswordDeleteError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
+            keyring.delete_password(self._service, self._username_prefix + name)
+        except PasswordDeleteError:
+            # Backends may use this error for deletion failures as well as misses.
+            # Only report absence when a fresh read confirms it.
+            try:
+                present = self.has_keychain_entry(name)
+            except SecretUnavailableError:
+                raise SecretStorageUnavailableError(
+                    f"Secret '{name}' removal could not be verified."
+                ) from None
+            if present:
+                raise SecretStorageUnavailableError(
+                    f"Secret '{name}' could not be removed from the OS keychain."
+                ) from None
             raise SecretNotFoundError(
                 f"Secret '{name}' not found in keychain."
             ) from None
-        except keyring.errors.NoKeyringError:  # type: ignore[reportAttributeAccessIssue]  # keyring stubs omit errors submodule
-            # No keyring backend (e.g. headless CI without keyrings.alt). There
-            # cannot be a stored secret to delete, so treat as a no-op miss.
+        except NoKeyringError:
+            if not self._allow_env_fallback:
+                raise SecretStorageUnavailableError(
+                    "Sync credentials could not be removed; configure the OS keychain."
+                ) from None
             raise SecretNotFoundError(
                 f"Secret '{name}' not found (no keyring backend available)."
+            ) from None
+        except KeyringError:
+            raise SecretStorageUnavailableError(
+                f"Secret '{name}' could not be removed — the OS keychain denied access."
             ) from None
         logger.debug(f"Removed secret '{name}' from OS keychain")

@@ -131,6 +131,7 @@ class MerchantRow:
     canonical_name: Annotated[str, DataClass.MERCHANT_NAME]
     category: Annotated[str | None, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
+    category_id: Annotated[str | None, DataClass.RECORD_ID] = None
 
 
 @row_set("merchants")

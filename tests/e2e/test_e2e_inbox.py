@@ -64,7 +64,9 @@ class TestInboxWorkflow:
             text=True,
             check=False,
         )
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 1, result.stderr
+        assert "Inbox drain needs attention" in result.stdout
+        assert "moneybin import confirm" in result.stdout
 
         remaining = list((profile_dir / "inbox").rglob("*.csv"))
         assert remaining == [], f"Expected inbox empty after sync, found: {remaining}"

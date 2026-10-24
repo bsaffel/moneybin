@@ -18,18 +18,25 @@ currency that spends them lands with the reports surface.
 from __future__ import annotations
 
 import logging
-from datetime import date
 
 import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors, parse_cli_date, parse_cli_decimal
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import (
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+    parse_cli_date,
+    parse_cli_decimal,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.currency import (
     FxOverridePayload,
@@ -44,6 +51,19 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
+
+
+def _rate_summary(payload: FxRatePayload, *, title: str = "FX rate") -> object:
+    """Render one exact rate with its pair, dates, and provenance together."""
+    pairs = [
+        ("Pair", f"{payload.from_currency}/{payload.to_currency}"),
+        ("Applied date", str(payload.rate_date)),
+        ("Rate", str(payload.rate)),
+        ("Source", payload.source),
+    ]
+    if payload.requested_date != payload.rate_date:
+        pairs.append(("Requested date", str(payload.requested_date)))
+    return build_summary(pairs, title=title)
 
 
 @app.command("rate")
@@ -69,19 +89,22 @@ def fx_rate(
     # Parsed before the connection so a typo costs no database open, and so it
     # exits 2 (usage) rather than 1 (the command ran and failed).
     requested = (
-        parse_cli_date(rate_date, "RATE_DATE") if rate_date else date.today()
+        parse_cli_date(rate_date, "RATE_DATE") if rate_date else None
     )  # a calendar date, not an instant
     with handle_cli_errors(cli_actor="fx_rate", payload_type=FxRatePayload):
         # polars is not cold-start cheap
         from moneybin.services.currency_service import (
             build_currency_service,
         )
+        from moneybin.services.profile_settings_service import ProfileSettingsService
 
         # Not read_only: resolving a rate nothing has cached yet fetches it and
         # writes it to raw.exchange_rates, which is the "seed" half of this
         # command. A read-only connection would fail on the first question
         # asked about any new pair.
         with get_database(read_only=False) as db:
+            if requested is None:
+                requested = ProfileSettingsService(db).today()
             service = build_currency_service(db, actor="fx_rate")
             resolved = service.resolve_rate(from_currency, to_currency, requested)
 
@@ -89,16 +112,12 @@ def fx_rate(
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=payload), output, cli_actor="fx_rate")
         return
-    line = (
-        f"1 {payload.from_currency} = {payload.rate} {payload.to_currency} "
-        f"on {payload.rate_date}"
+    emit_human_result(
+        compose_human_result([_rate_summary(payload)]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
-    if payload.rate_date != payload.requested_date:
-        # Silent carry-forward is the failure this whole command guards against.
-        # A weekend priced with Friday's rate is correct; reporting it as the
-        # weekend's own rate is not.
-        line += f", the last rate published on or before {payload.requested_date}"
-    typer.echo(f"{line}  ({payload.source})")
 
 
 @app.command("list")
@@ -110,6 +129,7 @@ def fx_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list has no informational chatter; only data
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show the stored rate series for one pair, newest first.
 
@@ -144,15 +164,71 @@ def fx_list(
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=payload), output, cli_actor="fx_list")
         return
-    # A rate is not an amount: `format_money` rounds to two places, which turns
-    # 0.87138 into 0.87 and loses the precision the series exists to record. It
-    # therefore declares no money column and renders each rate as stored.
-    if payload.rows:
-        render_rows(
-            ["date", "rate", "source"],
-            [(row.rate_date, row.rate, row.source) for row in payload.rows],
-            numeric=("rate",),
+    policy = get_terminal_policy(no_pager=no_pager)
+    pair = f"{payload.from_currency}/{payload.to_currency}"
+    scope = pair if start is None else f"{pair} since {start}"
+    parts: list[object] = [
+        build_summary(
+            [
+                ("Scope", scope),
+                ("Stored rates", str(len(payload.rows))),
+            ],
+            title="Exchange rates",
         )
+    ]
+    if payload.rows:
+        # At narrow widths each record is a complete labelled block, so the
+        # exact rate token stays on one physical line with its metadata. At
+        # ordinary widths the table keeps the series scannable while numeric
+        # cells stay unrounded and unwrappable.
+        if policy.width < 52:
+            parts.extend(
+                _rate_summary(
+                    FxRatePayload(
+                        from_currency=payload.from_currency,
+                        to_currency=payload.to_currency,
+                        requested_date=row.rate_date,
+                        rate_date=row.rate_date,
+                        rate=row.rate,
+                        source=row.source,
+                    ),
+                    title="Rate",
+                )
+                for row in payload.rows
+            )
+        else:
+            parts.append(
+                build_rows(
+                    ["date", "rate", "source"],
+                    [(row.rate_date, row.rate, row.source) for row in payload.rows],
+                    numeric=("rate",),
+                    terminal=policy,
+                )
+            )
+    elif not quiet:
+        parts.append(
+            build_summary(
+                [
+                    (
+                        "Next",
+                        generated_cli_command(
+                            "fx", "rate", payload.from_currency, payload.to_currency
+                        ),
+                    )
+                ],
+                title=(
+                    "No stored rates"
+                    if start is None
+                    else f"No stored rates since {start}"
+                ),
+            )
+        )
+    emit_human_result(
+        compose_human_result(parts),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("set")
@@ -165,6 +241,7 @@ def fx_set(
         None, "--note", help="Why this rate was recorded (e.g. the bank's own rate)"
     ),
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Record your own rate for one pair and date, outranking the provider.
 
@@ -206,9 +283,25 @@ def fx_set(
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=payload), output, cli_actor="fx_set")
         return
-    typer.echo(
-        f"✅ Recorded 1 {payload.from_currency} = {payload.rate} "
-        f"{payload.to_currency} on {payload.rate_date}"
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Pair", f"{payload.from_currency}/{payload.to_currency}"),
+                    ("Date", str(payload.rate_date)),
+                    ("Rate", str(payload.rate)),
+                    (
+                        "Outcome",
+                        f"Recorded 1 {payload.from_currency} = {payload.rate} "
+                        f"{payload.to_currency} on {payload.rate_date}",
+                    ),
+                ],
+                title="FX override recorded",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
 
 
@@ -220,6 +313,7 @@ def fx_delete(
         ..., help="Date of the correction to remove (YYYY-MM-DD)"
     ),
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Remove a rate correction, returning that date to provider pricing.
 
@@ -252,9 +346,30 @@ def fx_delete(
         render_or_json(build_envelope(data=payload), output, cli_actor="fx_delete")
         return
     pair = f"{payload.from_currency}/{payload.to_currency}"
-    if removed:
-        typer.echo(f"✅ Removed the {pair} correction for {payload.rate_date}")
-    else:
-        # Not an error: the end state the caller wanted already holds. Saying so
-        # keeps "there is no correction" from reading as "yours was deleted".
-        typer.echo(f"No override existed for {pair} on {payload.rate_date}")
+    policy = get_terminal_policy()
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Pair", pair),
+                    ("Date", str(payload.rate_date)),
+                    (
+                        "Outcome",
+                        (
+                            f"Removed the {pair} correction for {payload.rate_date}"
+                            if removed
+                            else f"No override existed for {pair} on {payload.rate_date}"
+                        ),
+                    ),
+                ],
+                title=(
+                    f"{policy.symbols.success} FX override removed"
+                    if removed
+                    else "No override existed"
+                ),
+            )
+        ]),
+        policy=policy,
+        finite_read=False,
+        receipt=True,
+    )

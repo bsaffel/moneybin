@@ -22,7 +22,7 @@ from moneybin.services.inbox_service import (
 )
 from tests.moneybin.db_helpers import (
     create_core_tables,
-    install_uncategorized_queue_view,
+    derive_is_categorizable,
 )
 
 
@@ -209,7 +209,7 @@ class TestImportInboxSync:
         """The drain's assist hint counts the rows the review queue lists.
 
         A confirmed transfer leg is not curator work, so
-        core.uncategorized_queue drops it — and the hint that offers to
+        is_categorizable excludes it — and the hint that offers to
         categorize "N transactions" must not quote a larger N than the queue
         the user is then sent to.
         """
@@ -227,7 +227,7 @@ class TestImportInboxSync:
             "('t_transfer', 'acct_open', DATE '2026-04-02', -500.00, 'Transfer', "
             "NULL, true)"
         )
-        install_uncategorized_queue_view(db)
+        derive_is_categorizable(db)
 
         @contextmanager
         def _bound_database(*args: object, **kwargs: object):  # type: ignore[misc]

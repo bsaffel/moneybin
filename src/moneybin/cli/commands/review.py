@@ -8,8 +8,8 @@ Aggregates pending counts from six review queues:
   - Merchant-link decisions
   - Security-link decisions
 
-Counts are what a bare `moneybin review` prints; the item-by-item walk is
-stubbed pending the v2 review-loop UX and reachable only via `--interactive`.
+Counts are what a bare `moneybin review` prints; `--interactive` walks a bounded
+selection with explicit decisions, skip, and quit.
 
 See also: `moneybin transactions review` (deprecated alias — removed after
 one minor release; points here).
@@ -21,6 +21,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    no_pager_option,
     output_option,
     quiet_option,
 )
@@ -29,8 +30,8 @@ from .transactions.review import review_impl
 
 
 def review_command(
-    type_: str = typer.Option(
-        "all",
+    type_: str | None = typer.Option(
+        None,
         "--type",
         help="all | matches | investment-matches | categorize | account-links | merchant-links | security-links",
     ),
@@ -38,13 +39,17 @@ def review_command(
         False, "--status", help="Show queue counts (the default)"
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", help="Walk the queue item by item (not yet built)"
+        False,
+        "--interactive",
+        help="Review pending items with explicit decisions, skip, or quit",
     ),
     confirm_id: list[str] | None = typer.Option(
         None, "--confirm", help="Confirm exactly one item by ID; repeats are invalid"
     ),
     reject_id: str | None = typer.Option(
-        None, "--reject", help="Non-interactive: reject one match by ID"
+        None,
+        "--reject",
+        help="Non-interactive: reject one match or categorization decision by ID",
     ),
     confirm_all: bool = typer.Option(
         False, "--confirm-all", help="Non-interactive: confirm all items in scope"
@@ -54,9 +59,8 @@ def review_command(
         "--field-choice",
         help="Investment confirmation: conflict-id=choice-id (repeatable)",
     ),
-    limit: int = typer.Option(
-        50, "--limit", help="Cap items per session"
-    ),  # placeholder; interactive loop pending
+    limit: int = typer.Option(50, "--limit", help="Cap items per session"),
+    no_pager: bool = no_pager_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -64,8 +68,9 @@ def review_command(
 
     One sweep answers "what needs my attention?" across all review domains.
     Use --type to filter to a specific queue, then --confirm/--reject/
-    --confirm-all to decide cash matches, or --reject for an investment Proposal.
-    Investment acceptance remains unavailable.
+    --confirm-all to decide matches, or --type categorize --reject <decision-id>
+    to reject a categorization attempt without prompting. Use --type investment-matches
+    --reject to reject an investment Proposal. Investment acceptance remains unavailable.
     """
     review_impl(
         type_=type_,
@@ -77,6 +82,7 @@ def review_command(
         reject_id=reject_id,
         confirm_all=confirm_all,
         limit=limit,
+        no_pager=no_pager,
         output=output,
         quiet=quiet,
     )

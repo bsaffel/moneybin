@@ -6,15 +6,20 @@ need to INSERT test data directly require concrete tables, so we define
 minimal CREATE TABLE statements here.
 """
 
+from collections.abc import Callable, Collection
 from datetime import datetime
 
 import duckdb
+import pytest
+import sqlglot
+from sqlglot import exp
 
 from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.tables import TableRef
 
 _MODEL_FRESHNESS_DDL = (
-    "meta.model_freshness (model_name VARCHAR, last_changed_at TIMESTAMP, "
-    "last_applied_at TIMESTAMP, last_executed_at TIMESTAMP, model_kind VARCHAR)"
+    "meta.model_freshness (model_name VARCHAR, last_changed_at TIMESTAMPTZ, "
+    "last_applied_at TIMESTAMPTZ, last_executed_at TIMESTAMPTZ, model_kind VARCHAR)"
 )
 
 
@@ -30,9 +35,8 @@ def record_sqlmesh_apply(db: Database, when: datetime) -> None:
     the scenario and integration suites, so this keeps only the columns
     ``freshness()`` reads plus enough shape to stay honest about the contract.
 
-    Callers pass a naive ``when`` and get UTC. Pin the session zone to UTC
-    too if the fixture's raw landing literals are naive, so both sides
-    describe the same instants on any machine.
+    Fixture instants use explicit known-UTC offsets so both freshness and
+    raw landing values describe the same instants on any machine.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS meta")
     db.execute(f"CREATE OR REPLACE TABLE {_MODEL_FRESHNESS_DDL}")
@@ -49,8 +53,8 @@ def record_model_execution(
 
     ``record_sqlmesh_apply`` answers "the whole warehouse was refreshed"; this
     answers "this one model was rebuilt at this instant", which is what a
-    per-report staleness check reads. ``when`` is naive UTC, as
-    ``meta.model_freshness`` stores it.
+    per-report staleness check reads. ``when`` is an aware fixture instant,
+    as ``meta.model_freshness`` stores it.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS meta")
     db.execute(f"CREATE TABLE IF NOT EXISTS {_MODEL_FRESHNESS_DDL}")
@@ -68,27 +72,32 @@ def record_model_execution(
 CORE_DIM_ACCOUNTS_DDL = """\
 CREATE TABLE IF NOT EXISTS core.dim_accounts (
     account_id VARCHAR PRIMARY KEY,
-    routing_number VARCHAR,
-    account_type VARCHAR,
-    institution_name VARCHAR,
-    institution_slug VARCHAR,
-    institution_fid VARCHAR,
-    source_type VARCHAR,
-    source_file VARCHAR,
-    extracted_at TIMESTAMP,
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     display_name VARCHAR,
-    display_name_is_user_set BOOLEAN,
     official_name VARCHAR,
-    last_four VARCHAR,
+    account_type VARCHAR,
+    account_type_override VARCHAR,
+    source_account_type VARCHAR,
     account_subtype VARCHAR,
     holder_category VARCHAR,
+    institution_slug VARCHAR,
+    institution_fid VARCHAR,
+    routing_number VARCHAR,
+    institution_name VARCHAR,
+    last_four VARCHAR,
+    source_type VARCHAR,
+    source_file VARCHAR,
+    investment_source_type VARCHAR,
     currency_code VARCHAR,
     credit_limit DECIMAL(18, 2),
+    display_name_is_user_set BOOLEAN,
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE,
-    archived_at DATE
+    archived_at DATE,
+    extracted_at TIMESTAMPTZ,
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    investment_source_type_changed_at TIMESTAMPTZ,
+    archived_changed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -126,6 +135,8 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     pending_transaction_id VARCHAR,
     is_transfer BOOLEAN,
     transfer_pair_id VARCHAR,
+    -- The common case; derive_is_categorizable() recomputes it from the model.
+    is_categorizable BOOLEAN DEFAULT TRUE,
     location_address VARCHAR,
     location_city VARCHAR,
     location_region VARCHAR,
@@ -137,22 +148,22 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     source_type VARCHAR,
     source_count INTEGER,
     match_confidence DECIMAL(5, 4),
-    source_extracted_at TIMESTAMP,
-    loaded_at TIMESTAMP,
+    source_extracted_at TIMESTAMPTZ,
+    loaded_at TIMESTAMPTZ,
     transaction_year INTEGER,
     transaction_month INTEGER,
     transaction_day INTEGER,
     transaction_day_of_week INTEGER,
     transaction_year_month VARCHAR,
     transaction_year_quarter VARCHAR,
-    notes STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMP)[],
+    notes STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMPTZ)[],
     note_count INTEGER,
     tags VARCHAR[],
     tag_count INTEGER,
     splits STRUCT(split_id VARCHAR, amount DECIMAL(18, 2), category VARCHAR, subcategory VARCHAR, note VARCHAR)[],
     split_count INTEGER,
     has_splits BOOLEAN,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -207,6 +218,7 @@ CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
     balance_date DATE,
     balance DECIMAL(18, 2),
     is_observed BOOLEAN,
+    in_net_worth BOOLEAN,
     observation_source VARCHAR,
     reconciliation_delta DECIMAL(18, 2),
     currency_code VARCHAR
@@ -216,12 +228,40 @@ CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
 REPORTS_NET_WORTH_DDL = """\
 CREATE VIEW IF NOT EXISTS reports.net_worth AS
 SELECT
+    CAST(NULL AS VARCHAR) AS home_currency_code,
     CURRENT_DATE AS balance_date,
-    CAST(NULL AS VARCHAR) AS currency_code,
-    0.00::DECIMAL(18, 2) AS net_worth,
     0 AS account_count,
+    0 AS carried_forward_count,
+    0 AS currency_count,
+    0 AS unpriced_currency_count,
+    0 AS unanchored_account_count,
     0.00::DECIMAL(18, 2) AS total_assets,
-    0.00::DECIMAL(18, 2) AS total_liabilities
+    0.00::DECIMAL(18, 2) AS total_liabilities,
+    0.00::DECIMAL(18, 2) AS net_worth
+WHERE FALSE;
+"""
+
+# core:net_worth_currencies reads this rung, not reports.net_worth (the
+# day-grain total) — stubbed here so any fixture built on
+# create_core_tables() / create_core_tables_raw() can exercise
+# core:net_worth_currencies without a full SQLMesh build.
+REPORTS_NET_WORTH_CURRENCIES_DDL = """\
+CREATE VIEW IF NOT EXISTS reports.net_worth_currencies AS
+SELECT
+    CAST(NULL AS VARCHAR) AS currency_code,
+    CAST(NULL AS VARCHAR) AS home_currency_code,
+    CAST(NULL AS VARCHAR) AS rate_source,
+    CURRENT_DATE AS balance_date,
+    CAST(NULL AS DATE) AS rate_published_date,
+    0 AS account_count,
+    0 AS carried_forward_count,
+    0 AS unanchored_account_count,
+    0.00::DECIMAL(18, 2) AS total_assets,
+    0.00::DECIMAL(18, 2) AS total_liabilities,
+    0.00::DECIMAL(18, 2) AS net_worth,
+    0.00::DECIMAL(18, 2) AS total_assets_home,
+    0.00::DECIMAL(18, 2) AS total_liabilities_home,
+    0.00::DECIMAL(18, 2) AS net_worth_home
 WHERE FALSE;
 """
 
@@ -237,8 +277,8 @@ SELECT CAST(NULL AS VARCHAR) AS category_id,
        CAST(NULL AS VARCHAR) AS class,
        CAST(NULL AS BOOLEAN) AS is_default,
        CAST(NULL AS BOOLEAN) AS is_active,
-       CAST(NULL AS TIMESTAMP) AS created_at,
-       CAST(NULL AS TIMESTAMP) AS updated_at
+       CAST(NULL AS TIMESTAMPTZ) AS created_at,
+       CAST(NULL AS TIMESTAMPTZ) AS updated_at
 WHERE FALSE;
 """
 
@@ -253,8 +293,8 @@ SELECT CAST(NULL AS VARCHAR) AS merchant_id,
        CAST(NULL AS VARCHAR) AS subcategory,
        CAST(NULL AS VARCHAR) AS created_by,
        CAST(NULL AS VARCHAR[]) AS exemplars,
-       CAST(NULL AS TIMESTAMP) AS created_at,
-       CAST(NULL AS TIMESTAMP) AS updated_at
+       CAST(NULL AS TIMESTAMPTZ) AS created_at,
+       CAST(NULL AS TIMESTAMPTZ) AS updated_at
 WHERE FALSE;
 """
 
@@ -274,7 +314,9 @@ WHERE FALSE;
 CORE_BRIDGE_CATEGORY_SOURCE_MAP_STUB_DDL = """\
 CREATE OR REPLACE VIEW core.bridge_category_source_map AS
 SELECT CAST(NULL AS VARCHAR) AS source_type,
+       CAST(NULL AS VARCHAR) AS source_origin,
        CAST(NULL AS VARCHAR) AS source_category_code,
+       CAST(NULL AS VARCHAR) AS source_subcategory_code,
        CAST(NULL AS VARCHAR) AS code_level,
        CAST(NULL AS VARCHAR) AS category_id,
        CAST(NULL AS VARCHAR) AS source_taxonomy_version,
@@ -320,7 +362,7 @@ CREATE TABLE IF NOT EXISTS core.fct_investment_transactions (
     source_type VARCHAR,
     source_origin VARCHAR,
     description VARCHAR,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -342,7 +384,7 @@ CREATE TABLE IF NOT EXISTS core.fct_investment_lots (
     is_open BOOLEAN,
     source_transaction_id VARCHAR,
     basis_incomplete BOOLEAN,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -365,7 +407,7 @@ CREATE TABLE IF NOT EXISTS core.fct_realized_gains (
     cost_basis_method VARCHAR,
     basis_incomplete BOOLEAN,
     currency_code VARCHAR,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -400,7 +442,7 @@ CREATE TABLE IF NOT EXISTS core.bridge_currency_conversions (
     from_date DATE,
     to_date DATE,
     valuation_rate_date DATE,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -423,7 +465,7 @@ CREATE TABLE IF NOT EXISTS core.fct_currency_lots (
     cost_basis_remaining DECIMAL(18, 2),
     basis_incomplete BOOLEAN,
     acquisition_date DATE,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -448,7 +490,7 @@ CREATE TABLE IF NOT EXISTS core.fct_realized_fx_gains (
     acquisition_date DATE,
     disposal_date DATE,
     valuation_rate_date DATE,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
 """
 
@@ -473,8 +515,8 @@ SELECT CAST(NULL AS VARCHAR) AS account_id,
        CAST(NULL AS DECIMAL(28, 10)) AS provider_reported_quantity,
        CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_cost_basis,
        CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_value,
-       CAST(NULL AS TIMESTAMP) AS provider_reported_as_of,
-       CAST(NULL AS TIMESTAMP) AS updated_at
+       CAST(NULL AS TIMESTAMPTZ) AS provider_reported_as_of,
+       CAST(NULL AS TIMESTAMPTZ) AS updated_at
 WHERE FALSE;
 """
 # NB: quantity/cost_basis/average_cost types above mirror dim_holdings.sql's
@@ -488,6 +530,17 @@ WHERE FALSE;
 # (LEFT JOINed from the newest holdings snapshot in production) — same types as
 # the ledger-derived columns they mirror.
 
+# core.dim_holdings_broker_reported — SQLMesh-managed view in production
+# (the broker's claim, reduced to one row per account). Column shape mirrors
+# dim_holdings_broker_reported.sql's final SELECT.
+CORE_DIM_HOLDINGS_BROKER_REPORTED_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.dim_holdings_broker_reported AS
+SELECT CAST(NULL AS VARCHAR) AS account_id,
+       CAST(NULL AS BOOLEAN) AS has_position,
+       CAST(NULL AS DATE) AS as_of
+WHERE FALSE;
+"""
+
 # core.fct_security_prices — SQLMesh SQL FULL-kind table in production.
 # Column shape mirrors fct_security_prices.sql's final SELECT.
 CORE_FCT_SECURITY_PRICES_DDL = """\
@@ -498,29 +551,8 @@ CREATE TABLE IF NOT EXISTS core.fct_security_prices (
     close DECIMAL(28, 10),
     source_type VARCHAR,
     price_basis VARCHAR,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMPTZ
 );
-"""
-
-# core.uncategorized_queue — SQLMesh-managed view in production (curator-impact
-# queue, moved from reports.* per reports-foundation.md R5). Column shape
-# mirrors uncategorized_queue.sql's final SELECT.
-CORE_UNCATEGORIZED_QUEUE_STUB_DDL = """\
-CREATE OR REPLACE VIEW core.uncategorized_queue AS
-SELECT CAST(NULL AS VARCHAR) AS transaction_id,
-       CAST(NULL AS VARCHAR) AS account_id,
-       CAST(NULL AS VARCHAR) AS account_name,
-       CAST(NULL AS DATE) AS txn_date,
-       CAST(NULL AS DECIMAL(18, 2)) AS amount,
-       CAST(NULL AS VARCHAR) AS currency_code,
-       CAST(NULL AS VARCHAR) AS description,
-       CAST(NULL AS VARCHAR) AS merchant_id,
-       CAST(NULL AS VARCHAR) AS merchant_normalized,
-       CAST(NULL AS INTEGER) AS age_days,
-       CAST(NULL AS DECIMAL(18, 2)) AS priority_score,
-       CAST(NULL AS VARCHAR) AS source_type,
-       CAST(NULL AS VARCHAR) AS source_id
-WHERE FALSE;
 """
 
 
@@ -537,7 +569,7 @@ SELECT CAST(NULL AS VARCHAR) AS from_currency,
        CAST(NULL AS VARCHAR) AS rate_vendor,
        CAST(NULL AS DECIMAL(18, 8)) AS rate,
        CAST(NULL AS DATE) AS rate_date,
-       CAST(NULL AS TIMESTAMP) AS updated_at
+       CAST(NULL AS TIMESTAMPTZ) AS updated_at
 WHERE FALSE;
 """
 
@@ -587,8 +619,8 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_FCT_CURRENCY_LOTS_DDL)
     db.execute(CORE_FCT_REALIZED_FX_GAINS_DDL)
     db.execute(CORE_DIM_HOLDINGS_STUB_DDL)
+    db.execute(CORE_DIM_HOLDINGS_BROKER_REPORTED_STUB_DDL)
     db.execute(CORE_FCT_SECURITY_PRICES_DDL)
-    db.execute(CORE_UNCATEGORIZED_QUEUE_STUB_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_DAILY_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_STUB_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_EFFECTIVE_STUB_DDL)
@@ -610,6 +642,7 @@ def create_core_tables(db: Database) -> None:
     db.execute(CORE_FCT_BALANCES_DDL)
     db.execute(CORE_FCT_BALANCES_DAILY_DDL)
     db.execute(REPORTS_NET_WORTH_DDL)
+    db.execute(REPORTS_NET_WORTH_CURRENCIES_DDL)
 
 
 def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
@@ -628,6 +661,7 @@ def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(CORE_FCT_BALANCES_DDL)
     conn.execute(CORE_FCT_BALANCES_DAILY_DDL)
     conn.execute(REPORTS_NET_WORTH_DDL)
+    conn.execute(REPORTS_NET_WORTH_CURRENCIES_DDL)
 
 
 # Table and column comments for core tables — mirror the SQLMesh model
@@ -714,29 +748,80 @@ def apply_core_table_comments(database: Database) -> None:
 
 # Resolve via the package's own SQLMESH_ROOT rather than walking up to the repo
 # root: the SQLMesh project lives inside the installed package, so a path built
-# from a test file's parents breaks whenever the project moves (it did — the
-# project relocated to src/moneybin/sqlmesh). SQLMESH_ROOT is what production
-# uses, so this binding cannot drift from it.
-_UNCATEGORIZED_QUEUE_MODEL_FILE = (
-    SQLMESH_ROOT / "models" / "core" / "uncategorized_queue.sql"
-)
+# from a test file's parents breaks whenever the project moves.
+_FCT_TRANSACTIONS_MODEL_FILE = SQLMESH_ROOT / "models" / "core" / "fct_transactions.sql"
 
 
-def install_uncategorized_queue_view(db: Database) -> None:
-    """Materialize core.uncategorized_queue from the real model SQL.
+def _is_categorizable_expression() -> str:
+    """The model's is_categorizable, inlined over aliases f (fact) and a (dim_accounts)."""
+    raw = _FCT_TRANSACTIONS_MODEL_FILE.read_text()
+    end = raw.index(");", raw.index("MODEL (")) + 2
+    select = sqlglot.parse_one(raw[end:], read="duckdb")
+    enriched = next(cte for cte in select.find_all(exp.CTE) if cte.alias == "enriched")
+    account_half = next(
+        e.this
+        for e in enriched.this.expressions
+        if e.alias == "account_resolved_unarchived"
+    )
+    column = next(e.this for e in select.expressions if e.alias == "is_categorizable")
 
-    Requires ``core.fct_transactions`` and ``core.dim_accounts`` to exist
-    (``create_core_tables``). Rebuilds the actual queue view on top of them
-    from the shipped model file so tests bind to the real canonical
-    definition instead of a hand-typed stub that could drift from it.
+    def inline(node: exp.Expr) -> exp.Expr:
+        if isinstance(node, exp.Column) and node.name == "account_resolved_unarchived":
+            return exp.paren(account_half.copy())
+        if isinstance(node, exp.Column) and not node.table:
+            return exp.column(node.name, table="f")
+        return node
+
+    return column.transform(inline).sql("duckdb")
+
+
+def derive_is_categorizable(db: Database) -> None:
+    """Recompute the fixture's is_categorizable with the shipped model's expression.
+
+    Production builds core.fct_transactions as a SQLMesh view; the unit-test
+    stand-in is a table whose column defaults TRUE. A test exercising an
+    exclusion calls this after seeding, so it binds to the model's definition
+    rather than a hand-typed copy of it.
     """
-    raw = _UNCATEGORIZED_QUEUE_MODEL_FILE.read_text()
-    start = raw.index("MODEL")
-    end = raw.index(");", start) + 2
-    body = raw[end:].strip()
     db.execute(
-        f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}"
-    )  # model body read from the repo file, not user input
+        f"""
+        UPDATE core.fct_transactions AS t
+        SET is_categorizable = d.is_categorizable
+        FROM (
+            SELECT f.rowid AS rid, {_is_categorizable_expression()} AS is_categorizable
+            FROM core.fct_transactions AS f
+            LEFT JOIN core.dim_accounts AS a ON f.account_id = a.account_id
+        ) AS d
+        WHERE t.rowid = d.rid
+        """  # noqa: S608  # model expression read from the repo file, not user input
+    )
+
+
+def simulate_pre_refresh_fct_transactions(db: Database) -> None:
+    """Drop is_categorizable: the fact a database holds after upgrade, before refresh."""
+    db.execute("ALTER TABLE core.fct_transactions DROP COLUMN is_categorizable")
+
+
+def insert_three_pending_transactions(db: Database) -> None:
+    """T1–T3, uncategorized, on the MCP template's ACC001 and ACC002.
+
+    Impact order is T2, T1, T3 at any CURRENT_DATE: ABS(amount) * age is
+    500*(d+5) > 25*(d+14) > 5*d, d being days since 2026-04-15.
+    """
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions
+            (transaction_id, account_id, transaction_date, amount, currency_code,
+             description, merchant_name, source_type, is_transfer)
+        VALUES
+            ('T1', 'ACC001', DATE '2026-04-01', -25.00, 'USD', 'COFFEE SHOP',
+             'Coffee Shop', 'ofx', false),
+            ('T2', 'ACC001', DATE '2026-04-10', -500.00, 'USD', 'BIG EXPENSE',
+             'Big Expense', 'ofx', false),
+            ('T3', 'ACC002', DATE '2026-04-15', -5.00, 'USD', 'TINY',
+             'Tiny', 'ofx', false)
+        """  # test input, not user data
+    )
 
 
 def seed_pending_dedup_pair(db: Database) -> None:
@@ -774,3 +859,39 @@ def seed_pending_dedup_pair(db: Database) -> None:
         decided_by="auto",
         actor="test",
     )
+
+
+def install_prep_view(db: Database, name: str) -> None:
+    """Install one shipped ``prep`` model as a view, its SELECT parsed off disk."""
+    # Deferred: sqlmesh is heavy, and most importers of this module never call this.
+    from sqlglot import exp
+    from sqlmesh.core.dialect import parse
+
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    path = SQLMESH_ROOT / "models" / "prep" / f"{name}.sql"
+    query = next(
+        node for node in parse(path.read_text()) if isinstance(node, exp.Select)
+    )
+    db.execute(
+        f"CREATE OR REPLACE VIEW prep.{name} AS {query.sql(dialect='duckdb')}"  # shipped model name from a test, not user input
+    )
+
+
+def spy_restate(
+    monkeypatch: pytest.MonkeyPatch, remaining: Callable[[], int]
+) -> list[tuple[tuple[TableRef, ...], str, int]]:
+    """Replace ``restate_after_write`` with a recorder.
+
+    Each call records its inputs, its ``committed_change``, and ``remaining()``
+    taken at that moment, so a test can show the restate ran after the
+    writer's delete committed.
+    """
+    calls: list[tuple[tuple[TableRef, ...], str, int]] = []
+
+    def spy(
+        _db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        calls.append((tuple(inputs), committed_change, remaining()))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", spy)
+    return calls

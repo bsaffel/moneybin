@@ -13,7 +13,7 @@ from moneybin.connectors.sync_client import (
     _DEFAULT_TIMEOUT,  # type: ignore[reportPrivateUsage]
     _KEYRING_JWT_KEY,  # type: ignore[reportPrivateUsage]
     _KEYRING_REFRESH_KEY,  # type: ignore[reportPrivateUsage]
-    _KEYRING_SERVICE,  # type: ignore[reportPrivateUsage]
+    _KEYRING_SERVER_KEY,  # type: ignore[reportPrivateUsage]
     _LINK_POLL_DEADLINE,  # type: ignore[reportPrivateUsage]
     _LONG_TIMEOUT,  # type: ignore[reportPrivateUsage]
     SyncClient,
@@ -23,16 +23,43 @@ from moneybin.connectors.sync_errors import (
     SyncLinkError,
     SyncTimeoutError,
 )
-from moneybin.connectors.sync_models import SyncAckResponse, SyncDataResponse
+from moneybin.connectors.sync_models import (
+    DeviceAuthorizationChallenge,
+    PlaidSyncDataResponse,
+    SyncAckV2Response,
+    SyncEnvelopeV2,
+)
+from moneybin.secrets import SecretNotFoundError, SecretStore
+
+JOB_ID = "00000000-0000-4000-8000-000000000abc"
+CONNECTION_ID = "00000000-0000-4000-8000-000000000def"
+BATCH_ID = "00000000-0000-4000-8000-000000000123"
+
+
+class FakeSecretStore(SecretStore):
+    """An isolated in-memory credential backend for transport tests."""
+
+    def __init__(self) -> None:
+        """Start with an empty isolated credential collection."""
+        self.values: dict[str, str] = {}
+
+    def get_key(self, name: str) -> str:
+        if name not in self.values:
+            raise SecretNotFoundError(name)
+        return self.values[name]
+
+    def set_key(self, name: str, value: str) -> None:
+        self.values[name] = value
+
+    def delete_key(self, name: str) -> None:
+        if name not in self.values:
+            raise SecretNotFoundError(name)
+        del self.values[name]
 
 
 @pytest.fixture
 def sync_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SyncClient:
-    """A SyncClient pointed at a fake URL with file-based token storage in tmp.
-
-    Uses the `_token_path` escape hatch so tests never touch the user's keyring.
-    Clears proxy env vars so httpx doesn't try to load `socksio` in sandbox envs.
-    """
+    """Use fake credentials and a temporary home, never the real keychain."""
     for var in (
         "ALL_PROXY",
         "all_proxy",
@@ -42,8 +69,12 @@ def sync_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SyncClient:
         "http_proxy",
     ):
         monkeypatch.delenv(var, raising=False)
-    token_path = tmp_path / ".sync_token"
-    return SyncClient(server_url="https://test.api", token_path=token_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return SyncClient(
+        server_url="https://test.api",
+        profile_id="test-consumer",
+        secret_store=FakeSecretStore(),
+    )
 
 
 def test_sync_client_initial_state_has_no_token(sync_client: SyncClient) -> None:
@@ -426,8 +457,12 @@ def test_poll_link_failed_raises(sync_client: SyncClient) -> None:
         )
     )
     sync_client._sleep = lambda _: None  # type: ignore[method-assign]
-    with pytest.raises(SyncLinkError, match="user cancelled"):
+    with pytest.raises(
+        SyncLinkError,
+        match="Link failed; inspect connection status before starting a new link",
+    ) as exc_info:
         sync_client.poll_link_status("sess_abc")
+    assert "user cancelled flow" not in str(exc_info.value)
 
 
 class _FakeClock:
@@ -479,14 +514,15 @@ def test_trigger_sync_returns_synchronous_result(sync_client: SyncClient) -> Non
         return_value=httpx.Response(
             201,
             json={
-                "job_id": "job-abc",
+                "job_id": JOB_ID,
+                "contract_version": 2,
                 "status": "completed",
                 "transaction_count": 42,
             },
         )
     )
     result = sync_client.trigger_sync()
-    assert result.job_id == "job-abc"
+    assert str(result.job_id) == JOB_ID
     assert result.status == "completed"
     assert result.transaction_count == 42
 
@@ -497,12 +533,22 @@ def test_trigger_sync_passes_provider_item_id_and_force(
 ) -> None:
     sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
     route = respx.post("https://test.api/sync/trigger").mock(
-        return_value=httpx.Response(201, json={"job_id": "j", "status": "completed"})
+        return_value=httpx.Response(
+            201,
+            json={
+                "job_id": JOB_ID,
+                "contract_version": 2,
+                "status": "completed",
+                "transaction_count": 0,
+            },
+        )
     )
     sync_client.trigger_sync(provider_item_id="item_x", reset_cursor=True)
     body = route.calls.last.request.content
     assert b"item_x" in body
-    assert b'"reset_cursor":true' in body or b'"reset_cursor": true' in body
+    assert b'"force":true' in body or b'"force": true' in body
+    assert b'"contract_version":2' in body or b'"contract_version": 2' in body
+    assert sync_client.consumer_id.encode() in body
 
 
 @respx.mock
@@ -512,61 +558,113 @@ def test_get_data_returns_parsed_sync_data(sync_client: SyncClient) -> None:
         return_value=httpx.Response(
             200,
             json={
-                "accounts": [
+                "job_id": JOB_ID,
+                "contract_version": 2,
+                "status": "completed",
+                "sources": [
                     {
-                        "account_id": "a1",
-                        "account_type": "depository",
-                        "account_subtype": "checking",
-                        "institution_name": "Chase",
-                        "official_name": "Total",
-                        "mask": "0001",
+                        "provider": "plaid",
+                        "connection_id": CONNECTION_ID,
+                        "credential_generation": 1,
+                        "batches": [
+                            {
+                                "batch_id": BATCH_ID,
+                                "fetched_at": "2026-04-08T00:00:00Z",
+                                "window": None,
+                                "payload": {
+                                    "accounts": [
+                                        {
+                                            "account_id": "a1",
+                                            "account_type": "depository",
+                                            "account_subtype": "checking",
+                                            "institution_name": "Chase",
+                                            "official_name": "Total",
+                                            "mask": "0001",
+                                        }
+                                    ],
+                                    "transactions": [
+                                        {
+                                            "transaction_id": "t1",
+                                            "account_id": "a1",
+                                            "transaction_date": "2026-04-07",
+                                            "amount": "10.00",
+                                            "description": "x",
+                                            "pending": False,
+                                        }
+                                    ],
+                                    "balances": [],
+                                    "removed_transactions": [],
+                                    "metadata": {
+                                        "job_id": JOB_ID,
+                                        "synced_at": "2026-04-08T00:00:00Z",
+                                        "institutions": [
+                                            {
+                                                "provider_item_id": "item_x",
+                                                "status": "completed",
+                                                "transaction_count": 1,
+                                            }
+                                        ],
+                                    },
+                                },
+                            }
+                        ],
+                        "outcomes": [
+                            {
+                                "account_id": None,
+                                "native_scope": {
+                                    "kind": "plaid_item",
+                                    "provider_item_id": "item_x",
+                                },
+                                "window": None,
+                                "status": "complete",
+                                "error_code": None,
+                            }
+                        ],
                     }
                 ],
-                "transactions": [
-                    {
-                        "transaction_id": "t1",
-                        "account_id": "a1",
-                        "transaction_date": "2026-04-07",
-                        "amount": "10.00",
-                        "description": "x",
-                        "pending": False,
-                    }
-                ],
-                "balances": [],
-                "removed_transactions": [],
-                "metadata": {
-                    "job_id": "job-abc",
-                    "synced_at": "2026-04-08T00:00:00Z",
-                    "institutions": [
-                        {
-                            "provider_item_id": "item_x",
-                            "status": "completed",
-                            "transaction_count": 1,
-                        }
-                    ],
-                },
             },
         )
     )
-    result = sync_client.get_data("job-abc")
-    assert isinstance(result, SyncDataResponse)
-    assert result.metadata.job_id == "job-abc"
-    assert len(result.transactions) == 1
+    result = sync_client.get_data(JOB_ID)
+    assert isinstance(result, SyncEnvelopeV2)
+    assert str(result.job_id) == JOB_ID
+    assert result.sources[0].provider == "plaid"
+    plaid = PlaidSyncDataResponse.model_validate(result.sources[0].batches[0].payload)
+    assert plaid.transactions[0].transaction_id == "t1"
 
 
 @respx.mock
 def test_ack_posts_job_id_and_returns_ack_response(sync_client: SyncClient) -> None:
     sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
     route = respx.post("https://test.api/sync/ack").mock(
-        return_value=httpx.Response(200, json={"job_id": "job-123", "status": "acked"})
+        return_value=httpx.Response(
+            200,
+            json={
+                "job_id": JOB_ID,
+                "contract_version": 2,
+                "status": "acked",
+                "acked_at": "2026-04-08T00:01:00Z",
+                "results": [
+                    {
+                        "provider": "plaid",
+                        "connection_id": CONNECTION_ID,
+                        "credential_generation": 1,
+                        "outcomes": [],
+                    }
+                ],
+            },
+        )
     )
 
-    result = sync_client.ack("job-123")
+    result = sync_client.ack(JOB_ID)
 
-    assert isinstance(result, SyncAckResponse)
-    assert result.job_id == "job-123"
+    assert isinstance(result, SyncAckV2Response)
+    assert str(result.job_id) == JOB_ID
     assert result.status == "acked"
-    assert json.loads(route.calls.last.request.content) == {"job_id": "job-123"}
+    assert json.loads(route.calls.last.request.content) == {
+        "job_id": JOB_ID,
+        "consumer_id": sync_client.consumer_id,
+    }
 
 
 def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -589,7 +687,7 @@ def test_login_sends_profile_id_when_set(
     _clear_proxy_env(monkeypatch)
     client = SyncClient(
         server_url="https://test.api",
-        token_path=tmp_path / ".sync_token",
+        secret_store=FakeSecretStore(),
         profile_id="ab12cd34ef56",
     )
     respx.post("https://test.api/auth/device/code").mock(
@@ -628,9 +726,7 @@ def test_login_omits_profile_id_when_not_set(
 ) -> None:
     """Legacy-server compat: profile_id must be absent from the token body when not set."""
     _clear_proxy_env(monkeypatch)
-    client = SyncClient(
-        server_url="https://test.api", token_path=tmp_path / ".sync_token"
-    )
+    client = SyncClient(server_url="https://test.api", secret_store=FakeSecretStore())
     respx.post("https://test.api/auth/device/code").mock(
         return_value=httpx.Response(
             200,
@@ -661,9 +757,12 @@ def test_login_omits_profile_id_when_not_set(
     assert "profile_id" not in sent
 
 
-def test_tokens_are_isolated_per_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tokens_are_isolated_per_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Two profiles must not share a keychain slot — tokens encode a per-profile subject."""
     _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
     store: dict[tuple[str, str], str] = {}
 
     def _set(service: str, user: str, pw: str) -> None:
@@ -672,8 +771,13 @@ def test_tokens_are_isolated_per_profile(monkeypatch: pytest.MonkeyPatch) -> Non
     def _get(service: str, user: str) -> str | None:
         return store.get((service, user))
 
-    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.set_password", _set)
-    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.get_password", _get)
+    monkeypatch.setattr("moneybin.secrets.keyring.set_password", _set)
+    monkeypatch.setattr("moneybin.secrets.keyring.get_password", _get)
+
+    def delete(service: str, user: str) -> None:
+        store.pop((service, user), None)
+
+    monkeypatch.setattr("moneybin.secrets.keyring.delete_password", delete)
 
     alice = SyncClient(server_url="https://test.api", profile_id="aaaaaaaaaaaa")
     bob = SyncClient(server_url="https://test.api", profile_id="bbbbbbbbbbbb")
@@ -684,16 +788,11 @@ def test_tokens_are_isolated_per_profile(monkeypatch: pytest.MonkeyPatch) -> Non
     assert bob._read_token() is None  # type: ignore[reportPrivateUsage]
 
 
-def test_logout_clears_scoped_and_legacy_keyring_slots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("cleanup", ["logout", "refresh_failure"])
+def test_named_cleanup_preserves_unscoped_and_sibling_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup: str
 ) -> None:
-    """Logout clears the profile's scoped keys and the legacy unscoped keys.
-
-    Other profiles' tokens stay intact. Exercises the keyring path of
-    _clear_tokens (the _token_path fixture used by other tests short-circuits
-    it); HOME is redirected so the fallback-file cleanup never touches the real
-    ~/.moneybin.
-    """
+    """Credential cleanup only removes storage for the known broker identity."""
     _clear_proxy_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
     store: dict[tuple[str, str], str] = {}
@@ -707,31 +806,60 @@ def test_logout_clears_scoped_and_legacy_keyring_slots(
     def _delete(service: str, user: str) -> None:
         store.pop((service, user), None)
 
-    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.set_password", _set)
-    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.get_password", _get)
-    monkeypatch.setattr(
-        "moneybin.connectors.sync_client.keyring.delete_password", _delete
-    )
+    monkeypatch.setattr("moneybin.secrets.keyring.set_password", _set)
+    monkeypatch.setattr("moneybin.secrets.keyring.get_password", _get)
+    monkeypatch.setattr("moneybin.secrets.keyring.delete_password", _delete)
 
     # A legacy (unscoped) token left by a pre-per-profile version of the client.
-    store[(_KEYRING_SERVICE, _KEYRING_JWT_KEY)] = "legacy-jwt"
-    store[(_KEYRING_SERVICE, _KEYRING_REFRESH_KEY)] = "legacy-ref"
+    store[("moneybin-sync", _KEYRING_JWT_KEY)] = "legacy-jwt"
+    store[("moneybin-sync", _KEYRING_REFRESH_KEY)] = "legacy-ref"
 
     alice = SyncClient(server_url="https://test.api", profile_id="aaaaaaaaaaaa")
     bob = SyncClient(server_url="https://test.api", profile_id="bbbbbbbbbbbb")
     alice._store_tokens(access_token="jwt-a", refresh_token="ref-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture
     bob._store_tokens(access_token="jwt-b", refresh_token="ref-b")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture
 
-    alice.logout()
+    store[("moneybin-sync", "pending")] = "legacy-pending"
+    directory = tmp_path / ".moneybin"
+    directory.mkdir()
+    legacy_file = directory / ".sync_token"
+    sibling_file = directory / ".sync_token-bbbbbbbbbbbb"
+    scoped_file = directory / ".sync_token-aaaaaaaaaaaa"
+    for path in (legacy_file, sibling_file, scoped_file):
+        path.write_text('{"jwt":"stale-access","refresh_token":"stale-refresh"}')
 
-    # Alice's scoped slots are gone; the legacy unscoped slots are wiped too.
+    if cleanup == "logout":
+        alice.logout()
+    else:
+        with respx.mock:
+            respx.post("https://test.api/auth/refresh").mock(
+                return_value=httpx.Response(401)
+            )
+            with pytest.raises(SyncAuthError):
+                alice._refresh()  # type: ignore[reportPrivateUsage]  # exercise failed-refresh cleanup
+
+    # The scoped identity is removed; unknown legacy identity remains intact.
     assert alice._read_token() is None  # type: ignore[reportPrivateUsage]
     assert alice._read_refresh_token() is None  # type: ignore[reportPrivateUsage]
-    assert (_KEYRING_SERVICE, _KEYRING_JWT_KEY) not in store
-    assert (_KEYRING_SERVICE, _KEYRING_REFRESH_KEY) not in store
+    assert store[("moneybin-sync", _KEYRING_JWT_KEY)] == "legacy-jwt"
+    assert store[("moneybin-sync", _KEYRING_REFRESH_KEY)] == "legacy-ref"
+    assert store[("moneybin-sync", "pending")] == "legacy-pending"
+    assert legacy_file.exists()
+    assert sibling_file.exists()
+    assert not scoped_file.exists()
     # Bob's scoped slots are untouched.
     assert bob._read_token() == "jwt-b"  # type: ignore[reportPrivateUsage]
     assert bob._read_refresh_token() == "ref-b"  # type: ignore[reportPrivateUsage]
+
+    # A deliberately unscoped client can still clear its own legacy identity.
+    SyncClient(server_url="https://test.api").logout()
+    assert ("moneybin-sync", _KEYRING_JWT_KEY) not in store
+    assert ("moneybin-sync", _KEYRING_REFRESH_KEY) not in store
+    assert ("moneybin-sync", "pending") not in store
+    assert not legacy_file.exists()
+    # Bob's own reads above already removed his issuer-less plaintext file.
+    assert not sibling_file.exists()
+    assert bob._read_token() == "jwt-b"  # type: ignore[reportPrivateUsage]  # sibling credential isolation
 
 
 def test_clear_tokens_for_profile_deletes_only_that_profiles_scoped_slots(
@@ -755,17 +883,15 @@ def test_clear_tokens_for_profile_deletes_only_that_profiles_scoped_slots(
     def _delete(service: str, user: str) -> None:
         store.pop((service, user), None)
 
-    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.set_password", _set)
-    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.get_password", _get)
-    monkeypatch.setattr(
-        "moneybin.connectors.sync_client.keyring.delete_password", _delete
-    )
+    monkeypatch.setattr("moneybin.secrets.keyring.set_password", _set)
+    monkeypatch.setattr("moneybin.secrets.keyring.get_password", _get)
+    monkeypatch.setattr("moneybin.secrets.keyring.delete_password", _delete)
 
     alice = SyncClient(server_url="https://test.api", profile_id="aaaaaaaaaaaa")
     bob = SyncClient(server_url="https://test.api", profile_id="bbbbbbbbbbbb")
     alice._store_tokens(access_token="jwt-a", refresh_token="ref-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture
     bob._store_tokens(access_token="jwt-b", refresh_token="ref-b")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture
-    store[(_KEYRING_SERVICE, _KEYRING_JWT_KEY)] = "legacy-jwt"
+    store[("moneybin-sync", _KEYRING_JWT_KEY)] = "legacy-jwt"
 
     SyncClient.clear_tokens_for_profile("aaaaaaaaaaaa")
 
@@ -773,4 +899,86 @@ def test_clear_tokens_for_profile_deletes_only_that_profiles_scoped_slots(
     assert alice._read_refresh_token() is None  # type: ignore[reportPrivateUsage]
     # Sibling profile and legacy unscoped slot are untouched.
     assert bob._read_token() == "jwt-b"  # type: ignore[reportPrivateUsage]
-    assert store[(_KEYRING_SERVICE, _KEYRING_JWT_KEY)] == "legacy-jwt"
+    assert store[("moneybin-sync", _KEYRING_JWT_KEY)] == "legacy-jwt"
+
+
+@respx.mock
+def test_login_reuses_a_supplied_challenge(sync_client: SyncClient) -> None:
+    """The address check already holds a device code; login must not ask again."""
+    code_route = respx.post("https://test.api/auth/device/code")
+    respx.post("https://test.api/auth/device/token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "eyJ-jwt",  # test fixture, not a real credential
+                "refresh_token": "v1.refresh",  # test fixture, not a real credential
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+    )
+    challenge = DeviceAuthorizationChallenge.model_validate({
+        "device_code": "dc-supplied",
+        "user_code": "ABCD-EFGH",
+        "verification_uri": "https://x",
+        "expires_in": 900,
+        "interval": 0,
+    })
+
+    sync_client.login(open_browser=False, challenge=challenge)
+
+    assert not code_route.called
+    assert sync_client._read_token() == "eyJ-jwt"  # type: ignore[reportPrivateUsage]
+
+
+# --- Credentials are bound to the server that issued them -------------------
+
+
+def _clients_sharing_a_store() -> tuple[SyncClient, SyncClient, FakeSecretStore]:
+    store = FakeSecretStore()
+    issuer = SyncClient(server_url="https://a.example.test", secret_store=store)
+    other = SyncClient(server_url="https://b.example.test", secret_store=store)
+    return issuer, other, store
+
+
+def test_tokens_are_not_presented_to_a_different_server(
+    sync_client: SyncClient,
+) -> None:
+    """However the address changed, another server never sees these tokens."""
+    issuer, other, _ = _clients_sharing_a_store()
+    issuer._store_tokens(access_token="jwt-a", refresh_token="refresh-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a credential
+
+    assert other._read_token() is None  # type: ignore[reportPrivateUsage]
+    assert other._read_refresh_token() is None  # type: ignore[reportPrivateUsage]
+
+
+def test_tokens_survive_a_different_server_looking(sync_client: SyncClient) -> None:
+    """A temporary override must not log the profile out of its own server."""
+    issuer, other, _ = _clients_sharing_a_store()
+    issuer._store_tokens(access_token="jwt-a", refresh_token="refresh-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a credential
+
+    other._read_token()  # type: ignore[reportPrivateUsage]
+
+    assert issuer._read_token() == "jwt-a"  # type: ignore[reportPrivateUsage]
+
+
+def test_tokens_with_no_recorded_issuer_are_never_presented(
+    sync_client: SyncClient,
+) -> None:
+    """The address may have changed since the pair was stored, so no server gets it."""
+    issuer, other, store = _clients_sharing_a_store()
+    store.values[_KEYRING_JWT_KEY] = "jwt-old"
+    store.values["refresh_token"] = "refresh-old"  # noqa: S105  # test fixture, not a credential
+
+    assert issuer._read_token() is None  # type: ignore[reportPrivateUsage]
+    assert other._read_token() is None  # type: ignore[reportPrivateUsage]
+    assert _KEYRING_SERVER_KEY not in store.values
+
+
+def test_logout_removes_the_server_binding(sync_client: SyncClient) -> None:
+    issuer, _, store = _clients_sharing_a_store()
+    issuer._store_tokens(access_token="jwt-a", refresh_token="refresh-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a credential
+
+    issuer.logout()
+
+    assert store.values == {}

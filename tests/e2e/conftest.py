@@ -95,10 +95,13 @@ _fallback_profile_created = False
 
 def base_env(home: Path, profile: str) -> dict[str, str]:
     """Base environment dict for E2E tests with encryption key."""
+    from moneybin.crypto_constants import KEY_NAME
+    from moneybin.secrets import SecretStore
+
     return {
         "MONEYBIN_HOME": str(home),
         "MONEYBIN_PROFILE": profile,
-        "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
+        SecretStore(profile=profile).env_var_name(KEY_NAME): TEST_ENCRYPTION_KEY,
     }
 
 

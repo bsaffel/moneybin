@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pexpect
 import pytest
 
 from tests.e2e.conftest import (
@@ -25,6 +26,7 @@ from tests.e2e.conftest import (
     run_cli,
     seed_pending_match,
 )
+from tests.pty_support import spawn_python_pty
 
 pytestmark = pytest.mark.e2e
 
@@ -118,7 +120,7 @@ class TestDBInit:
 
     With null keyring (E2E default), db init stores the generated key
     as a no-op. The Database constructor falls through to the env var
-    MONEYBIN_DATABASE__ENCRYPTION_KEY which we set to a fixed test key.
+    MONEYBIN_PROFILE__INITAUTO__DATABASE__ENCRYPTION_KEY which we set to a fixed test key.
     This tests the init workflow end-to-end without touching the real
     system keychain.
     """
@@ -127,33 +129,97 @@ class TestDBInit:
         env = {
             "MONEYBIN_HOME": str(tmp_path),
             "MONEYBIN_PROFILE": "initauto",
-            "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
+            "MONEYBIN_PROFILE__INITAUTO__DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
         }
         run_cli("profile", "create", "initauto", env=env)
         result = run_cli("db", "init", "--yes", env=env)
         result.assert_success()
 
-    def test_db_init_passphrase(self, tmp_path: Path) -> None:
-        env = {
-            "MONEYBIN_HOME": str(tmp_path),
-            "MONEYBIN_PROFILE": "initpp",
-            "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
-        }
-        run_cli("profile", "create", "initpp", env=env)
-        # Remove the auto-created DB so db init can create a new one
-        # with a passphrase-derived key
-        db_path = tmp_path / "profiles" / "initpp" / "moneybin.duckdb"
-        db_path.unlink(missing_ok=True)
-        passphrase_input = f"{TEST_PASSPHRASE}\n{TEST_PASSPHRASE}\n"
-        result = run_cli(
-            "db",
-            "init",
-            "--passphrase",
-            "--yes",
-            env=env,
-            input_text=passphrase_input,
+    def test_db_init_passphrase(
+        self, tmp_path: Path, request: pytest.FixtureRequest
+    ) -> None:
+        db_path = tmp_path / "passphrase-e2e.duckdb"
+        program = """
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from moneybin.cli.commands.db import app
+from moneybin.database import Database
+from moneybin.secrets import SecretNotFoundError
+
+db_path = Path(os.environ["MONEYBIN_TEST_DB_PATH"])
+settings = SimpleNamespace(
+    # No profile of this name is registered under the test home, so `db init`
+    # records no key mode; that path is covered by the db-command unit tests.
+    profile="passphrase-e2e",
+    database=SimpleNamespace(
+        path=db_path,
+        encryption_key_mode="passphrase",
+        backup_path=db_path.parent / "backups",
+        argon2_time_cost=1,
+        argon2_memory_cost=1024,
+        argon2_parallelism=1,
+        argon2_hash_len=32,
+    ),
+)
+
+class Store:
+    values = {}
+    def get_key(self, name):
+        if name not in self.values:
+            raise SecretNotFoundError(name)
+        return self.values[name]
+    def set_key(self, name, value):
+        self.values[name] = value
+    def delete_key(self, name):
+        if name not in self.values:
+            raise SecretNotFoundError(name)
+        del self.values[name]
+
+def invoke(args):
+    app(args=args, prog_name="moneybin db", standalone_mode=False)
+
+with patch("moneybin.config.get_settings", return_value=settings), patch(
+    "moneybin.database.get_settings", return_value=settings
+), patch("moneybin.secrets.SecretStore", Store):
+    invoke(["init", "--passphrase", "--yes"])
+    with Database(
+        db_path, secret_store=Store(), read_only=False, no_auto_upgrade=True
+    ) as db:
+        db.execute("CREATE TABLE raw.test_data (id INTEGER, val VARCHAR)")
+        db.execute("INSERT INTO raw.test_data VALUES (1, 'hello')")
+    invoke(["lock"])
+    assert "DATABASE__ENCRYPTION_KEY" not in Store.values
+    invoke(["unlock"])
+    with Database(
+        db_path, secret_store=Store(), read_only=False, no_auto_upgrade=True
+    ) as db:
+        row = db.execute("SELECT val FROM raw.test_data WHERE id = 1").fetchone()
+    assert row == ("hello",)
+print("roundtrip sentinel: hello")
+"""
+        process = spawn_python_pty(
+            program,
+            request=request,
+            env={
+                "MONEYBIN_HOME": str(tmp_path),
+                "MONEYBIN_TEST_DB_PATH": str(db_path),
+            },
         )
-        result.assert_success()
+        process.child.expect("Enter passphrase")
+        process.child.sendline(TEST_PASSPHRASE)
+        process.child.expect("Confirm passphrase")
+        process.child.sendline(TEST_PASSPHRASE)
+        process.child.expect("Enter passphrase")
+        process.child.sendline(TEST_PASSPHRASE)
+        process.child.expect("roundtrip sentinel: hello")
+        process.child.expect(pexpect.EOF)
+        process.child.close()
+
+        assert process.child.exitstatus == 0
+        assert TEST_PASSPHRASE not in process.transcript.getvalue()
 
 
 class TestDBOperations:
@@ -418,12 +484,21 @@ class TestCategorizeMutating:
         result = run_cli("db", "query", insert_sql, env=env)
         result.assert_success()
 
-        # auto-review lists the pending proposal
-        result = run_cli("transactions", "categorize", "auto", "review", env=env)
-        result.assert_success()
-        assert "autoe2e0001" in result.output, (
-            f"auto-review did not surface proposal: {result.output}"
+        # JSON preserves full proposal identifiers regardless of terminal width.
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "auto",
+            "review",
+            "--output",
+            "json",
+            env=env,
         )
+        result.assert_success()
+        proposals = json.loads(result.stdout)["data"]["proposals"]
+        assert any(
+            proposal["proposed_rule_id"] == "autoe2e0001" for proposal in proposals
+        ), f"auto-review did not surface proposal: {result.stdout}"
 
         # auto-stats reports the pending proposal
         result = run_cli("transactions", "categorize", "auto", "stats", env=env)
@@ -659,7 +734,8 @@ class TestImportMutating:
         env = make_workflow_env_fast(tmp_path, "importrev", _mutating_profile_template)
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
-        # Import
+        # First-contact layout needs an explicit confirmation; the receipt is
+        # complete but the requested import is not complete, so it exits 1.
         result = run_cli(
             "import",
             "files",
@@ -669,7 +745,10 @@ class TestImportMutating:
             "--no-refresh",
             env=env,
         )
-        result.assert_success()
+        assert result.exit_code == 1, result.output
+        assert "Confirmation required" in result.stdout
+        assert "moneybin import files" in result.stdout
+        assert "--confirm" in result.stdout
 
         # Revert with a fake ID — should fail gracefully, not crash
         result = run_cli("import", "revert", "nonexistent-id", "--yes", env=env)
@@ -938,7 +1017,7 @@ class TestBalanceAssertions:
     def test_balance_assert_then_delete(
         self, _accounts_with_data_template: Path, tmp_path: Path
     ) -> None:
-        """Balance assert then delete round-trip; list returns empty after delete."""
+        """Non-interactive deletion requires --yes and preserves refused assertions."""
         env = make_workflow_env_fast(
             tmp_path, "bal-assert-del", _accounts_with_data_template
         )
@@ -961,6 +1040,38 @@ class TestBalanceAssertions:
             self._DATE,
             env=env,
         )
+        assert result.exit_code == 1, result.output
+        assert "interactive terminal" in result.stderr
+        assert "--yes" in result.stderr
+
+        result = run_cli(
+            "accounts",
+            "balance",
+            "list",
+            "--account",
+            account_id,
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        assertions = json.loads(result.stdout, parse_float=Decimal)["data"][
+            "assertions"
+        ]
+        assert len(assertions) == 1
+        assert assertions[0]["account_id"] == account_id
+        assert assertions[0]["assertion_date"] == self._DATE
+        assert assertions[0]["balance"] == Decimal(self._AMOUNT)
+
+        result = run_cli(
+            "accounts",
+            "balance",
+            "assertion-delete",
+            account_id,
+            self._DATE,
+            "--yes",
+            env=env,
+        )
         result.assert_success()
 
         # After delete, list should return an empty assertions array
@@ -975,7 +1086,7 @@ class TestBalanceAssertions:
             env=env,
         )
         result.assert_success()
-        assert '"data": []' in result.stdout or "data" in result.stdout
+        assert json.loads(result.stdout)["data"]["assertions"] == []
 
     def test_balance_delete_nonexistent_is_noop(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -1075,7 +1186,8 @@ class TestCategorizeRulesCreateCLI:
             env=env,
         )
         result.assert_success()
-        assert "Created 1 rule" in result.stderr
+        assert "Rules created" in result.stdout
+        assert "Created: 1" in " ".join(result.stdout.split())
 
     def test_create_from_file_batch(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -1112,7 +1224,8 @@ class TestCategorizeRulesCreateCLI:
             env=env,
         )
         result.assert_success()
-        assert "Created 2 rule" in result.stderr
+        assert "Rules created" in result.stdout
+        assert "Created: 2" in " ".join(result.stdout.split())
 
     def test_create_with_json_output(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -1209,7 +1322,7 @@ class TestCategorizeRulesCreateCLI:
         assert "Traceback (most recent call last)" not in result.stderr
         # Text mode surfaces per-row failure reason so the user knows what failed.
         assert "bad-rule" in result.stderr
-        assert "⚠️" in result.stderr
+        assert "Attention:" in result.stderr
 
     def test_create_from_file_directory_path_errors_cleanly(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -1261,10 +1374,10 @@ class TestCategorizeRulesCreateCLI:
         )
         assert result.exit_code == 1
         # Success line IS suppressed by --quiet.
-        assert "✅ Created" not in result.stderr
+        assert "Rules created" not in result.stdout
         # Failure warnings ARE NOT suppressed by --quiet.
         assert "bad-quiet-rule" in result.stderr
-        assert "⚠️" in result.stderr
+        assert "Attention:" in result.stderr
 
 
 class TestCategorizeRulesDeleteCLI:
@@ -1522,6 +1635,168 @@ class TestMerchantLinksMutating:
         assert "Traceback (most recent call last)" not in result.stderr
 
 
+class TestCategoriesMappingsMutating:
+    """E2E smoke tests for `categories mappings set`.
+
+    Deep enumeration/resolution behavior is covered at the unit tier
+    (test_category_source_mapping_curation.py); these smoke the wiring, exit
+    codes, and mutual-exclusion guard the way `merchants links set` does.
+    """
+
+    def test_categories_mappings_set_missing_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`categories mappings set` without --into or --new exits 2 (usage error)."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-usage", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Groceries",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_categories_mappings_set_mutual_exclusion_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`categories mappings set --into X --new Y` exits 2 (mutually exclusive)."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-mutex", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Groceries",
+            "--into",
+            "cat-groceries",
+            "--new",
+            "New Category",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_categories_mappings_set_new_maps_an_imported_term(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Import a file with category text, then map a term `pending` lists."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-new", _mutating_profile_template
+        )
+        imported = run_cli(
+            "import",
+            "confirm",
+            str(FIXTURES_DIR / "tabular" / "chase_credit.csv"),
+            "--accept",
+            "--account-name",
+            "cmap-acct",
+            "--no-save-format",
+            "--output",
+            "json",
+            env=env,
+        )
+        imported.assert_success()
+        run_cli("transform", "apply", env=env, timeout=180).assert_success()
+        pending = run_cli(
+            "categories", "mappings", "pending", "--output", "json", env=env
+        )
+        pending.assert_success()
+        term = json.loads(pending.stdout)["data"]["terms"][0]
+
+        subcategory = (
+            ["--subcategory", term["subcategory"]] if term["subcategory"] else []
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            term["source_origin"],
+            "--category",
+            term["category"],
+            *subcategory,
+            "--new",
+            "E2E Minted Category",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert payload["data"]["action"] == "mapped"
+        assert payload["data"]["category_id"]
+        assert payload["data"]["source_type"] == term["source_type"]
+        # `set` sweeps at once, over the real prep and core models.
+        assert payload["data"]["categorized"] == term["transaction_count"]
+        assert payload["data"]["recategorized"] == 0
+
+        ignored = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            term["source_origin"],
+            "--category",
+            term["category"],
+            *subcategory,
+            "--ignore",
+            "--output",
+            "json",
+            env=env,
+        )
+        ignored.assert_success()
+        data = json.loads(ignored.stdout)["data"]
+        assert (data["action"], data["category_id"]) == ("ignored", None)
+        # Ignoring withdraws what the mapping categorized and keeps the term known.
+        assert data["recategorized"] == term["transaction_count"]
+        assert data["categorized"] == 0
+        still_pending = run_cli(
+            "categories", "mappings", "pending", "--output", "json", env=env
+        )
+        still_pending.assert_success()
+        assert (term["category"], term["subcategory"]) not in [
+            (t["category"], t["subcategory"])
+            for t in json.loads(still_pending.stdout)["data"]["terms"]
+        ]
+
+    def test_categories_mappings_set_unknown_term_is_refused(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """A term no import carries is refused, not stored as a dead mapping."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-unknown", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Some Imported Text",
+            "--new",
+            "E2E Minted Category",
+            "--output",
+            "json",
+            env=env,
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "mutation_not_found"
+
+
 class TestSecurityLinksMutating:
     """E2E smoke tests for `investments securities links set`.
 
@@ -1589,7 +1864,7 @@ class TestSecurityLinksMutating:
             env=env,
         )
         again.assert_success()
-        assert "No mark existed" in again.stdout
+        assert "Price mark unchanged" in again.stdout
 
     def test_fx_override_round_trips_through_the_resolver(
         self, _mutating_profile_template: Path, tmp_path: Path

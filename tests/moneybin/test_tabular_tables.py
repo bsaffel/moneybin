@@ -24,9 +24,9 @@ def test_tabular_accounts_ref() -> None:
 
 def test_import_log_ref() -> None:
     """Verify IMPORT_LOG constant has correct schema and name."""
-    assert IMPORT_LOG.schema == "raw"
+    assert IMPORT_LOG.schema == "app"
     assert IMPORT_LOG.name == "import_log"
-    assert IMPORT_LOG.full_name == "raw.import_log"
+    assert IMPORT_LOG.full_name == "app.import_log"
 
 
 def test_tabular_formats_ref() -> None:

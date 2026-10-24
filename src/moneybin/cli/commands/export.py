@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import typing
 from enum import StrEnum
 from pathlib import Path
@@ -20,12 +19,14 @@ from moneybin.cli.output import (
     ExportDestinationStatusOutput,
     ExportReceiptOutput,
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_export_receipt,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.errors import UserError
 from moneybin.exports.models import (
     ExportCommand,
@@ -80,16 +81,13 @@ def _destination_reference(value: str) -> tuple[str, str]:
     return kind, name
 
 
-def _is_interactive_terminal() -> bool:
-    """Return whether the command can safely elicit a privacy choice."""
-    return sys.stdin.isatty()
-
-
-def _redaction_mode(*, unredacted: bool, yes: bool) -> RedactionMode:
+def _redaction_mode(
+    *, unredacted: bool, yes: bool, output: OutputFormat
+) -> RedactionMode:
     """Choose a per-run mode without ever inferring unredacted output."""
     if unredacted:
         return "unredacted"
-    if yes or not _is_interactive_terminal():
+    if yes or output == OutputFormat.JSON or not get_terminal_policy().interactive:
         return "redacted"
     if typer.confirm("Export redacted output?", default=True, err=True):
         return "redacted"
@@ -213,7 +211,7 @@ def _run_export(
         format_=format_,
         compress=compress,
     )
-    redaction_mode = _redaction_mode(unredacted=unredacted, yes=yes)
+    redaction_mode = _redaction_mode(unredacted=unredacted, yes=yes, output=output)
 
     from moneybin.exports.models import local_export_publish_error
     from moneybin.exports.service import ExportService
@@ -370,6 +368,7 @@ def export_report(
 def destination_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list output is data-only
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List derived and saved export destinations with readiness."""
     from moneybin.config import get_settings
@@ -418,6 +417,7 @@ def destination_list(
     payload = ExportDestinationsOutput(destinations=rows)
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
+        lines: list[str] = []
         for row in rows:
             state = "ready" if row.ready else "not ready"
             identity = (
@@ -428,7 +428,13 @@ def destination_list(
             line = f"{row.name} ({row.kind}, {state}): {identity}"
             if row.reasons:
                 line = f"{line}; reasons: {', '.join(row.reasons)}"
-            typer.echo(line)
+            lines.append(line)
+        emit_human_result(
+            "\n".join(lines),
+            policy=get_terminal_policy(no_pager=no_pager),
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
     render_or_json(
         build_envelope(data=payload, total_count=len(rows), returned_count=len(rows)),
@@ -518,10 +524,6 @@ def destination_remove(
     from moneybin.repositories.export_destinations_repo import (
         ExportDestinationsRepo,
     )
-
-    if not yes and not typer.confirm(f"Remove destination configuration {name!r}?"):
-        raise typer.Exit(0)
-
     from moneybin.services.entity_reference import (
         AmbiguousEntity,
         MissingEntity,
@@ -531,6 +533,17 @@ def destination_remove(
         cli_actor="export_destination_remove",
         payload_type=ExportDestinationSetOutput,
     ):
+        if not yes:
+            if output == OutputFormat.JSON or not get_terminal_policy().interactive:
+                raise UserError(
+                    "Removing a destination requires --yes outside an interactive terminal.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint="Re-run with --yes after reviewing the destination name.",
+                )
+            if not typer.confirm(
+                f"Remove destination configuration {name!r}?", err=True
+            ):
+                raise typer.Exit(0)
         with get_database(read_only=False) as db:
             event = ExportDestinationsRepo(db).remove(name, actor=_ACTOR)
             if isinstance(event, MissingEntity):

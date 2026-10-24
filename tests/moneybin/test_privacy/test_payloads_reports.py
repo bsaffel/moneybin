@@ -9,13 +9,13 @@ from datetime import date
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, cast, get_args, get_origin, get_type_hints
-from unittest.mock import MagicMock
 
 import pytest
 from jsonschema import validate as validate_json_schema
 from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from moneybin.database import Database
 from moneybin.privacy.introspection import derive_tier
 from moneybin.privacy.payloads.reports import (
     ReportCatalogEntry,
@@ -28,19 +28,27 @@ from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import build_envelope
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
-    ServiceReportSpec,
     catalog_to_payload,
     result_to_payload,
 )
 from moneybin.reports._framework.contract import (
     OutputColumn,
     ParamSpec,
+    ReportQuery,
     ReportSemantics,
+    ReportSpec,
 )
 from moneybin.reports._framework.execute import (
     CatalogReportResult,
     build_catalog_result,
 )
+from moneybin.tables import TableRef
+
+
+def _unused_runner(db: Database, **params: object) -> ReportQuery:  # contract handle
+    """Never invoked — these tests only exercise catalog metadata."""
+    raise NotImplementedError
+
 
 _SEMANTICS = ReportSemantics(
     unit="currency",
@@ -74,11 +82,13 @@ _COLUMNS = (
     OutputColumn("date", "Calendar date.", DataClass.TXN_DATE),
     OutputColumn("amount", "Signed money amount.", DataClass.TXN_AMOUNT),
 )
-_SPEC = ServiceReportSpec(
+_SPEC = ReportSpec(
     report_id="core:spending_trend",
     name="spending_trend",
     description="Monthly spending totals.",
-    parameters=(
+    view=TableRef("reports", "spending_trend"),
+    runner=_unused_runner,
+    params=(
         ParamSpec(
             "from_month",
             str | None,
@@ -100,7 +110,6 @@ _SPEC = ServiceReportSpec(
     semantics=_SEMANTICS,
     classes={column.name: column.data_class for column in _COLUMNS},
     examples=('reports(report_id="core:spending_trend")',),
-    executor=MagicMock(),
 )
 _CATALOG_RESULT = CatalogReportResult(
     report_id="core:spending_trend",
@@ -168,7 +177,7 @@ def test_catalog_entry_includes_complete_static_metadata() -> None:
 def test_catalog_unannotated_parameter_accepts_any_json_value() -> None:
     spec = replace(
         _SPEC,
-        parameters=(
+        params=(
             ParamSpec(
                 "raw",
                 None,
@@ -387,11 +396,13 @@ def test_result_row_contract_is_not_falsely_annotated_as_aggregate() -> None:
 
 def test_result_payload_never_recovers_raw_account_parameter_values() -> None:
     raw_account_id = "acct-raw-123456789012"
-    spec = ServiceReportSpec(
+    spec = ReportSpec(
         report_id="test:accounts",
         name="accounts",
         description="Account-scoped report.",
-        parameters=(
+        view=TableRef("reports", "test_accounts"),
+        runner=_unused_runner,
+        params=(
             ParamSpec(
                 "account_ids",
                 list[str],
@@ -413,7 +424,6 @@ def test_result_payload_never_recovers_raw_account_parameter_values() -> None:
         semantics=_SEMANTICS,
         classes={"value": DataClass.AGGREGATE},
         examples=(),
-        executor=MagicMock(),
     )
     result = build_catalog_result(
         spec,

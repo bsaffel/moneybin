@@ -34,7 +34,7 @@ no method is elected):
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -48,7 +48,7 @@ _ACCOUNT_ID = "acct_inv_1"
 _SECURITY_ID = "sec_inv_1"
 # MAX over the two ledger rows' created_at -> the updated_at every derived row
 # inherits (core-updated-at convention: MAX of inputs, never CURRENT_TIMESTAMP).
-_SELL_CREATED_AT = datetime(2024, 7, 2, 10, 0, 0)
+_SELL_CREATED_AT = datetime(2024, 7, 2, 10, 0, 0, tzinfo=UTC)
 
 
 def _insert_security(db: Database) -> None:

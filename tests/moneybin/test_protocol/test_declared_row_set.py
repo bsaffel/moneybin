@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 
@@ -26,16 +26,12 @@ from moneybin.privacy.payloads.imports import (
     ImportInboxProcessedEntry,
     ImportInboxSyncPayload,
 )
-from moneybin.privacy.payloads.networth import (
-    NetWorthAccountRow,
-    NetWorthCurrencySegment,
-    NetWorthSnapshotPayload,
-)
 from moneybin.privacy.payloads.reports import (
     ReportOutputColumn,
     ReportResultPayload,
     ReportSemanticsPayload,
 )
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import build_envelope
 from moneybin.protocol.row_set import (
     NO_ROW_SET,
@@ -101,38 +97,39 @@ def _inbox_sync() -> ImportInboxSyncPayload:
     )
 
 
-def _networth_snapshot() -> NetWorthSnapshotPayload:
-    """A snapshot whose per-currency and per-account breakdowns are peers."""
-    return NetWorthSnapshotPayload(
-        balance_date=None,
-        currency_code=None,
-        net_worth=None,
-        total_assets=None,
-        total_liabilities=None,
-        account_count=4,
-        per_currency=[
-            NetWorthCurrencySegment(
-                currency_code="USD",
-                net_worth=None,
-                total_assets=None,
-                total_liabilities=None,
-                account_count=3,
-            ),
-            NetWorthCurrencySegment(
-                currency_code="EUR",
-                net_worth=None,
-                total_assets=None,
-                total_liabilities=None,
-                account_count=1,
-            ),
+@dataclass(frozen=True, slots=True)
+class _GroupRow:
+    group_id: Annotated[str, DataClass.RECORD_ID]
+    member_count: Annotated[int, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class _MemberRow:
+    member_id: Annotated[str, DataClass.RECORD_ID]
+    group_id: Annotated[str, DataClass.RECORD_ID]
+    value: Annotated[Decimal, DataClass.AGGREGATE]
+
+
+@row_set(NO_ROW_SET)
+@dataclass(frozen=True, slots=True)
+class _PeerCollectionsPayload:
+    """Two collections cutting one result two ways — neither is "the" row set."""
+
+    total_members: Annotated[int, DataClass.AGGREGATE]
+    by_group: list[_GroupRow]
+    by_member: list[_MemberRow]
+
+
+def _peer_collections() -> _PeerCollectionsPayload:
+    """A result whose by-group and by-member breakdowns are peers."""
+    return _PeerCollectionsPayload(
+        total_members=4,
+        by_group=[
+            _GroupRow(group_id="A", member_count=3),
+            _GroupRow(group_id="B", member_count=1),
         ],
-        per_account=[
-            NetWorthAccountRow(
-                account_id=f"acct-{index}",
-                display_name=None,
-                balance=Decimal(index),
-                observation_source="statement",
-            )
+        by_member=[
+            _MemberRow(member_id=f"m-{index}", group_id="A", value=Decimal(index))
             for index in range(4)
         ],
     )
@@ -155,8 +152,8 @@ class TestDeclaresOneAnswerPerCase:
         assert declared_row_set(ImportInboxSyncPayload) is NO_ROW_SET
 
     @pytest.mark.unit
-    def test_a_networth_snapshot_declares_no_row_set(self) -> None:
-        assert declared_row_set(NetWorthSnapshotPayload) is NO_ROW_SET
+    def test_a_peer_collections_payload_declares_no_row_set(self) -> None:
+        assert declared_row_set(_PeerCollectionsPayload) is NO_ROW_SET
 
 
 class TestCountsTheDeclaredRowSet:
@@ -191,16 +188,16 @@ class TestCountsTheDeclaredRowSet:
         assert envelope.summary.returned_count == 1
 
     @pytest.mark.unit
-    def test_a_networth_snapshot_counts_one_snapshot_not_a_peer_collection(
+    def test_a_peer_collections_payload_counts_one_result_not_a_peer_collection(
         self,
     ) -> None:
         """Case 3 — peer collections, neither subordinate to the other.
 
-        ``per_currency`` and ``per_account`` cut the same snapshot two ways.
+        ``by_group`` and ``by_member`` cut the same result two ways.
         Nominating either would publish a count of the cut the caller did not
         ask about, so the payload declares neither.
         """
-        envelope = build_envelope(data=_networth_snapshot())
+        envelope = build_envelope(data=_peer_collections())
         assert envelope.summary.returned_count == 1
 
 
@@ -233,17 +230,15 @@ class TestJsonFieldsFollowsTheSameDeclaration:
         place the caller cannot see.
         """
         render_or_json(
-            build_envelope(data=_networth_snapshot()),
+            build_envelope(data=_peer_collections()),
             OutputFormat.JSON,
-            json_fields="account_id",
+            json_fields="member_id",
         )
         out = json.loads(capsys.readouterr().out)
-        assert set(out["data"]["per_account"][0]) == {
-            "account_id",
-            "display_name",
-            "balance",
-            "observation_source",
-            "currency_code",
+        assert set(out["data"]["by_member"][0]) == {
+            "member_id",
+            "group_id",
+            "value",
         }
 
 

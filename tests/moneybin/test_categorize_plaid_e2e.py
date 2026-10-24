@@ -25,14 +25,15 @@ import pytest
 
 from moneybin.connectors.sync_models import (
     InstitutionResult,
-    SyncAccount,
-    SyncDataResponse,
+    PlaidSyncAccount,
+    PlaidSyncDataResponse,
+    PlaidSyncTransaction,
     SyncMetadata,
-    SyncTransaction,
 )
 from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.categorization import CategorizationService
+from moneybin.services.categorization.queries import CategorizationQueries
 
 pytestmark = pytest.mark.integration
 
@@ -41,7 +42,7 @@ _ACCOUNT_ID = "acc_pfc_e2e_checking"
 _ITEM_ID = "item_pfc_e2e"
 
 
-def _build_sync_data() -> SyncDataResponse:
+def _build_sync_data() -> PlaidSyncDataResponse:
     """Four PFC-coded transactions, hand-picked against the real seed CSV.
 
     Expectations below are derived by reading
@@ -69,9 +70,9 @@ def _build_sync_data() -> SyncDataResponse:
       code appears anywhere in the seed CSV, confidence=VERY_HIGH -> proves
       a missing bridge row (not confidence) is what blocks categorization.
     """
-    return SyncDataResponse(
+    return PlaidSyncDataResponse(
         accounts=[
-            SyncAccount(
+            PlaidSyncAccount(
                 account_id=_ACCOUNT_ID,
                 account_type="depository",
                 account_subtype="checking",
@@ -81,7 +82,7 @@ def _build_sync_data() -> SyncDataResponse:
             )
         ],
         transactions=[
-            SyncTransaction(
+            PlaidSyncTransaction(
                 transaction_id="txn_pfc_detailed",
                 account_id=_ACCOUNT_ID,
                 transaction_date=date(2026, 6, 1),
@@ -92,7 +93,7 @@ def _build_sync_data() -> SyncDataResponse:
                 category_confidence="HIGH",
                 pending=False,
             ),
-            SyncTransaction(
+            PlaidSyncTransaction(
                 transaction_id="txn_pfc_primary_fallback",
                 account_id=_ACCOUNT_ID,
                 transaction_date=date(2026, 6, 2),
@@ -103,7 +104,7 @@ def _build_sync_data() -> SyncDataResponse:
                 category_confidence="MEDIUM",
                 pending=False,
             ),
-            SyncTransaction(
+            PlaidSyncTransaction(
                 transaction_id="txn_pfc_low_confidence",
                 account_id=_ACCOUNT_ID,
                 transaction_date=date(2026, 6, 3),
@@ -114,7 +115,7 @@ def _build_sync_data() -> SyncDataResponse:
                 category_confidence="LOW",
                 pending=False,
             ),
-            SyncTransaction(
+            PlaidSyncTransaction(
                 transaction_id="txn_pfc_unmapped",
                 account_id=_ACCOUNT_ID,
                 transaction_date=date(2026, 6, 4),
@@ -256,7 +257,7 @@ def test_plaid_pfc_categorization_end_to_end(db: Database) -> None:
     # provider vocabulary, not a MoneyBin one: letting it stand in for a
     # category put `FOOD_AND_DRINK` in the same rendered column as
     # `Food & Drink` (cli-output-coherence F8) and, because
-    # core.uncategorized_queue selects `WHERE category IS NULL`, hid this row
+    # the categorization queue selects `category IS NULL`, hid this row
     # from the curation queue that exists to surface it.
     row = db.execute(
         """
@@ -292,19 +293,16 @@ def test_plaid_pfc_categorization_end_to_end(db: Database) -> None:
         "and must not leave the raw PFC code standing in as the category"
     )
 
-    # Both uncategorized rows must reach the curation queue. This is the
+    # Both uncategorized rows must reach the categorization queue. This is the
     # behavioural half of the assertions above: `category IS NULL` is only
-    # worth asserting because core.uncategorized_queue keys off it, and a raw
-    # PFC code standing in as the category silently emptied that queue of
-    # exactly the rows a curator most needs to see.
-    queued = {
-        str(r[0])
-        for r in db.execute(
-            "SELECT transaction_id FROM core.uncategorized_queue"
-        ).fetchall()
-    }
+    # worth asserting because the categorization queue keys off it, and a raw PFC code
+    # standing in as the category silently emptied it of exactly the rows a
+    # curator most needs to see.
+    listed = CategorizationQueries(db).list_uncategorized_transactions(limit=None)
+    assert listed is not None
+    queued = {str(r["transaction_id"]) for r in listed}
     assert {low_confidence_id, unmapped_id} <= queued, (
-        "uncategorized Plaid rows are missing from core.uncategorized_queue"
+        "uncategorized Plaid rows are missing from the categorization queue"
     )
     assert detailed_id not in queued, "a categorized row must not be queued"
     assert (

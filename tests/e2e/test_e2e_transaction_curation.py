@@ -299,14 +299,18 @@ class TestSystemAuditUndo:
         assert any(e["action"] == "tag.add" for e in detail["events"])
 
         # undo reverses the tag.
-        undone = run_cli("system", "audit", "undo", op, "--output", "json", env=env)
+        undone = run_cli(
+            "system", "audit", "undo", op, "--yes", "--output", "json", env=env
+        )
         undone.assert_success()
         assert _loads(undone.stdout)["data"]["reversed_row_count"] == 1
         remaining = _query_json(env, "SELECT COUNT(*) AS n FROM app.transaction_tags")
         assert remaining[0]["n"] == 0
 
         # undoing again is refused with the already-undone code.
-        again = run_cli("system", "audit", "undo", op, "--output", "json", env=env)
+        again = run_cli(
+            "system", "audit", "undo", op, "--yes", "--output", "json", env=env
+        )
         assert again.exit_code == 1
         assert _loads(again.stdout)["error"]["code"] == "undo_already_undone"
 
@@ -337,7 +341,7 @@ class TestImportLabelsGoldenPath:
         # Pull the most recent import_id from app.imports.
         rows = _query_json(
             env,
-            "SELECT import_id FROM raw.import_log ORDER BY started_at DESC LIMIT 1",
+            "SELECT import_id FROM app.import_log ORDER BY started_at DESC LIMIT 1",
         )
         assert rows, "expected at least one import row"
         import_id = str(rows[0]["import_id"])
@@ -483,7 +487,7 @@ class TestMCPBulkCreate:
                 result = await session.call_tool(
                     "transactions_create", {"transactions": entries}
                 )
-                assert not result.isError, result.content
+                assert not result.is_error, result.content
                 from mcp.types import TextContent
 
                 content = result.content[0]

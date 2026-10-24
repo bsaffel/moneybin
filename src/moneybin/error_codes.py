@@ -41,6 +41,7 @@ IMPORT_CURSOR_INVALID = "import_cursor_invalid"
 IMPORT_FILE_NOT_FOUND = "import_file_not_found"
 IMPORT_FORMAT_UNKNOWN = "import_format_unknown"
 IMPORT_ID_NOT_ALLOWED = "import_id_not_allowed"
+IMPORT_INTERRUPTED = "import_interrupted"
 IMPORT_INVALID_DATE_FORMAT = "import_invalid_date_format"
 IMPORT_INVALID_FILE_PATH = "import_invalid_file_path"
 IMPORT_INVALID_NUMBER_FORMAT = "import_invalid_number_format"
@@ -139,6 +140,10 @@ REFRESH_UNKNOWN_STEP = "refresh_unknown_step"
 UNDO_ALREADY_UNDONE = "undo_already_undone"
 UNDO_CASCADE_BLOCKED = "undo_cascade_blocked"
 UNDO_OPERATION_NOT_FOUND = "undo_operation_not_found"
+# The captured before-image would restore a value the current write path
+# refuses (e.g. a pre-#517 whitespace-only category). BaseRepo._require_admissible
+# raises this instead of writing the row back verbatim (issue #547).
+UNDO_VALUE_INADMISSIBLE = "undo_value_inadmissible"
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +161,7 @@ INFRA_CATALOG_UNAVAILABLE = "infra_catalog_unavailable"
 INFRA_CRYPTO_UNAVAILABLE = "infra_crypto_unavailable"
 INFRA_DATABASE_LOCKED = "infra_database_locked"
 INFRA_DATABASE_NOT_INITIALIZED = "infra_database_not_initialized"
+INFRA_DATABASE_UPGRADE_REQUIRED = "infra_database_upgrade_required"
 INFRA_FILE_NOT_FOUND = "infra_file_not_found"
 INFRA_INVALID_ARGUMENTS = "infra_invalid_arguments"
 INFRA_INVALID_INPUT = "infra_invalid_input"
@@ -172,6 +178,7 @@ INFRA_TOO_MANY_ITEMS = "infra_too_many_items"
 # mask_error_details would otherwise leave. Carries the exception *type* only —
 # never its message, which can embed file paths, SQL, and financial data.
 INFRA_UNCLASSIFIED_ERROR = "infra_unclassified_error"
+INFRA_UTC_UPGRADE_REQUIRED = "infra_utc_upgrade_required"
 INFRA_WRONG_KEY = "infra_wrong_key"
 
 
@@ -187,6 +194,10 @@ SYNC_ERROR = "sync_error"
 SYNC_INSTITUTION_AMBIGUOUS = "sync_institution_ambiguous"
 SYNC_INSTITUTION_REQUIRED = "sync_institution_required"
 SYNC_LINK_MODE_CONFLICT = "sync_link_mode_conflict"
+SYNC_SERVER_NOT_CONFIGURED = "sync_server_not_configured"
+# Login was asked to save an address while the environment or a dotenv supplies
+# a different one: the saved value would be shadowed on the very next command.
+SYNC_SERVER_OVERRIDE_CONFLICT = "sync_server_override_conflict"
 SYNC_STATUS_MODE_CONFLICT = "sync_status_mode_conflict"
 
 
@@ -247,6 +258,8 @@ SQL_SCHEMA_NOT_ALLOWED = "sql_schema_not_allowed"
 # entry. The caller's recovery differs — reach for DESCRIBE, not a name fix.
 SQL_TABLE_NOT_CURATED = "sql_table_not_curated"
 SQL_UNKNOWN_TABLE = "sql_unknown_table"
+# A column the query names does not exist; the table is fine, so fix the column.
+SQL_UNKNOWN_COLUMN = "sql_unknown_column"
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +324,7 @@ INVESTMENT_PRICE_MARK_CURRENCY_INVALID = "investment_price_mark_currency_invalid
 INVESTMENT_PRICE_MARK_UNREPRESENTABLE = "investment_price_mark_unrepresentable"
 INVESTMENT_SECURITY_NOT_BOUND = "investment_security_not_bound"
 INVESTMENT_SECURITY_NOT_IN_CATALOG = "investment_security_not_in_catalog"
+INVESTMENT_SOURCE_EXCLUDED = "investment_source_excluded"
 
 
 # ---------------------------------------------------------------------------

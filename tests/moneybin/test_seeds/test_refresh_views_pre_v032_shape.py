@@ -18,6 +18,8 @@ tables are left untouched.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from moneybin.database import Database
 from moneybin.seeds import (
     _ensure_seed_tables_exist,  # pyright: ignore[reportPrivateUsage]
@@ -102,6 +104,81 @@ def test_refresh_views_tolerates_pre_v032_shape_without_mutating_tables(
         "OR category_id LIKE 'u_%'"
     ).fetchone()
     assert row_count == (7,)
+
+
+def test_refresh_views_projects_category_id_for_current_and_legacy_merchants(
+    db: Database,
+) -> None:
+    """Both startup view variants retain the merchant-category identifier."""
+    db.execute(
+        "INSERT INTO app.user_merchants "
+        "(merchant_id, raw_pattern, match_type, canonical_name, category_id, "
+        "category, created_by) VALUES "
+        "('current-merchant', 'CURRENT', 'exact', 'Current Merchant', "
+        "'current-category', 'Current', 'test')"
+    )
+    refresh_views(db)
+    assert db.execute(
+        "SELECT category_id FROM core.dim_merchants WHERE merchant_id = "
+        "'current-merchant'"
+    ).fetchone() == ("current-category",)
+
+    db.execute("DROP VIEW IF EXISTS app.merchants")
+    db.execute("DROP TABLE app.user_merchants")
+    db.execute(
+        "CREATE TABLE app.merchants ("
+        "merchant_id VARCHAR, raw_pattern VARCHAR, match_type VARCHAR, "
+        "canonical_name VARCHAR, category VARCHAR, subcategory VARCHAR, "
+        "created_by VARCHAR, created_at TIMESTAMP)"
+    )
+    db.execute(
+        "INSERT INTO app.merchants VALUES "
+        "('legacy-merchant', 'LEGACY', 'exact', 'Legacy Merchant', "
+        "'Legacy', NULL, 'test', CURRENT_TIMESTAMP)"
+    )
+    refresh_views(db)
+    assert db.execute(
+        "SELECT category_id FROM core.dim_merchants WHERE merchant_id = "
+        "'legacy-merchant'"
+    ).fetchone() == (None,)
+
+
+def test_refresh_views_preserves_category_freshness_and_seed_nulls(
+    db: Database,
+) -> None:
+    db.execute(
+        "INSERT INTO seeds.categories (category_id, category, description) VALUES "
+        "('FND-UTC-plain', 'Plain', ''), ('FND-UTC-override', 'Override', '')"
+    )
+    db.execute(
+        "INSERT INTO app.category_overrides (category_id, is_active, updated_at) VALUES "
+        "('FND-UTC-override', false, TIMESTAMPTZ '2025-11-02T01:30:00.123456-04:00')"
+    )
+    db.execute(
+        "INSERT INTO app.user_categories "
+        "(category_id, category, created_at, updated_at) VALUES "
+        "('user-utc-category', 'User', TIMESTAMPTZ '2025-11-02T01:15:00-04:00', "
+        "TIMESTAMPTZ '2025-11-02T01:45:00.654321-04:00')"
+    )
+    expected = [
+        ("FND-UTC-override", None, datetime(2025, 11, 2, 5, 30, 0, 123456, tzinfo=UTC)),
+        ("FND-UTC-plain", None, None),
+        (
+            "user-utc-category",
+            datetime(2025, 11, 2, 5, 15, tzinfo=UTC),
+            datetime(2025, 11, 2, 5, 45, 0, 654321, tzinfo=UTC),
+        ),
+    ]
+    for _ in range(2):
+        refresh_views(db)
+        assert (
+            db.execute(
+                "SELECT category_id, created_at, updated_at FROM core.dim_categories "
+                "WHERE category_id IN ('FND-UTC-plain', 'FND-UTC-override', 'user-utc-category') "
+                "ORDER BY category_id"
+            ).fetchall()
+            == expected
+        )
 
 
 def test_bootstrap_shape_matches_frozen_v014(db: Database) -> None:

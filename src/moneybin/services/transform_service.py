@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # direct scans plus receipt-backed coverage equal `raw_tables_read_by_models()`,
 # so a new model input cannot go silently unwatched.
 _RAW_LANDING_COLUMNS: dict[str, str] = {
+    "exchange_rate_coverage": "loaded_at",
     "exchange_rates": "loaded_at",
     "ofx_accounts": "loaded_at",
     "ofx_balances": "loaded_at",
@@ -50,6 +51,9 @@ _RAW_LANDING_COLUMNS: dict[str, str] = {
     "plaid_securities": "loaded_at",
     "plaid_transactions": "loaded_at",
     "security_prices": "loaded_at",
+    "simplefin_accounts": "loaded_at",
+    "simplefin_transactions": "loaded_at",
+    "simplefin_balances": "loaded_at",
     "tabular_accounts": "loaded_at",
     "tabular_transactions": "loaded_at",
     # The two manual-entry tables record their insert as `created_at` and have
@@ -61,6 +65,17 @@ _RAW_LANDING_COLUMNS: dict[str, str] = {
 # Revisions and receipts commit atomically; only receipts carry landing time.
 _RAW_RECEIPT_COVERAGE: dict[str, str] = {
     "plaid_investment_transactions": "plaid_investment_transaction_receipts",
+}
+
+# SyncCompletenessService consumes receipt outcomes even when no model input
+# rows arrived. A zero-batch job still owes the normal local refresh boundary.
+# Keep these separate so the exact SQLMesh input-coverage assertion stays exact.
+_OPERATIONAL_RAW_LANDING_COLUMNS: dict[str, str] = {
+    "simplefin_sync_receipts": "loaded_at",
+}
+_ALL_RAW_LANDING_COLUMNS = {
+    **_RAW_LANDING_COLUMNS,
+    **_OPERATIONAL_RAW_LANDING_COLUMNS,
 }
 
 # Those of the above whose rows name the import batch that wrote them, so a
@@ -116,23 +131,15 @@ def _build_raw_landing_scan(
     """
     arms: list[str] = []
     for table in sorted(tables):
-        column = _RAW_LANDING_COLUMNS[table]
+        column = _ALL_RAW_LANDING_COLUMNS[table]
         batch = (
             "import_id" if table in _RAW_IMPORT_SCOPED else "NULL::VARCHAR AS import_id"
         )
         arms.append(f'SELECT "{column}" AS landed_at, {batch} FROM raw."{table}"')
     union = "\n    UNION ALL\n    ".join(arms)
-    # The ::TIMESTAMPTZ cast resolves each naive landing stamp in the *reading*
-    # session's zone, which is the writing zone only while the profile stays on
-    # one machine. Carry the database across zones and these stamps skew against
-    # the model execution stamp — an absolute epoch out of `_intervals` — by the
-    # offset delta, which can strand `pending` true or briefly mask real
-    # staleness until the next apply re-anchors it. A naive value cannot yield
-    # its instant at read time, so the fix is storing the landing columns as
-    # TIMESTAMPTZ, not a different cast.
     if not filter_bad_imports:
         return f"""
-            SELECT MAX(landed_at)::TIMESTAMPTZ FROM (
+            SELECT MAX(landed_at) FROM (
             {union}
             ) AS candidates
         """  # identifiers come from the module constants above
@@ -143,13 +150,13 @@ def _build_raw_landing_scan(
         ), candidates AS (
             {union}
         )
-        SELECT MAX(landed_at)::TIMESTAMPTZ FROM candidates
+        SELECT MAX(landed_at) FROM candidates
         WHERE import_id IS NULL
            OR import_id NOT IN (SELECT import_id FROM bad_imports)
     """  # identifiers come from the module constants above
 
 
-_RAW_LANDING_SCAN = _build_raw_landing_scan(_RAW_LANDING_COLUMNS)
+_RAW_LANDING_SCAN = _build_raw_landing_scan(_ALL_RAW_LANDING_COLUMNS)
 
 # SQLMesh calls a model *symbolic* when it never executes it, so it never
 # records an interval for one and `last_executed_at` stays NULL forever.
@@ -178,6 +185,12 @@ _SYMBOLIC_MODEL_KINDS: frozenset[str] = frozenset({"EMBEDDED", "EXTERNAL"})
 # INCREMENTAL_* kinds `apply()`'s `run()` step already covers.
 _UNREBUILT_MODEL_KINDS: frozenset[str] = _SYMBOLIC_MODEL_KINDS | {"SEED", "VIEW"}
 
+# The start every restatement plan passes. Without one SQLMesh takes the first
+# plan's day and refuses a plan whose end (now) precedes it, which a write made
+# under an earlier clock hits. No model reads the plan's dates, so it changes no
+# data: a FULL model rebuilds whole whatever the range.
+_RESTATE_START = "2000-01-01"
+
 
 def _oldest_execution_scan(model_count: int) -> str:
     """Scan for the least-recently-rebuilt model, over a bound name list.
@@ -197,7 +210,7 @@ def _oldest_execution_scan(model_count: int) -> str:
     names = ", ".join("?" for _ in range(model_count))
     return f"""
         SELECT
-            (MIN(last_executed_at) AT TIME ZONE 'UTC'),
+            MIN(last_executed_at),
             COUNT(*) FILTER (WHERE last_executed_at IS NULL)
         FROM {MODEL_FRESHNESS.full_name}
         WHERE COALESCE(model_kind, '') NOT IN ({kinds})
@@ -351,6 +364,7 @@ class TransformService:
                     if full_models and not initial_plan_backfills_full_models:
                         ctx.plan(
                             restate_models=full_models,
+                            start=_RESTATE_START,
                             auto_apply=True,
                             no_prompts=True,
                         )
@@ -428,6 +442,7 @@ class TransformService:
                 with sqlmesh_context(self._db) as ctx:
                     ctx.plan(
                         restate_models=requested,
+                        start=_RESTATE_START,
                         auto_apply=True,
                         no_prompts=True,
                     )
@@ -483,16 +498,9 @@ class TransformService:
         cannot clear the flag for models it never rebuilt — see
         :meth:`_oldest_model_execution_at`.
 
-        One known limit remains: the landing stamps are naive and resolve
-        through the *reading* session's zone, while the execution stamp is an
-        absolute epoch, so the comparison holds only while the profile is read
-        in the zone that wrote it. Carrying a profile across zones can skew it
-        by the offset delta until the next apply re-anchors both sides.
-
-        ``last_apply_at`` (``dim_accounts.updated_at``) and
-        ``latest_import_at`` (``import_log.completed_at``) remain
-        wall-clock values for display only; they do not drive the
-        pending decision.
+        Landing and execution stamps are absolute UTC instants.
+        ``last_apply_at`` and ``latest_import_at`` are display metadata;
+        they do not drive the pending decision.
         """
         presence = sqlmesh_registry.model_presence(self._db)
         # A warehouse nobody has built yet is not stale — it is what a profile
@@ -534,7 +542,7 @@ class TransformService:
                     if env.finalized_ts is not None:
                         env_apply_at = datetime.fromtimestamp(
                             env.finalized_ts / 1000, tz=UTC
-                        ).replace(tzinfo=None)
+                        )
         except Exception:  # SQLMesh may fail to init on a fresh DB
             logger.debug("SQLMesh status read failed", exc_info=True)
 
@@ -658,18 +666,18 @@ class TransformService:
         # only fully-complete imports: a 'partial' batch did land rows.
         try:
             row = self._db.execute(
-                f"SELECT MAX(completed_at)::TIMESTAMP FROM {IMPORT_LOG.full_name} "
+                f"SELECT MAX(completed_at) FROM {IMPORT_LOG.full_name} "
                 f"WHERE status IN ('complete', 'partial')"  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
-            # CatalogException when raw.import_log not yet created (pre-first-import)
+            # CatalogException when app.import_log not yet created (pre-first-import)
             return None
         return row[0] if row and row[0] is not None else None
 
     def _max_dim_accounts_updated_at(self) -> datetime | None:
         try:
             row = self._db.execute(
-                f"SELECT MAX(updated_at)::TIMESTAMP FROM {DIM_ACCOUNTS.full_name}"  # TableRef constant
+                f"SELECT MAX(updated_at) FROM {DIM_ACCOUNTS.full_name}"  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
             # CatalogException when core.dim_accounts not yet created (pre-first-transform)
@@ -701,13 +709,20 @@ class TransformService:
         return row[0] if row and row[0] is not None else None
 
     def _present_raw_landing_tables(self) -> tuple[frozenset[str], bool]:
-        """Declared landing tables this catalog actually has, plus import_log."""
+        """Declared raw landing tables this catalog actually has, plus import_log.
+
+        import_log lives in ``app``, not ``raw`` (MB-255), so the presence
+        check spans both schemas in one query rather than two round trips.
+        """
         rows = self._db.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_catalog = current_database() AND table_schema = 'raw'"
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            "WHERE table_catalog = current_database() AND table_schema IN ('raw', 'app')"
         ).fetchall()
-        names = {str(row[0]) for row in rows}
-        return frozenset(names & set(_RAW_LANDING_COLUMNS)), "import_log" in names
+        raw_names = {str(name) for schema, name in rows if schema == "raw"}
+        has_import_log = any(
+            schema == "app" and name == "import_log" for schema, name in rows
+        )
+        return frozenset(raw_names & set(_ALL_RAW_LANDING_COLUMNS)), has_import_log
 
     def _oldest_model_execution_at(self) -> datetime | None:
         """When the least-recently-rebuilt SQLMesh model was last backfilled.

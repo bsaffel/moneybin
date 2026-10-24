@@ -62,21 +62,21 @@ async def test_export_write_schemas_keep_event_and_target_state_separate() -> No
     export = await listed_tool(mcp, "export_run")
     destinations = await listed_tool(mcp, "exports_set")
 
-    assert set(export.inputSchema["properties"]) == {
+    assert set(export.input_schema["properties"]) == {
         "subject",
         "destination",
         "redaction_mode",
     }
-    assert set(destinations.inputSchema["properties"]) == {
+    assert set(destinations.input_schema["properties"]) == {
         "confirmation_token",
         "target",
     }
-    assert "operation" not in json.dumps(export.inputSchema)
-    assert "action" not in json.dumps(destinations.inputSchema)
+    assert "operation" not in json.dumps(export.input_schema)
+    assert "action" not in json.dumps(destinations.input_schema)
     assert export.annotations is not None
-    assert export.annotations.idempotentHint is False
+    assert export.annotations.idempotent_hint is False
     assert destinations.annotations is not None
-    assert destinations.annotations.idempotentHint is True
+    assert destinations.annotations.idempotent_hint is True
 
 
 @pytest.mark.parametrize(
@@ -85,7 +85,7 @@ async def test_export_write_schemas_keep_event_and_target_state_separate() -> No
         (
             "export_run",
             {
-                "subject": {"kind": "bundle", "report_id": "core:networth"},
+                "subject": {"kind": "bundle", "report_id": "core:net_worth"},
                 "destination": {"kind": "local", "name": "exports"},
                 "redaction_mode": "redacted",
             },
@@ -125,7 +125,7 @@ async def test_export_write_schemas_reject_cross_variant_fields(
         arguments,
     )
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 def _variant_schema(schema: dict[str, Any], tag: str) -> dict[str, Any]:
@@ -648,30 +648,30 @@ async def test_balance_assertion_coarse_schema_and_annotations() -> None:
     mcp = isolated_server(register_accounts_coarse_writes)
 
     tool = await listed_tool(mcp, "accounts_balance_assert")
-    amount_schema = tool.inputSchema["properties"]["amount"]
+    amount_schema = tool.input_schema["properties"]["amount"]
     numeric_schema = amount_schema["anyOf"][0]
     advertised_types = {branch["type"] for branch in numeric_schema["anyOf"]}
 
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is True
-    assert tool.annotations.idempotentHint is True
-    assert tool.inputSchema["properties"]["as_of"] == {
+    assert tool.annotations.read_only_hint is False
+    assert tool.annotations.destructive_hint is True
+    assert tool.annotations.idempotent_hint is True
+    assert tool.input_schema["properties"]["as_of"] == {
         "format": "date",
         "type": "string",
     }
-    assert set(tool.inputSchema["properties"]["state"]["enum"]) == {
+    assert set(tool.input_schema["properties"]["state"]["enum"]) == {
         "present",
         "absent",
     }
-    assert tool.inputSchema["properties"]["state"]["default"] == "present"
+    assert tool.input_schema["properties"]["state"]["default"] == "present"
     assert amount_schema["anyOf"][1] == {"type": "null"}
     assert numeric_schema["decimal_places"] == 2
     assert numeric_schema["max_digits"] == 18
     assert advertised_types <= {"integer", "number"}
     assert "number" in advertised_types
-    Draft202012Validator.check_schema(tool.inputSchema)
+    Draft202012Validator.check_schema(tool.input_schema)
 
     valid_payloads = [
         {"account": "ACC001", "as_of": "2026-07-01", "amount": 1250},
@@ -736,10 +736,10 @@ async def test_balance_assertion_coarse_schema_and_annotations() -> None:
         },
     ]
     for payload in valid_payloads:
-        validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+        validate_json_schema(payload, tool.input_schema, cls=Draft202012Validator)
     for payload in invalid_payloads:
         with pytest.raises(JSONSchemaValidationError):
-            validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+            validate_json_schema(payload, tool.input_schema, cls=Draft202012Validator)
 
 
 async def test_transaction_annotation_coarse_schema_and_annotations() -> None:
@@ -747,15 +747,15 @@ async def test_transaction_annotation_coarse_schema_and_annotations() -> None:
 
     tool = await listed_tool(mcp, "transactions_annotate")
 
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is True
-    assert tool.annotations.idempotentHint is False
-    assert "confirmation_token" in tool.inputSchema["properties"]
+    assert tool.annotations.read_only_hint is False
+    assert tool.annotations.destructive_hint is True
+    assert tool.annotations.idempotent_hint is False
+    assert "confirmation_token" in tool.input_schema["properties"]
     variants = {
         branch["properties"]["kind"]["const"]: set(branch["required"])
-        for branch in tool.inputSchema["properties"]["requests"]["items"]["oneOf"]
+        for branch in tool.input_schema["properties"]["requests"]["items"]["oneOf"]
     }
     assert variants == {
         "note_add": {"kind", "transaction_id", "text"},
@@ -765,7 +765,7 @@ async def test_transaction_annotation_coarse_schema_and_annotations() -> None:
         "splits_set": {"kind", "transaction_id", "splits"},
         "tag_rename": {"kind", "old_name", "new_name"},
     }
-    Draft202012Validator.check_schema(tool.inputSchema)
+    Draft202012Validator.check_schema(tool.input_schema)
 
 
 async def test_categorization_rules_set_coarse_schema_and_annotations() -> None:
@@ -773,13 +773,13 @@ async def test_categorization_rules_set_coarse_schema_and_annotations() -> None:
 
     tool = await listed_tool(mcp, "transactions_categorize_rules_set")
 
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is True
-    assert tool.annotations.idempotentHint is True
-    assert "confirmation_token" in tool.inputSchema["properties"]
-    Draft202012Validator.check_schema(tool.inputSchema)
+    assert tool.annotations.read_only_hint is False
+    assert tool.annotations.destructive_hint is True
+    assert tool.annotations.idempotent_hint is True
+    assert "confirmation_token" in tool.input_schema["properties"]
+    Draft202012Validator.check_schema(tool.input_schema)
 
     present = {
         "rules": [
@@ -808,9 +808,9 @@ async def test_categorization_rules_set_coarse_schema_and_annotations() -> None:
         ]
     }
     for payload in (present, inactive, absent):
-        validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+        validate_json_schema(payload, tool.input_schema, cls=Draft202012Validator)
     with pytest.raises(JSONSchemaValidationError):
-        validate_json_schema(invalid, tool.inputSchema, cls=Draft202012Validator)
+        validate_json_schema(invalid, tool.input_schema, cls=Draft202012Validator)
 
 
 async def test_taxonomy_set_coarse_schema_and_annotations() -> None:
@@ -818,21 +818,21 @@ async def test_taxonomy_set_coarse_schema_and_annotations() -> None:
 
     tool = await listed_tool(mcp, "taxonomy_set")
 
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is True
-    assert tool.annotations.idempotentHint is True
-    assert "confirmation_token" in tool.inputSchema["properties"]
+    assert tool.annotations.read_only_hint is False
+    assert tool.annotations.destructive_hint is True
+    assert tool.annotations.idempotent_hint is True
+    assert "confirmation_token" in tool.input_schema["properties"]
     variants = {
         branch["properties"]["kind"]["const"]: set(branch["required"])
-        for branch in tool.inputSchema["properties"]["items"]["items"]["oneOf"]
+        for branch in tool.input_schema["properties"]["items"]["items"]["oneOf"]
     }
     assert variants == {
         "category": {"kind", "state"},
         "merchant": {"kind", "state"},
     }
-    Draft202012Validator.check_schema(tool.inputSchema)
+    Draft202012Validator.check_schema(tool.input_schema)
 
     for payload in (
         {
@@ -865,7 +865,7 @@ async def test_taxonomy_set_coarse_schema_and_annotations() -> None:
             "confirmation_token": "token",
         },
     ):
-        validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+        validate_json_schema(payload, tool.input_schema, cls=Draft202012Validator)
 
 
 async def test_privacy_consent_set_coarse_schema_and_annotations() -> None:
@@ -873,20 +873,20 @@ async def test_privacy_consent_set_coarse_schema_and_annotations() -> None:
 
     tool = await listed_tool(mcp, "privacy_consent_set")
 
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is True
-    assert tool.annotations.idempotentHint is True
-    assert set(tool.inputSchema["properties"]["state"]["enum"]) == {
+    assert tool.annotations.read_only_hint is False
+    assert tool.annotations.destructive_hint is True
+    assert tool.annotations.idempotent_hint is True
+    assert set(tool.input_schema["properties"]["state"]["enum"]) == {
         "granted",
         "revoked",
     }
-    assert set(tool.inputSchema["properties"]["mode"]["enum"]) == {
+    assert set(tool.input_schema["properties"]["mode"]["enum"]) == {
         "persistent",
         "one-time",
     }
-    Draft202012Validator.check_schema(tool.inputSchema)
+    Draft202012Validator.check_schema(tool.input_schema)
 
     for payload in (
         {
@@ -900,7 +900,7 @@ async def test_privacy_consent_set_coarse_schema_and_annotations() -> None:
             "confirmation_token": "token",
         },
     ):
-        validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+        validate_json_schema(payload, tool.input_schema, cls=Draft202012Validator)
 
 
 @pytest.mark.integration
@@ -915,7 +915,7 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
     rules = await listed_tool(mcp, "transactions_categorize_rules_set")
 
     assert _rendered_variants(
-        annotations.inputSchema,
+        annotations.input_schema,
         collection="requests",
     ) == {
         "note_add": {"kind", "transaction_id", "text"},
@@ -925,24 +925,24 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
         "splits_set": {"kind", "transaction_id", "splits"},
         "tag_rename": {"kind", "old_name", "new_name"},
     }
-    assert _rendered_variants(reviews.inputSchema, collection="decisions") == {
+    assert _rendered_variants(reviews.input_schema, collection="decisions") == {
         "auto_rule": {"kind", "decision_id", "decision"},
         "categorization": {"kind", "decision_id", "decision"},
         "match": {"kind", "decision_id", "decision"},
         "investment_match": {"kind", "decision_id", "decision"},
         "rule_conflict": {"kind", "decision_id", "decision"},
     }
-    assert _rendered_variants(identities.inputSchema, collection="decisions") == {
+    assert _rendered_variants(identities.input_schema, collection="decisions") == {
         "account_link": {"kind", "decision_id", "decision"},
         "merchant_link": {"kind", "decision_id", "decision"},
         "security_link": {"kind", "decision_id", "decision"},
     }
-    assert _rendered_variants(taxonomy.inputSchema, collection="items") == {
+    assert _rendered_variants(taxonomy.input_schema, collection="items") == {
         "category": {"kind", "state"},
         "merchant": {"kind", "state"},
     }
 
-    rule = rules.inputSchema["properties"]["rules"]["items"]
+    rule = rules.input_schema["properties"]["rules"]["items"]
     assert rule["properties"]["kind"]["const"] == "rule"
     assert set(rule["properties"]["state"]["enum"]) == {
         "present",
@@ -952,8 +952,8 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
     assert set(rule["required"]) == {"kind", "state"}
 
     for tool in (annotations, reviews, identities, taxonomy, rules):
-        assert tool.outputSchema is None
-        Draft202012Validator.check_schema(tool.inputSchema)
+        assert tool.output_schema is None
+        Draft202012Validator.check_schema(tool.input_schema)
 
 
 @pytest.mark.integration
@@ -963,7 +963,7 @@ async def test_live_standard_write_conditions_render_exactly() -> None:
     init_db()
     reviews = await listed_tool(mcp, "reviews_decide")
     categorization = _rendered_variant(
-        reviews.inputSchema,
+        reviews.input_schema,
         collection="decisions",
         kind="categorization",
     )
@@ -987,7 +987,7 @@ async def test_live_standard_write_conditions_render_exactly() -> None:
     identities = await listed_tool(mcp, "identity_links_decide")
     for kind in ("account_link", "merchant_link", "security_link"):
         identity = _rendered_variant(
-            identities.inputSchema,
+            identities.input_schema,
             collection="decisions",
             kind=kind,
         )
@@ -1001,7 +1001,7 @@ async def test_live_standard_write_conditions_render_exactly() -> None:
 
     taxonomy = await listed_tool(mcp, "taxonomy_set")
     category = _rendered_variant(
-        taxonomy.inputSchema,
+        taxonomy.input_schema,
         collection="items",
         kind="category",
     )
@@ -1026,7 +1026,7 @@ async def test_live_standard_write_conditions_render_exactly() -> None:
     }
 
     merchant = _rendered_variant(
-        taxonomy.inputSchema,
+        taxonomy.input_schema,
         collection="items",
         kind="merchant",
     )
@@ -1047,7 +1047,7 @@ async def test_live_standard_write_conditions_render_exactly() -> None:
     }
 
     rules = await listed_tool(mcp, "transactions_categorize_rules_set")
-    rule = rules.inputSchema["properties"]["rules"]["items"]
+    rule = rules.input_schema["properties"]["rules"]["items"]
     rule_present = _conditional_then(rule, "state", "present")
     rule_inactive = _conditional_then(rule, "state", "inactive")
     rule_absent = _conditional_then(rule, "state", "absent")
@@ -1063,15 +1063,15 @@ async def test_live_standard_write_conditions_render_exactly() -> None:
 
     consent = await listed_tool(mcp, "privacy_consent_set")
     assert _forbidden_fields(
-        _conditional_then(consent.inputSchema, "state", "revoked")
+        _conditional_then(consent.input_schema, "state", "revoked")
     ) == {"mode"}
     assert _forbidden_fields(
-        _conditional_then(consent.inputSchema, "state", "granted")
+        _conditional_then(consent.input_schema, "state", "granted")
     ) == {"confirmation_token"}
 
     balance = await listed_tool(mcp, "accounts_balance_assert")
-    absent = _conditional_then(balance.inputSchema, "state", "absent")
-    present = _conditional_else(balance.inputSchema, "state", "absent")
+    absent = _conditional_then(balance.input_schema, "state", "absent")
+    present = _conditional_else(balance.input_schema, "state", "absent")
     assert _forbidden_fields(absent) == {"amount"}
     assert set(present["required"]) == {"amount"}
     assert present["properties"]["amount"] == {"not": {"type": "null"}}
@@ -1106,7 +1106,7 @@ async def test_balance_assertion_coarse_rejects_non_json_decimal_boundaries(
         },
     )
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 async def test_balance_assertion_coarse_transport_and_public_actor(
@@ -1129,17 +1129,17 @@ async def test_balance_assertion_coarse_transport_and_public_actor(
     text = next(
         block.text for block in response.content if isinstance(block, TextContent)
     )
-    assert response.isError is False
-    assert response.structuredContent is not None
-    assert json.loads(text) == response.structuredContent
-    assert response.structuredContent["data"] == {
+    assert response.is_error is False
+    assert response.structured_content is not None
+    assert json.loads(text) == response.structured_content
+    assert response.structured_content["data"] == {
         "account_id": "ACC001",
         "as_of": "2026-07-01",
-        "operation_id": response.structuredContent["data"]["operation_id"],
+        "operation_id": response.structured_content["data"]["operation_id"],
         "prior_state": "absent",
         "state": "present",
     }
-    assert response.structuredContent["summary"]["sensitivity"] == "medium"
+    assert response.structured_content["summary"]["sensitivity"] == "medium"
     assert len(captured) == 1
     assert captured[0]["actor"] == "mcp.accounts_balance_assert"
     assert captured[0]["sensitivity"] == "medium"

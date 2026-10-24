@@ -14,7 +14,7 @@ that ``refresh()``:
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from datetime import date, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -24,6 +24,7 @@ import duckdb
 import pytest
 import time_machine
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.orchestration.refresh import (
@@ -44,6 +45,7 @@ from moneybin.services.rate_backfill import (
 )
 from moneybin.services.refresh_outcome import StageOutcome
 from moneybin.services.transform_service import ApplyResult
+from moneybin.tables import EXCHANGE_RATE_COVERAGE, EXCHANGE_RATES, TableRef
 
 
 def _make_apply_result(applied: bool = True) -> ApplyResult:
@@ -77,7 +79,13 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
     matcher_run = MagicMock(return_value=_match_double())
     transform_apply = MagicMock(return_value=_make_apply_result(applied=True))
     categorize_pending = MagicMock(
-        return_value={"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
+        return_value={
+            "total": 0,
+            "rule": 0,
+            "merchant": 0,
+            "plaid": 0,
+            "source_category_map": 0,
+        }
     )
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
     identity = MagicMock(
@@ -137,6 +145,7 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         *,
         auto_accept_transfers: bool = False,
         actor: str = "system",
+        restate: bool = True,
     ) -> Any:
         # Mirrors `MatchingService.run`'s keyword-only signature rather than
         # absorbing `**kwargs`: a double that swallows arguments turns a caller
@@ -263,6 +272,24 @@ def test_refresh_reports_what_the_matcher_found(
     assert stage.count("auto_merged") == 2
     assert stage.count("pending_review") == 5
     assert stage.count("pending_transfers") == 1
+
+
+@pytest.mark.unit
+def test_refresh_reports_actual_stage_boundaries(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    events: list[str] = []
+
+    refresh(MagicMock(), progress=lambda event: events.append(event.stage))
+
+    assert events == [
+        "Refreshing spreadsheets",
+        "Matching transactions",
+        "Applying reports",
+        "Categorizing transactions",
+        "Resolving identities",
+        "Refreshing exchange rates",
+    ]
 
 
 @pytest.mark.unit
@@ -509,6 +536,121 @@ def test_rates_can_run_surgically(monkeypatch: pytest.MonkeyPatch) -> None:
     refresh(MagicMock(), steps=["rates"])
 
     assert calls == ["rates"]
+
+
+@pytest.mark.unit
+def test_rates_only_refresh_restates_the_spine_it_wrote_into(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No apply runs on this path, so the FULL spine is restated narrowly."""
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
+        calls.append("rates")
+        return RateBackfillResult(rates_written=2, pairs_failed=()), None
+
+    restated: list[tuple[list[TableRef], str]] = []
+
+    def _restate(
+        _db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        restated.append((list(inputs), committed_change))
+
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", _restate)
+
+    result = refresh(MagicMock(), steps=["rates"])
+
+    assert calls == ["rates"]
+    assert restated == [([EXCHANGE_RATES, EXCHANGE_RATE_COVERAGE], "exchange rate")]
+    assert result.stage("rates") == StageOutcome(
+        step="rates", ran=True, counts={"rates_written": 2}
+    )
+
+
+@pytest.mark.unit
+def test_rates_only_refresh_skips_the_restatement_when_nothing_was_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unchanged spine needs no rebuild."""
+    patch_all_refresh_stages(monkeypatch, [])
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
+        return RateBackfillResult(rates_written=0, pairs_failed=()), None
+
+    restate = MagicMock()
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", restate)
+
+    refresh(MagicMock(), steps=["rates"])
+
+    restate.assert_not_called()
+
+
+@pytest.mark.unit
+def test_rates_only_refresh_reports_a_failed_restatement_on_the_rates_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Written rates the reports cannot see yet must not read as success."""
+    patch_all_refresh_stages(monkeypatch, [])
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
+        return RateBackfillResult(rates_written=1, pairs_failed=()), None
+
+    def _fail(
+        _db: Database, _inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        raise UserError(
+            "The exchange rate was saved, but the reports that read it could not "
+            "be rebuilt.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+        )
+
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", _fail)
+
+    result = refresh(MagicMock(), steps=["rates"])
+
+    stage = result.stage("rates")
+    assert stage is not None
+    assert stage.ran is True
+    assert stage.error == (
+        "The exchange rate was saved, but the reports that read it could not "
+        "be rebuilt."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("steps", "expected_restate"),
+    [(None, False), (["match"], True)],
+    ids=["transform-rebuilds-decisions", "match-only-restates-them"],
+)
+def test_match_restates_its_decisions_only_when_no_transform_follows(
+    monkeypatch: pytest.MonkeyPatch,
+    steps: list[str] | None,
+    expected_restate: bool,
+) -> None:
+    """The cascade's transform rebuilds what decisions feed; alone, match restates."""
+    patch_all_refresh_stages(monkeypatch, [])
+    restates: list[bool] = []
+
+    def _match(
+        _self: matching_service.MatchingService,
+        *,
+        auto_accept_transfers: bool = False,
+        actor: str = "system",
+        restate: bool = True,
+    ) -> Any:
+        restates.append(restate)
+        return _match_double()
+
+    monkeypatch.setattr(matching_service.MatchingService, "run", _match)
+
+    refresh(MagicMock(), steps=steps)
+
+    assert restates == [expected_restate]
 
 
 @pytest.mark.unit
@@ -963,7 +1105,13 @@ def test_refresh_steps_canonical_order_enforced(
 
     def _categorize_side(*a: Any, **kw: Any) -> dict[str, int]:
         call_log.append("categorize")
-        return {"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
+        return {
+            "total": 0,
+            "rule": 0,
+            "merchant": 0,
+            "plaid": 0,
+            "source_category_map": 0,
+        }
 
     patched_services["gsheet_pull"].side_effect = _gsheet_side
     patched_services["matcher_run"].side_effect = _match_side
@@ -1367,6 +1515,7 @@ def test_refresh_reports_what_the_categorizer_did(
         "merchant": 250,
         "rule": 120,
         "plaid": 30,
+        "source_category_map": 0,
     }
 
     result = refresh(db=MagicMock(spec=Database), steps=["transform", "categorize"])
@@ -1379,6 +1528,7 @@ def test_refresh_reports_what_the_categorizer_did(
         "merchant": 250,
         "rule": 120,
         "plaid": 30,
+        "source_category_map": 0,
     }
 
 
@@ -1396,6 +1546,7 @@ def test_refresh_records_a_categorize_that_ran_and_found_nothing(
         "merchant": 0,
         "rule": 0,
         "plaid": 0,
+        "source_category_map": 0,
     }
 
     result = refresh(db=MagicMock(spec=Database), steps=["transform", "categorize"])

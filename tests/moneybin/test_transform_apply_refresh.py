@@ -123,13 +123,8 @@ def _write_restate_regression_models(root: Path, *, include_view_column: bool) -
     (models / "items_view.sql").write_text(view_model)
 
 
-@pytest.mark.slow
-def test_apply_restates_full_models_after_a_view_only_plan_change(
-    db: Database, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A changed VIEW cannot suppress the FULL rebuild needed for new raw rows."""
-    sqlmesh_root = tmp_path / "sqlmesh"
-    _write_restate_regression_models(sqlmesh_root, include_view_column=False)
+def _point_transform_at(monkeypatch: pytest.MonkeyPatch, sqlmesh_root: Path) -> None:
+    """Run TransformService.apply() against a test project instead of the real one."""
 
     @contextmanager
     def test_sqlmesh_context(database: Database):  # type: ignore[no-untyped-def]
@@ -145,6 +140,17 @@ def test_apply_restates_full_models_after_a_view_only_plan_change(
     monkeypatch.setattr(
         "moneybin.services.transform_service.refresh_views", skip_refresh_views
     )
+
+
+@pytest.mark.slow
+def test_apply_restates_full_models_after_a_view_only_plan_change(
+    db: Database, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A changed VIEW cannot suppress the FULL rebuild needed for new raw rows."""
+    sqlmesh_root = tmp_path / "sqlmesh"
+    _write_restate_regression_models(sqlmesh_root, include_view_column=False)
+
+    _point_transform_at(monkeypatch, sqlmesh_root)
     db.execute("CREATE TABLE raw.restate_items (id INTEGER)")
     db.execute("INSERT INTO raw.restate_items VALUES (1)")
     assert TransformService(db).apply().applied is True
@@ -246,3 +252,68 @@ def test_apply_reflects_second_data_load(db: Database) -> None:
         "second apply() did not surface the newly-pulled institution; "
         f"core.dim_accounts shows {institutions_after_second}"
     )
+
+
+def _write_demotion_models(root: Path, *, include_view: bool) -> None:
+    """A FULL base model, and optionally a VIEW over it."""
+    models = root / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    (models / "base.sql").write_text(
+        """
+        MODEL (
+          name core.demotion_base,
+          kind FULL,
+          grain id
+        );
+
+        SELECT id FROM raw.demotion_base
+        """
+    )
+    view = models / "queue.sql"
+    if include_view:
+        view.write_text(
+            """
+            MODEL (
+              name core.demotion_queue,
+              kind VIEW
+            );
+
+            SELECT id FROM core.demotion_base
+            """
+        )
+    else:
+        view.unlink()
+
+
+def _core_views(db: Database) -> set[str]:
+    rows = db.execute(
+        "SELECT view_name FROM duckdb_views() WHERE schema_name = 'core'"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+@pytest.mark.slow
+def test_apply_drops_a_view_whose_model_was_removed(
+    db: Database, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Refresh removes a deleted model's view from an existing database.
+
+    categorizable-transactions.md R8 retires core.uncategorized_queue with no
+    migration, relying on SQLMesh demoting a model absent from the new plan.
+    sqlmesh_context builds its Config in code, so this project runs under the
+    same configuration as the real one, through the path refresh takes.
+    """
+    sqlmesh_root = tmp_path / "sqlmesh"
+    _write_demotion_models(sqlmesh_root, include_view=True)
+    _point_transform_at(monkeypatch, sqlmesh_root)
+    db.execute("CREATE TABLE raw.demotion_base (id INTEGER)")
+    db.execute("INSERT INTO raw.demotion_base VALUES (1)")
+
+    assert TransformService(db).apply().applied is True
+    assert "demotion_queue" in _core_views(db)
+
+    _write_demotion_models(sqlmesh_root, include_view=False)
+    assert TransformService(db).apply().applied is True
+
+    assert "demotion_queue" not in _core_views(db)
+    assert db.execute("SELECT id FROM core.demotion_base").fetchall() == [(1,)]

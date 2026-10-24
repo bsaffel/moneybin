@@ -61,7 +61,7 @@ class OAuthGrantLike(Protocol):
 
     @property
     def can_write(self) -> bool:
-        """Return whether Sheets writes were granted."""
+        """Whether Sheets writes were granted."""
         ...
 
 

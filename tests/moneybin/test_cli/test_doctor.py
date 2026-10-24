@@ -81,6 +81,9 @@ def test_a_fully_passing_run_prints_only_its_summary(
     assert "✅" not in result.output
     assert "fct_transactions_fk_integrity" not in result.output
     assert "5 invariants checked" in result.output
+    # The summary is the only line this run prints — it must not open with a
+    # blank line (rule 1).
+    assert not result.output.startswith("\n")
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
@@ -116,28 +119,23 @@ def test_quiet_never_hides_a_failing_invariant(
     result = runner.invoke(app, ["system", "doctor", "-q"])
 
     assert result.exit_code == 1
-    assert "❌ fct_transactions_sign_convention — 1 violation(s)" in result.output
-    assert "⚠️  categorization_coverage — 80% uncategorized" in result.output
+    assert "× fct_transactions_sign_convention — 1 violation(s)" in result.output
+    assert "! categorization_coverage — 80% uncategorized" in result.output
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
 @patch("moneybin.cli.commands.system.doctor.DoctorService")
-def test_quiet_silences_the_next_step_hints_and_nothing_else(
+def test_quiet_preserves_required_recovery_actions(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
-    """The one thing `-q` takes, on the line `echo_report_notes` already draws.
-
-    A 💡 suggests a command to run next, which is the informational status the
-    flag is for. The invariant above it and the summary below it are the
-    answer.
-    """
+    """Quiet preserves the failing result and the actions needed to recover."""
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
     result = runner.invoke(app, ["system", "doctor", "-q"])
 
     assert result.exit_code == 1
-    assert "💡" not in result.output
-    assert "transactions_notes_delete" not in result.output
+    assert "›" in result.output
+    assert "moneybin transactions notes delete n1" in result.output
     assert "invariants checked" in result.output
 
 
@@ -151,7 +149,7 @@ def test_a_failing_invariant_prints_its_name_and_detail(
     mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
     result = runner.invoke(app, ["system", "doctor"])
 
-    assert "❌ fct_transactions_sign_convention — 1 violation(s)" in result.output
+    assert "× fct_transactions_sign_convention — 1 violation(s)" in result.output
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
@@ -198,7 +196,7 @@ def test_verbose_restores_the_full_roll(
     result = runner.invoke(app, ["system", "doctor", "--verbose"])
 
     assert result.exit_code == 0
-    assert result.output.count("✅") == 5
+    assert result.output.count("✓") == 5
     assert "fct_transactions_fk_integrity" in result.output
 
 
@@ -296,7 +294,7 @@ def test_doctor_renders_skipped_invariant(
     mock_svc_cls.return_value.run_all.return_value = skipped_report
     result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 0  # skipped is not a failure
-    assert "⏭️" in result.output
+    assert "!" in result.output
     assert "dedup_reconciliation" in result.output
     assert "skipped" in result.output
 
@@ -323,11 +321,15 @@ def test_doctor_json_verbose_includes_affected_ids(
     assert inv["affected_ids"] == ["abc123"]
 
 
-# Fixture mirrors the real orphan_app_state recipe contract:
-# notes_delete is "suggested" (non-idempotent across a batch — see recipe
-# docstring), tags_set is "certain" (clear-to-empty is idempotent). Holding
-# the fixture to the real recipe values makes this test catch future
-# confidence-value regressions in the recipe itself, not just rendering.
+# Fixture mirrors the real orphan_app_state recipe contract: both actions use
+# `transactions_annotate` (the one MCP tool the recipe emits), one `note_delete`
+# request (which maps to a real `transactions notes delete` command) and one
+# `tags_set` request clearing to an empty set (which has no CLI equivalent —
+# see doctor.py's `_recovery_command`). notes_delete is "suggested"
+# (non-idempotent across a batch — see recipe docstring), tags_set is
+# "certain" (clear-to-empty is idempotent). Holding the fixture to the real
+# recipe values makes this test catch future confidence-value regressions in
+# the recipe itself, not just rendering.
 _RECOVERY_REPORT = DoctorReport(
     invariants=[
         InvariantResult(
@@ -337,15 +339,19 @@ _RECOVERY_REPORT = DoctorReport(
             ["note:n1", "tag:t2"],
             recovery_actions=[
                 RecoveryAction(
-                    tool="transactions_notes_delete",
-                    arguments={"note_id": "n1"},
+                    tool="transactions_annotate",
+                    arguments={"requests": [{"kind": "note_delete", "note_id": "n1"}]},
                     rationale="Delete orphan note n1.",
                     confidence="suggested",
                     idempotent=False,
                 ),
                 RecoveryAction(
-                    tool="transactions_tags_set",
-                    arguments={"transaction_id": "t2", "tags": []},
+                    tool="transactions_annotate",
+                    arguments={
+                        "requests": [
+                            {"kind": "tags_set", "transaction_id": "t2", "tags": []}
+                        ]
+                    },
                     rationale="Clear orphan tags on t2.",
                     confidence="certain",
                     idempotent=True,
@@ -362,16 +368,59 @@ _RECOVERY_REPORT = DoctorReport(
 def test_doctor_text_renders_recovery_action_hints(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
-    """Failing invariants with recipes render each action's tool + confidence."""
+    """Failing invariants render a rationale and, when one exists, a runnable command.
+
+    Neither the raw MCP tool name nor the JSON arguments leak into the text
+    surface: a `[suggested]` action reads "Consider <rationale>", and a
+    request the CLI can express (note_delete) ends the line with a copyable
+    `moneybin ...` command, per requirement 7.
+    """
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
     result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 1
-    # Tool names appear so an agent reading the text output sees the next steps.
-    assert "transactions_notes_delete" in result.output
-    assert "transactions_tags_set" in result.output
-    # Confidence tag accompanies each action for fast scanning.
-    assert "certain" in result.output
+    assert "transactions_annotate" not in result.output
+    assert (
+        "Consider Delete orphan note n1.: moneybin transactions notes delete n1"
+        in result.output
+    )
+    # tags_set clearing to an exact empty set has no CLI primitive — the
+    # rationale alone still prints, with no command appended.
+    assert "Clear orphan tags on t2." in result.output
+    assert "Clear orphan tags on t2.: moneybin" not in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_text_keeps_affected_ids_in_the_unpaged_diagnostic_receipt(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A non-verbose failure still needs the affected saved-state facts."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
+
+    result = runner.invoke(app, ["system", "doctor"])
+
+    assert result.exit_code == 1
+    assert "Affected: note:n1, tag:t2" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_receipt_never_starts_a_pager(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
+
+    def unexpected_page(text: str, *, color: bool, wide: bool) -> bool:
+        del text, color, wide
+        pytest.fail("doctor is an operation receipt and must not page")
+
+    monkeypatch.setattr("moneybin.cli.pager.page_text", unexpected_page)
+    result = runner.invoke(app, ["system", "doctor"])
+
+    assert result.exit_code == 1
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
@@ -387,11 +436,66 @@ def test_doctor_json_includes_recovery_actions_per_invariant(
     inv = envelope["data"]["invariants"][0]
     assert inv["name"] == "orphan_app_state"
     tools = sorted(a["tool"] for a in inv["recovery_actions"])
-    assert tools == ["transactions_notes_delete", "transactions_tags_set"]
+    assert tools == ["transactions_annotate", "transactions_annotate"]
     # Each action ships its full executable shape — arguments are not stringified.
+    # JSON output is unchanged by the text-rendering rework, so the raw tool
+    # and arguments still ride the envelope for an agent to execute directly.
     notes_action = next(
-        a for a in inv["recovery_actions"] if a["tool"] == "transactions_notes_delete"
+        a
+        for a in inv["recovery_actions"]
+        if a["arguments"]["requests"][0]["kind"] == "note_delete"
     )
-    assert notes_action["arguments"] == {"note_id": "n1"}
+    assert notes_action["arguments"] == {
+        "requests": [{"kind": "note_delete", "note_id": "n1"}]
+    }
     assert notes_action["confidence"] == "suggested"
     assert notes_action["idempotent"] is False
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_text_maps_an_accounts_set_fix_to_its_command(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """An accounts_set fix names the flag; one without a source has no command."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = DoctorReport(
+        invariants=[
+            InvariantResult(
+                "investment_source_overlap",
+                "fail",
+                "1 account has investment history from two sources",
+                ["account:acc_choice"],
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="accounts_set",
+                        arguments={
+                            "account_id": "acc_choice",
+                            "investment_source_type": "manual",
+                        },
+                        rationale="keep the recorded history",
+                        confidence="suggested",
+                        idempotent=True,
+                    ),
+                    RecoveryAction(
+                        tool="accounts_set",
+                        arguments={"account_id": "acc_choice"},
+                        rationale="rename it",
+                        confidence="suggested",
+                        idempotent=True,
+                    ),
+                ],
+            ),
+        ],
+        transaction_count=1,
+    )
+
+    result = runner.invoke(app, ["system", "doctor"])
+
+    output = " ".join(result.output.split())  # the receipt wraps at terminal width
+    assert (
+        "Consider keep the recorded history: "
+        "moneybin accounts set acc_choice --investment-source-type manual"
+    ) in output
+    assert "Consider rename it" in output
+    assert "Consider rename it: moneybin" not in output

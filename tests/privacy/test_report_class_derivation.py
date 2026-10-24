@@ -33,6 +33,8 @@ def test_derives_every_deployed_reports_view() -> None:
         "large_transactions",
         "merchant_activity",
         "net_worth",
+        "net_worth_accounts",
+        "net_worth_currencies",
         "recurring_subscriptions",
         "realized_fx",
         "spending_trend",
@@ -144,6 +146,27 @@ def test_derivation_rejects_an_unqualified_upstream_read(tmp_path: Path) -> None
         _derive_one(model, tmp_path)
 
 
+def test_derivation_rejects_a_model_stacked_on_net_worth_currencies(
+    tmp_path: Path,
+) -> None:
+    """A reports.* model may not read another reports.* view (Requirement 2).
+
+    reports.net_worth_currencies has no independently authored ground truth
+    of its own — it IS derivation's own output — so a model built by reading
+    it would make the derived class map self-referential. Net worth ships
+    three independent rungs (net_worth, net_worth_currencies,
+    net_worth_accounts) precisely so none has to stack on another; this pins
+    that a stacked variant is rejected, not merely unbuilt.
+    """
+    model = """
+        MODEL (name reports.net_worth_stacked_probe, kind VIEW);
+        SELECT c.currency_code AS currency_code
+        FROM reports.net_worth_currencies AS c
+    """
+    with pytest.raises(ReportDerivationError, match="self-referential"):
+        _derive_one(model, tmp_path)
+
+
 def test_derivation_accepts_a_cte_reference_with_no_schema(tmp_path: Path) -> None:
     """The benign twin: the empty-schema case the skip was written for.
 
@@ -228,14 +251,13 @@ def test_derives_every_derivable_core_view() -> None:
     derived, _excluded = derive_core_view_classes()
     assert set(derived) == {
         ("core", "dim_merchants"),
-        ("core", "uncategorized_queue"),
     }
 
 
 def test_core_excludes_materialized_tables_by_kind() -> None:
     """A kind-FULL SQL model is excluded before derivation is even attempted."""
     _derived, excluded = derive_core_view_classes()
-    assert "kind=FULL" in excluded["core.dim_accounts"]
+    assert "kind=FULL" in excluded["core.bridge_transfers"]
     assert "kind=FULL" in excluded["core.fct_investment_transactions"]
 
 
@@ -261,9 +283,10 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
     unresolvable = {
         "core.bridge_category_source_map",  # reads seeds.category_source_map
         "core.bridge_merchant_entities",  # reads prep.int_transactions__merged
-        "core.bridge_transfers",  # reads prep.int_transactions__matched/merged
+        "core.dim_accounts",  # reads prep.int_accounts__merged
         "core.dim_categories",  # reads seeds.categories
         "core.dim_holdings",  # reads prep.stg_plaid__investment_holdings* and core.fct_security_prices
+        "core.dim_holdings_broker_reported",  # reads prep.stg_plaid__accounts and prep.stg_plaid__investment_holdings*
         "core.dim_securities",  # unaliased single-table SELECT (no qualify())
         "core.fct_balances",  # bare SELECT * inside a UNION ALL branch
         "core.fct_exchange_rates",  # reads prep.stg_exchange_rates
@@ -298,23 +321,6 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
             or "SELECT *" in reason
             or "without a schema" in reason
         ), f"{name}: exclusion reason does not say why: {reason!r}"
-
-
-def test_uncategorized_queue_age_days_and_priority_score_derive_correctly() -> None:
-    """The two columns #330's finding singled out as the least-verified.
-
-    ``age_days`` is ``CURRENT_DATE - transaction_date`` (a date arithmetic
-    expression referencing only ``transaction_date``) and ``priority_score``
-    is ``ABS(amount) * age_days`` (referencing both ``amount`` and
-    ``transaction_date``, whose classes are TXN_AMOUNT/HIGH and
-    TXN_DATE/MEDIUM respectively) — derivation's max-tier-referenced-column
-    rule must answer TXN_DATE and TXN_AMOUNT, matching what taxonomy.py
-    declares.
-    """
-    derived, _excluded = derive_core_view_classes()
-    queue = derived[("core", "uncategorized_queue")]
-    assert queue["age_days"] is DataClass.TXN_DATE
-    assert queue["priority_score"] is DataClass.TXN_AMOUNT
 
 
 # ---------------------------------------------------------------------------

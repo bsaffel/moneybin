@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import FastMCP
+from pytest_mock import MockerFixture
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -43,7 +44,17 @@ from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisio
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.entity_reference import ResolvedEntity, resolve_entity_reference
 
-pytestmark = pytest.mark.usefixtures("mcp_db")
+pytestmark = pytest.mark.usefixtures("mcp_db", "no_restate")
+
+
+@pytest.fixture()
+def no_restate(mocker: MockerFixture) -> MagicMock:
+    """Stub the post-write restate: ``mcp_db`` has tables but no SQLMesh state.
+
+    Archive, include, cost-basis, source and balance-assertion writes all
+    restate; the service tests pin which inputs each one names.
+    """
+    return mocker.patch("moneybin.services.restate.restate_after_write")
 
 
 def _seed_named_account(
@@ -605,6 +616,29 @@ class TestStandardCoarseAccountReads:
         assert second.summary.has_more is False
 
     @pytest.mark.unit
+    async def test_balance_latest_returns_an_unanchored_account_with_null_balance(
+        self, mcp_db: Path
+    ) -> None:
+        """A value-holding account with no balance observation is listed, null."""
+        _seed_balance_data()
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta
+                ) VALUES ('ACC003', '2025-06-30', NULL, FALSE, NULL, NULL)
+                """
+            )
+
+        response = await accounts_balances_coarse(view="latest")
+
+        parsed = response.to_dict()
+        by_account = {row["account_id"]: row for row in parsed["data"]["observations"]}
+        assert by_account["ACC003"]["balance"] is None
+        assert by_account["ACC001"]["balance"] is not None
+
+    @pytest.mark.unit
     async def test_balance_latest_as_of_and_reconcile_are_paginated(
         self, mcp_db: Path
     ) -> None:
@@ -1158,9 +1192,9 @@ class TestStandardCoarseBalanceAssertionWrite:
         assert [tool.name for tool in tools] == ["accounts_balance_assert"]
         tool = tools[0]
         assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is False
-        assert tool.annotations.destructiveHint is True
-        assert tool.annotations.idempotentHint is True
+        assert tool.annotations.read_only_hint is False
+        assert tool.annotations.destructive_hint is True
+        assert tool.annotations.idempotent_hint is True
 
 
 class TestNarrowToolsRemoved:
@@ -1340,14 +1374,8 @@ class TestAccountsSetExtended:
         assert parsed["data"]["display_name"] is None
 
     @pytest.mark.unit
-    async def test_default_cost_basis_method_round_trips(
-        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_default_cost_basis_method_round_trips(self, mcp_db: Path) -> None:
         """default_cost_basis_method param round-trips through the payload."""
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            MagicMock(),
-        )
         result = await accounts_set(
             account_id="ACC001", default_cost_basis_method="hifo"
         )
@@ -1355,20 +1383,70 @@ class TestAccountsSetExtended:
         assert parsed["data"]["default_cost_basis_method"] == "hifo"
 
     @pytest.mark.unit
-    async def test_clear_default_cost_basis_method(
-        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_clear_default_cost_basis_method(self, mcp_db: Path) -> None:
         """default_cost_basis_method is in _CLEARABLE_FIELDS; clearing it returns NULL."""
-        monkeypatch.setattr(
-            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-            MagicMock(),
-        )
         await accounts_set(account_id="ACC001", default_cost_basis_method="fifo")
         result = await accounts_set(
             account_id="ACC001", clear_fields=["default_cost_basis_method"]
         )
         parsed = result.to_dict()
         assert parsed["data"]["default_cost_basis_method"] is None
+
+    @pytest.mark.unit
+    async def test_investment_source_type_round_trips(self, mcp_db: Path) -> None:
+        """investment_source_type round-trips through the payload."""
+        result = await accounts_set(account_id="ACC001", investment_source_type="plaid")
+        parsed = result.to_dict()
+        assert parsed["data"]["investment_source_type"] == "plaid"
+
+    @pytest.mark.unit
+    async def test_clear_investment_source_type(self, mcp_db: Path) -> None:
+        """investment_source_type is in _CLEARABLE_FIELDS; clearing it returns NULL."""
+        await accounts_set(account_id="ACC001", investment_source_type="manual")
+        result = await accounts_set(
+            account_id="ACC001", clear_fields=["investment_source_type"]
+        )
+        parsed = result.to_dict()
+        assert parsed["data"]["investment_source_type"] is None
+
+    @pytest.mark.unit
+    async def test_source_choice_confirmation_rides_in_actions(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set or clear answers with what the ledger now uses and ignores."""
+        monkeypatch.setattr(
+            "moneybin.services.account_service.AccountService."
+            "investment_source_confirmation",
+            MagicMock(return_value="Using 2 recorded trades"),
+        )
+        result = await accounts_set(
+            account_id="ACC001", investment_source_type="manual"
+        )
+        assert result.to_dict()["actions"] == ["Using 2 recorded trades"]
+
+    @pytest.mark.unit
+    async def test_other_writes_carry_no_confirmation(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.account_service.AccountService."
+            "investment_source_confirmation",
+            MagicMock(return_value="Using 2 recorded trades"),
+        )
+        result = await accounts_set(account_id="ACC001", display_name="Renamed")
+        assert not result.to_dict().get("actions")
+
+    @pytest.mark.unit
+    async def test_unknown_investment_source_type_is_refused(
+        self, mcp_db: Path
+    ) -> None:
+        result = await accounts_set(
+            account_id="ACC001",
+            investment_source_type="ofx",  # type: ignore[arg-type]  # service must still refuse
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
 
 
 class TestBalanceCurrency:
@@ -1994,4 +2072,48 @@ async def test_links_run_does_not_promise_a_safe_retry() -> None:
     tool = next(t for t in await srv._list_tools() if t.name == "accounts_links_run")  # pyright: ignore[reportPrivateUsage]
 
     assert tool.annotations is not None
-    assert tool.annotations.idempotentHint is False
+    assert tool.annotations.idempotent_hint is False
+
+
+@pytest.mark.unit
+async def test_type_override_normalizes_and_clears_through_mcp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", MagicMock())
+    refresh = MagicMock(
+        return_value=RefreshResult(
+            applied=True,
+            duration_seconds=0.1,
+            stages=tuple(
+                StageOutcome(step=step, ran=True)
+                for step in ("match", "investment_match", "transform", "categorize")
+            ),
+        )
+    )
+    monkeypatch.setattr("moneybin.orchestration.account_mutations.refresh", refresh)
+    result = await accounts_set(account_id="ACC001", account_type="  CREDIT  ")
+    assert result.to_dict()["data"]["account_type"] == "credit"
+    refresh.assert_called_once()
+    assert refresh.call_args.kwargs == {
+        "steps": ["match", "transform", "categorize"],
+        "actor": "mcp",
+    }
+    refresh.reset_mock()
+    cleared = await accounts_set(
+        account_id="ACC001", account_type="loan", clear_fields=["account_type"]
+    )
+    assert cleared.to_dict()["data"]["account_type"] is None
+    refresh.assert_called_once()
+    assert refresh.call_args.kwargs == {
+        "steps": ["match", "transform", "categorize"],
+        "actor": "mcp",
+    }
+
+
+@pytest.mark.unit
+async def test_type_alias_is_rejected_through_mcp() -> None:
+    result = await accounts_set(account_id="ACC001", account_type="checking")
+    assert result.to_dict()["error"]["code"] == "mutation_invalid_input"

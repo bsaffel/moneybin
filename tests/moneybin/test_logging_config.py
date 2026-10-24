@@ -207,14 +207,7 @@ class TestSetupLogging(_LoggingSetupTestBase):
 
 
 class TestConsoleNoiseFilter(_LoggingSetupTestBase):
-    """The console hides named noisy dependencies and nothing else.
-
-    This is a denylist by design. An allowlist would be quieter as new
-    dependencies arrive, but it inverts the default for every ``logger.info``
-    in the tree, and each one a user actually needs becomes a silent
-    regression. What must be hidden is enumerable; what must stay visible
-    is not.
-    """
+    """CLI diagnostics are opt-in while warnings remain terminal-visible."""
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -229,8 +222,8 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
             "moneybin.services.categorization.orchestrator.engine_counts",
         ],
     )
-    def test_named_noisy_dependencies_are_hidden(self, logger_name: str) -> None:
-        """Each denylisted prefix and its descendants stay off the console."""
+    def test_cli_default_hides_info_from_every_logger(self, logger_name: str) -> None:
+        """Normal CLI output owns results through presenters, never INFO logs."""
         handler = self._console_handler()
 
         assert not handler.filter(self._record(logger_name, logging.INFO))
@@ -275,28 +268,11 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "logger_name",
-        [
-            "moneybin.cli.commands.sync",
-            "moneybin.database",
-            "moneybin.orchestration.refresh",
-            "moneybin.extractors.institution_resolution",
-            # The link harvesters. Suppressing these was tried in #356 and
-            # reverted: `import files` and `inbox sync` run the same refresh
-            # and have no other notice, so hiding them loses the only signal
-            # that a review item landed. Keep them visible unless every
-            # refresh caller carries the count itself.
-            "moneybin.services.account_links_service",
-            "moneybin.services.merchant_links_service",
-            # A dependency nobody has named. Under a denylist it must pass —
-            # the inverse of what an allowlist would do, and the case that
-            # tells the two designs apart.
-            "some_vendor_lib.client",
-        ],
+        "logger_name", ["moneybin.cli.commands.sync", "some_vendor_lib.client"]
     )
-    def test_everything_else_reaches_the_console(self, logger_name: str) -> None:
-        """Anything not explicitly suppressed stays visible."""
-        handler = self._console_handler()
+    def test_cli_verbose_restores_diagnostics(self, logger_name: str) -> None:
+        """Operators can request diagnostic INFO regardless of logger name."""
+        handler = self._console_handler(verbose=True)
 
         assert handler.filter(self._record(logger_name, logging.INFO))
 
@@ -308,31 +284,18 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
         assert handler.filter(self._record("httpx", logging.WARNING))
 
     @pytest.mark.unit
-    def test_no_file_logging_keeps_everything_on_stderr(self) -> None:
-        """With no log file, stderr is the only sink — it must keep everything.
-
-        `docs/guides/observability.md` and `threat-model.md` both promise that
-        `log_to_file: false` leaves stderr "unaffected", so containers and
-        journald can capture it. Suppression is only defensible because the
-        file keeps the copy; with no file it destroys the record.
-        """
+    def test_no_file_logging_still_hides_cli_info_by_default(self) -> None:
+        """No file sink does not recreate the default diagnostic wall."""
         handler = self._console_handler(log_to_file=False)
 
-        assert handler.filter(self._record("sqlmesh.core.context", logging.INFO))
-        assert handler.filter(self._record("httpx", logging.INFO))
-        assert handler.filter(self._record("moneybin.database", logging.INFO))
+        assert not handler.filter(self._record("sqlmesh.core.context", logging.INFO))
+        assert not handler.filter(self._record("moneybin.database", logging.INFO))
 
     @pytest.mark.unit
-    def test_missing_log_directory_also_keeps_everything_on_stderr(
+    def test_missing_log_directory_still_hides_cli_info_by_default(
         self, tmp_path: Path
     ) -> None:
-        """A log dir that cannot be created leaves stderr as the only sink too.
-
-        `log_to_file: true` is not the same as "a file handler exists". The
-        parent is created with `parents=False`, so a deleted profile tree
-        raises FileNotFoundError and setup falls back to console-only — the
-        same state as `log_to_file: false`, reached by a different route.
-        """
+        """A failed file setup keeps the same normal CLI console policy."""
         missing = tmp_path / "no-such-profile" / "logs" / "moneybin.log"
         handler = self._console_handler(log_to_file=True, log_file_path=missing)
 
@@ -341,7 +304,45 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
             for h in logging.getLogger().handlers
             if isinstance(h, logging.FileHandler)
         ], "Expected no FileHandler when the log directory is missing"
-        assert handler.filter(self._record("httpx", logging.INFO))
+        assert not handler.filter(self._record("httpx", logging.INFO))
+
+    @pytest.mark.unit
+    def test_real_cli_handlers_keep_pipeline_receipt_and_warning_without_info_wall(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A synthetic pipeline exercises real handlers, not filter internals.
+
+        Services may retain durable INFO diagnostics; normal CLI output instead
+        presents its receipt on stdout and the essential warning on stderr.
+        """
+        setup_logging(stream="cli", log_to_file=False)
+        service = logging.getLogger("moneybin.synthetic.pipeline")
+        service.info("sync stage complete")
+        service.info("refresh stage complete")
+        service.warning("refresh needs attention")
+        sys.stdout.write("Pipeline complete\n")
+
+        captured = capsys.readouterr()
+        assert captured.out == "Pipeline complete\n"
+        assert "refresh needs attention" in captured.err
+        assert "sync stage complete" not in captured.err
+        assert "refresh stage complete" not in captured.err
+
+    @pytest.mark.unit
+    def test_real_cli_handlers_verbose_restores_pipeline_diagnostics(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Verbose diagnostics are additive and do not replace the receipt."""
+        setup_logging(stream="cli", verbose=True, log_to_file=False)
+        service = logging.getLogger("moneybin.synthetic.pipeline")
+        service.info("sync stage complete")
+        service.warning("refresh needs attention")
+        sys.stdout.write("Pipeline complete\n")
+
+        captured = capsys.readouterr()
+        assert captured.out == "Pipeline complete\n"
+        assert "sync stage complete" in captured.err
+        assert "refresh needs attention" in captured.err
 
 
 class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):
@@ -359,6 +360,23 @@ class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):
         handler = self._console_handler("mcp")
 
         assert handler.filter(self._record("moneybin.mcp.server", logging.INFO))
+
+    @pytest.mark.parametrize(
+        "logger_name",
+        [
+            "httpx",
+            "httpcore.connection",
+            "moneybin.matching.engine",
+            "moneybin.extractors.plaid.extractor",
+        ],
+    )
+    def test_mcp_stream_suppresses_targeted_dependency_noise(
+        self, logger_name: str
+    ) -> None:
+        """MCP retains application INFO while hiding request and engine chatter."""
+        handler = self._console_handler("mcp")
+
+        assert not handler.filter(self._record(logger_name, logging.INFO))
 
     @pytest.mark.unit
     def test_mcp_stream_still_suppresses_sqlmesh_noise(self) -> None:

@@ -58,6 +58,7 @@ from moneybin.tables import (
     SECURITIES,
     SECURITY_LINK_DECISIONS,
     SECURITY_LINKS,
+    SECURITY_PRICE_OVERRIDES,
     SECURITY_PRICES,
 )
 
@@ -716,6 +717,7 @@ class PriceService:
             note=note,
             actor=self._actor,
         )
+        self._restate_marks()
 
     def delete_mark(
         self, security_id: str, price_date: date, *, quote_currency: str
@@ -732,7 +734,18 @@ class PriceService:
             self._canonical_quote_currency(quote_currency),
             actor=self._actor,
         )
-        return event is not None
+        if event is None:
+            return False
+        self._restate_marks()
+        return True
+
+    def _restate_marks(self) -> None:
+        """Rebuild the price models, which a mark outranks every feed in."""
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(
+            self._db, [SECURITY_PRICE_OVERRIDES], committed_change="price"
+        )
 
     @staticmethod
     def _require_storable(close: Decimal) -> None:

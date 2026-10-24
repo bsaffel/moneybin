@@ -52,7 +52,7 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
 | Schema | Materialization | Mutated by | Read by | Allowed prefixes | Purpose |
 |---|---|---|---|---|---|
 | `raw` | Tables | Python extractors (`src/moneybin/extractors/`) and the import services that drive them; MCP write tools | SQLMesh staging models; agent-safe SQL (inspection, Layer Rule 2) | source-named (`tabular_*`, `ofx_*`, `plaid_*`, `manual_transactions`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Untouched data from each source. Re-importable from the original file. |
-| `prep` | Views | SQLMesh transforms | SQLMesh core models; agent-safe SQL (inspection, Layer Rule 2) | `stg_<source>__<entity>`, `int_<entity>__<transformation>`; plus `stg_<pkg>__<entity>` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Light cleaning, type casting, source-system unioning. Internal to the pipeline: shapes change without notice and nothing downstream may depend on them. Readable through the agent-safe SQL surface for inspection only (Layer Rule 2). |
+| `prep` | Views; `int_*` may be Tables (materialization-freshness-contract.md) | SQLMesh transforms | SQLMesh core models; agent-safe SQL (inspection, Layer Rule 2) | `stg_<source>__<entity>`, `int_<entity>__<transformation>`; plus `stg_<pkg>__<entity>` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Light cleaning, type casting, source-system unioning. Internal to the pipeline: shapes change without notice and nothing downstream may depend on them. Readable through the agent-safe SQL surface for inspection only (Layer Rule 2). |
 | `core` | Tables (canonical) and Views (derived-grain) | SQLMesh transforms | All consumers (services, MCP, CLI, reports) | `fct_<entity>` (event grain or alternate event grain), `dim_<entity>` (slowly-changing entity), `bridge_<entity>` (M:N relationship), `alias_<entity>_ids` (one current-id resolver with an explicit terminal-retired outcome, derived from canonical history); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Canonical, deduplicated, multi-source. **One canonical table per real-world entity at its primary grain.** Alternate-grain facts use `fct_*` with a disambiguating name (`fct_transactions` header grain, `fct_transaction_lines` line grain). |
 | `app` | Tables | Services (write); migrations (DDL); MCP write tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc.; plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
 | `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports(report_id=..., parameters=...)`; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending_trend`, `budget`, future `portfolio`, `cash_flow`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `moneybin-cli.md` v2. |
@@ -177,7 +177,7 @@ class WhateverService:
         """Writes to app.* (or raw.*). Returns a typed result. Raises classified UserError."""
 ```
 
-Concrete reference: `NetworthService` (`src/moneybin/services/networth_service.py`) is a clean read-only example; `CategorizationService` (`src/moneybin/services/categorization/__init__.py`, a façade over the `matcher` / `applier` / `orchestrator` modules in the same package, PR #155) is a clean transactional example.
+Concrete reference: `DoctorService` (`src/moneybin/services/doctor_service.py`) is a clean read-only example; `CategorizationService` (`src/moneybin/services/categorization/__init__.py`, a façade over the `matcher` / `applier` / `orchestrator` modules in the same package, PR #155) is a clean transactional example.
 
 ### What every consumer can assume
 
@@ -189,7 +189,7 @@ Concrete reference: `NetworthService` (`src/moneybin/services/networth_service.p
 
 ### Read-only vs. transactional services
 
-The same shape covers both. A read-only service (e.g., `NetworthService`) only reads from `core.*` / `reports.*`. A transactional service (e.g., `CategorizationService`, `AccountService`) reads from `core` / `reports` and writes to `app.*` (or, in the `import` family, to `raw.*`). Transactional services use `db.begin() / commit() / rollback()` for multi-statement units of work. Transactional services compose `*Repo` classes (`src/moneybin/repositories/`) for protected `app.*` writes; raw mutation SQL against a protected `app.*` table inside a service is a contract violation under [Invariant 10](#architecture-invariants).
+The same shape covers both. A read-only service (e.g., `DoctorService`) only reads from `core.*` / `reports.*`. A transactional service (e.g., `CategorizationService`, `AccountService`) reads from `core` / `reports` and writes to `app.*` (or, in the `import` family, to `raw.*`). Transactional services use `db.begin() / commit() / rollback()` for multi-statement units of work. Transactional services compose `*Repo` classes (`src/moneybin/repositories/`) for protected `app.*` writes; raw mutation SQL against a protected `app.*` table inside a service is a contract violation under [Invariant 10](#architecture-invariants).
 
 ## MCP/CLI/SQL Symmetry
 
@@ -206,7 +206,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) §"Cross-Interface Taxonomy":
 | Concept | CLI | MCP | HTTP (future) |
 |---|---|---|---|
 | List accounts | `accounts list` | `accounts` | `GET /accounts` |
-| Net worth report | `reports networth` | `reports(report_id="core:networth", parameters={...})` | `GET /reports/networth` |
+| Net worth report | `reports net-worth` | `reports(report_id="core:net_worth", parameters={...})` | `GET /reports/net-worth` |
 | Decide a match | `transactions matches set <id> --status accepted` | `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])` | `POST /transactions/matches/{id}/decision` |
 
 Each surface uses its native operation shape while preserving the same result. The architecture spec's job here is to point at the rule, not force identical spelling.
@@ -290,11 +290,11 @@ Every tunable lives in a Settings field with a description and (where appropriat
 - All timeouts and intervals (MCP tool timeout, metrics flush).
 - All security parameters (Argon2 cost factors, salt sizes, hash lengths).
 
-Security-critical parameters are defined exactly once, at `_CONSTANTS` module-level or in a Settings field. Never duplicated across call sites — duplication introduces drift, and drift in a crypto cost factor locks users out.
+Security-critical defaults and secret lookup names are defined once in `moneybin.crypto_constants`; Settings and key derivation import them. Never duplicated across call sites — duplication introduces drift, and drift in a crypto cost factor locks users out.
 
 ### Secrets are not in `MoneyBinSettings`
 
-Encryption keys and high-sensitivity credentials live in `SecretStore` (`src/moneybin/secrets.py`) — keychain-first, env-var fallback. Per-profile keychain service: `service="moneybin-<profile>"`. The `Database` class is the only consumer of `_KEY_NAME`; CLI commands manage lifecycle (`db init`, `db unlock`, `db rotate-key`).
+Encryption keys and high-sensitivity credentials live in `SecretStore` (`src/moneybin/secrets.py`) — keychain-first, env-var fallback. Per-profile keychain service: `service="moneybin-<profile>"`. `KEY_NAME` and `SALT_NAME` are shared by database and CLI callers; CLI commands manage lifecycle (`db init`, `db unlock`, `db key rotate`). Named profiles use `MONEYBIN_PROFILE__<PROFILE>__<SECRET_NAME>` for environment fallback. The encryption-key cache records the profile identity and is invalidated on lock and rotation. Sync tokens use SecretStore with their existing opaque profile-ID keychain slots and require writable keychain storage.
 
 API keys and server credentials that don't need keychain storage use `SecretStore.get_env(name)` — env-var-only.
 
@@ -335,6 +335,10 @@ Per `.claude/rules/database.md` "Table and Column Comments":
 Both styles reach DuckDB's catalog: SQLMesh applies them on every `sqlmesh run` via `register_comments`; schema DDL applies them on every app startup via `init_schemas`.
 
 ### Row-level freshness convention
+
+Maintained instants use `TIMESTAMPTZ`, aware UTC Python values and UTC database
+sessions. Business dates retain `DATE`. [Warehouse UTC](warehouse-utc.md) defines
+machine serialization, the saved reporting calendar and explicit legacy upgrade.
 
 Every `core.*` model exposes an `updated_at` column whose value is the `MAX` of timestamps from inputs that change *per row*. Inputs that change *per model* (seeds, reference tables) contribute `NULL` and are surfaced through `meta.model_freshness`. `CURRENT_TIMESTAMP AS updated_at` inside a model is an anti-pattern — it evaluates at write time only for `FULL` tables and at query time for views, so it never reliably means "this row's freshness." See [`core-updated-at-convention.md`](core-updated-at-convention.md) for per-model formulas.
 

@@ -54,6 +54,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.orchestration.account_mutations import update_account_settings
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.privacy.classified_envelope import build_classified_envelope
 from moneybin.privacy.payloads.accounts import (
@@ -220,25 +221,29 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
     "official_name",
     "last_four",
     "account_subtype",
+    "account_type",
     "holder_category",
     "currency_code",
     "credit_limit",
     "display_name",
     "default_cost_basis_method",
+    "investment_source_type",
 })
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, timeout_seconds=180.0)
 def accounts_set(
     account_id: str,
     official_name: str | None = None,
     last_four: str | None = None,
     account_subtype: str | None = None,
+    account_type: str | None = None,
     holder_category: str | None = None,
     currency_code: str | None = None,
     credit_limit: float | None = None,
     display_name: str | None = None,
     default_cost_basis_method: str | None = None,
+    investment_source_type: Literal["manual", "plaid"] | None = None,
     include_in_net_worth: bool | None = None,
     is_archived: bool | None = None,
     clear_fields: list[str] | None = None,
@@ -251,7 +256,9 @@ def accounts_set(
 
     Structural fields (Plaid-parity metadata):
       ``official_name``, ``last_four``, ``account_subtype``, ``holder_category``,
-      ``currency_code``, ``credit_limit``.
+      ``currency_code``, ``credit_limit``. ``account_type`` overrides the canonical
+      type (depository, credit, loan, investment, other), preserving subtype and
+      source evidence; clear it to restore that evidence.
 
     Behavioral fields:
       ``display_name`` — text override for the account's resolved name.
@@ -259,14 +266,19 @@ def accounts_set(
         investment disposals: one of ``"fifo"``, ``"hifo"``, ``"specific"``,
         ``"average"``. ``None`` falls back to the global FIFO default. An
         unrecognized value raises ``mutation_invalid_input`` before the write.
-      ``include_in_net_worth`` — toggle inclusion in net-worth aggregates.
+      ``investment_source_type`` — which investment history feeds the
+        account's ledger: ``"manual"`` (recorded trades) or ``"plaid"``
+        (synced). Nothing is deleted; clearing it uses both. A set or clear
+        answers in ``actions`` with the trades now used and ignored.
+      ``include_in_net_worth``— toggle inclusion in net-worth aggregates.
       ``is_archived`` — archive / unarchive flag.
 
     Pass ``None`` to leave a field unchanged. To explicitly clear a text field
     back to NULL, include its name in ``clear_fields``. Valid clearable names:
-    ``"official_name"``, ``"last_four"``, ``"account_subtype"``,
+    ``"official_name"``, ``"last_four"``, ``"account_subtype"``, ``"account_type"``,
     ``"holder_category"``, ``"currency_code"``, ``"credit_limit"``,
-    ``"display_name"``, ``"default_cost_basis_method"``. Booleans
+    ``"display_name"``, ``"default_cost_basis_method"``,
+    ``"investment_source_type"``. Booleans
     (``include_in_net_worth``, ``is_archived``) are not clearable — pass the
     explicit value.
 
@@ -286,6 +298,7 @@ def accounts_set(
         "official_name": official_name,
         "last_four": last_four,
         "account_subtype": account_subtype,
+        "account_type": account_type,
         "holder_category": holder_category,
         "currency_code": currency_code,
         "credit_limit": Decimal(str(credit_limit))
@@ -293,6 +306,7 @@ def accounts_set(
         else None,
         "display_name": display_name,
         "default_cost_basis_method": default_cost_basis_method,
+        "investment_source_type": investment_source_type,
         "include_in_net_worth": include_in_net_worth,
         # MCP param `is_archived` → service kwarg `archived`.
         "archived": is_archived,
@@ -307,10 +321,16 @@ def accounts_set(
         for field in clear_fields:
             kwargs[field] = CLEAR
     with get_database(read_only=False) as db:
-        settings, warnings = AccountService(db).settings_update(
+        settings, warnings = update_account_settings(
+            db,
             account_id,
             actor="mcp",
             **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
+        )
+        confirmation = (
+            AccountService(db).investment_source_confirmation(account_id)
+            if kwargs["investment_source_type"] is not None
+            else None
         )
     d = settings.to_dict()
     payload = AccountSettingsPayload(
@@ -319,16 +339,20 @@ def accounts_set(
         official_name=d.get("official_name"),  # type: ignore[arg-type]
         last_four=d.get("last_four"),  # type: ignore[arg-type]
         account_subtype=d.get("account_subtype"),  # type: ignore[arg-type]
+        account_type=d.get("account_type"),  # type: ignore[arg-type]
         holder_category=d.get("holder_category"),  # type: ignore[arg-type]
         currency_code=d.get("currency_code"),  # type: ignore[arg-type]
         credit_limit=d.get("credit_limit"),  # type: ignore[arg-type]
         default_cost_basis_method=d.get("default_cost_basis_method"),  # type: ignore[arg-type]
+        investment_source_type=d.get("investment_source_type"),  # type: ignore[arg-type]
         include_in_net_worth=bool(d["include_in_net_worth"]),
         archived=bool(d["archived"]),
         archived_at=d.get("archived_at"),  # type: ignore[arg-type]
         warnings=[w.get("message", str(w)) for w in warnings] if warnings else [],
     )
-    return build_envelope(data=payload)
+    return build_envelope(
+        data=payload, actions=[confirmation] if confirmation else None
+    )
 
 
 # ─── Read tools (balance) ──────────────────────────────────────────────────
@@ -656,6 +680,9 @@ def _account_link_binding(
             ],
             "lot_selections_after": [list(row) for row in impact.lot_selections_after],
             "manual_identity": [list(row) for row in impact.manual_identity],
+            "settings_moved": list(impact.settings_moved),
+            "settings_kept": list(impact.settings_kept),
+            "settings_revision": [list(row) for row in impact.settings_revision],
         },
         resolved_ids=(
             impact.provisional_account_id,
@@ -1531,7 +1558,8 @@ def register_accounts_coarse_reads(mcp: FastMCP) -> None:
         "accounts_balances",
         "Return balances by date, history, assertions, or reconciliation deltas. "
         "Resolve one account by reference; amounts are positions in "
-        "summary.display_currency.",
+        "summary.display_currency. `balance` is null for an account that "
+        "holds value but has no recorded balance.",
         privacy_actor="accounts_balances",
     )
 
@@ -1794,22 +1822,19 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_set,
         "accounts_set",
-        "Partial update of an account's settings. Behavioral fields: "
-        "display_name, default_cost_basis_method (fifo/hifo/specific/average; "
-        "invalid values raise mutation_invalid_input), include_in_net_worth, "
-        "is_archived. Structural fields: "
-        "official_name, last_four, account_subtype, holder_category, "
-        "currency_code, credit_limit. Pass None to leave a field "
-        "unchanged; include a text field's name in clear_fields to clear it "
-        "(booleans are not clearable). is_archived and include_in_net_worth "
-        "are independent: archiving today excludes the account from net "
-        "worth entirely (history included); archived_at is recorded for a "
-        "future date-scoped release, not yet applied. "
-        "include_in_net_worth=False excludes an account regardless of "
-        "archived status. "
-        "Writes app.account_settings; revert by calling again with the prior "
-        "values (no built-in undo). "
-        "Amounts are in the currency named by `summary.display_currency`.",
+        "Update account settings. None leaves fields unchanged; clear_fields resets"
+        " nullable fields, never booleans. account_type: "
+        "depository/credit/loan/investment/other; subtype unchanged; clear restores"
+        " source evidence. Noncanonical account_subtype/holder_category values "
+        "warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid "
+        "types/methods raise mutation_invalid_input. investment_source_type: "
+        "manual/plaid selects ledger history; clear uses both; evidence is "
+        "retained. Other fields: display_name, official_name, last_four, "
+        "currency_code, credit_limit. is_archived and include_in_net_worth are "
+        "independent: archiving excludes all net-worth history; archived_at is not "
+        "date-scoped. include_in_net_worth=False excludes active accounts too. "
+        "Audited app.account_settings writes; restore values or use "
+        "system_audit_undo. Amounts use summary.display_currency.",
     )
     register(
         mcp,

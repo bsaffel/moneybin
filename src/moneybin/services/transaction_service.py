@@ -67,6 +67,7 @@ from moneybin.tables import (
     TRANSACTION_SPLITS,
     TRANSACTION_TAGS,
 )
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +224,8 @@ class ManualEntryRawResult:
 
     source_transaction_id: str
     transaction_id: str
+    amount: Decimal
+    currency_code: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,17 +370,17 @@ class AnnotationPlan:
 
     @property
     def destructive(self) -> bool:
-        """Return whether any changed item removes or replaces live state."""
+        """Whether any changed item removes or replaces live state."""
         return any(item.destructive for item in self.items if item.changed)
 
     @property
     def changed_count(self) -> int:
-        """Return the number of material annotation changes."""
+        """The number of material annotation changes."""
         return sum(item.changed for item in self.items)
 
     @property
     def resolved_ids(self) -> tuple[str, ...]:
-        """Return exact resolved targets and opaque live-state fingerprints."""
+        """Exact resolved targets and opaque live-state fingerprints."""
         targets = tuple(
             sorted({
                 f"{item.request.kind}:{target_id}"
@@ -405,6 +408,14 @@ class Split:
     ord: int
     created_at: str
     created_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class SplitsClearResult:
+    """Resolved transaction identity and exact number of deleted split rows."""
+
+    transaction_id: str
+    cleared_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1194,14 +1205,14 @@ class TransactionService:
         Validates every entry up front (account exists, amount is non-zero
         ``Decimal``, transaction_date is parseable, description non-empty);
         raises ``ValueError`` with the offending index on the first failure
-        before opening any transaction. Allocates one ``raw.import_log`` row
+        before opening any transaction. Allocates one ``app.import_log`` row
         for the batch via ``ImportService.allocate_import_log`` and inserts
         every row under that ``import_id`` inside a single DuckDB transaction
         alongside one ``manual.create`` audit event.
 
-        This is Task 7a: the raw-write path only. The pipeline is **not**
-        triggered here — the next normal ``import_file`` / ``transform apply``
-        pass picks these rows up.
+        After the writes commit, restates the models downstream of
+        ``raw.manual_transactions`` so the rows read back from
+        ``core.fct_transactions`` immediately.
 
         Categorization (when an entry carries a non-empty ``category``) runs
         in its own dedicated transaction *after* the raw-write commits. The
@@ -1249,7 +1260,7 @@ class TransactionService:
                 # next ``refresh_run`` (which materializes the row in
                 # ``core.fct_transactions``). Migration V026 added the column;
                 # The canonical helper mirrors the SQLMesh unmatched-row hash.
-                self._db.conn.execute(
+                committed = self._db.conn.execute(
                     f"""
                     INSERT INTO {MANUAL_TRANSACTIONS.full_name} (
                         source_transaction_id, import_id, account_id,
@@ -1258,6 +1269,7 @@ class TransactionService:
                         transaction_type, check_number, currency_code,
                         created_by, transaction_id
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING amount, currency_code
                     """,
                     [
                         source_transaction_id,
@@ -1283,11 +1295,15 @@ class TransactionService:
                         actor,
                         transaction_id,
                     ],
-                )
+                ).fetchone()
+                if committed is None:
+                    raise RuntimeError("manual entry insert returned no committed row")
                 results.append(
                     ManualEntryRawResult(
                         source_transaction_id=source_transaction_id,
                         transaction_id=transaction_id,
+                        amount=cast("Decimal", committed[0]),
+                        currency_code=cast("str | None", committed[1]),
                     )
                 )
 
@@ -1301,7 +1317,7 @@ class TransactionService:
             self._db.commit()
         except Exception:
             # Any failure between allocate_import_log() and the commit leaves
-            # an orphaned ``importing``-status row in raw.import_log that
+            # an orphaned ``importing``-status row in app.import_log that
             # blocks re-imports and shows up in `moneybin import history`.
             # Mirror the OFX path: mark the batch as failed before re-raising.
             self._db.rollback()
@@ -1360,6 +1376,13 @@ class TransactionService:
             except Exception:
                 self._db.rollback()
                 raise
+
+        # Function-local: the restate stack imports SQLMesh.
+        from moneybin.services.restate import restate_after_write
+
+        restate_after_write(
+            self._db, [MANUAL_TRANSACTIONS], committed_change="manual transaction"
+        )
 
         logger.info(
             f"manual.create import_id={import_id} row_count={len(results)} "
@@ -1925,7 +1948,7 @@ class TransactionService:
         self._splits_repo.delete(split_id=split_id, actor=actor)
         logger.info(f"split.remove split_id={split_id} actor={actor}")
 
-    def clear_splits(self, transaction_id: str, *, actor: str) -> None:
+    def clear_splits(self, transaction_id: str, *, actor: str) -> SplitsClearResult:
         """Delete all splits for a transaction; emit one ``split.remove`` per row.
 
         Per-row capture (DN3) keeps each split individually undoable. No-op (no
@@ -1941,6 +1964,9 @@ class TransactionService:
         logger.info(
             f"split.clear transaction_id={transaction_id} "
             f"count={len(events)} actor={actor}"
+        )
+        return SplitsClearResult(
+            transaction_id=transaction_id, cleared_count=len(events)
         )
 
     def set_splits(
@@ -2164,7 +2190,7 @@ class TransactionService:
             subcategory=row["subcategory"],
             note=row["note"],
             ord=row["ord"],
-            created_at=str(row["created_at"]),
+            created_at=format_utc(row["created_at"]),
             created_by=str(row["created_by"]),
         )
 
@@ -2204,7 +2230,7 @@ def _row_to_split(row: tuple[Any, ...]) -> Split:
         subcategory=str(row[4]) if row[4] is not None else None,
         note=str(row[5]) if row[5] is not None else None,
         ord=int(row[6]),
-        created_at=str(row[7]),
+        created_at=format_utc(row[7]),
         created_by=str(row[8]),
     )
 
@@ -2215,5 +2241,5 @@ def _row_to_note(row: tuple[Any, ...]) -> Note:
         transaction_id=str(row[1]),
         text=str(row[2]),
         author=str(row[3]),
-        created_at=str(row[4]),
+        created_at=format_utc(row[4]),
     )

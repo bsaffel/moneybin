@@ -3,7 +3,7 @@
    Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict). */
 MODEL (
   name core.bridge_transfers,
-  kind VIEW,
+  kind FULL,
   grain transfer_id
 );
 

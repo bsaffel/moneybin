@@ -1,11 +1,17 @@
-<!-- Last reviewed: 2026-09-13 -->
+<!-- Last reviewed: 2026-10-14 -->
 # CLI Reference
+
+Run `moneybin` for a short menu of common commands, or `moneybin --help` for
+all commands and global options. Both views use the same task sections and
+alphabetical command order; the full view adds entries without moving the
+familiar ones. Use `moneybin <command> --help` for a command's options and
+subcommands. These discovery commands do not open a profile or database.
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
 
 This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
 
-**Twelve commands are stubs hidden from `--help`**, so the CLI never advertises what it cannot do: `budget set`/`delete`, `sync key rotate`, `sync schedule set`/`show`/`remove`, `transactions categorize ml train`/`status`/`apply`, and `db key export`/`import`/`verify`. Each stays invocable, so a script that already calls one keeps working; the first nine exit `0` and the three `db key` names exit `1`.
+**Eleven commands are stubs hidden from `--help`**, so the CLI never advertises what it cannot do: `budget set`/`delete`, `sync key rotate`, `sync schedule set`/`show`/`remove`, `transactions categorize ml train`/`status`/`apply`, and `db key export`/`import`. Each stays invocable, so a script that already calls one keeps working; the first nine exit `0` and the two `db key` names exit `1`.
 
 ## Standard flags
 
@@ -16,7 +22,7 @@ These flags appear on commands across every group. They are not repeated in the 
 | `-p, --profile <name>` | Global (root) | Pick the profile to operate against. Overrides `MONEYBIN_PROFILE` and the saved default for one invocation. |
 | `-v, --verbose` | Global (root) | Enable debug logging on stderr. |
 | `-o, --output {text,json}` | All read commands | Output format. `text` is human-readable; `json` returns the standard response envelope (same shape as the MCP equivalent). |
-| `-q, --quiet` | All read commands | Suppress informational chatter (status lines, the trailing `✅`). Result rows are never suppressed — they are the data. |
+| `-q, --quiet` | All read commands | Suppress optional status lines and progress. Results, failures, truncation notices, and recovery actions are never suppressed — they are the data. |
 | `--json-fields a,b,c` | Read commands that opt in | Comma-separated field projection. Silently ignored unless `--output json` is active. Available fields are enumerated in the command's `--help`. |
 | `-y, --yes` | Mutating commands with prompts | Skip the confirmation prompt. Required for non-interactive use. |
 
@@ -33,7 +39,7 @@ These flags appear on commands across every group. They are not repeated in the 
 | Code | Meaning |
 |---|---|
 | `0` | Success. |
-| `1` | Runtime error: the operation ran and failed (file not found, database locked, upstream API 5xx, validation error on data already accepted, partial-batch error). Mutating commands also exit `1` when any item in a batch fails or is skipped (e.g., `transactions categorize commit` with one bad row). |
+| `1` | Runtime error: the operation ran and failed (file not found, database locked, upstream API 5xx, validation error on data already accepted, partial-batch error). `transactions categorize commit` also exits `1` when any row fails or is skipped; `import files` exits `1` only when every file in the batch fails, so a partial batch exits `0` (see [Data import](data-import.md#for-scripts-and-agents)). |
 | `2` | Usage error: missing argument, invalid flag value, unknown subcommand, bad combination of flags. |
 
 Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipes (`| jq`, `| less`) are safe in both modes.
@@ -57,7 +63,7 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 }
 ```
 
-`error` is present when `status` is `"error"`; `next_cursor` is present when more rows remain. Three concrete shapes follow — every other command's `data` payload is inferable by running it with `--output json` once. `Decimal` values serialize as JSON numbers, not strings.
+`error` is present when `status` is `"error"`; `next_cursor` is present when more rows remain. Four `summary` keys are conditional on conversion: `degraded` and `degraded_reason` when the read could not price what was asked for, `applied_rates` when at least one real rate was applied, and `home_currency` when one of those rates put a value into a home-basis column — the `_home` columns on the three net-worth reports. `home_currency` names the currency those columns are in; `display_currency` names the rest of the row. Three concrete shapes follow — every other command's `data` payload is inferable by running it with `--output json` once. `Decimal` values serialize as JSON numbers, not strings.
 
 **Read response — `transactions list`** (list payload):
 
@@ -72,22 +78,21 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 }
 ```
 
-**Report response — `reports networth`** (list payload, not a single record — a totals row per currency, then one row per account; captured against a synthetic profile):
+**Report response — `reports net-worth-accounts`** (list payload, one row per included account per day; captured against a synthetic profile):
 
 ```json
 {
   "status": "ok",
-  "summary": {"total_count": 3, "returned_count": 3, "has_more": false, "sensitivity": "high", "display_currency": "USD"},
+  "summary": {"total_count": 4, "returned_count": 4, "has_more": false, "sensitivity": "high", "display_currency": "USD"},
   "data": [
-    {"account_id": null, "account_name": null, "currency_code": "USD", "observation_source": null, "balance_date": "2025-12-31", "account_count": 2, "account_balance": null, "total_assets": 69788.0, "total_liabilities": 0.0, "net_worth": 69788.0},
-    {"account_id": "SYN00010001", "account_name": "Chase Bank checking …0001", "currency_code": "USD", "observation_source": null, "balance_date": "2025-12-31", "account_count": null, "account_balance": 69696.79, "total_assets": null, "total_liabilities": null, "net_worth": null},
-    {"account_id": "SYN00010002", "account_name": "Capital One credit card", "currency_code": "USD", "observation_source": "tabular", "balance_date": "2025-12-31", "account_count": null, "account_balance": 91.21, "total_assets": null, "total_liabilities": null, "net_worth": null}
+    {"account_id": "SYN00420002", "account_name": "Ally Bank savings …0002", "currency_code": "USD", "home_currency_code": "USD", "account_type": "depository", "is_observed": false, "observation_source": null, "rate_source": "identity", "balance_date": "2025-12-31", "rate_published_date": "2025-12-31", "days_since_observed": 1096, "reconciliation_delta": null, "account_balance": 33000.0, "account_balance_home": 33000.0},
+    {"account_id": "SYN00420001", "account_name": "Chase Bank checking …0001", "currency_code": "USD", "home_currency_code": "USD", "account_type": "depository", "is_observed": false, "observation_source": null, "rate_source": "identity", "balance_date": "2025-12-31", "rate_published_date": "2025-12-31", "days_since_observed": 1096, "reconciliation_delta": null, "account_balance": 387080.77, "account_balance_home": 387080.77}
   ],
-  "actions": ["Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series"]
+  "actions": ["Run reports(report_id='core:net_worth') for the single home-currency total", "Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown"]
 }
 ```
 
-The totals row carries `account_id: null` and fills the four headline columns (`account_count`, `total_assets`, `total_liabilities`, `net_worth`); each account row carries only its own `account_balance` and leaves the totals columns null. One totals row per currency the profile holds.
+Two of the four rows are trimmed above. Every row carries the same columns — one per included account per balance date — with `account_balance` in the account's own currency and `account_balance_home` converted, `null` when the pair is unpriced. There is no separate totals row; `reports net-worth` is the home-currency total and `reports net-worth-currencies` is the per-currency breakdown, both named in `actions`.
 
 **Mutating response — `transactions categorize commit`** (write summary):
 
@@ -151,10 +156,23 @@ command tree and checked against it in CI.
 
 Per-user profile lifecycle. Each profile has an isolated encrypted database,
 config, and log directory. `profile set <key> <value>` writes one config value
-(for example `logging.level info`) to the profile; `profile show` prints the
+(for example `logging.level INFO`; lowercase `info` is stored as `INFO`) to the
+profile, which settings read on every command unless an environment variable or
+`.env.<profile>` sets the same field; `profile show` prints the
 resolved settings, and `profile delete` removes the database, logs, and config
 together after a confirmation. Commands:
 [`reference/cli/profile.md`](../reference/cli/profile.md).
+
+`profile create` makes the new profile the active default, so the next command
+runs against it with no `profile switch` and no first-run wizard. Its receipt
+marks the profile `(active)` and, when it displaced another active profile,
+prints a `›` line with the `profile switch` command back. Activation is the
+default because every first command after a create expects the new profile;
+leaving it inactive sent that command to the previous profile, or to the wizard
+on a fresh home, which aborts without a terminal. The first-run wizard, and
+`moneybin demo` once its build passes doctor, activate the profile they build
+for the same reason.
+`synthetic generate` does not change the active profile.
 
 **Related guides:** [`profiles.md`](profiles.md).
 
@@ -173,13 +191,15 @@ Commands: [`reference/cli/system.md`](../reference/cli/system.md).
 What needs your attention, across every queue that holds a pending decision.
 A bare `moneybin review` prints the counts for all five queues: matches,
 uncategorized, account-links, merchant-links, security-links. `--type` narrows
-to one queue; `--confirm <id>` and `--reject <id>` decide one pending match
-without opening a queue command and require `--type matches`; `--confirm-all`
-accepts the whole match queue. To see the rows behind a count, use that queue's
-own command — `transactions matches pending`, `transactions categorize
-pending`, `accounts links pending`, `merchants links pending`, `investments
-securities links pending`. The item-by-item walk (`--interactive`) is not built
-yet. Commands: [`reference/cli/review.md`](../reference/cli/review.md).
+to one queue. `--interactive` walks pending decisions in a terminal, with
+accept, reject, skip, and quit actions; `--limit` bounds the items shown.
+For scripted match decisions, use `--type matches` with `--confirm <id>`,
+`--reject <id>`, or `--confirm-all`. To reject a categorization attempt, discover
+its ID with `transactions categorize pending --pending-only`, then pass
+`--type categorize --reject <decision-id>`. To inspect the queues, use
+`transactions matches pending`, `transactions categorize pending`,
+`accounts links pending`, `merchants links pending`, or `investments securities
+links pending`. Commands: [`reference/cli/review.md`](../reference/cli/review.md).
 
 ## Ingestion
 
@@ -204,17 +224,34 @@ scopes the listing to one batch. Commands:
 
 ### `sync`
 
-Pull transactions from external services through the moneybin-sync proxy.
-**`sync login` is required first** — most subcommands fail without a valid JWT.
-`sync link` links a new institution through Plaid Hosted Link or
-re-authenticates a connected one, printing the URL to stderr and opening the
-browser unless told not to; `sync link-status` shows the pending link state.
-`sync pull` fetches new transactions — and, for brokerage and retirement
-accounts, securities, investment transactions, and holdings — then runs the
-refresh pipeline; without `--institution` it pulls every connected institution,
-and `--force` resets the cursor and re-fetches the full history. `sync status`
-shows last-sync timestamps and cursor state per institution. `sync key rotate`
-and the `sync schedule` commands are stubs hidden from `--help`. Commands:
+Pull transactions through the configured moneybin-sync broker. **`sync login`
+is required for broker operations**; `sync pull --job-id <id> --local-only`
+repairs an already committed job's local setup/reports without broker access.
+The first login needs your server's address: use `sync login --server
+https://sync.example.com`, or answer the terminal prompt. The address is saved
+to the active profile only after the server answers. Switching servers signs
+the profile out of the old one; stored credentials are bound to their issuer.
+
+`sync link` uses Plaid Hosted Link by default, while `--provider simplefin`
+opens the broker's SimpleFIN claim flow. Enter setup tokens only on that page.
+`--connection-id` selects one exact grant for linking, pulling or disconnecting;
+SimpleFIN replacement/disconnect can affect every account in that grant.
+`sync link-status` shows pending link state.
+
+`sync pull` ingests provider-native data and runs the refresh pipeline. Select
+`--provider` or `--connection-id` to narrow the request. Plaid retains its
+cursor/investment behavior. SimpleFIN keeps provider-signed amounts, bounded
+UTC windows and explicit partial/deferred outcomes; `--force` repeats its latest
+90-day lookback, while `--history-start YYYY-MM-DD` requests older recovery.
+Neither bypasses provider budgets, and the flags cannot be combined.
+`--no-refresh` defers local processing. `sync status` separates connection
+health, provider freshness, history coverage and local recovery obligations.
+SimpleFIN disconnect requires separate grant revocation in Bridge; imported
+local history is preserved.
+
+The SimpleFIN implementation is in progress for Early Access; deployment and
+non-author live acceptance are separate gates. `sync key rotate` and the
+`sync schedule` commands are stubs hidden from `--help`. Commands:
 [`reference/cli/sync.md`](../reference/cli/sync.md).
 
 **Related guides:** [`data-import.md`](data-import.md), [`data-pipeline.md`](data-pipeline.md).
@@ -317,7 +354,19 @@ are stubs hidden from `--help`.
 Category taxonomy: list, create (with `--parent`), set, delete. Default
 (seeded) categories cannot be deleted — disable them with `set --inactive`.
 `delete` refuses a category that is still referenced unless `--force` is
-passed. Commands:
+passed. `mappings pending` lists distinct imported category-source vocabulary
+terms with no curated mapping (grouped by term, not by transaction) with
+`did_you_mean` suggestions; `mappings set` maps one term via
+`--into <category_id>` or `--new <name>`, or ignores it with `--ignore` (the
+term leaves the pending list and categorizes nothing). The mapping applies at
+once: its transactions are categorized, and when a term's mapping changes, the
+categories it assigned earlier are withdrawn and re-evaluated — ones you set by
+hand, by rule, or by merchant are never touched. `set` accepts a term only when an
+imported transaction carries it or it is already mapped, so a mistyped term is
+refused rather than stored as a mapping that never matches. It also refuses an
+inactive `--into` category. A term belongs to one source type (`csv`, `excel`,
+…), shown by `pending`; `set` derives it, and asks for `--source-type` when the
+same term arrives in more than one. Commands:
 [`reference/cli/categories.md`](../reference/cli/categories.md).
 
 ### `merchants`
@@ -347,16 +396,16 @@ escape hatch for a duplicate no signal reaches. Commands:
 [`reference/cli/accounts.md`](../reference/cli/accounts.md).
 
 `accounts set`'s `--archive`/`--unarchive` and `--include`/`--exclude` are
-independent flags with different jobs. `--archive` already excludes the
-account from net worth entirely today, history included, via the existing
-blanket filter; the archive date is recorded for a future release that will
-scope that exclusion by date, not applied yet. `--include`/`--exclude` toggle
-net-worth inclusion independently of archived status and persist through a
-later `--unarchive` — reach for `--exclude` alongside `--archive` only when
-the account should stay out of net worth at every date, even once it becomes
-active again; `--archive` alone already excludes it today and reverses
-cleanly on `--unarchive`. At least one field flag is required, and each
-structural field has a `--clear-<field>` twin.
+independent flags with different jobs. `--archive` excludes the account from
+the three net-worth reports only after its recorded archive date — balances
+on or before that date still count, so archiving does not retroactively
+rewrite history. `--include`/`--exclude` toggle net-worth inclusion
+independently of archived status and persist through a later `--unarchive` —
+reach for `--exclude` alongside `--archive` only when the account should stay
+out of net worth at every date, even once it becomes active again; `--archive`
+alone excludes it only from its archive date forward and reverses cleanly on
+`--unarchive`. At least one field flag is required, and each structural field
+has a `--clear-<field>` twin.
 
 **Related guides:** [`profiles.md`](profiles.md), [`data-pipeline.md`](data-pipeline.md).
 
@@ -427,16 +476,16 @@ only change the number.
 ## Reports
 
 Cross-domain analytical views. All commands support `--output json` and return
-the standard envelope. The nine built-in reports — `networth`,
-`networth-history`, `cash-flow`, `spending-trend`, `recurring-subscriptions`, `merchant-activity`,
-`large-transactions`, `balance-drift`, `realized-fx` — each have their own
-command with the filters that fit their grain (`--from-month`/`--to-month` on `cash-flow` and
-`spending-trend`, `--from`/`--to` on `networth-history`, `--since` on
-`balance-drift`, `--from-date`/`--to-date` on `realized-fx`, `--as-of` on snapshots,
-`--account` and `--category` where
-they apply);
-[`features.md`](../features.md#reports) says what each one shows, and the
-[reports guide](reports.md) shows each one's output. Commands:
+the standard envelope. The ten built-in reports — `net-worth`,
+`net-worth-currencies`, `net-worth-accounts`, `cash-flow`, `spending-trend`,
+`recurring-subscriptions`, `merchant-activity`, `large-transactions`,
+`balance-drift`, `realized-fx` — each have their own command with the filters
+that fit their grain (`--from-month`/`--to-month` on `cash-flow` and
+`spending-trend`, `--from-date`/`--to-date` on the three `net-worth` commands,
+`large-transactions`, and `realized-fx`, `--interval daily|weekly|monthly` on
+`net-worth` only, `--since` on `balance-drift`, `--account` and `--category`
+where they apply); [`features.md`](../features.md#reports) says what each one
+shows, and the [reports guide](reports.md) shows each one's output. Commands:
 [`reference/cli/reports.md`](../reference/cli/reports.md).
 
 ### Any report, any tier
@@ -540,7 +589,8 @@ loads it back from the keychain. `db backup` writes a timestamped encrypted
 backup and `db restore --from <backup-path>` (or `--latest`) restores one. `db
 ps` lists the processes holding the database file and `db kill` ends them. `db
 key show` prints the key to stderr and `db key rotate` re-encrypts under a new
-one; `db key export`, `import`, and `verify` are stubs hidden from `--help`.
+one. `db key verify` checks the effective credential against the existing
+database without changing it; `db key export` and `import` remain hidden stubs.
 `db migrate apply` runs pending schema migrations (`--dry-run` previews) and
 `db migrate status` lists applied and pending ones. Commands:
 [`reference/cli/db.md`](../reference/cli/db.md).
@@ -628,8 +678,9 @@ by `--since <duration>` and `--metric <family>`. Commands:
 
 Generate and manage synthetic financial data for testing and demos. Each
 profile is isolated, so synthetic data never collides with real data.
-`synthetic generate` writes a persona's data into a fresh profile; `synthetic
-reset` wipes and regenerates from scratch. Commands:
+`synthetic generate` writes a persona's data into an empty profile that
+`profile create` already made, and names that command when the profile is
+missing; `synthetic reset` wipes and regenerates from scratch. Commands:
 [`reference/cli/synthetic.md`](../reference/cli/synthetic.md).
 
 Whole-pipeline scenarios live under `tests/scenarios/` and are driven via `make test-scenarios` rather than a CLI command.
@@ -644,7 +695,7 @@ moneybin import files ~/Downloads/*.ofx     # any OFX files you downloaded
 moneybin refresh                            # run the post-load pipeline
 moneybin transactions categorize pending    # see what's still uncategorized
 # ... categorize via review or transactions categorize rules ...
-moneybin reports networth                   # this month's net worth
+moneybin reports net-worth                  # latest net worth (home currency; no figure without one)
 moneybin reports cash-flow                  # this month's income vs spending
 ```
 
@@ -656,7 +707,7 @@ Each step is idempotent — re-run safely if interrupted. `import files` auto-ru
 moneybin profile create personal
 moneybin import files ~/Downloads/checking.qfx
 moneybin transactions categorize run
-moneybin reports networth
+moneybin reports net-worth
 ```
 
 `categorize run` is a no-op until you have rules or merchant mappings — the auto-rule snowball kicks in after a few LLM-assist cycles.
@@ -728,10 +779,53 @@ moneybin system doctor
 ### Status-check a long-running pipeline from a script
 
 ```bash
-moneybin system status --output json | jq -e '.summary.total_count > 0' \
+moneybin system status --output json \
+  | jq -e '.data.sections[0].overview.transactions.count > 0' \
   && echo "data present" \
   || moneybin transactions categorize run
 ```
+
+### Interactive review
+
+Run `moneybin review --interactive --type all --limit 20` in a terminal to
+review matches, uncategorized transactions, and account, merchant, and security
+links. Bare `moneybin review` continues to show queue counts.
+
+Each item shows its evidence before offering accept, reject, skip, or quit.
+Identity groups show all candidates together; accepting requires an explicit
+candidate choice. Categorization requires an explicit active category. Account
+merges keep their impact confirmation. Security identity accepts merge and delete
+the provisional security; price-feed accepts only bind a key.
+
+The session limit counts every displayed item, including skipped items; one
+identity group counts as one item. Changed decisions are skipped for fresh review.
+Each authorized decision commits separately, so quitting or cancelling keeps
+earlier decisions and prints their saved count. JSON output and redirected input
+reject interactive mode before opening a writable database. Use the existing
+`transactions matches set`, `transactions categorize`, `accounts links set`,
+`merchants links set`, and `investments securities links set` commands for
+scripted decisions. Categorization rejection uses the existing review command:
+
+```bash
+moneybin transactions categorize pending --pending-only --output json
+moneybin review --type categorize --reject <decision-id> --output json
+```
+
+Use `data.transactions[].decision_id` from the pending response, or the complete
+Decision ID in its text output. IDs are projected without creating decisions;
+`null` means the transaction has no pending review attempt, including after a
+rejection. The transaction remains uncategorized until an assignment is committed.
+JSON review decisions require an explicit `--type` and never prompt for it.
+
+`--pending-only` filters eligible review attempts before applying the limit, so
+closed rejections cannot hide older pending items. Without that flag, the command
+keeps its uncategorized-inventory view, including rejected rows with a null
+Decision ID. Review counts use current pending attempts, so those rejected rows
+are absent from `moneybin review` counts until their review lifecycle changes.
+Interactive revalidation checks the selected transaction, independently of newer
+queue arrivals.
+
+
 
 ## See also
 

@@ -16,7 +16,7 @@ _CLI_ROOT = Path(__file__).resolve().parents[3] / "src" / "moneybin" / "cli"
 def test_unknown_currency_token_reads_in_both_positions() -> None:
     """The token has to work as a heading and as a suffix.
 
-    `reports networth` prints the currency as a label (`EUR: 1234.56`) while
+    `demo` prints the currency as a label (`EUR: 1234.56`) while
     `accounts balance` prints it after the amount (`1234.56 EUR`). A bare `?`
     is cryptic in the first position and `unknown` reads as though the
     *amount* were unknown in the second, which is how the CLI ended up with

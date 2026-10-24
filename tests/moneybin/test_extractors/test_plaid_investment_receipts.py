@@ -9,19 +9,19 @@ import pytest
 import yaml
 from sqlglot import exp
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database
 from moneybin.extractors.plaid.extractor import PlaidExtractor
 
 
 @pytest.fixture
-def receipt_payload() -> SyncDataResponse:
+def receipt_payload() -> PlaidSyncDataResponse:
     fixture = Path(__file__).parent / "fixtures/plaid_investments_sync_response.yaml"
-    return SyncDataResponse.model_validate(yaml.safe_load(fixture.read_text()))
+    return PlaidSyncDataResponse.model_validate(yaml.safe_load(fixture.read_text()))
 
 
 def test_transaction_delivery_keeps_immutable_versions_and_replay_order(
-    db: Database, receipt_payload: SyncDataResponse
+    db: Database, receipt_payload: PlaidSyncDataResponse
 ) -> None:
     columns = db.execute(
         """SELECT column_name FROM information_schema.columns
@@ -73,7 +73,7 @@ def test_transaction_delivery_keeps_immutable_versions_and_replay_order(
 
 
 def test_holdings_receipt_sequence_survives_replay(
-    db: Database, receipt_payload: SyncDataResponse
+    db: Database, receipt_payload: PlaidSyncDataResponse
 ) -> None:
     columns = db.execute(
         """SELECT column_name FROM information_schema.columns
@@ -106,7 +106,7 @@ def test_holdings_receipt_sequence_survives_replay(
 
 
 def test_current_staging_uses_final_delivery_at_equal_extraction_times(
-    db: Database, receipt_payload: SyncDataResponse
+    db: Database, receipt_payload: PlaidSyncDataResponse
 ) -> None:
     provider = PlaidExtractor(db)
     changed = receipt_payload.model_copy(deep=True)
@@ -148,7 +148,7 @@ def test_current_staging_uses_final_delivery_at_equal_extraction_times(
 
 @pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
 def test_failed_receipt_write_rolls_back_new_revision(
-    db: Database, receipt_payload: SyncDataResponse, failure: type[BaseException]
+    db: Database, receipt_payload: PlaidSyncDataResponse, failure: type[BaseException]
 ) -> None:
     provider = PlaidExtractor(db)
     provider.load(receipt_payload, job_id="first")

@@ -48,6 +48,9 @@ _SEED_MODELS: list[str] = [
     SEED_EXCHANGE_MIC_MAP.full_name,
 ]
 
+# Seeds ``_ensure_seed_tables_exist`` stubs as empty tables until SQLMesh runs.
+SEED_PLACEHOLDERS = (SEED_CATEGORIES, SEED_CATEGORY_SOURCE_MAP)
+
 # Registered SQLMesh models that `db init` creates before any transform has
 # run: ``refresh_views`` builds the three ``core`` dims directly via DuckDB and
 # ``materialize_seeds`` plans every model in ``_SEED_MODELS``. Their presence is
@@ -78,10 +81,34 @@ def materialize_seeds(db: Database) -> None:
 
     if _SEED_MODELS:
         logger.info("Materializing seed models")
-        with sqlmesh_context(db) as ctx:
-            ctx.plan(auto_apply=True, no_prompts=True, select_models=_SEED_MODELS)
+        _drop_seed_placeholders(db)
+        try:
+            with sqlmesh_context(db) as ctx:
+                ctx.plan(auto_apply=True, no_prompts=True, select_models=_SEED_MODELS)
+        except Exception:
+            # The placeholders are gone; restore them so the dim views resolve.
+            refresh_views(db)
+            raise
 
     refresh_views(db)
+
+
+def _drop_seed_placeholders(db: Database) -> None:
+    """Drop empty placeholder seed tables so SQLMesh can promote its views there.
+
+    SQLMesh exposes each seed as a VIEW. A BASE TABLE under a seed name is only
+    ever MoneyBin's empty placeholder (``_ensure_seed_tables_exist``, frozen
+    V014); left in place, SQLMesh drops it itself and logs a warning.
+    """
+    for table in SEED_PLACEHOLDERS:
+        is_base_table = db.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_catalog = current_database() "
+            "AND table_schema = ? AND table_name = ? AND table_type = 'BASE TABLE'",
+            [table.schema, table.name],
+        ).fetchone()
+        if is_base_table:
+            db.execute(f"DROP TABLE {table.full_name}")  # TableRef constant
 
 
 def _ensure_seed_tables_exist(db: Database) -> None:
@@ -120,6 +147,7 @@ def _ensure_seed_tables_exist(db: Database) -> None:
         CREATE TABLE IF NOT EXISTS {SEED_CATEGORY_SOURCE_MAP.full_name} (
             source_type VARCHAR,
             source_category_code VARCHAR,
+            source_subcategory_code VARCHAR,
             code_level VARCHAR,
             category_id VARCHAR,
             source_taxonomy_version VARCHAR
@@ -176,6 +204,17 @@ def refresh_views(db: Database) -> None:
         if has_column(db, USER_CATEGORIES, "class")
         else f"({CATEGORY_CLASS_FROM_ID_CASE_SQL}) AS class"
     )
+    # V010 adds updated_at to both tables; guarded the same way for a pre-V010 open.
+    override_updated_at_expr = (
+        "o.updated_at"
+        if has_column(db, CATEGORY_OVERRIDES, "updated_at")
+        else "NULL::TIMESTAMPTZ"
+    )
+    user_updated_at_expr = (
+        "updated_at"
+        if has_column(db, USER_CATEGORIES, "updated_at")
+        else "NULL::TIMESTAMPTZ"
+    )
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS
@@ -187,7 +226,8 @@ def refresh_views(db: Database) -> None:
             {seed_class_expr},
             true AS is_default,
             COALESCE(o.is_active, true) AS is_active,
-            NULL::TIMESTAMP AS created_at
+            NULL::TIMESTAMPTZ AS created_at,
+            {override_updated_at_expr} AS updated_at
         FROM {SEED_CATEGORIES.full_name} s
         LEFT JOIN {CATEGORY_OVERRIDES.full_name} o USING (category_id)
         UNION
@@ -199,36 +239,62 @@ def refresh_views(db: Database) -> None:
             {user_class_expr},
             false AS is_default,
             is_active,
-            created_at
+            created_at,
+            {user_updated_at_expr} AS updated_at
         FROM {USER_CATEGORIES.full_name}
         """  # noqa: S608  # all interpolated names are TableRef constants or the category_class module constant, not user input
     )
 
     # Build the two-tier category-source bridge. Mirrors
     # src/moneybin/sqlmesh/models/core/bridge_category_source_map.sql — a user row for
-    # (source_type, source_category_code) always wins over the seed default.
+    # (source_type, source_origin, source_category_code,
+    # source_subcategory_code) always wins over the seed default; seed rows
+    # are provider-wide, so their source_origin is ''.
+    #
+    # The seed table is SQLMesh-managed, so _ensure_seed_tables_exist's CREATE
+    # TABLE IF NOT EXISTS is a no-op on an existing database and the column
+    # only lands once `transform apply` runs. Database.__init__ calls
+    # refresh_views() on every open, well before that — so referencing the
+    # column unconditionally would raise BinderException on the first open
+    # after upgrading, bricking every entry point with no self-heal path
+    # (opening the database is itself a prerequisite for running
+    # `transform apply`). Guarded the same way the `class` column above is.
+    # COALESCE(..., '') additionally guards a blank CSV cell round-tripping
+    # as NULL rather than the '' "no subcategory" sentinel that
+    # app.category_source_map's NOT NULL DEFAULT '' always holds.
+    seed_subcategory_expr = (
+        "COALESCE(s.source_subcategory_code, '')"
+        if has_column(db, SEED_CATEGORY_SOURCE_MAP, "source_subcategory_code")
+        else "''"
+    )
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS
         SELECT
-            s.source_type,
-            s.source_category_code,
-            s.code_level,
             s.category_id,
+            s.source_type,
+            '' AS source_origin,
+            s.source_category_code,
+            {seed_subcategory_expr} AS source_subcategory_code,
+            s.code_level,
             s.source_taxonomy_version,
             true AS is_default
         FROM {SEED_CATEGORY_SOURCE_MAP.full_name} s
         WHERE NOT EXISTS (
             SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name} a
             WHERE a.source_type = s.source_type
+            AND a.source_origin = ''
             AND a.source_category_code = s.source_category_code
+            AND a.source_subcategory_code = {seed_subcategory_expr}
         )
         UNION ALL
         SELECT
-            source_type,
-            source_category_code,
-            code_level,
             category_id,
+            source_type,
+            source_origin,
+            source_category_code,
+            source_subcategory_code,
+            code_level,
             source_taxonomy_version,
             false AS is_default
         FROM {CATEGORY_SOURCE_MAP.full_name}
@@ -245,10 +311,13 @@ def refresh_views(db: Database) -> None:
             f"""
             CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
             SELECT
-                merchant_id, raw_pattern, match_type, canonical_name,
-                category, subcategory, created_by, created_at,
+                merchant_id,
+                CAST(NULL AS VARCHAR) AS category_id,
+                raw_pattern, match_type, canonical_name,
+                category, subcategory, created_by,
                 CAST([] AS VARCHAR[]) AS exemplars,
-                CAST(NULL AS TIMESTAMP) AS updated_at
+                created_at,
+                CAST(NULL AS TIMESTAMPTZ) AS updated_at
             FROM app.merchants
             """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
         )
@@ -258,7 +327,8 @@ def refresh_views(db: Database) -> None:
         f"""
         CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
         SELECT
-            merchant_id, raw_pattern, match_type, canonical_name,
+            merchant_id, category_id,
+            raw_pattern, match_type, canonical_name,
             category, subcategory, created_by,
             exemplars,
             created_at,

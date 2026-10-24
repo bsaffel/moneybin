@@ -124,6 +124,7 @@ def read_file(
     no_row_limit: bool = False,
     source_bytes: bytes | None = None,
     has_header: bool | None = None,
+    declared_date_format: str | None = None,
 ) -> ReadResult:
     """Read a file into a format-agnostic Polars DataFrame.
 
@@ -137,6 +138,12 @@ def read_file(
         no_row_limit: If True, skip row count limits.
         source_bytes: Already materialized source object to parse.
         has_header: Persisted header decision; None runs detection.
+        declared_date_format: Caller-declared date format (an explicit
+            ``--date-format``, or a matched/reviewed format's own
+            ``date_format``) recognized by header/headerless detection in
+            addition to the built-in ``_DATE_FORMATS`` list — see
+            ``_looks_like_data_row``'s docstring. ``None`` when detection
+            runs with no caller-declared format (unchanged behavior).
 
     Returns:
         ReadResult with DataFrame and metadata.
@@ -152,6 +159,7 @@ def read_file(
             skip_trailing_patterns=skip_trailing_patterns,
             source_bytes=source_bytes,
             has_header=has_header,
+            declared_date_format=declared_date_format,
         )
     elif info.file_type == "excel":
         result = _read_excel(
@@ -161,6 +169,7 @@ def read_file(
             sheet=sheet,
             source_bytes=source_bytes,
             has_header=has_header,
+            declared_date_format=declared_date_format,
         )
     elif info.file_type == "parquet":
         result = _read_parquet(path, source_bytes=source_bytes)
@@ -197,6 +206,7 @@ def _read_text(
     skip_trailing_patterns: list[str] | None = None,
     source_bytes: bytes | None = None,
     has_header: bool | None = None,
+    declared_date_format: str | None = None,
 ) -> ReadResult:
     """Read a text-based tabular file (CSV, TSV, pipe, semicolon).
 
@@ -207,6 +217,10 @@ def _read_text(
         skip_trailing_patterns: Regex patterns for trailing junk rows.
         source_bytes: Already materialized source object to parse.
         has_header: Persisted header decision; None runs detection.
+        declared_date_format: Caller-declared date format (an explicit
+            ``--date-format``, or a matched/reviewed format's own
+            ``date_format``) forwarded to header detection — see
+            ``_looks_like_data_row``'s docstring.
 
     Returns:
         ReadResult with the parsed DataFrame and metadata.
@@ -233,6 +247,7 @@ def _read_text(
             encoding,
             delimiter,
             source_bytes=source_bytes,
+            declared_date_format=declared_date_format,
         )
     elif has_header is not None:
         resolved_has_header = has_header
@@ -251,6 +266,7 @@ def _read_text(
             delimiter,
             skip_rows,
             source_bytes=source_bytes,
+            declared_date_format=declared_date_format,
         )
 
     df = pl.read_csv(
@@ -319,6 +335,7 @@ def _detect_header(
     delimiter: str,
     *,
     source_bytes: bytes | None = None,
+    declared_date_format: str | None = None,
 ) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...], tuple[str, ...]]:
     """Locate the header row, or determine the file is headerless.
 
@@ -331,6 +348,8 @@ def _detect_header(
         encoding: File encoding.
         delimiter: Column delimiter.
         source_bytes: Already materialized source object to inspect.
+        declared_date_format: Forwarded to ``_classify_header_rows`` — see
+            ``_looks_like_data_row``'s docstring.
 
     Returns:
         ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows,
@@ -354,11 +373,12 @@ def _detect_header(
         [] if not line.strip() else _tokenize_csv_line(line, delimiter)
         for line in lines
     ]
-    return _classify_header_rows(rows)
+    return _classify_header_rows(rows, declared_date_format)
 
 
 def _classify_header_rows(
     rows: list[list[str]],
+    declared_date_format: str | None = None,
 ) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...], tuple[str, ...]]:
     """Locate the header row, or determine the sampled rows are headerless.
 
@@ -393,6 +413,8 @@ def _classify_header_rows(
             rows before calling this — a blank or too-short row is skipped
             internally (via the ``len(parts) < 2`` / empty-``non_empty``
             checks below), not by the caller filtering it out beforehand.
+        declared_date_format: Forwarded to every ``_looks_like_data_row`` call
+            below — see that function's docstring.
 
     Returns:
         ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows,
@@ -440,23 +462,28 @@ def _classify_header_rows(
         qualifying.append((i, non_empty))
 
     for idx, (i, non_empty) in enumerate(qualifying):
-        if _looks_like_header(non_empty) and not _looks_like_data_row(non_empty):
+        if _looks_like_header(non_empty) and not _looks_like_data_row(
+            non_empty, declared_date_format
+        ):
             # A real header sits above the data, so a data row must follow it.
             # This rejects a footer/trailer that also reads as labels (e.g.
             # "Downloaded On,2026-04-17": a date, no amount, low numeric ratio)
             # but appears after the data in a headerless file — without the
             # follow check it would win header detection and the rows above it
             # would be skipped as preamble.
-            if any(_looks_like_data_row(later) for _, later in qualifying[idx + 1 :]):
+            if any(
+                _looks_like_data_row(later, declared_date_format)
+                for _, later in qualifying[idx + 1 :]
+            ):
                 ambiguous_rows = tuple(
                     tuple(rows[earlier_i])
                     for earlier_i, earlier in qualifying[:idx]
-                    if _looks_like_data_row(earlier)
+                    if _looks_like_data_row(earlier, declared_date_format)
                 )
                 header_cells = tuple(rows[i]) if ambiguous_rows else ()
                 return i, True, bool(ambiguous_rows), ambiguous_rows, header_cells
     for i, non_empty in qualifying:
-        if _looks_like_data_row(non_empty):
+        if _looks_like_data_row(non_empty, declared_date_format):
             return i, False, False, (), ()
 
     return 0, True, False, (), ()
@@ -469,6 +496,7 @@ def _row_looks_like_data_at(
     row_index: int,
     *,
     source_bytes: bytes | None = None,
+    declared_date_format: str | None = None,
 ) -> bool:
     """Return True if the physical row at ``row_index`` parses as a transaction.
 
@@ -484,6 +512,8 @@ def _row_looks_like_data_at(
         delimiter: Column delimiter.
         row_index: Zero-based physical line index to check.
         source_bytes: Already materialized source object to inspect.
+        declared_date_format: Forwarded to ``_looks_like_data_row`` \u2014 see
+            that function's docstring.
 
     Returns:
         True when the row at ``row_index`` parses as a transaction record.
@@ -501,10 +531,12 @@ def _row_looks_like_data_at(
     # (polars-compatible), so physical line 0 may retain it.
     parts = _tokenize_csv_line(lines[row_index].lstrip("\ufeff"), delimiter)
     non_empty = [p.strip() for p in parts if p.strip()]
-    return _looks_like_data_row(non_empty) if non_empty else False
+    return _looks_like_data_row(non_empty, declared_date_format) if non_empty else False
 
 
-def _looks_like_data_row(cells: list[str]) -> bool:
+def _looks_like_data_row(
+    cells: list[str], declared_date_format: str | None = None
+) -> bool:
     """Return True if a row already parses as a transaction record.
 
     A genuine data row carries both a parseable date and a parseable amount; a
@@ -515,13 +547,32 @@ def _looks_like_data_row(cells: list[str]) -> bool:
 
     Args:
         cells: Non-empty, unquoted cell strings from one row.
+        declared_date_format: A caller-declared format (``--date-format``, a
+            matched/reviewed format's own ``date_format``) scored alongside
+            the built-in ``_DATE_FORMATS`` list. Without this, a genuinely
+            headerless file whose dates use a format outside that list (e.g.
+            ``%Y%m%d``) has no row that reads as data, so the classifier falls
+            back to eating row 0 as a header with no way to recover it — an
+            explicit declaration is a strong enough signal to recognize the
+            row without a confirm (design-principles.md, "Magic stays
+            visible": calibrated to certainty, not silent guessing).
 
     Returns:
-        True when at least one cell is a date and at least one is an amount.
+        True when a date cell and an amount cell exist at different positions.
     """
-    has_date = any(detect_date_format([c])[0] is not None for c in cells)
-    has_amount = any(_is_amount(c) for c in cells)
-    return has_date and has_amount
+    # Pair a date with an amount in a different cell: under a declared compact
+    # format one cell can parse as both and must not count twice
+    # ("Statement date,20260131"), while a real amount may also parse as a
+    # date ("260105,151215").
+    date_idx = {
+        i
+        for i, c in enumerate(cells)
+        if detect_date_format([c], declared_format=declared_date_format)[0] is not None
+    }
+    if not date_idx:
+        return False
+    amount_idx = {i for i, c in enumerate(cells) if _is_amount(c)}
+    return any(i != j for i in date_idx for j in amount_idx)
 
 
 def _looks_like_header(cells: list[str]) -> bool:
@@ -943,6 +994,7 @@ def _excel_row_looks_like_data_at(
     row_index: int,
     *,
     source_bytes: bytes | None = None,
+    declared_date_format: str | None = None,
 ) -> bool:
     """Return True if the physical row at ``row_index`` parses as a transaction.
 
@@ -960,6 +1012,8 @@ def _excel_row_looks_like_data_at(
         sheet_name: Sheet to sample.
         row_index: Zero-based physical row index to check.
         source_bytes: Already materialized workbook object to inspect.
+        declared_date_format: Forwarded to ``_looks_like_data_row`` — see
+            that function's docstring.
 
     Returns:
         True when the row at ``row_index`` parses as a transaction record.
@@ -973,7 +1027,7 @@ def _excel_row_looks_like_data_at(
     # CSV-quoted text, so a leading/trailing quote character is genuine
     # cell content (see _classify_header_rows's identical rule).
     non_empty = [c.strip() for c in rows[row_index] if c.strip()]
-    return _looks_like_data_row(non_empty) if non_empty else False
+    return _looks_like_data_row(non_empty, declared_date_format) if non_empty else False
 
 
 def _excel_row_looks_like_data_at_bounded(
@@ -982,6 +1036,7 @@ def _excel_row_looks_like_data_at_bounded(
     row_index: int,
     *,
     source_bytes: bytes | None = None,
+    declared_date_format: str | None = None,
 ) -> bool:
     """Same question as ``_excel_row_looks_like_data_at``, never defaulting to False.
 
@@ -1011,6 +1066,8 @@ def _excel_row_looks_like_data_at_bounded(
             the container to pick a sheet.
         row_index: Zero-based physical row index to check.
         source_bytes: Already materialized workbook object to inspect.
+        declared_date_format: Forwarded to ``_looks_like_data_row`` — see
+            that function's docstring.
 
     Returns:
         True when the row at ``row_index`` parses as a transaction record.
@@ -1018,7 +1075,11 @@ def _excel_row_looks_like_data_at_bounded(
     if sheet_name is not None:
         try:
             return _excel_row_looks_like_data_at(
-                path, sheet_name, row_index, source_bytes=source_bytes
+                path,
+                sheet_name,
+                row_index,
+                source_bytes=source_bytes,
+                declared_date_format=declared_date_format,
             )
         except _openpyxl_sheet_access_errors():
             pass  # Fall through to the fastexcel/calamine sampler below.
@@ -1034,7 +1095,7 @@ def _excel_row_looks_like_data_at_bounded(
     if row_index >= len(rows):
         return False
     non_empty = [c.strip() for c in rows[row_index] if c.strip()]
-    return _looks_like_data_row(non_empty) if non_empty else False
+    return _looks_like_data_row(non_empty, declared_date_format) if non_empty else False
 
 
 def _classify_excel_headerless_via_fastexcel(
@@ -1042,6 +1103,7 @@ def _classify_excel_headerless_via_fastexcel(
     *,
     sheet_name: str | None,
     source_bytes: bytes | None,
+    declared_date_format: str | None = None,
 ) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...], tuple[str, ...]]:
     """Classify header/headerless via a raw fastexcel/calamine read.
 
@@ -1082,7 +1144,7 @@ def _classify_excel_headerless_via_fastexcel(
         sample_rows = _fastexcel_sample_rows(
             path, sheet_name, n=30, source_bytes=source_bytes
         )
-        return _classify_header_rows(sample_rows)
+        return _classify_header_rows(sample_rows, declared_date_format)
     except fastexcel.FastExcelError:
         return 0, True, False, (), ()
 
@@ -1095,6 +1157,7 @@ def _read_excel(
     sheet: str | None = None,
     source_bytes: bytes | None = None,
     has_header: bool | None = None,
+    declared_date_format: str | None = None,
 ) -> ReadResult:
     """Read an Excel (.xlsx) file.
 
@@ -1109,6 +1172,8 @@ def _read_excel(
         sheet: Sheet name to read. If None, picks the sheet with the most rows.
         source_bytes: Already materialized workbook object to parse.
         has_header: Persisted header decision; None runs detection.
+        declared_date_format: Caller-declared date format forwarded to header
+            detection — see ``_looks_like_data_row``'s docstring.
 
     Returns:
         ReadResult with the parsed DataFrame and sheet metadata.
@@ -1174,7 +1239,10 @@ def _read_excel(
                 ambiguous_rows,
                 header_cells,
             ) = _classify_excel_headerless_via_fastexcel(
-                path, sheet_name=None, source_bytes=source_bytes
+                path,
+                sheet_name=None,
+                source_bytes=source_bytes,
+                declared_date_format=declared_date_format,
             )
         else:
             try:
@@ -1187,7 +1255,7 @@ def _read_excel(
                     preamble_looks_like_data,
                     ambiguous_rows,
                     header_cells,
-                ) = _classify_header_rows(sample_rows)
+                ) = _classify_header_rows(sample_rows, declared_date_format)
             except _openpyxl_sheet_access_errors():
                 # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
                 # legacy binary .xls. This sampling call is new: pre-PR,
@@ -1233,7 +1301,10 @@ def _read_excel(
                     ambiguous_rows,
                     header_cells,
                 ) = _classify_excel_headerless_via_fastexcel(
-                    path, sheet_name=sheet_used, source_bytes=source_bytes
+                    path,
+                    sheet_name=sheet_used,
+                    source_bytes=source_bytes,
+                    declared_date_format=declared_date_format,
                 )
     elif has_header is not None:
         resolved_has_header = has_header
@@ -1277,7 +1348,11 @@ def _read_excel(
     header_row_looks_like_data = False
     if explicit_skip and resolved_has_header:
         header_row_looks_like_data = _excel_row_looks_like_data_at_bounded(
-            path, sheet_used, skip_rows, source_bytes=source_bytes
+            path,
+            sheet_used,
+            skip_rows,
+            source_bytes=source_bytes,
+            declared_date_format=declared_date_format,
         )
 
     return ReadResult(

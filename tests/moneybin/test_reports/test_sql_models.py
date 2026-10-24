@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Generator
 from datetime import date, datetime
 from decimal import Decimal
@@ -13,26 +12,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import SQLMESH_ROOT, Database
+from tests.moneybin.sqlmesh_model_helpers import load_model, rendered_model_sql
 
 _REPORT_MODELS = SQLMESH_ROOT / "models" / "reports"
 
 
-def _model_body(name: str) -> str:
-    """Return a report model's executable SQL without its MODEL header."""
-    raw = (_REPORT_MODELS / f"{name}.sql").read_text()
-    return re.sub(
-        r"^.*?MODEL\s*\(.*?\);\s*",
-        "",
-        raw,
-        count=1,
-        flags=re.DOTALL,
-    ).strip()
-
-
 def _install_report(db: Database, name: str) -> None:
+    """Install a report model as SQLMesh renders it, macros expanded."""
+    body = rendered_model_sql(_REPORT_MODELS / f"{name}.sql")
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(  # test-selected shipped model name
-        f"CREATE OR REPLACE VIEW reports.{name} AS {_model_body(name)}"
+        f"CREATE OR REPLACE VIEW reports.{name} AS {body}"
     )
 
 
@@ -169,16 +159,11 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
     rows = model_db.execute("""
         SELECT conversion_id, currency_lot_id, source_conversion_id,
                source_transfer_id, account_name, currency_code, home_currency,
-               disposed_amount, proceeds, cost_basis, gain_loss,
-               from_amount, to_amount
+               disposed_amount, proceeds, cost_basis, gain_loss
         FROM reports.realized_fx
         ORDER BY currency_lot_id
     """).fetchall()
 
-    # from_amount/to_amount are conversion-level totals (45.00/54.00), not
-    # lot-allocated: they repeat identically on both rows of this two-lot
-    # disposal by design, so a naive SUM() overstates conversion volume by the
-    # number of consumed lots. disposed_amount is the additive per-lot figure.
     assert rows == [
         (
             "dispose",
@@ -192,8 +177,6 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
             Decimal("36.00"),
             Decimal("30.00"),
             Decimal("6.00"),
-            Decimal("45.00"),
-            Decimal("54.00"),
         ),
         (
             "dispose",
@@ -207,10 +190,26 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
             Decimal("18.00"),
             Decimal("16.50"),
             Decimal("1.50"),
-            Decimal("45.00"),
-            Decimal("54.00"),
         ),
     ]
+
+
+def test_realized_fx_exposes_only_lot_grain_amounts(model_db: Database) -> None:
+    """The lot-grain report omits conversion totals that repeat across rows."""
+    _install_realized_fx_sources(model_db)
+    _install_report(model_db, "realized_fx")
+
+    cursor = model_db.execute("SELECT * FROM reports.realized_fx LIMIT 0")
+    columns = {description[0] for description in cursor.description or ()}
+
+    assert {"from_amount", "to_amount"}.isdisjoint(columns)
+    assert {
+        "disposed_amount",
+        "proceeds",
+        "cost_basis",
+        "fee_amount",
+        "gain_loss",
+    } <= columns
 
 
 def test_realized_fx_updated_at_includes_account_name_source(
@@ -328,6 +327,9 @@ def _install_balance_drift_sources(
             currency_code VARCHAR
         )
     """)
+    model_db.execute("""
+        CREATE TABLE core.fct_investment_transactions (account_id VARCHAR)
+    """)
     model_db.execute(
         """
         INSERT INTO core.dim_accounts VALUES (?, ?, ?, ?)
@@ -410,6 +412,31 @@ def test_balance_drift_without_reconciliation_adjustment_uses_daily_balance(
         """
     ).fetchone()
     assert row == (Decimal("1200.00"), Decimal("0.00"), "clean")
+
+
+def test_balance_drift_ignores_an_unanchored_account(model_db: Database) -> None:
+    """A NULL spine row has no assertion date to join, so drift never sees it."""
+    _install_balance_drift_sources(model_db)
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES (?, ?, ?)
+        """,
+        ["checking", "2026-04-01", Decimal("1200.00")],
+    )
+    for row in (
+        ["checking", "2026-04-01", Decimal("1200.00"), False, None, "USD"],
+        ["brokerage", "2026-04-01", None, False, None, "USD"],
+    ):
+        model_db.execute(
+            "INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?, ?)", row
+        )
+    _install_report(model_db, "balance_drift")
+
+    rows = model_db.execute(
+        "SELECT computed_balance, drift, status FROM reports.balance_drift"
+    ).fetchall()
+    assert rows == [(Decimal("1200.00"), Decimal("0.00"), "clean")]
 
 
 def test_balance_drift_first_observation_has_no_independent_position(
@@ -622,98 +649,6 @@ def _add_transaction(
             currency,
         ],
     )
-
-
-def test_net_worth_segments_totals_per_currency(model_db: Database) -> None:
-    """A USD and a EUR balance never sum into one net-worth figure."""
-    model_db.execute("""
-        CREATE TABLE core.dim_accounts (
-            account_id VARCHAR,
-            include_in_net_worth BOOLEAN,
-            archived BOOLEAN
-        )
-    """)
-    model_db.execute("""
-        CREATE TABLE core.fct_balances_daily (
-            account_id VARCHAR,
-            balance_date DATE,
-            balance DECIMAL(18, 2),
-            currency_code VARCHAR
-        )
-    """)
-    model_db.execute(
-        """
-        INSERT INTO core.dim_accounts VALUES ('usd', TRUE, FALSE), ('eur', TRUE, FALSE)
-        """
-    )
-    model_db.execute(
-        """
-        INSERT INTO core.fct_balances_daily VALUES
-            ('usd', '2024-01-01', 100.00, 'USD'),
-            ('eur', '2024-01-01', 100.00, 'EUR')
-        """
-    )
-
-    _install_report(model_db, "net_worth")
-
-    rows = model_db.execute(
-        """
-        SELECT currency_code, net_worth, account_count
-        FROM reports.net_worth
-        WHERE balance_date = '2024-01-01'
-        ORDER BY currency_code
-        """
-    ).fetchall()
-    assert rows == [
-        ("EUR", Decimal("100.00"), 1),
-        ("USD", Decimal("100.00"), 1),
-    ]
-
-
-def test_net_worth_keeps_unknown_currency_as_its_own_segment(
-    model_db: Database,
-) -> None:
-    """A NULL currency_code segments on its own, never folded into a known one."""
-    model_db.execute("""
-        CREATE TABLE core.dim_accounts (
-            account_id VARCHAR,
-            include_in_net_worth BOOLEAN,
-            archived BOOLEAN
-        )
-    """)
-    model_db.execute("""
-        CREATE TABLE core.fct_balances_daily (
-            account_id VARCHAR,
-            balance_date DATE,
-            balance DECIMAL(18, 2),
-            currency_code VARCHAR
-        )
-    """)
-    model_db.execute(
-        """
-        INSERT INTO core.dim_accounts
-        VALUES ('usd', TRUE, FALSE), ('unknown', TRUE, FALSE)
-        """
-    )
-    model_db.execute(
-        """
-        INSERT INTO core.fct_balances_daily VALUES
-            ('usd', '2024-01-01', 100.00, 'USD'),
-            ('unknown', '2024-01-01', 100.00, NULL)
-        """
-    )
-
-    _install_report(model_db, "net_worth")
-
-    rows = model_db.execute(
-        """
-        SELECT currency_code, net_worth
-        FROM reports.net_worth
-        WHERE balance_date = '2024-01-01'
-        ORDER BY currency_code NULLS LAST
-        """
-    ).fetchall()
-    assert rows == [("USD", Decimal("100.00")), (None, Decimal("100.00"))]
 
 
 def test_cash_flow_segments_one_account_holding_two_currencies(
@@ -952,6 +887,79 @@ def test_recurring_subscriptions_does_not_interleave_two_currency_streams(
     assert rows == [("EUR", "monthly", 4), ("USD", "monthly", 4)]
 
 
+_ELIGIBILITY_MACRO_CALLERS = (
+    "cash_flow",
+    "large_transactions",
+    "merchant_activity",
+    "recurring_subscriptions",
+    "spending_trend",
+)
+# These read balances, not transactions, so they write their own archive rule.
+_BALANCE_REPORT_MODELS = frozenset({
+    "balance_drift",
+    "net_worth",
+    "net_worth_accounts",
+    "net_worth_currencies",
+})
+
+
+def test_report_models_take_eligibility_from_the_shared_macro() -> None:
+    """No report model hand-writes the transfer/archive filter the macro owns."""
+    from sqlglot import exp
+    from sqlmesh.core.model import SqlModel
+
+    for path in sorted(_REPORT_MODELS.glob("*.sql")):
+        owned = {"is_transfer", "archived"}
+        if path.stem in _BALANCE_REPORT_MODELS:
+            owned = {"is_transfer"}
+        model = load_model(path)
+        assert isinstance(model, SqlModel)
+        assert isinstance(model.query, exp.Query)
+        calls_macro = "report_eligible_transaction" in model.python_env
+        assert calls_macro == (path.stem in _ELIGIBILITY_MACRO_CALLERS), (
+            f"{path.name}: calls @report_eligible_transaction = {calls_macro}; "
+            "update _ELIGIBILITY_MACRO_CALLERS if that is intended"
+        )
+        handwritten = {c.name for c in model.query.find_all(exp.Column)} & owned
+        assert not handwritten, (
+            f"{path.name} reads {sorted(handwritten)} directly; call "
+            "@report_eligible_transaction instead"
+        )
+
+
+@pytest.mark.parametrize("report", _ELIGIBILITY_MACRO_CALLERS)
+def test_transaction_reports_drop_transfers_and_archived_accounts(
+    model_db: Database, report: str
+) -> None:
+    """The shared eligibility predicate excludes both, in every model calling it."""
+    _install_transaction_sources(model_db)
+    for index in range(1, 5):
+        _add_transaction(
+            model_db,
+            transaction_id=f"t{index}",
+            date=_months_ago(index).isoformat(),
+            amount="-20",
+            currency="USD",
+        )
+    _install_report(model_db, report)
+
+    def row_count() -> int:
+        row = model_db.execute(
+            f"SELECT COUNT(*) FROM reports.{report}"  # noqa: S608  # parametrized shipped model name
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    assert row_count() > 0
+
+    model_db.execute("UPDATE core.fct_transactions SET is_transfer = TRUE")
+    assert row_count() == 0
+
+    model_db.execute("UPDATE core.fct_transactions SET is_transfer = FALSE")
+    model_db.execute("UPDATE core.dim_accounts SET archived = TRUE")
+    assert row_count() == 0
+
+
 def test_balance_drift_withholds_a_drift_across_two_currencies(
     model_db: Database,
 ) -> None:
@@ -1061,3 +1069,97 @@ def test_balance_drift_reports_the_currency_the_position_is_denominated_in(
         "SELECT currency_code, drift FROM reports.balance_drift"
     ).fetchone()
     assert row == ("EUR", Decimal("5.00"))
+
+
+def test_balance_drift_says_it_cannot_reconcile_an_investment_ledger(
+    model_db: Database,
+) -> None:
+    """A hand-kept brokerage's assertion is cash plus positions; no drift exists.
+
+    The ledger's buys, sells and dividends never reach `core.fct_transactions`,
+    so the transaction-derived balance is the deposits alone, and the assertion
+    also counts positions at market value. Subtracting the two would publish
+    every share held as drift; the row names why it has no figure instead.
+    """
+    _install_balance_drift_sources(model_db, currency="USD")
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES ('checking', '2025-12-31', 17125.00)
+        """
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES
+            ('checking', '2025-12-31', 17125.00, TRUE, 2125.00, 'USD')
+        """
+    )
+    model_db.execute("INSERT INTO core.fct_investment_transactions VALUES ('checking')")
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        """
+        SELECT asserted_balance, computed_balance, drift, drift_pct, status
+        FROM reports.balance_drift
+        """
+    ).fetchone()
+    # 15,000.00 computed and 2,125.00 drift would be the deposits-only answer.
+    assert row == (Decimal("17125.00"), None, None, None, "investment-ledger")
+
+
+def test_balance_drift_names_the_ledger_before_a_currency_mismatch(
+    model_db: Database,
+) -> None:
+    """A ledger account with a currency mismatch still reports investment-ledger.
+
+    The spec promises `--status investment-ledger` lists every account with a
+    ledger row. A mismatch is repairable (`accounts set --currency`), and after
+    the repair the ledger still leaves nothing to compare, so the row names the
+    condition that outlasts the fix.
+    """
+    _install_balance_drift_sources(model_db, currency="USD")
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES ('checking', '2025-12-31', 17125.00)
+        """
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES
+            ('checking', '2025-12-31', 17125.00, TRUE, 2125.00, 'EUR')
+        """
+    )
+    model_db.execute("INSERT INTO core.fct_investment_transactions VALUES ('checking')")
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        "SELECT computed_balance, drift, status FROM reports.balance_drift"
+    ).fetchone()
+    assert row == (None, None, "investment-ledger")
+
+
+def test_balance_drift_uses_profile_calendar_at_utc_month_boundary(
+    model_db: Database,
+) -> None:
+    from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+    ProfileSettingsRepo(model_db).set_reporting_timezone(
+        "America/New_York", actor="test"
+    )
+    _install_balance_drift_sources(model_db)
+    model_db.execute(
+        "INSERT INTO app.balance_assertions (account_id, assertion_date, balance) VALUES ('checking', '2026-02-28', 100)"
+    )
+    model_db.execute(
+        "INSERT INTO core.fct_balances_daily VALUES ('checking', '2026-02-28', 100, TRUE, 0, 'USD')"
+    )
+    body = rendered_model_sql(_REPORT_MODELS / "balance_drift.sql")
+    body = body.replace("CURRENT_TIMESTAMP", "TIMESTAMPTZ '2026-03-01 00:30:00+00'")
+    row = model_db.execute(
+        f"SELECT assertion_date, days_since_assertion FROM ({body})"  # noqa: S608  # rendered shipped model SQL, no user input
+    ).fetchone()
+    assert row == (date(2026, 2, 28), 0)
+    assert model_db.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)

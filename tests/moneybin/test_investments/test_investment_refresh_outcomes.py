@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.adapters.refresh_adapters import refresh_envelope
 from moneybin.cli.main import app
-from moneybin.connectors.sync_models import PullResult
+from moneybin.connectors.sync_models import PlaidSourceResult, PullResult
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.orchestration.refresh import (
@@ -170,7 +170,9 @@ def _embedded_envelopes(
     pull = PullResult.model_validate_json(pull.model_dump_json())
     sync_service = MagicMock()
     sync_service.__enter__.return_value.pull.return_value = pull
-    monkeypatch.setattr(sync, "_build_sync_service", lambda: sync_service)
+    monkeypatch.setattr(
+        sync, "_build_sync_service", lambda *, local_only=False: sync_service
+    )
     batch = BatchImportResult(
         per_file=[PerFileResult(path="a.csv", status="imported", source_type="csv")],
         transforms_applied=outcome.applied,
@@ -367,17 +369,40 @@ def test_cli_embedded_json_keeps_stage_recovery_and_pending_actions(
     outcome = step_outcome(result)
     pull = PullResult(
         job_id="test",
+        ack_state="confirmed",
+        setup_state="complete",
+        refresh_state="complete" if failure == "pending" else "failed",
         transactions_loaded=1,
         accounts_loaded=0,
         balances_loaded=0,
         transactions_removed=0,
         institutions=[],
         refresh_steps=outcome,
+        source_results=[
+            PlaidSourceResult.model_validate({
+                "provider": "plaid",
+                "connection_id": "22222222-2222-4222-8222-222222222222",
+                "credential_generation": 1,
+                "outcomes": [
+                    {
+                        "account_id": "synthetic-account",
+                        "native_scope": {
+                            "kind": "plaid_item",
+                            "provider_item_id": "synthetic-item",
+                        },
+                        "window": None,
+                        "status": "complete",
+                        "error_code": None,
+                    }
+                ],
+            })
+        ],
     )
     sync_service = MagicMock()
     sync_service.__enter__.return_value.pull.return_value = pull
     monkeypatch.setattr(
-        "moneybin.cli.commands.sync._build_sync_service", lambda: sync_service
+        "moneybin.cli.commands.sync._build_sync_service",
+        lambda *, local_only=False: sync_service,
     )
     batch = BatchImportResult(
         per_file=[PerFileResult(path="a.csv", status="imported", source_type="csv")],

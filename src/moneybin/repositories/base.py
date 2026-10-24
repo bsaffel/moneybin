@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar, cast
 
@@ -29,10 +30,13 @@ from sqlglot import exp
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.metrics.registry import app_mutation_audit_emitted_total
+from moneybin.services._validators import validate_category_text
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.tables import TableRef
+from moneybin.temporal import format_utc
+from moneybin.temporal_contract import decode_audit_row, read_audit_temporal_policy
 
 
 def quote_ident(name: str) -> str:
@@ -76,6 +80,36 @@ class BaseRepo:
     #: Abstract repository bases opt out of concrete-table metadata validation.
     abstract: ClassVar[bool] = False
 
+    #: Columns of ``table_ref`` a restore must re-validate with
+    #: ``validate_category_text`` before writing them back verbatim (issue
+    #: #547). Empty by default. Every repo owning a category/subcategory-shaped
+    #: text column declares the applicable column names here — found by
+    #: sweeping every ``BaseRepo`` table's schema for such a column, not by
+    #: trusting a fixed list (a fixed count in this comment is exactly the kind
+    #: of claim that goes stale the next time a table is added, so none is
+    #: given): ``user_categories``, ``user_merchants``, ``transaction_splits``,
+    #: ``budgets``, ``categorization_rules``, ``proposed_rules``,
+    #: ``transaction_categories``, ``rule_conflicts``, and
+    #: ``categorization_decisions``. The admissibility rule itself is stated in
+    #: exactly one place, ``services._validators.validate_category_text`` —
+    #: this only says which of THIS table's columns that rule applies to. See
+    #: :meth:`_require_admissible`.
+    _CATEGORY_TEXT_COLUMNS: ClassVar[tuple[str, ...]] = ()
+
+    #: The one grandfathered non-``app`` table a ``BaseRepo`` subclass owns
+    #: (MB-255). ``ManualInvestmentTransactionsRepo`` predates this guard and
+    #: owns ``raw.manual_investment_transactions`` — a deliberate exception,
+    #: not a gap: MB-255 moved ``import_log`` (the only other ``raw`` table a
+    #: repo owned) to ``app``, so this is now the sole survivor. Naming it
+    #: here rather than leaving the class docstring's "owns protected
+    #: `app.*` tables" wording unchecked is exactly the fix MB-255 made —
+    #: an unchecked docstring contract is how MB-248's false prerequisite got
+    #: written. A second exception is a decision to take deliberately, not
+    #: one to add quietly by extending this set.
+    _NON_APP_TABLE_EXCEPTIONS: ClassVar[frozenset[str]] = frozenset({
+        "ManualInvestmentTransactionsRepo"
+    })
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Fail at class-definition time if a repo omits required metadata.
 
@@ -83,6 +117,10 @@ class BaseRepo:
         owned table), and ``pk_columns`` (its primary key). Without this, a
         missing attr only surfaces as an ``AttributeError`` deep in a runtime
         path — fail fast at import instead.
+
+        Also enforces that ``table_ref`` names an ``app.*`` table, per the
+        named exception above — the concrete guard behind this class's
+        "protected `app.*` mutation" contract.
         """
         super().__init_subclass__(**kwargs)
         if cls.__dict__.get("abstract", False):
@@ -96,6 +134,17 @@ class BaseRepo:
                 raise TypeError(
                     f"{cls.__name__} must set a class-level `{attr}` — {why}."
                 )
+        table_ref = cls.table_ref
+        if (
+            table_ref.schema != "app"
+            and cls.__name__ not in BaseRepo._NON_APP_TABLE_EXCEPTIONS
+        ):
+            raise TypeError(
+                f"{cls.__name__}.table_ref names {table_ref.full_name!r}, not an "
+                "app.* table. BaseRepo owns protected app.* mutation (Invariant "
+                "10); add it to BaseRepo._NON_APP_TABLE_EXCEPTIONS only as a "
+                "deliberate, documented decision."
+            )
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
         """Bind to an open Database; lazily build an ``AuditService`` if absent."""
@@ -268,7 +317,9 @@ class BaseRepo:
         for key, value in row.items():
             if isinstance(value, Decimal):
                 out[key] = str(value)
-            elif hasattr(value, "isoformat"):
+            elif isinstance(value, datetime):
+                out[key] = format_utc(value)
+            elif isinstance(value, date):
                 out[key] = value.isoformat()
             else:
                 out[key] = value
@@ -309,23 +360,50 @@ class BaseRepo:
         audited (``is_undo=True``, ``undoes_operation_id=event.operation_id``) and
         the new event is returned — so it is undoable in turn (undo-the-undo).
 
-        Values come straight from the JSON-decoded audit payload: DuckDB
-        auto-casts ISO strings to ``DATE``/``TIMESTAMP`` and decimal strings to
+        Temporal fields are decoded on copies before validation or mutation.
+        Legacy naive instants require accepted migration provenance. DuckDB
+        auto-casts ISO business dates to ``DATE`` and decimal strings to
         ``DECIMAL``, and binds ``dict``/``list`` directly to ``JSON``/array
         columns — so no per-repo type handling is needed (``match_signals`` JSON
         and ``exemplars`` arrays round-trip natively).
+
+        A DELETE-undo or UPDATE-undo that would write ``before`` back verbatim
+        first runs it through :meth:`_require_admissible` — the write path can
+        reject a value (e.g. blank category text, #517) that an older audit row
+        still carries, and restoring it here would resurrect state no live
+        write path can produce (#547). No-op on the many repos with no declared
+        ``_CATEGORY_TEXT_COLUMNS``.
         """
-        before = event.before_value
-        after = event.after_value
-        if before == after:
+        if event.before_value == event.after_value:
             return None
+        try:
+            policy = read_audit_temporal_policy(self._db)
+            before = (
+                decode_audit_row(event, event.before_value, policy)
+                if event.before_value is not None
+                else None
+            )
+            after = (
+                decode_audit_row(event, event.after_value, policy)
+                if event.after_value is not None
+                else None
+            )
+        except ValueError:
+            raise UserError(
+                "Cannot undo: historical timestamps lack unambiguous accepted "
+                "UTC upgrade provenance. Inspect the operation and its upgrade evidence.",
+                code=error_codes.RECOVERY_NO_PATH,
+            ) from None
 
         with self._transaction(in_outer_txn=in_outer_txn):
+            resulting = before
             if before is None and after is not None:
                 self._require_capture(after, self.pk_columns, event)
-                self._delete_by_pk(after)
+                # None unless a repo keeps the row (see AccountSettingsRepo).
+                resulting = self._delete_by_pk(after)
             elif after is None and before is not None:
                 self._require_capture(before, self._not_null_columns(), event)
+                self._require_admissible(before, event)
                 self._insert_row(before)
             elif before is not None and after is not None:
                 self._require_capture(after, self.pk_columns, event)
@@ -333,6 +411,7 @@ class BaseRepo:
                 # writes only the captured columns and leaves the rest at their
                 # current (post-mutation) values.
                 self._require_capture(before, after.keys(), event)
+                self._require_admissible(before, event)
                 self._restore_row(before=before, locate=after)
             # Target the row the inverse actually leaves behind, not event.target_id:
             # a PK-changing undo (tag rename restore) lands on the *before* key, so
@@ -346,8 +425,8 @@ class BaseRepo:
                     event.target_table,
                     self._row_target_id(result_row),
                 ),
-                before=after,
-                after=before,
+                before=self._serialize_for_audit(after),
+                after=self._serialize_for_audit(resulting),
                 actor=actor,
                 is_undo=True,
                 undoes_operation_id=event.operation_id,
@@ -386,6 +465,65 @@ class BaseRepo:
                 code=error_codes.RECOVERY_NO_PATH,
             )
 
+    def _require_admissible(self, row: dict[str, Any], event: AuditEvent) -> None:
+        """Refuse to write ``row`` back verbatim if the write path would now reject it.
+
+        Design decision (issue #547): refuse with a classified error rather than
+        rebuild the affected tables with a DB-level ``CHECK`` — DuckDB has no
+        ``ALTER TABLE ADD CONSTRAINT``, so a `CHECK` needs a create/copy/drop/rename
+        per table (the cost #517 already declined to pay); refusing is a code-only
+        change that reuses the write path's own validator, so the rule stays
+        stated in exactly one place (``validate_category_text``) instead of a
+        second copy restated in SQL. This makes the specific audited operation
+        permanently un-undoable through this path — accepted because the
+        alternative is silently resurrecting a value no live write path can
+        produce (the #547 scenario: a pre-#517 blank category survives a
+        migration cleanup by hiding inside a delete's audit row). The error names
+        the exact field and offending value so the row is not a dead end: the
+        other captured fields stay visible via ``system_audit(view="detail")``
+        and the entity can be recreated with a valid value through the table's
+        normal write tool. That inspection step is a real, structured
+        ``recovery_actions`` entry, not just prose — an empty list paired with
+        a code other than ``RECOVERY_NO_PATH`` is the exact anti-pattern
+        data-recovery-contract.md's Resolved Design Decision 6 rules out (a
+        caller reading an empty list has no way to distinguish "nothing can be
+        done" from "the actionable step just isn't wired up").
+
+        Checks only ``_CATEGORY_TEXT_COLUMNS`` — empty by default, so this is a
+        no-op for every table that doesn't declare it.
+        """
+        for column in self._CATEGORY_TEXT_COLUMNS:
+            value = row.get(column)
+            if value is None:
+                continue
+            try:
+                validate_category_text(value, column)
+            except ValueError as exc:
+                raise UserError(
+                    f"Cannot undo {event.action!r}: the captured {column}="
+                    f"{value!r} on {event.target_table} is no longer admissible "
+                    f"({exc}). Undo cannot restore a value the write path would "
+                    "refuse — create a corrected row through the normal write "
+                    "path instead.",
+                    code=error_codes.UNDO_VALUE_INADMISSIBLE,
+                    recovery_actions=[
+                        RecoveryAction(
+                            tool="system_audit",
+                            arguments={
+                                "view": "detail",
+                                "operation_id": event.operation_id,
+                            },
+                            rationale=(
+                                "Inspect this operation's other captured "
+                                "fields, then recreate the entity with a "
+                                "valid value through its normal write tool."
+                            ),
+                            confidence="certain",
+                            idempotent=True,
+                        )
+                    ],
+                ) from exc
+
     def _row_target_id(self, row: dict[str, Any]) -> str:
         """The audit ``target_id`` for ``row`` — the row's own identity (row-grain).
 
@@ -402,13 +540,17 @@ class BaseRepo:
         clauses = [f"{quote_ident(col)} = ?" for col in self.pk_columns]
         return " AND ".join(clauses), [row[col] for col in self.pk_columns]
 
-    def _delete_by_pk(self, row: dict[str, Any]) -> None:
-        """Delete the row whose primary key matches ``row`` (undo of an INSERT)."""
+    def _delete_by_pk(self, row: dict[str, Any]) -> dict[str, Any] | None:
+        """Delete the row whose primary key matches ``row`` (undo of an INSERT).
+
+        Returns the audit image of the row left behind; ``None`` when it is gone.
+        """
         where, params = self._pk_where(row)
         self._db.execute(
             f"DELETE FROM {self.table_ref.full_name} WHERE {where}",  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
             params,
         )
+        return None
 
     def _insert_row(self, row: dict[str, Any]) -> None:
         """Re-insert a full captured row (undo of a DELETE)."""
@@ -627,6 +769,65 @@ class LinkDecisionsRepoBase(BaseRepo):
     def list_pending(self) -> list[dict[str, Any]]:
         """Read active review items in this queue's declared grouping order."""
         return self._list_with_status(status="pending", order_by=self.pending_order_by)
+
+    def list_pending_groups(
+        self,
+        *,
+        group_columns: tuple[str, ...],
+        item_id_columns: tuple[str, ...],
+        limit: int | None = None,
+        decision_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read complete selected groups before decoding or display enrichment."""
+        if limit is not None and limit <= 0:
+            return []
+        if not group_columns or not set(group_columns + item_id_columns) <= set(
+            self.columns
+        ):
+            raise ValueError("Review grouping must use declared repository columns")
+        group_sql = ", ".join(quote_ident(column) for column in group_columns)
+        order_sql = ", ".join(quote_ident(column) for column in self.pending_order_by)
+        # A legacy group's displayed source is its first decision's source.
+        item_parts = ", ".join(
+            quote_ident(column)
+            if column in group_columns
+            else f"FIRST({quote_ident(column)} ORDER BY {order_sql})"
+            for column in item_id_columns
+        )
+        params: list[Any] = []
+        if decision_id is not None:
+            selection = (
+                "WHERE decision_id = ? AND status = 'pending' AND reversed_at IS NULL"
+            )
+            params.append(decision_id)
+        else:
+            selection = (
+                "WHERE status = 'pending' AND reversed_at IS NULL "
+                f"GROUP BY {group_sql} ORDER BY CONCAT_WS(':', {item_parts}), {group_sql}"
+            )
+            if limit is not None:
+                selection += " LIMIT ?"
+                params.append(limit)
+        same_group = " AND ".join(
+            f"selected.{quote_ident(column)} = queue.{quote_ident(column)}"
+            for column in group_columns
+        )
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH selected AS (
+                    SELECT {group_sql} FROM {self.table_ref.full_name} {selection}
+                )
+                SELECT {self._columns_sql()} FROM {self.table_ref.full_name} AS queue
+                WHERE status = 'pending' AND reversed_at IS NULL
+                  AND EXISTS (SELECT 1 FROM selected WHERE {same_group})
+                ORDER BY {order_sql}
+                """,  # noqa: S608  # TableRef and validated quoted columns only; values bound
+                params,
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        return [self._decode_row(row) for row in rows]
 
     def _count_pending(self) -> int:
         """Return pending queue depth, treating an uninitialized queue as empty."""

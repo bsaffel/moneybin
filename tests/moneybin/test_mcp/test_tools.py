@@ -52,7 +52,7 @@ class TestToolRegistration:
             tools = await client.list_tools()
 
         assert len(tools) == STANDARD_TOOL_COUNT
-        advertised = frozenset(tool.name for tool in tools if tool.outputSchema)
+        advertised = frozenset(tool.name for tool in tools if tool.output_schema)
         assert advertised == ADMITTED_OUTPUT_SCHEMA_NAMES
 
     @pytest.mark.unit

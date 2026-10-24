@@ -53,7 +53,10 @@ from moneybin.repositories.categorization_rules_repo import CategorizationRulesR
 from moneybin.services.auto_rule_service import AutoConfirmResult
 from moneybin.services.categorization import CategorizationRuleInput
 from moneybin.services.categorization.applier import RuleCreationResult
-from tests.moneybin.db_helpers import seed_categories_view
+from tests.moneybin.db_helpers import (
+    insert_three_pending_transactions,
+    seed_categories_view,
+)
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -366,32 +369,7 @@ class TestCategorizePendingSortParam:
     @staticmethod
     def _install_view_with_transactions() -> None:
         with get_database(read_only=False) as db:
-            db.execute("""
-                CREATE OR REPLACE VIEW core.uncategorized_queue AS
-                SELECT
-                    'T1' AS transaction_id, 'ACC001' AS account_id,
-                    'Test Bank Checking' AS account_name,
-                    DATE '2026-04-01' AS txn_date,
-                    CAST(-25.00 AS DECIMAL(18,2)) AS amount,
-                    'USD' AS currency_code,
-                    'COFFEE SHOP' AS description,
-                    CAST(NULL AS VARCHAR) AS merchant_id,
-                    'Coffee Shop' AS merchant_normalized,
-                    CAST(39 AS INTEGER) AS age_days,
-                    CAST(975.0 AS DOUBLE) AS priority_score,
-                    'ofx' AS source_type,
-                    CAST(NULL AS VARCHAR) AS source_id
-                UNION ALL SELECT
-                    'T2', 'ACC001', 'Test Bank Checking',
-                    DATE '2026-04-10', CAST(-500.00 AS DECIMAL(18,2)),
-                    'USD', 'BIG EXPENSE', NULL, 'Big Expense',
-                    CAST(30 AS INTEGER), 15000.0, 'ofx', NULL
-                UNION ALL SELECT
-                    'T3', 'ACC002', 'Other Bank Savings',
-                    DATE '2026-04-15', CAST(-5.00 AS DECIMAL(18,2)),
-                    'USD', 'TINY', NULL, 'Tiny',
-                    CAST(25 AS INTEGER), 125.0, 'ofx', NULL
-            """)  # test input, not executing dynamic SQL
+            insert_three_pending_transactions(db)
 
     @pytest.mark.unit
     async def test_categorize_pending_sort_impact(self, mcp_db: object) -> None:
@@ -585,6 +563,18 @@ class TestCategorizationRulesTargetState:
         assert id_retry.to_dict()["error"]["code"] == "mutation_nothing_to_do"
         assert active.data.rules[0].min_amount == Decimal("-19.99")
         assert active.data.rules[0].max_amount == Decimal("-0.10")
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE app.categorization_rules SET created_at = "
+                "TIMESTAMPTZ '2025-11-02 01:30:00.123456-04:00', updated_at = "
+                "TIMESTAMPTZ '2025-11-02 01:31:00-04:00' WHERE rule_id = ?",
+                [rule_id],
+            )
+        timestamps = (
+            await transactions_categorize_rules_coarse(view="active")
+        ).to_dict()["data"]["rules"][0]
+        assert timestamps["created_at"] == "2025-11-02T05:30:00.123456Z"
+        assert timestamps["updated_at"] == "2025-11-02T05:31:00.000000Z"
         with get_database(read_only=True) as db:
             assert db.execute(
                 "SELECT COUNT(*) FROM app.categorization_rules "
@@ -971,6 +961,42 @@ class TestRuleConflictPayloadPrivacy:
             ])
 
         assert envelope.status == "ok"
+
+    @pytest.mark.unit
+    def test_rules_create_surfaces_recategorized_count_additively(self) -> None:
+        """``recategorized`` rides the existing payload without a new field name."""
+        result = RuleCreationResult(
+            created=1,
+            existing=0,
+            skipped=0,
+            error_details=[],
+            rule_ids=["r2"],
+            recategorized=7,
+        )
+        with (
+            patch(
+                "moneybin.mcp.tools.transactions_categorize.get_database"
+            ) as mock_get_db,
+            patch(
+                "moneybin.mcp.tools.transactions_categorize.CategorizationService"
+            ) as mock_svc_cls,
+        ):
+            mock_get_db.return_value.__enter__.return_value = MagicMock()
+            mock_svc_cls.return_value.create_rules.return_value = result
+            envelope = transactions_categorize_rules_create(
+                [
+                    {
+                        "name": "Amazon",
+                        "merchant_pattern": "AMAZON",
+                        "category": "Shopping",
+                    }
+                ],
+                reapply=True,
+            )
+
+        assert envelope.status == "ok"
+        assert envelope.data is not None
+        assert envelope.data.recategorized == 7
 
     @pytest.mark.unit
     def test_rules_create_that_wrote_nothing_raises_a_conflict(self) -> None:

@@ -20,9 +20,9 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes the snapshot to the institution connection; part of the PK
-    extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
+    extracted_at TIMESTAMPTZ                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
         DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+    loaded_at TIMESTAMPTZ                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, security_id, source_origin, source_file)
 );

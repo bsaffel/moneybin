@@ -17,7 +17,8 @@ from __future__ import annotations
 import re
 import shlex
 
-import click
+from typer._click import Command, Context
+from typer.core import TyperGroup
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -38,7 +39,7 @@ def moneybin_invocations(text: str) -> list[list[str]]:
     return invocations
 
 
-def _resolved_leaf_or_group(args: list[str]) -> click.Command | None:
+def _resolved_leaf_or_group(args: list[str]) -> Command | None:
     """Walk ``args`` through the CLI's command tree; ``None`` if any step fails to resolve.
 
     Stops at the first non-group ``Command`` — remaining ``args`` are that
@@ -51,16 +52,16 @@ def _resolved_leaf_or_group(args: list[str]) -> click.Command | None:
     """
     from moneybin.cli.main import app  # keep collection-time light
 
-    current: click.Command = get_command(app)
-    ctx = click.Context(current)
+    current: Command = get_command(app)
+    ctx = Context(current)
     for name in args:
-        if not isinstance(current, click.Group):
+        if not isinstance(current, TyperGroup):
             return current
         next_command = current.get_command(ctx, name)
         if next_command is None:
             return None
         current = next_command
-        ctx = click.Context(current, parent=ctx)
+        ctx = Context(current, parent=ctx)
     return current
 
 
@@ -93,7 +94,7 @@ def assert_published_commands_resolve(text: str) -> None:
         )
         resolved = _resolved_leaf_or_group(args)
         assert not (
-            isinstance(resolved, click.Group) and not resolved.invoke_without_command
+            isinstance(resolved, TyperGroup) and not resolved.invoke_without_command
         ), (
             f"published command `moneybin {' '.join(args)}` resolves to a "
             "command GROUP, not a leaf — it prints help and runs nothing"

@@ -92,23 +92,28 @@ def _mock_pipeline(
 ) -> None:
     """Patch the heavy collaborators DemoService.run imports lazily.
 
-    ``segments`` builds a multi-currency snapshot: the headline scalars go None
-    (no single total is meaningful) while ``per_currency`` carries each
-    currency's own figure — the real shape NetworthService returns.
+    ``segments`` builds a multi-currency result: several currency rows, the
+    real shape ``core:net_worth_currencies`` returns for a profile holding
+    more than one currency. Both branches patch the report catalog's
+    ``execute`` with a plain ``records`` list of dicts — the same shape
+    ``CatalogReportResult.records`` carries.
     """
     from moneybin.orchestration.refresh import RefreshResult
-    from moneybin.privacy.payloads.networth import (
-        NetWorthCurrencySegment,
-        NetWorthSnapshotPayload,
-    )
     from moneybin.services.doctor_service import DoctorReport, InvariantResult
 
     engine = mocker.patch("moneybin.synthetic.engine.GeneratorEngine")
     engine.return_value.generate.return_value = SimpleNamespace(
-        accounts=[object(), object()], transactions=[], merchant_seeds=[]
+        accounts=[object(), object()],
+        transactions=[object() for _ in range(5)],
+        merchant_seeds=[],
+        start_date=datetime.date(2024, 1, 1),
+        end_date=datetime.date(2024, 12, 31),
     )
     writer = mocker.patch("moneybin.synthetic.writer.SyntheticWriter")
-    writer.return_value.write.return_value = {"tabular_transactions": 5}
+    writer.return_value.write.return_value = {
+        "tabular_accounts": 2,
+        "tabular_transactions": 5,
+    }
 
     mocker.patch(
         "moneybin.orchestration.refresh.refresh",
@@ -122,48 +127,33 @@ def _mock_pipeline(
     doctor.return_value.run_all.return_value = DoctorReport(
         invariants=invariants, transaction_count=5
     )
-    net = mocker.patch("moneybin.services.networth_service.NetworthService")
+
     if segments is not None:
-        net.return_value.current.return_value = NetWorthSnapshotPayload(
-            balance_date=datetime.date(2025, 1, 1),
-            currency_code=None,
-            net_worth=None,
-            total_assets=None,
-            total_liabilities=None,
-            account_count=len(segments),
-            per_currency=[
-                NetWorthCurrencySegment(
-                    currency_code=code,
-                    net_worth=Decimal(value),
-                    total_assets=Decimal(value),
-                    total_liabilities=Decimal("0.00"),
-                    account_count=1,
-                )
-                for code, value in segments
-            ],
-            per_account=[],
-        )
-        return
-    net.return_value.current.return_value = NetWorthSnapshotPayload(
-        balance_date=datetime.date(2025, 1, 1) if net_worth is not None else None,
-        currency_code="USD" if net_worth is not None else None,
-        net_worth=Decimal(net_worth) if net_worth is not None else None,
-        total_assets=Decimal("150.00") if net_worth is not None else None,
-        total_liabilities=Decimal("50.00") if net_worth is not None else None,
-        account_count=2 if net_worth is not None else 0,
-        per_currency=[
-            NetWorthCurrencySegment(
-                currency_code="USD",
-                net_worth=Decimal(net_worth),
-                total_assets=Decimal("150.00"),
-                total_liabilities=Decimal("50.00"),
-                account_count=2,
-            )
+        rows = [
+            {
+                "currency_code": code,
+                "account_count": 1,
+                "total_assets": Decimal(value),
+                "total_liabilities": Decimal("0.00"),
+                "net_worth": Decimal(value),
+            }
+            for code, value in segments
         ]
-        if net_worth is not None
-        else [],
-        per_account=[],
-    )
+    elif net_worth is not None:
+        rows = [
+            {
+                "currency_code": "USD",
+                "account_count": 2,
+                "total_assets": Decimal("150.00"),
+                "total_liabilities": Decimal("50.00"),
+                "net_worth": Decimal(net_worth),
+            }
+        ]
+    else:
+        rows = []
+
+    catalog = mocker.patch("moneybin.reports._framework.catalog.get_report_catalog")
+    catalog.return_value.execute.return_value = SimpleNamespace(records=rows)
 
 
 def _make_demo_profile(
@@ -228,6 +218,79 @@ def test_run_populates_fresh_demo_profile(
     from moneybin.utils.user_config import get_default_profile
 
     assert get_default_profile() == DEMO_PROFILE
+    # The receipt names where the inbox was written, which is outside the home.
+    assert result.inbox_dir is not None
+    assert (result.inbox_dir / "inbox").is_dir()
+
+
+def test_denied_inbox_fails_before_the_fresh_database_is_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    """A TCC-style denial on the inbox root fails first, leaving no profile."""
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    denied = PermissionError(1, "Operation not permitted", "/denied/MoneyBin/demo")
+    mocker.patch.object(ProfileService, "ensure_inbox", side_effect=denied)
+    init_db = mocker.patch("moneybin.database.init_db")
+
+    with pytest.raises(PermissionError) as raised:
+        DemoService().run(persona="basic", seed=42)
+
+    assert raised.value.filename == "/denied/MoneyBin/demo"
+    init_db.assert_not_called()
+    assert not (tmp_path / "profiles" / DEMO_PROFILE).exists()
+
+
+@pytest.mark.integration
+def test_denied_inbox_fails_before_an_existing_database_is_rebuilt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    """On a rerun, the guard reads first, then the inbox, then the rebuild."""
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=True)
+    denied = PermissionError(1, "Operation not permitted", "/denied/MoneyBin/demo")
+    mocker.patch.object(ProfileService, "ensure_inbox", side_effect=denied)
+    rebuild = mocker.patch("moneybin.services.demo_service._rebuild_database")
+
+    with pytest.raises(PermissionError):
+        DemoService().run(persona="basic", seed=42, reset_confirmed=True)
+
+    rebuild.assert_not_called()
+    assert DemoService().profile_has_data()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "writer_counts",
+    [
+        {"tabular_accounts": 1, "tabular_transactions": 5},
+        {"tabular_accounts": 2, "tabular_transactions": 4},
+    ],
+    ids=["accounts", "transactions"],
+)
+def test_run_refuses_writer_counts_that_disagree_with_generated_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: Any,
+    writer_counts: dict[str, int],
+) -> None:
+    """Demo must fail before transforms when its writer omits generated rows."""
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _mock_pipeline(mocker)
+    writer = mocker.patch("moneybin.synthetic.writer.SyntheticWriter")
+    writer.return_value.write.return_value = writer_counts
+    refresh = mocker.patch("moneybin.orchestration.refresh.refresh")
+
+    with pytest.raises(
+        DemoRefreshFailedError, match="generated rows were not all saved"
+    ):
+        DemoService().run(persona="basic", seed=42)
+
+    writer.return_value.write.assert_called_once()
+    refresh.assert_not_called()
 
 
 @pytest.mark.integration
@@ -247,7 +310,7 @@ def test_run_accepts_a_multi_currency_position(
 ) -> None:
     """A profile holding two currencies has no single total — that is not a failure.
 
-    NetworthService nulls the headline scalars once a second currency appears
+    Demo nulls the headline scalars once a second currency appears
     (multi-currency.md Requirement 5) and reports each currency in
     `per_currency`. Demo used to read that null as a broken refresh, which made
     every multi-currency persona unrunnable.
@@ -349,7 +412,7 @@ def test_demo_net_worth_covers_every_account(
 ) -> None:
     # Demo's one headline answer. It used to print "Net worth: 0.00": every account
     # is carried in `core.fct_balances_daily` only to its OWN last observation, so on
-    # the latest date — the one `NetworthService.current()` reports — accounts with
+    # the latest date — the one demo's net-worth summary reads — accounts with
     # older statements had already dropped out. The OFX accounts carry a single
     # opening-day balance, so they vanished entirely, and `basic`'s remaining account
     # happened to sit at zero.
@@ -363,9 +426,9 @@ def test_demo_net_worth_covers_every_account(
     assert any(segment.net_worth != Decimal("0") for segment in result.per_currency)
 
     with get_database(read_only=True) as db:
-        # reports.net_worth is one row per (date, currency), so the count has to
-        # be summed across currencies — a bare LIMIT 1 would compare one
-        # currency's account count against the whole profile's and fail.
+        # reports.net_worth is one row per date, already totalled across every
+        # currency — SUM() here is over that single matching row, not a
+        # cross-currency rollup; a bare LIMIT 1 would answer the same question.
         row = db.execute(
             "SELECT SUM(account_count) FROM reports.net_worth "
             "WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)"

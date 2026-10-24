@@ -583,11 +583,7 @@ def investments_lots_select(
                 for lot_id, qty in parsed
             ],
         ),
-        actions=[
-            "Use refresh_run to materialize the updated selection into "
-            "core.fct_realized_gains",
-            "Use investments(view='gains') to see the updated allocation",
-        ],
+        actions=["Use investments(view='gains') to see the updated allocation"],
     )
 
 
@@ -887,7 +883,7 @@ def _apply_accept(
             # feed-key bind has no such impact, but it still has a blast radius —
             # the sibling candidates its accept auto-rejects — and that radius is
             # live state, so it is recomputed INSIDE accept_feed_key's transaction
-            # rather than here. mcp.md forbids verifying and then opening a
+            # rather than here. services.md forbids verifying and then opening a
             # separate mutation transaction: a sibling queued in that gap would be
             # rejected by a bind the user approved without it. The grant is
             # checked against the binding the prompt was issued for, which

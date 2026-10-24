@@ -73,6 +73,47 @@ class TestAssertionsCRUD:
     """Tests for assert_balance, delete_assertion, and list_assertions."""
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "amount,stored", [("100.005", "100.01"), ("-100.005", "-100.01")]
+    )
+    def test_assert_preserves_database_decimal_rounding(
+        self, assertion_db: Database, amount: str, stored: str
+    ) -> None:
+        svc = BalanceService(assertion_db)
+        result = svc.assert_balance(
+            "acct_a", date(2026, 1, 31), Decimal(amount), actor="cli"
+        )
+        assert result.assertion.balance == Decimal(stored)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_assert_verifies_prior_state_before_audited_write(
+        self, assertion_db: Database, existing: bool
+    ) -> None:
+        svc = BalanceService(assertion_db)
+        day = date(2026, 1, 31)
+        if existing:
+            svc.assert_balance("acct_a", day, Decimal("100"), actor="cli")
+        before = svc.get_assertion_snapshot("acct_a", day)
+        audit_count = assertion_db.execute(
+            "SELECT count(*) FROM app.audit_log"
+        ).fetchone()
+
+        def refuse(live: BalanceAssertionSnapshot | None) -> None:
+            assert live == before
+            raise UserError("Assertion changed", code="mutation_confirmation_mismatch")
+
+        with pytest.raises(UserError, match="Assertion changed"):
+            svc.assert_balance(
+                "acct_a", day, Decimal("200"), actor="cli", verify=refuse
+            )
+        assert svc.get_assertion_snapshot("acct_a", day) == before
+        assert (
+            assertion_db.execute("SELECT count(*) FROM app.audit_log").fetchone()
+            == audit_count
+        )
+
+    @pytest.mark.unit
     def test_assert_inserts(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
         result = svc.assert_balance(
@@ -145,7 +186,7 @@ class TestAssertionsCRUD:
                 verify=refuse,
             )
 
-        assert seen == [(Decimal("100.00"), "2026-02-01 12:34:56")]
+        assert seen == [(Decimal("100.00"), "2026-02-01 12:34:56+00:00")]
         assert svc.list_assertions("acct_a").assertions[0].balance == Decimal("100.00")
         delete_audits = assertion_db.execute(
             """
@@ -269,6 +310,28 @@ class TestCurrentBalances:
         assert isinstance(result, BalanceObservationListPayload)
         assert len(result.observations) == 1
         assert result.observations[0].balance == Decimal("100.00")  # the Jan 1 obs
+
+    @pytest.mark.unit
+    def test_current_returns_an_unanchored_account_with_a_null_balance(
+        self, db: Database
+    ) -> None:
+        """An account holding value with no balance is listed, not dropped."""
+        _seed_fct_balances_daily(
+            db,
+            [
+                {
+                    "account_id": "acct_b",
+                    "balance_date": date(2026, 1, 31),
+                    "balance": None,
+                    "is_observed": False,
+                    "currency_code": "USD",
+                },
+            ],
+        )
+        (obs,) = BalanceService(db).current_balances().observations
+        assert obs.account_id == "acct_b"
+        assert obs.balance is None
+        assert obs.is_observed is False
 
 
 class TestHistory:

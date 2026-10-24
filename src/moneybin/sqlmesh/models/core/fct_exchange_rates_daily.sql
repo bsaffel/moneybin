@@ -24,7 +24,7 @@
    rows does that. See docs/specs/reports-net-worth-sql-surface.md §Rate
    models for the argument in full.
 
-   WINDOW-BOUNDED FILL, WEEKEND HOP AT THE TRAILING EDGE, AND NOTHING FURTHER.
+   WINDOW-BOUNDED FILL, CLOSURES ONLY, WEEKEND HOP AT THE TRAILING EDGE.
    For a real pair, rows start at that pair's first observation and normally
    end at its last — before the first quote or after the last, there is no
    row at all, so a downstream join misses visibly rather than matching a
@@ -33,12 +33,18 @@
    no reference rate is ever published on a weekend: a pair whose last
    observation falls on a Friday gets two more spine rows (Saturday, Sunday)
    carrying that quote forward, and nothing else. This mirrors
-   `_last_publication_day` exactly and stops exactly where it stops —
-   `MAX_BACKWARD_RESOLUTION_DAYS` (currency_service.py) bounds a fetch
-   response's own distance from the day asked about, not a carry-forward
-   window, and borrowing it here would price an ordinary weekday from a
-   quote up to 14 days old, which is the substitution Requirement 5 forbids
-   by name.
+   `_last_publication_day` exactly and stops exactly where it stops.
+   Inside the window a day carries only across a market closure — the weekend
+   after a Friday, or a day inside a recorded provider answer
+   (raw.exchange_rate_coverage) whose bracketing publications, from that same
+   provider, sit at most
+   MAX_MARKET_CLOSURE_DAYS (7) apart, the rule resolve_rate's offline path
+   applies — so a holiday prices at the publication before it and a wider
+   hole stays unpriced. `MAX_BACKWARD_RESOLUTION_DAYS` (14) is not that
+   bound: it limits how far a fetch response may sit from the day asked
+   about, and borrowing it here would price an ordinary weekday from a quote
+   up to 14 days old, which is the substitution Requirement 5 forbids by
+   name.
 
    Multiple providers quoting the same pair and date is resolved by the same
    tie-break core.fct_exchange_rates uses for provider rows (freshest write,
@@ -77,46 +83,60 @@
    core.fct_security_prices. A user override is deliberately NOT part of that
    recompute; see the header note above.
 
-   KNOWN DEFERRAL. CurrencyService._store() restates only
-   core.bridge_currency_conversions and its downstream dependents
-   (fx_accounting_refresh.restate_fx_accounting) when `moneybin fx rate`
-   caches a newly fetched quote. It does not restate this table, so a
-   pair/date fetched after the last sqlmesh run stays stale, or entirely
-   absent, here (and therefore in core.fct_exchange_rates_effective, which
-   is built on top of it) until the next full run. This mirrors the shipped
-   precedent of PriceService.pull never restating core.fct_security_prices,
-   also kind FULL, and is deliberately out of scope here: nothing reads
-   this table yet. It MUST be resolved before the net-worth ladder rungs
-   start reading it — either wire this model into the provider-rate refresh
-   path, or accept the staleness explicitly. See
-   docs/specs/reports-net-worth-sql-surface.md's Implementation Plan for
-   those rungs (reports/net_worth_accounts.sql,
-   reports/net_worth_currencies.sql). */
+   A newly cached quote restates this table: CurrencyService._store() and the
+   refresh rates step both restate from raw.exchange_rates and
+   raw.exchange_rate_coverage (services/restate.py). */
 MODEL (
   name core.fct_exchange_rates_daily,
   kind FULL,
   grain (from_currency, to_currency, effective_date)
 );
 
-WITH provider_obs AS (
-  /* rate is the final tiebreak, matching core.fct_security_prices and
+WITH provider_series AS (
+  /* Each provider's own publication series, so a row knows the next day the
+     SAME provider published. The closure proof below is per provider: one
+     provider's answer says nothing about a gap in another's sparser cache, so
+     the bracket a carried row is measured against must come from the provider
+     that priced it, not from whichever provider happens to hold the next row.
+     rate is the final tiebreak, matching core.fct_security_prices and
      core.fct_exchange_rates: prep.stg_exchange_rates upper-cases from_currency/
      to_currency, so two raw rows differing only by case collide on this grain.
-     Nothing writes such a pair today, but leaving the pick unresolved past
-     source_type would make a future collision's winner depend on scan order
-     rather than the row's own values. */
+     A provider's last row has no next publication; a NULL there would let
+     IGNORE NULLS below borrow the previous row's, so it gets a date no gap
+     check can pass. */
   SELECT
     from_currency,
     to_currency,
     rate_date,
     rate,
     source_type AS provider_name,
-    loaded_at
+    loaded_at,
+    COALESCE(
+      LEAD(rate_date) OVER (PARTITION BY from_currency, to_currency, source_type ORDER BY rate_date),
+      '9999-12-31'::DATE
+    ) AS provider_next_date
   FROM prep.stg_exchange_rates
   QUALIFY
     ROW_NUMBER() OVER (
+      PARTITION BY from_currency, to_currency, rate_date, source_type
+      ORDER BY loaded_at DESC, rate
+    ) = 1
+), provider_obs AS (
+  /* One observation per pair and day: freshest write, then provider name,
+     the same tie-break core.fct_exchange_rates applies to provider rows. */
+  SELECT
+    from_currency,
+    to_currency,
+    rate_date,
+    rate,
+    provider_name,
+    provider_next_date,
+    loaded_at
+  FROM provider_series
+  QUALIFY
+    ROW_NUMBER() OVER (
       PARTITION BY from_currency, to_currency, rate_date
-      ORDER BY loaded_at DESC, source_type, rate
+      ORDER BY loaded_at DESC, provider_name, rate
     ) = 1
 ), pair_bounds AS (
   SELECT
@@ -151,6 +171,7 @@ WITH provider_obs AS (
     LAST_VALUE(o.rate_date IGNORE NULLS) OVER pair_order AS published_date,
     LAST_VALUE(o.rate IGNORE NULLS) OVER pair_order AS rate,
     LAST_VALUE(o.provider_name IGNORE NULLS) OVER pair_order AS rate_vendor,
+    LAST_VALUE(o.provider_next_date IGNORE NULLS) OVER pair_order AS next_published_date,
     'provider' AS rate_source
   FROM pair_spine AS s
   LEFT JOIN provider_obs AS o
@@ -162,6 +183,48 @@ WITH provider_obs AS (
     ORDER BY s.effective_date
     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
   )
+), provider_closures AS (
+  /* A carried row survives only as a market closure: the weekend after a
+     Friday (_last_publication_day's hop), or a day the carrying provider's own
+     recorded answer covered (raw.exchange_rate_coverage, matched on
+     source_type) whose two bracketing publications BY THAT PROVIDER are at
+     most 7 days apart — MAX_MARKET_CLOSURE_DAYS in currency_service.py, the
+     same rule resolve_rate's offline path applies, so the two answer the same
+     days. next_published_date carries with published_date and rate_vendor
+     through the same window, so the bracket is the carrying provider's.
+     Without coverage the gap may be a day nobody fetched (two separate
+     `fx rate` lookups leave the same rows as a full fetch); a wider gap is
+     likelier a hole than a closed market. Both stay unpriced (Requirement 5). */
+  SELECT
+    from_currency,
+    to_currency,
+    effective_date,
+    published_date,
+    rate,
+    rate_vendor,
+    rate_source
+  FROM provider_filled
+  WHERE
+    published_date = effective_date
+    OR (
+      ISODOW(effective_date) IN (6, 7)
+      AND ISODOW(published_date) = 5
+      AND effective_date - published_date <= 2
+    )
+    OR (
+      next_published_date - published_date <= 7
+      AND EXISTS(
+        SELECT
+          1
+        FROM raw.exchange_rate_coverage AS c
+        WHERE
+          c.from_currency = provider_filled.from_currency
+          AND c.to_currency = provider_filled.to_currency
+          AND c.source_type = provider_filled.rate_vendor
+          AND c.start_date <= provider_filled.effective_date
+          AND c.end_date >= provider_filled.effective_date
+      )
+    )
 ), identity_currencies AS (
   /* Both arms feed this, not core.dim_accounts alone: core.fct_balances
      coalesces a balance observation's own captured currency over the
@@ -175,7 +238,7 @@ WITH provider_obs AS (
   FROM (
     SELECT
       a.currency_code
-    FROM core.dim_accounts AS a
+    FROM prep.int_accounts__merged AS a
     UNION
     SELECT
       d.currency_code
@@ -214,7 +277,7 @@ WITH provider_obs AS (
     rate,
     rate_vendor,
     rate_source
-  FROM provider_filled
+  FROM provider_closures
   UNION ALL
   SELECT
     from_currency,

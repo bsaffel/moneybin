@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-03 -->
+<!-- Last reviewed: 2026-09-23 -->
 # Google Sheets
 
 Connect a Google Sheet as a live data source. MoneyBin authenticates once via direct OAuth, then every `moneybin refresh` re-pulls the sheet's current state — additions, edits, and deletions all flow through. Tiller-style ledger sheets participate in the full matching and categorization pipeline; any other sheet lands as queryable JSON with an auto-generated typed view.
@@ -178,7 +178,11 @@ A `transactions` connection pins a column mapping. If you rename or remove a col
 
 A `seed` connection pins nothing. It regenerates its view on every pull, so renamed, added, and reordered columns are absorbed silently; only a sheet with no header row at all refuses.
 
-Either way the connection enters `drift_detected` state; the rest of your connections keep pulling normally.
+Either way the connection enters `drift_detected` state; the rest of your
+connections keep pulling normally. A requested `moneybin gsheet pull` that
+detects drift exits nonzero even when another connection completed, so scripts
+and agents can inspect the receipt instead of treating the partial result as
+success.
 
 ```bash
 moneybin gsheet status
@@ -189,7 +193,7 @@ Will show something like:
 ```
 abc123  status=healthy  adapter=seed  last_success=2026-07-24T14:32:00  failures=0
 def456  status=drift_detected  adapter=transactions  last_success=2026-07-23T09:00:00  failures=1
-   ⚠️  missing headers: ['description']
+   ! missing headers: ['description']
 ```
 
 To recover, run:

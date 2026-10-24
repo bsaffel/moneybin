@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-10-01 -->
 # Observability
 
 What MoneyBin records about itself, how to read it, and what's intentionally NOT recorded. Three surfaces: structured logs (per-profile log files + stderr), persisted metrics (in the `app.metrics` table), and the `system doctor` integrity sweep. The privacy threat model lives in [`threat-model.md`](threat-model.md); this guide is operational.
@@ -7,8 +7,8 @@ What MoneyBin records about itself, how to read it, and what's intentionally NOT
 
 - **Default location.** `<base>/profiles/<profile>/logs/{stream}_YYYY-MM-DD.log`, where `<base>` is the MoneyBin data directory (`~/.moneybin` by default). One file per stream per day.
 - **Streams.** `cli` (CLI command execution), `mcp` (MCP server activity), `sqlmesh` (transform pipeline). SQLMesh output is routed to its own file and suppressed from the console; WARNING and above still reach stderr.
-- **Default verbosity.** `INFO`. Pass `--verbose` on any command to raise the root level to `DEBUG`.
-- **Format.** `human` by default. Set `MONEYBIN_LOGGING__FORMAT=json` to emit structured JSON to files. The **console always stays human-readable** regardless of `LOGGING__FORMAT` — JSON applies only to file handlers. Capture stderr if you want human-readable lines in journald/Docker; tail the file (or `moneybin logs <stream> --output json`) for JSON.
+- **CLI console and verbosity.** The CLI prints its requested result on stdout. Without the root flag, its console logger shows WARNING and ERROR on stderr; INFO and DEBUG diagnostics stay out of the console. Put `--verbose` before the command, as in `moneybin --verbose import files statement.csv`, to raise that CLI console logger to DEBUG and send its INFO and DEBUG diagnostics to stderr. Warnings, errors, and requested results remain visible without `--verbose`.
+- **Format and file logging.** `human` is the console format regardless of `MONEYBIN_LOGGING__FORMAT`; that setting changes file handlers only. `MONEYBIN_LOGGING__LOG_TO_FILE=false` disables the CLI's daily file, not its stderr handler: warnings and errors still reach stderr, and `--verbose` still exposes CLI INFO and DEBUG diagnostics there. MCP and SQLMesh use their own stream handlers; this paragraph describes CLI console behavior. Capture stderr for human-readable lines in journald/Docker; tail the file (or `moneybin logs <stream> --output json`) for JSON when file logging is enabled.
 - **PII sanitization.** Every handler wraps its formatter in `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`). Three patterns are masked unconditionally before bytes hit disk or terminal: SSNs (`NNN-NN-NNNN` → `***-**-****`), digit runs of 8+ (→ `****...NNNN` with last 4 retained), and dollar amounts (`$N`, `$N,NNN`, `$N.NN` → `$***`). The formatter masks and emits — it never drops a record. It is a safety net, not a substitute for clean log statements. The privacy ground rules around what may be logged in the first place live in [`threat-model.md`](threat-model.md#pii-redaction).
 - **File permissions.** Log files are created with `0600` on POSIX so only the owning user can read them.
 
@@ -36,15 +36,17 @@ The stream argument, the follow and prune flags, and `--print-path` are in the g
 
 ```console
 $ uv run moneybin logs cli -n 5
-Using profile: demo
+Logs · cli · requested line cap 5
+
 Profile resolved from config.yaml
 Using profile: demo
 Profile resolved from config.yaml
 Using profile: demo
 Profile resolved from config.yaml
+
 ```
 
-Five lines, message-only, because a CLI run wrote them (see "Log-line shapes" above).
+Five lines, message-only, because a CLI run wrote them (see "Log-line shapes" above). The header names the stream and the cap that was requested, not the number of lines found.
 
 Three behaviours the flag list does not carry:
 
@@ -138,29 +140,33 @@ Every metric is recorded manually (`METRIC.labels(...).inc()` / `.observe()`) at
 
 ```console
 $ uv run moneybin stats
-Using profile: demo
+Metrics
+Scope:   All recorded metrics
+Metrics: 73 across 16 domains
+Investment matching
+Investment Match Duration Seconds (operation: plan): 1 snapshots (sum=0.49 s)
 Import pipeline
-Import Batch Size:           3 snapshots (sum=0.00 files)
-Inbox Sync Duration Seconds: 3 snapshots (sum=0.00 s)
+Import Batch Size:           1 snapshots (sum=0.00 files)
+Inbox Sync Duration Seconds: 1 snapshots (sum=0.00 s)
 Tabular import
 OFX Fitid Collision Repaired: 0 total
-PDF Extraction Confidence:    3 snapshots (sum=0.00 score)
+PDF Extraction Confidence:    1 snapshots (sum=0.00 score)
 PDF Replay Guard Failure:     0 total
 Smart import confirmation
-Import Detection Score: 3 snapshots (sum=0.00 score)
-SQLMesh transforms
-SQLMesh Run Duration Seconds (model: transform_apply): 2 snapshots (sum=7.05 s)
+Import Detection Score: 1 snapshots (sum=0.00 score)
 ```
 
-Another 88 lines follow, under the headers from Deduplication through User-created reports. `--metric` narrows to one family by name substring — it matches the header's metrics, not the header:
+Another 78 lines follow, under the headers from SQLMesh transforms through User-created reports. The three header lines lead with the scope and the totals — 73 metrics across 16 domains — before the first subsystem block. This profile was built by `moneybin demo` and then refreshed with `moneybin refresh`, which flushed each metric once; `snapshots` counts those flushes, not observations. `--metric` narrows to one family by name substring — it matches the header's metrics, not the header, and the `Scope:` line restates the filter:
 
 ```console
 $ uv run moneybin stats --metric import
-Using profile: demo
+Metrics
+Scope:   Recorded metrics — metric family 'import'
+Metrics: 2 across 2 domains
 Import pipeline
-Import Batch Size: 3 snapshots (sum=0.00 files)
+Import Batch Size: 1 snapshots (sum=0.00 files)
 Smart import confirmation
-Import Detection Score: 3 snapshots (sum=0.00 score)
+Import Detection Score: 1 snapshots (sum=0.00 score)
 ```
 
 `stats` returns the most recent snapshot per `(metric_name, labels)`, groups the result under a header per subsystem, and reports counters as `N total`, gauges as `value`, and histograms as `N snapshots (sum=X <unit>)`. Cumulative counters are not summed across snapshots — that would double-count.
@@ -177,37 +183,41 @@ Two details of that line are worth reading precisely:
 
 A read-only sweep that asks: is the pipeline internally consistent right now?
 
-A clean sweep prints one line. On the family demo profile, immediately after `moneybin refresh`:
+A clean sweep prints one line. On the family demo profile, immediately after `moneybin refresh`, the synthetic history's fixed end date (2025-12-31) is now more than 30 days in the past, so it warns instead:
 
 ```console
 $ uv run moneybin system doctor
-Using profile: demo
+! net_worth_stale_balance — 4 account(s) in net worth have no balance observed in the last 30 days,
+so their balances are carried forward — import a recent statement, sync, or record one with
+`moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
+   Affected: account:****0001, account:****0002, account:****0003, account:****0004
 
-65 invariants checked across 2,886 transactions — all passing
+69 invariants checked across 2,886 transactions — 68 passing, 1 warn, 0 skipped
 ```
+
+`Affected` prints each account as `account:` and the last four digits of its id (`SYN00420001` shows as `****0001`), so the line identifies the account without printing the id. The trailing HTML comment on the `refresh` line is not CLI output: the docs gate needs it on any transcript line that quotes two commands.
 
 `--verbose` names each invariant that ran, plus the affected IDs on anything failing:
 
 ```console
 $ uv run moneybin system doctor --verbose
-Using profile: demo
-✅ fct_transactions_fk_integrity
-✅ fct_investment_transactions_fk_integrity
-✅ fct_investment_transactions_sign_convention
-✅ fct_investment_transactions_uniqueness
-✅ fct_transactions_sign_convention
-✅ bridge_transfers_balanced
-✅ transform_model_presence
+✓ fct_transactions_fk_integrity
+✓ fct_investment_transactions_fk_integrity
+✓ fct_investment_transactions_sign_convention
+✓ fct_investment_transactions_uniqueness
+✓ fct_transactions_sign_convention
+✓ bridge_transfers_balanced
+✓ transform_model_presence
 ```
 
-The other 58 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
+The other 62 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
 
 What it audits, via `DoctorService`:
 
 - **SQLMesh named audits** attached to core models — FK integrity and sign convention on `core.fct_transactions`, the same two plus uniqueness on `core.fct_investment_transactions`, and transfer-pair balance on `core.bridge_transfers`.
 - **Transform model presence** — the SQLMesh models the pipeline expects are materialized.
 - **Dedup reconciliation** and **cross-source duplicates** — duplicate account overlap, plus cross-source duplicate transactions that have no merge proposal.
-- **Categorization coverage** — share of the transactions that need a category that have one. Scoped to the population `core.uncategorized_queue` is drawn from, so transfer legs and archived accounts are out. Warns (not fails) when under 50%.
+- **Categorization coverage** — share of the transactions that need a category that have one. Scoped to `core.fct_transactions.is_categorizable`, so transfer legs, archived accounts, and transactions whose account never resolved are out. Warns (not fails) when under 50%.
 - **Currency integrity** — profile currencies and rows carrying an unknown currency.
 - **Protected `app.*` audit coverage** — one check per repository-wrapped table (`user_categories`, `categorization_rules`, `account_settings`, `balance_assertions`, `imports`, and the rest), verifying every mutation left an audit-log row. Sampled over recent rows by default; `--full` scans the whole table.
 - **Orphaned app state** — `app.*` rows pointing at accounts, categories, or transactions that no longer exist.
@@ -231,9 +241,9 @@ $ uv run moneybin system doctor --output json | jq .
     "display_currency": null
   },
   "data": {
-    "passing": 65,
+    "passing": 68,
     "failing": 0,
-    "warning": 0,
+    "warning": 1,
     "skipped": 0,
     "transaction_count": 2886,
     "invariants": [
@@ -257,7 +267,7 @@ $ uv run moneybin system doctor --output json | jq .
 }
 ```
 
-The `Using profile: demo` line the CLI writes to stderr and the 63 `invariants` entries between the first and the last are cut. `summary.total_count` counts the sweep, not its invariants — the per-invariant tallies are `data.passing` and `data.failing`.
+The 67 `invariants` entries between the first and the last are cut; this command writes nothing to stderr. `summary.total_count` counts the sweep, not its invariants — the per-invariant tallies are `data.passing` and `data.failing`.
 
 On failure (exit `1`), the top-level `status` flips to `"error"`, an `error` object appears (`{"code": "audit_invariant_failure", "message": "N invariant(s) failing"}`), and the offending entries in `data.invariants[]` carry `"status": "fail"` with `detail` set to `"N violation(s)"`. Match on `data.invariants[].status == "fail"` (or top-level `status == "error"`) to drive alerts. `affected_ids` is populated only when `--verbose` is passed.
 
@@ -338,7 +348,8 @@ After=network-online.target
 [Service]
 Type=simple
 User=moneybin
-Environment=MONEYBIN_DATABASE__ENCRYPTION_KEY=...
+Environment=MONEYBIN_PROFILE=default
+Environment=MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY=...
 Environment=MONEYBIN_LOGGING__LOG_TO_FILE=false
 Environment=MONEYBIN_LOGGING__FORMAT=human
 ExecStart=/usr/local/bin/moneybin mcp serve

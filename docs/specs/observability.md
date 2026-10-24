@@ -178,17 +178,32 @@ Metric definitions live in `src/moneybin/metrics/registry.py` (single source of 
 | `moneybin_import_duration_seconds` | Histogram | `source_type` |
 | `moneybin_import_errors_total` | Counter | `source_type`, `error_type` |
 | `moneybin_sqlmesh_run_duration_seconds` | Histogram | `model` |
+| `moneybin_materialized_restate_total` | Counter | `input`, `outcome` |
 | `moneybin_dedup_matches_total` | Counter | `match_tier`, `decided_by` |
 | `moneybin_transfer_retirements_total` | Counter | `cause` |
 | `moneybin_categorization_auto_rate` | Gauge | — |
 | `moneybin_categorization_rules_fired_total` | Counter | `rule_id` |
 | `moneybin_profile_currencies` | Gauge | — |
 | `moneybin_unknown_currency_rows` | Gauge | `grain` |
+| `moneybin_investment_source_choice_accounts` | Gauge | `investment_source_type` |
 | `moneybin_mcp_tool_calls_total` | Counter | `tool_name` |
 | `moneybin_mcp_tool_duration_seconds` | Histogram | `tool_name` |
 | `moneybin_db_query_duration_seconds` | Histogram | `operation` |
 
+`moneybin_investment_source_choice_accounts` counts the accounts that have each investment source chosen (`manual`, `plaid`, zeros included). It is set when the `investment_source_overlap` doctor check runs, on the read path and without a write lock, as the `moneybin_net_worth_*` gauges are. Changes to the setting itself are already in `app.audit_log` through `account_settings.set`, so no counter accompanies it. See [`investment-source-choice.md`](investment-source-choice.md).
+
 ### Instrumentation API
+
+Sync phase counters retain the existing end-to-end pull metrics and distinguish
+`moneybin_sync_ingestion_outcomes_total` (committed/failed),
+`moneybin_sync_refresh_outcomes_total` (complete/failed), and
+`moneybin_sync_partial_scopes_total` (partial/failed/deferred). Labels are only
+the bounded provider and status. A committed job is counted after its database
+commit, independently of acknowledgement or refresh success. Replay and local
+recovery do not count ingestion again; each actual refresh attempt counts.
+Process metrics can miss the commit-to-publication crash window and do not
+replace immutable receipts as durable evidence. See `sync-simplefin.md` for
+source-completeness and broker/client responsibilities.
 
 Every metric is recorded manually — a `Counter`/`Histogram`/`Gauge` constant
 imported from `moneybin.metrics.registry` and called directly at the call
@@ -240,7 +255,7 @@ CREATE TABLE app.metrics (
     value DOUBLE NOT NULL,            -- counter/gauge value, or histogram sum
     bucket_bounds DOUBLE[],           -- histogram upper bounds (NULL for counter/gauge)
     bucket_counts BIGINT[],           -- histogram cumulative counts per bucket
-    recorded_at TIMESTAMP NOT NULL    -- snapshot timestamp
+    recorded_at TIMESTAMPTZ NOT NULL    -- snapshot timestamp
 );
 ```
 

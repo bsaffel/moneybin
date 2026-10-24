@@ -15,7 +15,7 @@ SELECT
   s.class, /* Accounting class: income | expense | transfer | debt */
   TRUE AS is_default, /* TRUE for seeded defaults, FALSE for user-created */
   COALESCE(o.is_active, TRUE) AS is_active, /* FALSE if user has soft-deleted this default */
-  NULL::TIMESTAMP AS created_at, /* NULL for seeded categories; populated for user_categories below */
+  NULL::TIMESTAMPTZ AS created_at, /* NULL for seeded categories; populated for user_categories below */
   o.updated_at AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. NULL for pure-seed rows; query meta.model_freshness for seed model freshness. */
 FROM seeds.categories AS s
 LEFT JOIN app.category_overrides AS o

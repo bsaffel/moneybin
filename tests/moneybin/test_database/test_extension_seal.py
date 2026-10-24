@@ -59,6 +59,7 @@ UNDO_ATTEMPTS = [
     "RESET disabled_filesystems",
     "SET GLOBAL disabled_filesystems=''",
     "SET lock_configuration=false",
+    "SET TimeZone='Asia/Tokyo'",
     "SET autoload_known_extensions=true",
     "SET autoinstall_known_extensions=true",
     "SET allow_community_extensions=true",
@@ -277,3 +278,7 @@ def test_load_crypto_extension_failure_raises_database_crypto_error() -> None:
         _load_crypto_extension(conn)
 
     conn.close.assert_called_once()
+
+
+def test_utc_session_is_set_before_read_only_seal(read_db: Database) -> None:
+    assert read_db.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)

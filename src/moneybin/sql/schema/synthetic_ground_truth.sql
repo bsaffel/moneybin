@@ -9,6 +9,6 @@ CREATE TABLE IF NOT EXISTS synthetic.ground_truth (
     transfer_pair_id VARCHAR, -- Non-NULL for transfer pairs; both sides share the same ID
     persona VARCHAR NOT NULL, -- Which persona generated this row
     seed INTEGER NOT NULL, -- Seed used for reproducibility
-    generated_at TIMESTAMP NOT NULL, -- When this ground truth was produced
+    generated_at TIMESTAMPTZ NOT NULL, -- When this ground truth was produced
     PRIMARY KEY (source_transaction_id)
 );

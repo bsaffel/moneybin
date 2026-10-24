@@ -62,14 +62,15 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "source_type": "VARCHAR",
     "source_count": "BIGINT",
     "match_confidence": "DECIMAL(5,4)",
-    "source_extracted_at": "TIMESTAMP",
-    "loaded_at": "TIMESTAMP",
+    "source_extracted_at": "TIMESTAMP WITH TIME ZONE",
+    "loaded_at": "TIMESTAMP WITH TIME ZONE",
     # Per-row freshness column added by core-updated-at-convention spec;
     # MAX of loaded_at, categorized_at, and per-txn aggregates of note/tag/split
     # timestamps. See src/moneybin/sqlmesh/models/core/fct_transactions.sql outer SELECT.
-    "updated_at": "TIMESTAMP",
+    "updated_at": "TIMESTAMP WITH TIME ZONE",
     "is_transfer": "BOOLEAN",
     "transfer_pair_id": "VARCHAR",
+    "is_categorizable": "BOOLEAN",
     "transaction_year": "BIGINT",
     "transaction_month": "BIGINT",
     "transaction_day": "BIGINT",
@@ -78,7 +79,7 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "transaction_year_quarter": "VARCHAR",
     # Curation columns added by transaction-curation spec (V007); see
     # src/moneybin/sqlmesh/models/core/fct_transactions.sql notes_agg/tags_agg/splits_agg CTEs.
-    "notes": 'STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMP)[]',
+    "notes": 'STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMP WITH TIME ZONE)[]',
     "note_count": "BIGINT",
     "tags": "VARCHAR[]",
     "tag_count": "BIGINT",

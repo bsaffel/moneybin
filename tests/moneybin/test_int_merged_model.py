@@ -38,7 +38,11 @@ class TestIntTransactionsMergedModel:
             "MIN(m.transaction_date)" in content or "MIN(transaction_date)" in content
         )
 
-    def test_model_is_view(self) -> None:
+    def test_model_is_materialized(self) -> None:
+        """Every fact read pays for the merge, so it is built once per restate.
+
+        docs/specs/materialization-freshness-contract.md.
+        """
         model_path = SQLMESH_ROOT / "models" / "prep" / "int_transactions__merged.sql"
         content = model_path.read_text()
-        assert "kind VIEW" in content
+        assert "kind FULL" in content

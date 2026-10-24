@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, cast
@@ -23,11 +24,17 @@ from pydantic import BaseModel
 
 from moneybin import error_codes
 from moneybin.errors import ErrorDetail, RecoveryAction, UserError
+from moneybin.privacy.payloads.sync_completeness import SyncCompleteness
 from moneybin.protocol.row_set import row_set_rows
+from moneybin.temporal import format_utc
 
 
 def serialize_payload(value: Any) -> Any:
-    """Recursively expose payload containers without copying scalar leaves."""
+    """Expose payload containers, formatting typed instants and business dates."""
+    if isinstance(value, datetime):
+        return format_utc(value)
+    if isinstance(value, date):
+        return value.isoformat()
     if is_dataclass(value) and not isinstance(value, type):
         return {
             item.name: serialize_payload(getattr(value, item.name))
@@ -35,9 +42,10 @@ def serialize_payload(value: Any) -> Any:
         }
     if isinstance(value, BaseModel):
         try:
-            return serialize_payload(value.model_dump())
+            dumped = value.model_dump()
         except Exception:  # preserve existing fallback contract
             return value
+        return serialize_payload(dumped)
     if isinstance(value, Mapping):
         mapping = cast(Mapping[Any, Any], value)
         return {key: serialize_payload(item) for key, item in mapping.items()}
@@ -131,6 +139,14 @@ class SummaryMeta:
     # display_currency because the two answer one question together — that
     # names the unit, this says how the unit was reached.
     applied_rates: list[dict[str, Any]] | None = None
+    # The profile currency a `currency_basis="home"` column was priced FROM
+    # (contract.py's `CurrencyBasis`). Set only when a converted result's spec
+    # declares such a column and a surviving row actually holds a value in it
+    # — `applied_rates` alone names each rate's own pair, never which basis it
+    # priced, so a report with two source currencies per row (its own plus the
+    # home currency) would otherwise leave that half unattributed.
+    home_currency: str | None = None
+    sync_completeness: SyncCompleteness | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict, omitting a null ``period`` and a false ``degraded``.
@@ -157,6 +173,10 @@ class SummaryMeta:
                 d["degraded_reason"] = self.degraded_reason
         if self.applied_rates:
             d["applied_rates"] = self.applied_rates
+        if self.home_currency is not None:
+            d["home_currency"] = self.home_currency
+        if self.sync_completeness is not None:
+            d["sync_completeness"] = serialize_payload(self.sync_completeness)
         return d
 
 
@@ -177,7 +197,7 @@ class PayloadEncoder(json.JSONEncoder):
     value above ~$10^{13} would round on the way out; the wire contract
     documents money types up to that cap.
 
-    Catch-all for non-serializable types (datetime, UUID, etc.) falls back
+    Catch-all for other non-serializable types (UUID, etc.) falls back
     to `str(o)` here rather than via `json.dumps(..., default=str)` because
     passing both `cls=` and `default=` to `json.dumps` causes `default=` to
     REPLACE the encoder's `default()` method — silently dropping the
@@ -192,7 +212,7 @@ class PayloadEncoder(json.JSONEncoder):
         converted = serialize_payload(o)
         if converted is not o:
             return converted
-        # Existing fallback: str(o) for datetime, UUID, Enum, etc.
+        # Existing fallback for UUID, Enum, and other unsupported scalars.
         try:
             return super().default(o)
         except TypeError:
@@ -287,7 +307,7 @@ class ResponseEnvelope[T]:
                 ra if isinstance(ra, dict) else ra.model_dump()
                 for ra in self.recovery_actions
             ]
-        return d
+        return serialize_payload(d)
 
     def to_json(self) -> str:
         """Serialize to JSON string via PayloadEncoder.
@@ -316,6 +336,8 @@ def build_envelope(
     recovery_actions: list[RecoveryAction] | None = None,
     classes_returned: list[str] | None = None,
     applied_rates: list[dict[str, Any]] | None = None,
+    home_currency: str | None = None,
+    sync_completeness: SyncCompleteness | None = None,
 ) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope with computed metadata.
 
@@ -364,6 +386,11 @@ def build_envelope(
             (multi-currency.md Requirement 10). Pass it only when a conversion
             actually happened: omitted means nothing was converted, which is a
             different claim from "converted, rate unrecorded".
+        home_currency: The profile currency a `currency_basis="home"` column
+            was priced FROM, when the report declares one and a surviving row
+            actually holds a value in it. Omitted otherwise.
+        sync_completeness: Local source coverage for the resolved report scope.
+            Omitted when the report has no applicable sync evidence.
         classes_returned: Internal observability only — DataClass value strings
             for dynamic-SQL tools that self-classify per call (``dynamic_classification``
             mode). Read by the ``@mcp_tool`` decorator for privacy audit logging.
@@ -407,6 +434,8 @@ def build_envelope(
         degraded=degraded,
         degraded_reason=degraded_reason,
         applied_rates=applied_rates,
+        home_currency=home_currency,
+        sync_completeness=sync_completeness,
     )
 
     return ResponseEnvelope(

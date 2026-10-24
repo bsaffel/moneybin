@@ -9,7 +9,7 @@ from pydantic import Field, JsonValue
 
 from moneybin import error_codes
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import UserError, next_step_text
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.reports import ReportsPayload
 from moneybin.privacy.sensitivity import Sensitivity, get_max_rows, tier_to_sensitivity
@@ -85,22 +85,23 @@ def reports(
     # Built by hand rather than through `ReportResult.to_envelope`, which sends
     # raw records where this surface owes a typed payload and its own
     # `returned_count`. Every other field it carries must therefore be repeated
-    # here — `applied_rates` included, or the one report-reading surface an
-    # agent actually calls silently drops the provenance its own tool
-    # description promises.
+    # here — `applied_rates` and `home_currency` included, or the one
+    # report-reading surface an agent actually calls silently drops the
+    # provenance its own tool description promises.
     return build_envelope(
         data=payload,
         sensitivity=tier_to_sensitivity(result.tier).value,
         total_count=result.total_count,
         returned_count=len(payload.rows),
         classes_returned=result.classes_returned,
-        actions=result.actions or None,
+        actions=[next_step_text(action) for action in result.actions] or None,
         period=result.period,
         display_currency=result.display_currency,
         degraded=result.degraded,
         degraded_reason=result.degraded_reason,
         recovery_actions=list(result.recovery_actions) or None,
         applied_rates=[rate.as_provenance() for rate in result.applied_rates] or None,
+        home_currency=result.home_currency,
     )
 
 

@@ -53,16 +53,32 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             "ISO 4217 currency this row is denominated in; null means unknown.",
             DataClass.CURRENCY,
         ),
-        OutputColumn("top_category", "Modal category.", DataClass.CATEGORY),
+        OutputColumn(
+            "top_category", "Modal category.", DataClass.CATEGORY, uncategorized=True
+        ),
         OutputColumn("first_seen", "Earliest transaction date.", DataClass.TXN_DATE),
         OutputColumn("last_seen", "Latest transaction date.", DataClass.TXN_DATE),
-        OutputColumn("txn_count", "Transaction count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "txn_count",
+            "Transaction count.",
+            DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
+        ),
         OutputColumn(
             "active_months",
             "Distinct active calendar-month count.",
             DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
         ),
-        OutputColumn("account_count", "Distinct account count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "account_count",
+            "Distinct account count.",
+            DataClass.AGGREGATE,
+            numeric=True,
+            grouped=True,
+        ),
         OutputColumn(
             "total_inflow",
             "Lifetime sum of positive amounts.",

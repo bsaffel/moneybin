@@ -15,9 +15,11 @@ without a circular dependency.
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any, Literal
 
+from moneybin import error_codes
 from moneybin.config import get_settings as get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError as UserError
@@ -123,6 +125,7 @@ from moneybin.services.categorization.applier import (
     RuleStateTarget,
     RuleTargetPlan,
     RuleTargetResult,
+    SourceTermMapping,
     TaxonomyStateTarget,
     TaxonomyTargetPlan,
     TaxonomyTargetResult,
@@ -162,6 +165,7 @@ from moneybin.services.categorization.queries import (
     CategorizationCoverage,
     CategorizationQueries,
     CategorizationStats,
+    UnmappedSourceTerm,
 )
 from moneybin.tables import (
     CATEGORIES as CATEGORIES,
@@ -442,8 +446,14 @@ class CategorizationService:
         INSERT through ``CategorizationRulesRepo`` (paired audit, Invariant 10).
         When ``reapply=True`` and at least one rule was newly created,
         ``categorize_pending`` runs so the new rules fan out to uncategorized
-        rows immediately. ``actor`` is threaded to the audit rows (CLI/MCP pass
-        their surface; default ``"system"``).
+        rows immediately, and the result's ``recategorized`` carries the rows
+        that sweep's *rule* pass categorized (every active rule, not only the
+        ones just created) — ``None`` when no sweep ran. The same sweep also
+        runs the merchant and provider passes; their rows are not counted,
+        because the CLI and MCP present this figure as what rules did, and a
+        merchant match would otherwise make a new rule look effective.
+        ``actor`` is threaded to the audit rows
+        (CLI/MCP pass their surface; default ``"system"``).
 
         ``allow_broad`` overrides the unselective-``contains`` refusal (a
         pattern too short to discriminate) — see ``create_rules_core`` for
@@ -453,7 +463,8 @@ class CategorizationService:
             items, actor=actor, allow_broad=allow_broad
         )
         if reapply and result.created > 0:
-            self.categorize_pending()
+            counts = self.categorize_pending()
+            result.recategorized = counts["rule"]
         return result
 
     def deactivate_rule(
@@ -548,6 +559,74 @@ class CategorizationService:
             actor=actor,
             in_outer_txn=in_outer_txn,
         )
+
+    # -- Imported category-source-map curation --
+
+    def list_unmapped_source_terms(
+        self, *, namespace: str | None = None
+    ) -> list[UnmappedSourceTerm]:
+        """List distinct imported vocabulary terms with no bridge mapping.
+
+        ``namespace`` optionally filters to one ``source_origin`` (an
+        exporter slug). See
+        :meth:`CategorizationQueries.list_unmapped_source_terms`.
+        """
+        return self._queries.list_unmapped_source_terms(namespace=namespace)
+
+    def resolve_source_term(
+        self,
+        *,
+        source_type: str | None = None,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        category_id: str | None = None,
+        new_category: str | None = None,
+        ignore: bool = False,
+        actor: str = "system",
+    ) -> SourceTermMapping:
+        """Map one imported vocabulary term to a MoneyBin category, or ignore it.
+
+        See :meth:`MatchApplier.resolve_source_term` for the write contract
+        (exactly one of ``category_id`` / ``new_category`` / ``ignore``,
+        atomic commit, ``source_type`` derived when omitted).
+
+        The mapping always follows through: once the write commits,
+        ``categorize_pending`` runs, so a new mapping categorizes its rows at
+        once and the rows a changed mapping withdrew are re-evaluated. The
+        result's ``categorized`` counts transactions this term newly
+        categorized; ``recategorized`` counts those whose earlier
+        categorization from it was withdrawn, whatever they hold now.
+        """
+        mapping = self._applier.resolve_source_term(
+            source_type=source_type,
+            source_origin=source_origin,
+            category=category,
+            subcategory=subcategory,
+            category_id=category_id,
+            new_category=new_category,
+            ignore=ignore,
+            actor=actor,
+        )
+        held = self._applier.source_term_categorized_ids(mapping)
+        try:
+            self.categorize_pending()
+        except Exception as exc:
+            # The mapping and its withdrawals are already committed.
+            logger.error(
+                f"Categorize sweep failed after a mapping commit: {type(exc).__name__}"
+            )
+            raise UserError(
+                "The mapping is stored, but the categorize sweep that follows "
+                f"it failed. {mapping.recategorized} earlier categorization(s) "
+                "from this term were withdrawn, and the sweep may have "
+                "re-categorized only some of them before it stopped; running "
+                "it again finishes the change.",
+                code=error_codes.REFRESH_CATEGORIZE_FAILED,
+                hint="💡 Run 'moneybin refresh --step categorize' to finish it.",
+            ) from exc
+        gained = self._applier.source_term_categorized_ids(mapping) - held
+        return replace(mapping, categorized=len(gained - mapping.withdrawn_ids))
 
     def plan_taxonomy_targets(
         self, targets: Sequence[TaxonomyStateTarget]
@@ -654,6 +733,10 @@ class CategorizationService:
         """Apply Plaid PFC categories (via the category-source bridge) to still-uncategorized Plaid transactions."""
         return self._orchestrator.apply_plaid_categories()
 
+    def apply_source_category_map(self) -> int:
+        """Apply imported category text (via the category-source bridge) to still-uncategorized rows."""
+        return self._orchestrator.apply_source_category_map()
+
     def improve_ai_categories(self) -> int:
         """Upgrade AI-guessed categorizations to confident Plaid provider_native."""
         return self._orchestrator.improve_ai_categories()
@@ -685,16 +768,20 @@ class CategorizationService:
         # below, which runs engines in the requested order — necessary to
         # honor the order contract documented on the MCP tool.
         # categorize_pending() shares one uncategorized-rows fetch across both
-        # engines and enforces rule-priority-wins on conflicts. include_plaid=False
-        # keeps this fast path scoped to exactly the two requested engines —
-        # categorize_pending's default also runs a third (plaid) pass, which
-        # `methods: list[Literal["rules", "merchants"]]` has no way to request
-        # and this breakdown has no key to report it under.
+        # engines and enforces rule-priority-wins on conflicts.
+        # include_provider_native=False keeps this fast path scoped to
+        # exactly the two requested engines — categorize_pending's default
+        # also runs two provider_native passes (plaid, source_category_map),
+        # which `methods: list[Literal["rules", "merchants"]]` has no way to
+        # request and this breakdown has no key to report them under.
         if effective == ["rules", "merchants"]:
-            breakdown = self._orchestrator.categorize_pending(include_plaid=False)
+            breakdown = self._orchestrator.categorize_pending(
+                include_provider_native=False
+            )
             # categorize_pending returns {"rule": N, "merchant": N, "plaid": N,
-            # "total": N} — keys are singular; the public API exposes plural
-            # for symmetry with the methods=[...] parameter.
+            # "source_category_map": N, "total": N} — keys are singular; the
+            # public API exposes plural for symmetry with the methods=[...]
+            # parameter.
             result["applied_by_method"] = {
                 "rules": breakdown.get("rule", 0),
                 "merchants": breakdown.get("merchant", 0),
@@ -813,12 +900,48 @@ class CategorizationService:
             account_id=account_id,
         )
 
+    def list_pending_review_transactions(
+        self,
+        *,
+        limit: int | None,
+        sort: Literal["date", "impact"] = "date",
+        min_amount: Decimal = Decimal("0"),
+        account_id: str | None = None,
+        transaction_id: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Filter eligible attempts before ordering/limiting, then project only those IDs."""
+        rows = self._queries.list_uncategorized_transactions(
+            limit=limit,
+            sort=sort,
+            min_amount=min_amount,
+            account_id=account_id,
+            pending_only=True,
+            transaction_id=transaction_id,
+        )
+        if rows is None:
+            return None
+        attempts = self.project_pending_review_attempts([
+            str(row["transaction_id"]) for row in rows
+        ])
+        return [
+            {
+                **row,
+                "decision_id": str(attempts[str(row["transaction_id"])]["decision_id"]),
+            }
+            for row in rows
+            if str(row["transaction_id"]) in attempts
+        ]
+
+    def count_pending_review(self) -> int:
+        """Count current pending attempts, distinct from uncategorized inventory."""
+        return self._queries.count_pending_review()
+
     def list_categorization_history(self) -> list[dict[str, Any]]:
         """Return persisted transaction-category decisions newest first."""
         return self._queries.list_categorization_history()
 
     def count_uncategorized(self) -> int:
-        """Return the size of the canonical ``core.uncategorized_queue``."""
+        """Return how many transactions need a category."""
         return self._queries.count_uncategorized()
 
     def coverage(self) -> CategorizationCoverage:

@@ -15,7 +15,7 @@ The dividing line between assets and investments: **if the value comes from a ma
 
 Related specs and docs:
 - [`reports-net-worth.md`](reports-net-worth.md) — balance tracking and `reports.net_worth`; this spec extends it to include physical assets
-- [`moneybin-cli.md`](moneybin-cli.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `reports.net_worth`, surfaced via `reports networth`. CLI examples below already use the v2 path.
+- [`moneybin-cli.md`](moneybin-cli.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `reports.net_worth`, surfaced via `reports net-worth`. CLI examples below already use the v2 path.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data encrypted at rest via `Database` class
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 - [`mcp-architecture.md`](mcp-architecture.md) — tool taxonomy and response envelope conventions
@@ -56,8 +56,8 @@ CREATE TABLE IF NOT EXISTS app.assets (
     disposal_amount DECIMAL(18, 2),                     -- Sale price or settlement amount; NULL if still owned
     liability_account_id VARCHAR,                       -- Optional FK to core.dim_accounts (mortgage, auto loan); informational only
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE, -- Whether this asset contributes to net worth calculations
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the asset record was created
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When the asset record was last modified; service layer must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the asset record was created
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When the asset record was last modified; service layer must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
 );
 ```
 
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS app.asset_valuations (
     valuation_date DATE NOT NULL,    -- Date the valuation applies to (when the asset was worth this amount)
     value DECIMAL(18, 2) NOT NULL,   -- Estimated value of the asset as of the valuation date
     notes VARCHAR,                   -- Optional context for the valuation ("2024 county appraisal", "Zillow estimate")
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When this valuation record was entered
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When this valuation record was entered
     PRIMARY KEY (asset_id, valuation_date) -- One manual valuation per asset per date
 );
 ```
@@ -89,8 +89,8 @@ CREATE TABLE IF NOT EXISTS raw.zillow_valuations (
     zestimate_range_low DECIMAL(18, 2),     -- Low end of Zestimate confidence range
     zestimate_range_high DECIMAL(18, 2),    -- High end of Zestimate confidence range
     source_file VARCHAR,                    -- Path or URL of the data source
-    extracted_at TIMESTAMP,                 -- When the data was fetched from Zillow
-    loaded_at TIMESTAMP                     -- When the record was written to the raw table
+    extracted_at TIMESTAMPTZ,                 -- When the data was fetched from Zillow
+    loaded_at TIMESTAMPTZ                     -- When the record was written to the raw table
 );
 ```
 
@@ -245,7 +245,7 @@ for it; adding the nullable column later is an additive migration.
 ### Where staleness surfaces
 
 - **`assets list`** — warning indicator next to stale assets with days since last valuation
-- **`reports networth`** — summary note: "N assets have stale valuations" with asset names
+- **`reports net-worth`** — summary note: "N assets have stale valuations" with asset names
 
 Staleness is informational only — never blocks queries or omits stale assets from net worth. The value is still included; the system tells you it might be outdated.
 
@@ -324,7 +324,7 @@ Grandma's Ring      valuable      $12,000      2024-03-01     ✅ Current
 ```
 
 ```
-$ moneybin reports networth
+$ moneybin reports net-worth
 
 Net Worth: $347,250 as of 2025-04-23
 
@@ -345,11 +345,13 @@ existing report catalog; this spec does not reserve callback names.
 ### Draft report-catalog change
 
 Implementation would extend
-`reports(report_id="core:networth", parameters={...})` and
-`reports(report_id="core:networth_history", parameters={...})` through the
-underlying `reports.net_worth` model. The proposed snapshot response adds
-`total_physical_assets` alongside `total_assets` and `total_liabilities`; that
-field is not part of the live catalog response.
+`reports(report_id="core:net_worth", parameters={...})` — and its finer
+rungs `core:net_worth_currencies` and `core:net_worth_accounts` — through
+the underlying `reports.net_worth` model. (`core:net_worth` takes an
+`interval` parameter; the separate history report it replaced is retired.)
+The proposed snapshot response adds `total_physical_assets` alongside
+`total_assets` and `total_liabilities`; that field is not part of the live
+catalog response.
 
 ## Testing Strategy
 
@@ -375,7 +377,7 @@ field is not part of the live catalog response.
 
 ### Tier 3 — Integration
 
-- End-to-end: `assets add` → `assets value set` → `sqlmesh run` → `reports networth` → verify asset included in net worth.
+- End-to-end: `assets add` → `assets value set` → `sqlmesh run` → `reports net-worth` → verify asset included in net worth.
 - Disposal flow: `assets sell` → `sqlmesh run` → verify asset excluded from net worth after disposal date.
 - Liability linking: add asset with `--liability-account-id` → `assets show` → verify equity display.
 - Staleness surfacing: set an old valuation → `assets list` → verify warning appears.

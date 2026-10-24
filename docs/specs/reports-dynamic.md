@@ -126,7 +126,7 @@ number that lands.
 | `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: {from, to, reason}}` — `from` is the derived class the downgrade was approved against (R4) |
 | `class_fingerprint` | `VARCHAR NOT NULL` | Drift key over the derivation inputs (R4) |
 | `is_active` | `BOOLEAN NOT NULL DEFAULT true` | False = archived; hidden from the default catalog |
-| `created_at` / `updated_at` | `TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP` | House convention |
+| `created_at` / `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP` | [Warehouse UTC](warehouse-utc.md); explanation freshness uses canonical machine timestamps and the saved calendar in human output. |
 
 Under [Invariant 10](app-integrity-invariant.md), all mutation routes through
 `UserReportsRepo(BaseRepo)` in `src/moneybin/repositories/` — `create`, `set`,
@@ -239,7 +239,7 @@ supplies no map and every placeholder there fails closed.
 `[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*` (`_framework/contract.py:25`), so a bare
 `uuid4().hex[:12]` cannot construct a spec at all — the second constructor
 would raise on its first row. Every shipped report already carries the
-namespace (`core:spending_trend`, `core:networth`), and `user:` extends the same
+namespace (`core:spending_trend`, `core:net_worth`), and `user:` extends the same
 scheme to this tier, which is also what keeps a user report from colliding with
 a built-in in the id space even when R5's name check is what users actually see.
 
@@ -1069,7 +1069,7 @@ this draft assigns it no MCP identity. If its implementing PR cannot place the
 outcome behind an admitted existing projection, it must pass the bounded-
 registry admission record before receiving a public name. Its handle resolves
 by the shared reference contract's order — an exact `report_id` first, then an
-exact name (`.claude/rules/mcp.md` "Entity resolution") — so a report whose name
+exact name (`.claude/rules/services.md` "Entity resolution") — so a report whose name
 is contested by a registry collision (R5) stays inspectable by its stable
 `report_id`. Every handle-taking operation resolves the same way: the shipped
 `reports` tool already accepts `report_id`, and the CLI's `reports run` /
@@ -1110,28 +1110,21 @@ two tiers cannot be made uniform here:
   validation or ID resolution instead. So report inspection requires every
   `required` parameter for these tiers and returns a validation error naming
   the missing ones.
-- **Service-backed (`ServiceReportSpec`)** — there is no query to return at
-  all. This kind carries an `executor` returning a finished
-  `CatalogReportResult` (`_framework/catalog.py`), not a `runner` returning a
-  `ReportQuery`, so no SQL string exists anywhere in the path. `core:networth`
-  and `core:networth_history` are the shipped instances.
 
-The third kind is why R9's "provenance renders identically across tiers" is
-bounded rather than absolute, and the bound is worth stating plainly: a
-service-backed report cannot feed the brass SQL chip a query, because it has
-none. Report inspection returns its declared `semantics.provenance` — every
-relation the service reads, which for `core:networth` is three
-(`reports.net_worth`, `core.fct_balances_daily`, `core.dim_accounts`) and for
-`core:networth_history` is one (`reports.net_worth`) — and an explicit
-`sql_unavailable` reason naming the service-backed kind. A chip that renders "derived by `NetworthService` from
-`reports.net_worth`" tells the truth; one that fabricates a plausible `SELECT`
-to fill the slot does not, and the whole point of the provenance chip is that
-it can be checked.
-
-The same bound reaches the graduation verdict, which is keyed on the spec's kind
-rather than on whether a query turned up: a service-backed report returns
-`service_backed`, not `already_materialized`, because it owns no `reports.*`
-model to have been materialized into.
+**Retired (2026-09-19):** a third kind, service-backed (`ServiceReportSpec`),
+shipped alongside these two and carried an `executor` returning a finished
+`CatalogReportResult` rather than a `runner` returning a `ReportQuery`, so no
+SQL string existed anywhere in its path — report inspection returned its
+declared `semantics.provenance` (the relations the service read) plus an
+explicit `sql_unavailable` reason instead of a query, and R9's "provenance
+renders identically across tiers" was bounded rather than absolute because of
+it. `core:networth` and `core:networth_history` were its only shipped
+instances. [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md)
+retired the kind onto `@report` runners — `core:net_worth`,
+`core:net_worth_currencies`, and `core:net_worth_accounts` are ordinary
+runner-backed reports now, so every shipped report has a real query to render
+and R9 no longer needs the bound: report inspection now renders a SQL chip
+for every tier without exception.
 
 Everything else report inspection returns — class map, lineage, freshness,
 graduation eligibility — is parameter-independent and available for all three.

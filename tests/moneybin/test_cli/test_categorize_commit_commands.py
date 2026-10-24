@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
@@ -183,4 +184,49 @@ def test_commit_from_file_text_reports_created_merchant_mappings(
         result = CliRunner().invoke(app, ["commit-from-file", str(input_path)])
 
     assert result.exit_code == 0, result.output
-    assert "Created 2 merchant mappings" in "\n".join(caplog.messages)
+    assert "Merchant mappings created: 2" in result.stdout
+
+
+@pytest.mark.unit
+def test_commit_from_file_partial_receipt_keeps_saved_and_failed_scope(
+    tmp_path: Path,
+) -> None:
+    """A nonzero batch exit must still say which categorization was saved."""
+    input_path = tmp_path / "proposals.json"
+    input_path.write_text(
+        json.dumps([{"transaction_id": "txn-1", "category": "Groceries"}]),
+        encoding="utf-8",
+    )
+
+    class PartiallyFailingService:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        def categorize_items(
+            self, _items: list[CategorizationItem]
+        ) -> CategorizationResult:
+            return CategorizationResult(
+                applied=1,
+                skipped=1,
+                errors=1,
+                error_details=[{"transaction_id": "txn-2", "reason": "not found"}],
+            )
+
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.categorize.commit_from_file.get_database",
+            return_value=nullcontext(object()),
+        ),
+        patch(
+            "moneybin.services.categorization.CategorizationService",
+            PartiallyFailingService,
+        ),
+    ):
+        result = CliRunner().invoke(app, ["commit-from-file", str(input_path)])
+
+    assert result.exit_code == 1, result.output
+    assert "File commit partially completed" in result.stdout
+    assert "Applied: 1" in result.stdout
+    assert "Skipped: 1" in result.stdout
+    assert re.search(r"Failed:\s+1", result.stdout)
+    assert "txn-2: not found" in result.stdout

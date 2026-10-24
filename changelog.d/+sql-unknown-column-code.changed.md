@@ -1,0 +1,1 @@
+`sql_query` now returns `sql_unknown_column` when a query names a column that does not exist, so an agent no longer reads a column typo as a wrong table. Missing tables still return `sql_unknown_table`.

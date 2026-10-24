@@ -6,5 +6,5 @@ CREATE TABLE IF NOT EXISTS app.metrics (
     value DOUBLE NOT NULL, -- Counter/gauge current value, or histogram sum
     bucket_bounds DOUBLE[], -- Histogram upper bounds (NULL for counter/gauge)
     bucket_counts BIGINT[], -- Histogram cumulative bucket counts (NULL for counter/gauge)
-    recorded_at TIMESTAMP NOT NULL -- When this snapshot was taken
+    recorded_at TIMESTAMPTZ NOT NULL -- When this snapshot was taken
 );

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal, cast
 
 from moneybin import error_codes
@@ -35,12 +36,20 @@ from moneybin.services.undo_dispatch import (
     repo_for,
     undo_investment_operation,
 )
+from moneybin.sqlmesh_freshness import (
+    fully_restates,
+    input_class,
+    restates,
+    restating_columns,
+)
 from moneybin.tables import (
     AUDIT_LOG,
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     LOT_SELECTIONS,
+    TableRef,
 )
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +93,14 @@ class OperationDetail:
     events: list[AuditEvent]
     can_undo: bool
     undo_blocked_by: list[str] | None
+    # Schema-qualified row targets outside the registered undo surface.
     unresolvable: list[str] | None
-    """``schema.table`` of any row outside the undoable surface — distinguishes a
-    raw-targeted refusal from a marker-only / already-undone one for the surface
-    hint. Not part of the MCP payload; consumed only when building the action."""
+    # Preview facts describe selected source audit events, never inverse-row output.
+    reversible_source_event_count: int
+    source_tables: list[str]
+    undo_refusal_code: str | None
+    undo_refusal_message: str | None
+    undo_recovery_actions: list[RecoveryAction] | None
 
 
 @dataclass(frozen=True)
@@ -151,59 +164,30 @@ def _undo_action(
     )
 
 
-def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
-    """Return whether undo changed FX inputs and whether Account currency changed."""
-    needs_restatement = False
-    account_currency_changed = False
+def _restated_inputs(events: list[AuditEvent]) -> list[TableRef]:
+    """The restating ``app.*`` inputs an undo changed, per the freshness registry.
+
+    A table with display-only columns counts only when a restating column moved
+    between the before and after images, so undoing a rename restates nothing.
+    """
+    inputs: dict[str, TableRef] = {}
     for event in events:
-        if event.target_schema != "app":
+        if event.target_schema != "app" or not event.target_table:
             continue
-        if event.target_table == "exchange_rate_overrides":
-            needs_restatement = True
+        entry = input_class(TableRef("app", event.target_table))
+        if entry is None or not restates(entry.table):
             continue
-        if event.target_table == "profile_settings":
+        table = entry.table
+        if not fully_restates(table):
             before = event.before_value or {}
             after = event.after_value or {}
-            if before.get("home_currency") != after.get("home_currency"):
-                needs_restatement = True
-            continue
-        if event.target_table == "match_decisions":
-            before = event.before_value or {}
-            after = event.after_value or {}
-            before_is_accepted_transfer = (
-                before.get("match_type") == "transfer"
-                and before.get("match_status") == "accepted"
-                and before.get("reversed_at") is None
-            )
-            after_is_accepted_transfer = (
-                after.get("match_type") == "transfer"
-                and after.get("match_status") == "accepted"
-                and after.get("reversed_at") is None
-            )
-            if before_is_accepted_transfer != after_is_accepted_transfer:
-                needs_restatement = True
-            before_endpoints = (before.get("account_id"), before.get("account_id_b"))
-            after_endpoints = (after.get("account_id"), after.get("account_id_b"))
-            if (
-                before_is_accepted_transfer
-                and after_is_accepted_transfer
-                and before_endpoints != after_endpoints
-            ):
-                needs_restatement = True
-                account_currency_changed = True
-            continue
-        if event.target_table != "account_settings":
-            continue
-        before = event.before_value or {}
-        after = event.after_value or {}
-        if before.get("currency_code") != after.get("currency_code"):
-            needs_restatement = True
-            account_currency_changed = True
-        if before.get("default_cost_basis_method") != after.get(
-            "default_cost_basis_method"
-        ):
-            needs_restatement = True
-    return needs_restatement, account_currency_changed
+            moved = {
+                k for k in before.keys() | after.keys() if before.get(k) != after.get(k)
+            }
+            if not restating_columns(table, moved):
+                continue
+        inputs.setdefault(table.full_name, table)
+    return list(inputs.values())
 
 
 class UndoService:
@@ -214,45 +198,33 @@ class UndoService:
         self._db = db
         self._audit = audit if audit is not None else AuditService(db)
 
-    def undo(self, operation_id: str, *, actor: str) -> UndoResult:
+    def undo(
+        self,
+        operation_id: str,
+        *,
+        actor: str,
+        expected_audit_ids: tuple[str, ...] | None = None,
+    ) -> UndoResult:
         """Reverse every row of ``operation_id`` atomically under a new operation.
 
         Raises ``UserError`` with a recovery action for each refusal:
         ``UNDO_OPERATION_NOT_FOUND`` (no such op), ``UNDO_ALREADY_UNDONE`` (a prior
         undo reversed it), ``RECOVERY_NO_PATH`` (the op touched a table outside the
-        undoable ``app.*`` surface, e.g. ``raw.manual_transactions``), or
-        ``UNDO_CASCADE_BLOCKED`` (a later op modified the same rows).
+        undoable ``app.*`` surface, e.g. ``raw.manual_transactions``),
+        ``UNDO_CASCADE_BLOCKED`` (a later op modified the same rows), or
+        ``UNDO_VALUE_INADMISSIBLE`` (restoring a captured row would write back a
+        value the write path no longer admits, e.g. a pre-existing blank
+        category — not retryable; recreate the entity instead).
         """
         events = self._audit.events_for_operation(operation_id)
         if not events:
             audit_undo_total.labels(outcome="not_found").inc()
             raise self._not_found_error(operation_id)
         u = self._undoability(operation_id)
-        if u.undone_by is not None:
-            audit_undo_total.labels(outcome="already_undone").inc()
-            raise UserError(
-                f"Operation {operation_id!r} was already undone by {u.undone_by!r}.",
-                code=error_codes.UNDO_ALREADY_UNDONE,
-                recovery_actions=[_undo_action(u.undone_by, confidence="suggested")],
-            )
-        if u.unresolvable:
-            audit_undo_total.labels(outcome="no_path").inc()
-            raise UserError(
-                f"Operation {operation_id!r} touched {', '.join(u.unresolvable)}, "
-                "outside the undoable app.* surface — not reversible via undo.",
-                code=error_codes.RECOVERY_NO_PATH,
-                # Surface any blockers too: the op may be partly recoverable by
-                # undoing later ops first, so don't dead-end the agent.
-                recovery_actions=[_undo_action(b) for b in u.blockers] or None,
-            )
-        if u.blockers:
-            audit_undo_total.labels(outcome="cascade_blocked").inc()
-            raise UserError(
-                f"Operation {operation_id!r} cannot be undone: later operations "
-                f"modified the same rows. Undo those first.",
-                code=error_codes.UNDO_CASCADE_BLOCKED,
-                recovery_actions=[_undo_action(b) for b in u.blockers],
-            )
+        row_events = self._reversible_events(events)
+        if refusal := self._undo_refusal(operation_id, u, events, row_events):
+            self._record_refusal_metric(refusal)
+            raise refusal
 
         # Reverse in the exact reverse of write order inside one transaction under
         # a fresh operation id. ``events`` is write-ordered (events_for_operation
@@ -260,21 +232,21 @@ class UndoService:
         # order a future parent-then-child insert needs. Marker rows (target_id is
         # None, e.g. the tag.rename parent) carry no single-row mutation, so they
         # are skipped — only the per-row children are inverted.
-        row_events = [e for e in events if e.target_id is not None]
-        if not row_events:
-            # All events are markers (target_id None) — e.g. a tag.rename that
-            # matched zero rows. There is nothing to reverse; minting an undo op
-            # here would return an id with no audit rows (not itself queryable or
-            # undoable), so refuse instead.
-            audit_undo_total.labels(outcome="no_path").inc()
-            raise UserError(
-                f"Operation {operation_id!r} has no reversible row mutations "
-                "(only marker events) — nothing to undo.",
-                code=error_codes.RECOVERY_NO_PATH,
-            )
         with operation() as undo_op:
             self._db.begin()
             try:
+                if expected_audit_ids is not None:
+                    current_audit_ids = tuple(
+                        event.audit_id
+                        for event in self._audit.events_for_operation(operation_id)
+                    )
+                    if current_audit_ids != expected_audit_ids:
+                        raise UserError(
+                            "The operation changed after the displayed preview. "
+                            "Inspect it again before undoing.",
+                            code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                            recovery_actions=[_undo_action(operation_id)],
+                        )
                 undone: list[AuditEvent] = []
                 touched: dict[str, BaseRepo] = {}
                 self._validate_identity_selections(row_events)
@@ -310,12 +282,18 @@ class UndoService:
                 undone = self._audit.events_for_operation(undo_op)
                 self._db.commit()
             except UserError as e:
-                # _require_capture can raise RECOVERY_NO_PATH mid-loop (a legacy
-                # partial-capture row). Record the outcome like the pre-loop
-                # refusals do, rather than letting it vanish from metrics.
+                # _require_capture can raise RECOVERY_NO_PATH, and
+                # _require_admissible can raise UNDO_VALUE_INADMISSIBLE, mid-loop
+                # (a legacy partial-capture or now-inadmissible row). Record the
+                # outcome like the pre-loop refusals do, rather than letting it
+                # vanish from metrics.
                 self._db.rollback()
                 if e.code == error_codes.RECOVERY_NO_PATH:
                     audit_undo_total.labels(outcome="no_path").inc()
+                elif e.code == error_codes.UNDO_VALUE_INADMISSIBLE:
+                    audit_undo_total.labels(outcome="value_inadmissible").inc()
+                elif e.code == error_codes.MUTATION_CONFIRMATION_MISMATCH:
+                    audit_undo_total.labels(outcome="confirmation_mismatch").inc()
                 raise
             except BaseException:
                 self._db.rollback()
@@ -340,7 +318,7 @@ class UndoService:
                 repo.refresh_pending_gauge()
             except Exception:  # telemetry never fails a committed undo
                 logger.warning(
-                    f"⚠️ Could not refresh the review-queue gauge for "
+                    f"! Could not refresh the review-queue gauge for "
                     f"{type(repo).__name__} after undo {operation_id}; the count "
                     "will correct itself on the next decision."
                 )
@@ -351,19 +329,11 @@ class UndoService:
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
         )
-        needs_fx_restatement, account_currency_changed = _fx_restatement_requirement(
-            undone
-        )
-        if needs_fx_restatement:
-            from moneybin.services.fx_accounting_refresh import (
-                restate_fx_accounting,
-            )
+        restated = _restated_inputs(undone)
+        if restated:
+            from moneybin.services.restate import restate_after_write
 
-            restate_fx_accounting(
-                self._db,
-                account_currency_changed=account_currency_changed,
-                committed_change="undo",
-            )
+            restate_after_write(self._db, restated, committed_change="undo")
         return UndoResult(
             undo_operation_id=undo_op,
             undone_operation_id=operation_id,
@@ -501,12 +471,16 @@ class UndoService:
         having_clauses: list[str] = []
         if snapshot is not None:
             having_clauses.append(
-                "(MAX(occurred_at) < ? OR (MAX(occurred_at) = ? AND operation_id <= ?))"
+                "(MAX(occurred_at) < CAST(? AS TIMESTAMPTZ) OR "
+                "(MAX(occurred_at) = CAST(? AS TIMESTAMPTZ) "
+                "AND operation_id <= ?))"
             )
             params.extend([snapshot[0], snapshot[0], snapshot[1]])
         if after is not None:
             having_clauses.append(
-                "(MAX(occurred_at) < ? OR (MAX(occurred_at) = ? AND operation_id < ?))"
+                "(MAX(occurred_at) < CAST(? AS TIMESTAMPTZ) OR "
+                "(MAX(occurred_at) = CAST(? AS TIMESTAMPTZ) "
+                "AND operation_id < ?))"
             )
             params.extend([after[0], after[0], after[1]])
         having = "HAVING " + " AND ".join(having_clauses) if having_clauses else ""
@@ -566,8 +540,8 @@ class UndoService:
         having = ""
         if snapshot is not None:
             having = (
-                "HAVING MAX(occurred_at) < ? OR "
-                "(MAX(occurred_at) = ? AND operation_id <= ?)"
+                "HAVING MAX(occurred_at) < CAST(? AS TIMESTAMPTZ) OR "
+                "(MAX(occurred_at) = CAST(? AS TIMESTAMPTZ) AND operation_id <= ?)"
             )
             params.extend([snapshot[0], snapshot[0], snapshot[1]])
         row = self._db.conn.execute(
@@ -595,13 +569,90 @@ class UndoService:
         if not events:
             raise self._not_found_error(operation_id)
         u = self._undoability(operation_id)
+        source_events = self._reversible_events(events)
+        refusal = self._undo_refusal(operation_id, u, events, source_events)
         return OperationDetail(
             operation_id=operation_id,
             events=events,
-            can_undo=u.can_undo,
+            can_undo=refusal is None,
             undo_blocked_by=u.blockers or None,
             unresolvable=u.unresolvable or None,
+            reversible_source_event_count=len(source_events),
+            source_tables=sorted({
+                f"{event.target_schema}.{event.target_table}"
+                for event in source_events
+                if event.target_schema is not None and event.target_table is not None
+            }),
+            undo_refusal_code=refusal.code if refusal else None,
+            undo_refusal_message=refusal.message if refusal else None,
+            undo_recovery_actions=refusal.recovery_actions if refusal else None,
         )
+
+    @staticmethod
+    def _reversible_events(events: Iterable[AuditEvent]) -> list[AuditEvent]:
+        """Return event rows whose captured images describe a state change."""
+        return [
+            event
+            for event in events
+            if event.target_id is not None and event.before_value != event.after_value
+        ]
+
+    @staticmethod
+    def _undo_refusal(
+        operation_id: str,
+        undoability: _Undoability,
+        events: list[AuditEvent],
+        source_events: list[AuditEvent],
+    ) -> UserError | None:
+        """Build the exact pre-write refusal shared by preview and execution."""
+        if undoability.undone_by is not None:
+            return UserError(
+                f"Operation {operation_id!r} was already undone by "
+                f"{undoability.undone_by!r}.",
+                code=error_codes.UNDO_ALREADY_UNDONE,
+                recovery_actions=[
+                    _undo_action(undoability.undone_by, confidence="suggested")
+                ],
+            )
+        if undoability.unresolvable:
+            return UserError(
+                f"Operation {operation_id!r} touched "
+                f"{', '.join(undoability.unresolvable)}, outside the undoable "
+                "app.* surface — not reversible via undo.",
+                code=error_codes.RECOVERY_NO_PATH,
+                recovery_actions=[_undo_action(b) for b in undoability.blockers]
+                or None,
+            )
+        if undoability.blockers:
+            return UserError(
+                f"Operation {operation_id!r} cannot be undone: later operations "
+                "modified the same rows. Undo those first.",
+                code=error_codes.UNDO_CASCADE_BLOCKED,
+                recovery_actions=[_undo_action(b) for b in undoability.blockers],
+            )
+        if not source_events:
+            if any(event.target_id is not None for event in events):
+                return UserError(
+                    f"Operation {operation_id!r} has no net effect to reverse "
+                    "(all captured rows show before == after).",
+                    code=error_codes.RECOVERY_NO_PATH,
+                )
+            return UserError(
+                f"Operation {operation_id!r} has no reversible row mutations "
+                "(only marker events) — nothing to undo.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        return None
+
+    @staticmethod
+    def _record_refusal_metric(refusal: UserError) -> None:
+        """Record exactly one execution outcome for a shared pre-write refusal."""
+        outcomes = {
+            error_codes.UNDO_ALREADY_UNDONE: "already_undone",
+            error_codes.RECOVERY_NO_PATH: "no_path",
+            error_codes.UNDO_CASCADE_BLOCKED: "cascade_blocked",
+        }
+        audit_undo_total.labels(outcome=outcomes[refusal.code]).inc()
 
     def _summarize(
         self, row: tuple[object, ...], liveness: _UndoLiveness
@@ -630,7 +681,7 @@ class UndoService:
         tables = cast("list[str | None] | None", tables_raw) or []
         return OperationSummary(
             operation_id=operation_id,
-            occurred_at=str(occurred_at),
+            occurred_at=format_utc(cast(datetime, occurred_at)),
             actor=str(actor),
             actions=sorted(actions),
             tables=sorted(t for t in tables if t is not None),

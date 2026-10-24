@@ -78,11 +78,11 @@ def _seed_transaction(
 
 
 def _seed_import(import_id: str = "IMP_TEST_001") -> str:
-    """Insert one raw.import_log row that import_labels_set can attach to."""
+    """Insert one app.import_log row that import_labels_set can attach to."""
     with get_database(read_only=False) as db:
         db.execute(
             """
-            INSERT INTO raw.import_log (
+            INSERT INTO app.import_log (
                 import_id, source_file, source_type, source_origin,
                 format_name, account_names, status, rows_total, rows_imported
             ) VALUES (?, 'inline', 'manual', 'manual',

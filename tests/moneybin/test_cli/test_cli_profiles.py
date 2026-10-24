@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import typer
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
@@ -100,6 +101,44 @@ class TestCLIProfileHandling:
 
             assert result.exit_code == 0
             assert get_current_profile() == "test"
+
+    def test_repeated_profile_resolution_preserves_verbose_logging_policy(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Profile-specific setup must not reset the top-level verbose choice."""
+        from moneybin.cli.utils import resolve_profile, stash_cli_flags
+
+        setup = mocker.patch("moneybin.cli.utils.setup_observability")
+        stash_cli_flags("test", True)
+        with _create_profile("test"):
+            resolve_profile()
+            resolve_profile()
+
+        assert setup.call_args_list[-2:] == [
+            mocker.call(stream="cli", verbose=True, profile="test"),
+            mocker.call(stream="cli", verbose=True, profile="test"),
+        ]
+
+    def test_missing_profile_recovery_reaches_stderr(
+        self,
+        mocker: MockerFixture,
+        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Essential profile recovery remains visible without console INFO."""
+        from moneybin.cli.utils import resolve_profile, stash_cli_flags
+
+        mocker.patch("moneybin.cli.utils.setup_observability")
+        stash_cli_flags("missing", False)
+
+        with caplog.at_level(logging.ERROR), pytest.raises(typer.Exit) as exit_info:
+            resolve_profile()
+
+        assert exit_info.value.exit_code == 1
+        stderr = capsys.readouterr().err
+        assert "moneybin profile list" in stderr
+        assert "moneybin profile create missing" in stderr
+        assert "Profile 'missing' does not exist" in caplog.text
 
     def test_profile_source_names_the_source_that_resolved(
         self, mocker: MockerFixture

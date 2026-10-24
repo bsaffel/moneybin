@@ -8,8 +8,8 @@ captures the FULL prior row (Req 4).
 from __future__ import annotations
 
 import json
-from collections.abc import Generator
-from datetime import date
+from dataclasses import replace
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -20,10 +20,38 @@ import pytest
 from moneybin.database import Database
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.services.audit_service import AuditEvent
+from moneybin.services.profile_settings_service import ProfileSettingsService
 from tests.moneybin.test_repositories.conftest import audit_rows_for as _audit_rows_for
 from tests.moneybin.test_repositories.conftest import metric_for
 
 _metric = metric_for("account_settings")
+
+
+@pytest.fixture(autouse=True)
+def accepted_legacy_settings_provenance(db: Database) -> None:
+    """The synthetic legacy images below explicitly come from a UTC-naive writer."""
+    rules = [
+        {
+            "schema": "app",
+            "table": "account_settings",
+            "column": "updated_at",
+            "writer_era": "utc-naive",
+            "zone": "UTC",
+            "fold": None,
+            "recorded_from": "2025-01-01T00:00:00.000000Z",
+            "recorded_until": "2026-01-01T00:00:00.000000Z",
+        }
+    ]
+    # The two first-write events below were recorded on this separate day.
+    rules.append({
+        **rules[0],
+        "recorded_from": "2024-06-01T00:00:00.000000Z",
+        "recorded_until": "2024-06-02T00:00:00.000000Z",
+    })
+    db.execute(
+        "UPDATE app.utc_upgrade_provenance SET rules = ? WHERE contract_version = 2",
+        [json.dumps(rules)],
+    )
 
 
 def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
@@ -40,6 +68,11 @@ def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "archived_at": None,
         "include_in_net_worth": True,
         "default_cost_basis_method": None,
+        "investment_source_type": None,
+        "investment_source_type_changed_at": None,
+        "archived_changed_at": None,
+        "currency_code_changed_at": None,
+        "default_cost_basis_method_changed_at": None,
         "actor": "cli",
     }
     kwargs.update(overrides)
@@ -109,6 +142,31 @@ def test_set_persists_default_cost_basis_method(db: Database) -> None:
         ["acct_a"],
     ).fetchone()
     assert row == ("average",)
+
+
+def test_set_round_trips_investment_source_fields_and_audits_them(
+    db: Database,
+) -> None:
+    repo = AccountSettingsRepo(db)
+    changed_at = datetime(2026, 10, 1, 12, 30, 0, tzinfo=UTC)
+    event = _set(
+        repo,
+        investment_source_type="manual",
+        investment_source_type_changed_at=changed_at,
+    )
+
+    row = db.conn.execute(
+        "SELECT investment_source_type, investment_source_type_changed_at "
+        "FROM app.account_settings WHERE account_id = ?",
+        ["acct_a"],
+    ).fetchone()
+    assert row == ("manual", changed_at)
+    assert event.after_value is not None
+    assert event.after_value["investment_source_type"] == "manual"
+    assert (
+        event.after_value["investment_source_type_changed_at"]
+        == "2026-10-01T12:30:00.000000Z"
+    )
 
 
 def test_set_invalid_default_cost_basis_method_raises_constraint_exception(
@@ -183,7 +241,7 @@ def _legacy_undo_event(
 ) -> AuditEvent:
     return AuditEvent(
         audit_id="aud-legacy1",
-        occurred_at="2025-06-01T00:00:00",
+        occurred_at="2025-06-01T00:00:00.000000Z",
         actor="cli",
         action="account_settings.set",
         target_schema="app",
@@ -236,7 +294,53 @@ def test_undo_of_legacy_unarchive_row_derives_archived_at_today_on_rearchive(
         "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
         ["acct_legacy2"],
     ).fetchone()
-    assert row == (True, date.today())
+    assert row == (True, ProfileSettingsService(db).today())
+
+
+@pytest.mark.parametrize(
+    "zone,hour,expected",
+    [
+        ("America/Los_Angeles", 6, date(2025, 12, 31)),
+        ("Pacific/Kiritimati", 18, date(2026, 1, 2)),
+    ],
+)
+@pytest.mark.parametrize("missing_row", [False, True])
+def test_legacy_rearchive_uses_saved_calendar(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    zone: str,
+    hour: int,
+    expected: date,
+    missing_row: bool,
+) -> None:
+    from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+    ProfileSettingsRepo(db).set_reporting_timezone(zone, actor="test")
+    now = datetime(2026, 1, 1, hour, tzinfo=UTC)
+
+    def frozen_now(self: AccountSettingsRepo) -> datetime:
+        return now
+
+    monkeypatch.setattr(AccountSettingsRepo, "_now", frozen_now)
+    repo = AccountSettingsRepo(db)
+    if missing_row:
+        _set(repo, account_id="a", archived=True, archived_at=date(2024, 6, 1))
+        event = repo.delete("a", actor="cli")
+        assert event is not None
+        event = replace(
+            event,
+            before_value=_legacy_row(account_id="a", archived=True),
+            occurred_at="2025-06-01T00:00:00.000000Z",
+        )
+    else:
+        _set(repo, account_id="a", archived=False)
+        event = _legacy_undo_event(
+            account_id="a", before_archived=True, after_archived=False
+        )
+    repo.undo_event(event, actor="cli")
+    assert db.execute(
+        "SELECT archived_at FROM app.account_settings WHERE account_id = 'a'"
+    ).fetchone() == (expected,)
 
 
 def test_undo_of_undo_of_legacy_unarchive_row_leaves_active_account_null(
@@ -271,7 +375,7 @@ def test_undo_of_undo_of_legacy_unarchive_row_leaves_active_account_null(
         "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
         ["acct_legacy8"],
     ).fetchone()
-    assert mid_row == (True, date.today())
+    assert mid_row == (True, ProfileSettingsService(db).today())
 
     # Undo the undo (redo): back to active. Must clear archived_at, not
     # reuse today's date on an archived=False row.
@@ -332,7 +436,7 @@ def test_undo_of_legacy_row_with_unchanged_archived_leaves_archived_at_alone(
     after_image["display_name"] = "Legacy Account Renamed"
     event = AuditEvent(
         audit_id="aud-legacy3",
-        occurred_at="2025-06-01T00:00:00",
+        occurred_at="2025-06-01T00:00:00.000000Z",
         actor="cli",
         action="account_settings.set",
         target_schema="app",
@@ -377,7 +481,7 @@ def test_undo_of_legacy_row_with_unchanged_archived_captures_live_value_in_own_a
     after_image["display_name"] = "Legacy Account Renamed"
     event = AuditEvent(
         audit_id="aud-legacy11",
-        occurred_at="2025-06-01T00:00:00",
+        occurred_at="2025-06-01T00:00:00.000000Z",
         actor="cli",
         action="account_settings.set",
         target_schema="app",
@@ -418,7 +522,10 @@ def test_undo_of_legacy_row_normalizes_archived_at_into_its_own_audit(
 
     assert undo_result is not None
     assert undo_result.after_value is not None
-    assert undo_result.after_value["archived_at"] == date.today().isoformat()
+    assert (
+        undo_result.after_value["archived_at"]
+        == ProfileSettingsService(db).today().isoformat()
+    )
 
 
 def test_undo_of_legacy_archive_row_preserves_live_archived_at_in_capture(
@@ -550,7 +657,7 @@ def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
     # archived_at key.
     first_write_event = AuditEvent(
         audit_id="aud-legacy6",
-        occurred_at="2024-06-01T00:00:00",
+        occurred_at="2024-06-01T00:00:00.000000Z",
         actor="cli",
         action="account_settings.set",
         target_schema="app",
@@ -562,24 +669,22 @@ def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
         operation_id="op-legacy6",
     )
 
-    # Undo #1: before is None -> deletes the row via _delete_by_pk.
+    # Undo #1: before is None -> _delete_by_pk. Deleting would unarchive the
+    # account with no archived_changed_at, so the row is reset in place.
     undo_result = repo.undo_event(first_write_event, actor="cli")
     assert undo_result is not None
-    assert (
-        db.conn.execute(
-            "SELECT 1 FROM app.account_settings WHERE account_id = ?",
-            ["acct_legacy6"],
-        ).fetchone()
-        is None
-    )
+    assert db.conn.execute(
+        "SELECT archived, archived_at, archived_changed_at IS NOT NULL "
+        "FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy6"],
+    ).fetchone() == (False, None, True)
     # The real live date must survive into the undo's own before_value
     # capture -- not be reported as an unrecoverable NULL/missing key, which
     # is what a later redo would restore from.
     assert undo_result.before_value is not None
     assert undo_result.before_value["archived_at"] == "2024-06-01"
 
-    # Undo #2 (redo): after is None -> reinserts via _insert_row, not
-    # _restore_row.
+    # Undo #2 (redo): both images present -> _restore_row over the reset row.
     redo_result = repo.undo_event(undo_result, actor="cli")
     assert redo_result is not None
 
@@ -609,7 +714,7 @@ def test_undo_of_undo_of_legacy_first_write_unarchive_leaves_archived_at_null(
 
     first_write_event = AuditEvent(
         audit_id="aud-legacy7",
-        occurred_at="2024-06-01T00:00:00",
+        occurred_at="2024-06-01T00:00:00.000000Z",
         actor="cli",
         action="account_settings.set",
         target_schema="app",
@@ -634,35 +739,28 @@ def test_undo_of_undo_of_legacy_first_write_unarchive_leaves_archived_at_null(
 
 
 class TestPreV063SchemaToleranceOnAccountSettingsWrite:
-    """A write-mode open must tolerate account_settings predating archived_at.
+    """Repository operations tolerate a synthetic pre-V063 column shape.
 
-    Codex PR #596 P2 (thread ``PRRT_kwDOPjlNiM6h1iuP``) plus the wider grid
-    found alongside it. ``Database.__init__`` calls ``init_schemas()`` (``CREATE TABLE IF NOT
-    EXISTS``, a no-op on an existing table) unconditionally in EVERY open --
-    read or write -- before the explicit ``no_auto_upgrade`` gate decides
-    whether pending migrations run at all. So a profile opened with
-    ``no_auto_upgrade=True`` never gets V063 applied, not just transiently.
-    Unlike the legacy-audit-capture tests above (which simulate a pre-V063
-    *audit row* on an already-migrated live table), every fixture here drops
-    the column from the LIVE table and never adds it back.
+    Drop fields only after opening a valid encrypted fixture. Normal startup
+    refuses this incomplete shape; repository compatibility and that startup
+    boundary have separate tests, without bypassing the production guard.
     """
 
     @pytest.fixture()
-    def pre_v063_rw_db(
-        self, db: Database, mock_secret_store: MagicMock
-    ) -> Generator[Database, None, None]:
-        """A real write-mode Database reopened over account_settings missing archived_at."""
+    def pre_v063_rw_db(self, db: Database) -> Database:
+        """Project an already-open encrypted fixture onto pre-V063 columns."""
         db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_at")
-        db_path = db.path
-        db.close()
-        rw_db = Database(
-            db_path,
-            secret_store=mock_secret_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
-        yield rw_db
-        rw_db.close()
+        # A historical projection stays on the already-open UTC fixture.
+        for column in (
+            "archived_changed_at",
+            "currency_code_changed_at",
+            "default_cost_basis_method_changed_at",
+            "account_type",
+            "account_type_changed_at",
+            "account_subtype_changed_at",
+        ):
+            db.execute(f"ALTER TABLE app.account_settings DROP COLUMN {column}")
+        return db
 
     def test_set_insert_succeeds(self, pre_v063_rw_db: Database) -> None:
         """Cell 2: the INSERT column list must drop archived_at when absent."""
@@ -770,4 +868,161 @@ class TestPreV063SchemaToleranceOnAccountSettingsWrite:
                 ["acct_pre_v063"],
             ).fetchone()
             is None
+        )
+
+
+def test_type_override_set_clear_restore(db: Database) -> None:
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_type="depository")
+    cleared = _set(repo, account_type=None)
+    assert cleared.before_value is not None
+    assert cleared.after_value is not None
+    assert cleared.before_value["account_type"] == "depository"
+    assert cleared.after_value["account_type"] is None
+    restored = repo.undo_event(cleared, actor="cli")
+    assert restored is not None and restored.after_value is not None
+    assert restored.after_value["account_type"] == "depository"
+    assert db.execute(
+        "SELECT account_type, account_subtype, display_name "
+        "FROM app.account_settings WHERE account_id = 'acct_a'"
+    ).fetchone() == ("depository", "checking", "Checking")
+    repo.undo_event(restored, actor="cli")
+    assert db.execute(
+        "SELECT account_type FROM app.account_settings WHERE account_id = 'acct_a'"
+    ).fetchone() == (None,)
+
+
+def test_legacy_type_omission_preserves_live_override_and_complete_undo(
+    db: Database,
+) -> None:
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy_type", account_type="credit")
+    event = _legacy_undo_event(
+        account_id="acct_legacy_type", before_archived=False, after_archived=True
+    )
+    undone = repo.undo_event(event, actor="cli")
+    assert undone is not None
+    assert undone.before_value is not None and undone.after_value is not None
+    assert undone.before_value["account_type"] == "credit"
+    assert undone.after_value["account_type"] == "credit"
+    redone = repo.undo_event(undone, actor="cli")
+    assert redone is not None and redone.after_value is not None
+    assert redone.after_value["account_type"] == "credit"
+
+
+def test_legacy_first_write_redo_recovers_live_type(db: Database) -> None:
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy_type", account_type="credit")
+    event = _legacy_undo_event(
+        account_id="acct_legacy_type", before_archived=False, after_archived=True
+    )
+    event = replace(event, before_value=None)
+    undone = repo.undo_event(event, actor="cli")
+    assert undone is not None and undone.before_value is not None
+    assert undone.before_value["account_type"] == "credit"
+    redone = repo.undo_event(undone, actor="cli")
+    assert redone is not None and redone.after_value is not None
+    assert redone.after_value["account_type"] == "credit"
+
+
+class TestPreV069SchemaToleranceOnAccountSettingsWrite:
+    """Repository operations tolerate a synthetic pre-V069 column shape.
+
+    The live projection is made after opening a valid encrypted fixture;
+    reopening it normally is independently required to refuse.
+    """
+
+    @pytest.fixture()
+    def pre_v069_rw_db(self, db: Database) -> Database:
+        """Project an already-open encrypted fixture onto pre-V069 columns."""
+        db.execute(
+            "ALTER TABLE app.account_settings "
+            "DROP COLUMN investment_source_type_changed_at"
+        )
+        db.execute(
+            "ALTER TABLE app.account_settings DROP COLUMN investment_source_type"
+        )
+        # Added by V074, after V069: a pre-V069 table cannot hold it either.
+        db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_changed_at")
+        return db
+
+    def test_set_with_null_source_fields_succeeds_and_omits_keys(
+        self, pre_v069_rw_db: Database
+    ) -> None:
+        repo = AccountSettingsRepo(pre_v069_rw_db)
+        event = _set(repo, account_id="acct_pre_v069")
+        assert event.after_value is not None
+        assert event.after_value["display_name"] == "Checking"
+        assert "investment_source_type" not in event.after_value
+        assert "investment_source_type_changed_at" not in event.after_value
+
+        update = _set(repo, account_id="acct_pre_v069", display_name="Renamed")
+        assert update.before_value is not None
+        assert "investment_source_type" not in update.before_value
+
+    def test_live_columns_excludes_the_missing_pair(
+        self, pre_v069_rw_db: Database
+    ) -> None:
+        live = AccountSettingsRepo(pre_v069_rw_db)._live_columns()  # pyright: ignore[reportPrivateUsage]  # probe under test
+        assert "archived_at" in live
+        assert "investment_source_type" not in live
+        assert "investment_source_type_changed_at" not in live
+
+
+def test_legacy_first_write_with_source_watermark_redo_recovers_live_type(
+    db: Database,
+) -> None:
+    repo = AccountSettingsRepo(db)
+    stamp = datetime(2020, 1, 1, tzinfo=UTC)
+    _set(
+        repo,
+        account_id="acct_legacy_type",
+        account_type="credit",
+        investment_source_type="manual",
+        investment_source_type_changed_at=stamp,
+    )
+    event = replace(
+        _legacy_undo_event(
+            account_id="acct_legacy_type", before_archived=False, after_archived=True
+        ),
+        before_value=None,
+    )
+    undone = repo.undo_event(event, actor="cli")
+    assert undone is not None and undone.before_value is not None
+    assert undone.before_value["account_type"] == "credit"
+    assert undone.after_value is not None
+    assert undone.after_value["account_type"] is None
+    redone = repo.undo_event(undone, actor="cli")
+    assert redone is not None and redone.after_value is not None
+    assert redone.after_value["account_type"] == "credit"
+    assert redone.after_value["investment_source_type"] == "manual"
+    assert (
+        datetime.fromisoformat(redone.after_value["investment_source_type_changed_at"])
+        >= stamp
+    )
+
+
+@pytest.mark.parametrize(
+    "drop_column",
+    [
+        "ALTER TABLE app.account_settings DROP COLUMN archived_changed_at",
+        "ALTER TABLE app.account_settings DROP COLUMN investment_source_type_changed_at",
+    ],
+)
+def test_normal_reopen_refuses_incomplete_account_settings_schema(
+    db: Database,
+    mock_secret_store: MagicMock,
+    drop_column: str,
+) -> None:
+    from moneybin.temporal_contract import UTCUpgradeRequiredError
+
+    db.execute(drop_column)
+    db_path = db.path
+    db.close()
+    with pytest.raises(UTCUpgradeRequiredError):
+        Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
         )

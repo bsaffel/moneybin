@@ -20,6 +20,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import duckdb
@@ -509,6 +510,33 @@ def _identifier_detail(exc: Exception) -> str | None:
     return masked or None
 
 
+# DuckDB BinderException heads for a missing column: a bare or qualified
+# reference (`Table "t"` or, for a derived table, `Values list "t"`), a
+# `* EXCLUDE`/`* REPLACE` entry, or a `COLUMNS('re')` that matches nothing.
+# Other binder errors (bad LIMIT, GROUP BY position, missing alias) stay on
+# `sql_unknown_table`.
+_MISSING_COLUMN = re.compile(
+    r'^Binder Error: (?:Referenced column ".*?" not found|'
+    r".*? does not have a column named|"
+    r'Column ".*?" in (?:EXCLUDE|REPLACE) list not found|'
+    r"No matching columns found)"
+)
+
+# sqlglot's qualify step rejects a qualified reference to a column its known
+# source lacks (`t.nope`, a derived table's `t.nope`, `USING (nope)`) before
+# DuckDB sees the query; these are its only two column-miss messages.
+_QUALIFY_MISSING_COLUMN = re.compile(r"^(?:Unknown column|Cannot automatically join): ")
+
+
+def _is_missing_column(exc: Exception) -> bool:
+    """Whether a bind failure names a missing column rather than a table."""
+    if isinstance(exc, duckdb.BinderException):
+        return _MISSING_COLUMN.match(str(exc)) is not None
+    if isinstance(exc, SqlSchemaError):
+        return _QUALIFY_MISSING_COLUMN.match(str(exc)) is not None
+    return False
+
+
 def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryResult:
     """Run a read-only SQL query with full privacy enforcement.
 
@@ -619,12 +647,12 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         )
         raise UserError(
             "Query could not be bound to the schema.",
-            code=error_codes.SQL_UNKNOWN_TABLE,
-            # This code now means "binder or catalog rejection" — broader
-            # than its name: negative LIMIT/OFFSET, an out-of-range GROUP BY
-            # term, a malformed regex, and more, not only a missing table or
-            # column. A rename/split is a public-contract change under
-            # separate review; the code stays as-is for now.
+            code=error_codes.SQL_UNKNOWN_COLUMN
+            if _is_missing_column(e)
+            else error_codes.SQL_UNKNOWN_TABLE,
+            # `sql_unknown_table` is still the catch-all for every other binder
+            # or catalog rejection (negative LIMIT/OFFSET, an out-of-range
+            # GROUP BY term, ...); only a missing column gets its own code.
             #
             # SqlSchemaError gets no hint. Its messages are safe today only as
             # a side effect of `_qualified` in sql_lineage.py calling
@@ -654,7 +682,10 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     redacted = redact_records(records, col_classes, consent=None)
 
     return SqlQueryResult(
-        records=redacted,
+        records=[
+            {column: _format_wall_times(value) for column, value in record.items()}
+            for record in redacted
+        ],
         columns=columns,
         # The per-RESULT-column map, not lineage's raw output. Lineage keys its
         # answer by sqlglot projection name, which for the opaque constructs
@@ -668,6 +699,23 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         total_count=max_rows + 1 if truncated else len(records),
         truncated=truncated,
     )
+
+
+def _format_wall_times(value: Any) -> Any:
+    """Keep computed SQL wall times out of strict instant presentation paths."""
+    if isinstance(value, datetime) and value.utcoffset() is None:
+        # DuckDB also returns TIMESTAMPTZ infinities as naive min/max sentinels;
+        # retain their existing strict refusal instead of inventing finite times.
+        if value in (datetime.min, datetime.max):
+            return value
+        return value.isoformat(timespec="microseconds")
+    if isinstance(value, list):
+        return [_format_wall_times(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_format_wall_times(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _format_wall_times(item) for key, item in value.items()}
+    return value
 
 
 def _fetch_metadata(
@@ -690,10 +738,9 @@ def _fetch_metadata(
         )
         raise UserError(
             "Query could not be bound to the schema.",
-            # See execute_sql_query: this code now means "binder or catalog
-            # rejection", broader than its name; a rename is under separate
-            # review.
-            code=error_codes.SQL_UNKNOWN_TABLE,
+            code=error_codes.SQL_UNKNOWN_COLUMN
+            if _is_missing_column(e)
+            else error_codes.SQL_UNKNOWN_TABLE,
             hint=_identifier_detail(e),
         ) from e
     except duckdb.Error as e:

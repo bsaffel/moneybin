@@ -1,0 +1,106 @@
+{
+  "job_id": "77777777-7777-4777-8777-777777777777",
+  "contract_version": 2,
+  "status": "completed",
+  "sources": [
+    {
+      "provider": "simplefin",
+      "connection_id": "88888888-8888-4888-8888-888888888888",
+      "credential_generation": 2,
+      "protocol_version": "2.0.0-draft",
+      "batches": [
+        {
+          "batch_id": "99999999-9999-4999-8999-999999999999",
+          "fetched_at": "2026-09-30T12:00:00Z",
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "payload": {
+            "errlist": [],
+            "connections": [
+              {
+                "conn_id": "native-connection-1",
+                "name": "Synthetic Bank - Demo",
+                "org_id": "synthetic-bank",
+                "org_name": "Synthetic Bank",
+                "sfin_url": "https://example.invalid/simplefin"
+              },
+              {
+                "conn_id": "native-connection-2",
+                "name": "Synthetic Bank - Second",
+                "org_id": "synthetic-bank",
+                "org_name": "Synthetic Bank",
+                "sfin_url": "https://example.invalid/simplefin"
+              }
+            ],
+            "accounts": [
+              {
+                "id": "v2-account-1",
+                "conn_id": "native-connection-1",
+                "name": "Synthetic Checking",
+                "currency": "USD",
+                "balance": "123456789012345.6789",
+                "available-balance": "100.00",
+                "balance-date": 1788998400,
+                "transactions": [
+                  {
+                    "id": "v2-transaction-1",
+                    "posted": 1788998400,
+                    "amount": "+0.0100",
+                    "description": "Synthetic credit",
+                    "pending": false
+                  }
+                ],
+                "extra": {
+                  "synthetic_optional_field": "kept"
+                }
+              },
+              {
+                "id": "v2-account-1",
+                "conn_id": "native-connection-2",
+                "name": "Synthetic Checking",
+                "currency": "USD",
+                "balance": "123456789012345.6789",
+                "available-balance": "100.00",
+                "balance-date": 1788998400,
+                "transactions": [],
+                "extra": {
+                  "synthetic_optional_field": "kept"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "account_id": "v2-account-1",
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "status": "complete",
+          "error_code": null,
+          "native_scope": {
+            "kind": "simplefin_v2_connection",
+            "conn_id": "native-connection-1"
+          }
+        },
+        {
+          "account_id": "v2-account-1",
+          "window": {
+            "start": "2026-09-01T00:00:00Z",
+            "end": "2026-10-01T00:00:00Z"
+          },
+          "status": "complete",
+          "error_code": null,
+          "native_scope": {
+            "kind": "simplefin_v2_connection",
+            "conn_id": "native-connection-2"
+          }
+        }
+      ]
+    }
+  ]
+}

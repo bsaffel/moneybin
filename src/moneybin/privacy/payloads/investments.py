@@ -48,6 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from moneybin.privacy.payloads.currency import FxRatePayload
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.row_set import NO_ROW_SET, row_set
+from moneybin.temporal import format_utc
 
 # Every payload below classifies its `warnings` field AGGREGATE (Tier.LOW), not
 # DESCRIPTION: these are canned system-generated diagnostic strings (the
@@ -90,6 +91,10 @@ class InvestmentEventRow:
     investment_transaction_id: Annotated[str, DataClass.RECORD_ID]
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str | None, DataClass.RECORD_ID]
+    ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    security_name: Annotated[str | None, DataClass.TXN_TYPE]
+    exchange: Annotated[str | None, DataClass.TXN_TYPE]
+    ticker_shared: Annotated[bool, DataClass.TXN_TYPE]
     trade_date: Annotated[date, DataClass.TXN_DATE]
     settlement_date: Annotated[date | None, DataClass.TXN_DATE]
     original_acquisition_date: Annotated[date | None, DataClass.TXN_DATE]
@@ -110,6 +115,10 @@ class InvestmentEventRow:
             investment_transaction_id=row.investment_transaction_id,
             account_id=row.account_id,
             security_id=row.security_id,
+            ticker=row.ticker,
+            security_name=row.security_name,
+            exchange=row.exchange,
+            ticker_shared=row.ticker_shared,
             trade_date=row.trade_date,
             settlement_date=row.settlement_date,
             original_acquisition_date=row.original_acquisition_date,
@@ -163,6 +172,10 @@ class InvestmentHoldingRow:
 
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str, DataClass.RECORD_ID]
+    ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    security_name: Annotated[str | None, DataClass.TXN_TYPE]
+    exchange: Annotated[str | None, DataClass.TXN_TYPE]
+    ticker_shared: Annotated[bool, DataClass.TXN_TYPE]
     quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
     cost_basis: Annotated[Decimal, DataClass.BALANCE]
     average_cost: Annotated[Decimal | None, DataClass.BALANCE]
@@ -180,6 +193,10 @@ class InvestmentHoldingRow:
         return cls(
             account_id=row.account_id,
             security_id=row.security_id,
+            ticker=row.ticker,
+            security_name=row.security_name,
+            exchange=row.exchange,
+            ticker_shared=row.ticker_shared,
             quantity=row.quantity,
             cost_basis=row.cost_basis,
             average_cost=row.average_cost,
@@ -252,6 +269,10 @@ class InvestmentLotRow:
     lot_id: Annotated[str, DataClass.RECORD_ID]
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str, DataClass.RECORD_ID]
+    ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    security_name: Annotated[str | None, DataClass.TXN_TYPE]
+    exchange: Annotated[str | None, DataClass.TXN_TYPE]
+    ticker_shared: Annotated[bool, DataClass.TXN_TYPE]
     acquisition_date: Annotated[date, DataClass.TXN_DATE]
     acquisition_type: Annotated[str, DataClass.TXN_TYPE]
     original_quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
@@ -270,6 +291,10 @@ class InvestmentLotRow:
             lot_id=row.lot_id,
             account_id=row.account_id,
             security_id=row.security_id,
+            ticker=row.ticker,
+            security_name=row.security_name,
+            exchange=row.exchange,
+            ticker_shared=row.ticker_shared,
             acquisition_date=row.acquisition_date,
             acquisition_type=row.acquisition_type,
             original_quantity=row.original_quantity,
@@ -313,6 +338,10 @@ class InvestmentGainRow:
     realized_gain_id: Annotated[str, DataClass.RECORD_ID]
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str, DataClass.RECORD_ID]
+    ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    security_name: Annotated[str | None, DataClass.TXN_TYPE]
+    exchange: Annotated[str | None, DataClass.TXN_TYPE]
+    ticker_shared: Annotated[bool, DataClass.TXN_TYPE]
     disposal_txn_id: Annotated[str, DataClass.RECORD_ID]
     lot_id: Annotated[str, DataClass.RECORD_ID]
     quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
@@ -333,6 +362,10 @@ class InvestmentGainRow:
             realized_gain_id=row.realized_gain_id,
             account_id=row.account_id,
             security_id=row.security_id,
+            ticker=row.ticker,
+            security_name=row.security_name,
+            exchange=row.exchange,
+            ticker_shared=row.ticker_shared,
             disposal_txn_id=row.disposal_txn_id,
             lot_id=row.lot_id,
             quantity=row.quantity,
@@ -676,7 +709,7 @@ class SecurityLinkHistoryRow:
             candidate_security_id=r["candidate_security_id"],
             status=r["status"],
             decided_by=r["decided_by"],
-            decided_at=str(r["decided_at"])
+            decided_at=format_utc(r["decided_at"])
             if r.get("decided_at") is not None
             else None,
             confidence=(
@@ -765,12 +798,6 @@ class InvestmentPriceMarkPayload:
     quote_currency: Annotated[str, DataClass.CURRENCY]
     close: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
     removed: Annotated[bool, DataClass.AGGREGATE]
-    # Whether the mark reached core. Same reason as InvestmentPricePullPayload:
-    # the write lands in app.security_price_overrides and every consumer reads
-    # core.fct_security_prices, so without this an agent cannot tell a corrected
-    # valuation from one still serving the price the user just overrode.
-    refreshed: Annotated[bool, DataClass.AGGREGATE] = False
-    refresh_error: Annotated[str | None, DataClass.AGGREGATE] = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,8 +6,8 @@ MODEL (
 /* category and subcategory are nulled out when blank for the reason
    stg_plaid__accounts states for its own free-text columns: '' passes a NULL
    check while rendering as a malformed label. Here the NULL check that matters
-   is core.uncategorized_queue's `category IS NULL` — a category of spaces hides
-   a transaction nobody ever categorized from the queue built to surface it.
+   is the queue filter's `category IS NULL` — a category of spaces hides
+   a transaction nobody ever categorized from the list built to surface it.
 
    The regex matches stg_tabular__transactions, which carries the full note on
    why these two columns do not use the bare TRIM their siblings do: they are

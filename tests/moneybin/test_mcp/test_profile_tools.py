@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin import error_codes
 from moneybin.mcp.tools.profile import (
@@ -14,7 +15,16 @@ from moneybin.mcp.tools.profile import (
 )
 from tests.moneybin.test_mcp.schema_assertions import call_tool_raw, isolated_server
 
-pytestmark = pytest.mark.usefixtures("mcp_db")
+pytestmark = pytest.mark.usefixtures("mcp_db", "no_restate")
+
+
+@pytest.fixture()
+def no_restate(mocker: MockerFixture) -> MagicMock:
+    """Stub the post-write restate: ``mcp_db`` has tables but no SQLMesh state.
+
+    The service tests pin which inputs each setting restates.
+    """
+    return mocker.patch("moneybin.services.restate.restate_after_write")
 
 
 async def test_register_profile_tools_registers_expected() -> None:
@@ -44,15 +54,7 @@ async def test_profile_reports_no_home_currency_before_one_is_chosen(
 async def test_profile_answers_on_a_database_that_predates_the_settings_table(
     mcp_db: object,
 ) -> None:
-    """The read tool degrades to "unset" on a pre-V044 database, not an error.
-
-    `profile` opens read-only, and read-only opens skip `init_schemas` and the
-    migration runner alike — so an agent's first call against an upgrading
-    user's database finds no `app.profile_settings`. The CLI twin
-    (`moneybin profile show`) is covered in test_cli_profile_settings.py; both
-    inherit the guard from `ProfileSettingsRepo`, and this asserts the agent
-    surface independently so the guard cannot regress to CLI-only.
-    """
+    """An incompatible profile refuses settings reads before any mutation."""
     from moneybin.database import get_database
 
     with get_database(read_only=False) as db:
@@ -60,19 +62,14 @@ async def test_profile_answers_on_a_database_that_predates_the_settings_table(
 
     env = await profile()
 
-    assert env.error is None
-    assert env.data.home_currency is None
+    assert env.error is not None
+    assert env.error.code == "infra_utc_upgrade_required"
 
 
 async def test_profile_set_then_profile_round_trips_the_home_currency(
     mcp_db: object,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The write tool's effect is visible to the read tool."""
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        MagicMock(),
-    )
     write_env = await profile_set(home_currency="EUR")
     assert write_env.error is None
     assert write_env.data.home_currency == "EUR"
@@ -109,13 +106,8 @@ async def test_profile_set_empty_display_targets_does_not_offer_rate_refresh(
 
 async def test_profile_set_home_currency_preserves_declared_display_targets(
     mcp_db: object,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The patch-shaped tool changes the requested setting and leaves targets intact."""
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        MagicMock(),
-    )
     await profile_set(display_currency_targets=["EUR"])
 
     env = await profile_set(home_currency="USD")
@@ -177,9 +169,9 @@ async def test_registered_profile_set_requires_exactly_one_setting_without_mutat
         isolated_server(register_profile_tools), "profile_set", arguments
     )
 
-    assert response.structuredContent is not None
+    assert response.structured_content is not None
     assert (
-        response.structuredContent["error"]["code"]
+        response.structured_content["error"]["code"]
         == error_codes.MUTATION_INVALID_INPUT
     )
     settings = (await profile()).data
@@ -225,3 +217,13 @@ def test_profile_read_is_annotated_read_only() -> None:
     """
     assert getattr(profile, "_mcp_read_only", None) is True
     assert getattr(profile_set, "_mcp_read_only", None) is False
+
+
+async def test_reporting_timezone_round_trips_and_rejects_invalid_input() -> None:
+    result = await profile_set(reporting_timezone="America/New_York")
+    assert result.error is None
+    assert result.data.reporting_timezone == "America/New_York"
+    assert (await profile()).data.reporting_timezone == "America/New_York"
+    rejected = await profile_set(reporting_timezone="Unknown/Zone")
+    assert rejected.error is not None
+    assert (await profile()).data.reporting_timezone == "America/New_York"

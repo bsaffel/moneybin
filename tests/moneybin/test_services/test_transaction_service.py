@@ -81,6 +81,24 @@ def transaction_db(db: Database) -> Database:
     return db
 
 
+def _mirror_fct_ids_into_matched(db: Database) -> None:
+    """Seed the curation resolver's liveness oracle with the fact's id set.
+
+    Resolution reads ``prep.int_transactions__matched`` (production: the same
+    id set as ``core.fct_transactions``) and passes ids through unchanged when
+    it is absent, so a test of resolution needs it present.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(transaction_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "
+        "SELECT transaction_id FROM core.fct_transactions"
+    )
+
+
 class TestEmptyResults:
     """Tests for service behavior with no data in tables."""
 
@@ -1654,7 +1672,7 @@ class TestManualEntry:
         )
 
         log_rows = transaction_db.conn.execute(
-            "SELECT source_type, format_name FROM raw.import_log WHERE import_id = ?",
+            "SELECT source_type, format_name FROM app.import_log WHERE import_id = ?",
             [result.import_id],
         ).fetchall()
         assert log_rows == [("manual", "manual_entry")]
@@ -1669,6 +1687,24 @@ class TestManualEntry:
             r.source_transaction_id for r in result.results
         }
         assert {r[1] for r in manual_rows} == {result.import_id}
+
+    @pytest.mark.unit
+    def test_create_manual_batch_returns_persisted_amount_and_currency(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        result = TransactionService(transaction_db).create_manual_batch(
+            [self._entry(amount=Decimal("-12.567"), currency_code=None)], actor="cli"
+        )
+
+        returned = result.results[0]
+        stored = transaction_db.conn.execute(
+            "SELECT amount, currency_code FROM raw.manual_transactions WHERE source_transaction_id = ?",
+            [returned.source_transaction_id],
+        ).fetchone()
+        assert stored is not None
+        assert returned.amount == stored[0]
+        assert returned.currency_code == stored[1]
 
     @pytest.mark.unit
     def test_create_manual_batch_finalizes_the_batch_on_the_success_path(
@@ -1689,7 +1725,7 @@ class TestManualEntry:
 
         row = transaction_db.conn.execute(
             "SELECT status, rows_total, rows_imported, completed_at "
-            "FROM raw.import_log WHERE import_id = ?",
+            "FROM app.import_log WHERE import_id = ?",
             [result.import_id],
         ).fetchone()
         assert row is not None
@@ -1743,7 +1779,7 @@ class TestManualEntry:
         assert manual_count is not None
         assert manual_count[0] == 0
         log_count = transaction_db.conn.execute(
-            "SELECT COUNT(*) FROM raw.import_log WHERE source_type = 'manual'"
+            "SELECT COUNT(*) FROM app.import_log WHERE source_type = 'manual'"
         ).fetchone()
         assert log_count is not None
         assert log_count[0] == 0
@@ -1826,7 +1862,7 @@ class TestManualEntry:
             service.create_manual_batch(oversize, actor="cli")
         # Size check fires before any DB mutation.
         log_count = transaction_db.conn.execute(
-            "SELECT COUNT(*) FROM raw.import_log WHERE source_type = 'manual'"
+            "SELECT COUNT(*) FROM app.import_log WHERE source_type = 'manual'"
         ).fetchone()
         assert log_count is not None
         assert log_count[0] == 0
@@ -2046,11 +2082,18 @@ class TestManualEntry:
 class TestCurationTransactionIdResolution:
     """Curation writes resolve a superseded transaction_id (issue #538).
 
-    ``transaction_db`` seeds ``core.fct_transactions`` with a live 'T1'; each
+    ``transaction_db`` seeds ``core.fct_transactions`` (and, via the class
+    override below, ``prep.int_transactions__matched``) with a live 'T1'; each
     test additionally aliases 'T1_OLD' -> 'T1' in ``app.transaction_id_aliases``
     to model a dedup merge that re-keyed the canonical id after a caller had
     already been handed the old one.
     """
+
+    @pytest.fixture()
+    def transaction_db(self, transaction_db: Database) -> Database:
+        """The module fixture, with the liveness oracle seeded from the fact."""
+        _mirror_fct_ids_into_matched(transaction_db)
+        return transaction_db
 
     @pytest.fixture()
     def superseded_db(self, transaction_db: Database) -> Database:

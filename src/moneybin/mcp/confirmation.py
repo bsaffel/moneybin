@@ -137,7 +137,7 @@ class ConfirmationBroker:
 
     @property
     def ttl_seconds(self) -> int:
-        """Return the configured token lifetime."""
+        """The configured token lifetime."""
         if self._ttl_seconds is not None:
             return self._ttl_seconds
         try:

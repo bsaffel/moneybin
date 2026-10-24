@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -497,11 +498,11 @@ class TestSingleAccountConfirmPipeline:
             "json",
             env=env,
         )
-        # import files exits 0 even on confirmation_required in --output json mode;
-        # the body's data.status is the discriminant.
-        assert result.exit_code == 0, (
-            f"Expected exit 0 from import files (confirmation_required exits 0 "
-            f"in JSON mode)\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        # The JSON envelope remains machine-readable, but requested work is
+        # incomplete until this account identity confirmation is resolved.
+        assert result.exit_code == 1, (
+            f"Expected exit 1 from incomplete import confirmation\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         payload = json.loads(result.stdout)
         data = payload["data"]
@@ -528,6 +529,7 @@ class TestSingleAccountConfirmPipeline:
         )
         ref = proposals[0]["proposal_ref"]
         assert ref == "@0", f"the first proposal's ref must be @0, got {ref!r}"
+        assert any("moneybin import confirm" in action for action in payload["actions"])
 
         # Step 2: Resolve — accept the mapping and bind by the positional ref so
         # the import can complete. Binding the masked key instead is refused; that
@@ -677,19 +679,28 @@ class TestAutoRulePipeline:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-        # auto-review surfaces the seeded proposal
-        result = run_cli("transactions", "categorize", "auto", "review", env=env)
-        result.assert_success()
-        assert "COFFEE SHOP" in result.output, (
-            f"Expected COFFEE SHOP pattern in auto-review output: {result.output}"
+        # JSON preserves full proposals regardless of the terminal's table width.
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "auto",
+            "review",
+            "--output",
+            "json",
+            env=env,
         )
+        result.assert_success()
+        proposals = json.loads(result.stdout)["data"]["proposals"]
+        assert any(
+            proposal["merchant_pattern"] == "COFFEE SHOP" for proposal in proposals
+        ), f"Expected COFFEE SHOP pattern in auto-review output: {result.stdout}"
 
         # auto-accept promotes the proposal to an active rule
         result = run_cli(
             "transactions", "categorize", "auto", "accept", "--accept-all", env=env
         )
         result.assert_success()
-        assert "Accepted 1" in result.output, (
+        assert "Accepted: 1" in " ".join(result.output.split()), (
             f"auto-accept did not approve the proposal: {result.output}"
         )
 
@@ -740,3 +751,95 @@ class TestAutoRulePipeline:
         # this exercises the path future imports will hit.
         result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()
+
+
+def test_offline_restore_and_recovery_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.config import (
+        clear_settings_cache,
+        get_current_profile,
+        get_settings,
+        set_current_profile,
+    )
+    from moneybin.database import Database, invalidate_encryption_key_cache
+    from moneybin.services.database_restore_lock import SourceLease
+    from moneybin.services.database_restore_service import restore_encrypted_database
+    from tests.e2e.conftest import TEST_ENCRYPTION_KEY
+
+    env = make_workflow_env(tmp_path / "home", "restore-workflow")
+    try:
+        previous_profile = get_current_profile(auto_resolve=False)
+    except RuntimeError:
+        previous_profile = None
+    with monkeypatch.context() as parent_env:
+        for key, value in env.items():
+            parent_env.setenv(key, value)
+        clear_settings_cache()
+        set_current_profile(env["MONEYBIN_PROFILE"])
+        invalidate_encryption_key_cache()
+        try:
+            store = MagicMock()
+            store.get_key.return_value = TEST_ENCRYPTION_KEY
+            destination = get_settings().database.path
+            source = tmp_path / "restore-source.duckdb"
+            with Database(
+                source, read_only=False, secret_store=store, no_auto_upgrade=True
+            ) as db:
+                db.execute(
+                    "INSERT INTO app.versions (component, version) "
+                    "VALUES ('restore_probe', 'source')"
+                )
+            original = destination.read_bytes()
+            source_bytes = source.read_bytes()
+            restored = run_cli("db", "restore", "--from", str(source), "--yes", env=env)
+            restored.assert_success()
+            assert destination.read_bytes() == source_bytes
+            backups = list(
+                (destination.parent / "backups").glob("*_pre_restore.duckdb")
+            )
+            assert len(backups) == 1
+            assert backups[0].read_bytes() == original
+            with Database(destination, read_only=False, secret_store=store) as db:
+                db.execute(
+                    "UPDATE app.versions SET version = 'destination' "
+                    "WHERE component = 'restore_probe'"
+                )
+            before_interruption = destination.read_bytes()
+            promote = SourceLease.promote
+
+            def interrupt(
+                self: SourceLease, candidate: Path, *, fingerprint: str
+            ) -> None:
+                promote(self, candidate, fingerprint=fingerprint)
+                raise KeyboardInterrupt
+
+            recovery_backup = tmp_path / "original-before-interruption.duckdb"
+            with monkeypatch.context() as patcher:
+                patcher.setattr(SourceLease, "promote", interrupt)
+                with pytest.raises(KeyboardInterrupt):
+                    restore_encrypted_database(
+                        source,
+                        destination,
+                        secret_store=store,
+                        backup_path=recovery_backup,
+                    )
+            journal = destination.with_name(
+                destination.name + ".restore-promotion.json"
+            )
+            assert journal.exists()
+            recovered = run_cli("db", "restore", "--recover", env=env)
+            recovered.assert_success()
+            assert not journal.exists()
+            assert destination.read_bytes() == source_bytes
+            assert recovery_backup.read_bytes() == before_interruption
+            assert source.read_bytes() == source_bytes
+            for command in ("utc-inspect", "utc-prepare", "utc-apply", "utc-recover"):
+                absent = run_cli("db", "migrate", command, "--help", env=env)
+                assert absent.exit_code == 2
+                assert "No such command" in absent.output
+        finally:
+            clear_settings_cache()
+            invalidate_encryption_key_cache()
+            if previous_profile is not None:
+                set_current_profile(previous_profile)

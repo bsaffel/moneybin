@@ -29,13 +29,13 @@ class TestDbKeySubgroup:
         """
         result = runner.invoke(db_app, ["key", "--help"])
         assert result.exit_code == 0
-        for action in ("show", "rotate"):
+        for action in ("show", "rotate", "verify"):
             assert action in result.stdout
-        for stub in ("export", "import", "verify"):
+        for stub in ("export", "import"):
             assert stub not in result.stdout
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("action", ["export", "import", "verify"])
+    @pytest.mark.parametrize("action", ["export", "import"])
     def test_stub_actions_exit_with_not_implemented(
         self,
         runner: CliRunner,

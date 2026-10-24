@@ -31,7 +31,7 @@ declaration covers.
 > this spec proposed *deriving* internal-schema classes automatically via
 > the `sql_lineage` graph, "self-maintaining, no hand-authored registry."
 > [ADR-013](../decisions/013-report-classification-declared.md) already
-> rejected exactly that. As a current runtime invariant, eight SQLMesh report views back nine report routes:
+> rejected exactly that. As a current runtime invariant, ten SQLMesh report views back ten report routes:
 > SQLMesh deploys every `kind VIEW` model as `SELECT * FROM
 > <internal physical table>`, so runtime lineage classifies the pointer,
 > not the logic, and CRITICAL columns **leak in the clear**; and lineage
@@ -197,7 +197,7 @@ by **preserving** the account-number property, not trading it:
 
 - `reports` columns are fully declared (ADR-013) — masking is as sound as
   the typed report tools today.
-- `raw`/`prep` CRITICAL columns are declared (D4) — 34 columns across 17
+- `raw`/`prep` CRITICAL columns are declared (D4) — 58 columns across 24
   tables; everything else is held by the content-net floor (D5). The floor
   is a *weaker* guarantee than a declaration for those columns — an accepted
   trade for keeping data readable, recorded here so a future contributor can

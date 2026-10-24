@@ -110,7 +110,9 @@ def _blank_original_currency_analytics(
         OutputColumn(
             "description", "Original transaction description.", DataClass.DESCRIPTION
         ),
-        OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
+        OutputColumn(
+            "category", "Transaction category.", DataClass.CATEGORY, uncategorized=True
+        ),
         OutputColumn(
             "currency_code",
             "ISO 4217 currency this row is denominated in; null means unknown.",
@@ -124,6 +126,7 @@ def _blank_original_currency_analytics(
             "account's own currency and cannot be restated at per-date rates. A "
             "row already in the display currency keeps its score.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "amount_zscore_category",
@@ -131,6 +134,7 @@ def _blank_original_currency_analytics(
             "baseline. Null on a row this read repriced, for the same reason as "
             "the account score.",
             DataClass.AGGREGATE,
+            numeric=True,
         ),
         OutputColumn(
             "is_top_100",

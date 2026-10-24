@@ -5,15 +5,61 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+import duckdb
 
 from moneybin.database import Database, check_core_schema_drift
+from moneybin.db_lock import live_writer
+from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.review_service import ReviewService
 from moneybin.services.transform_service import TransformService
 from moneybin.tables import DIM_ACCOUNTS, FCT_TRANSACTIONS, IMPORT_LOG, MODEL_FRESHNESS
+from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 logger = logging.getLogger(__name__)
+
+
+def database_connections(db_path: Path) -> dict[str, list[dict[str, Any]]]:
+    """Merge file-lock writer metadata with lsof-derived reader enumeration.
+
+    Needs no database connection, so it answers while a writer holds the lock.
+    Returns the empty-shape ``{"writers": [], "readers": []}`` when neither
+    source reports anything. A writer is reported only when a process actually
+    holds the file lock (``live_writer``) — the persisted metadata file
+    alone is not enough, since it outlives the holder. Tolerates a corrupted
+    lock file by treating it as no-writer-info — the lock-file payload is
+    best-effort observability, not a correctness contract. The writer's pid is
+    filtered out of the reader list to avoid double-listing the writer process.
+    """
+    writers: list[dict[str, Any]] = []
+    writer_pid: int | None = None
+    # live_writer resolves db_path itself for the lock file; resolving here
+    # too keeps the lsof reader scan on the same inode for a symlinked path.
+    resolved = db_path.resolve()
+    metadata = live_writer(db_path)
+    if metadata is not None:
+        writer_pid = metadata["pid"]
+        writers.append(metadata)
+
+    # A writer can time out and release the advisory lock while a DuckDB reader
+    # still blocks the next write, so recovery diagnostics must enumerate
+    # readers independently of the current writer-lock state.
+    readers: list[dict[str, Any]] = []
+    for proc in find_blocking_processes(resolved):
+        if writer_pid is not None and proc["pid"] == writer_pid:
+            continue  # Avoid double-listing the writer as a reader
+        readers.append({
+            "pid": int(proc["pid"]),
+            "command": describe_process(
+                str(proc.get("cmdline") or proc.get("command", ""))
+            ),
+        })
+
+    return {"writers": writers, "readers": readers}
 
 
 @dataclass(frozen=True)
@@ -68,9 +114,11 @@ class SystemService:
         from moneybin.services.merchant_links_service import MerchantLinksService
         from moneybin.services.security_links_service import SecurityLinksService
 
+        categorization = CategorizationService(self._db)
+        uncategorized = categorization.count_uncategorized()
         review = ReviewService(
             MatchingService(self._db),
-            CategorizationService(self._db),
+            categorization,
             AccountLinksService(self._db),
             MerchantLinksService(self._db),
             SecurityLinksService(self._db),
@@ -81,7 +129,7 @@ class SystemService:
 
         logger.info(
             f"System status: {accounts_count} accounts, {transactions_count} transactions, "
-            f"{review.matches_pending} matches pending, {review.categorize_pending} uncategorized, "
+            f"{review.matches_pending} matches pending, {uncategorized} uncategorized, "
             f"transforms_pending={freshness.pending}"
         )
         return SystemStatus(
@@ -93,12 +141,24 @@ class SystemService:
             account_links_pending=review.account_links_pending,
             merchant_links_pending=review.merchant_links_pending,
             security_links_pending=review.security_links_pending,
-            categorize_pending=review.categorize_pending,
+            categorize_pending=uncategorized,
             transforms_pending=freshness.pending,
             transforms_last_apply_at=freshness.last_apply_at,
             transforms_missing_models=freshness.missing_models,
             schema_drift=schema_drift,
         )
+
+    def gsheet_connections(self) -> list[dict[str, Any]]:
+        """Return every Google Sheets connection row, or none before init.
+
+        Narrowed to ``CatalogException`` (the table absent on a bare database)
+        so real DB/query problems surface instead of reading as zero
+        connections and suppressing recovery hints.
+        """
+        try:
+            return GSheetConnectionsRepo(self._db).list_all()
+        except duckdb.CatalogException:
+            return []
 
     def _count_accounts(self) -> int:
         try:

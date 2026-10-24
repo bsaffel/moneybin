@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-09-27 -->
 # What the AI Provider Sees
 
 When you drive MoneyBin with an AI agent, some of your financial data reaches
@@ -63,7 +63,7 @@ envelope contains once it reaches the model.
 | Tool kind | Goes to the provider | Always masked first | Recorded locally |
 |---|---|---|---|
 | Transaction reads (`transactions`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
-| Report views (`reports(report_id="core:networth")`, `reports(report_id="core:spending_trend")`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
+| Report views (`reports(report_id="core:net_worth")`, `reports(report_id="core:spending_trend")`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app`/`reports`/`raw`/`prep` (amounts, descriptions, merchants, dates, locations, untouched importer output) | Account/routing numbers — by column class in `core`/`app`/`reports`, by value shape in `raw`/`prep` | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
@@ -95,7 +95,6 @@ not in the renderer:
 
 ```console
 $ uv run moneybin sql query "SELECT display_name, institution_name, last_four, routing_number FROM core.dim_accounts ORDER BY display_name LIMIT 3" --output json
-Using profile: demo
 {"status": "ok", "summary": {"total_count": 3, "returned_count": 3, "has_more": false, "sensitivity": "critical", "display_currency": null}, "data": [{"display_name": "Ally Bank savings \u20260002", "institution_name": "Ally Bank", "last_four": "****0002", "routing_number": null}, {"display_name": "Chase Bank checking \u20260001", "institution_name": "Chase Bank", "last_four": "****0001", "routing_number": null}, {"display_name": "Chase Bank credit card", "institution_name": "Chase Bank", "last_four": null, "routing_number": null}], "actions": []}
 ```
 
@@ -201,8 +200,6 @@ before an agent ever sees one:
 
 ```console
 $ uv run moneybin transactions categorize assist --limit 2 --output json
-Using profile: demo
-audit: tool=transactions_categorize_assist sensitivity=medium metadata={'txn_count': 2, 'account_filter': None}
 {"status": "ok", "summary": {"total_count": 2, "returned_count": 2, "has_more": false, "sensitivity": "medium", "display_currency": null}, "data": {"transactions": [{"transaction_id": "5bbc2331ca753a4b", "description_scrubbed": "TARGET", "memo_scrubbed": "", "source_type": "csv", "transaction_type": null, "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "-"}, {"transaction_id": "8621e03e0d342b35", "description_scrubbed": "ONLINE PAYMENT CHASE CARD", "memo_scrubbed": "", "source_type": "csv", "transaction_type": null, "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "+"}]}, "actions": []}
 ```
 
@@ -229,7 +226,7 @@ The provider sees the *results of the queries the agent ran*, not your database:
   statement returns their values.
 - **`raw` and `prep` are readable, and masked differently.** An agent can read
   what an importer produced — the point is answering "did my import land
-  correctly?" without an operator shell. 34 columns across 17 tables carry an
+  correctly?" without an operator shell. 58 columns across 24 tables carry an
   explicit CRITICAL declaration; every other value is scanned at read time and
   masked when it looks like an SSN or an unbroken run of 8 or more digits. A
   4-to-7 digit account number, one written `1234-5678`, or one stored as a
@@ -242,11 +239,13 @@ The provider sees the *results of the queries the agent ran*, not your database:
 
   ```console
   $ uv run moneybin sql query "SELECT source_transaction_id, date_posted, payee, amount FROM raw.ofx_transactions ORDER BY date_posted DESC LIMIT 3"
-  Using profile: demo
-  source_transaction_id | date_posted | payee | amount
-  SYN****...2886 | 2025-12-31 00:00:00 | CAR WASH #3180 BOISE ID | -18.43
-  SYN****...2883 | 2025-12-30 00:00:00 | TARGET #4058 SEATTLE WA | -55.82
-  SYN****...2882 | 2025-12-29 00:00:00 | TRADER JOE'S #9114 CHARLOTTE NC | -42.85
+  ┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
+  ┃ source_transaction_id ┃ date_posted         ┃ payee                           ┃ amount ┃
+  ┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
+  │ SYN****...2886        │ 2025-12-31 00:00:00 │ CAR WASH #3180 BOISE ID         │ -18.43 │
+  │ SYN****...2883        │ 2025-12-30 00:00:00 │ TARGET #4058 SEATTLE WA         │ -55.82 │
+  │ SYN****...2882        │ 2025-12-29 00:00:00 │ TRADER JOE'S #9114 CHARLOTTE NC │ -42.85 │
+  └───────────────────────┴─────────────────────┴─────────────────────────────────┴────────┘
   ```
 
   The digit run inside `source_transaction_id` is masked in place by the value
@@ -342,10 +341,23 @@ each:
 
 ```console
 $ uv run moneybin privacy log --last 2
-Using profile: demo
-2026-09-14T18:59:32.905483+00:00 | tool_call | cli.categorize_assist | sensitivity=medium classes=description,record_id,txn_type rows=2
-2026-09-14T18:59:30.779320+00:00 | tool_call | cli.sql_query | sensitivity=critical classes=institution,institution_account_number,routing_number,user_note rows=3
+Showing last 2 events (all actors; total matching events unknown)
+Returned: 2
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ When                             ┃ Action    ┃ Actor                 ┃ Details                   ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 2026-09-27T16:05:10.573911+00:00 │ tool_call │ cli.categorize_assist │ sensitivity=medium        │
+│                                  │           │                       │ classes=description,recor │
+│                                  │           │                       │ d_id,txn_type rows=2      │
+│ 2026-09-27T16:05:03.347128+00:00 │ tool_call │ cli.sql_query         │ sensitivity=critical      │
+│                                  │           │                       │ classes=institution,insti │
+│                                  │           │                       │ tution_account_number,rou │
+│                                  │           │                       │ ting_number,user_note     │
+│                                  │           │                       │ rows=3                    │
+└──────────────────────────────────┴───────────┴───────────────────────┴───────────────────────────┘
 ```
+
+Each timestamp renders whole at this 100-column width. The class lists still wrap mid-token: `classes=institution,institution_account_number,routing_number,user_note` is one value split across three rows.
 
 The SQL text, the account names, and the descriptions those calls returned are
 absent — the line carries the tier, the classes, and the row count and nothing

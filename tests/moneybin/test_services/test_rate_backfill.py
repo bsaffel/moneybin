@@ -28,6 +28,7 @@ from moneybin.reports._framework.contract import ReportSemantics
 from moneybin.reports._framework.convert import convert_records
 from moneybin.services.currency_service import (
     MAX_BACKWARD_RESOLUTION_DAYS,
+    MAX_MARKET_CLOSURE_DAYS,
     CurrencyService,
 )
 from moneybin.services.rate_backfill import (
@@ -139,6 +140,63 @@ def test_a_foreign_currency_yields_one_window_from_its_earliest_row(
             from_currency="EUR",
             to_currency="USD",
             start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+    )
+
+
+def test_a_null_balance_row_adds_no_window_beyond_its_transactions(
+    db: Database,
+) -> None:
+    """An unanchored account's rows start at its first transaction, already covered."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    db.execute(
+        """
+        INSERT INTO core.fct_balances_daily
+            (account_id, balance_date, balance, currency_code)
+        VALUES ('acct-1', ?, NULL, 'EUR')
+        """,
+        [date(2026, 3, 10)],
+    )
+
+    windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == (
+        RateWindow(
+            from_currency="EUR",
+            to_currency="USD",
+            start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+    )
+
+
+def test_a_null_balance_row_is_the_sole_source_of_its_currency_window(
+    db: Database,
+) -> None:
+    """An unpriced holding leaves the spine's NULL row as the only dated evidence."""
+    db.execute(
+        """
+        INSERT INTO core.dim_holdings (account_id, security_id, currency_code)
+        VALUES ('acct-1', 'sec-1', 'GBP')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO core.fct_balances_daily
+            (account_id, balance_date, balance, currency_code)
+        VALUES ('acct-1', ?, NULL, 'GBP')
+        """,
+        [date(2026, 5, 4)],
+    )
+
+    windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == (
+        RateWindow(
+            from_currency="GBP",
+            to_currency="USD",
+            start=date(2026, 5, 4),
             end=_TODAY,
         ),
     )
@@ -723,6 +781,7 @@ def test_declared_target_stores_the_provider_pair_a_report_names_as_evidence(
                 "amount": Decimal("10.00"),
             }
         ],
+        today=_TODAY,
         classes={
             "txn_date": DataClass.TXN_DATE,
             "currency_code": DataClass.CURRENCY,
@@ -866,6 +925,60 @@ def test_a_pair_the_provider_does_not_publish_is_reported_as_unsupported(
     assert result.pairs_unsupported == ("JPY/USD",)
     assert result.pairs_failed == ()
     assert result.rates_written == 0
+
+
+def test_an_unsupported_verdict_reaches_a_later_cache_only_read(db: Database) -> None:
+    """A report read cannot ask the provider, so refresh records its list.
+
+    Without it, a report missing a JPY rate could only guess whether refresh or
+    `moneybin fx set` is the fix.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="JPY")
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=_SilentAdapter())
+
+    assert CurrencyService(db).unsupported("JPY", "USD") == {"JPY"}
+
+
+def test_a_fully_successful_refresh_still_records_the_provider_list(
+    db: Database,
+) -> None:
+    """Every pair answering is the normal case, and the list must stay current.
+
+    A report reading an ad-hoc display currency the provider never publishes
+    needs that list to say so, whatever the refresh's own pairs answered.
+    """
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=_SpanAdapter())
+
+    assert CurrencyService(db).unsupported("AED", "USD") == {"AED"}
+
+
+def test_a_range_answer_records_the_span_it_proves_complete(db: Database) -> None:
+    """From the first to the last kept publication, every date is accounted for."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+    adapter = _DatedAdapter(date(2026, 3, 9), date(2026, 3, 13))
+
+    run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    rows = db.execute(
+        "SELECT from_currency, to_currency, start_date, end_date "
+        "FROM raw.exchange_rate_coverage"
+    ).fetchall()
+    assert rows == [("EUR", "USD", date(2026, 3, 9), date(2026, 3, 13))]
+
+
+def test_a_range_answer_missing_a_rate_records_no_span(db: Database) -> None:
+    """A rate dropped as unstorable leaves a hole that is not a closed market."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    run_rate_backfill(
+        db, home_currency="USD", through=_TODAY, adapter=_UnstorableAdapter()
+    )
+
+    row = db.execute("SELECT COUNT(*) FROM raw.exchange_rate_coverage").fetchone()
+    assert row == (0,)
 
 
 def test_a_home_currency_the_provider_does_not_publish_is_reported_as_unsupported(
@@ -1204,13 +1317,16 @@ def test_a_rate_dated_far_before_the_window_is_not_stored(db: Database) -> None:
 
     Separate from the upper bound because the lower one is not symmetric: a
     provider legitimately answers a closed day with an earlier one, so the
-    window opens with `MAX_BACKWARD_RESOLUTION_DAYS` of slack. This date is one
-    day beyond it — far enough that no publication-day resolution explains it,
-    which is what makes it a wrong date rather than a resolved one.
+    bound sits `MAX_MARKET_CLOSURE_DAYS` below the request start, which sits
+    `MAX_BACKWARD_RESOLUTION_DAYS` below the window. This date is one day
+    beyond that — past the longest closure the rate spine tolerates between
+    publications, so no resolution explains it, which is what makes it a wrong
+    date rather than a resolved one.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     adapter = _DatedAdapter(
-        date(2026, 3, 10) - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS + 1)
+        date(2026, 3, 10)
+        - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS + MAX_MARKET_CLOSURE_DAYS + 1)
     )
 
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
@@ -1234,3 +1350,71 @@ def test_a_rate_resolved_back_to_the_last_publication_day_is_kept(
     result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
 
     assert result.rates_written == 1
+
+
+def test_a_request_opening_on_a_weekend_keeps_the_friday_it_resolves_to(
+    db: Database,
+) -> None:
+    """A weekend request start is answered from the Friday before it, not reported short.
+
+    The window opens on a Saturday, so the request reaching back two weeks opens
+    on a Saturday too. The provider resolves that day to the Friday before it;
+    if the request still began on the Saturday, that Friday would land outside
+    the bound, be discarded, and name the pair on every refresh although every
+    rate a report reads was stored. The coverage span starts on that Friday —
+    a real publication — not on the weekend nobody published.
+    """
+    saturday = date(2026, 3, 14)
+    friday_before_request = saturday - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS + 1)
+    _add_transaction(db, on=saturday, currency="EUR")
+    adapter = _DatedAdapter(
+        friday_before_request,
+        date(2026, 3, 2),
+        date(2026, 3, 13),
+        _TODAY - timedelta(days=1),
+    )
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert result.pairs_discarded == ()
+    assert result.rates_written == 4
+    assert adapter.ranges == [("EUR", "USD", friday_before_request, _TODAY)]
+    assert db.execute(
+        "SELECT start_date, end_date FROM raw.exchange_rate_coverage "
+        "WHERE from_currency = 'EUR' AND to_currency = 'USD'"
+    ).fetchall() == [(friday_before_request, _TODAY - timedelta(days=1))]
+
+
+def test_a_request_opening_on_a_weekday_holiday_keeps_the_publication_before_it(
+    db: Database,
+) -> None:
+    """A holiday request start is answered from the publication before it, not reported short.
+
+    The window opens on Thursday 2026-01-15, so the request opens on Thursday
+    2026-01-01, a market holiday. The provider resolves that day to 2025-12-31;
+    if the bound sat at the request start, that row would be discarded and name
+    the pair on every refresh although every rate a report reads was stored.
+    The request keeps its start; the bound allows `MAX_MARKET_CLOSURE_DAYS`
+    below it. The coverage span starts on the publication, not the holiday.
+    """
+    window_start = date(2026, 1, 15)
+    holiday = window_start - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS)
+    resolved = date(2025, 12, 31)
+    _add_transaction(db, on=window_start, currency="EUR")
+    adapter = _DatedAdapter(
+        resolved,
+        date(2026, 1, 5),
+        date(2026, 1, 14),
+        _TODAY - timedelta(days=1),
+    )
+
+    result = run_rate_backfill(db, home_currency="USD", through=_TODAY, adapter=adapter)
+
+    assert holiday == date(2026, 1, 1)
+    assert result.pairs_discarded == ()
+    assert result.rates_written == 4
+    assert adapter.ranges == [("EUR", "USD", holiday, _TODAY)]
+    assert db.execute(
+        "SELECT start_date, end_date FROM raw.exchange_rate_coverage "
+        "WHERE from_currency = 'EUR' AND to_currency = 'USD'"
+    ).fetchall() == [(resolved, _TODAY - timedelta(days=1))]

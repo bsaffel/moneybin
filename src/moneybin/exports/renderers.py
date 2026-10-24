@@ -12,7 +12,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import pyarrow as pa
@@ -27,7 +27,11 @@ from moneybin.exports.manifest import (
     bundle_table_path,
     safe_table_identifier,
 )
-from moneybin.exports.snapshot import PreparedExport, PreparedTable
+from moneybin.exports.snapshot import (
+    PreparedExport,
+    PreparedTable,
+    format_export_datetime,
+)
 
 _MANIFEST_SHEET = "MoneyBin Manifest"
 _DICTIONARY_SHEET = "MoneyBin Data Dictionary"
@@ -168,8 +172,8 @@ def _write_parquet(table: PreparedTable, path: Path) -> None:
     schema = parquet_schema_for(table)
     arrow_table = pa.Table.from_arrays(
         [
-            pa.array([row[index] for row in table.rows], type=field.type)
-            for index, field in enumerate(schema)
+            pa.array([row[index] for row in table.rows], type=arrow_type)
+            for index, arrow_type in enumerate(schema.types)
         ],
         schema=schema,
     )
@@ -224,7 +228,7 @@ def _arrow_type(duckdb_type: str) -> pa.DataType:
     raise ValueError(f"Unsupported Parquet column type: {duckdb_type}")
 
 
-def _arrow_struct_field(field: str) -> pa.Field:
+def _arrow_struct_field(field: str) -> pa.Field[Any]:
     """Map one DuckDB ``STRUCT(name TYPE)`` field to Arrow."""
     name, separator, duckdb_type = field.strip().partition(" ")
     if not separator or not duckdb_type.strip():
@@ -285,7 +289,9 @@ def normalize_tabular_cell(value: object) -> TabularCell:
     if isinstance(value, Decimal):
         # Text preserves DECIMAL precision; XLSX numeric cells are IEEE-754 doubles.
         return str(value)
-    if isinstance(value, (datetime, date, time)):
+    if isinstance(value, datetime):
+        return format_export_datetime(value)
+    if isinstance(value, (date, time)):
         return value.isoformat()
     if isinstance(value, bytes):
         return value.hex()
@@ -301,7 +307,12 @@ def normalize_tabular_cell(value: object) -> TabularCell:
 def _payload_json_safe(value: object) -> object:
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        return {str(key): _payload_json_safe(item) for key, item in mapping.items()}
+        return {
+            (
+                format_export_datetime(key) if isinstance(key, datetime) else str(key)
+            ): _payload_json_safe(item)
+            for key, item in mapping.items()
+        }
     if isinstance(value, (list, tuple)):
         sequence = cast(Sequence[object], value)
         return [_payload_json_safe(item) for item in sequence]

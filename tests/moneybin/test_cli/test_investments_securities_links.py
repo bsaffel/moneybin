@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,13 +75,15 @@ class TestSecurityLinksPending:
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
     ) -> None:
-        """Empty queue exits 0 with no output."""
+        """An empty queue names the reviewed scope and result."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_pending.return_value = []
         mock_count.return_value = 0
 
         result = runner.invoke(app, ["pending"])
         assert result.exit_code == 0
+        assert "Security links" in result.stdout
+        assert "No pending security-link decisions." in result.stdout
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.pending")
@@ -191,6 +194,38 @@ class TestSecurityLinksPending:
         assert groups[0]["candidates"][0]["candidate_ticker"] == "VTI"
         assert "n_pending" in parsed["data"]
 
+    def test_pending_offers_no_pager_for_a_finite_human_result(self) -> None:
+        """A substantial review queue remains navigable without refetching."""
+        result = runner.invoke(app, ["pending", "--help"])
+
+        assert result.exit_code == 0
+        assert "--no-pager" in result.stdout
+
+    @patch("moneybin.cli.commands.investments.security_links.get_database")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.pending")
+    @patch(
+        "moneybin.services.security_links_service.SecurityLinksService.count_pending"
+    )
+    def test_pending_quiet_keeps_decision_data_but_drops_routine_next_hint(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """Quiet retains the review evidence while suppressing a next step."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [_make_pending_group(decision_id="dec_quiet")]
+        mock_count.return_value = 1
+
+        result = runner.invoke(app, ["pending", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        assert "dec_quiet" in result.stdout
+        assert (
+            "Next: decide with moneybin investments securities links set"
+            not in result.stdout
+        )
+
 
 # ---------------------------------------------------------------------------
 # links set
@@ -230,7 +265,6 @@ class TestSecurityLinksSet:
         self,
         mock_accept: MagicMock,
         mock_get_db: MagicMock,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Binding a symbol deletes nothing; saying "merged" describes another act.
 
@@ -241,14 +275,13 @@ class TestSecurityLinksSet:
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_accept.return_value = "bound"
 
-        with caplog.at_level(logging.INFO):
-            result = runner.invoke(
-                app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
-            )
+        result = runner.invoke(
+            app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
+        )
 
         assert result.exit_code == 0
-        assert "bound to sec001aabbcc" in caplog.text
-        assert "merged" not in caplog.text
+        assert "bound to sec001aabbcc" in result.stdout
+        assert "merged" not in result.stdout
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
@@ -256,19 +289,17 @@ class TestSecurityLinksSet:
         self,
         mock_accept: MagicMock,
         mock_get_db: MagicMock,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """The destructive outcome must stay legible as destructive."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_accept.return_value = "merged"
 
-        with caplog.at_level(logging.INFO):
-            result = runner.invoke(
-                app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
-            )
+        result = runner.invoke(
+            app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
+        )
 
         assert result.exit_code == 0
-        assert "merged into sec001aabbcc" in caplog.text
+        assert "merged into sec001aabbcc" in result.stdout
 
     def test_set_help_states_both_outcomes_of_accepting(self) -> None:
         """`--into` is the only confirmation, so --help carries the blast radius.
@@ -327,6 +358,27 @@ class TestSecurityLinksSet:
         )
         assert result.exit_code == 2
 
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            (["--accept", "--reject", "--into", "sec001aabbcc"], "mutually exclusive"),
+            ([], "Specify either --accept or --reject"),
+            (["--reject", "--into", "sec001aabbcc"], "only valid with --accept"),
+            (["--accept"], "--accept requires --into"),
+        ],
+    )
+    def test_set_usage_errors_use_the_standard_failure_marker(
+        self, args: list[str], message: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Every mutually-exclusive usage failure gets the CLI error presentation."""
+        with caplog.at_level(logging.ERROR):
+            result = runner.invoke(app, ["set", "dec001", *args])
+
+        assert result.exit_code == 2, result.output
+        errors = [record.getMessage() for record in caplog.records]
+        assert any(message in error for error in errors), errors
+        assert any(error.startswith(("×", "X")) for error in errors), errors
+
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
     def test_set_accept_wrong_into_surfaces_user_error(
@@ -370,12 +422,14 @@ class TestSecurityLinksHistory:
     def test_history_empty(
         self, mock_history: MagicMock, mock_get_db: MagicMock
     ) -> None:
-        """Empty history exits 0."""
+        """An empty history names the requested scope and result."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_history.return_value = []
 
         result = runner.invoke(app, ["history"])
         assert result.exit_code == 0
+        assert "Security-link history" in result.stdout
+        assert "No security-link decisions found." in result.stdout
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.history")
@@ -395,7 +449,7 @@ class TestSecurityLinksHistory:
                 "candidate_security_id": "sec001aabbcc",
                 "status": "accepted",
                 "decided_by": "user",
-                "decided_at": "2025-06-01T10:00:00",
+                "decided_at": datetime(2025, 6, 1, 10, 0, tzinfo=UTC),
                 "confidence_score": 0.5,
                 "match_signals": {"signal": "fuzzy_name"},
                 "match_reason": "fuzzy_name",

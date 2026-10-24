@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
@@ -39,7 +39,10 @@ from moneybin.repositories.investment_match_decisions_repo import (
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services._text import build_match_inputs
-from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_links_service import (
+    AccountLinksService,
+    SettingsReconciliation,
+)
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
 from moneybin.services.investment_matching_service import (
@@ -47,7 +50,10 @@ from moneybin.services.investment_matching_service import (
     record_committed_investment_decisions,
 )
 from moneybin.services.merchant_links_service import MerchantLinksService
-from moneybin.services.security_links_service import SecurityLinksService
+from moneybin.services.security_links_service import (
+    SecurityLinksService,
+    restate_after_accept,
+)
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -134,6 +140,10 @@ class IdentityDecisionPlanItem:
     group_key: tuple[str, ...]
     before_state: JsonValue
     affected_ids: dict[str, tuple[str, ...]]
+    # Account merges only: the settings fields the merge moves onto the survivor
+    # and the conflicting ones it keeps, planned in batch order.
+    settings_moved: tuple[str, ...] = ()
+    settings_kept: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,12 +161,12 @@ class IdentityDecisionPlan:
 
     @property
     def changed_count(self) -> int:
-        """Return the number of material decision transitions."""
+        """The number of material decision transitions."""
         return sum(item.changed for item in self.items)
 
     @property
     def destructive(self) -> bool:
-        """Return whether the material batch contains an identity merge accept."""
+        """Whether the material batch contains an identity merge accept."""
         return any(
             item.changed and item.request.decision == "accept" for item in self.items
         )
@@ -293,6 +303,7 @@ class ReviewDecisionsService:
                         = left(?, 20)
                 )
             )
+              AND tx.is_categorizable
             LIMIT 1
             """,  # TableRef constants + parameterized value
             [
@@ -677,11 +688,9 @@ class ReviewDecisionsService:
             duration_seconds=perf_counter() - started,
         )
         record_committed_match_effects(effects)
-        from moneybin.services.fx_accounting_refresh import (
-            restate_fx_accounting_after_match_effects,
-        )
+        from moneybin.services.restate import restate_after_match_effects
 
-        restate_fx_accounting_after_match_effects(self._db, effects)
+        restate_after_match_effects(self._db, effects)
         if touched_merchant_ids:
             category_service.record_committed_review_merchants(
                 created_merchant_ids=tuple(created_merchant_ids),
@@ -705,6 +714,8 @@ class ReviewDecisionsService:
     def _prepare_account(
         self,
         request: AccountLinkDecisionRequest,
+        *,
+        survivor_images: dict[str, Mapping[str, Any]] | None = None,
     ) -> IdentityDecisionPlanItem:
         service = AccountLinksService(self._db, actor=self._actor)
         decision = _decision_row(
@@ -776,6 +787,17 @@ class ReviewDecisionsService:
             if material_accept
             else []
         )
+        images = survivor_images if survivor_images is not None else {}
+        settings = (
+            service.plan_settings(
+                source_id, target_id, survivor_row=images.get(target_id)
+            )
+            if material_accept
+            else SettingsReconciliation()
+        )
+        if settings.moved and settings.row is not None:
+            # Later merges into this survivor see the image this one leaves.
+            images[target_id] = settings.row
         selections = [
             row
             for disposal_id in selection_disposal_ids
@@ -812,6 +834,15 @@ class ReviewDecisionsService:
                 "accepted_links": links,
                 "manual_identity": manual_identity,
                 "lot_selections": selections,
+                "settings": {
+                    "moved": settings.moved,
+                    "kept": settings.kept,
+                    # Bound, never rendered: catches a moved value edited while
+                    # the confirmation was open (names alone cannot).
+                    "revision": service.settings_revision(source_id, target_id)
+                    if material_accept
+                    else (),
+                },
             }),
             affected_ids={
                 "accounts": tuple(dict.fromkeys((source_id, target_id)))
@@ -823,6 +854,8 @@ class ReviewDecisionsService:
                 "lots": (),
                 "price_marks": (),
             },
+            settings_moved=settings.moved,
+            settings_kept=settings.kept,
         )
 
     def _prepare_merchant(
@@ -1180,6 +1213,9 @@ class ReviewDecisionsService:
         prepared: list[IdentityDecisionPlanItem] = []
         seen_ids: set[tuple[str, str]] = set()
         seen_groups: set[tuple[str, ...]] = set()
+        # Apply order is batch order, so settings are planned against the
+        # survivor image the earlier merges in this batch leave behind.
+        survivor_images: dict[str, Mapping[str, Any]] = {}
         for index, request in enumerate(decisions):
             key = (request.kind, request.decision_id)
             if key in seen_ids:
@@ -1194,7 +1230,9 @@ class ReviewDecisionsService:
             seen_ids.add(key)
             try:
                 if isinstance(request, AccountLinkDecisionRequest):
-                    item = self._prepare_account(request)
+                    item = self._prepare_account(
+                        request, survivor_images=survivor_images
+                    )
                 elif isinstance(request, MerchantLinkDecisionRequest):
                     item = self._prepare_merchant(request)
                 else:
@@ -1369,6 +1407,15 @@ class ReviewDecisionsService:
             merchant_service.record_committed_outer_outcomes(merchant_outcomes)
         if security_outcomes:
             security_service.record_committed_outer_outcomes(security_outcomes)
+        security_accepted = any(
+            item.changed
+            and isinstance(item.request, SecurityLinkDecisionRequest)
+            and item.request.decision == "accept"
+            for item in plan.items
+        )
+        if security_accepted and rematch is None:
+            # The rematch above transforms, which already covers these.
+            restate_after_accept(self._db)
         # The plan is the only value this path returns, so it carries the pass's
         # outcome out; without it the surface cannot report an auto-merge it did
         # not ask for. None here means no pass ran, not a pass that found zero.

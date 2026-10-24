@@ -70,7 +70,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -81,6 +81,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError, classify_user_error, exception_origin
 from moneybin.matching.engine import MatchRunError
+from moneybin.progress import ProgressEvent
 from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
 from moneybin.services.refresh_outcome import (
     RefreshStepOutcome,
@@ -223,6 +224,29 @@ def _rates_stage(
     )
 
 
+def _restate_rate_spine(db: Database) -> str | None:
+    """Rebuild the rate spine after a rates-only refresh wrote into it.
+
+    `core.fct_exchange_rates_daily` is kind FULL: the full cascade picks new
+    rates up with its second apply, but `steps=["rates"]` runs no apply, so
+    without this the net-worth reports keep pricing at the old carried-forward
+    rate. Restates from the two raw tables the step writes.
+    """
+    from moneybin.services.restate import restate_after_write
+    from moneybin.tables import EXCHANGE_RATE_COVERAGE, EXCHANGE_RATES
+
+    try:
+        restate_after_write(
+            db,
+            [EXCHANGE_RATES, EXCHANGE_RATE_COVERAGE],
+            committed_change="exchange rate",
+        )
+    except UserError as exc:
+        logger.error(f"Rate spine restatement failed: {exc.code}")
+        return exc.message
+    return None
+
+
 def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
     """Resolve a steps list (or None) to the canonical frozenset.
 
@@ -235,7 +259,11 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
 
 
 def refresh(
-    db: Database, *, steps: list[str] | None = None, actor: str = "system"
+    db: Database,
+    *,
+    steps: list[str] | None = None,
+    actor: str = "system",
+    progress: Callable[[ProgressEvent], None] | None = None,
 ) -> RefreshResult:
     """Run the post-load pipeline through the exchange-rate gather.
 
@@ -265,6 +293,7 @@ def refresh(
             runner), which stay ``"system"``, and a surface re-matching because
             a user just decided something — the post-merge re-match — whose
             decisions are that user's work and say so.
+        progress: Optional callback for actual operation boundaries.
 
     Raises:
         UserError(code=error_codes.REFRESH_UNKNOWN_STEP): if any element of ``steps``
@@ -292,6 +321,8 @@ def refresh(
     stages: list[StageOutcome] = []
 
     if "gsheet" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Refreshing spreadsheets"))
         # _run_gsheet_step catches all exceptions internally and always
         # returns a list — no outer try/except needed here.
         pull_results = _run_gsheet_step(db)
@@ -348,8 +379,13 @@ def refresh(
     transfers_retired = 0
     matching_skipped = False
     if "match" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Matching transactions"))
         try:
-            match_result = MatchingService(db).run(actor=actor)
+            # The transform below rebuilds everything the decisions feed.
+            match_result = MatchingService(db).run(
+                actor=actor, restate="transform" not in requested
+            )
             auto_merged = match_result.auto_merged
             pending_review = match_result.pending_review
             pending_transfers = match_result.pending_transfers
@@ -426,13 +462,21 @@ def refresh(
         # signal is honest. Categorize, if also requested, still runs
         # against whatever SQLMesh-built views are already on disk.
         if "categorize" in requested:
+            if progress is not None:
+                progress(ProgressEvent("Categorizing transactions"))
             stages.append(_run_categorize_step(db))
         if "identity" in requested:
+            if progress is not None:
+                progress(ProgressEvent("Resolving identities"))
             identity_stage, identity_errors = _run_identity_step(db)
             stages.append(identity_stage)
         rate_backfill = None
         if "rates" in requested:
+            if progress is not None:
+                progress(ProgressEvent("Refreshing exchange rates"))
             rate_backfill, rate_backfill_error = _run_rates_step(db)
+            if rate_backfill is not None and rate_backfill.rates_written > 0:
+                rate_backfill_error = _restate_rate_spine(db)
             stages.append(_rates_stage(rate_backfill, rate_backfill_error))
         return RefreshResult(
             applied=False,
@@ -444,6 +488,8 @@ def refresh(
             requested_steps=requested_steps,
         )
 
+    if progress is not None:
+        progress(ProgressEvent("Applying reports"))
     transform_service = TransformService(db)
     apply_result = transform_service.apply()
     # No counts: apply rebuilds models rather than producing a countable
@@ -471,12 +517,18 @@ def refresh(
         )
 
     if "categorize" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Categorizing transactions"))
         stages.append(_run_categorize_step(db))
     if "identity" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Resolving identities"))
         identity_stage, identity_errors = _run_identity_step(db)
         stages.append(identity_stage)
     rate_backfill = None
     if "rates" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Refreshing exchange rates"))
         rate_backfill, rate_backfill_error = _run_rates_step(db)
         stages.append(_rates_stage(rate_backfill, rate_backfill_error))
 
@@ -682,7 +734,8 @@ def _run_categorize_step(db: Database) -> StageOutcome:
         logger.debug(
             f"Auto-categorized {stats['total']} transactions "
             f"({stats['merchant']} merchant, {stats['rule']} rule, "
-            f"{stats['plaid']} plaid)"
+            f"{stats['plaid']} plaid, "
+            f"{stats['source_category_map']} source_category_map)"
         )
     # Informational only — never surfaces as the categorize stage's error.
     try:
@@ -701,7 +754,10 @@ def _run_categorize_step(db: Database) -> StageOutcome:
         # A fresh dict rather than the service's own: it owns that one and is
         # free to reuse it, so holding it by reference would let a later run
         # rewrite a stage this one already reported.
-        counts={key: int(stats[key]) for key in ("total", "merchant", "rule", "plaid")},
+        counts={
+            key: int(stats[key])
+            for key in ("total", "merchant", "rule", "plaid", "source_category_map")
+        },
     )
 
 

@@ -1,0 +1,1 @@
+`moneybin reports explain --output json` no longer emits the `sql_unavailable` key, and the text output drops the `SQL: <reason>` line that carried it. Every report is SQL-backed now, so there is no "this report has no query" reason left to report; where an executed form is still withheld, `sql_suppressed_by` already says why.

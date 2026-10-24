@@ -60,7 +60,7 @@ class ReviewService:
         """Return current queue counts for all review domains."""
         return ReviewStatus(
             matches_pending=self._match_service.count_pending(),
-            categorize_pending=self._categorize_service.count_uncategorized(),
+            categorize_pending=self._categorize_service.count_pending_review(),
             account_links_pending=self._account_links_service.count_pending(),
             merchant_links_pending=self._merchant_links_service.count_pending(),
             security_links_pending=self._security_links_service.count_pending(),

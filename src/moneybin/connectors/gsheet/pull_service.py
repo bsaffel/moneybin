@@ -1,6 +1,6 @@
 """GSheetPullService — orchestrates per-connection pulls.
 
-A single pull writes one ``raw.import_log`` row (lifecycle ``importing`` →
+A single pull writes one ``app.import_log`` row (lifecycle ``importing`` →
 ``complete`` | ``failed``), invokes the adapter's drift check / transform /
 load, and updates ``app.gsheet_connections`` with the success/failure
 outcome via ``GSheetConnectionsRepo.update_after_pull``.
@@ -11,7 +11,6 @@ connection so the rest of the batch can still run.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
@@ -35,7 +34,7 @@ from moneybin.connectors.gsheet.errors import (
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.database import Database
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
-from moneybin.tables import IMPORT_LOG
+from moneybin.repositories.import_log_repo import ImportLogRepo
 
 logger = logging.getLogger(__name__)
 
@@ -298,28 +297,19 @@ class GSheetPullService:
         raise last_exc
 
     def _open_import_log(self, import_id: str, conn: GSheetConnection) -> None:
-        """Insert an ``importing`` row in raw.import_log scoped to this pull."""
+        """Insert an ``importing`` row in app.import_log scoped to this pull."""
         account_names = [] if conn.account_name is None else [conn.account_name]
-        self._db.execute(
-            f"""
-            INSERT INTO {IMPORT_LOG.full_name} (
-                import_id, source_file, source_type, source_origin,
-                format_name, format_source, account_names, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,  # noqa: S608  # IMPORT_LOG is a TableRef constant, values parameterized
-            [
-                import_id,
-                f"gsheet://{conn.spreadsheet_id}/{conn.sheet_gid}",
-                "gsheet",
-                conn.connection_id,
-                # gid (not sheet_name) as the tab id: workbook and tab names
-                # can both contain "/", which would make a "workbook/tab"
-                # format_name ambiguous to split. gid is unique and slash-free.
-                f"gsheet:{conn.workbook_name} (gid={conn.sheet_gid})",
-                "gsheet",
-                json.dumps(account_names),
-                "importing",
-            ],
+        ImportLogRepo(self._db).open_import(
+            import_id,
+            source_file=f"gsheet://{conn.spreadsheet_id}/{conn.sheet_gid}",
+            source_type="gsheet",
+            source_origin=conn.connection_id,
+            account_names=account_names,
+            # gid (not sheet_name) as the tab id: workbook and tab names can
+            # both contain "/", which would make a "workbook/tab" format_name
+            # ambiguous to split. gid is unique and slash-free.
+            format_name=f"gsheet:{conn.workbook_name} (gid={conn.sheet_gid})",
+            format_source="gsheet",
         )
 
     def _close_import_log(
@@ -330,15 +320,8 @@ class GSheetPullService:
         rows_imported: int,
     ) -> None:
         """Finalize the import_log row with terminal status."""
-        self._db.execute(
-            f"""
-            UPDATE {IMPORT_LOG.full_name}
-               SET status = ?,
-                   rows_imported = ?,
-                   completed_at = CURRENT_TIMESTAMP
-             WHERE import_id = ?
-            """,  # noqa: S608  # IMPORT_LOG is a TableRef constant, values parameterized
-            [status, rows_imported, import_id],
+        ImportLogRepo(self._db).close_import(
+            import_id, status=status, rows_imported=rows_imported
         )
 
     def _record_failure(

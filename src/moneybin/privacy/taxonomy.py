@@ -98,7 +98,7 @@ class DataClass(StrEnum):
 
     @property
     def tier(self) -> Tier:
-        """Return the privacy ``Tier`` this class belongs to."""
+        """The privacy ``Tier`` this class belongs to."""
         return _TIER_BY_CLASS[self]
 
 
@@ -197,6 +197,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "status": DataClass.TXN_TYPE,
     },
     ("app", "account_settings"): {
+        "account_type": DataClass.TXN_TYPE,
         "account_id": DataClass.RECORD_ID,
         "account_subtype": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
@@ -210,6 +211,17 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "holder_category": DataClass.TXN_TYPE,
         "default_cost_basis_method": DataClass.TXN_TYPE,
         "include_in_net_worth": DataClass.TXN_TYPE,
+        # A closed source-type vocabulary (manual | plaid), like source_type.
+        "investment_source_type": DataClass.TXN_TYPE,
+        # When the choice last moved; ledger-freshness bookkeeping, like updated_at.
+        "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        # When archived last moved; freshness bookkeeping, like updated_at.
+        "archived_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        # When the currency / cost-basis method last moved; the same bookkeeping.
+        "account_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "account_subtype_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "currency_code_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "default_cost_basis_method_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -218,6 +230,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "scope": DataClass.RECORD_ID,
         "home_currency": DataClass.CURRENCY,
         "display_currency_targets": DataClass.CURRENCY,
+        "reporting_timezone": DataClass.RECORD_ID,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("app", "ai_consent_grants"): {
@@ -309,7 +322,9 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "category_id": DataClass.RECORD_ID,
         "code_level": DataClass.TXN_TYPE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "source_origin": DataClass.TXN_TYPE,
         "source_category_code": DataClass.CATEGORY,
+        "source_subcategory_code": DataClass.CATEGORY,
         "source_taxonomy_version": DataClass.AGGREGATE,
         "source_type": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -385,6 +400,69 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "report_id": DataClass.RECORD_ID,
         "semantics": DataClass.DESCRIPTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    # --- Import log (MB-255 moved this table raw -> app; it used to ride
+    # raw's FLOORED content net with only `account_names` declared in
+    # INTERNAL_CRITICAL). `app` is not floored, so every column needs an
+    # explicit class now — an undeclared one fails closed to UNRESOLVED and
+    # whole-masks, silently hiding a column that used to display.
+    ("app", "sync_job_state"): {
+        "job_id": DataClass.RECORD_ID,
+        "consumer_id": DataClass.RECORD_ID,
+        "ingested_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "ack_state": DataClass.TXN_TYPE,
+        "acked_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "setup_state": DataClass.TXN_TYPE,
+        "refresh_state": DataClass.TXN_TYPE,
+        "job_details": DataClass.COMPOSITE_IDENTIFIER,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("app", "import_log"): {
+        "account_names": (
+            # Same value as raw.tabular_accounts.account_name / the OFX
+            # <ACCTID> element, carried in a JSON array. COMPOSITE_IDENTIFIER,
+            # not ACCOUNT_IDENTIFIER: a DuckDB JSON column reaches the
+            # redaction transform as `str`, so the partial `"****" +
+            # value[-4:]` mask would publish the tail of the SERIALIZED
+            # array — for a one-element array of a bare number, the tail of
+            # an account number. Whole-masks instead, at CRITICAL.
+            DataClass.COMPOSITE_IDENTIFIER
+        ),
+        "balance_validated": DataClass.TXN_TYPE,
+        "completed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "date_format": DataClass.TXN_TYPE,
+        "detection_confidence": DataClass.TXN_TYPE,
+        "file_sha256": DataClass.RECORD_ID,
+        "format_name": DataClass.RECORD_ID,
+        "format_source": DataClass.TXN_TYPE,
+        "import_id": DataClass.RECORD_ID,
+        "number_format": DataClass.TXN_TYPE,
+        "rejection_details": (
+            # JSON [{row_number, reason}]. `reason` can embed the raw
+            # unparseable source value verbatim — transforms.py's
+            # `_extract_amounts` writes reasons like `f"Unparseable amount:
+            # {s!r}"` — so this can carry an un-redacted amount string at an
+            # unknown position, the same "worst case is a money value" shape
+            # as import_previews.snapshot_json. TXN_AMOUNT (HIGH) rather than
+            # DESCRIPTION, which the sibling structural-metadata JSON columns
+            # (tabular_formats.field_mapping/header_signature) get — those
+            # only ever hold column names, never row values.
+            DataClass.TXN_AMOUNT
+        ),
+        "reverted_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "rows_imported": DataClass.AGGREGATE,
+        "rows_rejected": DataClass.AGGREGATE,
+        "rows_skipped_trailing": DataClass.AGGREGATE,
+        "rows_total": DataClass.AGGREGATE,
+        "sign_convention": DataClass.TXN_TYPE,
+        "source_file": DataClass.RECORD_ID,
+        # Institution or source name (e.g. "chase_credit") per
+        # transform_dataframe's docstring — same shape as
+        # tabular_formats.institution_name.
+        "source_origin": DataClass.INSTITUTION,
+        "source_type": DataClass.TXN_TYPE,
+        "started_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "status": DataClass.TXN_TYPE,
     },
     ("app", "imports"): {
         "import_id": DataClass.RECORD_ID,
@@ -555,6 +633,10 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "resolved_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "resolved_rule_id": DataClass.RECORD_ID,
         "status": DataClass.TXN_TYPE,
+    },
+    ("app", "utc_upgrade_provenance"): {
+        "contract_version": DataClass.AGGREGATE,
+        "rules": DataClass.USER_NOTE,
     },
     ("app", "schema_migrations"): {
         "applied_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -759,7 +841,9 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "category_id": DataClass.RECORD_ID,
         "code_level": DataClass.TXN_TYPE,
         "is_default": DataClass.TXN_TYPE,
+        "source_origin": DataClass.TXN_TYPE,
         "source_category_code": DataClass.CATEGORY,
+        "source_subcategory_code": DataClass.CATEGORY,
         "source_taxonomy_version": DataClass.AGGREGATE,
         "source_type": DataClass.TXN_TYPE,
     },
@@ -813,6 +897,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "dim_accounts"): {
+        "account_type_override": DataClass.TXN_TYPE,
+        "source_account_type": DataClass.TXN_TYPE,
         # Opaque minted canonical surrogate (spec D6) — not PII. PII lives in
         # app.account_links.ref_value (ACCOUNT_IDENTIFIER).
         "account_id": DataClass.RECORD_ID,
@@ -832,6 +918,10 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "institution_fid": DataClass.INSTITUTION,
         "institution_name": DataClass.INSTITUTION,
         "institution_slug": DataClass.INSTITUTION,
+        # Same classification as the app.account_settings entries above.
+        "investment_source_type": DataClass.TXN_TYPE,
+        "investment_source_type_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "archived_changed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "official_name": DataClass.INSTITUTION,
@@ -874,8 +964,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # fct_security_prices.source_type.
         "price_source": DataClass.TXN_TYPE,
         # CURRENT_DATE - price_date: CURRENT_DATE is public, so this is bijective
-        # with price_date (uncategorized_queue.age_days precedent) and inherits its
-        # class rather than TXN_DATE.
+        # with price_date (the PendingTxnRow.age_days precedent) and inherits its class
+        # rather than TXN_DATE.
         "days_since_observed": DataClass.TIMESTAMP_OBSERVABILITY,
         "valuation_status": DataClass.TXN_TYPE,
         # The broker's non-authoritative claim about the same position. Being a
@@ -887,6 +977,20 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "provider_reported_value": DataClass.BALANCE,
         "provider_reported_as_of": DataClass.TIMESTAMP_OBSERVABILITY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("core", "dim_holdings_broker_reported"): {
+        "account_id": DataClass.RECORD_ID,
+        # A boolean flag: every boolean in this taxonomy takes TXN_TYPE
+        # (fct_investment_lots.is_open is the closest analogue).
+        "has_position": DataClass.TXN_TYPE,
+        # The date has_position holds true as of — the same "state asserted as
+        # of this date" shape as app.balance_assertions.as_of
+        # (BalanceAssertionStatePayload.as_of, DataClass.TXN_DATE): both name a
+        # date on which a state (present/absent, has-position) is claimed to
+        # hold, not pure pipeline telemetry. Column-name consistency
+        # (database.md) then settles it: every "as_of" in the codebase is this
+        # same concept, so it takes the same class throughout.
+        "as_of": DataClass.TXN_DATE,
     },
     ("core", "dim_merchants"): {
         "canonical_name": DataClass.MERCHANT_NAME,
@@ -937,6 +1041,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "balance_date": DataClass.TXN_DATE,
         "currency_code": DataClass.CURRENCY,
         "is_observed": DataClass.TXN_TYPE,
+        "in_net_worth": DataClass.TXN_TYPE,
         "observation_source": DataClass.TXN_TYPE,
         "reconciliation_delta": DataClass.BALANCE,
     },
@@ -1151,6 +1256,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "has_splits": DataClass.AGGREGATE,
+        "is_categorizable": DataClass.TXN_TYPE,
         "is_pending": DataClass.TXN_TYPE,
         "is_transfer": DataClass.TXN_TYPE,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -1191,32 +1297,6 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "transfer_pair_id": DataClass.RECORD_ID,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
-    ("core", "uncategorized_queue"): {
-        # Curator-impact queue for the categorization surface
-        # (services/categorization/queries.py, transactions_categorize_pending);
-        # moved out of reports.* per reports-foundation.md R5. account_id is
-        # RECORD_ID here to match every other account_id in this registry
-        # (spec D6) — NOT ACCOUNT_IDENTIFIER, unlike the deleted
-        # _bridged_classes.py entry this mirrors.
-        "transaction_id": DataClass.RECORD_ID,
-        "account_id": DataClass.RECORD_ID,
-        "account_name": DataClass.USER_NOTE,
-        "txn_date": DataClass.TXN_DATE,
-        "amount": DataClass.TXN_AMOUNT,
-        "currency_code": DataClass.CURRENCY,
-        "description": DataClass.DESCRIPTION,
-        "merchant_id": DataClass.RECORD_ID,
-        "merchant_normalized": DataClass.MERCHANT_NAME,
-        # CURRENT_DATE is public, so age_days is bijective with txn_date
-        # (txn_date = CURRENT_DATE - age_days) — a date, not an aggregate.
-        "age_days": DataClass.TXN_DATE,
-        # ABS(amount) * age_days: exact once age_days is visible (>= MEDIUM
-        # tier), so priority_score recovers ABS(amount) by division at any
-        # tier that unmasks age_days but not amount. Must stay HIGH.
-        "priority_score": DataClass.TXN_AMOUNT,
-        "source_type": DataClass.TXN_TYPE,
-        "source_id": DataClass.RECORD_ID,
-    },
 }
 
 # CRITICAL columns of the fixed raw/prep tables. A SIBLING of CLASSIFICATION,
@@ -1241,6 +1321,47 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
 # partial-masking transform, so the choice sets the label's accuracy, not the
 # masking. ROUTING_NUMBER masks WHOLE and is not interchangeable with either.
 INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
+    ("prep", "stg_simplefin__accounts"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("prep", "stg_simplefin__transactions"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("prep", "stg_simplefin__balances"): {
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_accounts"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_transactions"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_balances"): {
+        "native_scope": DataClass.COMPOSITE_IDENTIFIER,
+        "original_record": DataClass.COMPOSITE_IDENTIFIER,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("raw", "simplefin_responses"): {
+        "original_payload": DataClass.COMPOSITE_IDENTIFIER,
+        "source_errors": DataClass.COMPOSITE_IDENTIFIER,
+    },
+    ("raw", "simplefin_sync_receipts"): {
+        "source_metadata": DataClass.COMPOSITE_IDENTIFIER,
+        "local_outcomes": DataClass.COMPOSITE_IDENTIFIER,
+    },
     # --- OFX: `account_id` is the `<ACCTID>` element, i.e. the institution's
     # own account number (raw_ofx_accounts.sql). `source_account_key` is that
     # same column re-aliased by every stg_ofx__* model.
@@ -1320,19 +1441,6 @@ INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_number_masked": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         # `NULL::TEXT AS routing_number` placeholder, as for Plaid above.
         "routing_number": DataClass.ROUTING_NUMBER,
-    },
-    # --- Import log: `account_names` is the same tabular file value again, and
-    # the OFX importer writes raw <ACCTID> values into it verbatim — its call
-    # site says so ("institution-assigned account numbers, not display names").
-    #
-    # WHOLE, not the partial mask the two columns above take. A DuckDB JSON
-    # column reaches the transform as `str`, so ACCOUNT_IDENTIFIER's
-    # `"****" + value[-4:]` would publish the TAIL of the serialized array,
-    # which for a one-element array of a bare number is the tail of an account
-    # number. Same reasoning as `source_bytes` below, and the same scoping
-    # argument for using UNRESOLVED in this map.
-    ("raw", "import_log"): {
-        "account_names": DataClass.UNRESOLVED,
     },
     ("prep", "stg_tabular__transactions"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,

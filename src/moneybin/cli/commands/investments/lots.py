@@ -10,13 +10,22 @@ import typer
 from moneybin.cli.output import (
     OutputFormat,
     currency_label,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
+    share_count,
     wide_option,
 )
-from moneybin.cli.render import Money, column_view, render_note, render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    Money,
+    build_rows,
+    build_summary,
+    column_view,
+    compose_human_result,
+)
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     InvestmentLotSelectionEntry,
@@ -26,6 +35,8 @@ from moneybin.privacy.payloads.investments import (
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.investment_service import InvestmentService, LotRow
 
+from .securities import security_label
+
 app = typer.Typer(
     help="Tax lots: list and specific-identification selection",
     no_args_is_help=True,
@@ -34,9 +45,19 @@ app = typer.Typer(
 
 _LOTS_COLUMNS: tuple[tuple[str, Callable[[LotRow], object]], ...] = (
     ("lot", lambda r: r.lot_id),
-    ("security", lambda r: r.security_id),
+    (
+        "security",
+        lambda r: security_label(
+            r.ticker,
+            r.security_name,
+            r.security_id,
+            exchange=r.exchange,
+            ticker_shared=r.ticker_shared,
+        ),
+    ),
+    ("security id", lambda r: r.security_id),
     ("acquired", lambda r: r.acquisition_date),
-    ("remaining", lambda r: r.remaining_quantity),
+    ("remaining", lambda r: share_count(r.remaining_quantity)),
     ("basis", lambda r: r.cost_basis_remaining),
     ("currency", lambda r: currency_label(r.currency_code)),
     ("method", lambda r: r.cost_basis_method),
@@ -92,6 +113,17 @@ one table whose default set depends on the query, because it is the one command
 whose result changes kind rather than size.
 """
 
+_LOTS_OPTIONAL = ("currency", "method", "security id", "state")
+"""What `--wide` omits, last first, when all ten columns are wider than the terminal.
+
+Under `--open` `state` reads `open` on every row, so it goes first. The id goes
+next, as in `holdings`: a ticker already names the security and JSON carries
+the id.
+"""
+
+_LOTS_ALL_OPTIONAL = ("currency", "method", "security id")
+"""The `--all` counterpart: `state` is part of that default set, so never omitted."""
+
 
 @app.command("list")
 def investments_lots_list(
@@ -109,15 +141,17 @@ def investments_lots_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List tax lots with remaining quantity and basis. Open lots only by default.
 
-    Shows the lot, its security, when it was acquired, how much remains, the
-    remaining basis, and a note marking any basis known to be incomplete.
-    ``--all`` adds an open/closed ``state`` column, since that view returns
-    both. ``--wide`` shows every declared column: the currency, the cost-basis
-    method, and ``state`` — which under the default ``--open`` reads ``open``
-    on every row.
+    Shows the lot, its security (by ticker), when it was acquired, how much
+    remains, the remaining basis, and a note marking any basis known to be
+    incomplete. ``--all`` adds an open/closed ``state`` column, since that view
+    returns both. ``--wide`` shows every declared column: the security's
+    catalog id, the currency, the cost-basis method, and ``state`` — which
+    under the default ``--open`` reads ``open`` on every row — omitting those
+    it cannot fit the terminal and saying which.
 
     Lots in an account whose investment ledger arrives from two sources at once
     double-count, because the two ledgers interleave rather than merge. The
@@ -154,27 +188,55 @@ def investments_lots_list(
             default=_LOTS_DEFAULT if open_only else _LOTS_ALL_DEFAULT,
             wide=wide,
         )
-        render_rows(
-            view.names,
-            view.rows,
-            # A lot's remaining basis is a position rather than a movement, so it
-            # renders unsigned and uncoloured. The remaining quantity is a share
-            # count, not an amount, and is left as stored.
-            money={"basis": Money("balance")},
-            numeric=("remaining",),
-            total_columns=view.total,
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_rows(
+                        view.names,
+                        view.rows,
+                        # A lot's remaining basis is a position rather than a movement, so it
+                        # renders unsigned and uncoloured. The remaining quantity is a share
+                        # count, not an amount, so it is never rounded.
+                        money={"basis": Money("balance")},
+                        numeric=("remaining",),
+                        total_columns=view.total,
+                        optional=(
+                            None
+                            if not wide
+                            else _LOTS_OPTIONAL
+                            if open_only
+                            else _LOTS_ALL_OPTIONAL
+                        ),
+                        terminal=policy,
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+            wide=wide,
         )
-    for w in result.warnings:
-        # `-q` drops status lines, not disclosures about the figures. The
-        # basis-incomplete warning is droppable because the default view keeps
-        # a per-row `⚠️ basis_incomplete` marker; a source overlap has no such
-        # fallback here — `investments holdings` leans on its `status` column
-        # and this table has none — so silencing it would leave a doubled
-        # quantity and basis on screen with nothing saying so.
-        render_note(
-            f"⚠️  {w}",
-            quiet=quiet and w != result.degraded_reason,
-            warn=True,
+    else:
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Tax lots", "No lots match these filters.")],
+                        title=(
+                            "Try: moneybin investments lots list --all"
+                            if open_only
+                            else "Try: moneybin investments holdings"
+                        ),
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
         )
 
 
@@ -248,8 +310,8 @@ def investments_lots_select(
         )
         return
     if clear:
-        typer.echo(f"✅ Cleared lot selection for {disposal_txn_id} (reverts to FIFO)")
+        typer.echo(f"Lot selection cleared for {disposal_txn_id}; FIFO will apply.")
     else:
         typer.echo(
-            f"✅ Set lot selection for {disposal_txn_id}: {len(selections)} lot(s)"
+            f"Lot selection saved for {disposal_txn_id}: {len(selections)} lots."
         )

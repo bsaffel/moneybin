@@ -208,6 +208,25 @@ def _seed_transaction(
     )
 
 
+def _seed_live_transaction(db: Database, txn_id: str, description: str) -> None:
+    """``_seed_transaction`` plus the id's row in the curation liveness oracle.
+
+    Alias resolution reads liveness off ``prep.int_transactions__matched``
+    (production: the fact's own id set) and passes ids through unresolved when
+    that relation is absent.
+    """
+    _seed_transaction(db, txn_id, description=description)
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(transaction_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched (transaction_id) VALUES (?)",
+        [txn_id],
+    )
+
+
 def _seed_uncategorized_transaction(
     db: Database,
     txn_id: str,
@@ -331,6 +350,76 @@ def test_record_increments_trigger_count_on_same_pattern_and_category(
     assert len(rows) == 1
     assert rows[0][0] == 2
     assert sorted(rows[0][1]) == ["t1", "t2"]
+
+
+def test_record_categorization_does_not_double_count_a_rekeyed_transaction(
+    real_db: Database,
+) -> None:
+    """A dedup merge re-keying a transaction must not double-count it (issue #552).
+
+    Categorizes the same real-world transaction under its pre-merge id, then
+    simulates a dedup merge (the pre-merge id leaves ``core.fct_transactions``
+    and ``prep.int_transactions__matched``, the post-merge id takes its place,
+    and the alias map records the
+    forwarding — the same shape ``forward_rekeyed_transaction_ids`` leaves
+    behind), then categorizes again under the post-merge id. ``trigger_count``
+    must increment once, not twice, for one physical transaction.
+    """
+    _seed_live_transaction(real_db, "old_id", description="STARBUCKS")
+    svc = AutoRuleService(real_db)
+    proposed_rule_id = svc.record_categorization("old_id", "Food & Drink")
+    assert proposed_rule_id is not None
+
+    real_db.execute("DELETE FROM core.fct_transactions WHERE transaction_id = 'old_id'")
+    real_db.execute(
+        "DELETE FROM prep.int_transactions__matched WHERE transaction_id = 'old_id'"
+    )
+    _seed_live_transaction(real_db, "new_id", description="STARBUCKS")
+    real_db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES ('old_id', 'new_id', CURRENT_TIMESTAMP)"
+    )
+
+    svc.record_categorization("new_id", "Food & Drink")
+
+    row = real_db.execute(
+        f"SELECT trigger_count, sample_txn_ids FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # building test input string, not executing SQL
+        "WHERE proposed_rule_id = ?",
+        [proposed_rule_id],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] == ["old_id"]
+
+
+def test_record_categorization_replay_of_the_same_live_id_does_not_double_count(
+    real_db: Database,
+) -> None:
+    """Recording the same live id twice (MCP retry, re-import) must not double-count.
+
+    The fix for issue #552 resolves ``sample_txn_ids`` through the alias chain
+    before the already-counted check, which also changed the comparison for
+    this ordinary (no re-key) replay path. Nothing else in this module pins
+    that path, so a future change to ``resolve_curation_transaction_ids`` or to
+    the ``.values()`` membership check could silently reintroduce
+    double-counting here with the rest of the suite staying green.
+    """
+    _seed_transaction(real_db, "t1", description="STARBUCKS")
+    svc = AutoRuleService(real_db)
+    proposed_rule_id = svc.record_categorization("t1", "Food & Drink")
+    assert proposed_rule_id is not None
+
+    svc.record_categorization("t1", "Food & Drink")
+
+    row = real_db.execute(
+        f"SELECT trigger_count, sample_txn_ids FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # building test input string, not executing SQL
+        "WHERE proposed_rule_id = ?",
+        [proposed_rule_id],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] == ["t1"]
 
 
 def test_record_supersedes_when_same_pattern_different_category(
@@ -1114,6 +1203,9 @@ def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -
     assert blocked.approved == 0
     assert blocked.skipped == 1
     assert blocked.rule_ids == []
+    # The refusal reason rides on the result for the surface to present.
+    assert blocked.refused_broad == [pid]
+    assert blocked.refused_unselective == []
     assert (
         AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL._value.get()  # type: ignore[reportPrivateUsage]
         == blocked_before + 1
@@ -1164,6 +1256,8 @@ def test_approve_refuses_legacy_short_contains_proposal_without_allow_broad(
     assert result.approved == 0
     assert result.skipped == 1
     assert result.rule_ids == []
+    assert result.refused_unselective == [pid]
+    assert result.refused_broad == []
     rule_count_row = real_db.execute(
         "SELECT COUNT(*) FROM app.categorization_rules WHERE created_by = 'auto_rule'"
     ).fetchone()

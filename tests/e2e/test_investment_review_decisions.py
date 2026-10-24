@@ -105,7 +105,7 @@ def test_plan_reject_undo_and_replan_across_processes(
     suppressed.assert_success()
     assert json.loads(suppressed.stdout)["data"]["rows"] == []
     run_cli(
-        "system", "audit", "undo", outcome["operation_id"], env=env
+        "system", "audit", "undo", outcome["operation_id"], "--yes", env=env
     ).assert_success()
     run_cli("investments", "matches", "run", env=env).assert_success()
     restored = run_cli("investments", "matches", "pending", "--output", "json", env=env)

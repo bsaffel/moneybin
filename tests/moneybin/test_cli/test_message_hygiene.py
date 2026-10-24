@@ -11,8 +11,9 @@ trio, which predates the helper and inlines its own message.
 import ast
 from pathlib import Path
 
-import click
 import pytest
+from typer._click import Command
+from typer.core import TyperGroup
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -21,9 +22,6 @@ from moneybin.cli.commands.stubs import (
     _not_implemented,  # pyright: ignore[reportPrivateUsage]
 )
 from moneybin.cli.main import app
-from moneybin.logging.config import (
-    _CONSOLE_SUPPRESSED_PREFIXES,  # pyright: ignore[reportPrivateUsage]
-)
 from tests.moneybin.test_mcp.test_capability_parity import (
     UNIMPLEMENTED_CLI_INVOCATIONS,
     UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS,
@@ -62,12 +60,12 @@ MIXED_GROUPS = ("db key",)
 PARTIALLY_IMPLEMENTED_COMMANDS = ("transactions review",)
 
 
-def _walk_commands() -> dict[str, click.Command]:
+def _walk_commands() -> dict[str, Command]:
     """Map every executable command path to its click command."""
-    found: dict[str, click.Command] = {}
+    found: dict[str, Command] = {}
 
-    def walk(command: click.Command, prefix: tuple[str, ...]) -> None:
-        if isinstance(command, click.Group):
+    def walk(command: Command, prefix: tuple[str, ...]) -> None:
+        if isinstance(command, TyperGroup):
             if command.invoke_without_command and prefix:
                 found[" ".join(prefix)] = command
             for name, child in command.commands.items():
@@ -79,17 +77,17 @@ def _walk_commands() -> dict[str, click.Command]:
     return found
 
 
-def _walk_groups() -> dict[str, click.Group]:
+def _walk_groups() -> dict[str, TyperGroup]:
     """Map every command group path to its click group.
 
     Separate from ``_walk_commands`` because a group built with
     ``no_args_is_help=True`` does not set ``invoke_without_command``, so it
     never lands in the executable-command map.
     """
-    found: dict[str, click.Group] = {}
+    found: dict[str, TyperGroup] = {}
 
-    def walk(command: click.Command, prefix: tuple[str, ...]) -> None:
-        if not isinstance(command, click.Group):
+    def walk(command: Command, prefix: tuple[str, ...]) -> None:
+        if not isinstance(command, TyperGroup):
             return
         if prefix:
             found[" ".join(prefix)] = command
@@ -366,28 +364,10 @@ def _user_facing_strings(module: Path) -> list[tuple[str, bool]]:
     return emitted
 
 
-def _logger_name(module: Path) -> str:
-    """The logger name ``logging.getLogger(__name__)`` produces in this module."""
-    relative = module.relative_to(SRC_ROOT.parent).with_suffix("")
-    parts = relative.parts
-    if parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join(parts)
-
-
 def _reaches_the_console(module: Path) -> bool:
-    """Whether this module's log records survive to the user's stderr.
-
-    ``_CONSOLE_SUPPRESSED_PREFIXES`` is a denylist, so a module is visible
-    unless it is named there. Deriving the exemption from that tuple rather
-    than from a second hand-written list is what keeps the two in step: adding
-    a prefix there silences this check for the same module, and nothing else.
-    """
-    name = _logger_name(module)
-    return not any(
-        name == prefix or name.startswith(f"{prefix}.")
-        for prefix in _CONSOLE_SUPPRESSED_PREFIXES
-    )
+    """Logger warnings remain visible even though normal CLI INFO is hidden."""
+    _ = module
+    return True
 
 
 def test_runtime_messages_name_no_internal_dependency() -> None:

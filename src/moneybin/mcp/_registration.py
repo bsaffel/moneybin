@@ -122,10 +122,10 @@ def register(
     domain = getattr(fn, "_mcp_domain", None)
     tags = {domain} if domain else None
     annotations = ToolAnnotations(
-        readOnlyHint=getattr(fn, "_mcp_read_only", True),
-        destructiveHint=getattr(fn, "_mcp_destructive", False),
-        idempotentHint=getattr(fn, "_mcp_idempotent", True),
-        openWorldHint=getattr(fn, "_mcp_open_world", False),
+        read_only_hint=getattr(fn, "_mcp_read_only", True),
+        destructive_hint=getattr(fn, "_mcp_destructive", False),
+        idempotent_hint=getattr(fn, "_mcp_idempotent", True),
+        open_world_hint=getattr(fn, "_mcp_open_world", False),
     )
     adapter = _wire_result_adapter(fn, privacy_actor=privacy_actor)
     if input_schema_extra is None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 
 import pytest
 from pytest_mock import MockerFixture
@@ -10,7 +11,7 @@ from pytest_mock import MockerFixture
 import moneybin.services.matching_service as matching_service
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.matching.aliasing import AliasForwardResult
 from moneybin.matching.application import MatchApplicationEffects, MatchStatusChange
 from moneybin.matching.engine import MatchResult, MatchRunError
@@ -21,6 +22,7 @@ from moneybin.matching.persistence import (
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.services.matching_service import MatchingService
+from moneybin.tables import MATCH_DECISIONS, TableRef
 from tests.moneybin.test_mcp.schema_assertions import (
     assert_recovery_actions_executable,
 )
@@ -32,6 +34,8 @@ def _seed(
     status: MatchStatus,
     *,
     match_type: str = "dedup",
+    confidence_score: float = 0.9,
+    match_signals: dict[str, object] | None = None,
 ) -> None:
     MatchDecisionsRepo(db).insert(
         match_id=match_id,
@@ -42,8 +46,8 @@ def _seed(
         source_type_b="ofx",
         source_origin_b="o2",
         account_id="acct1",
-        confidence_score=0.9,
-        match_signals={},
+        confidence_score=confidence_score,
+        match_signals=match_signals or {},
         match_tier="3",
         match_type=match_type,
         account_id_b="acct2" if match_type == "transfer" else None,
@@ -130,63 +134,58 @@ def test_set_status_accepts_pending(db: Database) -> None:
     assert _status_of(db, "m1") == "accepted"
 
 
-def test_accepting_transfer_restates_fx_accounting(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+_Restatement = tuple[Database, list[TableRef], str]
+
+
+def _record_restatements(monkeypatch: pytest.MonkeyPatch) -> list[_Restatement]:
+    """Replace ``restate_after_write`` with a recorder of what each write restated."""
+    restated: list[_Restatement] = []
+
+    def record(
+        target_db: Database, inputs: Collection[TableRef], *, committed_change: str
+    ) -> None:
+        restated.append((target_db, list(inputs), committed_change))
+
+    monkeypatch.setattr("moneybin.services.restate.restate_after_write", record)
+    return restated
+
+
+@pytest.mark.parametrize("match_type", ["transfer", "dedup"])
+def test_accepting_a_match_restates_match_decisions(
+    db: Database, monkeypatch: pytest.MonkeyPatch, match_type: str
 ) -> None:
-    _seed(db, "fx-transfer", "pending", match_type="transfer")
-    restated: list[Database] = []
+    """Any accept restates, dedup included: a merge re-keys the ledger."""
+    _seed(db, "accepted-match", "pending", match_type=match_type)
+    restated = _record_restatements(monkeypatch)
 
-    def record_restatement(target_db: Database, **_kwargs: object) -> None:
-        restated.append(target_db)
+    MatchingService(db).set_status("accepted-match", status="accepted")
 
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
-
-    MatchingService(db).set_status("fx-transfer", status="accepted")
-
-    assert restated == [db]
+    assert restated == [(db, [MATCH_DECISIONS], "match decision")]
 
 
-def test_rejecting_transfer_does_not_restate_fx_accounting(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("match_type", ["transfer", "dedup"])
+def test_rejecting_a_pending_match_restates_nothing(
+    db: Database, monkeypatch: pytest.MonkeyPatch, match_type: str
 ) -> None:
-    _seed(db, "rejected-fx-transfer", "pending", match_type="transfer")
-    restated: list[Database] = []
+    """Models read only accepted decisions, so pending → rejected changes none."""
+    _seed(db, "rejected-match", "pending", match_type=match_type)
+    restated = _record_restatements(monkeypatch)
 
-    def record_restatement(target_db: Database, **_kwargs: object) -> None:
-        restated.append(target_db)
-
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
-
-    MatchingService(db).set_status("rejected-fx-transfer", status="rejected")
+    MatchingService(db).set_status("rejected-match", status="rejected")
 
     assert restated == []
 
 
-def test_reversing_transfer_restates_fx_accounting_as_committed_undo(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("match_type", ["transfer", "dedup"])
+def test_reversing_a_match_restates_match_decisions_as_committed_undo(
+    db: Database, monkeypatch: pytest.MonkeyPatch, match_type: str
 ) -> None:
-    _seed(db, "reversed-fx-transfer", "accepted", match_type="transfer")
-    restated: list[tuple[Database, str]] = []
+    _seed(db, "reversed-match", "accepted", match_type=match_type)
+    restated = _record_restatements(monkeypatch)
 
-    def record_restatement(
-        target_db: Database, *, committed_change: str = "setting"
-    ) -> None:
-        restated.append((target_db, committed_change))
+    MatchingService(db).undo("reversed-match")
 
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
-    )
-
-    MatchingService(db).undo("reversed-fx-transfer")
-
-    assert restated == [(db, "undo")]
+    assert restated == [(db, [MATCH_DECISIONS], "undo")]
 
 
 def test_set_status_rejects_pending(db: Database) -> None:
@@ -324,23 +323,167 @@ def test_accept_all_pending_accepts_and_counts(db: Database) -> None:
     assert MatchingService(db).get_pending() == []
 
 
-def test_accept_all_pending_restates_when_it_accepts_a_transfer(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+def test_accept_previewed_changes_only_the_limited_selection(db: Database) -> None:
+    """A bounded approval cannot widen to the rest of the pending queue."""
+    _seed(db, "low", "pending", confidence_score=0.7)
+    _seed(db, "middle", "pending", confidence_score=0.8)
+    _seed(db, "high", "pending", confidence_score=0.9)
+
+    service = MatchingService(db)
+    selection = service.preview_pending(limit=1)
+    outcome = service.accept_previewed(selection, actor="cli")
+
+    assert selection.ids == ("high",)
+    assert outcome.accepted == 1
+    assert {
+        match_id: _status_of(db, match_id) for match_id in ("high", "middle", "low")
+    } == {"high": "accepted", "middle": "pending", "low": "pending"}
+    updates = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log "
+        "WHERE action = 'match_decision.update_status'"
+    ).fetchone()
+    assert updates == (1,)
+
+
+@pytest.mark.parametrize("drift", ["changed", "deleted", "displaced"])
+def test_accept_previewed_refuses_a_stale_selection(db: Database, drift: str) -> None:
+    """A changed selected set requires another explicit approval."""
+    _seed(db, "selected", "pending", confidence_score=0.9)
+    _seed(db, "outside", "pending", confidence_score=0.8)
+    service = MatchingService(db)
+    selection = service.preview_pending(limit=1)
+
+    if drift == "changed":
+        db.execute(
+            "UPDATE app.match_decisions SET match_reason = 'changed' "
+            "WHERE match_id = ?",
+            ["selected"],
+        )
+    elif drift == "deleted":
+        db.execute("DELETE FROM app.match_decisions WHERE match_id = ?", ["selected"])
+    else:
+        _seed(db, "new-high", "pending", confidence_score=0.99)
+
+    with pytest.raises(UserError, match="changed") as exc:
+        service.accept_previewed(selection, actor="cli")
+
+    assert exc.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert _status_of(db, "outside") == "pending"
+    if drift != "deleted":
+        assert _status_of(db, "selected") == "pending"
+    updates = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log "
+        "WHERE action = 'match_decision.update_status'"
+    ).fetchone()
+    assert updates == (0,)
+
+
+def test_accept_previewed_ignores_new_rows_outside_the_limited_selection(
+    db: Database,
 ) -> None:
-    _seed(db, "bulk-fx-transfer", "pending", match_type="transfer")
-    restated: list[Database] = []
+    """The preview fingerprint intentionally excludes unrelated lower-ranked work."""
+    _seed(db, "selected", "pending", confidence_score=0.9)
+    service = MatchingService(db)
+    selection = service.preview_pending(limit=1)
+    _seed(db, "outside", "pending", confidence_score=0.1)
 
-    def record_restatement(target_db: Database, **_kwargs: object) -> None:
-        restated.append(target_db)
+    service.accept_previewed(selection, actor="cli")
 
-    monkeypatch.setattr(
-        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
-        record_restatement,
+    assert _status_of(db, "selected") == "accepted"
+    assert _status_of(db, "outside") == "pending"
+
+
+def test_accept_previewed_accepts_equivalent_match_signals_json(db: Database) -> None:
+    """Database JSON key order is not a change to the reviewed proposal."""
+    _seed(db, "selected", "pending", match_signals={"a": 1, "b": 2})
+    service = MatchingService(db)
+    selection = service.preview_pending(limit=1)
+    db.execute(
+        "UPDATE app.match_decisions SET match_signals = ? WHERE match_id = ?",
+        ['{"b":2,"a":1}', "selected"],
     )
 
-    MatchingService(db).accept_all_pending(match_type="transfer")
+    service.accept_previewed(selection, actor="cli")
 
-    assert restated == [db]
+    assert _status_of(db, "selected") == "accepted"
+
+
+def test_accept_previewed_reports_committed_effects_when_restatement_fails(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The restate runs after commit, so its failure cannot roll saved work back."""
+    _seed(db, "selected", "pending")
+    selection = MatchingService(db).preview_pending(limit=1)
+
+    def _fail_restatement(*_args: object, **_kwargs: object) -> None:
+        raise UserError(
+            "The match decision was committed, but the reports that read it "
+            "could not be rebuilt.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+            hint="Run 'moneybin refresh' before relying on balances, holdings, "
+            "lots or gains.",
+            recovery_actions=[
+                RecoveryAction(
+                    tool="refresh",
+                    arguments={},
+                    rationale="Rebuild the reports after the saved match decision.",
+                    confidence="suggested",
+                    idempotent=True,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.restate.restate_after_match_effects",
+        _fail_restatement,
+    )
+
+    outcome = MatchingService(db).accept_previewed(selection, actor="cli")
+
+    assert outcome.accepted == 1
+    assert outcome.accounting_stale is True
+    assert outcome.accounting_error_code == error_codes.REFRESH_MODEL_FAILED
+    assert outcome.accounting_hint == (
+        "Run 'moneybin refresh' before relying on balances, holdings, lots or gains."
+    )
+    assert outcome.accounting_recovery_actions[0].tool == "refresh"
+    assert _status_of(db, "selected") == "accepted"
+
+
+def test_accept_all_pending_keeps_its_existing_restatement_error_behavior(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounded receipt does not change legacy bulk callers' exception contract."""
+    _seed(db, "selected", "pending")
+
+    def _fail_restatement(*_args: object, **_kwargs: object) -> None:
+        raise UserError(
+            "The match decision was committed, but the reports that read it could "
+            "not be rebuilt.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.restate.restate_after_match_effects",
+        _fail_restatement,
+    )
+
+    with pytest.raises(UserError, match="could not be rebuilt"):
+        MatchingService(db).accept_all_pending(actor="cli")
+
+    assert _status_of(db, "selected") == "accepted"
+
+
+@pytest.mark.parametrize("match_type", ["transfer", "dedup"])
+def test_accept_all_pending_restates_match_decisions(
+    db: Database, monkeypatch: pytest.MonkeyPatch, match_type: str
+) -> None:
+    _seed(db, "bulk-match", "pending", match_type=match_type)
+    restated = _record_restatements(monkeypatch)
+
+    MatchingService(db).accept_all_pending(match_type=match_type)
+
+    assert restated == [(db, [MATCH_DECISIONS], "match decision")]
 
 
 def test_set_status_application_effects_match_persisted_outcome(db: Database) -> None:
@@ -794,10 +937,7 @@ class TestForwardingNeverMasksTheMatchersError:
             "forward_rekeyed_transaction_ids",
             side_effect=forwarding_failure,
         )
-        restate = mocker.patch(
-            "moneybin.services.fx_accounting_refresh."
-            "restate_fx_accounting_after_match_run"
-        )
+        restate = mocker.patch("moneybin.services.restate.restate_after_match_run")
 
         with pytest.raises(RuntimeError) as excinfo:
             MatchingService(db).run(actor="system")
@@ -813,7 +953,7 @@ class TestForwardingNeverMasksTheMatchersError:
         result = MatchResult(transfers_retired=1)
         forwarding_failure = RuntimeError("app.transaction_categories is damaged")
         restatement_failure = UserError(
-            "FX restatement failed", code=error_codes.REFRESH_MODEL_FAILED
+            "restatement failed", code=error_codes.REFRESH_MODEL_FAILED
         )
         mocker.patch.object(
             matching_service.TransactionMatcher, "run", return_value=result
@@ -824,8 +964,7 @@ class TestForwardingNeverMasksTheMatchersError:
             side_effect=forwarding_failure,
         )
         mocker.patch(
-            "moneybin.services.fx_accounting_refresh."
-            "restate_fx_accounting_after_match_run",
+            "moneybin.services.restate.restate_after_match_run",
             side_effect=restatement_failure,
         )
 

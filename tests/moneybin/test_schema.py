@@ -1,11 +1,17 @@
 """Tests for schema initialization and inline-comment application."""
 
+import importlib
+import inspect
 import os
+import pkgutil
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
+import moneybin.extractors as extractors
 import moneybin.schema as schema
 from moneybin.database import Database
+from moneybin.extractors._protocol import Provider
 
 
 def test_comment_plan_cache_matches_uncached_derivation(tmp_path: Path) -> None:
@@ -74,11 +80,15 @@ def test_comment_plan_cache_reparses_when_content_changes_with_same_mtime(
 def test_reopen_reuses_schema_comment_plans(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> None:
-    """A second writable open re-applies comments without reparsing schema DDL."""
+    """Writable opens apply comments from shipped plans without parsing schema DDL."""
     db_path = tmp_path / "moneybin.duckdb"
     schema._COMMENT_PLAN_CACHE.clear()  # pyright: ignore[reportPrivateUsage]  # cache internals under test
 
-    with patch.object(schema.sqlglot, "parse", wraps=schema.sqlglot.parse) as parse:
+    with patch.object(
+        schema,
+        "_derive_comment_plan",
+        wraps=schema._derive_comment_plan,  # pyright: ignore[reportPrivateUsage]  # isolate comment parsing from the independently cached UTC inventory
+    ) as derive:
         db = Database(
             db_path,
             secret_store=mock_secret_store,
@@ -86,6 +96,9 @@ def test_reopen_reuses_schema_comment_plans(
             read_only=False,
         )
         db.close()
+        # Shipped plans cover every core DDL file, so a fresh open parses none.
+        first_open_count = derive.call_count
+        assert first_open_count == 0
         db = Database(
             db_path,
             secret_store=mock_secret_store,
@@ -94,7 +107,68 @@ def test_reopen_reuses_schema_comment_plans(
         )
         db.close()
 
-    assert parse.call_count == len(schema._all_schema_files())  # pyright: ignore[reportPrivateUsage]  # source list under test
+    assert derive.call_count == first_open_count
+
+
+def _provider_classes_by_schema_dir() -> dict[Path, type[Provider]]:
+    """Map each ``schema/`` dir to the class implementing ``schema_files()`` for it.
+
+    Discovered by walking ``moneybin.extractors`` rather than listed, so a new
+    provider is covered without anyone remembering to add it here.
+    """
+    by_dir: dict[Path, type[Provider]] = {}
+    for info in pkgutil.walk_packages(extractors.__path__, f"{extractors.__name__}."):
+        module = importlib.import_module(info.name)
+        for _, cls in inspect.getmembers(module, inspect.isclass):
+            if cls.__module__ != module.__name__ or cls is Provider:
+                continue
+            if not callable(getattr(cls, "schema_files", None)):
+                continue
+            schema_dir = Path(inspect.getfile(cls)).resolve().parent / "schema"
+            assert schema_dir not in by_dir, (
+                f"{cls.__name__} and {by_dir[schema_dir].__name__} share {schema_dir}"
+            )
+            by_dir[schema_dir] = cast(type[Provider], cls)
+    return by_dir
+
+
+def test_provider_schema_dirs_match_discovered_providers() -> None:
+    """The hand-listed provider dirs are exactly the providers that exist.
+
+    ``schema.py`` lists the directories instead of importing the providers, so
+    nothing but this test notices a provider whose DDL is never executed.
+    """
+    listed = {p.resolve() for p in schema._PROVIDER_SCHEMA_DIRS}  # pyright: ignore[reportPrivateUsage]  # hand-maintained list under test
+    extractors_dir = schema._EXTRACTORS_DIR.resolve()  # pyright: ignore[reportPrivateUsage]  # discovery root under test
+    on_disk = {p for p in extractors_dir.glob("*/schema") if p.is_dir()}
+
+    assert set(_provider_classes_by_schema_dir()) == listed
+    assert on_disk == listed
+
+
+def test_provider_schema_files_match_schema_discovery() -> None:
+    """Each provider claims exactly the DDL ``schema.py`` executes from its dir.
+
+    The two sides glob independently (``raw_<name>_*.sql`` vs ``raw_*.sql``).
+    A file only ``schema.py`` matches becomes a table no provider owns; a file
+    only the provider matches is a table that is never created.
+    """
+    executed = [p.resolve() for p in schema._all_schema_files()]  # pyright: ignore[reportPrivateUsage]  # source list under test
+    by_dir = _provider_classes_by_schema_dir()
+    assert by_dir
+
+    for schema_dir, cls in by_dir.items():
+        # schema_files() reads only the package location, so skip __init__
+        # and its per-provider Database argument.
+        claimed = {p.resolve() for p in cls.__new__(cls).schema_files()}
+        created = {p for p in executed if p.parent == schema_dir}
+
+        assert claimed, f"{cls.__name__}.schema_files() returned nothing"
+        assert claimed == created, (
+            f"{cls.__name__}: only in schema_files() "
+            f"{sorted(p.name for p in claimed - created)}; only in schema.py "
+            f"{sorted(p.name for p in created - claimed)}"
+        )
 
 
 def _reset_seeds_categories_for_v014_replay(db: Database) -> None:

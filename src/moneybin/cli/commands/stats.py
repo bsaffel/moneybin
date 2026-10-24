@@ -12,11 +12,18 @@ from typing import Annotated, Any
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.render import render_summary
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    no_pager_option,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.tables import METRICS
+from moneybin.temporal import format_utc
 from moneybin.utils.parsing import parse_duration
 
 logger = logging.getLogger(__name__)
@@ -38,6 +45,18 @@ _ACRONYM_CASING = {
 # Where a metric prints when the registry declares no domain for it: a name
 # `app.metrics` kept from a version that has since renamed or dropped it.
 _UNDECLARED_DOMAIN = "Other"
+
+
+def _scope_description(since: str | None, metric: str | None) -> str:
+    """The scope line shared by the empty and populated headers (requirement 1)."""
+    parts: list[str] = []
+    if metric:
+        parts.append(f"metric family '{metric}'")
+    if since:
+        parts.append(f"last {since}")
+    if not parts:
+        return "All recorded metrics"
+    return "Recorded metrics — " + ", ".join(parts)
 
 
 def _leading_word(metric_name: str) -> str:
@@ -164,6 +183,7 @@ def stats_command(
     ] = None,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Display lifetime metric aggregates."""
     where_clauses: list[str] = []
@@ -173,7 +193,7 @@ def stats_command(
         try:
             delta = parse_duration(since)
         except ValueError as e:
-            logger.error(f"❌ {e}")
+            logger.error(str(e))
             raise typer.Exit(1) from e
         cutoff = datetime.now(tz=UTC) - delta
         where_clauses.append("recorded_at >= ?")
@@ -241,7 +261,7 @@ def stats_command(
                             "labels": row[2],
                             "value": row[3],
                             "snapshots": row[4],
-                            "last_recorded": row[5].isoformat() if row[5] else None,
+                            "last_recorded": format_utc(row[5]) if row[5] else None,
                         }
                         for row in rows
                     ]
@@ -257,8 +277,21 @@ def stats_command(
                 # logs — so moving this one settles nothing and silently
                 # changes what `moneybin stats > file` writes. Requirements
                 # 23-25 are about the rendering of metrics that exist.
-                if not quiet:
-                    typer.echo("No metrics recorded yet. Run some operations first.")
+                emit_human_result(
+                    compose_human_result([
+                        build_summary(
+                            [
+                                ("Scope", _scope_description(since, metric)),
+                                ("Result", "No metrics recorded yet."),
+                                ("Next", "Run an import, refresh, or report."),
+                            ],
+                            title="Metrics",
+                        )
+                    ]),
+                    policy=get_terminal_policy(no_pager=no_pager),
+                    finite_read=True,
+                    no_pager=no_pager,
+                )
                 return
 
             # Deferred, matching every other CLI reference to the registry:
@@ -266,5 +299,25 @@ def stats_command(
             # startup path of every command, not just this one.
             from moneybin.metrics.registry import HISTOGRAM_UNITS, METRIC_DOMAINS
 
-            for domain, pairs in _grouped(rows, HISTOGRAM_UNITS, METRIC_DOMAINS):
-                render_summary(pairs, title=domain)
+            grouped = list(_grouped(rows, HISTOGRAM_UNITS, METRIC_DOMAINS))
+            metric_count = sum(len(pairs) for _, pairs in grouped)
+            header = build_summary(
+                [
+                    ("Scope", _scope_description(since, metric)),
+                    (
+                        "Metrics",
+                        f"{metric_count} across "
+                        f"{len(grouped)} domain{'s' if len(grouped) != 1 else ''}",
+                    ),
+                ],
+                title="Metrics",
+            )
+            parts = [header] + [
+                build_summary(pairs, title=domain) for domain, pairs in grouped
+            ]
+            emit_human_result(
+                compose_human_result(parts),
+                policy=get_terminal_policy(no_pager=no_pager),
+                finite_read=True,
+                no_pager=no_pager,
+            )

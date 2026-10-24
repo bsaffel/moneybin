@@ -26,13 +26,13 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
 
       - name: Run privacy performance budgets
         env:
           # The persona fixture creates an encrypted database before measuring.
           # CI runners do not have a keyring backend, so use an ephemeral key.
-          MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
+          MONEYBIN_PROFILE__SCENARIO__DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: >-
           uv run pytest tests/scenarios/test_privacy_middleware_perf.py -m perf -n 0 -v
           -o log_cli=true --log-cli-level=INFO

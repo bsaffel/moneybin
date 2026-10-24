@@ -1,0 +1,1 @@
+`sql_query` and `moneybin sql query` no longer mask a `COUNT(*) FILTER (WHERE ...)` or `COUNT(DISTINCT ...) FILTER (WHERE ...)` result when the predicate only compares protected columns to each other. A predicate comparing a protected column to a literal or a query parameter still masks the count, unchanged.

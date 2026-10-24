@@ -97,8 +97,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, categorization_rules) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, categorization_rules) | rule_id | RECORD_ID | 12-char truncated UUID4; app-created entity. |
 | (app, category_overrides) | category_id | CATEGORY | matches `seeds.categories.category_id` which is a semantic slug (e.g. `INC-SAL`); rule 9 classifies semantic-slug category IDs as CATEGORY. |
-| (app, imports) | import_id | RECORD_ID | FK to `raw.import_log.import_id`, a content-hash internal identifier. |
-| (app, import_previews) | import_id | RECORD_ID | Resulting `raw.import_log.import_id`; same class as the referenced import row. |
+| (app, imports) | import_id | RECORD_ID | FK to `app.import_log.import_id`, a content-hash internal identifier. |
+| (app, import_previews) | import_id | RECORD_ID | Resulting `app.import_log.import_id`; same class as the referenced import row. |
 | (app, import_previews) | preview_id | RECORD_ID | Opaque 12-char UUID4 handle for one expiring preview. |
 | (app, match_decisions) | account_id | RECORD_ID | opaque minted surrogate. |
 | (app, match_decisions) | account_id_b | RECORD_ID | second account in a transfer pair; same class as account_id. |
@@ -162,6 +162,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, categorization_rules) | name | USER_NOTE | human-readable rule label; user-authored free text. |
 | (app, export_destinations) | name, managed_tab_prefix | USER_NOTE | user-authored labels can reveal the export's purpose; mask them by default. |
 | (app, export_destinations) | destination_id, local_path, spreadsheet_id | RECORD_ID | opaque generated ID and storage/provider references; local paths follow `import_previews.file_path`. |
+| (app, import_log) | account_names | COMPOSITE_IDENTIFIER | JSON array of account names/numbers the batch touched (MB-255 moved this table `raw` → `app`, where an undeclared column fails closed to UNRESOLVED and whole-masks — this makes the prior `raw`-floor override an explicit declaration). A DuckDB JSON column reaches the redaction transform as `str`, so ACCOUNT_IDENTIFIER's partial `"****" + value[-4:]` mask would publish the tail of the *serialized array*, not of any value inside it — same reasoning as `account_link_decisions.match_signals` above. |
+| (app, import_log) | rejection_details | TXN_AMOUNT | JSON `[{row_number, reason}]`; `reason` can embed a raw unparseable source value verbatim (`transforms.py`'s `_extract_amounts` writes `f"Unparseable amount: {s!r}"`), so the worst case is an un-redacted amount string at an unknown position — same "classify by highest-sensitivity possible content" reasoning as `import_previews.snapshot_json` below, not the `tabular_formats.field_mapping`-style DESCRIPTION given to sibling JSON columns that only ever hold column names. |
 | (app, imports) | labels | USER_NOTE | LIST of user-applied slug labels; user-authored, treat as USER_NOTE for parity with `transaction_tags.tag`. |
 | (app, import_previews) | file_path | RECORD_ID | Local source provenance, matching the existing `source_file` classification; never exposed as account identity. |
 | (app, import_previews) | snapshot_json | TXN_AMOUNT | Complete preview payload can contain exact sample amounts and descriptions; classify by its highest-sensitivity possible content. |
@@ -183,7 +185,7 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (core, dim_holdings) | unrealized_gain | BALANCE | `market_value` less `cost_basis`; derivable from two BALANCE columns, so it can be no less sensitive than either. Signed, but the sign carries no class weight — realized gain/loss on `fct_realized_gains` is BALANCE for the same reason. |
 | (core, dim_holdings) | price_date | TIMESTAMP_OBSERVABILITY | the date of the public close used to value the position — the same value as `fct_security_prices.price_date` (audited above), carried onto the position. It names when a *market* closed, not when the user did anything, so it takes that column's LOW-tier treatment rather than TXN_DATE. |
 | (core, dim_holdings) | price_source | TXN_TYPE | which provider supplied the close (`plaid`, …) — a low-cardinality routing tag, identical in kind to `fct_security_prices.source_type` and the other `source_type` discriminators classified TXN_TYPE elsewhere. Reveals nothing about the position itself. |
-| (core, dim_holdings) | days_since_observed | TIMESTAMP_OBSERVABILITY | `CURRENT_DATE - price_date`. `CURRENT_DATE` is public, so this is bijective with `price_date` and cannot carry more information than it — masking one while publishing the other would be theatre. Inherits `price_date`'s class (the `uncategorized_queue.age_days` precedent). |
+| (core, dim_holdings) | days_since_observed | TIMESTAMP_OBSERVABILITY | `CURRENT_DATE - price_date`. `CURRENT_DATE` is public, so this is bijective with `price_date` and cannot carry more information than it — masking one while publishing the other would be theatre. Inherits `price_date`'s class (the `PendingTxnRow.age_days` precedent). |
 | (core, dim_holdings) | valuation_status | TXN_TYPE | a five-value enum (`valued` / `carried_forward` / `unpriced` / `withheld` / `source_overlap`) describing the *pricing* of the row, not the user's holding. Same closed-vocabulary discriminator shape as `term` and `cost_basis_method`. |
 | (core, fct_security_prices) | close | AGGREGATE | a market close is public reference data — same security, same date, same price for every user — not a personal fact like `fct_investment_transactions.price` (what the user actually paid). No existing numeric LOW-tier class fits a bare public price value; AGGREGATE is the closest fit, same as other non-sensitive computed numerics (`confidence_score`, `priority`). |
 | (core, fct_security_prices) | price_date | TIMESTAMP_OBSERVABILITY | which calendar date a public close applies to, not a personal event date like `trade_date`/`balance_date` (TXN_DATE, MEDIUM) — it reveals nothing about the user's behavior on its own, so it gets the same LOW-tier treatment as other "when was this recorded" columns. |
@@ -381,6 +383,7 @@ The `sql_query` MCP tool accepts arbitrary read-only SQL, so its output columns 
 | Literal-only (`'hi'`, `1`) | `AGGREGATE` (LOW) |
 | `COLUMNS('regex')`, `COLUMNS(c -> …)` | Conservative fallback — sqlglot models the argument, never the columns DuckDB expands it to |
 | `*` that survived `qualify()` (a `PIVOT` / `UNPIVOT` / `SUMMARIZE` source) | Conservative fallback — the output columns are computed at execution time and are not in the catalog |
+| Any column read through a `PIVOT` / `UNPIVOT` source, or through a column-list alias (`AS d(a, b)`) | Conservative fallback — a generated or positionally renamed column can answer to a catalog name while holding another value (see "A qualifier resolves against the catalog only where a catalog table binds it") |
 | Whole-row pseudo-column (`SELECT dim_accounts FROM core.dim_accounts`), `UNNEST` of one | Conservative fallback — the projection names no column but returns all of them |
 | Unresolvable | Conservative fallback (see below) |
 
@@ -420,7 +423,7 @@ Ninety such arms recover a routing number in one query, at LOW.
 
 This is written down rather than closed, and the reason is that it is **not specific to this rule**. The counting-aggregate collapse has it identically: `COUNT(j.account_id)` over the same joins yields the same ninety bits, with no `IS NULL` anywhere, and has done since long before MB-102. `COUNT(col)` counts non-NULLs, which is the same one bit per row in a different spelling. Closing it for the newer spelling alone would leave two behaviours for one question — the failure mode `design-principles.md` names as the largest source of rot.
 
-It is therefore tracked as MB-179, against **both** rules, and belongs to whichever change closes both. What MB-102 changed is which spellings reach it, not whether it is reachable.
+What MB-102 changed is which spellings reach it, not whether it is reachable. Both spellings are deliberate reconstruction, which "What the masking protects against" below places out of scope (MB-179, closed 2026-09-18).
 
 #### The cap is a claim about base columns
 
@@ -462,6 +465,14 @@ Three further properties bound what shipped:
 
 The opaque-node veto still outranks this rule, as it does the counting aggregate: `COLUMNS(…)` inside a condition takes the conservative fallback, because it distributes into sibling projections lineage never named.
 
+### A qualifier resolves against the catalog only where a catalog table binds it
+
+A column such as `dim_accounts.account_id` takes a catalog class only when the `FROM` that binds `dim_accounts` binds it to a real catalog table. Anything else that binds the name shadows the same-named table, as SQL itself does: a CTE, a subquery, `VALUES`, `UNNEST`, `LATERAL`, a table function, a table reference to a CTE (`FROM c AS dim_accounts`), and any `PIVOT` / `UNPIVOT`. A pivot never lends its source table's classes, because DuckDB generates its output columns and the author names them: `UNPIVOT (account_id FOR n IN (routing_number, account_id))` produces an `account_id` column holding the routing number. A column-list alias does not lend them either: `core.dim_accounts AS d(account_id, account_type, routing_number)` renames by position, so `d.account_type` holds the routing number.
+
+The binding scope is the nearest one whose `FROM` reads the name. It is found by walking outward from the column, so a correlated subquery is judged by the `FROM` it actually reads, not by a CTE of the same name that is merely visible. The catalog key comes from that binder itself, not from a query-wide alias map, so an alias reused in another scope cannot substitute its table. Every shape above returned a CRITICAL value at tier LOW before the rule was stated this way, from an enumerated list of shadowing syntaxes that each new form slipped past. The paths without a scope tree — placeholder classes and projection provenance — apply the same rule across the whole query: a name passes only when every binder of it is a catalog table. A missed binding syntax therefore over-masks instead of leaking.
+
+The cost is that a column read through a pivot or a column-list alias always takes the conservative fallback, even where the rename or pivot happens to leave its value unchanged. Columns read from an ordinary table next to a pivot still resolve.
+
 ### Conservative fallback
 
 When `resolve_output_classes` cannot resolve a projection (unresolvable alias, correlated subquery residual, opaque construct, or column absent from the snapshot), it takes the higher of two floors:
@@ -489,6 +500,14 @@ The snapshot cache key is the migration version integer from `SELECT MAX(version
 - `redact_records` accepts an explicit `{column_name: DataClass}` map from the lineage resolver and applies `_TRANSFORMS` to each row's values by column name.
 
 Because both functions share the same `_TRANSFORMS` table, a change to how CRITICAL columns are masked (e.g., adding a HIGH/MEDIUM transform) automatically applies to both the typed surface and `sql_query`.
+
+### What the masking protects against
+
+Decided 2026-09-18 (MB-177). `sql_query` masking stops **accidental disclosure**: a query an agent writes to answer a question never returns a CRITICAL value unmasked. A projection that returns one is a bug and is fixed (MB-178).
+
+It does **not** hold against **deliberate reconstruction**, where a query is built to infer a CRITICAL value one bit at a time. Classification reads projections only, so a `WHERE`, `HAVING`, `JOIN … ON`, or `ORDER BY` condition over a CRITICAL column, or an outer join feeding a counting aggregate (see "The cap is not absolute" above), answers yes/no questions about the value at tier LOW. Recovering a 9-digit routing number takes about 90 such conditions written for that purpose. No agent reaches that by accident, and the person running the query already owns the database. Closing it would mean masking ordinary filters such as `WHERE last_four = '5678'`, or hiding CRITICAL values from the query engine entirely. DuckDB has no built-in column masking to build that on.
+
+Report a reconstruction path as a documented limit, not as a masking bug. Reopen the question if `sql_query` ever serves a caller other than the database owner's own agent.
 
 ### Scope note (honest)
 
@@ -530,9 +549,12 @@ dynamic classification, payload construction, and envelope assembly remain
 enabled on both paths. Matching scoped patches keep their setup cost controlled
 and restore the production callables even if the call fails; the preflight
 checks the protected response and its audit event. The gate caps
-protected-egress overhead at ≤50 ms p50 and ≤200 ms p99 per flow, and ≤20%
+protected-egress overhead at ≤50 ms p50 and ≤200 ms p95 per flow, and ≤20%
 across the sums of the five per-flow p50 values. The aggregate is not an
-end-to-end wall-clock measure.
+end-to-end wall-clock measure. The tail cap moved from p99 to p95 on
+2026-10-14: with 30 iterations, p99 is the single slowest sample, and five
+measured runs showed its delta changing sign for the same flow (−84 to +84 ms);
+p99 is still measured and logged.
 
 The serial fixture disables SQLMesh's anonymized analytics dispatcher before it
 builds the persona. That dispatcher retries external telemetry delivery, which
@@ -577,7 +599,7 @@ by its decorator, and its report-derived result supplies the per-call tier.
 | `reports(report_id="core:spending_trend")` | Actual report route with terminal row redaction and audit bypassed only in the test raw path, vs the unchanged protected route | high | transaction-amount aggregates |
 | `accounts(view="list", limit=100)` | Registered `accounts_coarse` route; raw bypasses only `build_classified_envelope` terminal redaction and audit | dynamic, up to critical | ~4-row list (critical fields masked) |
 | Budget status (test-only synthetic egress) | `BudgetService.status()` under `@mcp_tool`; setup creates one active `Housing & Utilities` budget through `BudgetService.set_budget()` | high | aggregate + nonempty per-budget rows; no public route is added |
-| Net-worth history (test-only typed egress) | `NetworthService.history()` under `@mcp_tool`; the public route is `reports(report_id="core:networth_history", parameters={...})` | high | balance time-series |
+| `reports(report_id="core:net_worth_currencies")` | Actual report route with terminal row redaction and audit bypassed only in the test raw path, vs the unchanged protected route | high | balance time-series |
 
 The gate proves each protected callback produces the expected redacted result
 and writes privacy-audit events before timing it. Concrete numbers are

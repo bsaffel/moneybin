@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -11,7 +11,7 @@ from moneybin.database import Database
 from moneybin.services.system_service import SystemService, SystemStatus
 from tests.moneybin.db_helpers import (
     create_core_tables_raw,
-    install_uncategorized_queue_view,
+    derive_is_categorizable,
     record_sqlmesh_apply,
 )
 
@@ -40,19 +40,23 @@ def system_db(db: Database) -> Database:
     create_core_tables_raw(conn)
 
     conn.execute("""
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO core.dim_accounts (
+            account_id, routing_number, account_type, institution_name,
+            institution_slug, institution_fid, source_type, source_file,
+            extracted_at, loaded_at, updated_at, display_name,
+            display_name_is_user_set, currency_code, archived, include_in_net_worth
+        ) VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-         'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE, NULL),
+         'Test Bank CHECKING ...0001', TRUE, 'USD', FALSE, TRUE),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', 'other_bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-         'Other Bank SAVINGS ...0002', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE, NULL)
+         'Other Bank SAVINGS ...0002', TRUE, 'USD', FALSE, TRUE)
     """)  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
-    # categorize_pending counts core.uncategorized_queue, the one definition of
-    # an uncategorized transaction; SQLMesh materializes it in production.
-    install_uncategorized_queue_view(db)
+    # categorize_pending counts is_categorizable rows with no category.
+    derive_is_categorizable(db)
 
     return db
 
@@ -131,7 +135,7 @@ def test_status_last_import_at_none_when_table_missing(system_db: Database) -> N
 def test_status_last_import_at_populated(system_db: Database) -> None:
     """last_import_at returns the most recent completed_at from import_log."""
     system_db.conn.execute("""
-        INSERT INTO raw.import_log (
+        INSERT INTO app.import_log (
             import_id, source_file, source_type, source_origin, account_names,
             status, started_at, completed_at
         ) VALUES
@@ -174,7 +178,7 @@ def _seed_import_log(db: Database, completed_at: datetime) -> None:
     """Insert one complete import row at the given timestamp."""
     db.conn.execute(
         """
-        INSERT INTO raw.import_log (
+        INSERT INTO app.import_log (
             import_id, source_file, source_type, source_origin, account_names,
             status, started_at, completed_at
         ) VALUES (?, 'test.qfx', 'ofx', 'test', '[]', 'complete', ?, ?)
@@ -205,11 +209,15 @@ def _insert_dim_account(
     """Insert one dim_accounts row with the given extracted_at and updated_at."""
     db.conn.execute(
         """
-        INSERT INTO core.dim_accounts VALUES
+        INSERT INTO core.dim_accounts (
+            account_id, routing_number, account_type, institution_name,
+            institution_slug, institution_fid, source_type, source_file,
+            extracted_at, loaded_at, updated_at, display_name,
+            display_name_is_user_set, currency_code, archived, include_in_net_worth
+        ) VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', ?, CURRENT_TIMESTAMP, ?,
-         'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD',
-         NULL, FALSE, TRUE, NULL)
+         'Test Bank CHECKING ...0001', TRUE, 'USD', FALSE, TRUE)
         """,
         [dim_extracted_at, dim_updated_at],
     )
@@ -223,11 +231,11 @@ def test_status_transforms_pending_when_raw_landed_after_the_apply(
     declare_only_models("core.dim_accounts")
     db.execute("SET TimeZone = 'UTC'")
     create_core_tables_raw(db.conn)
-    dim_updated = datetime(2026, 5, 10, 12, 0)
+    dim_updated = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
     _insert_dim_account(db, datetime(2025, 1, 1), dim_updated)
     record_sqlmesh_apply(db, dim_updated)
-    _seed_raw_ofx_account(db, datetime(2026, 5, 13, 18, 24), "import-1")
-    _seed_import_log(db, datetime(2026, 5, 13, 18, 24))
+    _seed_raw_ofx_account(db, datetime(2026, 5, 13, 18, 24, tzinfo=UTC), "import-1")
+    _seed_import_log(db, datetime(2026, 5, 13, 18, 24, tzinfo=UTC))
 
     status = SystemService(db=db).status()
     assert status.transforms_pending is True
@@ -242,12 +250,12 @@ def test_status_transforms_not_pending_after_apply(
     declare_only_models("core.dim_accounts")
     db.execute("SET TimeZone = 'UTC'")
     create_core_tables_raw(db.conn)
-    dim_updated = datetime(2026, 5, 13, 19, 0)
-    landed = datetime(2026, 5, 13, 18, 24)
+    dim_updated = datetime(2026, 5, 13, 19, 0, tzinfo=UTC)
+    landed = datetime(2026, 5, 13, 18, 24, tzinfo=UTC)
     _insert_dim_account(db, landed, dim_updated)
     record_sqlmesh_apply(db, dim_updated)
     _seed_raw_ofx_account(db, landed, "import-1")
-    _seed_import_log(db, datetime(2026, 5, 13, 18, 30))
+    _seed_import_log(db, datetime(2026, 5, 13, 18, 30, tzinfo=UTC))
 
     status = SystemService(db=db).status()
     assert status.transforms_pending is False
@@ -264,3 +272,29 @@ def test_status_transforms_pending_false_with_no_imports(
     status = SystemService(db=db).status()
     assert status.transforms_pending is False
     assert status.transforms_last_apply_at is None
+
+
+@pytest.mark.unit
+def test_system_inventory_includes_rejected_categorization_attempts(
+    system_db: Database,
+) -> None:
+    from moneybin.repositories.categorization_decisions_repo import (
+        CategorizationDecisionsRepo,
+    )
+    from moneybin.services.categorization import CategorizationService
+
+    repo = CategorizationDecisionsRepo(system_db)
+    for transaction_id in ("T1", "T2"):
+        attempt = repo.ensure_pending(transaction_id, actor="test")
+        repo.update_status(
+            attempt["decision_id"],
+            status="rejected",
+            category_id=None,
+            merchant_id=None,
+            decided_by="user",
+            actor="test",
+        )
+    categorization = CategorizationService(system_db)
+    assert categorization.count_pending_review() == 0
+    assert categorization.count_uncategorized() == 2
+    assert SystemService(system_db).status().categorize_pending == 2

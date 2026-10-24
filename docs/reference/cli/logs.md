@@ -5,13 +5,13 @@ View, prune, or locate MoneyBin log files for the active profile.
 
 Generated from the registered command tree, so every option below is one the command declares; `--help` on any command prints the same text. Shared flags, exit codes, and JSON envelopes: [CLI reference](../../guides/cli-reference.md).
 
-Usage: `moneybin logs [OPTIONS] [STREAM]`
+Usage: `moneybin logs [OPTIONS] [stream]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[STREAM]` | text | no | Log stream to view: cli, mcp, sqlmesh. Required unless --print-path or --prune is used. |
+| `stream` | text | no | Log stream to view: cli, mcp, sqlmesh. Required unless --print-path or --prune is used. |
 
 **Options**
 
@@ -24,8 +24,9 @@ Usage: `moneybin logs [OPTIONS] [STREAM]`
 | `--until` | text |  | Upper time bound: duration ago or absolute timestamp |
 | `--grep` | text |  | Regex pattern to filter log messages |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--print-path` | flag |  | Print the log directory and exit (no stream required) |
 | `--prune` | flag |  | Delete old log files instead of viewing (no stream required) |
 | `--older-than` | text |  | With --prune: delete logs older than this duration (e.g., 30d) |
 | `--dry-run` | flag |  | With --prune: show what would be deleted |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

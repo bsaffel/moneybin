@@ -1,4 +1,4 @@
-"""Tests for ``ImportLogRepo`` — batch-lifecycle bookkeeping over raw.import_log."""
+"""Tests for ``ImportLogRepo`` — batch-lifecycle bookkeeping over app.import_log."""
 
 import json
 from unittest.mock import MagicMock
@@ -46,7 +46,7 @@ class TestBeginImport:
         )
         row = db.execute(
             "SELECT source_file, source_type, source_origin, status, account_names "
-            "FROM raw.import_log WHERE import_id = ?",
+            "FROM app.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
         assert row is not None
@@ -75,7 +75,7 @@ class TestFinalizeImport:
         )
         row = db.execute(
             "SELECT status, rows_imported, completed_at "
-            "FROM raw.import_log WHERE import_id = ?",
+            "FROM app.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
         assert row is not None
@@ -108,7 +108,7 @@ class TestFinalizeImport:
             rejection_details=details,
         )
         row = db.execute(
-            "SELECT rejection_details FROM raw.import_log WHERE import_id = ?",
+            "SELECT rejection_details FROM app.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
         assert row is not None
@@ -135,7 +135,7 @@ class TestFinalizeImport:
             rejection_details=[],
         )
         row = db.execute(
-            "SELECT rejection_details FROM raw.import_log WHERE import_id = ?",
+            "SELECT rejection_details FROM app.import_log WHERE import_id = ?",
             [import_id],
         ).fetchone()
         assert row is not None
@@ -412,3 +412,37 @@ class TestBeginImportValidatesSourceType:
                 source_origin="x",
                 account_names=[],
             )
+
+
+def test_utc_import_cursor_keeps_offset_ties_in_non_utc_session(db: Database) -> None:
+    """Typed instant predicates keep equal-time ids across a non-UTC session."""
+    db.execute("SET TimeZone = 'America/New_York'")
+    repo = ImportLogRepo(db)
+    for row_id, stamp in [
+        ("a", "2026-10-01T09:00:00-04:00"),
+        ("b", "2026-10-01T13:00:00Z"),
+    ]:
+        import_id = repo.begin_import(
+            source_file="synthetic.csv",
+            source_type="csv",
+            source_origin="synthetic",
+            account_names=[],
+        )
+        db.execute(
+            "UPDATE app.import_log SET import_id = ?, started_at = CAST(? AS TIMESTAMPTZ) WHERE import_id = ?",
+            [row_id, stamp, import_id],
+        )
+    first = repo.get_import_history_page(limit=1)
+    assert first.snapshot_started_at == "2026-10-01T13:00:00.000000Z"
+    assert [row["import_id"] for row in first.records] == ["b"]
+    second = repo.get_import_history_page(
+        limit=1,
+        snapshot_started_at=first.snapshot_started_at,
+        snapshot_import_id=first.snapshot_import_id,
+        after_started_at="2026-10-01T13:00:00Z",
+        after_import_id="b",
+        snapshot_total=first.total_count,
+    )
+    assert [row["import_id"] for row in second.records] == ["a"]
+    assert second.total_count == 2
+    assert second.has_more is False

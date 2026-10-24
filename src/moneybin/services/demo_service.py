@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -26,14 +27,26 @@ from moneybin.errors import UserError
 from moneybin.tables import OFX_TRANSACTIONS, TABULAR_TRANSACTIONS
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from moneybin.database import Database
     from moneybin.orchestration.refresh import RefreshResult
-    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
 
 logger = logging.getLogger(__name__)
 
 DEMO_PROFILE = "demo"
 DEMO_DEFAULT_SEED = 42
+
+
+@dataclass(frozen=True, slots=True)
+class DemoCurrencySegment:
+    """One currency's own-unit totals from ``core:net_worth_currencies``."""
+
+    currency_code: str | None
+    account_count: int
+    total_assets: Decimal
+    total_liabilities: Decimal
+    net_worth: Decimal
 
 
 @dataclass(frozen=True)
@@ -58,10 +71,15 @@ class DemoResult:
     net_worth: Decimal | None
     total_assets: Decimal | None
     total_liabilities: Decimal | None
-    per_currency: list[NetWorthCurrencySegment]
+    per_currency: list[DemoCurrencySegment]
     # The default profile demo displaced, so the CLI can name the way back.
     # None when no default was set (or it was already `demo`).
     previous_default: str | None
+    # Text-only receipt context. JSON retains its established envelope shape.
+    reporting_timezone: str = "UTC"
+    start_date: date | None = None
+    end_date: date | None = None
+    inbox_dir: Path | None = None
 
 
 class DemoProfileNotOursError(UserError):
@@ -199,11 +217,11 @@ class DemoService:
             else:
                 set_current_profile(original)
 
-    def _guard_and_rebuild(self, *, reset_confirmed: bool) -> None:
-        """Verify an existing demo profile is ours, then rebuild its database.
+    def _guard_existing(self, *, reset_confirmed: bool) -> None:
+        """Verify an existing demo profile is ours and safe to rebuild.
 
         Refuses anything we can't prove the generator made and that holds no real
-        data — rebuilding destroys the database file.
+        data — the rebuild that follows destroys the database file. Reads only.
         """
         from moneybin.config import get_settings
         from moneybin.database import get_database
@@ -260,11 +278,8 @@ class DemoService:
                     )
         else:
             # The directory exists but was never `db init`'d — nothing to guard and
-            # nothing to lose. `_rebuild_database` creates the database below.
+            # nothing to lose. `_rebuild_database` creates the database in `run`.
             logger.info(f"⚙️  Demo profile {DEMO_PROFILE!r} has no database yet")
-
-        # Connection closed — safe to replace the database file.
-        _rebuild_database(DEMO_PROFILE)
 
     def run(
         self,
@@ -279,8 +294,8 @@ class DemoService:
         from moneybin.database import get_database
         from moneybin.metrics.registry import DEMO_RUN_TOTAL
         from moneybin.orchestration.refresh import refresh
+        from moneybin.reports._framework.catalog import get_report_catalog
         from moneybin.services.doctor_service import DoctorService
-        from moneybin.services.networth_service import NetworthService
         from moneybin.services.profile_service import ProfileService
         from moneybin.synthetic.engine import GeneratorEngine
         from moneybin.synthetic.merchant_seed import seed_merchant_catalog
@@ -297,31 +312,49 @@ class DemoService:
         #    destroys the database file.
         profiles = ProfileService()
         existed = profiles.exists(DEMO_PROFILE)
-        if not existed:
-            profiles.create(DEMO_PROFILE, init_inbox=True)
-            logger.info(f"⚙️  Created demo profile {DEMO_PROFILE!r}")
 
         # 2. Point the process at it so we open the right database. The PERSISTED
         #    default switch happens only after a fully successful run (step 9).
         set_current_profile(DEMO_PROFILE)
 
-        # 3. An existing demo profile must be provably ours before we rebuild it.
+        # 3. An existing demo profile must be provably ours before we touch it.
         if existed:
-            self._guard_and_rebuild(reset_confirmed=reset_confirmed)
+            self._guard_existing(reset_confirmed=reset_confirmed)
+
+        # The inbox lives outside the data home (~/Documents/MoneyBin by default),
+        # where macOS privacy controls can deny the write. Create it before any
+        # database or schema work, so a denial fails first and names the path.
+        inbox_dir = profiles.ensure_inbox(DEMO_PROFILE)
+
+        if existed:
+            # Connection closed and guard cleared — safe to replace the file.
+            _rebuild_database(DEMO_PROFILE)
             # A bare `db init --profile demo` (directory + database, no config.yaml)
-            # lands here unregistered: `profile list` would hide it and it would
-            # have no inbox. Finish the setup we promised — only now that the guard
-            # has cleared, so we never scaffold a profile we then refuse.
-            profiles.ensure_registered(DEMO_PROFILE, init_inbox=True)
+            # lands here unregistered: `profile list` would hide it. Finish the
+            # setup we promised — only now that the guard has cleared, so we never
+            # scaffold a profile we then refuse.
+            profiles.ensure_registered(DEMO_PROFILE)
+        else:
+            profiles.create(DEMO_PROFILE)
+            logger.info(f"⚙️  Created demo profile {DEMO_PROFILE!r}")
 
         with get_database(read_only=False) as db:
+            from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+            reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
             # 4. Generate persona data into the (now fresh) database.
             result = GeneratorEngine(persona, seed=seed, years=years).generate()
             counts = SyntheticWriter(db).write(result)
-            account_count = len(result.accounts)
+            account_count = sum(
+                counts.get(k, 0) for k in ("ofx_accounts", "tabular_accounts")
+            )
             txn_count = sum(
                 counts.get(k, 0) for k in ("ofx_transactions", "tabular_transactions")
             )
+            if account_count != len(result.accounts) or txn_count != len(
+                result.transactions
+            ):
+                raise DemoRefreshFailedError("generated rows were not all saved")
 
             # 5. Transform FIRST, on its own. `refresh()` always runs its steps in
             #    canonical order (gsheet → match → transform → categorize), so a
@@ -351,13 +384,34 @@ class DemoService:
             #    (the default sampling would under-cover a 3-year `family` run).
             report = DoctorService(db).run_all(full=True)
             failing_names = [r.name for r in report.invariants if r.status == "fail"]
-            snapshot = NetworthService(db).current()
+            # Unranged (no from_date/to_date) resolves to the latest available
+            # day. No display or home currency: demo wants each currency's own
+            # totals, not a converted one (multi-currency.md Requirement 5).
+            net_worth_result = get_report_catalog().execute(
+                db,
+                report_id="core:net_worth_currencies",
+                parameters={},
+                limit=None,
+                display_currency=None,
+                home_currency=None,
+            )
+            per_currency = [
+                DemoCurrencySegment(
+                    currency_code=row["currency_code"],
+                    account_count=row["account_count"],
+                    total_assets=row["total_assets"],
+                    total_liabilities=row["total_liabilities"],
+                    net_worth=row["net_worth"],
+                )
+                for row in net_worth_result.records
+            ]
 
         # Test the segments, not the scalars: a multi-currency profile nulls the
         # scalars by design, so testing those would refuse a perfectly good run.
         # No segments at all is the real failure — the refresh produced nothing.
-        if not snapshot.per_currency:
+        if not per_currency:
             raise DemoRefreshFailedError("net worth unavailable after refresh")
+        single = per_currency[0] if len(per_currency) == 1 else None
 
         # 9. Only now — a complete, successful run — make demo the persisted
         #    default so the next command lands on it. Report the profile we
@@ -378,6 +432,7 @@ class DemoService:
         logger.info(f"✅ Demo profile {DEMO_PROFILE!r} ready (seed={seed})")
         return DemoResult(
             profile=DEMO_PROFILE,
+            reporting_timezone=reporting_timezone,
             persona=persona,
             seed=seed,
             account_count=account_count,
@@ -385,9 +440,12 @@ class DemoService:
             categorized_count=categorized_count,
             doctor_failing=report.failing,
             doctor_failing_names=failing_names,
-            net_worth=snapshot.net_worth,
-            total_assets=snapshot.total_assets,
-            total_liabilities=snapshot.total_liabilities,
-            per_currency=list(snapshot.per_currency),
+            net_worth=single.net_worth if single else None,
+            total_assets=single.total_assets if single else None,
+            total_liabilities=single.total_liabilities if single else None,
+            per_currency=per_currency,
             previous_default=previous_default,
+            start_date=result.start_date,
+            end_date=result.end_date,
+            inbox_dir=inbox_dir,
         )

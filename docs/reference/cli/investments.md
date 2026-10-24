@@ -53,9 +53,9 @@ Usage: `moneybin investments add [OPTIONS]`
 
 List ledger events from the canonical investment-transaction fact table.
 
-Shows the trade date, event type, security, quantity, and the signed amount
-with the currency it is denominated in. There is no ``--wide``: all six
-columns fit an 80-column terminal, so none is held back.
+Shows the trade date, event type, security (its ticker, or its catalog name
+when it has none), quantity, and the signed amount with the currency it is
+denominated in. ``--wide`` adds the security's catalog id.
 
 Usage: `moneybin investments list [OPTIONS]`
 
@@ -69,7 +69,9 @@ Usage: `moneybin investments list [OPTIONS]`
 | `--from` | text |  | Start trade date YYYY-MM-DD (inclusive) |
 | `--to` | text |  | End trade date YYYY-MM-DD (inclusive) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments holdings
 
@@ -80,8 +82,10 @@ before today. A position with no usable price, one whose share count is
 known wrong, or one in an account whose investment ledger arrives from two
 sources at once shows ``-`` rather than a zero, and the ``status`` column
 beside it says which — it prints by default, because the three cases have
-different remedies. ``--wide`` adds the cost basis, the average cost, and
-the date the price was observed.
+different remedies. A position is named by its ticker. ``--wide`` adds the
+security's catalog id, the cost basis, the average cost, and the date the
+price was observed, omitting those it cannot fit the terminal and saying
+which.
 
 The closing portfolio line reports ``max_days_since_observed``: the age in
 days of the stalest close behind any figure above, or ``-`` when no
@@ -97,8 +101,9 @@ Usage: `moneybin investments holdings [OPTIONS]`
 |---|---|---|---|
 | `--account` | text |  | Account ID or free-text reference |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments gains
 
@@ -106,9 +111,11 @@ Realized gain/loss (the 1099-B surface) from the realized-gains fact table.
 
 Shows when each position was disposed, what it was, what it fetched, the
 gain or loss, the currency those figures are denominated in, and whether
-the holding term was short or long. ``--wide`` adds the quantity and cost
-basis the gain was computed from, and a ``note`` column marking each row
-whose basis is known to be incomplete.
+the holding term was short or long. A security is named by its ticker.
+``--wide`` adds its catalog id, the quantity and cost basis the gain was
+computed from, and a ``note`` column marking each row whose basis is known
+to be incomplete, omitting those it cannot fit the terminal and saying
+which.
 
 When any row's basis is incomplete the command says so on stderr, and
 ``-q`` does not silence it: the gain shown for such a row is a conservative
@@ -131,8 +138,9 @@ Usage: `moneybin investments gains [OPTIONS]`
 | `--to` | text |  | End disposal date YYYY-MM-DD (inclusive) |
 | `--term` | text |  | Filter by holding term: short or long |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments lots
 
@@ -151,12 +159,13 @@ Usage: `moneybin investments lots [OPTIONS] COMMAND [ARGS]...`
 
 List tax lots with remaining quantity and basis. Open lots only by default.
 
-Shows the lot, its security, when it was acquired, how much remains, the
-remaining basis, and a note marking any basis known to be incomplete.
-``--all`` adds an open/closed ``state`` column, since that view returns
-both. ``--wide`` shows every declared column: the currency, the cost-basis
-method, and ``state`` — which under the default ``--open`` reads ``open``
-on every row.
+Shows the lot, its security (by ticker), when it was acquired, how much
+remains, the remaining basis, and a note marking any basis known to be
+incomplete. ``--all`` adds an open/closed ``state`` column, since that view
+returns both. ``--wide`` shows every declared column: the security's
+catalog id, the currency, the cost-basis method, and ``state`` — which
+under the default ``--open`` reads ``open`` on every row — omitting those
+it cannot fit the terminal and saying which.
 
 Lots in an account whose investment ledger arrives from two sources at once
 double-count, because the two ledgers interleave rather than merge. The
@@ -175,8 +184,9 @@ Usage: `moneybin investments lots list [OPTIONS]`
 | `--security` | text |  | Ticker, CUSIP, ISIN, or catalog name |
 | `--open / --all` | flag | `true` | Show only open lots (default) or the full open+closed history |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments lots select
 
@@ -192,13 +202,13 @@ identification consumes lot selections. Elect it first with
 ``moneybin investments securities set \<security-id> --method specific``;
 ``--clear`` needs no election.
 
-Usage: `moneybin investments lots select [OPTIONS] DISPOSAL_TXN_ID`
+Usage: `moneybin investments lots select [OPTIONS] {disposal_txn_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `DISPOSAL_TXN_ID` | text | yes | investment_transaction_id of the disposal (a sell) |
+| `disposal_txn_id` | text | yes | investment_transaction_id of the disposal (a sell) |
 
 **Options**
 
@@ -233,7 +243,9 @@ Usage: `moneybin investments matches pending [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments matches history
 
@@ -246,7 +258,9 @@ Usage: `moneybin investments matches history [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments matches run
 
@@ -259,7 +273,7 @@ Usage: `moneybin investments matches run [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin investments prices
 
@@ -302,7 +316,7 @@ Usage: `moneybin investments prices pull [OPTIONS]`
 | `--since` | text |  | Fetch closes from this ISO date forward. Default: the last few days. |
 | `--refresh` | flag |  | Rebuild the price models so the new closes value holdings right away |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin investments prices set
 
@@ -320,18 +334,18 @@ Without --currency the mark takes the currency the position is held in. A
 mark only values a holding quoted in the same currency, so a fixed default
 would write successfully and value nothing for any non-USD position.
 
-The mark lands in app; holdings value from core. Pass --refresh to rebuild
-the models in the same command, or run 'moneybin refresh' afterwards.
+The mark values holdings as soon as it is saved: the price models rebuild
+in the same command.
 
-Usage: `moneybin investments prices set [OPTIONS] SECURITY PRICE_DATE PRICE`
+Usage: `moneybin investments prices set [OPTIONS] {security} {price_date} {price}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SECURITY` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
-| `PRICE_DATE` | text | yes | Date the price applies to (YYYY-MM-DD) |
-| `PRICE` | text | yes | Price of one unit, e.g. 42.50 |
+| `security` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
+| `price_date` | text | yes | Date the price applies to (YYYY-MM-DD) |
+| `price` | text | yes | Price of one unit, e.g. 42.50 |
 
 **Options**
 
@@ -339,7 +353,6 @@ Usage: `moneybin investments prices set [OPTIONS] SECURITY PRICE_DATE PRICE`
 |---|---|---|---|
 | `--currency` | text |  | ISO-4217 quote currency. Defaults to the currency the position is held in; required when nothing is held or two denominations are in use. |
 | `--note` | text |  | Why this price was set (e.g. a 409A valuation) |
-| `--refresh` | flag |  | Rebuild the price models so the mark values holdings right away |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin investments prices delete
@@ -351,24 +364,23 @@ row for its date, and 'set' can only change the number, so without this a
 mark is unreachable once written. Removing one is permanent — the audit log
 records it, but the previous value is not restored by re-running anything.
 
-The removal lands in app; holdings value from core. Pass --refresh to rebuild
-the models in the same command, or run 'moneybin refresh' afterwards.
+The removal takes effect as soon as it is saved: the price models rebuild
+in the same command.
 
-Usage: `moneybin investments prices delete [OPTIONS] SECURITY PRICE_DATE`
+Usage: `moneybin investments prices delete [OPTIONS] {security} {price_date}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SECURITY` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
-| `PRICE_DATE` | text | yes | Date of the mark to remove (YYYY-MM-DD) |
+| `security` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
+| `price_date` | text | yes | Date of the mark to remove (YYYY-MM-DD) |
 
 **Options**
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--currency` | text |  | ISO-4217 quote currency. Defaults to the currency the position is held in; required when nothing is held or two denominations are in use. |
-| `--refresh` | flag |  | Rebuild the price models so the removal values holdings right away |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin investments prices list
@@ -378,13 +390,13 @@ Show the resolved price series for one security, newest first.
 Reads the resolved winner per date, not every observation that competed for
 it, so 'source' names which feed or mark actually supplied each close.
 
-Usage: `moneybin investments prices list [OPTIONS] SECURITY`
+Usage: `moneybin investments prices list [OPTIONS] {security}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SECURITY` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
+| `security` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
 
 **Options**
 
@@ -393,7 +405,8 @@ Usage: `moneybin investments prices list [OPTIONS] SECURITY`
 | `--since` | text |  | Only show prices from this ISO date forward |
 | `--source` | one of `plaid`, `tiingo`, `coingecko`, `override`, `trade_implied` |  | Filter by the source that supplied each close |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments prices token
 
@@ -440,7 +453,8 @@ Usage: `moneybin investments securities list [OPTIONS]`
 |---|---|---|---|
 | `--type` | text |  | Filter by security_type (equity, etf, mutual_fund, bond, crypto, cash, other) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments securities add
 
@@ -477,13 +491,13 @@ full history from the current method on every refresh, so changing it
 after a disposal was realized silently recomputes that disposal's cost
 basis (v1 does not enforce IRS election lock-in).
 
-Usage: `moneybin investments securities set [OPTIONS] SECURITY_ID`
+Usage: `moneybin investments securities set [OPTIONS] {security_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SECURITY_ID` | text | yes | Security ID |
+| `security_id` | text | yes | Security ID |
 
 **Options**
 
@@ -537,7 +551,8 @@ Usage: `moneybin investments securities links pending [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments securities links set
 
@@ -579,13 +594,13 @@ moneybin investments securities links set dec001 --accept --into sec001aabbcc
 moneybin investments securities links set dec001 --reject
 ```
 
-Usage: `moneybin investments securities links set [OPTIONS] DECISION_ID`
+Usage: `moneybin investments securities links set [OPTIONS] {decision_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `DECISION_ID` | text | yes | Decision ID to act on (from `investments securities links pending`) |
+| `decision_id` | text | yes | Decision ID to act on (from `investments securities links pending`) |
 
 **Options**
 
@@ -607,4 +622,5 @@ Usage: `moneybin investments securities links history [OPTIONS]`
 |---|---|---|---|
 | `--limit, -n` | int (≥ 1) | `50` | Max records to show |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

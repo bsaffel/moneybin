@@ -11,8 +11,8 @@
     match_reason: TEXT
     provisional_display_name: TEXT
     candidate_display_name: TEXT
-    decided_at: TIMESTAMPNTZ
-    reversed_at: TIMESTAMPNTZ
+    decided_at: TIMESTAMPTZ
+    reversed_at: TIMESTAMPTZ
     reversed_by: TEXT
 - name: '"moneybin"."app"."account_links"'
   columns:
@@ -24,8 +24,8 @@
     source_origin: TEXT
     status: TEXT
     decided_by: TEXT
-    decided_at: TIMESTAMPNTZ
-    reversed_at: TIMESTAMPNTZ
+    decided_at: TIMESTAMPTZ
+    reversed_at: TIMESTAMPTZ
     reversed_by: TEXT
 - name: '"moneybin"."app"."account_settings"'
   columns:
@@ -40,12 +40,20 @@
     archived: BOOLEAN
     include_in_net_worth: BOOLEAN
     default_cost_basis_method: TEXT
-    updated_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPTZ
     archived_at: DATE
+    investment_source_type: TEXT
+    investment_source_type_changed_at: TIMESTAMPTZ
+    archived_changed_at: TIMESTAMPTZ
+    currency_code_changed_at: TIMESTAMPTZ
+    default_cost_basis_method_changed_at: TIMESTAMPTZ
+    account_type: TEXT
+    account_type_changed_at: TIMESTAMPTZ
+    account_subtype_changed_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."audit_log"'
   columns:
     audit_id: TEXT
-    occurred_at: TIMESTAMPNTZ
+    occurred_at: TIMESTAMPTZ
     actor: TEXT
     action: TEXT
     target_schema: TEXT
@@ -64,22 +72,24 @@
     assertion_date: DATE
     balance: DECIMAL(18, 2)
     notes: TEXT
-    created_at: TIMESTAMPNTZ
-    updated_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
+    updated_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."category_overrides"'
   columns:
     category_id: TEXT
     is_active: BOOLEAN
-    updated_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."category_source_map"'
   columns:
     source_type: TEXT
+    source_origin: TEXT
     source_category_code: TEXT
+    source_subcategory_code: TEXT
     code_level: TEXT
     category_id: TEXT
     source_taxonomy_version: TEXT
-    created_at: TIMESTAMPNTZ
-    updated_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
+    updated_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."exchange_rate_overrides"'
   columns:
     from_currency: TEXT
@@ -87,8 +97,14 @@
     rate_date: DATE
     rate: DECIMAL(18, 8)
     note: TEXT
-    created_at: TIMESTAMPNTZ
-    updated_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
+    updated_at: TIMESTAMPTZ
+- name: '"moneybin"."app"."lot_selections"'
+  columns:
+    investment_transaction_id: TEXT
+    lot_id: TEXT
+    quantity: DECIMAL(28, 10)
+    created_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."match_decisions"'
   columns:
     match_id: TEXT
@@ -107,9 +123,20 @@
     match_status: TEXT
     match_reason: TEXT
     decided_by: TEXT
-    decided_at: TIMESTAMPNTZ
-    reversed_at: TIMESTAMPNTZ
+    decided_at: TIMESTAMPTZ
+    reversed_at: TIMESTAMPTZ
     reversed_by: TEXT
+- name: '"moneybin"."app"."profile_settings"'
+  columns:
+    scope: TEXT
+    home_currency: TEXT
+    display_currency_targets: TEXT[]
+    reporting_timezone: TEXT
+    updated_at: TIMESTAMPTZ
+- name: '"moneybin"."app"."utc_upgrade_provenance"'
+  columns:
+    contract_version: INT
+    rules: JSON
 - name: '"moneybin"."app"."securities"'
   columns:
     security_id: TEXT
@@ -125,8 +152,8 @@
     cost_basis_method: TEXT
     currency_code: TEXT
     created_by: TEXT
-    created_at: TIMESTAMPNTZ
-    updated_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
+    updated_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."security_links"'
   columns:
     link_id: TEXT
@@ -136,8 +163,8 @@
     source_type: TEXT
     status: TEXT
     decided_by: TEXT
-    decided_at: TIMESTAMPNTZ
-    reversed_at: TIMESTAMPNTZ
+    decided_at: TIMESTAMPTZ
+    reversed_at: TIMESTAMPTZ
     reversed_by: TEXT
 - name: '"moneybin"."app"."security_price_overrides"'
   columns:
@@ -146,8 +173,8 @@
     quote_currency: TEXT
     close: DECIMAL(28, 10)
     note: TEXT
-    created_at: TIMESTAMPNTZ
-    updated_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
+    updated_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."seed_source_priority"'
   columns:
     source_type: TEXT
@@ -158,7 +185,7 @@
     category: TEXT
     subcategory: TEXT
     category_id: TEXT
-    categorized_at: TIMESTAMPNTZ
+    categorized_at: TIMESTAMPTZ
     categorized_by: TEXT
     merchant_id: TEXT
     confidence: DECIMAL(3, 2)
@@ -170,7 +197,7 @@
     transaction_id: TEXT
     text: TEXT
     author: TEXT
-    created_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."transaction_splits"'
   columns:
     split_id: TEXT
@@ -181,13 +208,13 @@
     category_id: TEXT
     note: TEXT
     ord: INT
-    created_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
     created_by: TEXT
 - name: '"moneybin"."app"."transaction_tags"'
   columns:
     transaction_id: TEXT
     tag: TEXT
-    applied_at: TIMESTAMPNTZ
+    applied_at: TIMESTAMPTZ
     applied_by: TEXT
 - name: '"moneybin"."app"."user_categories"'
   columns:
@@ -197,8 +224,8 @@
     description: TEXT
     class: TEXT
     is_active: BOOLEAN
-    created_at: TIMESTAMPNTZ
-    updated_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
+    updated_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."user_merchants"'
   columns:
     merchant_id: TEXT
@@ -210,8 +237,16 @@
     category_id: TEXT
     created_by: TEXT
     exemplars: ARRAY<TEXT>
-    created_at: TIMESTAMPNTZ
-    updated_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
+    updated_at: TIMESTAMPTZ
+- name: '"moneybin"."raw"."exchange_rate_coverage"'
+  columns:
+    from_currency: TEXT
+    to_currency: TEXT
+    start_date: DATE
+    end_date: DATE
+    source_type: TEXT
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."exchange_rates"'
   columns:
     from_currency: TEXT
@@ -219,7 +254,7 @@
     rate_date: DATE
     rate: DECIMAL(18, 8)
     source_type: TEXT
-    loaded_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."manual_investment_transactions"'
   columns:
     source_transaction_id: TEXT
@@ -241,7 +276,7 @@
     fees: DECIMAL(18, 2)
     currency_code: TEXT
     description: TEXT
-    created_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
     created_by: TEXT
     investment_transaction_id: TEXT
 - name: '"moneybin"."raw"."manual_transactions"'
@@ -262,7 +297,7 @@
     transaction_type: TEXT
     check_number: TEXT
     currency_code: TEXT
-    created_at: TIMESTAMPNTZ
+    created_at: TIMESTAMPTZ
     created_by: TEXT
     transaction_id: TEXT
     to_amount: DECIMAL(18, 2)
@@ -275,22 +310,25 @@
     institution_org: TEXT
     institution_fid: TEXT
     source_file: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
     import_id: TEXT
     source_type: TEXT
     source_origin: TEXT
 - name: '"moneybin"."raw"."ofx_balances"'
   columns:
     account_id: TEXT
-    statement_start_date: TIMESTAMPNTZ
-    statement_end_date: TIMESTAMPNTZ
+    statement_start_date: TIMESTAMPTZ
+    statement_end_date: TIMESTAMPTZ
+    statement_start_source_date: DATE
+    statement_end_source_date: DATE
     ledger_balance: DECIMAL(18, 2)
-    ledger_balance_date: TIMESTAMPNTZ
+    ledger_balance_date: TIMESTAMPTZ
+    ledger_balance_source_date: DATE
     available_balance: DECIMAL(18, 2)
     source_file: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
     import_id: TEXT
     source_type: TEXT
     source_origin: TEXT
@@ -300,14 +338,15 @@
     source_transaction_id: TEXT
     account_id: TEXT
     transaction_type: TEXT
-    date_posted: TIMESTAMPNTZ
+    date_posted: TIMESTAMPTZ
+    date_posted_source_date: DATE
     amount: DECIMAL(18, 2)
     payee: TEXT
     memo: TEXT
     check_number: TEXT
     source_file: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
     import_id: TEXT
     source_type: TEXT
     source_origin: TEXT
@@ -328,8 +367,8 @@
     source_file: TEXT
     source_type: TEXT
     source_origin: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."plaid_balances"'
   columns:
     account_id: TEXT
@@ -343,16 +382,16 @@
     source_file: TEXT
     source_type: TEXT
     source_origin: TEXT
-    last_updated_datetime: TIMESTAMPNTZ
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    last_updated_datetime: TIMESTAMPTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."plaid_investment_holding_lots"'
   columns:
     account_id: TEXT
     security_id: TEXT
     lot_index: INT
     institution_lot_id: TEXT
-    original_purchase_datetime: TIMESTAMPNTZ
+    original_purchase_datetime: TIMESTAMPTZ
     quantity: DECIMAL(28, 10)
     purchase_price: DECIMAL(28, 10)
     cost_basis: DECIMAL(18, 2)
@@ -361,8 +400,8 @@
     source_file: TEXT
     source_type: TEXT
     source_origin: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."plaid_investment_holdings"'
   columns:
     account_id: TEXT
@@ -381,8 +420,8 @@
     source_file: TEXT
     source_type: TEXT
     source_origin: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."plaid_investment_holdings_snapshots"'
   columns:
     source_origin: TEXT
@@ -391,8 +430,8 @@
     holdings_count: INT
     transactions_window_start: DATE
     source_type: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
     ingestion_sequence: BIGINT
 - name: '"moneybin"."raw"."plaid_investment_transaction_receipts"'
   columns:
@@ -401,15 +440,15 @@
     source_file: TEXT
     observation_version: TEXT
     ingestion_sequence: BIGINT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."plaid_investment_transactions"'
   columns:
     investment_transaction_id: TEXT
     account_id: TEXT
     security_id: TEXT
     transaction_date: DATE
-    transaction_datetime: TIMESTAMPNTZ
+    transaction_datetime: TIMESTAMPTZ
     transaction_name: TEXT
     quantity: DECIMAL(28, 10)
     amount: DECIMAL(18, 2)
@@ -441,8 +480,8 @@
     source_file: TEXT
     source_type: TEXT
     source_origin: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."plaid_transactions"'
   columns:
     transaction_id: TEXT
@@ -472,8 +511,8 @@
     source_file: TEXT
     source_type: TEXT
     source_origin: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
     to_amount: DECIMAL(18, 2)
     to_currency: TEXT
 - name: '"moneybin"."raw"."security_prices"'
@@ -485,8 +524,8 @@
     source_origin: TEXT
     close: DECIMAL(28, 10)
     price_basis: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."tabular_accounts"'
   columns:
     account_id: TEXT
@@ -501,8 +540,8 @@
     source_type: TEXT
     source_origin: TEXT
     import_id: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
 - name: '"moneybin"."raw"."tabular_transactions"'
   columns:
     transaction_id: TEXT
@@ -529,9 +568,9 @@
     source_origin: TEXT
     import_id: TEXT
     row_number: INT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
-    deleted_from_source_at: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPTZ
+    loaded_at: TIMESTAMPTZ
+    deleted_from_source_at: TIMESTAMPTZ
     to_amount: DECIMAL(18, 2)
     to_currency: TEXT
 - name: '"moneybin"."sqlmesh"."_intervals"'
@@ -563,3 +602,67 @@
     forward_only: BOOLEAN
     dev_version: TEXT
     fingerprint: TEXT
+
+- name: '"moneybin"."raw"."simplefin_accounts"'
+  columns:
+    batch_id: UUID
+    source_origin: TEXT
+    account_id: TEXT
+    native_scope: JSON
+    identity_strength: TEXT
+    observation_version: TEXT
+    original_record: JSON
+    validation_error: TEXT
+    fetched_at: TIMESTAMPTZ
+    source_file: TEXT
+    source_type: TEXT
+    loaded_at: TIMESTAMPTZ
+    name: TEXT
+    currency: TEXT
+    account_label: TEXT
+    institution_label: TEXT
+
+- name: '"moneybin"."raw"."simplefin_transactions"'
+  columns:
+    batch_id: UUID
+    source_origin: TEXT
+    account_id: TEXT
+    native_scope: JSON
+    identity_strength: TEXT
+    observation_version: TEXT
+    original_record: JSON
+    validation_error: TEXT
+    fetched_at: TIMESTAMPTZ
+    source_file: TEXT
+    source_type: TEXT
+    loaded_at: TIMESTAMPTZ
+    transaction_id: TEXT
+    transaction_reference: TEXT
+    amount: DECIMAL(18,2)
+    amount_original: TEXT
+    posted_at: TIMESTAMPTZ
+    transacted_at: TIMESTAMPTZ
+    pending: BOOLEAN
+    description: TEXT
+    currency: TEXT
+
+- name: '"moneybin"."raw"."simplefin_balances"'
+  columns:
+    batch_id: UUID
+    source_origin: TEXT
+    account_id: TEXT
+    native_scope: JSON
+    identity_strength: TEXT
+    observation_version: TEXT
+    original_record: JSON
+    validation_error: TEXT
+    fetched_at: TIMESTAMPTZ
+    source_file: TEXT
+    source_type: TEXT
+    loaded_at: TIMESTAMPTZ
+    balance: DECIMAL(18,2)
+    balance_original: TEXT
+    available_balance: DECIMAL(18,2)
+    available_balance_original: TEXT
+    balance_at: TIMESTAMPTZ
+    currency: TEXT

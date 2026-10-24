@@ -24,7 +24,7 @@ def test_status_total_includes_real_pending_investment_proposals(
     planned_investment(comparison_db, competing=True)
     empty = MagicMock()
     empty.count_pending.return_value = 0
-    empty.count_uncategorized.return_value = 0
+    empty.count_pending_review.return_value = 0
     service: Any = ReviewService
     result = service(
         empty,

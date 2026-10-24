@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -57,7 +57,7 @@ _SCHEMAS = {
         ("from_date", "DATE"),
         ("to_date", "DATE"),
         ("valuation_rate_date", "DATE"),
-        ("updated_at", "TIMESTAMP"),
+        ("updated_at", "TIMESTAMP WITH TIME ZONE"),
     ],
     "fct_currency_lots": [
         ("currency_lot_id", "VARCHAR"),
@@ -77,7 +77,7 @@ _SCHEMAS = {
         ("cost_basis_remaining", "DECIMAL(18,2)"),
         ("basis_incomplete", "BOOLEAN"),
         ("acquisition_date", "DATE"),
-        ("updated_at", "TIMESTAMP"),
+        ("updated_at", "TIMESTAMP WITH TIME ZONE"),
     ],
     "fct_realized_fx_gains": [
         ("realized_fx_gain_id", "VARCHAR"),
@@ -99,7 +99,7 @@ _SCHEMAS = {
         ("acquisition_date", "DATE"),
         ("disposal_date", "DATE"),
         ("valuation_rate_date", "DATE"),
-        ("updated_at", "TIMESTAMP"),
+        ("updated_at", "TIMESTAMP WITH TIME ZONE"),
     ],
 }
 
@@ -141,7 +141,7 @@ def _insert_conversion(
             amount, to_amount, description, currency_code, to_currency,
             created_at, created_by
         ) VALUES (?, 'import-fx', ?, ?::DATE, ?::DECIMAL(18,2),
-                  ?::DECIMAL(18,2), 'FX fixture', ?, ?, ?::TIMESTAMP, 'cli')
+                  ?::DECIMAL(18,2), 'FX fixture', ?, ?, ?::TIMESTAMPTZ, 'cli')
         """,
         [
             source_id,
@@ -159,16 +159,34 @@ def _insert_conversion(
 def _seed_real_transform_inputs(db: Database) -> None:
     db.execute(
         """
-        INSERT INTO app.profile_settings (home_currency, updated_at)
-        VALUES ('USD', '2025-12-01 09:00:00'::TIMESTAMP)
+        UPDATE app.profile_settings
+        SET home_currency = 'USD', updated_at = TIMESTAMPTZ '2025-12-01 09:00:00+00:00'
+        WHERE scope = 'profile'
         """
     )
+    # The lots read the method from the account base, which holds only accounts
+    # a source delivered, so the average-cost account needs a source row.
+    db.execute(
+        """
+        INSERT INTO raw.ofx_accounts (
+            account_id, account_type, source_file, extracted_at, loaded_at,
+            source_type, source_origin
+        ) VALUES (
+            'acct-gbp-average', 'CHECKING', 'currency-fixture.ofx',
+            '2025-12-01 09:00:00+00:00'::TIMESTAMPTZ,
+            '2025-12-01 10:00:00+00:00'::TIMESTAMPTZ, 'ofx', 'fixture-bank'
+        )
+        """
+    )
+    # A method write stamps its change time, as AccountService does.
     db.execute(
         """
         INSERT INTO app.account_settings (
-            account_id, default_cost_basis_method, updated_at
+            account_id, default_cost_basis_method,
+            default_cost_basis_method_changed_at, updated_at
         ) VALUES (
-            'acct-gbp-average', 'average', '2026-01-01 08:00:00'::TIMESTAMP
+            'acct-gbp-average', 'average', '2026-01-01 08:00:00+00:00'::TIMESTAMPTZ,
+            '2026-01-01 08:00:00+00:00'::TIMESTAMPTZ
         )
         """
     )
@@ -202,7 +220,7 @@ def _seed_real_transform_inputs(db: Database) -> None:
             'match-fx-home-eur', 'linked-usd-out', 'manual', 'user',
             'linked-eur-in', 'manual', 'user', 'acct-usd', 'acct-eur-fifo',
             1.0000, 'transfer', 'accepted', 'user',
-            '2026-01-05 11:00:00'::TIMESTAMP
+            '2026-01-05 11:00:00+00:00'::TIMESTAMPTZ
         )
         """
     )
@@ -287,9 +305,9 @@ def _seed_real_transform_inputs(db: Database) -> None:
             from_currency, to_currency, rate_date, rate, source_type, loaded_at
         ) VALUES
             ('EUR', 'USD', '2026-03-01'::DATE, 1.50000000,
-             'frankfurter', '2026-03-02 12:00:00'::TIMESTAMP),
+             'frankfurter', '2026-03-02 12:00:00+00:00'::TIMESTAMPTZ),
             ('EUR', 'USD', '2026-04-01'::DATE, 1.60000000,
-             'frankfurter', '2026-04-02 12:00:00'::TIMESTAMP)
+             'frankfurter', '2026-04-02 12:00:00+00:00'::TIMESTAMPTZ)
         """
     )
     db.execute(
@@ -309,7 +327,7 @@ def _seed_real_transform_inputs(db: Database) -> None:
             'security-sale-eur', 'import-fx', 'acct-eur-fifo', 'sec-eur',
             'sell', '2026-04-01'::DATE, -1::DECIMAL(28,10),
             30.00::DECIMAL(18,2), 5.00::DECIMAL(18,2), 'EUR',
-            'Foreign sale fixture', '2026-04-02 10:00:00'::TIMESTAMP,
+            'Foreign sale fixture', '2026-04-02 10:00:00+00:00'::TIMESTAMPTZ,
             'cli', 'inv-eur-sale'
         )
         """
@@ -338,8 +356,9 @@ def test_transform_moves_same_currency_basis_and_realizes_only_on_later_disposal
 ) -> None:
     db.execute(
         """
-        INSERT INTO app.profile_settings (home_currency, updated_at)
-        VALUES ('USD', '2025-12-01 09:00:00'::TIMESTAMP)
+        UPDATE app.profile_settings
+        SET home_currency = 'USD', updated_at = TIMESTAMPTZ '2025-12-01 09:00:00+00:00'
+        WHERE scope = 'profile'
         """
     )
     for source_id, account_id, txn_date, amount, currency, created_at in (
@@ -408,13 +427,13 @@ def test_transform_moves_same_currency_basis_and_realizes_only_on_later_disposal
                 'match-acquisition', 'acquire-usd-out', 'manual', 'user',
                 'acquire-eur-in', 'manual', 'user', 'acct-usd',
                 'acct-eur-source', 1.0000, 'transfer', 'accepted', 'user',
-                '2026-01-01 11:00:00'::TIMESTAMP
+                '2026-01-01 11:00:00+00:00'::TIMESTAMPTZ
             ),
             (
                 'match-movement', 'move-eur-out', 'manual', 'user',
                 'move-eur-in', 'manual', 'user', 'acct-eur-source',
                 'acct-eur-destination', 1.0000, 'transfer', 'accepted', 'user',
-                '2026-02-01 11:00:00'::TIMESTAMP
+                '2026-02-01 11:00:00+00:00'::TIMESTAMPTZ
             )
         """
     )
@@ -516,8 +535,9 @@ def test_cross_currency_reversal_advances_both_position_watermarks(
 ) -> None:
     db.execute(
         """
-        INSERT INTO app.profile_settings (home_currency, updated_at)
-        VALUES ('USD', '2025-12-01 09:00:00'::TIMESTAMP)
+        UPDATE app.profile_settings
+        SET home_currency = 'USD', updated_at = TIMESTAMPTZ '2025-12-01 09:00:00+00:00'
+        WHERE scope = 'profile'
         """
     )
     _insert_conversion(
@@ -566,7 +586,7 @@ def test_cross_currency_reversal_advances_both_position_watermarks(
             from_currency, to_currency, rate_date, rate, source_type, loaded_at
         ) VALUES (
             'GBP', 'USD', '2026-02-01'::DATE, 2.00000000,
-            'frankfurter', '2026-02-02 12:00:00'::TIMESTAMP
+            'frankfurter', '2026-02-02 12:00:00+00:00'::TIMESTAMPTZ
         )
         """
     )
@@ -581,7 +601,7 @@ def test_cross_currency_reversal_advances_both_position_watermarks(
             'match-cross-currency', 'cross-eur-out', 'manual', 'user',
             'cross-gbp-in', 'manual', 'user', 'acct-eur-source',
             'acct-gbp-destination', 1.0000, 'transfer', 'accepted', 'user',
-            '2026-02-01 11:00:00'::TIMESTAMP
+            '2026-02-01 11:00:00+00:00'::TIMESTAMPTZ
         )
         """
     )
@@ -722,7 +742,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
         "manual",
         "user",
         "linked-eur-in",
-        datetime(2026, 1, 5, 11, 0, 0),
+        datetime(2026, 1, 5, 11, 0, 0, tzinfo=UTC),
     )
 
     foreign_exchange = db.execute(
@@ -744,7 +764,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
         Decimal("1.50000000"),
         date(2026, 3, 1),
         "frankfurter",
-        datetime(2026, 3, 2, 12, 0, 0),
+        datetime(2026, 3, 2, 12, 0, 0, tzinfo=UTC),
     )
 
     lots = {
@@ -779,7 +799,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             False,
             "complete",
             None,
-            datetime(2026, 4, 2, 12, 0, 0),
+            datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC),
         ),
         "clot_b48056b8a404035f": (
             "acct-gbp-average",
@@ -797,7 +817,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             False,
             "complete",
             None,
-            datetime(2026, 3, 2, 12, 0, 0),
+            datetime(2026, 3, 2, 12, 0, 0, tzinfo=UTC),
         ),
         "clot_872a3c437737ba98": (
             "acct-gbp-average",
@@ -815,7 +835,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             False,
             "complete",
             None,
-            datetime(2026, 3, 2, 12, 0, 0),
+            datetime(2026, 3, 2, 12, 0, 0, tzinfo=UTC),
         ),
         "clot_9ac7325df7857fbe": (
             "acct-gbp-average",
@@ -833,7 +853,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             False,
             "complete",
             None,
-            datetime(2026, 3, 2, 12, 0, 0),
+            datetime(2026, 3, 2, 12, 0, 0, tzinfo=UTC),
         ),
         "clot_e05af1a4b4dba32e": (
             "acct-eur-fifo",
@@ -851,7 +871,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             False,
             "complete",
             None,
-            datetime(2026, 4, 2, 12, 0, 0),
+            datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC),
         ),
     }
 
@@ -890,7 +910,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             None,
             "incomplete",
             "incomplete_shape",
-            datetime(2026, 5, 1, 10, 0, 0),
+            datetime(2026, 5, 1, 10, 0, 0, tzinfo=UTC),
         ),
         "rfx_a3f769064fbf488d": (
             "acct-eur-fifo",
@@ -911,7 +931,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             "actual",
             "complete",
             None,
-            datetime(2026, 4, 2, 12, 0, 0),
+            datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC),
         ),
         "rfx_7be9cd658f8b45f5": (
             "acct-gbp-average",
@@ -932,7 +952,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             "actual",
             "complete",
             None,
-            datetime(2026, 3, 2, 12, 0, 0),
+            datetime(2026, 3, 2, 12, 0, 0, tzinfo=UTC),
         ),
         "rfx_31e33aed4cbcefe5": (
             "acct-gbp-average",
@@ -953,7 +973,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             "frankfurter",
             "complete",
             None,
-            datetime(2026, 3, 2, 12, 0, 0),
+            datetime(2026, 3, 2, 12, 0, 0, tzinfo=UTC),
         ),
     }
 

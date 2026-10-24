@@ -173,6 +173,45 @@ class AccountLinksRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def reverse(
+        self,
+        *,
+        link_id: str,
+        reversed_by: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Reverse an accepted mapping, freeing its native ref for a new binding.
+
+        Raises ``ValueError`` when no link with this id exists, or when it is
+        already reversed — re-reversing would overwrite the original
+        reversal's audit trail (``reversed_at``/``reversed_by``). Mirrors
+        ``SecurityLinksRepo.reverse``.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(self._fetch_row(link_id), "link_id", link_id)
+            if before["status"] == "reversed":
+                raise ValueError(f"account_links: link {link_id} already reversed")
+            self._db.execute(
+                f"""
+                UPDATE {ACCOUNT_LINKS.full_name}
+                SET reversed_at = CURRENT_TIMESTAMP, reversed_by = ?,
+                    status = 'reversed'
+                WHERE link_id = ?
+                """,  # noqa: S608  # TableRef + parameterized values
+                [reversed_by, link_id],
+            )
+            after = self._fetch_row(link_id)
+            return self._emit_audit(
+                action="account_link.reverse",
+                target=(*self._audit_target, link_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
     def repoint(
         self,
         *,

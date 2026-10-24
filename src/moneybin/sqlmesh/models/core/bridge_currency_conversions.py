@@ -22,12 +22,17 @@ from moneybin.metrics.registry import set_fx_accounting_rows
     "core.bridge_currency_conversions",
     kind="FULL",
     depends_on={
+        "app.audit_log",
+        "app.exchange_rate_overrides",
+        "app.match_decisions",
+        "app.profile_settings",
         "core.bridge_transfers",
-        "core.dim_accounts",
         "core.fct_transactions",
+        "prep.int_accounts__merged",
         "prep.int_transactions__matched",
         "prep.int_transactions__merged",
         "raw.exchange_rates",
+        "app.utc_upgrade_provenance",
     },
     columns={
         "conversion_id": "VARCHAR",
@@ -57,7 +62,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
         "from_date": "DATE",
         "to_date": "DATE",
         "valuation_rate_date": "DATE",
-        "updated_at": "TIMESTAMP",
+        "updated_at": "TIMESTAMPTZ",
     },
     column_descriptions={
         "conversion_id": "Content hash of the trusted evidence identity",
@@ -137,8 +142,8 @@ def execute(
         pa.field("from_date", pa.date32()),
         pa.field("to_date", pa.date32()),
         pa.field("valuation_rate_date", pa.date32()),
-        pa.field("updated_at", pa.timestamp("us")),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
     ])
-    yield pa.Table.from_pylist([asdict(row) for row in rows], schema=schema).to_pandas(
+    yield pa.Table.from_pylist([asdict(row) for row in rows], schema=schema).to_pandas(  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list
         types_mapper=pd.ArrowDtype
     )

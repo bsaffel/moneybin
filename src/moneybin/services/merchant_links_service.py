@@ -115,8 +115,12 @@ class MerchantLinksService:
 
         return count_pending_merchant_link_decisions(self._db)
 
-    def pending(self) -> list[PendingMerchantLinkGroup]:
+    def pending(
+        self, *, limit: int | None = None, decision_id: str | None = None
+    ) -> list[PendingMerchantLinkGroup]:
         """Return pending decisions grouped by (source_type, ref_value).
+
+        ``limit`` selects complete groups; ``decision_id`` selects its full group.
 
         Reads ``MerchantLinkDecisionsRepo.list_pending()`` (already ordered by
         ``decided_at, decision_id``) and groups into
@@ -127,7 +131,16 @@ class MerchantLinksService:
         ``ref_value`` form distinct review groups rather than folding into one.
         Read-only — no audit emitted.
         """
-        rows = self._decisions.list_pending()
+        rows = (
+            self._decisions.list_pending()
+            if limit is None and decision_id is None
+            else self._decisions.list_pending_groups(
+                group_columns=("source_type", "ref_value"),
+                item_id_columns=("source_type", "ref_value"),
+                limit=limit,
+                decision_id=decision_id,
+            )
+        )
         if not rows:
             return []
 

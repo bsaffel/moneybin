@@ -7,7 +7,7 @@ implemented
 > **Shipped extensions** (post-initial implementation, not yet folded into the spec body):
 > - **Content-hash self-heal** — V013 added `app.schema_migrations.content_hash`; the runner can clear a stuck-but-unchanged migration row and retry on the next boot (PR #146 boot-time SQLMesh drift heal, PR #156 stuck-migration self-heal). See `MigrationRunner` and `src/moneybin/mcp/server.py:check_schema_at_boot`.
 > - **Populated-fixture test convention** — V010/V011 surfaced "Cannot create index with outstanding updates" only against populated tables. `.claude/rules/database.md` now mandates ≥3-row realistic fixtures and an enclosing `BEGIN`/`COMMIT` wrap for migrations that touch existing data (PR #148).
-> - **MCP boot-time drift recovery** — when a fresh MCP session detects stale `core.*` snapshots, the server runs one `TransformService.apply()` self-heal before raising `SchemaDriftError`, breaking the chicken-and-egg where the agent's recovery tool lived inside the server it could not start (PR #146).
+> - **MCP boot-time drift recovery** — when a fresh MCP session detects stale `core.*` snapshots, the server runs one `TransformService.apply()` self-heal before raising `SchemaDriftError`, breaking the chicken-and-egg where the agent's recovery tool lived inside the server it could not start (PR #146). A server that finds another process on the same profile already running that heal (lock holder `operation_type=transform_apply`) waits up to 45 s for it, then re-checks drift instead of healing again; any other lock holder still fails at the default 10 s wait (#627).
 > - **SQLMesh state drift detection + repair** — the in-process migrate (`Database.migrate_sqlmesh_state()`) pins its adapter to the persistent catalog and verifies the durable `sqlmesh._versions` actually advanced before recording success (previously it wrote to the throwaway in-memory catalog and reported a false success). `moneybin db migrate status` reports state-vs-package drift across schema, SQLMesh, and SQLGlot versions (`migrations.sqlmesh_state_assessment`), and `moneybin db migrate apply` repairs a behind state via `Database.repair_sqlmesh_state()` (PR #289).
 
 ## Goal
@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS app.schema_migrations (
     checksum VARCHAR NOT NULL, -- Lowercase hex SHA-256 of the migration file contents at apply time
     success BOOLEAN NOT NULL DEFAULT TRUE, -- FALSE if the migration failed mid-execution (stuck state)
     execution_ms INTEGER, -- Migration duration in milliseconds
-    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Timestamp when this migration was applied
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- Timestamp when this migration was applied
 );
 ```
 
@@ -205,8 +205,8 @@ CREATE TABLE IF NOT EXISTS app.versions (
     component VARCHAR PRIMARY KEY, -- Component identifier: 'moneybin', 'sqlmesh', etc.
     version VARCHAR NOT NULL, -- Current version string (semver)
     previous_version VARCHAR, -- Version before the last update (NULL on first install)
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the version was last changed
-    installed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- When this component was first recorded
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the version was last changed
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP -- When this component was first recorded
 );
 ```
 
@@ -385,3 +385,16 @@ N/A — migrations are an infrastructure concern, not exposed via MCP tools.
   troubleshooting.
 - All migration operations are logged with enough detail to diagnose failures from
   the log file alone.
+
+
+### UTC compatibility before migration
+
+The [warehouse UTC contract](warehouse-utc.md) is checked before initialization
+or migration escalation. Incompatible old profiles are refused; ordinary
+migrations cannot infer historical timezone provenance. This pre-v1 change
+expects fresh profiles after the planned SQL baseline. Any retained-history
+conversion needs separately prepared, explicitly authorized offline maintenance;
+no permanent converter or conversion migration is installed. Historical
+migration files remain unchanged. Encrypted restore validates source key and
+contract before replacement and exposes interrupted promotion reconciliation
+through `moneybin db restore --recover`.

@@ -13,7 +13,7 @@ Usage: `moneybin accounts [OPTIONS] COMMAND [ARGS]...`
 |---|---|
 | [`moneybin accounts list`](#moneybin-accounts-list) | List accounts. |
 | [`moneybin accounts summary`](#moneybin-accounts-summary) | Summarize account counts, lifecycle state, and recent activity. |
-| [`moneybin accounts get`](#moneybin-accounts-get) | Show one account's full settings + dim record. |
+| [`moneybin accounts get`](#moneybin-accounts-get) | Show one account's identity and lifecycle summary. |
 | [`moneybin accounts set`](#moneybin-accounts-set) | Update account settings (structural + behavioral fields). |
 | [`moneybin accounts resolve`](#moneybin-accounts-resolve) | Resolve a free-text account reference to ranked account_id candidates. |
 | [`moneybin accounts balance`](#moneybin-accounts-balance) | Balance assertions, history, and reconciliation |
@@ -30,9 +30,10 @@ Usage: `moneybin accounts list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--include-archived` | flag |  | Include archived accounts in the listing |
 | `--type` | text |  | Filter by account_type (canonical: depository, credit, loan, investment, other) or account_subtype (source detail: checking, savings, credit card, ...); case-insensitive |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts summary
 
@@ -45,35 +46,41 @@ Usage: `moneybin accounts summary [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts get
 
-Show one account's full settings + dim record.
+Show one account's identity and lifecycle summary.
 
-Usage: `moneybin accounts get [OPTIONS] ACCOUNT_ID`
+Usage: `moneybin accounts get [OPTIONS] {account_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `ACCOUNT_ID` | text | yes | Account ID |
+| `account_id` | text | yes | Account ID |
 
 **Options**
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts set
 
 Update account settings (structural + behavioral fields).
 
-Structural: --official-name, --last-four, --subtype, --holder-category,
---currency, --credit-limit, --default-cost-basis-method (each clearable
-via --clear-FIELD). --default-cost-basis-method must be one of fifo,
-hifo, specific, average — an invalid value is rejected before any write.
+Structural: --official-name, --last-four, --type, --subtype, --holder-category,
+--currency, --credit-limit, --default-cost-basis-method,
+--investment-source-type (each clearable via --clear-FIELD).
+--default-cost-basis-method must be one of fifo, hifo, specific, average
+and --investment-source-type one of manual, plaid — an invalid value is
+rejected before any write. --investment-source-type picks which
+investment history feeds the account's ledger when it has both recorded
+and synced trades; the other history is kept, not deleted.
 Behavioral: --display-name, --include/--exclude, --archive/--unarchive.
 --archive/--unarchive and --include/--exclude are independent flags with
 different jobs. --archive today excludes the account from net worth
@@ -83,13 +90,13 @@ no report reads it that way yet. Use --exclude to exclude an account
 from net worth regardless of its archived status, including one that
 stays active and listed. At least one field flag required.
 
-Usage: `moneybin accounts set [OPTIONS] ACCOUNT_ID`
+Usage: `moneybin accounts set [OPTIONS] {account_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `ACCOUNT_ID` | text | yes | Account ID |
+| `account_id` | text | yes | Account ID |
 
 **Options**
 
@@ -97,22 +104,26 @@ Usage: `moneybin accounts set [OPTIONS] ACCOUNT_ID`
 |---|---|---|---|
 | `--official-name` | text |  | Institution's formal account name |
 | `--last-four` | text |  | Last 4 digits of account number |
+| `--type` | text |  | Canonical type override: depository, credit, loan, investment, other |
 | `--subtype` | text |  | Plaid-style account subtype (e.g., checking, savings, credit card) |
 | `--holder-category` | text |  | Account holder type (personal/business/joint) |
 | `--currency` | text |  | ISO-4217 currency code (e.g., USD) |
 | `--credit-limit` | text |  | Credit limit (for credit cards / lines) |
 | `--display-name` | text |  | Custom display name override (use --clear-display-name to clear) |
 | `--default-cost-basis-method` | text |  | Per-account cost-basis default: fifo, hifo, specific, or average (NULL falls back to the global FIFO default) |
+| `--investment-source-type` | text |  | Which investment history feeds this account's ledger: manual (recorded trades) or plaid (synced). Nothing is deleted; --clear-investment-source-type uses both again |
 | `--include / --exclude` | flag |  | Include or exclude this account from net worth |
 | `--archive / --unarchive` | flag |  | Archive or unarchive this account (does not change --include/--exclude) |
 | `--clear-official-name` | flag |  |  |
 | `--clear-last-four` | flag |  |  |
 | `--clear-subtype` | flag |  |  |
+| `--clear-type` | flag |  |  |
 | `--clear-holder-category` | flag |  |  |
 | `--clear-currency` | flag |  |  |
 | `--clear-credit-limit` | flag |  |  |
 | `--clear-display-name` | flag |  |  |
 | `--clear-default-cost-basis-method` | flag |  |  |
+| `--clear-investment-source-type` | flag |  |  |
 | `--yes, -y` | flag |  | Skip soft-validation prompt for non-canonical values |
 
 ## moneybin accounts resolve
@@ -123,13 +134,13 @@ Fuzzy-matches against display_name, account_subtype, and institution_name.
 Use this before commands that need an account_id when you only have a
 natural-language reference.
 
-Usage: `moneybin accounts resolve [OPTIONS] QUERY`
+Usage: `moneybin accounts resolve [OPTIONS] {query}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `QUERY` | text | yes | Free-text account reference (e.g., 'my Chase account') |
+| `query` | text | yes | Free-text account reference (e.g., 'my Chase account') |
 
 **Options**
 
@@ -137,7 +148,8 @@ Usage: `moneybin accounts resolve [OPTIONS] QUERY`
 |---|---|---|---|
 | `--limit, -n` | int (≥ 1) | `5` | Maximum number of candidates to return |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts balance
 
@@ -167,9 +179,10 @@ Usage: `moneybin accounts balance show [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--account` | text |  | Filter to a single account_id |
 | `--as-of` | text |  | ISO date (YYYY-MM-DD); shows balance on or before |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts balance history
 
@@ -185,28 +198,29 @@ Usage: `moneybin accounts balance history [OPTIONS]`
 | `--from` | text |  |  |
 | `--to` | text |  |  |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts balance assert
 
 Assert a balance for an account on a specific date.
 
-Usage: `moneybin accounts balance assert [OPTIONS] ACCOUNT_ID ASSERTION_DATE AMOUNT`
+Usage: `moneybin accounts balance assert [OPTIONS] {account_id} {assertion_date} {amount}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `ACCOUNT_ID` | text | yes |  |
-| `ASSERTION_DATE` | text | yes | ISO date (YYYY-MM-DD) |
-| `AMOUNT` | text | yes | Balance amount as decimal |
+| `account_id` | text | yes |  |
+| `assertion_date` | text | yes | ISO date (YYYY-MM-DD) |
+| `amount` | text | yes | Balance amount as decimal |
 
 **Options**
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--notes` | text |  |  |
-| `--yes, -y` | flag |  |  |
+| `--yes, -y` | flag |  | Skip confirmation when replacing an existing assertion |
 
 ## moneybin accounts balance list
 
@@ -220,26 +234,27 @@ Usage: `moneybin accounts balance list [OPTIONS]`
 |---|---|---|---|
 | `--account` | text |  |  |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts balance assertion-delete
 
 Delete a balance assertion. Silent no-op if no row exists.
 
-Usage: `moneybin accounts balance assertion-delete [OPTIONS] ACCOUNT_ID ASSERTION_DATE`
+Usage: `moneybin accounts balance assertion-delete [OPTIONS] {account_id} {assertion_date}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `ACCOUNT_ID` | text | yes |  |
-| `ASSERTION_DATE` | text | yes | ISO date (YYYY-MM-DD) |
+| `account_id` | text | yes |  |
+| `assertion_date` | text | yes | ISO date (YYYY-MM-DD) |
 
 **Options**
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--yes, -y` | flag |  |  |
+| `--yes, -y` | flag |  | Skip confirmation when deleting an existing assertion |
 
 ## moneybin accounts balance reconcile
 
@@ -254,7 +269,8 @@ Usage: `moneybin accounts balance reconcile [OPTIONS]`
 | `--account` | text |  |  |
 | `--threshold` | text | `0.01` |  |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts links
 
@@ -287,7 +303,8 @@ Usage: `moneybin accounts links pending [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts links set
 
@@ -312,13 +329,13 @@ moneybin accounts links set dec001 --into ACC002 --yes
 moneybin accounts links set dec001 --standalone
 ```
 
-Usage: `moneybin accounts links set [OPTIONS] DECISION_ID`
+Usage: `moneybin accounts links set [OPTIONS] {decision_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `DECISION_ID` | text | yes | Decision ID to act on (from `accounts links pending`) |
+| `decision_id` | text | yes | Decision ID to act on (from `accounts links pending`) |
 
 **Options**
 
@@ -327,6 +344,7 @@ Usage: `moneybin accounts links set [OPTIONS] DECISION_ID`
 | `--into` | text |  | Merge: the candidate account_id to adopt (from the pending group) |
 | `--standalone` | flag |  | Standalone-reject: keep the provisional account as its own canonical entity |
 | `--yes, -y` | flag |  | Skip the merge confirmation prompt (--into only; --standalone never asks) |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin accounts links history
 
@@ -340,7 +358,8 @@ Usage: `moneybin accounts links history [OPTIONS]`
 |---|---|---|---|
 | `--limit, -n` | int (≥ 0) | `50` | Max records to show |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts links run
 
@@ -356,14 +375,14 @@ account. Order is direction: the first id is absorbed and the second kept,
 whenever both are absorbable. Neither form merges: both write proposals for
 `accounts links set`.
 
-Usage: `moneybin accounts links run [OPTIONS] [ACCOUNT_ID] [CANDIDATE_ACCOUNT_ID]`
+Usage: `moneybin accounts links run [OPTIONS] [account_id] [candidate_account_id]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[ACCOUNT_ID]` | text | no | Account absorbed on accept (requires CANDIDATE_ACCOUNT_ID) |
-| `[CANDIDATE_ACCOUNT_ID]` | text | no | Account kept on accept (requires ACCOUNT_ID) |
+| `account_id` | text | no | Account absorbed on accept (requires CANDIDATE_ACCOUNT_ID) |
+| `candidate_account_id` | text | no | Account kept on accept (requires ACCOUNT_ID) |
 
 **Options**
 

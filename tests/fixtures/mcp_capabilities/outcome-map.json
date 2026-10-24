@@ -65,8 +65,6 @@
       "reports"
     ],
     "cli_commands": [
-      "reports networth",
-      "reports networth-history",
       "reports spending-trend",
       "reports cash-flow",
       "reports recurring-subscriptions",
@@ -74,6 +72,9 @@
       "reports large-transactions",
       "reports balance-drift",
       "reports realized-fx",
+      "reports net-worth-currencies",
+      "reports net-worth-accounts",
+      "reports net-worth",
       "reports run"
     ],
     "service_methods": [
@@ -788,6 +789,26 @@
     "exemption": null
   },
   {
+    "capability_id": "taxonomy.source-categories.curate",
+    "mcp_tools": [],
+    "cli_commands": [
+      "categories mappings pending",
+      "categories mappings set"
+    ],
+    "service_methods": [
+      "moneybin.services.categorization.CategorizationService.list_unmapped_source_terms",
+      "moneybin.services.categorization.CategorizationService.resolve_source_term"
+    ],
+    "observable_outcomes": [
+      "distinct unmapped imported-vocabulary terms (grouped by term, not by transaction), each with its affected row count and up to 3 did_you_mean suggestions, and the same audited app.category_source_map row after mapping a term to an existing or newly-created category or ignoring it (category_id NULL), and the same app.transaction_categories rows after the immediate sweep that follows"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "MB-180 PR2 ships the CLI curation surface only; the decided MCP surface (a source_categories kind in reviews and a source_category item in taxonomy_set, per category-source-map.md) extends existing tools and still owes its surface-change admission record in mcp-tool-surface-scaling.md"
+    }
+  },
+  {
     "capability_id": "import.files",
     "mcp_tools": [
       "import_files"
@@ -934,7 +955,8 @@
     ],
     "observable_outcomes": [
       "login yields a scoped authenticated session without exposing tokens",
-      "institution link yields the same hosted session ID, URL, and expiry"
+      "institution link yields the same hosted session ID, URL, and expiry",
+      "provider and exact grant selectors retain the broker-hosted link contract; uncertain claims never trigger a pull"
     ],
     "exemption": null
   },
@@ -951,11 +973,14 @@
     "service_methods": [
       "moneybin.connectors.sync_auth.SyncAuthService.status",
       "moneybin.services.sync_service.SyncService.list_connections",
-      "moneybin.connectors.sync_client.SyncClient.get_link_status"
+      "moneybin.connectors.sync_client.SyncClient.get_link_status",
+      "moneybin.services.sync_service.SyncService.recovery_jobs"
     ],
     "observable_outcomes": [
       "auth polling reports pending/authenticated/denied/expired/provider_error idempotently",
-      "connection and link-session status fields match"
+      "connection and link-session status fields match",
+      "safe history retains unknown, pending and acknowledged coverage without native identifiers or global completeness claims",
+      "profile-scoped unfinished job identities and phase-specific recovery actions remain discoverable independently of current remote grants"
     ],
     "exemption": null
   },
@@ -968,10 +993,14 @@
       "sync pull"
     ],
     "service_methods": [
-      "moneybin.services.sync_service.SyncService.pull"
+      "moneybin.services.sync_service.SyncService.pull",
+      "moneybin.services.sync_service.SyncService.recover"
     ],
     "observable_outcomes": [
-      "identical loaded/removed counts, per-institution statuses, raw rows, transform result, and security-resolution result"
+      "identical loaded/removed counts, per-institution statuses, raw rows, transform result, and security-resolution result",
+      "whole-job ingestion is durable before acknowledgement; setup, refresh and bounded local inspection outcomes remain independent",
+      "same-job recovery performs status/ack and retained-evidence local repair without provider retrieval; local_only performs no broker access",
+      "replay delivery counts do not overwrite original durable ingestion evidence"
     ],
     "exemption": null
   },
@@ -987,10 +1016,11 @@
     "service_methods": [
       "moneybin.services.sync_service.SyncService.disconnect",
       "moneybin.connectors.sync_auth.SyncAuthService.logout",
-      "moneybin.connectors.sync_client.SyncClient.logout"
+      "moneybin.connectors.sync_client.SyncClient.logout",
+      "moneybin.services.sync_service.SyncService.disconnect_confirmed"
     ],
     "observable_outcomes": [
-      "institution mode removes the remote connection while preserving local rows",
+      "exact-grant confirmation binds generation and affected accounts; disconnect preserves local rows and reports remote revocation obligations",
       "logout clears profile-scoped tokens and pending auth sessions and is recoverable by login"
     ],
     "exemption": null

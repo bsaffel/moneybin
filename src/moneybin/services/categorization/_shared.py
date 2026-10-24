@@ -132,11 +132,56 @@ def plaid_bridge_match_predicate(detailed_expr: str, primary_expr: str) -> str:
     code column), one edit updates both instead of silently diverging what gets
     categorized from what the stat reports as unmapped. ``detailed_expr`` /
     ``primary_expr`` are SQL column expressions for the detailed and primary PFC
-    codes (code constants, never user input).
+    codes (code constants, never user input). Provider rows carry a blank
+    ``source_origin``, so an origin-scoped imported mapping never matches here.
     """
     return (
-        f"b.source_type = 'plaid' "
+        f"b.source_type = 'plaid' AND b.source_origin = '' "
         f"AND b.source_category_code IN ({detailed_expr}, {primary_expr})"
+    )
+
+
+def source_category_bridge_match_predicate(
+    source_type_expr: str,
+    source_origin_expr: str,
+    category_expr: str,
+    subcategory_expr: str,
+) -> str:
+    """Render the predicate matching one imported row to the category-source bridge.
+
+    Keyed on ``core.bridge_category_source_map`` (alias ``b``), mirroring
+    :func:`plaid_bridge_match_predicate`. Imported rows match exactly on the
+    row's own ``(source_type, source_origin)`` — e.g. ``csv`` +
+    ``chase_credit`` — so two exporters can map the same category string to
+    different MoneyBin categories, and one origin exported in two formats is
+    two vocabularies (docs/specs/category-source-map.md's "Multi-aggregator
+    and free-text boundary" extension). A provider row's blank origin never
+    equals an imported row's type, so the two never collide.
+
+    ``app.category_source_map``'s key is a real ``(source_type,
+    source_origin, source_category_code, source_subcategory_code)`` tuple — a
+    prior version packed ``category``/``subcategory`` into one JSON-encoded
+    ``source_category_code`` string, but comparing a VARCHAR column against
+    a JSON-typed literal made DuckDB cast the column to JSON, which raised
+    ``ConversionException`` on every bare (non-JSON) code already in the
+    table, such as a seeded Plaid row. Comparing the columns directly
+    avoids that cast entirely. ``source_subcategory_code`` uses ``''`` as
+    its sentinel for "no subcategory" — DuckDB primary keys reject NULL, so
+    an absent subcategory cannot be stored as NULL — hence the
+    ``COALESCE(..., '')`` on the read side here.
+
+    This predicate is built in exactly one place because the write side
+    (``CategorySourceMapRepo.upsert``, which normalizes ``subcategory or
+    ""`` in Python) and the read side
+    (``CategorizationOrchestrator._source_category_bridge_candidates``, via
+    this function) must key identically — if the two drifted, a curated
+    mapping would silently stop matching instead of raising.
+    """
+    return (
+        f"b.source_type = {source_type_expr} "
+        f"AND b.source_origin = {source_origin_expr} "
+        f"AND b.source_category_code = {category_expr} "
+        f"AND b.source_subcategory_code = COALESCE({subcategory_expr}, '')"
     )
 
 

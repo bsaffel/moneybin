@@ -14,11 +14,12 @@ import re
 import shutil
 from collections.abc import Generator
 from pathlib import Path
+from typing import cast
 
 import yaml
 
 from moneybin import error_codes
-from moneybin.config import get_base_dir
+from moneybin.config import get_base_dir, validate_profile_setting
 from moneybin.errors import UserError
 from moneybin.utils.user_config import (
     generate_profile_config,
@@ -175,13 +176,19 @@ class ProfileService:
             (profile_dir / "logs").mkdir(mode=0o700, exist_ok=True)
             (profile_dir / "temp").mkdir(mode=0o700, exist_ok=True)
         if init_inbox:
-            self._init_inbox(normalized)
+            self.ensure_inbox(normalized)
         if not (profile_dir / "config.yaml").exists():
             generate_profile_config(profile_dir, normalized)
             logger.debug(f"Completed registration for profile: {normalized}")
         return profile_dir
 
-    def create(self, name: str, *, init_inbox: bool = False) -> Path:
+    def create(
+        self,
+        name: str,
+        *,
+        init_inbox: bool = False,
+        reporting_timezone: str | None = None,
+    ) -> Path:
         """Create a profile, or complete an unregistered one, in place.
 
         Creates ``<base>/profiles/<normalized_name>/`` with subdirectories
@@ -197,8 +204,10 @@ class ProfileService:
 
         Args:
             name: Profile name (will be normalized to lowercase with hyphens).
+            reporting_timezone: IANA calendar for fresh profiles; defaults to UTC.
+                Adoption retains the existing database policy.
             init_inbox: When True, also create the import-inbox layout at
-                ``<inbox_root>/<normalized_name>/{inbox,processed,failed}/``.
+                ``<inbox_root>/<normalized_name>/{inbox,processed,failed,pending}/``.
 
         Returns:
             Path to the profile directory.
@@ -208,6 +217,12 @@ class ProfileService:
                 ``config.yaml``) already exists under the normalized name.
             ValueError: If the name contains no valid characters.
         """
+        from moneybin.repositories.profile_settings_repo import (
+            validate_reporting_timezone,
+        )
+
+        if reporting_timezone is not None:
+            validate_reporting_timezone(reporting_timezone)
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
         # 0o700: profile dir holds the encrypted DB, privacy.log.jsonl, and
@@ -235,14 +250,25 @@ class ProfileService:
             # than keeping perms we never chose.
             profile_dir.chmod(0o700)
         try:
+            # Inbox first: a denied inbox root (macOS TCC on ~/Documents) must
+            # fail before the database and its schema are built, not after.
+            if init_inbox:
+                self.ensure_inbox(normalized)
             # Database before registration: `_init_database` is the step that
             # actually fails in the field (a locked or unavailable OS keychain), and
             # `ensure_registered` writes the `config.yaml` commit marker. Registering
             # first would leave a failed create visible to `list()` and refused by
             # `create()` — stranding the user exactly as before.
             if not (profile_dir / "moneybin.duckdb").exists():
-                self._init_database(profile_dir, normalized)
-            self.ensure_registered(normalized, init_inbox=init_inbox)
+                self._init_database(
+                    profile_dir,
+                    normalized,
+                    reporting_timezone=reporting_timezone or "UTC",
+                )
+            else:
+                # Adoption is read-only: retain both database bytes and its policy.
+                self.reporting_timezone(normalized)
+            self.ensure_registered(normalized)
         except Exception:
             # Roll back only a directory we made ourselves. An adopted directory
             # may hold a `db init`'d database — the thing the caller is trying to
@@ -255,30 +281,71 @@ class ProfileService:
         return profile_dir
 
     @staticmethod
-    def _init_inbox(profile: str) -> Path:
-        """Create the import-inbox layout for ``profile`` and return its root."""
+    def inbox_root(name: str) -> Path:
+        """Where ``name``'s import-inbox layout lives: ``<inbox_root>/<profile>/``."""
         from moneybin.config import MoneyBinSettings
-        from moneybin.services.inbox_service import InboxService
 
         # Don't pass import_= explicitly — let MoneyBinSettings build it via
         # its default_factory so MONEYBIN_IMPORT___INBOX_ROOT env overrides
         # apply (e.g. test isolation in tests/conftest.py).
-        settings = MoneyBinSettings(profile=profile)
+        return MoneyBinSettings(profile=normalize_profile_name(name)).profile_inbox_dir
+
+    @staticmethod
+    def ensure_inbox(name: str) -> Path:
+        """Create the import-inbox layout for ``name`` and return its root."""
+        from moneybin.config import MoneyBinSettings
+        from moneybin.services.inbox_service import InboxService
+
+        settings = MoneyBinSettings(profile=normalize_profile_name(name))
         service = InboxService(db=None, settings=settings)
         service.ensure_layout()
         return service.root
 
-    def _init_database(self, profile_dir: Path, profile: str) -> None:
+    def recorded_key_mode(self, name: str) -> str | None:
+        """The ``database.encryption_key_mode`` the profile's config.yaml records."""
+        try:
+            config = _read_yaml(self._profile_dir(name) / "config.yaml")
+        except ValueError:
+            return None
+        database = config.get("database")
+        if not isinstance(database, dict):
+            return None
+        mode = cast(dict[str, object], database).get("encryption_key_mode")
+        return (
+            mode if isinstance(mode, str) and mode in ("auto", "passphrase") else None
+        )
+
+    def _init_database(
+        self, profile_dir: Path, profile: str, *, reporting_timezone: str = "UTC"
+    ) -> None:
         """Initialize an encrypted database for the profile.
 
         Args:
             profile_dir: Path to the profile directory.
+            reporting_timezone: IANA calendar to persist before registration.
             profile: Normalized profile name. Scopes the keychain entry so
                 profiles never share encryption keys.
         """
         from moneybin.database import init_db
 
-        init_db(profile_dir / "moneybin.duckdb", profile=profile)
+        init_db(
+            profile_dir / "moneybin.duckdb",
+            profile=profile,
+            reporting_timezone=reporting_timezone,
+        )
+
+    def reporting_timezone(self, name: str) -> str:
+        """Read an existing profile's calendar without adopting or mutating it."""
+        from moneybin.database import Database
+        from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+        from moneybin.secrets import SecretStore
+
+        with Database(
+            self._profile_dir(name) / "moneybin.duckdb",
+            read_only=True,
+            secret_store=SecretStore(profile=normalize_profile_name(name)),
+        ) as db:
+            return ProfileSettingsRepo(db).get_reporting_timezone()
 
     def list(self) -> list[dict[str, str | bool]]:
         """List all profiles with their active status.
@@ -336,6 +403,8 @@ class ProfileService:
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
+        if profile_dir.is_symlink():
+            raise ValueError("Cannot delete a profile through a symbolic link")
         if not profile_dir.exists():
             raise ProfileNotFoundError(f"Profile '{normalized}' not found")
         if normalized == get_default_profile():
@@ -343,32 +412,33 @@ class ProfileService:
                 f"Cannot delete the active profile '{normalized}'. "
                 "Switch to another profile first: moneybin profile switch <name>"
             )
-        # Capture the opaque sync id before the dir (and its profile_id file) are
-        # removed, so the broker tokens scoped to it can be cleared afterward.
+        # Capture the opaque sync id to clear credentials before removing it.
         sync_id_file = profile_dir / "profile_id"
         sync_profile_id = (
             sync_id_file.read_text().strip() if sync_id_file.exists() else None
         )
-        shutil.rmtree(profile_dir)
-        # Clear the profile's keychain entries — each profile has its own
-        # service ("moneybin-<profile>"), so this never touches sibling profiles.
-        from moneybin.secrets import SecretStore
-
-        store = SecretStore(profile=normalized)
-        for key_name in ("DATABASE__ENCRYPTION_KEY", "DATABASE__PASSPHRASE_SALT"):
-            try:
-                store.delete_key(key_name)
-            except Exception as e:  # best-effort cleanup; data dir is already gone
-                # Don't turn a successful directory removal into a hard failure
-                # if keyring cleanup fails (e.g. NoKeyringError on headless
-                # systems, locked keychain, network keyring unreachable).
-                logger.debug(f"Keychain cleanup for {key_name} failed: {e}")
-        # Clear the profile's scoped broker sync tokens (a separate keyring
-        # service from the SecretStore above), so a delete leaves nothing behind.
+        # Clear broker credentials while the profile identity still exists, so
+        # a denied cleanup leaves enough information for a safe retry.
         if sync_profile_id:
             from moneybin.connectors.sync_client import SyncClient
 
             SyncClient.clear_tokens_for_profile(sync_profile_id)
+        # Keep the root for cleanup retries, but preserve keys until all data is gone.
+        for entry in profile_dir.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        from moneybin.crypto_constants import KEY_NAME, SALT_NAME
+        from moneybin.secrets import SecretNotFoundError, SecretStore
+
+        store = SecretStore(profile=normalized)
+        for key_name in (KEY_NAME, SALT_NAME):
+            try:
+                store.delete_key(key_name)
+            except SecretNotFoundError:
+                pass
+        profile_dir.rmdir()
         logger.debug(f"Deleted profile directory: {normalized}")
 
     def show(
@@ -409,9 +479,8 @@ class ProfileService:
     def set(self, name: str, key: str, value: str) -> None:
         """Set a config value in a profile's config.yaml.
 
-        Only supports two-level dot-notation keys (``section.field``).
-        Boolean strings (``"true"``/``"false"``) and digit-only strings
-        are coerced to their native types before writing.
+        Only supports two-level dot-notation keys (``section.field``) that
+        ``MoneyBinSettings`` declares; the value is coerced to the field's type.
 
         Args:
             name: Profile name (normalized before lookup).
@@ -420,8 +489,9 @@ class ProfileService:
 
         Raises:
             ProfileNotFoundError: If the named profile directory does not exist.
-            ValueError: If ``key`` is not in ``section.field`` format, or if
-                the name contains no valid characters.
+            ValueError: If ``key`` is not a declared, non-secret
+                ``section.field``, the value is rejected by the field's type,
+                or the name contains no valid characters.
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
@@ -437,18 +507,19 @@ class ProfileService:
         section, field = parts
         if not _SAFE_KEY.match(section) or not _SAFE_KEY.match(field):
             raise ValueError(f"Key parts must be lowercase identifiers, got: {key!r}")
+        # Validated before the file is touched: settings load this file, so an
+        # undeclared key would be inert and a bad value would break every command.
+        saved = data.get(section)
+        coerced_value = validate_profile_setting(
+            section,
+            field,
+            value,
+            cast(dict[str, object], saved) if isinstance(saved, dict) else None,
+        )
         if section not in data or not isinstance(data[section], dict):
             data[section] = {}
         section_dict: dict[str, object] = data[section]  # type: ignore[assignment]  # narrowed above
-        # Coerce booleans and integers from string representation
-        coerced_value: str | bool | int
-        if value.lower() in ("true", "false"):
-            coerced_value = value.lower() == "true"
-        elif value.isdigit():
-            coerced_value = int(value)
-        else:
-            coerced_value = value
         section_dict[field] = coerced_value
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-        logger.info(f"Set {key}={value} for profile {normalized}")
+        logger.info(f"Set {key} for profile {normalized}")

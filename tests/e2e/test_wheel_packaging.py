@@ -29,10 +29,12 @@ _PKG_ROOT = _REPO_ROOT / "src" / "moneybin"
 # Each entry: a glob the wheel MUST match at least once, and why it exists.
 REQUIRED_WHEEL_CONTENTS = {
     "moneybin/sql/schema/*.sql": "schema DDL — profile create fails without it",
+    "moneybin/sql/schema/comment_plans.json": "precomputed comment plans — fresh opens re-parse DDL without it",
     "moneybin/sql/migrations/*.sql": "SQL migrations — schema upgrades fail",
     "moneybin/sql/migrations/*.py": "Python migrations — most of the ladder is .py",
     "moneybin/sqlmesh/config.py": "SQLMesh project config",
     "moneybin/sqlmesh/external_models.yaml": "SQLMesh external model defs",
+    "moneybin/sqlmesh/macros/*.py": "SQLMesh macros — models calling one fail to render",
     "moneybin/sqlmesh/models/**/*.sql": "SQL models — no transforms without them",
     "moneybin/sqlmesh/models/**/*.py": "Python models — core fct_* tables",
     "moneybin/sqlmesh/models/seeds/*.csv": "seed data for the category models",
@@ -182,3 +184,17 @@ def test_wheel_excludes_build_artifacts(wheel_members: list[str]):
         if _EXCLUDED_DIRS.intersection(Path(name).parts) or name.endswith(".pyc")
     )
     assert not leaked, f"wheel ships build artifacts that must be excluded: {leaked}"
+
+
+@pytest.mark.e2e
+@pytest.mark.slow
+def test_wheel_excludes_one_time_utc_converter(wheel_members: list[str]) -> None:
+    retired = {
+        "moneybin/utc_upgrade.py",
+        "moneybin/services/utc_upgrade_service.py",
+        "moneybin/services/utc_upgrade_lock.py",
+        "moneybin/sql/migrations/V080__normalize_utc_instants.py",
+    }
+    assert not retired.intersection(wheel_members)
+    assert "moneybin/temporal_contract.py" in wheel_members
+    assert "moneybin/services/database_restore_service.py" in wheel_members

@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
@@ -11,13 +12,26 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import column_view, render_note, render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    build_rows,
+    build_summary,
+    column_view,
+    compose_human_result,
+    render_note,
+)
+from moneybin.cli.utils import (
+    abort_cli_error,
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.limits import RULE_PRIORITY_MAX, RULE_PRIORITY_MIN
@@ -49,6 +63,7 @@ app = typer.Typer(
 def rules_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Display all active categorization rules."""
     from moneybin.services.categorization import CategorizationService
@@ -81,20 +96,41 @@ def rules_list(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
     if not rows:
-        if not quiet:
-            logger.info("No active categorization rules.")
-        return
-
-    if not quiet:
-        logger.info("Active categorization rules:")
-    for row in rows:
-        sub = f" / {row.subcategory}" if row.subcategory else ""
-        logger.info(
-            f"  [{row.rule_id}] {row.name}: '{row.merchant_pattern}' "
-            f"({row.match_type}) -> {row.category}{sub} "
-            f"(priority: {row.priority})"
+        parts = [build_summary([("Result", "No active categorization rules.")])]
+        disclosures = (
+            "Next: moneybin transactions categorize rules create <name> --pattern <pattern> --category <category>",
         )
+    else:
+        parts = [
+            build_summary(
+                [("Active rules", f"{len(rows):,}")], title="Categorization rules"
+            ),
+            build_rows(
+                ["rule id", "name", "pattern", "match", "category", "priority"],
+                [
+                    (
+                        row.rule_id,
+                        row.name,
+                        row.merchant_pattern,
+                        row.match_type,
+                        _label(row.category, row.subcategory),
+                        row.priority,
+                    )
+                    for row in rows
+                ],
+                numeric=("priority",),
+                terminal=policy,
+            ),
+        ]
+        disclosures = ()
+    emit_human_result(
+        compose_human_result(parts, disclosures=disclosures),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("apply")
@@ -106,13 +142,22 @@ def rules_apply() -> None:
         with get_database(read_only=False) as db:
             result = CategorizationService(db).categorize_run(methods=["rules"])
             applied = result["total_applied"]
-            if applied > 0:
-                logger.info(f"✅ Categorized {applied} transactions by rule")
-            else:
-                logger.info("✅ No uncategorized transactions matched active rules")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Categorized", f"{applied:,}"), ("Method", "rules")],
+                title="Rule application complete",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
-def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
+def _warn_rule_create_rows(
+    result: "RuleCreationResult", *, carry: Sequence[str] = ()
+) -> None:
     """Report each failed and each refused row on stderr.
 
     Per-row warnings always surface — they're diagnostic, not informational —
@@ -120,19 +165,58 @@ def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
     than the logger: each names the rule its author named, and the log pipeline
     persists to disk where `SanitizedLogFormatter` cannot recognize
     user-authored text.
+
+    The exact-match rerun carries the refused row's own scoping
+    (`account_id`, amount bounds, a non-default `priority`), read from the
+    row itself so a `--from-file` batch keeps each rule's constraints, plus
+    ``carry`` — the caller's command-level flags (`--reapply`) — so the
+    suggested command creates the rule that was refused, not a broader one:
+    an account-scoped proposal must not come back account-agnostic.
     """
     for err in result.error_details:
         render_note(
-            f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
+            f"Attention: {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
             warn=True,
         )
+        pattern = err.get("merchant_pattern")
+        category = err.get("category")
+        if pattern is not None and category is not None:
+            args: list[object] = [
+                "transactions",
+                "categorize",
+                "rules",
+                "create",
+                err.get("name", ""),
+                "--pattern",
+                pattern,
+                "--category",
+                category,
+            ]
+            subcategory = err.get("subcategory")
+            if subcategory:
+                args.extend(["--subcategory", subcategory])
+            args.extend(["--match-type", "exact"])
+            if account_id := err.get("account_id"):
+                args.extend(["--account-id", account_id])
+            if min_amount := err.get("min_amount"):
+                args.extend(["--min-amount", min_amount])
+            if max_amount := err.get("max_amount"):
+                args.extend(["--max-amount", max_amount])
+            if (priority := err.get("priority")) and priority != "100":
+                args.extend(["--priority", priority])
+            args.extend(carry)
+            render_note(
+                f"› Rerun with an exact match: {generated_cli_command(*args)}",
+                warn=True,
+            )
     for conflict in result.conflict_details:
-        render_note(
-            f"👀 {conflict.name}: {conflict.reason} "
-            f"Decide it with `moneybin transactions categorize rules resolve "
-            f"{conflict.conflict_id} --replace|--reprioritize N|--cancel`.",
-            warn=True,
+        render_note(f"Attention: {conflict.name}: {conflict.reason}", warn=True)
+        resolve_cmd = generated_cli_command(
+            "transactions", "categorize", "rules", "resolve", conflict.conflict_id
         )
+        render_note(f"› Decide it: {resolve_cmd} --replace", warn=True)
+        render_note(f"› Or: {resolve_cmd} --reprioritize <N>", warn=True)
+        render_note(f"› Or: {resolve_cmd} --cancel", warn=True)
 
 
 @app.command("create")
@@ -216,15 +300,30 @@ def rules_create(
             with from_file.open(encoding="utf-8") as f:
                 loaded = json.load(f)
         except FileNotFoundError as e:
-            typer.echo(f"❌ File not found: {from_file}", err=True)
-            raise typer.Exit(2) from e
+            abort_cli_error(
+                e,
+                output=output,
+                exit_code=2,
+                cli_actor="rules_create",
+                message=f"File not found: {from_file}",
+            )
         except json.JSONDecodeError as e:
-            typer.echo(f"❌ Invalid JSON in {from_file}: {e}", err=True)
-            raise typer.Exit(1) from e
+            abort_cli_error(
+                e,
+                output=output,
+                exit_code=1,
+                cli_actor="rules_create",
+                message=f"Invalid JSON in {from_file}: {e}",
+            )
         except OSError as e:
             # PermissionError, IsADirectoryError, broken-mount OSError, etc.
-            typer.echo(f"❌ Cannot read {from_file}: {e}", err=True)
-            raise typer.Exit(2) from e
+            abort_cli_error(
+                e,
+                output=output,
+                exit_code=2,
+                cli_actor="rules_create",
+                message=f"Cannot read {from_file}: {e}",
+            )
         if not isinstance(loaded, list):
             raise typer.BadParameter(
                 "--from-file must point at a JSON list of rule dicts"
@@ -257,6 +356,10 @@ def rules_create(
                 validated, reapply=reapply, actor="cli", allow_broad=allow_broad
             )
         result.merge_parse_errors(parse_errors)
+        # The command-level flag a refused rule's exact-match rerun keeps. Its
+        # scoping (account, amounts, priority) rides on the refused row itself,
+        # so a --from-file batch keeps each rule's own.
+        carry: list[str] = ["--reapply"] if reapply else []
         if result.conflicts > 0 and result.created == 0:
             # An error promises the call changed nothing. This batch routes
             # each row independently, so one call can create a rule *and*
@@ -266,7 +369,7 @@ def rules_create(
             # The notes go out first: the refusal below names no rule — a rule
             # name is its author's text and this message reaches the logger —
             # so they carry the conflict id the resolve command needs.
-            _warn_rule_create_rows(result)
+            _warn_rule_create_rows(result, carry=carry)
             raise UserError(
                 "A rule in this batch matches the same transactions as an "
                 "active rule and assigns a different category.",
@@ -297,14 +400,42 @@ def rules_create(
             actions=actions,
         )
         render_or_json(envelope, output, cli_actor="rules_create")
-    elif not quiet:
-        logger.info(
-            f"✅ Created {result.created} rule(s); "
-            f"existing {result.existing}, skipped {result.skipped}, "
-            f"conflicts {result.conflicts}"
+    else:
+        policy = get_terminal_policy()
+        refused = bool(result.skipped or result.conflicts)
+        if result.created > 0 and not refused:
+            title = f"{policy.symbols.success} Rules created"
+        elif result.created > 0:
+            title = f"{policy.symbols.attention} Rules partially created"
+        elif not refused and result.existing > 0:
+            # Every submitted rule already exists and nothing was refused:
+            # re-running the same create is an idempotent success, not a
+            # failure, and the command exits 0.
+            title = f"{policy.symbols.success} Rules already exist"
+        else:
+            # A conflict-only zero-created batch already raised UserError
+            # above, so reaching here means every proposed rule was refused
+            # (or the batch was empty).
+            title = f"{policy.symbols.failure} No rules created"
+        summary_pairs = [
+            ("Created", str(result.created)),
+            ("Existing", str(result.existing)),
+            ("Skipped", str(result.skipped)),
+            ("Conflicts", str(result.conflicts)),
+        ]
+        if result.recategorized is not None:
+            summary_pairs.append((
+                "Recategorized",
+                f"{result.recategorized:,} rows (every active rule, not just this one)",
+            ))
+        emit_human_result(
+            compose_human_result([build_summary(summary_pairs, title=title)]),
+            policy=policy,
+            finite_read=False,
+            receipt=True,
         )
 
-    _warn_rule_create_rows(result)
+    _warn_rule_create_rows(result, carry=carry)
 
     if result.skipped > 0:
         raise typer.Exit(1)
@@ -353,8 +484,16 @@ def rules_delete(
         )
         return
 
-    if not quiet:
-        logger.info(f"✅ Rule {rule_id} deactivated")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Rule ID", rule_id), ("Action", "Deactivated")], title="Rule deleted"
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 _CONFLICT_COLUMNS: tuple[
@@ -390,6 +529,7 @@ def rules_list_conflicts(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show categorization rules refused because another rule owns the matcher."""
     # defer import; CLI cold-start hygiene
@@ -425,8 +565,17 @@ def rules_list_conflicts(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
     if not conflicts:
-        render_note("No rule conflicts awaiting a decision.", quiet=quiet)
+        emit_human_result(
+            compose_human_result(
+                [build_summary([("Result", "No rule conflicts awaiting a decision.")])],
+                disclosures=("Next: moneybin transactions categorize rules list",),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
 
     # Rows go to stdout through `render_rows`, never through `logger`: the
@@ -436,7 +585,29 @@ def rules_list_conflicts(
     view = column_view(
         _CONFLICT_COLUMNS, conflicts, default=_CONFLICT_DEFAULT, wide=wide
     )
-    render_rows(view.names, view.rows, numeric=("priority",), total_columns=view.total)
+    emit_human_result(
+        compose_human_result(
+            [
+                build_summary(
+                    [("Conflicts", f"{len(conflicts):,}")], title="Rule conflicts"
+                ),
+                build_rows(
+                    view.names,
+                    view.rows,
+                    numeric=("priority",),
+                    total_columns=view.total,
+                    terminal=policy,
+                ),
+            ],
+            disclosures=(
+                "Next: moneybin transactions categorize rules resolve <conflict-id> --replace",
+            ),
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+        wide=wide,
+    )
 
 
 def _label(category: object, subcategory: object) -> str:
@@ -444,21 +615,24 @@ def _label(category: object, subcategory: object) -> str:
     return f"{category} / {subcategory}" if subcategory else str(category)
 
 
-def _load_resolution_file(from_file: Path) -> list[object]:
+def _load_resolution_file(from_file: Path, *, output: OutputFormat) -> list[object]:
     """Read a batch resolution file, mapping every read failure to an exit code."""
     try:
         with from_file.open(encoding="utf-8") as f:
             loaded = json.load(f)
     except FileNotFoundError as e:
-        typer.echo(f"❌ File not found: {from_file}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e, output=output, exit_code=2, message=f"File not found: {from_file}"
+        )
     except json.JSONDecodeError as e:
-        typer.echo(f"❌ Invalid JSON in {from_file}: {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, message=f"Invalid JSON in {from_file}: {e}"
+        )
     except OSError as e:
         # PermissionError, IsADirectoryError, broken-mount OSError, etc.
-        typer.echo(f"❌ Cannot read {from_file}: {e}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e, output=output, exit_code=2, message=f"Cannot read {from_file}: {e}"
+        )
     if not isinstance(loaded, list):
         raise typer.BadParameter(
             "--from-file must point at a JSON list of resolution dicts"
@@ -597,7 +771,7 @@ def rules_resolve(
             )
         decisions = [
             _decision_from_row(index, row)
-            for index, row in enumerate(_load_resolution_file(from_file))
+            for index, row in enumerate(_load_resolution_file(from_file, output=output))
         ]
     else:
         if not conflict_id:
@@ -615,12 +789,32 @@ def rules_resolve(
         ]
 
     if not yes:
+        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
+            abort_cli_error(
+                UserError(
+                    "Explicit confirmation is required.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint="Re-run with --yes after reviewing the requested change.",
+                ),
+                output=output,
+                exit_code=2,
+            )
         verbs = ", ".join(sorted({d.resolution for d in decisions}))
         confirmed = typer.confirm(
             f"Apply {len(decisions)} rule-conflict resolution(s) ({verbs})?"
         )
         if not confirmed:
-            logger.info("Resolution cancelled")
+            emit_human_result(
+                compose_human_result([
+                    build_summary(
+                        [("Saved state", "No rule conflicts were changed")],
+                        title="Rule conflict resolution cancelled",
+                    )
+                ]),
+                policy=get_terminal_policy(),
+                finite_read=False,
+                receipt=True,
+            )
             raise typer.Exit(0)
 
     with handle_cli_errors():
@@ -653,8 +847,18 @@ def rules_resolve(
 
     activated = sum(1 for item in results if item.rule_id is not None)
     superseded = sum(len(item.superseded_rule_ids) for item in results)
-    render_note(
-        f"✅ Resolved {len(results)} conflict(s); "
-        f"activated {activated}, superseded {superseded}",
-        quiet=quiet,
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Resolved", str(len(results))),
+                    ("Activated", str(activated)),
+                    ("Superseded", str(superseded)),
+                ],
+                title="Rule conflicts resolved",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )

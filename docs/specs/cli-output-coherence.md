@@ -11,6 +11,17 @@ M3K.3 — the third increment under M3K (CLI / MCP UX standards), after M3K.1
 ([`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md)). Those two govern
 what the MCP surface returns; this one governs what the CLI's text branch prints.
 
+> **Superseded surface (2026-09-19):** every reference below to "the two
+> hand-written commands" (`reports networth`, `reports networth-history`),
+> their `NetworthService` backing, and the file
+> `src/moneybin/cli/commands/reports/networth.py` names code
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md)
+> deleted. The three net-worth commands that replaced them are generated from
+> `@report` specs like every other report command, so they take `--wide` and
+> `DEFAULT_COLUMNS` from the shared path rather than choosing columns in code,
+> and the hand-written exceptions this spec carved out no longer exist. Every
+> rendering rule the spec sets stands; only the exception does not.
+
 ## Goal
 
 Give the CLI one way to render each kind of result, so every command looks like it
@@ -117,7 +128,11 @@ Numbered, each independently testable.
    `format_money` rounds to two decimal places, which renders a sub-cent
    crypto close as `0.00`, so those columns declare no money kind and print as
    stored. Requirement 11 governs *amounts* — what something is worth — not
-   the per-unit prices an amount is computed from.
+   the per-unit prices an amount is computed from. A share count prints with
+   its trailing zeros trimmed in a text table — `41.5000000000` as `41.5`,
+   never rounded — while a per-unit price keeps every stored place. Without
+   the trim, a ten-place quantity beside a `carried_forward` status pushed
+   `investments holdings`' default view past 80 columns.
 
    **That exclusion covers formatting only.** A column left out of `money=`
    still holds a number, and the fold below reads a fragment of one as a whole
@@ -165,7 +180,7 @@ Numbered, each independently testable.
     **A fidelity disclosure is not an informational status line.** `-q` reaches
     a next-step hint — "run `moneybin reports explain …`" — because that is
     chatter in the sense this requirement means. It does not reach the three
-    statements `echo_report_notes` makes about how far the numbers above can be
+    statements `report_note_lines` makes about how far the numbers above can be
     trusted: the truncation warning, the degraded-report warning, and the
     applied-rates conversion disclosure. Asking for less chatter is not a claim
     that masking, truncation, or a currency conversion stopped happening, and
@@ -260,6 +275,12 @@ Numbered, each independently testable.
    `networth-history` — do not: they already choose their columns in code, and
    networth's full projection mixes per-currency totals rows with per-account
    rows that a single table cannot widen into coherently.
+   On a terminal narrower than the whole projection, `--wide` drops the
+   columns outside `DEFAULT_COLUMNS`, first in projection order first (the
+   projection leads with the id and ends on the headline measure, so the id
+   goes before a balance does), until the table fits, never drops a default
+   column, and names what it omitted:
+   `10 of 11 columns fit — account_id omitted; widen the terminal or use --output json`.
 8. `--output json` is unaffected by `DEFAULT_COLUMNS` and by `--wide`; it returns
    the full projection, filtered only by `--json-fields`.
 9. `DEFAULT_COLUMNS` for every report fits in **80 columns** with no elision of any
@@ -341,6 +362,15 @@ Numbered, each independently testable.
     milestone's own transcript surfaced it, and a percent contract (places,
     and whether the column carries `%` or a ratio) is the natural companion to
     the money contract rather than a second idiom invented later.
+
+    **Resolved by the percent declaration.** A report column storing a ratio
+    declares `OutputColumn(percent=True)` (a refinement of `numeric`, exclusive
+    with `grouped`), and `format_percent` renders it in the text branch to one
+    place with the terminal's minus: `0.0943` → `+9.4%`, a value rounding to
+    zero → `0.0%`. JSON and MCP keep the stored fraction. `mom_pct`, `yoy_pct`,
+    `drift_pct`, and `change_pct` declare it, and
+    `test_every_ratio_is_a_percent_and_nothing_else_is` holds every `_pct`
+    column to it.
 12. Every money column declares a **money kind**, and the renderer never infers
     meaning from the raw number. Four kinds:
     - `flow` — signed under the AGENTS.md accounting convention (negative =
@@ -631,7 +661,7 @@ Numbered, each independently testable.
     whole job is to report on the ledger saying nothing about it. The summary
     is doctor's result, not a status line about producing one, and requirement
     5 already forbids `-q` suppressing result data. What `-q` does silence is
-    the 💡 recovery-action hints, which is the line `echo_report_notes` already
+    the 💡 recovery-action hints, which is the line `report_note_lines` already
     draws for reports: quiet reaches next-step hints and nothing else. A
     failing invariant still prints under `-q`.
 
@@ -767,7 +797,7 @@ Numbered, each independently testable.
 
     **Two further defects fall out of the same one-line change**, and are the
     evidence the boundary belongs here rather than in the renderer:
-    `core.uncategorized_queue` selects `WHERE category IS NULL`, so a
+    the queue filter selects `category IS NULL`, so a
     never-categorized Plaid row carrying a raw code was **excluded from the
     curation queue** — while `transactions list --uncategorized`
     (`categorized_by IS NULL`, `transaction_service.py:1007`) included it. Two
@@ -804,8 +834,8 @@ Numbered, each independently testable.
 
     Absent means NULL, and only NULL. A whitespace-only category is reachable —
     Polars reads an empty CSV cell as NULL but keeps a cell holding spaces —
-    and treating it as a gap is the tempting mistake. `core.uncategorized_queue`
-    selects `WHERE category IS NULL`, so such a row is not in the queue, and
+    and treating it as a gap is the tempting mistake. The queue filter
+    selects `category IS NULL`, so such a row is not in the queue, and
     counting it would advertise a gap `transactions categorize run` cannot act
     on: the same class of lie as the provider code requirement 29 removes from
     this column. Making the two agree means normalizing blanks in staging,
@@ -818,7 +848,7 @@ Numbered, each independently testable.
     rather than the `NULLIF(TRIM(category), '')` sketched above: `TRIM` strips
     ASCII whitespace only, so a non-breaking space or a Unicode separator
     survived it and left exactly the row this paragraph is about. The manual
-    model's header names `core.uncategorized_queue`'s `category IS NULL` as the
+    model's header names the queue filter's `category IS NULL` as the
     reason, and both models carry the same cascade onto `subcategory`, since a
     subcategory orphaned from its category resolves to no `category_id`. The
     renderer's half of the contract is unchanged — absent still means NULL, and
@@ -844,6 +874,14 @@ Numbered, each independently testable.
     One placeholder, tree-wide. `transactions splits list` rendered `-` for the
     same absence; it now renders the same word, because two placeholders for one
     condition is the second pattern the coherence rule prohibits.
+
+    A report declares its column as `OutputColumn(uncategorized=True)`; the
+    column's `DataClass.CATEGORY` alone does not qualify it, because that class
+    also covers `subcategory`, where a NULL is not a taxonomy gap. The framing
+    count on a report counts rows of the report's grain — a category-month on
+    `spending-trend` — not transactions, so one NULL-category series over a
+    twelve-month window reads `12 uncategorized`. Dropping the count from
+    report tables is planned.
 
 **Stubs (F4)**
 
@@ -1289,7 +1327,7 @@ today's code. Two need specific shapes:
 - **F8** — two tiers, because requirement 29's boundary moved below the CLI.
   At the data layer, `test_categorize_plaid_e2e.py` asserts an uncategorized
   Plaid row carries `category IS NULL` — **and reaches
-  `core.uncategorized_queue`**, the behavioural partner that proves the raw code
+  the categorization queue**, the behavioural partner that proves the raw code
   was not merely hidden from a column but was emptying the curation queue. Two
   assertions in that file previously pinned the defect
   (`assert row[0] == "FOOD_AND_DRINK", "raw Plaid category text still passes

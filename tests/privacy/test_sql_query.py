@@ -10,6 +10,7 @@ inherit identical behavior structurally.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, date, datetime
 
 import duckdb
 import pytest
@@ -24,6 +25,7 @@ from moneybin.privacy.sql_query import (
     validate_read_only_query,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.protocol.envelope import build_envelope
 
 # Every remote URL scheme the read-only validator must reject. Kept in lockstep
 # with the filesystems the connection seal disables (`_DISABLED_FILESYSTEMS` in
@@ -40,6 +42,130 @@ _REMOTE_URL_SCHEMES = [
     "r2://bucket/x.parquet",
     "hf://datasets/user/repo/x.csv",
 ]
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("date_trunc('month', DATE '2026-10-21')", "2026-10-01T00:00:00.000000"),
+        ("TIMESTAMP '2026-10-01 12:34:56.123456'", "2026-10-01T12:34:56.123456"),
+        (
+            "TIMESTAMPTZ '2026-11-01 06:30:00+00' AT TIME ZONE 'America/New_York'",
+            "2026-11-01T01:30:00.000000",
+        ),
+    ],
+)
+def test_sql_wall_time_preserves_computed_clock(
+    populated_db: Database, expression: str, expected: str
+) -> None:
+    result = execute_sql_query(
+        populated_db,
+        f"SELECT {expression} AS wall_time",  # fixed test expressions
+        max_rows=10,
+    )
+    assert result.records == [{"wall_time": expected}]
+
+
+def test_sql_wall_time_nested_values_preserve_instants_dates_and_text(
+    populated_db: Database,
+) -> None:
+    result = execute_sql_query(
+        populated_db,
+        """
+        SELECT [{'wall_time': TIMESTAMP '2026-10-01 00:00:00',
+                 'instant': TIMESTAMPTZ '2026-10-01 00:30:00+02',
+                 'day': DATE '2026-10-01',
+                 'text': '2026-10-01 00:00:00',
+                 'missing': NULL}] AS nested
+        """,
+        max_rows=10,
+    )
+    assert result.records == [
+        {
+            "nested": [
+                {
+                    "wall_time": "2026-10-01T00:00:00.000000",
+                    "instant": datetime(2026, 9, 30, 22, 30, tzinfo=UTC),
+                    "day": date(2026, 10, 1),
+                    "text": "2026-10-01 00:00:00",
+                    "missing": None,
+                }
+            ]
+        }
+    ]
+
+
+def test_sql_wall_time_keeps_critical_column_masked(populated_db: Database) -> None:
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        """
+        SELECT routing_number,
+               TIMESTAMP '2026-10-01 00:00:00' AS wall_time
+        FROM core.dim_accounts
+        """,
+        max_rows=10,
+    )
+    assert result.records == [
+        {
+            "routing_number": "*****",
+            "wall_time": "2026-10-01T00:00:00.000000",
+        }
+    ]
+    assert result.tier is Tier.CRITICAL
+
+
+def test_sql_wall_time_unnamed_struct_preserves_tuple_and_json(
+    populated_db: Database,
+) -> None:
+    result = execute_sql_query(
+        populated_db,
+        """
+        SELECT row(TIMESTAMP '2026-10-01 12:34:56',
+                   TIMESTAMPTZ '2026-10-01 00:30:00+02',
+                   DATE '2026-10-01') AS unnamed
+        """,
+        max_rows=10,
+    )
+    assert result.records == [
+        {
+            "unnamed": (
+                "2026-10-01T12:34:56.000000",
+                datetime(2026, 9, 30, 22, 30, tzinfo=UTC),
+                date(2026, 10, 1),
+            )
+        }
+    ]
+    assert build_envelope(data=result.records).to_dict()["data"] == [
+        {
+            "unnamed": [
+                "2026-10-01T12:34:56.000000",
+                "2026-09-30T22:30:00.000000Z",
+                "2026-10-01",
+            ]
+        }
+    ]
+
+
+@pytest.mark.parametrize("infinity", ["infinity", "-infinity"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_sql_wall_time_does_not_reinterpret_infinite_instants(
+    populated_db: Database, infinity: str, nested: bool
+) -> None:
+    expression = f"TIMESTAMPTZ '{infinity}'"
+    if nested:
+        expression = f"[{{'instant': {expression}}}]"
+    result = execute_sql_query(
+        populated_db,
+        f"SELECT {expression} AS instant",  # fixed test expressions
+        max_rows=10,
+    )
+    sentinel = datetime.max if infinity == "infinity" else datetime.min
+    assert result.records == [
+        {"instant": [{"instant": sentinel}] if nested else sentinel}
+    ]
+    with pytest.raises(ValueError, match="explicit UTC offset"):
+        build_envelope(data=result.records).to_json()
 
 
 @pytest.mark.parametrize("url", _REMOTE_URL_SCHEMES)
@@ -885,10 +1011,10 @@ def test_unknown_table_error_omits_raw_detail(populated_db: Database) -> None:
     assert ei.value.details is None
 
 
-def test_unknown_column_returns_unknown_table_code_and_names_the_column(
+def test_unknown_column_returns_unknown_column_code_and_names_the_column(
     populated_db: Database,
 ) -> None:
-    """An unknown COLUMN classifies the same as an unknown table and is named.
+    """An unknown COLUMN gets its own code, distinct from an unknown table.
 
     DuckDB raises BinderException here, not CatalogException.
     """
@@ -898,7 +1024,7 @@ def test_unknown_column_returns_unknown_table_code_and_names_the_column(
             "SELECT nonexistent_col FROM core.fct_transactions",
             max_rows=10,
         )
-    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
     assert "nonexistent_col" in (ei.value.hint or "")
 
 
@@ -920,7 +1046,7 @@ def test_unknown_column_hint_does_not_echo_query_literals(
             "'Dr Smith Cardiology'",
             max_rows=10,
         )
-    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
     assert "Dr Smith Cardiology" not in (ei.value.hint or "")
     assert "LINE" not in (ei.value.hint or "")
 
@@ -1004,7 +1130,7 @@ def test_pivot_near_miss_hint_omits_row_derived_candidate_prefixes(
                 "USING count(*))",
                 max_rows=10,
             )
-    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
     hint = ei.value.hint or ""
     assert "0211" in hint
     for real_prefix in ("0210", "0260", "1210"):
@@ -1145,6 +1271,172 @@ def test_shadowing_cte_does_not_return_routing_number_in_the_clear(
     assert result.tier is Tier.CRITICAL
     assert result.records[0]["account_type"] == "*****"
     assert _ROUTING_NUMBER not in str(result.records)
+
+
+# Every derived-table kind that is not a CTE or a subquery, each binding the
+# name ``dim_accounts`` to a correlated routing number. ``account_id`` is the
+# column the catalog would answer for: RECORD_ID, LOW, printed in the clear.
+_CORRELATED_DERIVED_TABLE_SOURCES = {
+    "values": "(VALUES (a.routing_number)) AS dim_accounts(account_id)",
+    "unnest": "UNNEST([a.routing_number]) AS dim_accounts(account_id)",
+    "lateral": "LATERAL (SELECT a.routing_number AS account_id) AS dim_accounts",
+}
+
+
+@pytest.mark.parametrize(
+    "source",
+    list(_CORRELATED_DERIVED_TABLE_SOURCES.values()),
+    ids=list(_CORRELATED_DERIVED_TABLE_SOURCES),
+)
+def test_correlated_derived_table_named_after_catalog_table_is_masked(
+    source: str, populated_db: Database
+) -> None:
+    """A non-CTE derived table shadows a same-named catalog table too.
+
+    Only CTE and subquery aliases entered the shadowed set, so a name bound by
+    ``VALUES``, ``UNNEST`` or ``LATERAL`` and read from a correlated subquery
+    resolved against ``core.dim_accounts`` instead: the routing number came
+    back verbatim at tier LOW, classified ``record_id``.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        f"SELECT (SELECT dim_accounts.account_id) AS v FROM core.dim_accounts a, {source}",  # noqa: S608  # parametrized test input, not user input
+        max_rows=100,
+    )
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["v"] == "*****"
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+def test_correlated_unpivot_alias_named_after_catalog_table_is_masked(
+    populated_db: Database,
+) -> None:
+    """An UNPIVOT alias over a derived table shadows the catalog table it names."""
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT (SELECT dim_accounts.account_id) AS v "
+        "FROM (SELECT routing_number AS x FROM core.dim_accounts) "
+        "UNPIVOT (account_id FOR n IN (x)) AS dim_accounts",
+        max_rows=100,
+    )
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["v"] == "*****"
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+_UNPIVOT_OVER_BASE_TABLE = {
+    "unaliased": (
+        "SELECT account_id FROM core.dim_accounts "
+        "UNPIVOT (account_id FOR n IN (routing_number, account_id))"
+    ),
+    "aliased": (
+        "SELECT dim_accounts.account_id AS v, n FROM core.dim_accounts "
+        "UNPIVOT (account_id FOR n IN (routing_number, account_id)) AS dim_accounts"
+    ),
+    "aliased-as-other-table": (
+        "SELECT fct_transactions.category AS v FROM core.dim_accounts "
+        "UNPIVOT (category FOR n IN (routing_number)) AS fct_transactions"
+    ),
+    "correlated": (
+        "SELECT (SELECT fct_transactions.category) AS v FROM core.dim_accounts "
+        "UNPIVOT (category FOR n IN (routing_number)) AS fct_transactions"
+    ),
+    "correlated-in-list": (
+        "SELECT (SELECT dim_accounts.account_type) AS v FROM core.dim_accounts "
+        "UNPIVOT (account_type FOR n IN (routing_number, account_type)) "
+        "AS dim_accounts"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "sql", list(_UNPIVOT_OVER_BASE_TABLE.values()), ids=list(_UNPIVOT_OVER_BASE_TABLE)
+)
+def test_an_unpivot_value_column_never_borrows_a_catalog_class(
+    sql: str, populated_db: Database
+) -> None:
+    """An UNPIVOT's value column is generated; its name is the author's to pick.
+
+    Listing ``account_id`` among the arms frees that name, and an alias can name
+    any table. Either way the generated column answered to a catalog column —
+    RECORD_ID, CATEGORY, TXN_TYPE, all LOW — while holding the routing number.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.tier is Tier.CRITICAL
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+_MISBOUND_QUALIFIERS = {
+    # A subquery scope's ``sources`` lists every visible CTE; the walk must stop
+    # at the FROM that reads the name, not at an unread CTE of that name.
+    "unread-cte-over-outer-table": (
+        "WITH d AS (SELECT 'x' AS routing_number) "
+        "SELECT (SELECT d.routing_number FROM (SELECT 1) z) AS v "
+        "FROM core.dim_accounts AS d"
+    ),
+    # A column-list alias renames by position.
+    "renamed-catalog-table": (
+        "SELECT d.account_type FROM core.dim_accounts "
+        "AS d(account_id, account_type, routing_number)"
+    ),
+    "renamed-cte-reference": (
+        "WITH t AS (SELECT routing_number, account_type FROM core.dim_accounts) "
+        "SELECT u.account_type FROM t AS u(account_type, x)"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "sql", list(_MISBOUND_QUALIFIERS.values()), ids=list(_MISBOUND_QUALIFIERS)
+)
+def test_a_qualifier_is_classified_by_what_its_from_actually_binds(
+    sql: str, populated_db: Database
+) -> None:
+    """Each shape classified the routing number by the wrong column, at LOW."""
+    _seed_account(populated_db)
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.tier is Tier.CRITICAL
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+@pytest.mark.parametrize(
+    "from_clause",
+    ["c AS dim_accounts", "core.dim_accounts a, c AS dim_accounts"],
+    ids=["alias-only", "beside-catalog-table"],
+)
+def test_correlated_read_of_an_aliased_cte_is_masked(
+    from_clause: str, populated_db: Database
+) -> None:
+    """A correlated reference resolves through the ENCLOSING scope's sources.
+
+    ``FROM c AS dim_accounts`` binds the name in the outer scope; the inner
+    ``(SELECT dim_accounts.account_id)`` has no source of its own, and looking
+    only there sent the reference to ``core.dim_accounts`` — LOW, in the clear.
+    """
+    _seed_account(populated_db)
+    cte = "WITH c AS (SELECT routing_number AS account_id FROM core.dim_accounts)"
+    sql = f"{cte} SELECT (SELECT dim_accounts.account_id) AS v FROM {from_clause}"  # noqa: S608  # parametrized test input, not user input
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["v"] == "*****"
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+def test_derived_table_with_its_own_name_leaves_catalog_columns_readable(
+    populated_db: Database,
+) -> None:
+    """Shadowing refuses only the colliding name, never the catalog table beside it."""
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT a.account_id FROM core.dim_accounts a, (VALUES (7)) AS v(n)",
+        max_rows=100,
+    )
+    assert result.tier is Tier.LOW
+    assert result.records[0]["account_id"] == "ACC000123456789"
 
 
 def test_except_query_is_classified_and_masked(populated_db: Database) -> None:
@@ -2278,7 +2570,7 @@ def test_metadata_unknown_column_log_names_the_error_type_not_the_query(
 
     DESCRIBE only binds the inner query, never executes it, so an unknown
     column there raises DuckDB's BinderException — the same exception the data
-    path routes to SQL_UNKNOWN_TABLE. This fixture used to land in the
+    path routes to SQL_UNKNOWN_COLUMN. This fixture used to land in the
     metadata path's generic bucket (SQL_QUERY_ERROR, no detail); it now gets
     the same named-identifier treatment as the data path.
     """
@@ -2290,7 +2582,7 @@ def test_metadata_unknown_column_log_names_the_error_type_not_the_query(
                 f"WHERE display_name = '{_MERCHANT}'",
                 max_rows=10,
             )
-    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
     # The hint is the point of the clause, not a side effect: without these two
     # a regression passing hint=None from _fetch_metadata still passes.
     assert "nope" in (ei.value.hint or "")
@@ -2332,3 +2624,49 @@ def test_metadata_unknown_table_log_names_the_error_type_not_the_query(
     _assert_log_names_the_failure_without_quoting_it(
         caplog, cause, "sql_query metadata unknown table/column"
     )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a.nope FROM core.dim_accounts a",
+        "SELECT * EXCLUDE (nope) FROM core.dim_accounts",
+        "SELECT * REPLACE (1 AS nope) FROM core.dim_accounts",
+        "SELECT t.nope FROM (SELECT account_id FROM core.dim_accounts) t",
+        "SELECT COLUMNS('^nope$') FROM core.dim_accounts",
+        "SELECT a.account_id FROM core.dim_accounts a "
+        "JOIN core.dim_accounts b USING (nope)",
+    ],
+    ids=[
+        "qualified",
+        "exclude",
+        "replace",
+        "derived-table",
+        "columns-regex",
+        "join-using",
+    ],
+)
+def test_every_missing_column_message_shape_gets_unknown_column_code(
+    populated_db: Database, sql: str
+) -> None:
+    """Each DuckDB missing-column binder message maps to sql_unknown_column."""
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(populated_db, sql, max_rows=10)
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT account_id FROM core.dim_accounts LIMIT -1",
+        "SELECT x.account_id FROM core.dim_accounts",
+    ],
+    ids=["negative-limit", "missing-table-alias"],
+)
+def test_non_column_binder_error_keeps_unknown_table_code(
+    populated_db: Database, sql: str
+) -> None:
+    """Only a missing column gets sql_unknown_column; other binder errors don't."""
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(populated_db, sql, max_rows=10)
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE

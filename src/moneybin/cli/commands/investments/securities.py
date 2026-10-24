@@ -10,12 +10,14 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     InvestmentSecuritiesPayload,
@@ -33,6 +35,27 @@ app = typer.Typer(
 app.add_typer(security_links.app, name="links")
 
 
+def security_label(
+    ticker: str | None,
+    name: str | None,
+    security_id: str | None,
+    *,
+    exchange: str | None = None,
+    ticker_shared: bool = False,
+) -> str:
+    """Name a security in a table: its ticker, else its catalog name, else its id.
+
+    A ticker another catalog row also carries is written ``TICKER.EXCHANGE`` —
+    the form the security resolver accepts back — so two positions never share
+    a cell. Without an exchange to tell them apart the id is the label, as it
+    is when the catalog has no row for it at all, so the cell is never blank;
+    ``-`` is an event that names no security.
+    """
+    if ticker and ticker_shared:
+        return f"{ticker}.{exchange}" if exchange else security_id or ticker
+    return ticker or name or security_id or "-"
+
+
 @app.command("list")
 def investments_securities_list(
     type_: str | None = typer.Option(
@@ -42,6 +65,7 @@ def investments_securities_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list has no informational chatter; only data
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List the securities catalog."""
     with handle_cli_errors(
@@ -61,14 +85,39 @@ def investments_securities_list(
             cli_actor="investments_securities_list",
         )
         return
+    policy = get_terminal_policy(no_pager=no_pager)
+    scope = f"type {type_}" if type_ else "the catalog"
+    parts: list[object] = [build_summary([("Scope", scope)], title="Securities")]
     if result.rows:
-        render_rows(
-            ["security", "ticker", "name", "type"],
-            [
-                (row.security_id, row.ticker or "-", row.name, row.security_type)
-                for row in result.rows
-            ],
+        parts.append(
+            build_rows(
+                # `security id`, as every other investments table heads it under
+                # `--wide`: there `security` is the ticker, here the id is the
+                # point, since `securities set` takes nothing else.
+                ["security id", "ticker", "name", "type"],
+                [
+                    (row.security_id, row.ticker or "-", row.name, row.security_type)
+                    for row in result.rows
+                ],
+                terminal=policy,
+            )
         )
+    else:
+        parts.append(build_summary([("Result", f"No securities found in {scope}.")]))
+    emit_human_result(
+        compose_human_result(parts), policy=policy, finite_read=True, no_pager=no_pager
+    )
+
+
+def _emit_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
+    """Render a compact outcome-first receipt for a catalog mutation."""
+    policy = get_terminal_policy()
+    emit_human_result(
+        compose_human_result([build_summary(pairs, title=title)]),
+        policy=policy,
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("add")
@@ -135,7 +184,7 @@ def investments_securities_add(
             cli_actor="investments_securities_add",
         )
         return
-    typer.echo(f"✅ Added security {security_id}")
+    _emit_receipt("Security added", [("Security", security_id)])
 
 
 @app.command("set")
@@ -219,4 +268,4 @@ def investments_securities_set(
             cli_actor="investments_securities_set",
         )
         return
-    typer.echo(f"✅ Updated security {security_id}")
+    _emit_receipt("Security updated", [("Security", security_id)])

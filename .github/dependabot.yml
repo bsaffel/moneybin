@@ -1,10 +1,15 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # `uv`, not `pip`: the pip ecosystem edits pyproject.toml alone, leaving
+  # uv.lock stale, so every `--locked` install in CI refused the PR.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Raise each floor with the lockfile, so the minimum a user can install is
+    # the version CI tested, and a security floor rises with its fix.
+    versioning-strategy: "increase"
     groups:
       dev-dependencies:
         patterns:
@@ -13,6 +18,8 @@ updates:
           - "pytest*"
           - "pip-audit"
 
+  # Dependabot PRs need no changelog fragment; the Changelog workflow
+  # recognizes them from their diff (changelog.d/README.md).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

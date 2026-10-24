@@ -517,10 +517,10 @@ async def test_register_emits_tool_annotations() -> None:
     tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     write = next(t for t in tools if t.name == "write_tool")
     assert write.annotations is not None
-    assert write.annotations.readOnlyHint is False
-    assert write.annotations.destructiveHint is True
-    assert write.annotations.idempotentHint is False
-    assert write.annotations.openWorldHint is False
+    assert write.annotations.read_only_hint is False
+    assert write.annotations.destructive_hint is True
+    assert write.annotations.idempotent_hint is False
+    assert write.annotations.open_world_hint is False
 
 
 @pytest.mark.unit

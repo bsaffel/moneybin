@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 _DIR_MODE = 0o700
 _FILE_MODE = 0o600
+# Every directory `ensure_layout` creates under <inbox_root>/<profile>/.
+INBOX_LAYOUT: tuple[str, ...] = ("inbox", "processed", "failed", "pending")
 _OUTCOME_DIRS: tuple[Literal["processed", "failed", "pending"], ...] = (
     "processed",
     "failed",
@@ -244,13 +246,7 @@ class InboxService:
 
     def ensure_layout(self) -> None:
         """Create <root>/{inbox,processed,failed,pending}/ with 0700 perms (idempotent)."""
-        for d in (
-            self.root,
-            self.inbox_dir,
-            self.processed_dir,
-            self.failed_dir,
-            self.pending_dir,
-        ):
+        for d in (self.root, *(self.root / name for name in INBOX_LAYOUT)):
             d.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
             # mkdir's mode is masked by umask on creation; chmod fixes existing dirs too.
             d.chmod(_DIR_MODE)
@@ -1066,11 +1062,21 @@ class InboxService:
                     "(the subfolder names the account)."
                 )
         elif reason == "header_row_consumed":
-            # Nothing to run: no --accept, --mapping, or --date-format touches
-            # a row already consumed as column names. The file stays in
-            # pending/ until the source (or the saved format's skip_rows) is
-            # corrected, which is the honest instruction.
-            actions.append(header_row_consumed_recovery())
+            # No --accept, --mapping or --date-format recovers a consumed
+            # header row; inbox sync never names a format, so only the
+            # shared classifier reaches this branch. The one recovery it
+            # prints runs `import files` or `import formats delete` — like
+            # the unreadable_date --date-format half below, neither calls
+            # archive_confirmed_file, so the file and this sidecar stay in
+            # pending/ and the next sync re-processes a finished item.
+            actions.append(
+                header_row_consumed_recovery(str(moved_path), format_name=None)
+            )
+            actions.append(
+                "That recovery does not archive — delete this sidecar and "
+                f"move {moved_path.name} out of pending/ afterwards, or the "
+                "next sync will process it again."
+            )
         elif reason == "header_position_ambiguous":
             # Unlike header_row_consumed, --accept genuinely resolves this —
             # it ratifies the detected header position, nothing was consumed.

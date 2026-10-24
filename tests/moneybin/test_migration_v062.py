@@ -29,7 +29,9 @@ SELECT column_name, data_type, is_nullable
 
 def test_v062_adds_an_empty_default_target_collection(db: Database) -> None:
     """The runner preserves a legacy home currency and backfills its targets."""
-    db.execute("INSERT INTO app.profile_settings (home_currency) VALUES ('USD')")
+    db.execute(
+        "UPDATE app.profile_settings SET home_currency = 'USD' WHERE scope = 'profile'"
+    )
     db.execute("ALTER TABLE app.profile_settings DROP COLUMN display_currency_targets")
     migration = Migration.from_file(_MIGRATION_PATH)
 
@@ -114,7 +116,7 @@ def test_v062_runner_recovers_a_partial_column_without_a_failure_row(
 def test_v044_to_v062_runner_chain_matches_fresh_profile_shape(
     db: Database, tmp_path: Path
 ) -> None:
-    """The two real migrations produce the fresh schema and empty default."""
+    """Historical migrations and fresh UTC bootstrap retain their own exact shapes."""
     fresh_shape = {row[0]: row[1:] for row in db.execute(_COLUMN_SHAPE_SQL).fetchall()}
     db.execute("DROP TABLE app.profile_settings")
     for path in (_V044_MIGRATION_PATH, _MIGRATION_PATH):
@@ -126,7 +128,20 @@ def test_v044_to_v062_runner_chain_matches_fresh_profile_shape(
         row[0]: row[1:] for row in db.execute(_COLUMN_SHAPE_SQL).fetchall()
     }
     assert result.applied_count == 2
-    assert migrated_shape == fresh_shape
+    # Published migrations preserve their historical types and column set.
+    assert migrated_shape == {
+        "scope": ("VARCHAR", "NO"),
+        "home_currency": ("VARCHAR", "YES"),
+        "updated_at": ("TIMESTAMP", "NO"),
+        "display_currency_targets": ("VARCHAR[]", "NO"),
+    }
+    assert fresh_shape == {
+        "scope": ("VARCHAR", "NO"),
+        "home_currency": ("VARCHAR", "YES"),
+        "display_currency_targets": ("VARCHAR[]", "NO"),
+        "reporting_timezone": ("VARCHAR", "YES"),
+        "updated_at": ("TIMESTAMP WITH TIME ZONE", "NO"),
+    }
     db.execute("INSERT INTO app.profile_settings (home_currency) VALUES ('USD')")
     assert db.execute(
         "SELECT display_currency_targets FROM app.profile_settings"
@@ -138,7 +153,9 @@ def test_v062_rerun_and_partial_column_both_restore_the_empty_default(
 ) -> None:
     """A crash after add leaves a nullable column that a later run can complete."""
     db.execute("ALTER TABLE app.profile_settings DROP COLUMN display_currency_targets")
-    db.execute("INSERT INTO app.profile_settings (home_currency) VALUES ('USD')")
+    db.execute(
+        "UPDATE app.profile_settings SET home_currency = 'USD' WHERE scope = 'profile'"
+    )
     db.execute(
         "ALTER TABLE app.profile_settings "
         "ADD COLUMN display_currency_targets VARCHAR[] DEFAULT []"

@@ -11,7 +11,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`accounts_balance_assert`](#accounts_balance_assert) | Declare a manual balance assertion present or absent for one resolved account and date. | write, destructive, idempotent | at least `medium` |
 | [`accounts_balances`](#accounts_balances) | Return balances by date, history, assertions, or reconciliation deltas. | read-only, idempotent | up to `high` |
 | [`accounts_links_run`](#accounts_links_run) | Propose account merges: sweep for duplicates, or link two accounts by id. | write, not idempotent | at least `low` |
-| [`accounts_set`](#accounts_set) | Partial update of an account's settings. | write, idempotent | at least `critical` |
+| [`accounts_set`](#accounts_set) | Update account settings. | write, idempotent | at least `critical` |
 | [`export_run`](#export_run) | Publish one canonical bundle or registered report to a named local or Sheets destination. | write, not idempotent, open world | at least `medium` |
 | [`exports_set`](#exports_set) | Assert one named export destination's local or Sheets target state. | write, destructive, idempotent, open world | at least `medium` |
 | [`gsheet`](#gsheet) | Read connections or connection health. | read-only, idempotent | up to `medium` |
@@ -32,15 +32,15 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`investments_securities_set`](#investments_securities_set) | Create or update securities in app.securities by stable ID or ticker. | write, idempotent | at least `low` |
 | [`privacy`](#privacy) | Read active AI consent status or exact, cursor-paginated privacy log events. | read-only, idempotent | up to `low` |
 | [`privacy_consent_set`](#privacy_consent_set) | Atomically grant or revoke consent for one or more feature categories. | write, destructive, idempotent | at least `low` |
-| [`profile`](#profile) | Read the active profile's name and managed settings, including its home currency and declared display-currency targets. | read-only, idempotent | at least `low` |
-| [`profile_set`](#profile_set) | Set the profile's home currency or report display-currency targets (ISO 4217). | write, idempotent | at least `low` |
+| [`profile`](#profile) | Read the active profile's name and managed settings. | read-only, idempotent | at least `low` |
+| [`profile_set`](#profile_set) | Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO 4217). | write, idempotent | at least `low` |
 | [`refresh_run`](#refresh_run) | Run the post-load refresh pipeline. | write, idempotent | at least `medium` |
 | [`reports`](#reports) | Browse registered financial reports or run one by stable report ID. | read-only, idempotent | up to `critical` |
 | [`reviews`](#reviews) | Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. | read-only, idempotent | up to `critical` |
 | [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, or investment_match review decisions. | write, idempotent | at least `high` |
 | [`sql_query`](#sql_query) | Execute a read-only SQL query against the database. | read-only, idempotent | up to `critical` |
 | [`sql_schema`](#sql_schema) | Return the curated database schema. | read-only, idempotent | up to `critical` |
-| [`sync_disconnect`](#sync_disconnect) | Disconnect one institution or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `low` |
+| [`sync_disconnect`](#sync_disconnect) | Disconnect one institution connection or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `medium` |
 | [`sync_link`](#sync_link) | Start a hosted institution-link or nonblocking device-login session. | write, not idempotent, open world | at least `medium` |
 | [`sync_pull`](#sync_pull) | Pull connected financial data. | write, not idempotent, open world | at least `medium` |
 | [`sync_status`](#sync_status) | Read global health, one link session, or advance one device-login session. | write, idempotent, open world | up to `medium` |
@@ -89,7 +89,7 @@ Access: write, destructive, idempotent. Sensitivity: at least `medium`.
 
 ### accounts_balances
 
-Return balances by date, history, assertions, or reconciliation deltas. Resolve one account by reference; amounts are positions in summary.display_currency.
+Return balances by date, history, assertions, or reconciliation deltas. Resolve one account by reference; amounts are positions in summary.display_currency. `balance` is null for an account that holds value but has no recorded balance.
 
 Access: read-only, idempotent. Sensitivity: up to `high`.
 
@@ -117,7 +117,7 @@ Access: write, not idempotent. Sensitivity: at least `low`.
 
 ### accounts_set
 
-Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving today excludes the account from net worth entirely (history included); archived_at is recorded for a future date-scoped release, not yet applied. include_in_net_worth=False excludes an account regardless of archived status. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.
+Update account settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type: depository/credit/loan/investment/other; subtype unchanged; clear restores source evidence. Noncanonical account_subtype/holder_category values warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid types/methods raise mutation_invalid_input. investment_source_type: manual/plaid selects ledger history; clear uses both; evidence is retained. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not date-scoped. include_in_net_worth=False excludes active accounts too. Audited app.account_settings writes; restore values or use system_audit_undo. Amounts use summary.display_currency.
 
 Access: write, idempotent. Sensitivity: at least `critical`.
 
@@ -127,11 +127,13 @@ Access: write, idempotent. Sensitivity: at least `critical`.
 | `official_name` | string |  |  |
 | `last_four` | string |  |  |
 | `account_subtype` | string |  |  |
+| `account_type` | string |  |  |
 | `holder_category` | string |  |  |
 | `currency_code` | string |  |  |
 | `credit_limit` | number |  |  |
 | `display_name` | string |  |  |
 | `default_cost_basis_method` | string |  |  |
+| `investment_source_type` | one of `manual`, `plaid` |  |  |
 | `include_in_net_worth` | boolean |  |  |
 | `is_archived` | boolean |  |  |
 | `clear_fields` | array of string |  |  |
@@ -386,10 +388,11 @@ Access: write, not idempotent. Sensitivity: up to `critical`.
 |---|---|---|---|
 | `file_path` | string |  | required |
 | `mapping` | object of string |  |  |
+| `omit_fields` | array of string |  |  |
 
 ### import_revert
 
-Revert one completed import or delete one user-saved format. Both branches require exact payload-bound confirmation. Import reversion deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips raw.import_log to 'reverted': permanent — no revert, and no system_audit_undo counterpart. Saved-format deletion writes app.tabular_formats and is recoverable with system_audit_undo.
+Revert one completed import or delete one user-saved format. Both branches require exact payload-bound confirmation. Import reversion deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips app.import_log to 'reverted': permanent — no revert, and no system_audit_undo counterpart. Saved-format deletion writes app.tabular_formats and is recoverable with system_audit_undo.
 
 Access: write, destructive, not idempotent. Sensitivity: at least `low`.
 
@@ -500,7 +503,7 @@ Access: write, destructive, idempotent. Sensitivity: at least `low`.
 
 ### profile
 
-Read the active profile's name and managed settings, including its home currency and declared display-currency targets. The home currency is null until the user chooses one; MoneyBin never assumes USD.
+Read the active profile's name and managed settings. Settings include home currency, display-currency targets, and reporting timezone. Home currency is null until the user chooses one; MoneyBin never assumes USD.
 
 Access: read-only, idempotent. Sensitivity: at least `low`.
 
@@ -508,7 +511,7 @@ No parameters.
 
 ### profile_set
 
-Set the profile's home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing and does not restate accounting. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).
+Set one profile preference: reporting_timezone (IANA), home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing directly. Changes restate dependent accounting after commit. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).
 
 Access: write, idempotent. Sensitivity: at least `low`.
 
@@ -516,6 +519,7 @@ Access: write, idempotent. Sensitivity: at least `low`.
 |---|---|---|---|
 | `home_currency` | string |  | ISO 4217 code, three uppercase letters (USD, EUR, GBP). |
 | `display_currency_targets` | array of string |  | ISO 4217 codes to prepare for report reads. |
+| `reporting_timezone` | string |  | IANA calendar for reports and human instant display. |
 
 ### refresh_run
 
@@ -529,7 +533,7 @@ Access: write, idempotent. Sensitivity: at least `medium`.
 
 ### reports
 
-Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. Amounts are in the currency named by `summary.display_currency`; set `display_currency` to price a report's rows into one currency, which defaults to the profile's home currency. `summary.applied_rates` names the exact rate, source, and date behind any converted figure. A report that cannot be priced stays segmented per currency and says why in `summary.degraded_reason`. Its `status` filter, where it has one, selects before conversion. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.
+Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. Amounts are in the currency named by `summary.display_currency`; set `display_currency` to price a report's rows into one currency, which defaults to the profile's home currency. `summary.applied_rates` names the exact rate, source, and date behind any converted figure, and `summary.home_currency` names the home currency actually priced into a home-basis column such as `net_worth_home`, absent when no conversion put a value in one. A report that cannot be priced stays segmented per currency and says why in `summary.degraded_reason`. Its `status` filter, where it has one, selects before conversion. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.
 
 Access: read-only, idempotent. Sensitivity: up to `critical`.
 
@@ -628,7 +632,7 @@ explicit priority, ``cancel`` leaves live state alone.
 
 ### sql_query
 
-Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****\<last4>). core/app/reports declare a class for every column. raw and prep declare 34 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes — a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.
+Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****\<last4>). core/app/reports declare a class for every column. raw and prep declare 58 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes — a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.
 
 Access: read-only, idempotent. Sensitivity: up to `critical`.
 
@@ -648,26 +652,32 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### sync_disconnect
 
-Disconnect one institution or clear profile-scoped sync credentials.
+Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). Choose exactly one of institution, provider_item_id, or connection_id from sync_status; institution is refused when ambiguous. state='absent' is Plaid-only: delete the item's locally pulled raw rows and broker-carried prices, reverse its account links, and withdraw merge proposals only its accounts describe. provider_item_id also reaches a Plaid item the server no longer lists. SimpleFIN purge is refused; ordinary disconnect retains local history and may require revocation in SimpleFIN Bridge. Purge confirmation binds the connection, credential generation, full account identities, and local deletion scope; a disconnect confirmation cannot authorize purge.
 
-Access: write, destructive, not idempotent, open world. Sensitivity: at least `low`.
+Access: write, destructive, not idempotent, open world. Sensitivity: at least `medium`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `institution` | string |  |  |
+| `connection_id` | string |  |  |
+| `provider_item_id` | string |  |  |
 | `mode` | one of `institution`, `logout` | `institution` |  |
+| `state` | one of `disconnected`, `absent` | `disconnected` |  |
 | `confirmation_token` | string |  |  |
 
 ### sync_link
 
-Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries.
+Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries. In login mode, server_url names this profile's sync server: pass only an address the user gave you; omit it and, if none is saved, the user is offered http://127.0.0.1:8000. A new or changed address is saved to the profile's config.yaml only after the user confirms a prompt, and signs the profile out of the previous server; log in with another address to change it back.
 
 Access: write, not idempotent, open world. Sensitivity: at least `medium`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `institution` | string |  |  |
+| `provider` | one of `plaid`, `simplefin` |  |  |
+| `connection_id` | string |  |  |
 | `mode` | one of `institution`, `login` | `institution` |  |
+| `server_url` | string |  |  |
 
 ### sync_pull
 
@@ -678,6 +688,13 @@ Access: write, not idempotent, open world. Sensitivity: at least `medium`.
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `institution` | string |  |  |
+| `provider` | one of `plaid`, `simplefin` |  |  |
+| `connection_id` | string |  |  |
+| `history_start` | string |  |  |
+| `force` | boolean | `false` |  |
+| `refresh` | boolean | `true` |  |
+| `job_id` | string |  |  |
+| `local_only` | boolean | `false` |  |
 
 ### sync_status
 

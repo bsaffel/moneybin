@@ -13,7 +13,7 @@ Tier derivation summary:
   - ``SyncLinkPayload``               → Tier.MEDIUM (link_url = DESCRIPTION —
                                         link is a sensitive one-time credential)
   - ``SyncLinkStatusPayload``         → Tier.MEDIUM (error = DESCRIPTION)
-  - ``SyncDisconnectPayload``         → Tier.LOW (INSTITUTION + TXN_TYPE only)
+  - ``SyncDisconnectPayload``         → Tier.MEDIUM (account labels = USER_NOTE)
   - ``SyncSchedulePlaceholderPayload``→ Tier.LOW (stub; not-implemented payloads)
 """
 
@@ -26,7 +26,65 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.payloads.system import RefreshStageRow
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.protocol.row_set import row_set
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
+
+
+@dataclass(frozen=True, slots=True)
+class SyncCoverageInterval:
+    """One half-open acknowledged UTC interval."""
+
+    start: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    end: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+@row_set(NO_ROW_SET)
+@dataclass(frozen=True, slots=True)
+class SyncHistoryAccountRow:
+    """History associated with a safe canonical reference or unresolved scope."""
+
+    account_id: Annotated[str | None, DataClass.RECORD_ID]
+    display_name: Annotated[str, DataClass.USER_NOTE]
+    acknowledged_intervals: list[SyncCoverageInterval]
+    history_target: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+@row_set(NO_ROW_SET)
+@dataclass(frozen=True, slots=True)
+class SyncHistoryPayload:
+    """Observed credit and pending intent, without a global completion claim."""
+
+    observed_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    replay_required: Annotated[bool, DataClass.TXN_TYPE]
+    discovery_history_target: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    accounts: list[SyncHistoryAccountRow]
+
+
+@dataclass(frozen=True, slots=True)
+class SyncScopeRow:
+    """Safe retrieval outcome at its original scope."""
+
+    account_id: Annotated[str | None, DataClass.RECORD_ID]
+    display_name: Annotated[str, DataClass.USER_NOTE]
+    scope_kind: Annotated[str, DataClass.TXN_TYPE]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    error_code: Annotated[str | None, DataClass.TXN_TYPE]
+    window: SyncCoverageInterval | None
+    retry_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY] = None
+
+
+@row_set(NO_ROW_SET)
+@dataclass(frozen=True, slots=True)
+class SyncSourceRow:
+    """One grant's retrieval result and independently observed history."""
+
+    provider: Annotated[str, DataClass.INSTITUTION]
+    connection_id: Annotated[str, DataClass.RECORD_ID]
+    credential_generation: Annotated[int, DataClass.AGGREGATE]
+    protocol_version: Annotated[str | None, DataClass.TXN_TYPE]
+    history_phase: Annotated[str, DataClass.TXN_TYPE]
+    history: SyncHistoryPayload | None
+    outcomes: list[SyncScopeRow]
+
 
 # ---------------------------------------------------------------------------
 # sync_pull — per-institution result row
@@ -37,7 +95,7 @@ from moneybin.protocol.row_set import row_set
 class SyncPullInstitutionRow:
     """Per-institution outcome inside SyncPullPayload.institutions."""
 
-    provider_item_id: Annotated[str, DataClass.RECORD_ID]
+    provider_item_id: Annotated[str | None, DataClass.RECORD_ID]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
     status: Annotated[str, DataClass.TXN_TYPE]
     transaction_count: Annotated[int | None, DataClass.AGGREGATE]
@@ -73,6 +131,16 @@ class SyncPullPayload:
     transforms_applied: Annotated[bool, DataClass.TXN_TYPE]
     transforms_duration_seconds: Annotated[float | None, DataClass.AGGREGATE]
     transforms_error: Annotated[str | None, DataClass.DESCRIPTION]
+    job_status: Annotated[str, DataClass.TXN_TYPE] = "completed"
+    ingestion_state: Annotated[str, DataClass.TXN_TYPE] = "committed"
+    ack_state: Annotated[str, DataClass.TXN_TYPE] = "pending"
+    ack_error_code: Annotated[str | None, DataClass.TXN_TYPE] = None
+    setup_state: Annotated[str, DataClass.TXN_TYPE] = "pending"
+    setup_error_code: Annotated[str | None, DataClass.TXN_TYPE] = None
+    inspection_error_code: Annotated[str | None, DataClass.TXN_TYPE] = None
+    refresh_state: Annotated[str, DataClass.TXN_TYPE] = "pending"
+    complete: Annotated[bool, DataClass.TXN_TYPE] = False
+    sources: list[SyncSourceRow] = field(default_factory=list)
     # Accepted transfers this pull's refresh reversed (AGGREGATE, Tier.LOW).
     transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
     # What the pull's own refresh did, step by step. Named exactly as
@@ -96,6 +164,9 @@ class SyncPullPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
+    # Securities and investment transactions (like accounts and balances) count
+    # rows new or changed; holdings and lots count those that differ from the
+    # item's previous snapshot.
     securities_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     investment_transactions_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     holdings_loaded: Annotated[int, DataClass.AGGREGATE] = 0
@@ -126,18 +197,40 @@ class SyncConnectionRow:
     """One connected institution in SyncStatusPayload.connections."""
 
     id: Annotated[str, DataClass.RECORD_ID]
-    provider_item_id: Annotated[str, DataClass.RECORD_ID]
+    provider_item_id: Annotated[str | None, DataClass.RECORD_ID]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
     provider: Annotated[str, DataClass.INSTITUTION]
     status: Annotated[str, DataClass.TXN_TYPE]
     last_sync: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    created_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
     error_code: Annotated[str | None, DataClass.TXN_TYPE]
     guidance: Annotated[str | None, DataClass.DESCRIPTION]
+
+    credential_generation: Annotated[int, DataClass.AGGREGATE] = 1
+    protocol_version: Annotated[str | None, DataClass.TXN_TYPE] = None
+    history_phase: Annotated[str, DataClass.TXN_TYPE] = "unknown"
+    history: SyncHistoryPayload | None = None
+    history_unavailable_reason: Annotated[str | None, DataClass.TXN_TYPE] = None
+    provider_balance_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY] = None
+    setup_state: Annotated[str, DataClass.TXN_TYPE] = "unknown"
+    refresh_state: Annotated[str, DataClass.TXN_TYPE] = "unknown"
 
 
 # ---------------------------------------------------------------------------
 # sync_status — top-level payload
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SyncRecoveryJobRow:
+    """Local durable obligations, without current remote-health assertions."""
+
+    job_id: Annotated[str, DataClass.RECORD_ID]
+    ingestion_state: Annotated[str, DataClass.TXN_TYPE]
+    ack_state: Annotated[str, DataClass.TXN_TYPE]
+    setup_state: Annotated[str, DataClass.TXN_TYPE]
+    refresh_state: Annotated[str, DataClass.TXN_TYPE]
+    inspection_error_code: Annotated[str | None, DataClass.TXN_TYPE]
 
 
 @row_set("connections")
@@ -146,6 +239,7 @@ class SyncStatusPayload:
     """Payload for ``sync_status`` — list of connected institutions."""
 
     connections: list[SyncConnectionRow]
+    recovery_jobs: list[SyncRecoveryJobRow] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +274,10 @@ class SyncInstitutionLinkView(BaseModel):
     session_id: Annotated[str, DataClass.RECORD_ID]
     link_url: Annotated[str, DataClass.DESCRIPTION]
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+
+    link_type: Annotated[Literal["widget_flow", "token_paste"], DataClass.TXN_TYPE] = (
+        "widget_flow"
+    )
 
 
 class SyncAuthView(BaseModel):
@@ -218,6 +316,9 @@ class SyncLinkStatusPayload:
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
     error: Annotated[str | None, DataClass.DESCRIPTION]
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    provider: Annotated[str, DataClass.INSTITUTION] = "plaid"
+    connection_id: Annotated[str | None, DataClass.RECORD_ID] = None
+    action: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 @row_set("connections")
@@ -228,6 +329,7 @@ class SyncGlobalStatusView(BaseModel):
 
     kind: Annotated[Literal["global"], DataClass.TXN_TYPE] = "global"
     connections: list[SyncConnectionRow]
+    recovery_jobs: list[SyncRecoveryJobRow] = Field(default_factory=list)
 
 
 class SyncSessionStatusView(BaseModel):
@@ -242,6 +344,9 @@ class SyncSessionStatusView(BaseModel):
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
     error: Annotated[str | None, DataClass.DESCRIPTION]
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    provider: Annotated[str, DataClass.INSTITUTION] = "plaid"
+    connection_id: Annotated[str | None, DataClass.RECORD_ID] = None
+    action: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 SyncStatusCoarsePayload = Annotated[
@@ -255,26 +360,58 @@ SyncStatusCoarsePayload = Annotated[
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SyncDisconnectPayload:
     """Payload for ``sync_disconnect`` — confirmation of disconnection.
 
-    Both fields are Tier.LOW: ``status`` is a fixed string (TXN_TYPE),
-    ``institution`` is caller-supplied institution name (INSTITUTION).
+    ``status`` is a fixed string (TXN_TYPE), ``institution`` is the
+    caller-supplied institution name (INSTITUTION), ``None`` when the
+    disconnected connection has no name, and ``provider_item_id`` identifies
+    exactly which connection was removed (RECORD_ID) — needed because two
+    same-named connections (e.g. after a relink) share the same
+    ``institution`` value.
     """
 
     status: Annotated[str, DataClass.TXN_TYPE]
-    institution: Annotated[str, DataClass.INSTITUTION]
+    institution: Annotated[str | None, DataClass.INSTITUTION]
+    provider_item_id: Annotated[str | None, DataClass.RECORD_ID]
+
+    connection_id: Annotated[str | None, DataClass.RECORD_ID] = None
+    remote_revocation: Annotated[str | None, DataClass.TXN_TYPE] = None
+    affected_accounts: Annotated[list[str], DataClass.USER_NOTE] = field(
+        default_factory=list
+    )
+    purged: Annotated[bool, DataClass.TXN_TYPE] = False
+    rows_deleted: Annotated[int, DataClass.AGGREGATE] = 0
+    account_links_reversed: Annotated[int, DataClass.AGGREGATE] = 0
 
 
+@row_set(NO_ROW_SET)
 class SyncInstitutionDisconnectView(BaseModel):
-    """Confirmation that one institution was disconnected."""
+    """Confirmation that one institution was disconnected, optionally purged.
+
+    ``purged`` carries the local half: with ``state="absent"`` every locally
+    pulled row of the item was deleted and ``rows_deleted`` counts them.
+    ``institution`` is ``None`` when the server no longer listed the item and
+    only the local rows were removed.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
-    status: Annotated[Literal["disconnected"], DataClass.TXN_TYPE]
-    institution: Annotated[str, DataClass.INSTITUTION]
+    status: Annotated[Literal["disconnected", "purged"], DataClass.TXN_TYPE]
+    institution: Annotated[str | None, DataClass.INSTITUTION]
+    provider_item_id: Annotated[str | None, DataClass.RECORD_ID]
+
+    connection_id: Annotated[str | None, DataClass.RECORD_ID] = None
+    remote_revocation: Annotated[str | None, DataClass.TXN_TYPE] = None
+    affected_accounts: Annotated[list[str], DataClass.USER_NOTE] = Field(
+        default_factory=list
+    )
+    purged: Annotated[bool, DataClass.TXN_TYPE] = False
+    rows_deleted: Annotated[int, DataClass.AGGREGATE] = 0
+    account_links_reversed: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 class SyncLogoutView(BaseModel):

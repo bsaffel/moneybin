@@ -95,14 +95,14 @@ async def test_import_revert_schema_admits_the_confirmation_token_round_trip() -
     mcp = isolated_server(import_tools_module.register_import_workflow_tools)
     revert = await listed_tool(mcp, "import_revert")
 
-    Draft202012Validator.check_schema(revert.inputSchema)
+    Draft202012Validator.check_schema(revert.input_schema)
     validate_json_schema(
         {
             "operation": "revert_import",
             "import_id": "imp_20260809_abc",
             "confirmation_token": "tok_abc",
         },
-        revert.inputSchema,
+        revert.input_schema,
         cls=Draft202012Validator,
     )
 
@@ -123,7 +123,7 @@ async def test_import_revert_schema_still_forbids_cross_branch_targets(
     revert = await listed_tool(mcp, "import_revert")
 
     with pytest.raises(JSONSchemaValidationError):
-        validate_json_schema(arguments, revert.inputSchema, cls=Draft202012Validator)
+        validate_json_schema(arguments, revert.input_schema, cls=Draft202012Validator)
 
 
 def test_import_human_confirmation_tools_allow_decision_window() -> None:
@@ -1182,6 +1182,50 @@ async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     ]
 
 
+async def test_import_preview_coarse_persists_explicit_optional_omission(
+    mcp_db: object, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    path = tmp_path / "geography.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    response = await import_preview_coarse(file_path=str(path), omit_fields=["status"])
+    assert response.error is None, response.error
+    assert "status" not in response.data.mapping
+
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        stored = ImportPreviewsRepo(db).get(response.data.preview_id)
+        assert stored is not None
+        snapshot = stored["snapshot_json"]
+        assert "status" not in snapshot["plan"]["field_mapping"]
+        rows = db.conn.execute(
+            "SELECT count(*) FROM raw.tabular_transactions"
+        ).fetchone()
+        assert rows is not None and rows[0] == 0
+
+
+@pytest.mark.parametrize(
+    "omitted,mapping",
+    [(["amount"], None), (["unknown"], None), (["status"], {"status": "State"})],
+)
+async def test_import_preview_coarse_rejects_invalid_omission(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    omitted: list[str],
+    mapping: dict[str, str] | None,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    path = tmp_path / "geography.csv"
+    path.write_text("Date,Amount,Description,State\n2026-01-01,-2,Example,WA\n")
+    response = await import_preview_coarse(
+        file_path=str(path), omit_fields=omitted, mapping=mapping
+    )
+    assert response.error is not None
+
+
 async def test_import_preview_coarse_post_date_matches_what_import_stores(
     mcp_db: object,
     tmp_path: Path,
@@ -1521,7 +1565,20 @@ async def test_import_preview_rejects_file_growth_during_bounded_capture(
 
     from moneybin.extractors.tabular.format_detector import FormatInfo
 
-    def stale_format(_path: Path) -> FormatInfo:
+    def stale_format(
+        _path: Path,
+        *,
+        no_size_limit: bool = False,
+        format_override: str | None = None,
+        delimiter_override: str | None = None,
+        encoding_override: str | None = None,
+    ) -> FormatInfo:
+        assert no_size_limit is False
+        assert (format_override, delimiter_override, encoding_override) == (
+            None,
+            None,
+            None,
+        )
         return FormatInfo(file_type="csv", file_size=4)
 
     monkeypatch.setattr(
@@ -2185,7 +2242,7 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
 
     with get_database(read_only=True) as db:
-        import_log_count = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        import_log_count = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         seed_count = db.execute("SELECT COUNT(*) FROM raw.pdf_seeds").fetchone()
         assert import_log_count is not None and import_log_count[0] == 0
         assert seed_count is not None and seed_count[0] == 0
@@ -2634,7 +2691,7 @@ async def test_import_confirm_bridge_token_is_bound_to_exact_response(
     from moneybin.database import get_database
 
     with get_database(read_only=True) as db:
-        import_log_count = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        import_log_count = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert import_log_count is not None and import_log_count[0] == 0
 
 
@@ -3703,6 +3760,112 @@ async def test_confirm_refusal_names_both_recoveries_for_an_unreadable_date(
     assert "'<dest_field>'" not in hint, hint
 
 
+@pytest.mark.parametrize("unreadable_date", [False, True])
+@pytest.mark.parametrize("omit_status", [False, True])
+async def test_confirm_recovery_retains_optional_omissions(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    unreadable_date: bool,
+    omit_status: bool,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "confirm-recovery.csv"
+    csv.write_text(
+        "Date,Description,Amount,State\nnot-a-date,Coffee,-4.50,WA\n"
+        if unreadable_date
+        else "Notes,Reference,Unmapped,State\nCoffee,-4.50,2026-01-01,WA\n"
+    )
+    preview = await import_preview_coarse(
+        file_path=str(csv), omit_fields=["status"] if omit_status else None
+    )
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        stored = ImportPreviewsRepo(db).get(preview.data.preview_id)
+        assert stored is not None
+        assert stored["snapshot_json"].get("omit_fields") == (
+            ["status"] if omit_status else None
+        )
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id, account_name="Checking"
+    )
+    hint = " ".join(confirmed.actions)
+    assert ("omit_fields=['status']" in hint) is omit_status, hint
+    if unreadable_date:
+        assert ("--omit-field status" in hint) is omit_status, hint
+    import ast
+    import re
+
+    command = re.search(r"import_preview\((.*?)\)", hint)
+    assert command is not None
+    call = ast.parse("import_preview(" + command.group(1) + ")", mode="eval").body
+    assert isinstance(call, ast.Call)
+    arguments: dict[str, Any] = {}
+    for keyword in call.keywords:
+        assert keyword.arg is not None
+        arguments[keyword.arg] = ast.literal_eval(keyword.value)
+    arguments["mapping"] = (
+        {"transaction_date": "Date"}
+        if unreadable_date
+        else {
+            "transaction_date": "Unmapped",
+            "amount": "Reference",
+            "description": "Notes",
+        }
+    )
+    retried = await import_preview_coarse(**arguments)
+    assert retried.error is None
+    assert ("status" not in retried.data.mapping) is omit_status
+
+
+@pytest.mark.parametrize("unreadable_date", [False, True])
+async def test_preview_recovery_retains_optional_omissions(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    unreadable_date: bool,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "recovery.csv"
+    csv.write_text(
+        "Date,Description,Amount,State\nnot-a-date,Coffee,-4.50,WA\n"
+        if unreadable_date
+        else "Notes,Reference,Unmapped,State\nCoffee,-4.50,2026-01-01,WA\n"
+    )
+    preview = await import_preview_coarse(file_path=str(csv), omit_fields=["status"])
+    hint = " ".join(preview.actions)
+    assert "omit_fields=['status']" in hint, hint
+    if unreadable_date:
+        assert "--omit-field status" in hint, hint
+
+    # Follow the executable MCP restaging call with an actual source column.
+    import ast
+    import re
+
+    command = re.search(r"import_preview\((.*?)\)", hint)
+    assert command is not None
+    call = ast.parse("import_preview(" + command.group(1) + ")", mode="eval").body
+    assert isinstance(call, ast.Call)
+    arguments: dict[str, Any] = {}
+    for keyword in call.keywords:
+        assert keyword.arg is not None
+        arguments[keyword.arg] = ast.literal_eval(keyword.value)
+    arguments["mapping"] = (
+        {"transaction_date": "Date"}
+        if unreadable_date
+        else {
+            "transaction_date": "Unmapped",
+            "amount": "Reference",
+            "description": "Notes",
+        }
+    )
+    retried = await import_preview_coarse(**arguments)
+    assert retried.error is None
+    assert "status" not in retried.data.mapping
+
+
 async def test_preview_keeps_the_correction_hint_for_an_unconfirmable_plan(
     mcp_db: object,
     tmp_path: Path,
@@ -3980,7 +4143,7 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
         for import_id in ("imp_a", "imp_b", "imp_c"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -3988,7 +4151,7 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
                 [
                     import_id,
                     f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
+                    "2099-01-01 00:00:00+00:00",
                 ],
             )
 
@@ -4012,12 +4175,12 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
     with get_database(read_only=False) as db:
         db.execute(
             """
-            INSERT INTO raw.import_log (
+            INSERT INTO app.import_log (
                 import_id, source_file, source_type, source_origin,
                 account_names, status, started_at
             ) VALUES (
                 'imp_new', '/tmp/new.csv', 'csv', 'test', '[]', 'complete',
-                '2100-01-01 00:00:00'
+                '2100-01-01 00:00:00+00:00'
             )
             """
         )
@@ -4051,12 +4214,12 @@ async def test_import_status_mixed_cursor_carries_full_initial_total(
         for import_id in ("imp_a", "imp_b"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (
                     ?, ?, 'csv', 'test', '[]', 'complete',
-                    '2099-01-01 00:00:00'
+                    '2099-01-01 00:00:00+00:00'
                 )
                 """,
                 [import_id, f"/home/test/imports/{import_id}.csv"],
@@ -4070,7 +4233,11 @@ async def test_import_status_mixed_cursor_carries_full_initial_total(
     position = decode_keyset_cursor(
         first.next_cursor,
         namespace="import_status.imports",
-        scope={"import_id": None, "sections": ["imports", "formats"]},
+        scope={
+            "import_id": None,
+            "sections": ["imports", "formats"],
+            "temporal_contract": 2,
+        },
     )
 
     assert first.summary.total_count > 2
@@ -4086,13 +4253,13 @@ async def test_import_status_coarse_allows_multiple_canonical_prepends(
 
     with get_database(read_only=False) as db:
         for import_id, started_at in (
-            ("imp_a", "2099-01-01 00:00:00"),
-            ("imp_b", "2099-02-01 00:00:00"),
-            ("imp_c", "2099-03-01 00:00:00"),
+            ("imp_a", "2099-01-01 00:00:00+00:00"),
+            ("imp_b", "2099-02-01 00:00:00+00:00"),
+            ("imp_c", "2099-03-01 00:00:00+00:00"),
         ):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4106,12 +4273,12 @@ async def test_import_status_coarse_allows_multiple_canonical_prepends(
 
     with get_database(read_only=False) as db:
         for import_id, started_at in (
-            ("imp_new_1", "2100-01-01 00:00:00"),
-            ("imp_new_2", "2100-02-01 00:00:00"),
+            ("imp_new_1", "2100-01-01 00:00:00+00:00"),
+            ("imp_new_2", "2100-02-01 00:00:00+00:00"),
         ):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4145,7 +4312,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
         for import_id in ("imp_a", "imp_b", "imp_c"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4153,7 +4320,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
                 [
                     import_id,
                     f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
+                    "2099-01-01 00:00:00+00:00",
                 ],
             )
 
@@ -4165,7 +4332,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
         for import_id in ("imp_y", "imp_z"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4173,7 +4340,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
                 [
                     import_id,
                     f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
+                    "2099-01-01 00:00:00+00:00",
                 ],
             )
 
@@ -4196,13 +4363,13 @@ async def test_import_status_coarse_survives_removal_and_prepend_without_skippin
 
     with get_database(read_only=False) as db:
         for import_id, started_at in (
-            ("imp_a", "2099-01-01 00:00:00"),
-            ("imp_b", "2099-02-01 00:00:00"),
-            ("imp_c", "2099-03-01 00:00:00"),
+            ("imp_a", "2099-01-01 00:00:00+00:00"),
+            ("imp_b", "2099-02-01 00:00:00+00:00"),
+            ("imp_c", "2099-03-01 00:00:00+00:00"),
         ):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4214,15 +4381,15 @@ async def test_import_status_coarse_survives_removal_and_prepend_without_skippin
     assert first.next_cursor is not None
 
     with get_database(read_only=False) as db:
-        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_c'")
+        db.execute("DELETE FROM app.import_log WHERE import_id = 'imp_c'")
         db.execute(
             """
-            INSERT INTO raw.import_log (
+            INSERT INTO app.import_log (
                 import_id, source_file, source_type, source_origin,
                 account_names, status, started_at
             ) VALUES (
                 'imp_new', '/tmp/imp_new.csv', 'csv', 'test', '[]', 'complete',
-                '2100-01-01 00:00:00'
+                '2100-01-01 00:00:00+00:00'
             )
             """
         )
@@ -4246,7 +4413,7 @@ async def test_import_status_coarse_survives_unserved_row_removal_without_duplic
         for import_id in ("imp_a", "imp_b", "imp_c"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4254,7 +4421,7 @@ async def test_import_status_coarse_survives_unserved_row_removal_without_duplic
                 [
                     import_id,
                     f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
+                    "2099-01-01 00:00:00+00:00",
                 ],
             )
 
@@ -4262,7 +4429,7 @@ async def test_import_status_coarse_survives_unserved_row_removal_without_duplic
     assert first.next_cursor is not None
 
     with get_database(read_only=False) as db:
-        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_b'")
+        db.execute("DELETE FROM app.import_log WHERE import_id = 'imp_b'")
 
     response = await import_status_coarse(
         sections=["imports"],
@@ -4282,9 +4449,9 @@ async def test_import_status_coarse_rejects_invalid_key_types_before_data_access
 
     invalid_cursor = encode_keyset_cursor(
         namespace="import_status.imports",
-        scope={"import_id": None, "sections": ["imports"]},
-        snapshot=(123, "imp_b"),
-        after=(123, "imp_b"),
+        scope={"import_id": None, "sections": ["imports"], "temporal_contract": 2},
+        snapshot=(123, "imp_b", 2),
+        after=(123, "imp_b", 2),
         total=2,
     )
     accessed = False
@@ -4315,7 +4482,7 @@ async def test_import_status_coarse_import_id_returns_one_exact_record(
     with get_database(read_only=False) as db:
         db.execute(
             """
-            INSERT INTO raw.import_log (
+            INSERT INTO app.import_log (
                 import_id, source_file, source_type, source_origin,
                 account_names, status
             ) VALUES ('imp_exact', '/tmp/exact.csv', 'csv', 'test', '[]', 'complete')
@@ -6064,3 +6231,98 @@ class TestEmbeddedRefreshRecoveryActions:
             action.arguments.get("steps") for action in (result.recovery_actions or [])
         ]
         assert ["match"] in steps
+
+
+async def test_import_files_surfaces_the_assumed_sign_with_revert_first(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """An agent gets the guessed sign as data plus the recovery, revert first.
+
+    The service now records an ambiguous sign on the result instead of
+    logging a WARNING, so this row and action are the only signal an agent
+    has that expenses may have loaded as income. Reverting comes before
+    re-importing because the import has committed: rows without source ids
+    would double-load and rows with source ids would keep the wrong sign.
+    """
+    csv_file = tmp_path / "statements" / "txns.csv"
+    csv_file.parent.mkdir(parents=True)
+    csv_file.touch()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
+    mock_service = MagicMock()
+    mock_service.import_file.return_value = ImportResult(
+        file_path=str(csv_file),
+        file_type="csv",
+        transactions=2,
+        import_id="imp_assumed",
+        sign_assumed="negative_is_expense",
+    )
+
+    with patch(
+        "moneybin.services.import_service.ImportService",
+        return_value=mock_service,
+    ):
+        result = await import_files_coarse(paths=[str(csv_file)])
+
+    assert result.data.files[0].sign_assumed == "negative_is_expense"
+    joined = " ".join(result.actions or [])
+    assert "Sign convention assumed: negative_is_expense" in joined
+    assert "import_revert(import_id='imp_assumed')" in joined
+    assert "--sign negative_is_income" in joined
+    assert joined.index("import_revert") < joined.index("--sign negative_is_income")
+
+
+async def test_import_files_carries_no_assumed_sign_when_it_was_never_guessed(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    csv_file = tmp_path / "statements" / "txns.csv"
+    csv_file.parent.mkdir(parents=True)
+    csv_file.touch()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
+    mock_service = MagicMock()
+    mock_service.import_file.return_value = ImportResult(
+        file_path=str(csv_file), file_type="csv", transactions=2, import_id="imp_plain"
+    )
+
+    with patch(
+        "moneybin.services.import_service.ImportService",
+        return_value=mock_service,
+    ):
+        result = await import_files_coarse(paths=[str(csv_file)])
+
+    assert result.data.files[0].sign_assumed is None
+    assert not any("Sign convention assumed" in a for a in result.actions or [])
+
+
+async def test_import_confirm_coarse_surfaces_the_assumed_sign(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The confirm path has the same blind spot as import_files; same action."""
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Coffee,4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        MagicMock(
+            return_value=ImportResult(
+                file_path=str(csv),
+                file_type="tabular",
+                transactions=1,
+                import_id="imp_assumed",
+                sign_assumed="negative_is_expense",
+            )
+        ),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    joined = " ".join(response.actions or [])
+    assert "Sign convention assumed: negative_is_expense" in joined
+    assert "import_revert(import_id='imp_assumed')" in joined

@@ -227,8 +227,9 @@ IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
     "Known layout that failed the replay/validation guard and re-surfaced.",
     ("channel",),
 )
-# Wired: ImportService._import_tabular refuses a saved layout whose skip_rows
-# now consumes a transaction as the header row, and records it here. That is
+# Wired: ImportService._import_tabular refuses a saved layout that no longer
+# fits its file — the header position it implies lands on a transaction row —
+# and records it here. That is
 # the first replay check to land; column-presence and header-drift checks on
 # the matched_format path are still trusted without verification, so a rise
 # here means a saved format stopped reading its own file, not that every kind
@@ -241,6 +242,13 @@ SQLMESH_RUN_DURATION_SECONDS = Histogram(
     "moneybin_sqlmesh_run_duration_seconds",
     "Duration of SQLMesh model runs in seconds",
     ["model"],
+)
+
+MATERIALIZED_RESTATE_TOTAL = Counter(
+    "moneybin_materialized_restate_total",
+    "Restates of materialized models after an app write, by the app table "
+    "written; outcome is applied, failed, or unbuilt (no warehouse yet)",
+    ["input", "outcome"],
 )
 
 _FX_ACCOUNTING_GRAINS = (
@@ -444,15 +452,50 @@ FX_RATE_FETCH_DURATION_SECONDS = Histogram(
     ["source_type"],
 )
 
-# The rate spine's row and coverage counts (Requirement 12 of
-# reports-net-worth-sql-surface.md) land with the work that consumes the spine,
-# not here. Every gauge in this family is set from a Python SQLMesh model —
-# fct_currency_lots.py, fct_realized_fx_gains.py, bridge_currency_conversions.py
-# all call set_fx_accounting_rows — and the three rate-spine models are plain
-# .sql with no equivalent hook. A labeled Gauge emits no sample until a child is
-# instantiated, so declaring them now would put two metrics in the registry that
-# never appear in a scrape at all: absent rather than zero, which reads as
-# "not collected" and is worse than an honestly missing metric.
+# The rate spine's per-outcome coverage counts (Requirement 12 of
+# reports-net-worth-sql-surface.md) would land with the work that consumes the
+# spine, not here — every gauge in that family is set from a Python SQLMesh
+# model (fct_currency_lots.py, fct_realized_fx_gains.py,
+# bridge_currency_conversions.py all call set_fx_accounting_rows), and the
+# three rate-spine models are plain .sql with no equivalent hook. A labeled
+# Gauge emits no sample until a child is instantiated, so declaring one now
+# would put a metric in the registry that never appears in a scrape at all:
+# absent rather than zero, which reads as "not collected" and is worse than an
+# honestly missing metric.
+#
+# The two gauges below are not that case: both are **unlabeled**, so — unlike
+# a labeled gauge with no child — they emit a sample the instant the process
+# starts, whether or not currency_integrity has ever run. Doctor's
+# currency_integrity check (doctor_service.py) sets them, each from its own
+# COUNT in its own try/except, so an install whose core layer predates the
+# rate spine or the net-worth rung skips one gauge without failing the check
+# or the other gauge.
+
+FX_RATE_SPINE_ROWS = Gauge(
+    "moneybin_fx_rate_spine_rows",
+    "Rows in core.fct_exchange_rates_daily",
+)
+
+NET_WORTH_UNPRICED_DATES = Gauge(
+    "moneybin_net_worth_unpriced_dates",
+    # A date where a held currency had no rate, so reports.net_worth's
+    # measures are NULL there by design (fail-closed) rather than silently
+    # partial — this gauge is how an operator notices without querying.
+    "Dates on which reports.net_worth is null because a held currency has no rate",
+)
+
+NET_WORTH_UNANCHORED_ACCOUNTS = Gauge(
+    "moneybin_net_worth_unanchored_accounts",
+    # Nonzero means the latest reports.net_worth total is NULL (Requirement 14);
+    # set by doctor's net_worth_unanchored_accounts check.
+    "Accounts in net worth holding value with no balance observation",
+)
+
+NET_WORTH_STALE_BALANCE_ACCOUNTS = Gauge(
+    "moneybin_net_worth_stale_balance_accounts",
+    "Accounts in net worth whose latest observed balance is older than "
+    "doctor.balance_staleness_threshold_days",
+)
 
 # ── Categorization ────────────────────────────────────────────────────────────
 
@@ -517,10 +560,19 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
 CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
     "moneybin_categorize_provider_native_total",
     "Categorizations assigned from a provider's native categorization. "
-    "trigger='sweep' is the automatic apply_plaid_categories pass over "
-    "still-uncategorized rows; trigger='backfill' is the explicit "
+    "trigger='sweep' is the automatic pass over still-uncategorized rows — "
+    "apply_plaid_categories and apply_source_category_map, told apart by the "
+    "source_type label; trigger='backfill' is the explicit "
     "improve_ai_categories upgrade pass over categorized_by='ai' rows.",
     ["source_type", "trigger"],
+)
+
+CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL = Counter(
+    "moneybin_category_source_mapping_outcomes_total",
+    "Outcomes of curating one imported category term into "
+    "app.category_source_map via resolve_source_term.",
+    # outcome: added | updated | refused
+    ["outcome"],
 )
 
 AUTO_RULE_PATTERN_DOWNGRADED_TOTAL = Counter(
@@ -711,6 +763,14 @@ INVESTMENT_EVENTS_RECORDED_TOTAL = Counter(
     labelnames=("type",),
 )
 
+INVESTMENT_SOURCE_CHOICE_ACCOUNTS = Gauge(
+    "moneybin_investment_source_choice_accounts",
+    "Accounts with each investment source chosen (app.account_settings."
+    "investment_source_type), refreshed when the investment_source_overlap "
+    "doctor check runs.",
+    ["investment_source_type"],
+)
+
 SECURITY_RESOLUTION_OUTCOMES_TOTAL = Counter(
     "moneybin_security_resolution_outcomes_total",
     "Security-reference resolution outcomes by winning rung: cusip | isin | "
@@ -829,7 +889,9 @@ app_mutation_audit_emitted_total = Counter(
 audit_undo_total = Counter(
     "moneybin_audit_undo_total",
     "system_audit_undo invocations by outcome (success, not_found, "
-    "already_undone, cascade_blocked, no_path). One increment per undo attempt.",
+    "already_undone, cascade_blocked, no_path, value_inadmissible, "
+    "confirmation_mismatch). One "
+    "increment per undo attempt.",
     ["outcome"],
 )
 
@@ -849,6 +911,24 @@ SYNC_PULL_DURATION_SECONDS = Histogram(
 SYNC_PULL_OUTCOMES_TOTAL = Counter(
     "moneybin_sync_pull_outcomes_total",
     "Pull outcomes by provider and status (success or failed).",
+    ["provider", "status"],
+)
+
+SYNC_INGESTION_OUTCOMES_TOTAL = Counter(
+    "moneybin_sync_ingestion_outcomes_total",
+    "New durable sync job ingestion outcomes by provider (committed or failed).",
+    ["provider", "status"],
+)
+
+SYNC_REFRESH_OUTCOMES_TOTAL = Counter(
+    "moneybin_sync_refresh_outcomes_total",
+    "Actual local sync refresh attempts by provider (complete or failed).",
+    ["provider", "status"],
+)
+
+SYNC_PARTIAL_SCOPES_TOTAL = Counter(
+    "moneybin_sync_partial_scopes_total",
+    "Incomplete source scopes in newly committed jobs (partial, failed or deferred).",
     ["provider", "status"],
 )
 
@@ -877,6 +957,29 @@ SYNC_CONNECT_OUTCOMES = Counter(
     "moneybin_sync_connect_outcomes_total",
     "Connect-flow outcomes by terminal status (connected, failed, timeout).",
     ["status"],
+)
+
+SYNC_DISCONNECT_OUTCOMES = Counter(
+    "moneybin_sync_disconnect_outcomes_total",
+    "Disconnect outcomes by scope: remote (server connection removed, local "
+    "rows kept), purged (server connection removed and its local rows "
+    "deleted), purged_orphan (local rows deleted for an item the server no "
+    "longer listed).",
+    ["scope"],
+)
+
+SYNC_PURGE_ROWS_DELETED = Counter(
+    "moneybin_sync_purge_rows_deleted_total",
+    "Raw rows deleted by a purging sync disconnect, per table.",
+    ["table"],
+)
+
+SYNC_SERVER_ADDRESS_OUTCOMES = Counter(
+    "moneybin_sync_server_address_outcomes_total",
+    "Attempts to save a profile's sync server address at login, by surface "
+    "(cli, mcp) and outcome (saved, replaced, unreachable, rejected, declined, "
+    "timed_out, prompt_unavailable, override_conflict).",
+    ["surface", "outcome"],
 )
 
 # ── Investments sync ─────────────────────────────────────────────────────────
@@ -1022,7 +1125,7 @@ USER_REPORT_RECLASSIFY_TOTAL = Counter(
 
 # ── CLI text rendering ───────────────────────────────────────────────────────
 
-# These three persist only on sessions that also write business data:
+# These five persist only on sessions that also write business data:
 # `flush_metrics()` returns without flushing when `database_was_written()` is
 # false (`observability.py`), so a read-only `reports` run or a stub invocation
 # discards its observations at exit. That is deliberate — turning a read-only
@@ -1054,6 +1157,18 @@ CLI_COLUMNS_OMITTED_TOTAL = Counter(
     "moneybin_cli_columns_omitted_total",
     "Times a text render omitted columns from the full projection, by command",
     ["command"],
+)
+
+CLI_PAGER_FALLBACK_TOTAL = Counter(
+    "moneybin_cli_pager_fallback_total",
+    "Pager start fallbacks by command and fixed failure reason",
+    ["command", "reason"],  # unavailable | start_failed
+)
+
+CLI_PROMPT_OUTCOMES_TOTAL = Counter(
+    "moneybin_cli_prompt_outcomes_total",
+    "Interactive prompt outcomes by command",
+    ["command", "outcome"],  # selected | cancelled | refused
 )
 
 CLI_STUB_INVOKED_TOTAL = Counter(
@@ -1184,6 +1299,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_import_revalidation_failure": "Smart import confirmation",
     # SQLMesh transforms
     "moneybin_sqlmesh_run_duration_seconds": "SQLMesh transforms",
+    "moneybin_materialized_restate": "SQLMesh transforms",
     # Export delivery
     "moneybin_export_runs": "Export delivery",
     "moneybin_export_duration_seconds": "Export delivery",
@@ -1205,11 +1321,15 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_fx_accounting_rows": "Multi-currency integrity",
     "moneybin_profile_currencies": "Multi-currency integrity",
     "moneybin_unknown_currency_rows": "Multi-currency integrity",
+    "moneybin_net_worth_unpriced_dates": "Multi-currency integrity",
+    "moneybin_net_worth_unanchored_accounts": "Multi-currency integrity",
+    "moneybin_net_worth_stale_balance_accounts": "Multi-currency integrity",
     # Exchange rates
     "moneybin_fx_rate_rows_written": "Exchange rates",
     "moneybin_fx_rate_resolution": "Exchange rates",
     "moneybin_fx_rate_backfill_pairs": "Exchange rates",
     "moneybin_fx_rate_fetch_duration_seconds": "Exchange rates",
+    "moneybin_fx_rate_spine_rows": "Exchange rates",
     # Categorization
     "moneybin_categorization_auto_rate": "Categorization",
     "moneybin_categorization_rules_fired": "Categorization",
@@ -1222,6 +1342,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_categorize_match_outcome": "Categorization",
     "moneybin_categorize_write_skipped_precedence": "Categorization",
     "moneybin_categorize_provider_native": "Categorization",
+    "moneybin_category_source_mapping_outcomes": "Categorization",
     "moneybin_auto_rule_pattern_downgraded": "Categorization",
     "moneybin_auto_rule_broad_pending": "Categorization",
     "moneybin_auto_rule_broad_accept_blocked": "Categorization",
@@ -1248,6 +1369,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_merchant_link_outcomes": "Merchant identity resolution",
     # Investments
     "moneybin_investment_events_recorded": "Investments",
+    "moneybin_investment_source_choice_accounts": "Investments",
     "moneybin_security_resolution_outcomes": "Investments",
     # MCP server
     "moneybin_mcp_tool_calls": "MCP server",
@@ -1273,6 +1395,12 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_sync_institution_errors": "Sync",
     "moneybin_sync_auth_refresh_outcomes": "Sync",
     "moneybin_sync_connect_outcomes": "Sync",
+    "moneybin_sync_ingestion_outcomes": "Sync",
+    "moneybin_sync_refresh_outcomes": "Sync",
+    "moneybin_sync_partial_scopes": "Sync",
+    "moneybin_sync_disconnect_outcomes": "Sync",
+    "moneybin_sync_purge_rows_deleted": "Sync",
+    "moneybin_sync_server_address_outcomes": "Sync",
     # Investments sync
     "moneybin_sync_investments_records_loaded": "Investments sync",
     "moneybin_investment_amount_drift_rows": "Investments sync",
@@ -1293,5 +1421,7 @@ METRIC_DOMAINS: dict[str, str] = {
     # CLI text rendering
     "moneybin_cli_wide_requested": "CLI text rendering",
     "moneybin_cli_columns_omitted": "CLI text rendering",
+    "moneybin_cli_pager_fallback": "CLI text rendering",
+    "moneybin_cli_prompt_outcomes": "CLI text rendering",
     "moneybin_cli_stub_invoked": "CLI text rendering",
 }

@@ -182,8 +182,8 @@ CREATE TABLE IF NOT EXISTS app.securities (
     is_cash_equivalent BOOLEAN,                         -- Highly liquid, treat-like-cash flag (money-market/sweep); NULL = unknown
     cost_basis_method VARCHAR CHECK (cost_basis_method IN ('fifo', 'hifo', 'specific', 'average')), -- Per-security election override; NULL falls back to account default
     currency_code VARCHAR NOT NULL DEFAULT 'USD',       -- Instrument's denominating currency; canonical name per multi-currency.md; no FX conversion in v1
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the catalog entry was created
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When last modified; service must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the catalog entry was created
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When last modified; service must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
 );
 ```
 
@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     source_transaction_id VARCHAR PRIMARY KEY, -- Truncated UUID4 (12 hex), prefixed 'manual_' for source-clarity in joins
     source_type VARCHAR NOT NULL DEFAULT 'manual',  -- Discriminator; constant for this table
     source_origin VARCHAR NOT NULL DEFAULT 'user',  -- Origin tag; always 'user' for manual entries
-    import_id VARCHAR NOT NULL,                -- FK to raw.import_log.import_id; one batch per CLI call or MCP bulk call
+    import_id VARCHAR NOT NULL,                -- FK to app.import_log.import_id; one batch per CLI call or MCP bulk call
     account_id VARCHAR NOT NULL,               -- FK to core.dim_accounts; resolved at entry
     security_id VARCHAR,                       -- FK to app.securities; resolved at entry; NULL for cash-only events
     security_ref VARCHAR,                      -- The user-supplied security reference as typed (audit trail for the resolution)
@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     fees DECIMAL(18, 2),                       -- Commissions/fees component; folded into cost basis
     currency_code VARCHAR,                     -- Denominating currency as supplied; NULL when the user named none (never fabricated) — core.fct_investment_transactions inherits the account's (multi-currency.md Requirement 3)
     description VARCHAR,                       -- Free-text description
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by VARCHAR NOT NULL,               -- 'cli' or 'mcp'; future-extensible for multi-user identity
     investment_transaction_id VARCHAR          -- Predicted gold-key (content hash, per raw.manual_transactions.transaction_id precedent); populated at INSERT
 );
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS app.lot_selections (
     investment_transaction_id VARCHAR NOT NULL, -- FK to the disposal row in core.fct_investment_transactions
     lot_id VARCHAR NOT NULL,                     -- FK to core.fct_investment_lots; the chosen lot
     quantity DECIMAL(28, 10) NOT NULL,          -- Units to draw from this lot for this disposal
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the selection was recorded
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the selection was recorded
     PRIMARY KEY (investment_transaction_id, lot_id) -- One selection per (disposal, lot) pair
 );
 ```
@@ -246,6 +246,11 @@ ALTER TABLE app.account_settings
     ADD COLUMN default_cost_basis_method VARCHAR
         CHECK (default_cost_basis_method IN ('fifo', 'hifo', 'specific', 'average')); -- Per-account default; NULL → global FIFO
 ```
+
+A later spec, [`investment-source-choice.md`](investment-source-choice.md), appends
+`investment_source_type` and `investment_source_type_changed_at` to this table:
+the per-account choice of which source type feeds the ledger when `manual` and
+`plaid` histories overlap. `core.fct_investment_transactions` filters on it.
 
 Delivered the same dual-path way as prior column additions (e.g. V030's Plaid
 transaction fields): the column joins the `app_account_settings.sql` DDL for fresh
@@ -314,7 +319,7 @@ Columns:
   provider_type              VARCHAR          -- Exact provider type from the same source member; nullable
   provider_subtype           VARCHAR          -- Exact provider subtype from the same source member; nullable
   description                VARCHAR          -- Free-text description
-  updated_at                 TIMESTAMP        -- Row freshness per core-updated-at-convention
+  updated_at                 TIMESTAMPTZ        -- Row freshness per core-updated-at-convention
 ```
 
 ### SQLMesh model: `core.fct_investment_lots` (TABLE, derived)
@@ -344,7 +349,7 @@ Columns:
   is_open                 BOOLEAN          -- remaining_quantity > 0
   source_transaction_id   VARCHAR          -- FK to the opening core.fct_investment_transactions row
   basis_incomplete        BOOLEAN          -- TRUE when this lot opened with no supplied basis (e.g. transfer_in with unknown cost basis); see "Oversold lots"
-  updated_at              TIMESTAMP        -- Row freshness
+  updated_at              TIMESTAMPTZ        -- Row freshness
 ```
 
 ### SQLMesh model: `core.fct_realized_gains` (TABLE, derived)
@@ -369,14 +374,20 @@ Columns:
   cost_basis_method   VARCHAR          -- Method that produced this basis
   basis_incomplete    BOOLEAN          -- TRUE when part of this disposal matched no tracked lot (zero-basis slice); see "Oversold lots"
   currency_code       VARCHAR          -- Denominating currency
-  updated_at          TIMESTAMP        -- Row freshness
+  updated_at          TIMESTAMPTZ        -- Row freshness
 ```
 
 ### SQLMesh model: `core.dim_holdings` (VIEW, derived)
 
 Current positions — the sum of open lots per (account, security). No date dimension;
-it is the "now" snapshot, rebuilt on every run. Daily-valued history
+it is the "now" snapshot, queried through a view. Daily-valued history
 (`core.fct_holdings_daily`) is Pillar C.
+
+For current valuation, “today” is the profile's saved reporting date. The view
+reads it at query time for newest-price eligibility, valuation status and price
+age; a date after that reporting date is ineligible even if UTC has reached it.
+Source price dates are preserved. Feed retrieval independently uses completed
+UTC days, as specified in `investments-price-feeds.md`.
 
 ```
 Columns:
@@ -392,7 +403,7 @@ Columns:
   price_source      VARCHAR          -- Which source supplied the close (see core.fct_security_prices); NULL when no close resolved
   days_since_observed INT            -- Calendar days between price_date and today; 0 on a same-day close; NULL when no close resolved
   valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld | source_overlap
-  updated_at        TIMESTAMP        -- Row freshness; folds the position's lots, its close, its broker snapshot receipt, and — for a mixed-source account — the ledger rows behind the overlap, so a status flip caused by a sibling position still advances it
+  updated_at        TIMESTAMPTZ        -- Row freshness; folds the position's lots, its close, its broker snapshot receipt, and — for a mixed-source account — the ledger rows behind the overlap, so a status flip caused by a sibling position still advances it
 ```
 
 > **Unrealized gain/loss** arrived with Pillar C phase C.1
@@ -851,49 +862,60 @@ moneybin investments securities set <security_id> [--name ...] [--ticker ...] \
 $ moneybin investments holdings --account fidelity_brokerage
 
 ┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┓
-┃ security ┃ quantity       ┃ market value ┃ unrealized ┃ currency ┃ status    ┃
+┃ security ┃       quantity ┃ market value ┃ unrealized ┃ currency ┃ status    ┃
 ┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━┩
-│ a3f19c02 │ 15.0000000000  │     2,850.00 │    +375.00 │ USD      │ valued    │
-│ b8e1     │                │              │            │          │           │
-│ 7d40be91 │ 200.0000000000 │    25,000.00 │  +1,600.00 │ USD      │ carried_f │
-│ c5a2     │                │              │            │          │ orward    │
-│ c81a5f60 │ 0.5000000000   │            - │          - │ USD      │ unpriced  │
-│ 39db     │                │              │            │          │           │
+│ AAPL     │  15.0000000000 │     2,850.00 │    +375.00 │ USD      │ valued    │
+│ VTI      │ 200.0000000000 │    25,000.00 │  +1,600.00 │ USD      │ carried_f │
+│          │                │              │            │          │ orward    │
+│ BOND30   │   0.5000000000 │            - │          - │ USD      │ unpriced  │
 └──────────┴────────────────┴──────────────┴────────────┴──────────┴───────────┘
-6 of 9 columns shown — --wide for all
+6 of 10 columns shown — --wide for all
 portfolio market_value=27,850.00 USD max_days_since_observed=3
 
 ⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved), 'withheld' (a known-wrong share count, or lots that disagree on currency), or 'source_overlap' (the account's investment ledger arrives from two sources at once).
 ```
 
-The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row
-carries its own currency code beside the money figures. An absent figure renders
+The first column names the security by its ticker, or by its catalog name when
+it has none; the 12-hex catalog id is a `security id` column under `--wide`, and
+every JSON row carries `security_id`, `ticker`, and `security_name` (decided
+2026-10: a reader recognises a holding by its ticker, and the id alone forced a
+second lookup in `securities list`). `investments list`, `gains`, and
+`lots list` name securities the same way. A ticker another catalog row also
+carries is written `TICKER.EXCHANGE` — tickers are not unique and `exchange` is
+the documented disambiguator — which is the form the security resolver accepts
+back; a shared ticker with no exchange falls back to the id. The JSON rows
+carry `exchange` and `ticker_shared` so a consumer can make the same choice.
+Each row carries its own currency
+code beside the money figures. An absent figure renders
 `-`, matching `avg_cost`'s existing NULL rendering — a blank column reads as zero,
 and NULL here means "no number", not "worth nothing".
 
-The cost basis, the average cost and the observation date follow under `--wide`;
-the six columns above are the curated default. `quantity` is the reason the ids
-fold rather than the share counts: a `DECIMAL(28,10)` count is declared
-`numeric`, so a squeeze is paid out of the text columns and no number is ever
-broken across lines.
+The catalog id, the cost basis, the average cost and the observation date follow
+under `--wide`; the six columns above are the curated default. `quantity` is
+the reason the status folds rather than the share counts: a `DECIMAL(28,10)`
+count is declared `numeric`, so a squeeze is paid out of the text columns and
+no number is ever broken across lines. A `--wide` table wider than the terminal
+keeps the default six and drops its extras, least important first, naming the
+ones it omitted beneath the table; all ten columns squeezed into 80 had crushed
+the text columns and cut the numbers short.
 
 ```
 $ moneybin investments gains --account fidelity_brokerage --from 2024-01-01
 
-┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┓
-┃ disposed   ┃ security     ┃ proceeds ┃    gain ┃ currency ┃ term  ┃
-┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━┩
-│ 2024-06-12 │ a3f19c02b8e1 │   950.00 │ +200.00 │ USD      │ long  │
-│ 2024-09-03 │ c81a5f6039db │ 9,500.00 │ +500.00 │ USD      │ short │
-└────────────┴──────────────┴──────────┴─────────┴──────────┴───────┘
-6 of 9 columns shown — --wide for all
+┏━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┓
+┃ disposed   ┃ security ┃ proceeds ┃    gain ┃ currency ┃ term  ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━┩
+│ 2024-06-12 │ AAPL     │   950.00 │ +200.00 │ USD      │ long  │
+│ 2024-09-03 │ BOND30   │ 9,500.00 │ +500.00 │ USD      │ short │
+└────────────┴──────────┴──────────┴─────────┴──────────┴───────┘
+6 of 10 columns shown — --wide for all
 ```
 
-`--wide` adds the quantity and the cost basis the gain was computed from, plus
-a `note` column marking each row whose basis is known to be incomplete. That
+`--wide` adds the catalog id, the quantity and the cost basis the gain was
+computed from, plus a `note` column marking each row whose basis is known to be incomplete. That
 marker sits in `investments lots list`'s default view but not this one: a
-seventh column here folds the disposal date and the security id and breaks the
-marker itself across three lines at 80 columns. The requirement it exists for —
+seventh column here, with a 12-character security cell, folds the disposal date
+and the security and breaks the marker itself across three lines at 80 columns. The requirement it exists for —
 that an incomplete basis is never invisible — is met on this command by the
 warning instead, which is the one note `-q` does not silence.
 

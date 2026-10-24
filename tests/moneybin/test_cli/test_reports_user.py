@@ -9,22 +9,23 @@ that reach the service.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import typer
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from moneybin import error_codes
 from moneybin.cli.commands.reports import user_reports
 from moneybin.cli.main import app
 from moneybin.cli.output import CLI_MAX_ROWS
 from moneybin.cli.report_params import parse_parameter_value
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
@@ -49,6 +50,40 @@ _ROW: dict[str, Any] = {
 }
 
 
+def _noninteractive_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
+def _interactive_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
 def _service(**attributes: Any) -> MagicMock:
     service = MagicMock()
     service.resolve.return_value = _ROW
@@ -68,6 +103,7 @@ def _patch_service(service: MagicMock) -> Any:
     )
 
 
+@contextmanager
 def _patch_database() -> Any:
     """Patch the name the command module bound, not the definition site.
 
@@ -76,10 +112,17 @@ def _patch_database() -> Any:
     real missing profile, which every exit-code assertion here would read as the
     failure it was looking for.
     """
-    return patch(
-        "moneybin.cli.commands.reports.user_reports.get_database",
-        return_value=no_profile_database(),
-    )
+    with (
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch(
+            "moneybin.repositories.profile_settings_repo.ProfileSettingsRepo.get_reporting_timezone",
+            return_value="UTC",
+        ),
+    ):
+        yield
 
 
 def _patch_catalog_database() -> Any:
@@ -128,6 +171,84 @@ def _save_outcome(**overrides: Any) -> SaveOutcome:
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
+
+
+def test_list_help_offers_no_pager() -> None:
+    result = runner.invoke(app, ["reports", "list", "--help"])
+
+    assert result.exit_code == 0
+    assert "--no-pager" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_action"),
+    [
+        (
+            ["reports", "list", "--no-pager"],
+            "Try: moneybin reports list --include-archived",
+        ),
+        (
+            ["reports", "list", "--include-archived", "--no-pager"],
+            "Try: moneybin reports create --help",
+        ),
+        (
+            ["reports", "list", "--tier", "builtin", "--no-pager"],
+            "Try: moneybin reports list --include-archived",
+        ),
+    ],
+)
+def test_list_empty_explains_the_scope(args: list[str], expected_action: str) -> None:
+    with (
+        _patch_catalog_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_to_payload",
+            return_value=MagicMock(reports=[]),
+        ),
+    ):
+        result = runner.invoke(app, args)
+
+    assert result.exit_code == 0
+    assert "No reports match this scope." in result.stdout
+    assert expected_action in result.stdout
+
+
+def test_list_empty_tier_action_removes_the_tier_filter() -> None:
+    """The suggested catalog read leaves the empty tier scope behind."""
+    archived_user_report = _catalog_entry("user:archived", name="saved", archived=True)
+    catalog = MagicMock()
+    with (
+        _patch_catalog_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=catalog,
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_to_payload",
+            side_effect=[
+                MagicMock(reports=[]),
+                MagicMock(reports=[archived_user_report]),
+            ],
+        ) as to_payload,
+    ):
+        empty = runner.invoke(
+            app, ["reports", "list", "--tier", "builtin", "--no-pager"]
+        )
+        suggested = runner.invoke(
+            app, ["reports", "list", "--include-archived", "--no-pager"]
+        )
+
+    assert empty.exit_code == 0, empty.output
+    assert "Try: moneybin reports list --include-archived" in empty.stdout
+    assert suggested.exit_code == 0, suggested.output
+    assert "saved" in suggested.stdout
+    assert to_payload.call_args_list == [
+        call(catalog, include_archived=False),
+        call(catalog, include_archived=True),
+    ]
 
 
 def test_list_rejects_an_unknown_tier() -> None:
@@ -189,11 +310,11 @@ def test_list_reports_the_sensitivity_of_the_rows_it_returned(
     monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
     catalog = MagicMock()
     catalog.list.return_value = [
-        MagicMock(report_id="core:networth"),
+        MagicMock(report_id="core:net_worth"),
         MagicMock(report_id="user:rab12cd34ef56"),
     ]
     entries = [
-        _catalog_entry("core:networth"),
+        _catalog_entry("core:net_worth"),
         _catalog_entry("user:rab12cd34ef56", name="monthly_spend"),
     ]
     with (
@@ -223,7 +344,7 @@ def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:
     away. The rendered table must carry the distinction, not just the JSON.
     """
     entries = [
-        _catalog_entry("core:networth", archived=False),
+        _catalog_entry("core:net_worth", archived=False),
         _catalog_entry("user:put_away", archived=True),
     ]
     with (
@@ -249,7 +370,7 @@ def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:
     )
     assert "archived" in archived_line
     active_line = next(
-        line for line in result.output.splitlines() if "networth" in line
+        line for line in result.output.splitlines() if "net_worth" in line
     )
     assert "archived" not in active_line
 
@@ -587,7 +708,14 @@ def test_create_reads_the_query_from_a_file(tmp_path: Path) -> None:
     query.write_text("SELECT account_id FROM core.dim_accounts\n")
     service = _service(create=_save_outcome())
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(
             app, ["reports", "create", "my_accounts", "--sql-file", str(query)]
         )
@@ -696,7 +824,14 @@ def test_set_routes_a_missing_sql_file_through_the_json_error_boundary(
 def test_create_declares_a_typed_parameter_with_a_default() -> None:
     service = _service(create=_save_outcome())
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(
             app,
             [
@@ -1018,7 +1153,14 @@ def test_delete_aborts_when_the_prompt_is_declined() -> None:
     """
     service = _service()
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(app, ["reports", "delete", "my_accounts"], input="n\n")
 
     assert result.exit_code == 0
@@ -1038,7 +1180,7 @@ def test_delete_proceeds_without_a_prompt_under_yes() -> None:
 def test_delete_reports_an_unaskable_confirmation_through_the_envelope() -> None:
     """A closed stdin is not a decline — and it must not skip the envelope.
 
-    ``typer.confirm`` raises ``click.Abort`` on EOF, which is what a piped or
+    ``typer.confirm`` raises ``typer.Abort`` on EOF, which is what a piped or
     non-TTY invocation without ``--yes`` produces. ``classify_user_error`` does not
     recognize ``Abort``, so letting it escape spent the whole interaction on a bare
     ``Aborted.``: no error code, and no JSON for a caller that asked for JSON.
@@ -1055,6 +1197,33 @@ def test_delete_reports_an_unaskable_confirmation_through_the_envelope() -> None
     # the combined stream would put that text in front of the JSON.
     payload = json.loads(result.stdout)
     assert payload["error"]["code"] == "mutation_confirmation_required"
+    service.delete.assert_not_called()
+
+
+def test_delete_refuses_piped_yes_without_elicitation() -> None:
+    """A redirected answer cannot authorize deletion when the prompt was hidden."""
+    service = _service()
+
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_noninteractive_policy(),
+        ),
+        patch("typer.confirm") as confirm,
+    ):
+        result = runner.invoke(
+            app,
+            ["reports", "delete", "my_accounts", "--output", "json"],
+            input="y\n",
+        )
+
+    assert result.exit_code == 1, result.output
+    assert (
+        json.loads(result.stdout)["error"]["code"] == "mutation_confirmation_required"
+    )
+    confirm.assert_not_called()
     service.delete.assert_not_called()
 
 
@@ -1105,7 +1274,14 @@ def test_reclassify_passes_the_prompt_answer_through_to_the_service(
         )
     )
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         runner.invoke(
             app,
             [
@@ -1154,7 +1330,14 @@ def test_reclassify_asks_about_the_class_derivation_produces_now() -> None:
         ),
     )
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(
             app,
             [
@@ -1259,6 +1442,46 @@ def test_reclassify_reports_that_it_could_not_ask_rather_than_aborting() -> None
     assert "Aborted" not in result.output
 
 
+def test_reclassify_piped_yes_keeps_no_elicitation_semantics() -> None:
+    """A hidden prompt passes None to the service instead of consuming input."""
+    service = _service(
+        reclassify=ReclassifyOutcome(
+            report_id=_ROW["report_id"],
+            column="spend",
+            from_class=DataClass.TXN_AMOUNT,
+            to_class=DataClass.AGGREGATE,
+        )
+    )
+
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_noninteractive_policy(),
+        ),
+        patch("typer.confirm") as confirm,
+    ):
+        runner.invoke(
+            app,
+            [
+                "reports",
+                "reclassify",
+                "my_accounts",
+                "--column",
+                "spend",
+                "--to",
+                "aggregate",
+                "--reason",
+                "A single total reveals no transaction amount.",
+            ],
+            input="y\n",
+        )
+
+    assert service.reclassify.call_args.kwargs["confirmed"] is None
+    confirm.assert_not_called()
+
+
 def test_reclassify_routes_a_decline_through_the_service_not_an_early_exit() -> None:
     """The decline reaches the service, unlike ``delete``'s exit-0 cancel.
 
@@ -1283,7 +1506,14 @@ def test_reclassify_routes_a_decline_through_the_service_not_an_early_exit() -> 
         code=error_codes.REPORT_CLASS_CONFIRM_REQUIRED,
     )
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(
             app,
             [
@@ -1367,7 +1597,6 @@ def _explanation(**overrides: Any) -> ReportExplanation:
         "sql_template": (
             "SELECT account_id FROM core.dim_accounts WHERE routing_number = $rn"
         ),
-        "sql_unavailable": None,
         "withheld_parameters": ("rn",),
         "sql_suppressed_by": (),
         "columns": (
@@ -1382,7 +1611,7 @@ def _explanation(**overrides: Any) -> ReportExplanation:
         "class_fingerprint": "abc123",
         "drift_detected": False,
         "drift_reason": None,
-        "updated_at": "2026-07-26 00:00:00",
+        "updated_at": "2026-07-26T00:00:00.000000Z",
         "graduation": "eligible",
         "graduation_blockers": (),
     }
@@ -1423,6 +1652,75 @@ def test_explain_binds_parameters_and_renders_the_class_map() -> None:
     # The withheld parameter is named, and its value never printed.
     assert "021000021" not in result.output
     assert "rn" in flat
+
+
+def test_explain_human_freshness_uses_saved_calendar(db: Database) -> None:
+    from contextlib import nullcontext
+
+    db.execute(
+        "UPDATE app.profile_settings SET reporting_timezone = 'America/New_York'"
+    )
+    with (
+        patch.object(user_reports, "get_database", return_value=nullcontext(db)),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(_explanation(updated_at="2025-11-02T05:30:00.123456Z")),
+    ):
+        result = runner.invoke(app, ["reports", "explain", "my_accounts", "--no-pager"])
+    assert result.exit_code == 0, result.output
+    assert "2025-11-02 01:30:00.123456-04:00 [America/New_York]" in result.output
+
+
+def test_explain_help_offers_no_pager() -> None:
+    """The finite explanation can be printed directly for capture or review."""
+    result = runner.invoke(app, ["reports", "explain", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--no-pager" in result.stdout
+
+
+def test_explain_prints_sql_verbatim_never_reflowed() -> None:
+    """Requirement 10: a code block is data — it never breaks inside a token.
+
+    Long identifiers used to break mid-token when the SQL went through
+    `build_summary`'s label grid the same way a long path did. As a code
+    block inside the one paged answer it is printed verbatim — neither
+    wrapped, folded, nor cropped at the terminal width — so the statement
+    comes back exactly.
+    """
+    long_sql = (
+        "SELECT core.dim_accounts.account_id_with_a_very_long_column_alias_name "
+        "FROM core.dim_accounts WHERE routing_number = $rn"
+    )
+    explanation = _explanation(sql=long_sql, sql_template=long_sql)
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "moneybin.cli.report_params.coerce_report_parameters",
+            return_value={"rn": "021000021"},
+        ),
+        _patch_explain(explanation),
+    ):
+        result = runner.invoke(
+            app,
+            ["reports", "explain", "my_accounts", "--param", "rn=021000021"],
+        )
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines.count("SQL:") == 1
+    assert lines.count("Template:") == 1
+    sql_block = lines[lines.index("SQL:") + 1 : lines.index("Template:")]
+    joined = " ".join(line.strip() for line in sql_block if line.strip())
+    assert joined == long_sql, "SQL was reflowed instead of wrapped at spaces"
+    assert "account_id_with_a_very_long_column_alias_name" in result.output
 
 
 def test_explain_reports_a_suppressed_executed_form_with_the_fix() -> None:
@@ -1479,6 +1777,29 @@ def test_explain_echoes_the_drift_reason_and_keeps_it_out_of_the_log() -> None:
     # renderer — so this fails only on a record that carries the alias back.
     logged = [str(call.args[0]) for call in log.warning.call_args_list]
     assert not any("amazon_spend" in message for message in logged)
+
+
+def test_explain_marks_graduation_blockers_and_drift_as_attention() -> None:
+    """Trust warnings need the same visible marker as report result disclosures."""
+    explanation = _explanation(
+        graduation_blockers=("joins are not portable",),
+        drift_detected=True,
+        drift_reason="stale_classification: spend moved upward",
+    )
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(explanation),
+    ):
+        result = runner.invoke(app, ["reports", "explain", "my_accounts"])
+
+    assert result.exit_code == 0, result.output
+    assert "! joins are not portable" in _flatten(result.output)
+    assert "! stale_classification: spend moved upward" in _flatten(result.output)
 
 
 def test_explain_json_carries_the_provenance_and_freshness() -> None:
@@ -1740,6 +2061,10 @@ def test_a_confirm_prompt_is_never_held_open_over_the_writer_lock(
         ),
         patch("typer.confirm", side_effect=_decline),
         _patch_service(_service()),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
     ):
         runner.invoke(app, argv)
 
