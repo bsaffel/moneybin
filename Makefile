@@ -213,8 +213,8 @@ check: format lint type-check ## Development: Run all code quality checks
 # The single home for the pip-audit invocation: both the Security workflow and
 # the Release pipeline call `make audit`, so any accepted-vuln ignore list lives
 # here once and cannot drift. `uv run` auto-syncs, so this stands alone in CI.
-# `--all-groups` is load-bearing: without it the server group is never
-# resolved, and CVEs in it go unreported by both pipelines.
+# `--all-groups` audits every dependency group, not only the default one, so a
+# group added later cannot carry CVEs past both pipelines unreported.
 audit: ## Development: Audit resolved dependencies for known CVEs (pip-audit)
 	@uv run --all-groups pip-audit --skip-editable
 

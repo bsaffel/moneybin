@@ -61,7 +61,6 @@ dependencies = [
     "polars>=2.0.0",
     "pyarrow>=25.0.1",
     # API integrations
-    "plaid-python>=46.0.0",
     "ofxparse>=0.21",
     "requests>=2.34.2",
     "python-dotenv>=1.2.4",
@@ -248,13 +247,6 @@ dev = [
     # leaving pyright strict with no types at all. Drop once pyarrow ships its
     # own annotations (apache/arrow GH-48970).
     "pyarrow-stubs>=20.0.0.20260819",
-]
-
-server = [
-    # Server-side API framework (for future hosted MoneyBin Sync)
-    "fastapi>=0.141.1",
-    "uvicorn>=0.53.0",
-    # plaid-python already in main dependencies
 ]
 
 [tool.ruff]
