@@ -359,7 +359,9 @@ terms with no curated mapping (grouped by term, not by transaction) with
 `did_you_mean` suggestions; `mappings set` maps one term via
 `--into <category_id>` or `--new <name>`, or ignores it with `--ignore` (the
 term leaves the pending list and categorizes nothing); `mappings remove`
-deletes a term's mapping or ignore and returns it to pending. The mapping applies at
+deletes a term's mapping or ignore and returns it to pending. An imported
+term is never shown as a category by itself: until it is mapped, its
+transactions read as uncategorized. The mapping applies at
 once: its transactions are categorized, and when a term's mapping changes, the
 categories it assigned earlier are withdrawn and re-evaluated — ones you set by
 hand, by rule, or by merchant are never touched. `set` accepts a term only when an

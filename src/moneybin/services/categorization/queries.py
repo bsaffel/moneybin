@@ -767,9 +767,9 @@ class CategorizationQueries:
         """Count what needs categorizing, and how much of it already is.
 
         Scoped to ``is_categorizable`` — a coverage figure over rows nobody is
-        ever asked to categorize describes no work. A category counts however
-        it arrived: a row whose source file supplied its own category text is
-        one ``moneybin review`` skips, so coverage has to agree that it is done.
+        ever asked to categorize describes no work. Only a MoneyBin
+        categorization fills ``category``; text a source file supplied counts
+        once a mapping in ``app.category_source_map`` has translated it.
 
         Raises:
             duckdb.CatalogException: the core layer is not built yet.
@@ -826,12 +826,11 @@ class CategorizationQueries:
         # Breakdown by source, over the same population as the three counts
         # above so the buckets still sum to `categorized` — the CLI prints them
         # directly beneath it, and parts that don't reach the whole are the
-        # defect this population change exists to fix. Two consequences of
-        # scoping it that way: a categorization orphaned from its transaction
-        # stops counting as coverage (doctor keeps a separate invariant for
-        # those), and a row whose category came from its source file's own
-        # column gets the `source_supplied` bucket, since it is categorized but
-        # no assignment method describes it.
+        # defect this population change exists to fix. A categorization
+        # orphaned from its transaction therefore stops counting as coverage
+        # (doctor keeps a separate invariant for those). Every categorized row
+        # has an app.transaction_categories row, since core.fct_transactions
+        # takes `category` from nowhere else, so the inner join drops nothing.
         #
         # `categorized_by='rule'` is written by BOTH the rule engine and
         # apply_merchant_categories — the latter deliberately stamps the 'rule'
@@ -851,7 +850,6 @@ class CategorizationQueries:
                 )
                 SELECT
                   CASE
-                    WHEN c.transaction_id IS NULL THEN 'source_supplied'
                     WHEN c.categorized_by = 'rule' AND c.rule_id IS NULL
                          AND c.merchant_id IS NOT NULL
                     THEN 'merchant_map'
@@ -859,7 +857,7 @@ class CategorizationQueries:
                   END AS source,
                   COUNT(*) AS cnt
                 FROM categorizable AS t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS c
+                INNER JOIN {TRANSACTION_CATEGORIES.full_name} AS c
                   ON t.transaction_id = c.transaction_id
                 WHERE t.category IS NOT NULL
                 GROUP BY 1

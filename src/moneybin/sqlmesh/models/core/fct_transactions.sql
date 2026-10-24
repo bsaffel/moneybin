@@ -56,8 +56,8 @@ WITH notes_agg AS (
     COALESCE(m.canonical_name, t.merchant_name) AS merchant_name,
     m.merchant_id,
     t.memo,
-    COALESCE(dc.category, c.category, t.category) AS category,
-    COALESCE(dc.subcategory, c.subcategory, t.subcategory) AS subcategory,
+    COALESCE(dc.category, c.category) AS category,
+    COALESCE(dc.subcategory, c.subcategory) AS subcategory,
     c.categorized_by,
     t.payment_channel,
     t.transaction_type,
@@ -142,8 +142,8 @@ SELECT
   original_description, /* Raw, unmodified bank-statement description from the source (Plaid original_description); NULL when the source has no separate raw form. Distinct from description (cleaned) and memo (supplementary). */
   merchant_name, /* Normalized merchant name from core.dim_merchants; falls back to source value */
   memo, /* Additional notes from highest-priority source */
-  category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows, then to the source's OWN category text where the source supplies one a person wrote (tabular CSV column, manual entry). Never a provider taxonomy code: Plaid contributes no category here, so an uncategorized Plaid row is NULL, which is what the queue filter (is_categorizable AND category IS NULL) selects on. The raw PFC code lives in prep.int_transactions__merged.plaid_category */
-  subcategory, /* Spending subcategory resolved via FK; same fallback chain as category */
+  category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows. Only a MoneyBin categorization reaches it: category text a source supplied (a CSV column, a Plaid PFC code) never does, and becomes a category only through a mapping in app.category_source_map. An uncategorized row is NULL, which is what the queue filter (is_categorizable AND category IS NULL) selects on. The source's own text stays in prep.int_transactions__merged (category, plaid_category) */
+  subcategory, /* Spending subcategory resolved via FK; same fallback as category */
   categorized_by, /* How the category was assigned: rule, ai, user, or NULL if uncategorized */
   payment_channel, /* Payment channel (online, in store, other) */
   transaction_type, /* Source-specific transaction type code */

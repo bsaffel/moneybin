@@ -2,11 +2,12 @@
 
 ``stg_plaid__accounts.sql`` already states the rule for its own free-text
 columns: ``''`` passes a NULL check while rendering as a malformed label.
-``stg_tabular__transactions`` applies it to ``currency`` and not to
-``category``, and ``stg_manual__transactions`` applies it to nothing, so a cell
-holding only spaces arrives at ``core.fct_transactions.category`` non-NULL.
-The queue filter selects ``category IS NULL``, so that
-transaction is missing from the queue nobody can curate it out of.
+``stg_tabular__transactions`` applied it to ``currency`` and not to
+``category``, and ``stg_manual__transactions`` applied it to nothing, so a cell
+holding only spaces survived as a term. A source's category text stops at
+``prep.int_transactions__merged`` — ``core.fct_transactions.category`` takes
+only MoneyBin's categorizations — so these assert there, where the text is the
+term ``categories mappings pending`` offers and a mapping matches.
 
 Seeds ``raw.*`` directly (mirrors ``test_int_unioned_currency.py``) to isolate
 the staging SQL from the importer path.
@@ -61,42 +62,44 @@ def _insert_manual_transaction(
     )
 
 
-def _fact_category(db: Database, description: str) -> tuple[str | None, ...] | None:
+def _source_category(db: Database, description: str) -> tuple[str | None, ...] | None:
     return db.execute(
-        "SELECT category FROM core.fct_transactions WHERE description = ?",
+        "SELECT category FROM prep.int_transactions__merged WHERE description = ?",
         [description],
     ).fetchone()
 
 
-def _fact_pair(db: Database, description: str) -> tuple[str | None, ...] | None:
+def _source_pair(db: Database, description: str) -> tuple[str | None, ...] | None:
     return db.execute(
-        "SELECT category, subcategory FROM core.fct_transactions WHERE description = ?",
+        """
+        SELECT category, subcategory FROM prep.int_transactions__merged
+        WHERE description = ?
+        """,
         [description],
     ).fetchone()
 
 
 @pytest.mark.slow
-def test_a_whitespace_category_from_a_csv_is_absent_in_the_fact(
+def test_a_whitespace_category_from_a_csv_is_absent_as_a_term(
     db: Database,
 ) -> None:
     """A CSV cell holding only spaces is not a category a person wrote.
 
-    Left raw, it reaches the fact as ``'   '`` — non-NULL, so
-    the categorization queue skips the row and every table that renders the
-    column shows a blank cell instead of the placeholder.
+    Left raw, it would reach ``categories mappings pending`` as a term of
+    spaces — one nobody can read, offered for a mapping nobody wants.
     """
     _insert_tabular_transaction(db, txn_id="csv_blank", category="   ")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    row = _fact_category(db, "Test Payee")
+    row = _source_category(db, "Test Payee")
     assert row is not None
     assert row[0] is None
 
 
 @pytest.mark.slow
-def test_a_whitespace_category_from_a_manual_entry_is_absent_in_the_fact(
+def test_a_whitespace_category_from_a_manual_entry_is_absent_as_a_term(
     db: Database,
 ) -> None:
     """The manual arm trims nothing at all, so it has the same gap."""
@@ -105,13 +108,13 @@ def test_a_whitespace_category_from_a_manual_entry_is_absent_in_the_fact(
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    row = _fact_category(db, "Test Manual Entry")
+    row = _source_category(db, "Test Manual Entry")
     assert row is not None
     assert row[0] is None
 
 
 @pytest.mark.slow
-def test_a_non_breaking_space_category_is_absent_in_the_fact(
+def test_a_non_breaking_space_category_is_absent_as_a_term(
     db: Database,
 ) -> None:
     """Blank means what the service means by it, not what ASCII space means.
@@ -127,7 +130,7 @@ def test_a_non_breaking_space_category_is_absent_in_the_fact(
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    row = _fact_category(db, "Test Payee")
+    row = _source_category(db, "Test Payee")
     assert row is not None
     assert row[0] is None
 
@@ -151,7 +154,7 @@ def test_a_blanked_category_takes_its_subcategory_with_it(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    row = _fact_pair(db, "Test Payee")
+    row = _source_pair(db, "Test Payee")
     assert row is not None
     assert row == (None, None)
 
@@ -168,7 +171,7 @@ def test_a_blanked_category_takes_its_subcategory_with_it_on_the_manual_arm(
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    row = _fact_pair(db, "Test Manual Entry")
+    row = _source_pair(db, "Test Manual Entry")
     assert row is not None
     assert row == (None, None)
 
@@ -188,7 +191,7 @@ def test_a_blank_subcategory_leaves_its_category_standing(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    row = _fact_pair(db, "Test Payee")
+    row = _source_pair(db, "Test Payee")
     assert row is not None
     assert row == ("Groceries", None)
 
@@ -205,6 +208,30 @@ def test_a_category_a_person_wrote_survives_the_trim(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    row = _fact_category(db, "Test Payee")
+    row = _source_category(db, "Test Payee")
     assert row is not None
     assert row[0] == "Groceries"
+
+
+@pytest.mark.slow
+def test_a_category_the_source_supplied_never_reaches_the_fact(db: Database) -> None:
+    """Source text is an input to a mapping, never a passed-through value.
+
+    ``Groceries`` is a seeded MoneyBin category, so an exact name match is the
+    likeliest shortcut back to pass-through; with no mapping the row stays
+    uncategorized and in the queue.
+    """
+    _insert_tabular_transaction(db, txn_id="csv_term", category="Groceries")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _source_category(db, "Test Payee") == ("Groceries",)
+    row = db.execute(
+        """
+        SELECT category, subcategory, categorized_by
+        FROM core.fct_transactions WHERE description = ?
+        """,
+        ["Test Payee"],
+    ).fetchone()
+    assert row == (None, None, None)
