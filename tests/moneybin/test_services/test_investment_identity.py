@@ -49,7 +49,12 @@ def test_manual_enumeration_uses_current_routes(db: Database) -> None:
 
 
 def legacy_repoint(
-    db: Database, *, invalid: bool = False, captured_created_at: str | None = None
+    db: Database,
+    *,
+    invalid: bool = False,
+    captured_created_at: str | None = None,
+    before_created_at: str | None = None,
+    before_security_id: str = "a",
 ) -> str:
     add_manual_event(db, security_id="b")
     if captured_created_at is not None:
@@ -74,7 +79,9 @@ def legacy_repoint(
     }
     if captured_created_at is not None:
         after["created_at"] = captured_created_at
-    before = dict(after, security_id="a")
+    before = dict(after, security_id=before_security_id)
+    if before_created_at is not None:
+        before["created_at"] = before_created_at
     if invalid:
         before["amount"] = "-12.00"
     with operation() as op:
@@ -110,15 +117,51 @@ def _legacy_manual_time_policy(db: Database, count: int) -> None:
     ).fetchone() == (1,)
 
 
+def _legacy_manual_image_policy(db: Database, op: str) -> None:
+    _legacy_manual_time_policy(db, 1)
+    event = AuditService(db).events_for_operation(op)[0]
+    record = db.execute("SELECT rules FROM app.utc_upgrade_provenance").fetchone()
+    assert record is not None
+    rule = json.loads(record[0])[0]
+    db.execute(
+        "UPDATE app.utc_upgrade_provenance SET rules = ?",
+        [
+            json.dumps([
+                rule | {"audit_id": event.audit_id, "image_side": "before"},
+                rule
+                | {
+                    "audit_id": event.audit_id,
+                    "image_side": "after",
+                    "zone": "UTC",
+                    "writer_era": "utc-naive",
+                },
+            ])
+        ],
+    )
+
+
 @pytest.mark.parametrize(
-    "captured_created_at,rule_count",
-    [("2024-07-01T12:00:00-04:00", 0), ("2024-07-01T12:00:00", 1)],
+    "captured_created_at,rule_count,mixed_images",
+    [
+        ("2024-07-01T12:00:00-04:00", 0, False),
+        ("2024-07-01T12:00:00", 1, False),
+        ("2024-07-01T16:00:00", 1, True),
+    ],
 )
 def test_legacy_identity_recovery_compares_instants_without_rewriting_evidence(
-    db: Database, captured_created_at: str, rule_count: int
+    db: Database,
+    captured_created_at: str,
+    rule_count: int,
+    mixed_images: bool,
 ) -> None:
-    op = legacy_repoint(db, captured_created_at=captured_created_at)
+    op = legacy_repoint(
+        db,
+        captured_created_at=captured_created_at,
+        before_created_at="2024-07-01T12:00:00" if mixed_images else None,
+    )
     _legacy_manual_time_policy(db, rule_count)
+    if mixed_images:
+        _legacy_manual_image_policy(db, op)
     frozen = raw_observations(db)
     evidence = db.execute(
         "SELECT before_value, after_value FROM app.audit_log WHERE operation_id = ?",
@@ -178,6 +221,22 @@ def test_legacy_identity_recovery_refuses_uncertain_or_changed_instants_atomical
     assert raw_observations(db) == frozen
     assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == audit_count
     assert db.execute("SELECT COUNT(*) FROM app.security_links").fetchone() == (0,)
+
+
+def test_legacy_manual_repo_skips_semantically_equal_images(db: Database) -> None:
+    op = legacy_repoint(
+        db,
+        captured_created_at="2024-07-01T16:00:00",
+        before_created_at="2024-07-01T12:00:00",
+        before_security_id="b",
+    )
+    _legacy_manual_image_policy(db, op)
+    event = AuditService(db).events_for_operation(op)[0]
+    frozen = raw_observations(db)
+    audit_count = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    assert ManualInvestmentTransactionsRepo(db).undo_event(event, actor="cli") is None
+    assert raw_observations(db) == frozen
+    assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == audit_count
 
 
 def test_legacy_undo_redo_routes_without_restoring_raw(db: Database) -> None:

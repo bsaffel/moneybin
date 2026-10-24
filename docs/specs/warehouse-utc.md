@@ -140,6 +140,11 @@ a missing or unverifiable final journal and never promotes an unpromoted candida
 - Audit replay decodes known temporal fields before mutation with persisted,
   field-specific provenance. Preserve original JSON, nulls and omitted fields;
   alias-forwarded undo uses the same decoder.
+  A legacy rule may bind to one audit ID and its `before` or `after` image
+  when the two images came from different clocks. Both selectors are required
+  together; rules without selectors retain their field-and-occurrence scope.
+  Replay supplies the image side explicitly and requires exactly one matching
+  rule. Scoped rules do not override overlapping rules or rewrite audit JSON.
 - Timestamp cursors use canonical UTC keys and stable tie-breakers. Scopes
   carry temporal contract version 2; old tokens request a pagination restart.
   DATE/id and other non-temporal cursor scopes retain their contracts.

@@ -317,7 +317,9 @@ def test_audit_temporal_decoder_preserves_nulls_omissions_and_business_dates(
         "display_name": "2024-07-01T12:00:00",
         "metadata": {"nested": [1]},
     }
-    decoded = decode_audit_row(event, image, AuditTemporalPolicy(rules=()))
+    decoded = decode_audit_row(
+        event, image, AuditTemporalPolicy(rules=()), image_side="before"
+    )
     assert decoded == image
     assert "updated_at" not in decoded
     assert decoded is not image
@@ -383,7 +385,9 @@ def test_audit_policy_resolves_only_explicit_fold_and_recorded_era(
     )
     image = {"created_at": "2024-11-03T01:30:00"}
     policy = AuditTemporalPolicy(rules=(rule,))
-    assert decode_audit_row(event, image, policy)["created_at"] == datetime(
+    assert decode_audit_row(event, image, policy, image_side="before")[
+        "created_at"
+    ] == datetime(
         2024,
         11,
         3,
@@ -397,11 +401,13 @@ def test_audit_policy_resolves_only_explicit_fold_and_recorded_era(
             replace(event, occurred_at="2026-01-01T00:00:00.000000Z"),
             image,
             policy,
+            image_side="before",
         )
     assert decode_audit_row(
         event,
         {"created_at": "2024-11-03T01:30:00-04:00"},
         AuditTemporalPolicy(rules=()),
+        image_side="before",
     )["created_at"] == datetime(
         2024,
         11,
