@@ -1,5 +1,6 @@
 """Encrypted backups publish only verified, quiescent recovery evidence."""
 
+import errno
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -98,3 +99,32 @@ def test_backup_refuses_destination_with_retained_wal(
         backup_encrypted_database(source, output, secret_store=mock_secret_store)
     assert not output.exists()
     assert wal.read_bytes() == b"retained recovery evidence"
+
+
+@pytest.mark.parametrize("error_number", [errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP])
+def test_backup_reports_unsupported_hard_link_without_publishing(
+    tmp_path: Path,
+    mock_secret_store: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    error_number: int,
+) -> None:
+    from moneybin.services import database_backup_service as service
+
+    source, output = tmp_path / "source.duckdb", tmp_path / "backup.duckdb"
+    with Database(
+        source, read_only=False, secret_store=mock_secret_store, no_auto_upgrade=True
+    ):
+        pass
+    original = source.read_bytes()
+
+    def unsupported_link(*args: object, **kwargs: object) -> None:
+        raise OSError(error_number, "private-marker")
+
+    monkeypatch.setattr(service.os, "link", unsupported_link)
+    with pytest.raises(ValueError, match="^hard_link_unavailable$"):
+        service.backup_encrypted_database(
+            source, output, secret_store=mock_secret_store
+        )
+    assert not output.exists()
+    assert source.read_bytes() == original
+    assert not list(tmp_path.glob(".backup-*"))

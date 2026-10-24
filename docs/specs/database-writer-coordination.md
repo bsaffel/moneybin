@@ -826,5 +826,7 @@ writers and refuse pending WAL. It does not checkpoint a live source. The
 candidate is copied and fsynced beside the destination, reopened with the
 original key, and checked against the leased source fingerprint before atomic
 create-if-absent publication. An existing destination remains untouched.
+Publication requires hard-link support in the output filesystem; an unsupported
+filesystem is refused explicitly without a weaker overwrite-prone fallback.
 Ordinary reader/writer lifetimes are unchanged; close the writer and retry a
 refused backup. Keep the encryption key separately from the snapshot.

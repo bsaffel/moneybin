@@ -689,6 +689,37 @@ def db_info(
         raise typer.Exit(1) from e
 
 
+def _backup_failure_message(exc: Exception) -> str:
+    """Map failure categories to fixed guidance without exposing exception text."""
+    import duckdb
+
+    from moneybin.database import DatabaseKeyError
+    from moneybin.secrets import SecretNotFoundError, SecretStorageUnavailableError
+
+    reasons = {
+        "checkpoint_required": "Checkpoint required: preserve the database and WAL; close the writer after a successful checkpoint, then retry.",
+        "active_access": "Active database access: close database writers, then retry the backup.",
+        "backup_destination_exists": "Backup destination exists: choose a new output path; the existing file was preserved.",
+        "copy_verification_failed": "Backup verification failed: no backup was confirmed; preserve the source and retry on reliable storage.",
+        "hard_link_unavailable": "Hard-link publication unavailable: choose a writable filesystem that supports hard links; atomic backup publication requires them.",
+    }
+    if isinstance(exc, FileExistsError):
+        return reasons["backup_destination_exists"]
+    if isinstance(exc, ValueError):
+        reason = str(exc).split(":", 1)[0]
+        if reason in reasons:
+            return reasons[reason]
+    if isinstance(
+        exc, (DatabaseKeyError, SecretNotFoundError, SecretStorageUnavailableError)
+    ):
+        return "Encryption key unavailable: unlock the profile with its original key, then retry."
+    if isinstance(exc, duckdb.Error):
+        return "Encrypted database validation failed: verify the original encryption key and source integrity; preserve the source."
+    if isinstance(exc, OSError):
+        return "Backup storage unavailable: verify the output directory exists, is writable, and has sufficient space."
+    return "Backup failed unexpectedly: no backup was confirmed; preserve the source and inspect local diagnostics."
+
+
 @app.command("backup")
 def db_backup(
     output: Path | None = typer.Option(
@@ -714,11 +745,12 @@ def db_backup(
         backup_path = output
     else:
         backup_dir = settings.database.backup_path or db_path.parent / "backups"
-        backup_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         backup_path = backup_dir / f"moneybin_{timestamp}.duckdb"
 
     try:
+        if output is None:
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
         with operation_progress(get_terminal_policy()) as report:
             from moneybin.secrets import SecretStore
             from moneybin.services.database_backup_service import (
@@ -736,10 +768,7 @@ def db_backup(
             typer.echo("Backup interrupted before a backup file was confirmed.")
         raise typer.Exit(130) from None
     except Exception as exc:
-        typer.echo(
-            "Backup refused: close active database connections after a successful "
-            "checkpoint, use a new output path, and retain the original encryption key."
-        )
+        typer.echo(format_cli_failure(_backup_failure_message(exc)), err=True)
         logger.debug(f"Backup failed: {type(exc).__name__}")
         raise typer.Exit(1) from None
 

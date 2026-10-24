@@ -1721,12 +1721,60 @@ class TestDbBackupCommand:
             assert "Backup created" not in result.output
             assert not output.exists()
 
+    @pytest.mark.parametrize(
+        ("failure", "expected"),
+        [
+            ("checkpoint_required", "Checkpoint required"),
+            ("active_access", "Active database access"),
+            ("backup_destination_exists", "Backup destination exists"),
+            ("copy_verification_failed", "Backup verification failed"),
+            ("hard_link_unavailable", "Hard-link publication unavailable"),
+            ("key", "Encryption key unavailable"),
+            ("corruption", "Encrypted database validation failed"),
+            ("permission", "Backup storage unavailable"),
+            ("unknown", "Backup failed unexpectedly"),
+        ],
+    )
+    def test_backup_failure_has_fixed_actionable_reason(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        failure: str,
+        expected: str,
+    ) -> None:
+        import duckdb
+
+        from moneybin.database import DatabaseKeyError
+
+        source = tmp_path / "source.duckdb"
+        source.write_bytes(b"synthetic")
+        _make_settings_mock(source, mocker)
+        exceptions: dict[str, Exception] = {
+            "key": DatabaseKeyError("private-marker"),
+            "corruption": duckdb.IOException("private-marker"),
+            "permission": PermissionError("private-marker"),
+            "unknown": RuntimeError("private-marker"),
+        }
+        mocker.patch(
+            "moneybin.services.database_backup_service.backup_encrypted_database",
+            side_effect=exceptions.get(
+                failure, ValueError(failure + ": private-marker")
+            ),
+        )
+        result = runner.invoke(
+            app, ["backup", "--output", str(tmp_path / "copy.duckdb")]
+        )
+        assert result.exit_code == 1
+        assert expected in result.stderr
+        assert "private-marker" not in result.output
+        assert "Backup created" not in result.output
+
     def test_backup_fails_when_db_missing(
         self,
         runner: CliRunner,
         mocker: Any,
         tmp_path: Path,
-        mock_secret_store: MagicMock,
     ) -> None:
         """Backup command fails when database doesn't exist."""
         _make_settings_mock(tmp_path / "missing.duckdb", mocker)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import tempfile
 from pathlib import Path
@@ -43,5 +44,10 @@ def backup_encrypted_database(
             # Hard linking publishes complete bytes atomically and refuses an
             # output created by another actor during validation.
             _require_snapshot(destination)
-            os.link(candidate, destination)
+            try:
+                os.link(candidate, destination)
+            except OSError as exc:
+                if exc.errno in {errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                    raise ValueError("hard_link_unavailable") from None
+                raise
             _sync_directory(destination.parent)

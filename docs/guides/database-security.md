@@ -186,6 +186,11 @@ destination; close the writer and retry with an unused destination. The backup
 uses the same key as the live database. Retain that key separately: the snapshot
 contains Raw evidence and App state, but cannot recover a lost key.
 
+The output filesystem must support hard links for atomic publication without
+overwriting another file. If backup reports that hard links are unavailable,
+choose another writable filesystem. Key, validation, and storage failures report
+separate recovery guidance rather than advising every failure to close writers.
+
 ### What `db restore` does
 
 ```bash
