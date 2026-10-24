@@ -1136,7 +1136,9 @@ class TransactionService:
             like = f"%{escaped}%"
             params.extend([like, like])
         if uncategorized_only:
-            conditions.append("categorized_by IS NULL")
+            # The categorization queue's own predicate, so this listing, the
+            # queue and every coverage figure count the same rows.
+            conditions.append("is_categorizable AND category IS NULL")
 
         if snapshot is not None:
             conditions.append(

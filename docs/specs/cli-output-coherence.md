@@ -795,6 +795,11 @@ Numbered, each independently testable.
     defect; dropping the fallback wholesale would have discarded user-authored
     categories, a regression this scoping avoids.
 
+    **Superseded by MB-180.** The remaining fallback was later retired too: a
+    source's own category text now reaches `category` only through a mapping.
+    See [`category-source-map.md`](category-source-map.md) → "Extension:
+    retiring the pass-through".
+
     **Two further defects fall out of the same one-line change**, and are the
     evidence the boundary belongs here rather than in the renderer:
     the queue filter selects `category IS NULL`, so a

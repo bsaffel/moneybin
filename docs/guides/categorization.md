@@ -173,6 +173,8 @@ If you're moving from Tiller, Beancount, hledger, Mint exports, or another tool 
 
 3. **`moneybin transactions create` for new manual entries.** New transactions you enter via `moneybin transactions create --category X` write `categorized_by='user'` at creation time. This is the only path that writes user-source today, and it applies to *new* transactions, not imported historical rows.
 
+4. **Map the category column your export carries.** A category your old tool wrote into the file is not shown as a MoneyBin category on its own: until you map it, those transactions read as uncategorized. `moneybin categories mappings pending` lists each distinct term once, with suggestions, and `moneybin categories mappings set` maps a term to a MoneyBin category (or creates one), categorizing every transaction that carries it. Mappings write `categorized_by='provider_native'`, the lowest rank, so any rule or merchant mapping you add later overrides them.
+
 A unified bulk-import-as-user CLI does not exist yet. If you need it for a migration today, file an issue with your data shape — the existing `set_category_in_active_txn` service method already supports user-source writes, so the gap is a CLI/MCP entry point, not a database constraint.
 
 ## JSON shapes

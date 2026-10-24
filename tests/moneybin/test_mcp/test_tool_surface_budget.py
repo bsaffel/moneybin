@@ -164,7 +164,10 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # from the description that `rule_conflicts` names both rules and the
     # category each assigns has to open the queue to find out what it is.
     # Plus 21 bytes for the investment_matches read selector.
-    "reviews": (987, 8_698),
+    # Plus 220 for the source_categories queue: one more `kind` enum member and
+    # the sentence routing its terms to taxonomy_set, without which an agent
+    # cannot tell that queue resolves through a write tool, not a decide tool.
+    "reviews": (1_207, 8_698),
     "taxonomy": (689, 622),
     "import_status": (667, 1_239),
     "gsheet": (459, 1_018),
@@ -216,7 +219,12 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # 36 of those bytes came back when the condition dropped its redundant
     # `state` test: the `absent` branch already forbids `subcategory`, so
     # naming `state` narrowed the `if` without narrowing what validates.
-    "taxonomy_set": (3_676, 3_227),
+    #
+    # 1,756 bytes for the source_category item: its variant schema, and the
+    # description naming the item, its three states, the same-batch category,
+    # the follow-through counts, and the table it writes, so an agent maps a
+    # reviews(kind="source_categories") row without opening another tool.
+    "taxonomy_set": (5_432, 3_227),
     "privacy_consent_set": (1_248, 2_190),
 }
 

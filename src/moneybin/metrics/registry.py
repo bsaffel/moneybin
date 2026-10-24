@@ -570,8 +570,8 @@ CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
 CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL = Counter(
     "moneybin_category_source_mapping_outcomes_total",
     "Outcomes of curating one imported category term into "
-    "app.category_source_map via resolve_source_term.",
-    # outcome: added | updated | refused
+    "app.category_source_map (categories mappings set/remove, taxonomy_set).",
+    # outcome: added | updated | removed | refused
     ["outcome"],
 )
 
