@@ -240,8 +240,10 @@ artifact, though, so support guidance says what a masking rule should not:
 glance before being pasted into an issue.
 
 ### Database Backup and Restore
-41. `db backup` creates a timestamped copy of the encrypted database file in the backup
-    directory. Backups are encrypted with the same key — safe to store anywhere.
+41. `db backup` validates a quiescent encrypted snapshot before publishing it in
+    the backup directory. It refuses active writers, pending WAL and an existing
+    destination. The complete file retains Raw, App state, and recovery metadata;
+    its original encryption key must be retained separately.
 42. `db restore` lists available backups, lets the user pick one (or `--from <path>`),
     auto-backs-up the current database first, then swaps files.
 43. Restore attempts the current encryption key first. If it fails (backup from before a
@@ -384,8 +386,9 @@ Key export/import and passphrase policy are outside this verification slice.
 - **PII sanitization as a safety net:** The `SanitizedLogFormatter` catches accidental
   PII logging at runtime. It does not replace the developer's responsibility to log
   correctly — it's a backstop for the cases that slip through code review.
-- **Backup = file copy:** An encrypted DuckDB file is its own backup artifact. No
-  export/import step, no format conversion. Safe to store anywhere.
+- **Backup = verified encrypted snapshot:** Preserve the whole database under a
+  quiescent-source lease, validate the copy with the original key, and publish
+  complete bytes atomically. Report exports do not preserve recovery state.
 
 ## CLI Interface
 
@@ -455,7 +458,8 @@ MoneyBin version.
 ```
 moneybin db backup [--output PATH]
 ```
-Creates timestamped copy in backup directory. Default path:
+Creates a verified encrypted snapshot in the backup directory. Active writers,
+pending WAL, and existing destinations cause refusal. Default path:
 `data/<profile>/backups/moneybin_YYYY-MM-DD_HHMMSS.duckdb`.
 
 ```
