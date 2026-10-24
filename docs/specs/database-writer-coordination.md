@@ -737,7 +737,7 @@ stays bounded by construction.
 |---|---|---|
 | `post_migration` | `Database.__init__` after `MigrationRunner.apply_pending()` returns with `applied_count > 0` | ✅ |
 | `post_transform` | `TransformService.apply()` after a successful apply (shared CLI + MCP call point) | ✅ |
-| `pre_backup` | Before backup/export writes a snapshot | Helper exists; site lands when backup ships |
+| `pre_backup` | Explicit checkpoint before snapshot work | Helper available; standalone backup instead requires a quiescent source without WAL |
 | `post_compact` | After a future `db compact` operation | Helper exists; site lands when compact ships |
 | `post_large_import` | After an import that exceeds a measured threshold | Helper exists; site lands when the threshold is measured |
 
@@ -818,3 +818,13 @@ wait-time distribution observability theater):
 - No singleton `Database` cache — per-call connections per ADR-010.
 - No writer-priority arbitration / starvation prevention — the 10 s
   ceiling is the safety net at single-user scale.
+
+### Standalone encrypted backup
+
+`db backup` uses the existing encrypted inspection snapshot lease to exclude
+writers and refuse pending WAL. It does not checkpoint a live source. The
+candidate is copied and fsynced beside the destination, reopened with the
+original key, and checked against the leased source fingerprint before atomic
+create-if-absent publication. An existing destination remains untouched.
+Ordinary reader/writer lifetimes are unchanged; close the writer and retry a
+refused backup. Keep the encryption key separately from the snapshot.

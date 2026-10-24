@@ -698,7 +698,7 @@ def db_backup(
         help="Output path for backup (default: data/<profile>/backups/)",
     ),
 ) -> None:
-    """Create a timestamped backup of the encrypted database file."""
+    """Create a verified encrypted backup after closing database writers."""
     from datetime import datetime
 
     from moneybin.config import get_settings
@@ -720,15 +720,13 @@ def db_backup(
 
     try:
         with operation_progress(get_terminal_policy()) as report:
-            report(ProgressEvent("Copying database backup"))
-            shutil.copy2(str(db_path), str(backup_path))
-            report(ProgressEvent("Securing database backup"))
-            # Set restrictive permissions
-            if sys.platform != "win32":
-                try:
-                    backup_path.chmod(0o600)
-                except OSError:
-                    pass
+            from moneybin.secrets import SecretStore
+            from moneybin.services.database_backup_service import (
+                backup_encrypted_database,
+            )
+
+            report(ProgressEvent("Validating database backup"))
+            backup_encrypted_database(db_path, backup_path, secret_store=SecretStore())
     except KeyboardInterrupt:
         if backup_path.exists():
             typer.echo(
@@ -737,6 +735,13 @@ def db_backup(
         else:
             typer.echo("Backup interrupted before a backup file was confirmed.")
         raise typer.Exit(130) from None
+    except Exception as exc:
+        typer.echo(
+            "Backup refused: close active database connections after a successful "
+            "checkpoint, use a new output path, and retain the original encryption key."
+        )
+        logger.debug(f"Backup failed: {type(exc).__name__}")
+        raise typer.Exit(1) from None
 
     typer.echo(
         f"Backup created: {backup_path} ({_format_bytes(backup_path.stat().st_size)})"

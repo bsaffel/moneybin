@@ -1,0 +1,1 @@
+Database backup now validates a quiescent encrypted snapshot and publishes it atomically. Active writers, pending WAL, and existing destinations are refused instead of producing a potentially incomplete or overwritten backup.

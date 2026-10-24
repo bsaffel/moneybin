@@ -1642,11 +1642,24 @@ class TestDbBackupCommand:
         return CliRunner()
 
     def test_backup_creates_file(
-        self, runner: CliRunner, mocker: Any, tmp_path: Path
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
     ) -> None:
         """Backup command creates a timestamped backup file."""
         test_db = tmp_path / "test.duckdb"
-        test_db.write_bytes(b"data")
+        from moneybin.database import Database
+
+        with Database(
+            test_db,
+            read_only=False,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+        ):
+            pass
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
         _make_settings_mock(test_db, mocker)
 
         result = runner.invoke(app, ["backup"])
@@ -1656,11 +1669,24 @@ class TestDbBackupCommand:
         assert len(backups) == 1
 
     def test_backup_to_custom_output(
-        self, runner: CliRunner, mocker: Any, tmp_path: Path
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
     ) -> None:
         """Backup command writes to specified --output path."""
         test_db = tmp_path / "test.duckdb"
-        test_db.write_bytes(b"data")
+        from moneybin.database import Database
+
+        with Database(
+            test_db,
+            read_only=False,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+        ):
+            pass
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
         _make_settings_mock(test_db, mocker)
 
         output_path = tmp_path / "my_backup.duckdb"
@@ -1668,8 +1694,39 @@ class TestDbBackupCommand:
         assert result.exit_code == 0
         assert output_path.exists()
 
+    def test_backup_refuses_live_committed_wal(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
+    ) -> None:
+        from moneybin.database import Database
+
+        source, output = tmp_path / "source.duckdb", tmp_path / "copy.duckdb"
+        _make_settings_mock(source, mocker)
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_secret_store)
+        with Database(
+            source,
+            read_only=False,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+        ) as db:
+            db.checkpoint("pre_backup")
+            db.execute(
+                "INSERT INTO app.versions (component, version) VALUES ('retained', '2')"
+            )
+            result = runner.invoke(app, ["backup", "--output", str(output)])
+            assert result.exit_code == 1
+            assert "Backup created" not in result.output
+            assert not output.exists()
+
     def test_backup_fails_when_db_missing(
-        self, runner: CliRunner, mocker: Any, tmp_path: Path
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        mock_secret_store: MagicMock,
     ) -> None:
         """Backup command fails when database doesn't exist."""
         _make_settings_mock(tmp_path / "missing.duckdb", mocker)
@@ -2419,7 +2476,8 @@ class TestDbMaintenanceInterrupts:
         db_path.write_bytes(b"source")
         _make_settings_mock(db_path, mocker)
         mocker.patch(
-            "moneybin.cli.commands.db.shutil.copy2", side_effect=KeyboardInterrupt
+            "moneybin.services.database_backup_service.backup_encrypted_database",
+            side_effect=KeyboardInterrupt,
         )
 
         result = CliRunner().invoke(

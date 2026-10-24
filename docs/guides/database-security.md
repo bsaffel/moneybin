@@ -180,15 +180,11 @@ Machine B's keychain now holds the key; verify with `moneybin db info`.
 
 With no arguments it writes `<base>/profiles/<profile>/backups/moneybin_<timestamp>.duckdb`; `-o` takes an explicit destination. Flags are in the [`db` CLI reference](../reference/cli/db.md).
 
-```console
-$ uv run moneybin db backup
-Copying database backup
-Securing database backup
-```
-
-The two stage lines are stderr; the receipt is the one stdout line, and it is cut because it names the snapshot path described above. It reports the size as `14.3 MB` — the same size `db info` reports for the live file.
-
-It's a `shutil.copy2` of the encrypted file with `0600` permissions applied. The backup is **encrypted with the same key as the live database** — the file you copy off the machine is opaque without that key.
+Backup verifies a quiescent encrypted snapshot before publishing a complete file
+with `0600` permissions. It refuses an active writer, pending WAL, or an existing
+destination; close the writer and retry with an unused destination. The backup
+uses the same key as the live database. Retain that key separately: the snapshot
+contains Raw evidence and App state, but cannot recover a lost key.
 
 ### What `db restore` does
 
@@ -331,7 +327,7 @@ After a schema change, downstream views and reports are refreshed by the data pi
 
 `db ps` lists the processes holding the database file open; `db kill` sends them SIGTERM as a last resort for a stuck writer; `db shell` opens an interactive DuckDB shell with the encrypted database pre-attached as `moneybin`; `db query` runs one statement; `db info` reports path, size, and encryption state without unlocking. The flags and output formats are in the [`db` CLI reference](../reference/cli/db.md).
 
-Check `db ps` before a backup or restore — a snapshot taken mid-write is corrupt:
+Check `db ps` before a backup or restore; backup refuses active writers and pending WAL:
 
 ```console
 $ uv run moneybin db ps
