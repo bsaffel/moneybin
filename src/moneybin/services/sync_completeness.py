@@ -39,6 +39,7 @@ from moneybin.tables import (
     SIMPLEFIN_RESPONSES,
     SIMPLEFIN_SYNC_RECEIPTS,
     SIMPLEFIN_TRANSACTIONS,
+    STG_SIMPLEFIN_TRANSACTIONS,
     SYNC_JOB_STATE,
 )
 
@@ -243,18 +244,44 @@ class SyncCompletenessService:
             observation_date = (
                 "posted_at" if table == SIMPLEFIN_TRANSACTIONS else "balance_at"
             )
-            for origin, native, error, currency, observed_at in self.db.execute(
-                f"""SELECT source_origin, account_id, validation_error, currency, {observation_date}
+            reference = (
+                "transaction_reference" if table == SIMPLEFIN_TRANSACTIONS else "NULL"
+            )
+            latest = self.db.execute(
+                f"""SELECT source_origin, account_id, validation_error, currency, {observation_date}, {reference}
                     FROM {table.full_name}
                     QUALIFY ROW_NUMBER() OVER (PARTITION BY {partition}
                         ORDER BY fetched_at DESC, batch_id DESC,
                             observation_version DESC) = 1"""  # fixed TableRefs and partition expressions
-            ).fetchall():
+            ).fetchall()
+            projected_dates: dict[str, date] = {}
+            if (
+                self.transaction_scope
+                and table == SIMPLEFIN_TRANSACTIONS
+                and any(row[2] is not None for row in latest)
+                and has_column(
+                    self.db, STG_SIMPLEFIN_TRANSACTIONS, "source_transaction_id"
+                )
+                and has_column(self.db, STG_SIMPLEFIN_TRANSACTIONS, "posted_date")
+            ):
+                # Reuse staging's structural eligibility: a malformed correction
+                # can leave a validated observation in a different report month.
+                projected_dates = {
+                    str(ref): posted_date
+                    for ref, posted_date in self.db.execute(
+                        f"SELECT source_transaction_id, posted_date FROM {STG_SIMPLEFIN_TRANSACTIONS.full_name}"  # trusted TableRef
+                    ).fetchall()
+                }
+            for origin, native, error, currency, observed_at, ref in latest:
+                projected_date = projected_dates.get(str(ref)) if error else None
                 if self.transaction_scope and observed_at is not None:
-                    observed_date = observed_at.astimezone(UTC).date()
+                    dates = [observed_at.astimezone(UTC).date()]
+                    if projected_date is not None:
+                        dates.append(projected_date)
                     if not any(
                         (lower is None or lower <= observed_date)
                         and (upper is None or observed_date <= upper)
+                        for observed_date in dates
                         for lower, upper in self.transaction_windows
                     ):
                         continue
@@ -272,6 +299,8 @@ class SyncCompletenessService:
                         if observed_at is not None
                         else "unknown dates"
                     )
+                    if projected_date is not None:
+                        self.affected_windows.add(projected_date.isoformat())
 
         self._receipt_issues(receipts, add, observed_scopes)
         # Accepted targets can still be legacy native IDs; bindings do not

@@ -664,6 +664,11 @@ class DoctorService:
                 detail="No known gaps in local sync evidence.",
                 affected_ids=[],
             )
+        transaction_reasons = [
+            reason
+            for reason in transaction_result.reasons
+            if reason not in result.reasons
+        ]
         return InvariantResult(
             name=name,
             status="warn",
@@ -674,17 +679,14 @@ class DoctorService:
                 for reason in result.reasons
             )
             + (
-                ". Transaction evidence: "
+                (". " if result.reasons else "")
+                + "Transaction evidence: "
                 + "; ".join(
                     f"{reason.kind} ({reason.affected_account_count} affected accounts, "
                     f"{reason.unresolved_scope_count} unresolved scopes)"
-                    for reason in transaction_result.reasons
-                    if reason not in result.reasons
+                    for reason in transaction_reasons
                 )
-                if any(
-                    reason not in result.reasons
-                    for reason in transaction_result.reasons
-                )
+                if transaction_reasons
                 else ""
             )
             + (
