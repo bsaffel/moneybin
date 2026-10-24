@@ -3,7 +3,7 @@
    source file with minimal transformation — amounts are sign-normalized but all
    original values are preserved for audit. */
 CREATE TABLE IF NOT EXISTS raw.tabular_transactions (
-    transaction_id VARCHAR NOT NULL,            -- Deterministic identifier: source_transaction_id when available, else SHA-256 hash of date|amount|description|account_id|row_number
+    transaction_id VARCHAR NOT NULL,            -- Deterministic identifier: account_id:source_transaction_id when available, else source-prefixed SHA-256 of date|amount|description|account_id; only repeated identical content adds an occurrence suffix
     account_id VARCHAR NOT NULL,                -- Source-system account identifier; for multi-account files extracted from per-row account column, for single-account files provided or generated
     transaction_date DATE NOT NULL,             -- Primary transaction date parsed from source using detected or specified date format
     post_date DATE,                             -- Settlement or posting date when distinct from transaction date; NULL if source provides only one date
@@ -22,11 +22,11 @@ CREATE TABLE IF NOT EXISTS raw.tabular_transactions (
     balance DECIMAL(18, 2),                     -- Running account balance after this transaction if provided by source
     currency VARCHAR,                           -- ISO 4217 currency code if present in source (e.g. USD, EUR); captured now, multi-currency processing deferred
     member_name VARCHAR,                        -- Account holder, cardholder, or member name if present in source
-    source_file VARCHAR NOT NULL,               -- Absolute path to the imported file at time of extraction
+    source_file VARCHAR NOT NULL,               -- Source path or locator supplied to the extractor; not necessarily absolute
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe, pdf
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data (e.g. "chase_credit", "tiller", Plaid item_id); scopes Tier 2b dedup
     import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in app.import_log; enables import reverting and history
-    row_number INTEGER,                         -- 1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation
+    row_number INTEGER,                         -- 1-based row/line number in the source file for import diagnostics; never contributes to transaction identity
     extracted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
     deleted_from_source_at TIMESTAMPTZ,                  -- For live tabular sources (gsheet): timestamp when this row was observed absent from the source on the most recent pull. NULL means the row is currently present in source (or the source is non-live like a one-shot CSV import).

@@ -121,6 +121,34 @@ contributed to it. Not lineage — see **"Provenance"** under Flagged
 ambiguities.
 _Avoid_: history, audit trail, source tracking
 
+### Financial time
+
+**Business date**:
+The source-defined calendar day a financial fact belongs to.
+_Avoid_: transaction timestamp, ingestion date
+
+**Source as-of time**:
+When a source says an observation was valid. A source update time instead
+records when the source says its claim changed.
+_Avoid_: fetch time, arrival time
+
+**Broker fetch time**:
+When the sync server obtained a source response.
+_Avoid_: source as-of time, local arrival time
+
+**Local arrival time**:
+When MoneyBin received or recorded an observation locally.
+_Avoid_: business date, source update time
+
+**Row freshness**:
+The latest contributing input time under a model's freshness rule; it can
+change independently of when the financial fact occurred.
+_Avoid_: source recency, change cursor
+
+**Model freshness**:
+When a model's definition, metadata, or execution was last applied.
+_Avoid_: row freshness, observation time
+
 ### Money
 
 **Transaction**:

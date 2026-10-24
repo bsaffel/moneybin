@@ -1,4 +1,8 @@
-/* Canonical transactions fact view; reads from the deduplicated merged layer
+/* One row per canonical transaction, keyed by transaction_id. Account/category/
+   merchant joins are many-to-one; notes, tags, and splits aggregate before joining
+   to preserve header cardinality. Amount is additive within one currency; use
+   fct_transaction_lines for split-category totals and never sum both grains.
+   Canonical transactions fact view; reads from the deduplicated merged layer
    with categorization and merchant joins; negative amount = expense, positive = income.
    Curation columns (notes/tags/splits + counts) join from app.* per Architectural
    Pattern 1: app.* writes are flat-relational; consumers read DuckDB nested types.

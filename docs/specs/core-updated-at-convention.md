@@ -46,6 +46,34 @@ Three corollaries:
 2. **Never use `CURRENT_TIMESTAMP AS updated_at` inside a FULL table either** unless the intent really is "every row gets the same timestamp on every apply." For the dim models in scope here, that's the wrong semantic — replace with a `GREATEST(...)` over real per-row inputs.
 3. **A FULL model folds only restating timestamps.** A curation timestamp (a settings row's `updated_at`, a note's `created_at`) advances at write time, while a materialized row moves only on its next rebuild, so folding one reports a change before it has happened. Materialized models fold a field's own `*_changed_at` instead — see [`materialization-freshness-contract.md`](materialization-freshness-contract.md).
 
+### Distinct clocks
+
+Choose the clock that answers the consumer's question:
+
+| Clock | Meaning | Existing examples |
+|---|---|---|
+| Business or effective date | The source-defined calendar day to which a financial fact belongs. | Transaction posting date; `balance_date`. |
+| Source update or as-of time | When the source says a record changed or a value was observed. Update time and observation time retain their field-specific meanings. | Plaid `last_updated_datetime`; SimpleFIN `balance_at`. |
+| Broker fetch time | When the sync server obtained the source response, independent of client arrival. | SimpleFIN `fetched_at`; Plaid `extracted_at`. |
+| Local arrival time | When MoneyBin received or loaded the observation. | Raw `loaded_at`. |
+| Row freshness | Latest contributing per-row input timestamp under this model's formula, including applicable user-state changes. | Core `updated_at`. |
+| Model freshness | Definition, metadata-apply or execution time for a model, each exposed separately. | `meta.model_freshness.last_changed_at`, `last_applied_at`, `last_executed_at`. |
+
+A recent arrival or execution can contain an old source observation. Use the
+source's as-of time to assess source staleness; `updated_at` alone cannot answer
+that question. An absent source clock remains absent: receipt or fetch time
+must not be presented as evidence of when the source changed. The
+[Warehouse UTC contract](warehouse-utc.md) governs timestamp representation and
+business-date preservation.
+
+Selection order is source-specific. SimpleFIN balance staging first selects
+revisions at one `balance_at` by broker fetch order, then the latest source
+observation in each UTC day. Plaid investment transactions select the latest
+receipt by `extracted_at` and `ingestion_sequence`. Daily balances apply source
+precedence before observation receipt freshness. These orders answer different
+questions; substituting Core row freshness would let a classification edit
+change which financial observation wins.
+
 ### Per-model formulas
 
 `updated_at` uses `TIMESTAMPTZ` with aware UTC contributing clocks. Values may
@@ -69,7 +97,7 @@ observation's receipt timestamp independently of that classification freshness.
 
 ### Semantics for consumers
 
-- A row's `updated_at` advances if and only if a real input to that row changed (raw data reloaded, user edit, override toggled). It does *not* advance just because SQLMesh re-applied with no input change. This is the desired property — it lets consumers cheaply ask "what changed since timestamp X?" without false positives from idempotent reruns.
+- A row's `updated_at` reflects the timestamps included in its documented input formula. An idempotent SQLMesh re-apply does not itself advance it. It is neither guaranteed monotonic nor a universal change-data-capture cursor: some edits and deletes are invisible, deletion can remove the largest contributing timestamp, and account-scoped signals can advance rows whose projected values did not change. The limitations below govern incremental consumers; strict change tracking needs an operation-specific signal that covers the required edits and deletes.
 - `NULL` `updated_at` means "this row's freshness is the model's freshness." Consumers needing a non-`NULL` answer should `COALESCE(updated_at, <meta.model_freshness.last_changed_at for this row's contributing seed model>)`. The model name is derivable from row-level fields where it matters (e.g., `is_default = TRUE` rows in `dim_categories` came from `seeds.categories`).
 - `updated_at` does not imply causality across rows. Two rows with the same `updated_at` may have changed for unrelated reasons.
 

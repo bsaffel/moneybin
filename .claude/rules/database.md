@@ -244,6 +244,30 @@ Claude defaults to PostgreSQL syntax. Use DuckDB equivalents:
 | Read file | `read_csv('f.csv')`, `read_parquet('*.parquet')` | N/A |
 | Write file | `COPY (...) TO 'f.csv' (HEADER, DELIMITER ',')` | `\copy` or `COPY` with different options |
 
+## Numeric boundaries
+
+The types below define supported storage precision, not arbitrary currency
+minor-unit support. Preserve source amount/currency evidence when rejecting or
+withholding an unsupported value; make that outcome visible rather than silently
+rounding it into a valid fact. Source-specific policies remain in their specs.
+
+Keep authoritative arithmetic exact through intermediate operations and data
+frame boundaries. DuckDB DECIMAL division returns floating point; casting the
+result back cannot restore lost digits. Use a proven exact allocation boundary
+and round once under the domain's policy. Preserve Decimal values across pandas
+with the existing VARCHAR/Decimal conversion pattern when pandas is required.
+
+Check values near rounding ties and the declared type limits. Money, quantity,
+price, and rate scales differ; intermediate precision and residual allocation
+must preserve the accounting total. Domain rounding belongs in
+[investment accounting](../../docs/specs/investments-data-model.md) and
+[multi-currency accounting](../../docs/specs/multi-currency.md).
+
+The response envelope currently encodes Decimal as JSON numbers through binary
+floating point; it does not promise every stored decimal digit. Exact consumers
+can use decimal-preserving CSV or Parquet exports. Changing machine numeric
+representation is a separate public-contract decision.
+
 ## Anti-Patterns
 
 - No MySQL/PostgreSQL-specific syntax (this is DuckDB).
