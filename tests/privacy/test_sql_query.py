@@ -2500,14 +2500,47 @@ def test_metadata_unknown_table_log_names_the_error_type_not_the_query(
     )
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a.nope FROM core.dim_accounts a",
+        "SELECT * EXCLUDE (nope) FROM core.dim_accounts",
+        "SELECT * REPLACE (1 AS nope) FROM core.dim_accounts",
+        "SELECT t.nope FROM (SELECT account_id FROM core.dim_accounts) t",
+        "SELECT COLUMNS('^nope$') FROM core.dim_accounts",
+        "SELECT a.account_id FROM core.dim_accounts a "
+        "JOIN core.dim_accounts b USING (nope)",
+    ],
+    ids=[
+        "qualified",
+        "exclude",
+        "replace",
+        "derived-table",
+        "columns-regex",
+        "join-using",
+    ],
+)
+def test_every_missing_column_message_shape_gets_unknown_column_code(
+    populated_db: Database, sql: str
+) -> None:
+    """Each DuckDB missing-column binder message maps to sql_unknown_column."""
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(populated_db, sql, max_rows=10)
+    assert ei.value.code == error_codes.SQL_UNKNOWN_COLUMN
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT account_id FROM core.dim_accounts LIMIT -1",
+        "SELECT x.account_id FROM core.dim_accounts",
+    ],
+    ids=["negative-limit", "missing-table-alias"],
+)
 def test_non_column_binder_error_keeps_unknown_table_code(
-    populated_db: Database,
+    populated_db: Database, sql: str
 ) -> None:
     """Only a missing column gets sql_unknown_column; other binder errors don't."""
     with pytest.raises(UserError) as ei:
-        execute_sql_query(
-            populated_db,
-            "SELECT account_id FROM core.dim_accounts LIMIT -1",
-            max_rows=10,
-        )
+        execute_sql_query(populated_db, sql, max_rows=10)
     assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE

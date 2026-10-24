@@ -509,19 +509,29 @@ def _identifier_detail(exc: Exception) -> str | None:
     return masked or None
 
 
-# DuckDB BinderException heads for a missing column (`Referenced column "x"
-# not found in FROM clause!`, `Table "t" does not have a column named "x"`).
+# DuckDB BinderException heads for a missing column: a bare or qualified
+# reference (`Table "t"` or, for a derived table, `Values list "t"`), a
+# `* EXCLUDE`/`* REPLACE` entry, or a `COLUMNS('re')` that matches nothing.
 # Other binder errors (bad LIMIT, GROUP BY position, missing alias) stay on
 # `sql_unknown_table`.
 _MISSING_COLUMN = re.compile(
     r'^Binder Error: (?:Referenced column ".*?" not found|'
-    r'Table ".*?" does not have a column named)'
+    r".*? does not have a column named|"
+    r'Column ".*?" in (?:EXCLUDE|REPLACE) list not found|'
+    r"No matching columns found)"
 )
+
+# sqlglot's qualify step rejects a qualified reference to a column its known
+# source lacks (`t.nope`, a derived table's `t.nope`, `USING (nope)`) before
+# DuckDB sees the query; these are its only two column-miss messages.
+_QUALIFY_MISSING_COLUMN = re.compile(r"^(?:Unknown column|Cannot automatically join): ")
 
 
 def _bind_error_code(exc: Exception) -> str:
-    """`sql_unknown_column` for a DuckDB missing-column miss, else `sql_unknown_table`."""
+    """`sql_unknown_column` for a missing-column miss, else `sql_unknown_table`."""
     if isinstance(exc, duckdb.BinderException) and _MISSING_COLUMN.match(str(exc)):
+        return error_codes.SQL_UNKNOWN_COLUMN
+    if isinstance(exc, SqlSchemaError) and _QUALIFY_MISSING_COLUMN.match(str(exc)):
         return error_codes.SQL_UNKNOWN_COLUMN
     return error_codes.SQL_UNKNOWN_TABLE
 
