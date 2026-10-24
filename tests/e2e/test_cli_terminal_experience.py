@@ -283,6 +283,7 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             """
             fx rate
             db key show
+            db key verify
             system doctor
             mcp config path
             import inbox path
@@ -325,7 +326,6 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             transactions categorize ml train
             db key export
             db key import
-            db key verify
             """
         ),
         "mutation_or_receipt": _paths(

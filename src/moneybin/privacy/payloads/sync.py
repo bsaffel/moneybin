@@ -164,6 +164,9 @@ class SyncPullPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
+    # Securities and investment transactions (like accounts and balances) count
+    # rows new or changed; holdings and lots count those that differ from the
+    # item's previous snapshot.
     securities_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     investment_transactions_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     holdings_loaded: Annotated[int, DataClass.AGGREGATE] = 0

@@ -51,6 +51,7 @@ from moneybin.tables import (
     PLAID_SECURITIES,
     PLAID_TRANSACTIONS,
     SECURITY_PRICES,
+    TableRef,
 )
 from moneybin.temporal import as_utc
 
@@ -67,13 +68,46 @@ def _utc_date(value: datetime) -> date:
     return as_utc(value).date()
 
 
+def _reported_items(
+    holdings: list[SyncHolding], institutions: list[InstitutionResult]
+) -> set[str]:
+    """Items whose holdings this pull fetched; see ``_load_holdings_snapshots``."""
+    return {
+        inst.provider_item_id
+        for inst in institutions
+        if inst.status == "completed" and inst.transactions_window_start is not None
+    } | {holding.provider_item_id for holding in holdings}
+
+
+def _quoted_columns(df: pl.DataFrame, ignored: frozenset[str]) -> str:
+    """Comma-joined, quoted column list of ``df`` minus ``ignored``."""
+    from sqlglot import exp
+
+    return ", ".join(
+        exp.to_identifier(c, quoted=True).sql("duckdb")
+        for c in df.columns
+        if c not in ignored
+    )
+
+
 @dataclass(frozen=True)
 class LoadResult:
-    """Per-table row counts returned by PlaidExtractor.load()."""
+    """Per-table row counts returned by PlaidExtractor.load().
+
+    Accounts, balances, securities, and investment transactions count rows that
+    are new or whose content changed; holdings and lots count those that differ
+    from the item's previous snapshot. Re-sent, unchanged rows are still written
+    (their load metadata advances) but are not counted — see ``rows_written``.
+    """
 
     accounts_loaded: int
     transactions_loaded: int
     balances_loaded: int
+    # Every raw row written, changed or not. Downstream models read the load
+    # metadata (extracted_at, the newest snapshot's as_of), so a refresh gate
+    # keys on this rather than on the content-change counts. Required: a
+    # missing value would read as "nothing written" and skip the refresh.
+    rows_written: int
     securities_loaded: int = 0
     investment_transactions_loaded: int = 0
     holdings_loaded: int = 0
@@ -83,6 +117,10 @@ class LoadResult:
     # broker's pull it is the ONLY one — so callers gating refresh on "did
     # anything change" must be able to see it.
     holdings_snapshots_loaded: int = 0
+
+
+# Columns that advance on every write without the source reporting anything new.
+_LOAD_METADATA = frozenset({"source_file", "extracted_at", "loaded_at"})
 
 
 _ACCOUNTS_SCHEMA = pl.Schema({
@@ -365,19 +403,27 @@ class PlaidExtractor:
         security_prices_loaded = self._load_security_prices(
             sync_data.securities, extracted_at, loaded_at
         )
-        investment_transactions_loaded = self._load_investment_transactions(
-            sync_data.investment_transactions,
-            source_file,
-            extracted_at,
-            loaded_at,
-            in_outer_txn=in_outer_txn,
+        investment_transactions_loaded, investment_receipts_written = (
+            self._load_investment_transactions(
+                sync_data.investment_transactions,
+                source_file,
+                extracted_at,
+                loaded_at,
+                in_outer_txn=in_outer_txn,
+            )
         )
-        holdings_loaded, holding_lots_loaded = self._load_investment_holdings(
-            sync_data.investment_holdings,
-            window_by_item,
-            source_file,
-            extracted_at,
-            loaded_at,
+        reported_items = _reported_items(
+            sync_data.investment_holdings, sync_data.metadata.institutions
+        )
+        holdings_loaded, holding_lots_loaded, lots_written = (
+            self._load_investment_holdings(
+                sync_data.investment_holdings,
+                window_by_item,
+                reported_items,
+                source_file,
+                extracted_at,
+                loaded_at,
+            )
         )
         # Deliberately NOT inside _load_investment_holdings' `if not holdings`
         # early return: the receipt's entire purpose is the pull where holdings
@@ -385,9 +431,22 @@ class PlaidExtractor:
         holdings_snapshots_loaded = self._load_holdings_snapshots(
             sync_data.investment_holdings,
             sync_data.metadata.institutions,
+            reported_items,
             source_file,
             extracted_at,
             loaded_at,
+        )
+        # Accounts, balances, securities, and holdings write every row offered.
+        rows_written = (
+            len(sync_data.accounts)
+            + transactions_loaded
+            + len(sync_data.balances)
+            + len(sync_data.securities)
+            + security_prices_loaded
+            + investment_receipts_written
+            + len(sync_data.investment_holdings)
+            + lots_written
+            + holdings_snapshots_loaded
         )
         return LoadResult(
             accounts_loaded=accounts_loaded,
@@ -399,6 +458,7 @@ class PlaidExtractor:
             holding_lots_loaded=holding_lots_loaded,
             holdings_snapshots_loaded=holdings_snapshots_loaded,
             security_prices_loaded=security_prices_loaded,
+            rows_written=rows_written,
         )
 
     def _validate_holdings_windows(
@@ -544,13 +604,10 @@ class PlaidExtractor:
             ],
             schema=_ACCOUNTS_SCHEMA,
         )
+        changed = self._count_changed(PLAID_ACCOUNTS, df)
         self.db.ingest_dataframe(PLAID_ACCOUNTS.full_name, df, on_conflict="upsert")
-        # Info, not debug: the CLI's per-institution totals go out via
-        # typer.echo, which never reaches the log file — so these row counts
-        # are the only durable record of what a sync loaded. Denylisted from
-        # the console instead, where "Plaid account" misnames a Chase card.
-        logger.debug(f"Prepared {len(df)} Plaid accounts")
-        return len(df)
+        logger.debug(f"Prepared {len(df)} Plaid accounts ({changed} new or changed)")
+        return changed
 
     def _load_transactions(
         self,
@@ -607,9 +664,12 @@ class PlaidExtractor:
             ],
             schema=_BALANCES_SCHEMA,
         )
+        changed = self._count_changed(PLAID_BALANCES, df)
         self.db.ingest_dataframe(PLAID_BALANCES.full_name, df, on_conflict="upsert")
-        logger.debug(f"Prepared {len(df)} Plaid balance snapshots")
-        return len(df)
+        logger.debug(
+            f"Prepared {len(df)} Plaid balance snapshots ({changed} new or changed)"
+        )
+        return changed
 
     def _load_securities(
         self,
@@ -634,6 +694,7 @@ class PlaidExtractor:
             ],
             schema=_SECURITIES_SCHEMA,
         )
+        changed = self._count_changed(PLAID_SECURITIES, df)
         self.db.ingest_dataframe(PLAID_SECURITIES.full_name, df, on_conflict="upsert")
         record_counter(
             SYNC_INVESTMENTS_RECORDS_LOADED,
@@ -643,7 +704,22 @@ class PlaidExtractor:
             observations=self.observations,
         )
         logger.debug(f"Prepared {len(df)} Plaid securities")
-        return len(df)
+        return changed
+
+    def _count_changed(self, table: TableRef, df: pl.DataFrame) -> int:
+        """Rows of ``df`` with no identical stored row, ignoring load metadata."""
+        cols = _quoted_columns(df, _LOAD_METADATA)
+        with self.db.registered_dataframe(df) as view:
+            row = self.db.execute(
+                f"""
+                SELECT COUNT(*) FROM (
+                    SELECT {cols} FROM {view}
+                    EXCEPT
+                    SELECT {cols} FROM {table.full_name}
+                )
+                """  # noqa: S608  # TableRef constant and quoted schema columns, no values
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def _load_security_prices(
         self,
@@ -725,9 +801,10 @@ class PlaidExtractor:
         loaded_at: datetime,
         *,
         in_outer_txn: bool = False,
-    ) -> int:
+    ) -> tuple[int, int]:
+        """Record revisions and receipts; return (new or changed, receipts written)."""
         if not transactions:
-            return 0
+            return (0, 0)
         self._warn_amount_drift(transactions)
         # DO NOT NEGATE amount here. Plaid convention (positive = cash out)
         # is preserved in raw; the flip lives in stg_plaid__investment_transactions.
@@ -766,6 +843,9 @@ class PlaidExtractor:
         if not in_outer_txn:
             self.db.begin()
         try:
+            # Before the receipts land: a revert to an earlier version writes no
+            # new revision but still changes which version is current.
+            changed = self._count_changed_from_latest_receipt(receipts)
             self.db.ingest_dataframe(
                 PLAID_INVESTMENT_TRANSACTIONS.full_name,
                 revisions,
@@ -790,18 +870,43 @@ class PlaidExtractor:
             observations=self.observations,
         )
         logger.debug(f"Prepared {written} Plaid investment transaction receipts")
-        return written
+        return changed, written
+
+    def _count_changed_from_latest_receipt(self, receipts: pl.DataFrame) -> int:
+        """Transactions whose version differs from their latest receipt, or have none.
+
+        The latest-receipt ordering mirrors
+        prep.stg_plaid__investment_transactions.current_receipts.
+        """
+        with self.db.registered_dataframe(receipts) as view:
+            row = self.db.execute(
+                f"""
+                WITH latest AS (
+                    SELECT investment_transaction_id, source_origin, observation_version
+                    FROM {PLAID_INVESTMENT_TRANSACTION_RECEIPTS.full_name}
+                    QUALIFY ROW_NUMBER() OVER (
+                        PARTITION BY investment_transaction_id, source_origin
+                        ORDER BY extracted_at DESC, ingestion_sequence DESC
+                    ) = 1
+                )
+                SELECT COUNT(*)
+                FROM {view} AS incoming
+                LEFT JOIN latest USING (investment_transaction_id, source_origin)
+                WHERE latest.observation_version IS DISTINCT FROM incoming.observation_version
+                """  # noqa: S608  # TableRef constant and generated view name; no user input
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def _load_investment_holdings(
         self,
         holdings: list[SyncHolding],
         window_by_item: dict[str, date | None],
+        reported_items: set[str],
         source_file: str,
         extracted_at: datetime,
         loaded_at: datetime,
-    ) -> tuple[int, int]:
-        if not holdings:
-            return (0, 0)
+    ) -> tuple[int, int, int]:
+        """Write this snapshot; return (positions changed, lots changed, lots written)."""
         holding_rows: list[dict[str, object]] = []
         lot_rows: list[dict[str, object]] = []
         for holding in holdings:
@@ -840,19 +945,36 @@ class PlaidExtractor:
                     "loaded_at": loaded_at,
                 })
         df_holdings = pl.DataFrame(holding_rows, schema=_INVESTMENT_HOLDINGS_SCHEMA)
-        self.db.ingest_dataframe(
-            PLAID_INVESTMENT_HOLDINGS.full_name, df_holdings, on_conflict="upsert"
+        df_lots = pl.DataFrame(lot_rows, schema=_INVESTMENT_HOLDING_LOTS_SCHEMA)
+        # Before the write: the comparison baseline is the PREVIOUS snapshot.
+        # Runs on an empty pull too, so a fully sold-off item counts its exits.
+        changed = self._count_changed_since_snapshot(
+            PLAID_INVESTMENT_HOLDINGS,
+            df_holdings,
+            reported_items,
+            grain=("account_id", "security_id"),
         )
-        record_counter(
-            SYNC_INVESTMENTS_RECORDS_LOADED,
-            labels={"table": "plaid_investment_holdings"},
-            amount=len(df_holdings),
-            emit_metrics=True,
-            observations=self.observations,
+        lots_changed = self._count_changed_since_snapshot(
+            PLAID_INVESTMENT_HOLDING_LOTS,
+            df_lots,
+            reported_items,
+            grain=("account_id", "security_id"),
+            # The provider's array position, not lot identity: a reordered
+            # list must not read as changed lots.
+            ignored=frozenset({"lot_index"}),
         )
-        lots_loaded = 0
+        if holdings:
+            self.db.ingest_dataframe(
+                PLAID_INVESTMENT_HOLDINGS.full_name, df_holdings, on_conflict="upsert"
+            )
+            record_counter(
+                SYNC_INVESTMENTS_RECORDS_LOADED,
+                labels={"table": "plaid_investment_holdings"},
+                amount=len(df_holdings),
+                emit_metrics=True,
+                observations=self.observations,
+            )
         if lot_rows:
-            df_lots = pl.DataFrame(lot_rows, schema=_INVESTMENT_HOLDING_LOTS_SCHEMA)
             self.db.ingest_dataframe(
                 PLAID_INVESTMENT_HOLDING_LOTS.full_name, df_lots, on_conflict="upsert"
             )
@@ -863,16 +985,83 @@ class PlaidExtractor:
                 emit_metrics=True,
                 observations=self.observations,
             )
-            lots_loaded = len(df_lots)
         logger.debug(
-            f"Prepared {len(df_holdings)} Plaid holdings rows, {lots_loaded} tax lots"
+            f"Prepared {len(df_holdings)} Plaid holdings rows ({changed} positions "
+            f"changed), {len(df_lots)} tax lots ({lots_changed} changed)"
         )
-        return len(df_holdings), lots_loaded
+        return changed, lots_changed, len(df_lots)
+
+    def _count_changed_since_snapshot(
+        self,
+        table: TableRef,
+        df: pl.DataFrame,
+        reported_items: set[str],
+        *,
+        grain: tuple[str, ...],
+        ignored: frozenset[str] = frozenset(),
+    ) -> int:
+        """Rows added, removed, or changed since each item's previous snapshot.
+
+        Rows are compared as a multiset within each grain key, so a key's
+        change count is the larger of its added and removed rows: a revalued
+        row counts once, not as one removal plus one addition.
+
+        Snapshot-level columns (the date and the item's rolling transactions
+        window) are excluded: they move with the calendar, not the position.
+        The newest-snapshot ordering mirrors
+        prep.stg_plaid__investment_holdings_snapshots.is_newest, which reads
+        only after a refresh; this runs mid-load, before one.
+        """
+        if not reported_items:
+            return 0
+        cols = _quoted_columns(
+            df,
+            _LOAD_METADATA | {"holdings_date", "transactions_window_start"} | ignored,
+        )
+        keys = ", ".join([*grain, "source_origin"])
+        with self.db.registered_dataframe(df) as view:
+            row = self.db.execute(
+                f"""
+                WITH previous_snapshot AS (
+                    SELECT source_origin, source_file
+                    FROM {PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name}
+                    WHERE list_contains(?, source_origin)
+                    QUALIFY ROW_NUMBER() OVER (
+                        PARTITION BY source_origin
+                        ORDER BY extracted_at DESC, ingestion_sequence DESC
+                    ) = 1
+                ), current_rows AS (
+                    SELECT {cols} FROM {view}
+                ), previous_rows AS (
+                    SELECT {cols}
+                    FROM {table.full_name}
+                    JOIN previous_snapshot USING (source_origin, source_file)
+                ), differing AS (
+                    SELECT {keys}, 1 AS added, 0 AS removed FROM (
+                        SELECT * FROM current_rows
+                        EXCEPT ALL SELECT * FROM previous_rows
+                    )
+                    UNION ALL
+                    SELECT {keys}, 0 AS added, 1 AS removed FROM (
+                        SELECT * FROM previous_rows
+                        EXCEPT ALL SELECT * FROM current_rows
+                    )
+                ), per_key AS (
+                    SELECT SUM(added) AS added, SUM(removed) AS removed
+                    FROM differing
+                    GROUP BY {keys}
+                )
+                SELECT COALESCE(SUM(GREATEST(added, removed)), 0) FROM per_key
+                """,  # noqa: S608  # TableRef constants, quoted schema columns, literal grain keys; origins parameterized
+                [sorted(reported_items)],
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def _load_holdings_snapshots(
         self,
         holdings: list[SyncHolding],
         institutions: list[InstitutionResult],
+        reported_items: set[str],
         source_file: str,
         extracted_at: datetime,
         loaded_at: datetime,
@@ -899,12 +1088,8 @@ class PlaidExtractor:
         Items that DID deliver holdings are unioned in unconditionally, which
         holds the invariant every newest-snapshot consumer depends on: no
         holdings row exists whose (source_origin, source_file) has no receipt.
+        ``reported_items`` is that set, from ``_reported_items``.
         """
-        reported_items = {
-            inst.provider_item_id
-            for inst in institutions
-            if inst.status == "completed" and inst.transactions_window_start is not None
-        } | {holding.provider_item_id for holding in holdings}
         if not reported_items:
             return 0
         # Every reported item has a window: the first set is filtered on it, and

@@ -55,6 +55,21 @@ def test_loader_writes_accounts(db: Database, sync_data: PlaidSyncDataResponse) 
     )
 
 
+def test_reloading_unchanged_accounts_and_balances_counts_no_changes(
+    db: Database, sync_data: PlaidSyncDataResponse
+) -> None:
+    """A later job re-sending the same accounts and balances changes nothing."""
+    loader = PlaidExtractor(db)
+    loader.load(sync_data, job_id="job-1")
+    payload = sync_data.model_copy(deep=True)
+    payload.accounts[0].name = "Everyday Checking"
+
+    result = loader.load(payload, job_id="job-2")
+
+    assert result.accounts_loaded == 1  # only the renamed account
+    assert result.balances_loaded == 0
+
+
 def test_loader_writes_persistent_account_id_and_name(
     db: Database, sync_data: PlaidSyncDataResponse
 ) -> None:

@@ -202,6 +202,7 @@ Usage: `moneybin db key [OPTIONS] COMMAND [ARGS]...`
 |---|---|
 | [`moneybin db key show`](#moneybin-db-key-show) | Print the database encryption key. |
 | [`moneybin db key rotate`](#moneybin-db-key-rotate) | Re-encrypt the database with a new key. |
+| [`moneybin db key verify`](#moneybin-db-key-verify) | Verify the effective credential can open the existing database read-only. |
 
 ## moneybin db key show
 
@@ -227,6 +228,19 @@ Usage: `moneybin db key rotate [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--yes, -y` | flag |  | Skip confirmation prompt |
+
+## moneybin db key verify
+
+Verify the effective credential can open the existing database read-only.
+
+Usage: `moneybin db key verify [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin db migrate
 

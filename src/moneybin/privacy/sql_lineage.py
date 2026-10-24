@@ -376,20 +376,113 @@ def expand_star(tree: exp.Expr, snapshot: SchemaSnapshot) -> exp.Expr:
 
 
 def _scope_source_names(tree: exp.Expr) -> frozenset[str]:
-    """Every name bound by a CTE or a derived-table alias anywhere in ``tree``.
+    """Every qualifier in ``tree`` that must NOT resolve against the catalog.
 
-    These names SHADOW a same-named base table — that is plain SQL semantics,
-    not a security rule: given ``WITH dim_accounts AS (…) SELECT … FROM
-    dim_accounts``, the reference is the CTE and the catalog table is invisible.
-    ``_column_key`` uses this to refuse the catalog for such a reference.
+    An allow-list, inverted into the set ``_column_key`` refuses: a name stays
+    resolvable only when every binder of it in the query is a real catalog
+    table. Anything else that binds a name SHADOWS a same-named base table —
+    plain SQL semantics, not a security rule: given ``WITH dim_accounts AS (…)
+    SELECT … FROM dim_accounts``, the reference is the CTE and the catalog
+    table is invisible. The binders that are not a catalog table are every
+    ``exp.DerivedTable`` (CTE, subquery, ``VALUES``, ``UNNEST``, ``LATERAL``),
+    a ``PIVOT`` / ``UNPIVOT`` (whose output DuckDB generates, so a column may
+    answer to a catalog name while holding any arm the author wrote), a table
+    function, and a table reference to a CTE (``FROM c AS dim_accounts``). A
+    qualifier no catalog table binds at all is refused too — DuckDB rejects a
+    table's real name once it is aliased, so only a stray guess reaches it.
+
+    Enumerating binders case by case was the earlier shape, and each kind it
+    missed returned a CRITICAL value at tier LOW; inverting it means a new
+    binding syntax over-redacts instead. The projection path also refuses
+    these through ``_source_scope_of``; the scope-free paths
+    (``resolve_placeholder_classes``, ``resolve_projection_sources``) have
+    only this set.
 
     Deliberately whole-query rather than per-scope: a name bound anywhere is at
     worst declined here and answered by ``_conservative_floor``, so a too-wide
     set over-redacts, while a too-narrow one under-redacts.
     """
-    names = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
-    names |= {sub.alias for sub in tree.find_all(exp.Subquery)}
-    return frozenset(n for n in names if n)
+    # Case-folded: DuckDB matches identifiers case-insensitively, and the
+    # unqualified fallback tree keeps the author's spelling (`WITH C … FROM c`).
+    ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
+    catalog: set[str] = set()
+    other = {node.alias_or_name for node in tree.find_all(exp.DerivedTable)}
+    other |= {pivot.alias for pivot in tree.find_all(exp.Pivot)}
+    for tbl in tree.find_all(exp.Table):
+        name = tbl.alias or tbl.name
+        if _is_catalog_binder(tbl) and (tbl.db or tbl.name.lower() not in ctes):
+            catalog.add(name)
+        else:
+            other.add(name)
+    used = {col.table for col in tree.find_all(exp.Column)}
+    return frozenset(n for n in other | (used - catalog) if n)
+
+
+def _renames_columns(node: exp.Expr) -> bool:
+    """True if ``node``'s alias carries a column list (``AS d(a, b, …)``).
+
+    The list renames the source's columns BY POSITION, so a name read through it
+    need not be the column of that name: ``core.dim_accounts AS d(account_id,
+    account_type, routing_number)`` makes ``d.account_type`` the routing number.
+    """
+    alias = node.args.get("alias")
+    return isinstance(alias, exp.TableAlias) and bool(alias.columns)
+
+
+def _is_catalog_binder(tbl: exp.Table) -> bool:
+    """True if ``tbl`` binds its name to a catalog table's own, unrenamed columns.
+
+    A pivot generates the columns its name exposes, a table function's output
+    is not a table, and a column-list alias renames by position; none may lend
+    a catalog column's class. The caller decides whether a schema-less name is
+    a CTE reference, since only it knows how this tree resolves names.
+    """
+    return (
+        not tbl.args.get("pivots")
+        and isinstance(tbl.this, exp.Identifier)
+        and not _renames_columns(tbl)
+    )
+
+
+def _catalog_key(
+    col: exp.Column,
+    scope: Scope | None,
+    alias_map: dict[str, tuple[str, str]],
+    snapshot: SchemaSnapshot,
+    shadowed: frozenset[str],
+) -> tuple[str, str, str] | None:
+    """The catalog column ``col`` reads where its FROM binds it, or None.
+
+    Per-scope where a scope binds ``col.table``, so ``dim_accounts`` bound to
+    ``core.dim_accounts`` inside one CTE still resolves while the same name
+    bound to a CTE in the outer query does not — a whole-query set cannot tell
+    the two apart. The key comes from that binder itself, never the alias map,
+    which is last-write-wins across scopes: ``FROM app.account_links t WHERE
+    EXISTS (SELECT 1 FROM app.merchant_links t)`` mapped ``t`` to the inner
+    table and returned an ACCOUNT_IDENTIFIER as RECORD_ID/LOW. Where no scope on
+    the chain binds the name, ``shadowed`` (``_scope_source_names``) and the
+    alias map answer for the whole query.
+    """
+    binding = _binding_scope(col, scope) if scope is not None else None
+    if binding is None:
+        return _column_key(col, alias_map, snapshot, shadowed)
+    source = binding.selected_sources[col.table][1]
+    if not (isinstance(source, exp.Table) and _is_catalog_binder(source)):
+        return None
+    if not source.db:
+        return _bare_catalog_key(source.name, col.name, snapshot)
+    key = (source.db, source.name, col.name)
+    return key if key in snapshot.columns else None
+
+
+def _bare_catalog_key(
+    table: str, column: str, snapshot: SchemaSnapshot
+) -> tuple[str, str, str] | None:
+    """The catalog key for a schema-less ``table.column``; the snapshot names the schema."""
+    for actual_schema, t, c in snapshot.columns:
+        if t == table and c == column:
+            return (actual_schema, t, c)
+    return None
 
 
 def _column_key(
@@ -403,14 +496,15 @@ def _column_key(
     After qualify(), col.table is the alias or dealiased table name.
     col.db is NOT populated. We resolve via the alias_map.
 
-    ``shadowed`` names CTEs / derived tables (see ``_scope_source_names``); a
-    column qualified by one of them NEVER resolves against the catalog. Both
-    lookups below would otherwise produce a false-positive catalog hit for a
-    CTE named after a real table: ``_build_alias_map`` walks ``Table`` nodes
-    *inside* CTE bodies, so ``core.dim_accounts`` self-registers under the bare
-    key ``dim_accounts``, and the bare-name scan matches any CTE named like a
-    catalog table. Callers on the *resolution* path must pass it;
-    ``collect_input_columns`` deliberately does not (see its docstring).
+    ``shadowed`` is every qualifier that must not resolve against the catalog
+    (see ``_scope_source_names``). Both lookups below would otherwise produce a
+    false-positive catalog hit for a name a CTE, pivot, or other non-table
+    binds: ``_build_alias_map`` walks ``Table`` nodes *inside* CTE bodies, so
+    ``core.dim_accounts`` self-registers under the bare key ``dim_accounts``,
+    and the bare-name scan matches any qualifier spelled like a catalog table.
+    Scope-free resolution callers must pass it; the projection path reaches
+    this only through ``_catalog_key``, and ``collect_input_columns``
+    deliberately does not pass it (see its docstring).
     """
     name = col.name
     table_ref = col.table  # alias or real table name
@@ -425,12 +519,8 @@ def _column_key(
         key = (schema, real_table, name)
         return key if key in snapshot.columns else None
 
-    # No alias hit — unqualified table reference. Search the catalog for a
-    # (table, column) match; the schema from snapshot.columns is authoritative.
-    for actual_schema, t, c in snapshot.columns:
-        if t == table_ref and c == name:
-            return (actual_schema, t, c)
-    return None
+    # No alias hit — unqualified table reference; the snapshot names the schema.
+    return _bare_catalog_key(table_ref, name, snapshot)
 
 
 def collect_input_columns(
@@ -443,7 +533,8 @@ def collect_input_columns(
     there, resolving a CTE-qualified column to a same-named catalog table can
     only ADD a class to the max, never remove one, so the shadowing imprecision
     is safe and the extra reach is desirable. On the resolution path the same
-    imprecision is a leak, which is why ``_resolve_projection`` does pass it.
+    imprecision is a leak, which is why ``_resolve_projection`` resolves through
+    ``_catalog_key`` instead.
     """
     alias_map = _build_alias_map(tree)
     found: set[tuple[str, str, str]] = set()
@@ -1009,10 +1100,10 @@ class _ResolveCtx:
     recursion happened to bottom out in — see ``_conservative_floor``.
     ``strict`` turns that fallback into an error for the build-time deriver.
 
-    ``shadowed`` is every CTE / derived-table name bound anywhere in ``tree``
-    (see ``_scope_source_names``). Computed once per call and carried unchanged
-    through the recursion, because a name bound by the outer query still shadows
-    the catalog inside a nested scope.
+    ``shadowed`` is every qualifier in ``tree`` that must not resolve against
+    the catalog (see ``_scope_source_names``). Computed once per call and
+    carried unchanged through the recursion; ``_catalog_key`` consults it only
+    where no scope binds the qualifier.
 
     ``placeholder_classes`` is the caller's resolved parameter map, empty for a
     surface that binds nothing. It is carried through the recursion because a
@@ -1096,6 +1187,29 @@ def _class_at_index(source: Scope, index: int, ctx: _ResolveCtx) -> DataClass | 
     )
 
 
+def _binding_scope(col: exp.Column, scope: Scope) -> Scope | None:
+    """The scope whose FROM binds ``col.table``: its own, or an enclosing one.
+
+    A correlated reference names a source of an ENCLOSING scope, so this walks
+    outward as SQL does. Stopping at the column's own scope sent
+    ``(SELECT dim_accounts.x)`` over ``FROM c AS dim_accounts`` to the
+    same-named catalog table, returning a CRITICAL value at tier LOW. None when
+    no scope on the chain binds it — a UNION branch is handed its union's
+    scope, whose sources are not the branch's own.
+
+    ``selected_sources``, NOT ``sources``: the latter lists every CTE visible
+    to the scope whether or not its FROM reads it, so the walk stopped at an
+    unread CTE ``d`` instead of the outer ``FROM core.dim_accounts AS d`` that
+    SQL actually binds — and classified the routing number by the CTE.
+    """
+    enclosing: Scope | None = scope
+    while enclosing is not None:
+        if col.table in enclosing.selected_sources:
+            return enclosing
+        enclosing = enclosing.parent
+    return None
+
+
 def _source_scope_of(col: exp.Column, scope: Scope | None) -> Scope | None:
     """The CTE / derived-table Scope ``col`` reads from, or None if it reads a table.
 
@@ -1127,7 +1241,10 @@ def _source_scope_of(col: exp.Column, scope: Scope | None) -> Scope | None:
     if scope is None:
         return None
     if col.table:
-        source = scope.sources.get(col.table)
+        binding = _binding_scope(col, scope)
+        if binding is None:
+            return None
+        node, source = binding.selected_sources[col.table]
     else:
         # Unqualified column in a single-source SELECT: SQL semantics leave no
         # ambiguity about where it came from. Not a convenience — the build-time
@@ -1143,8 +1260,15 @@ def _source_scope_of(col: exp.Column, scope: Scope | None) -> Scope | None:
         selected = scope.selected_sources
         if len(selected) != 1:
             return None
-        source = next(iter(selected.values()))[1]
-    # A real exp.Table (or nothing) — the alias-map path handles it.
+        node, source = next(iter(selected.values()))
+    if node.args.get("pivots") or _renames_columns(node):
+        # A pivot generates the names it exposes, and ``FROM t AS u(a, b)``
+        # renames by position, so the projection of the same name inside the
+        # source is not this column: ``u.account_type`` over ``t(routing_number,
+        # account_type)`` is the routing number. Answering "not a scope source"
+        # is safe only because ``_catalog_key`` refuses a non-Table binder too.
+        return None
+    # A real exp.Table (or nothing) — the catalog path handles it.
     return source if isinstance(source, Scope) else None
 
 
@@ -1284,7 +1408,13 @@ def _reads_a_pivot(col: exp.Column, col_scope: Scope | None) -> bool:
     bit per row. ``_OPAQUE_PROJECTION_NODES`` already takes this position for
     the ``Star`` a pivot source stops ``qualify()`` from expanding; this is the
     same reasoning reaching the one name that survives expansion.
+
+    The scope searched is the one that BINDS ``col`` (``_binding_scope``), so a
+    correlated reference is judged by the FROM it actually reads, not by the
+    pivot-free subquery it sits in.
     """
+    if col_scope is not None and col.table:
+        col_scope = _binding_scope(col, col_scope) or col_scope
     root = col_scope.expression if col_scope is not None else col.root()
     return root.find(exp.Pivot) is not None
 
@@ -1324,7 +1454,7 @@ def _resolves_to_a_classified_catalog_column(
         return False
     if _reads_a_pivot(col, col_scope):
         return False
-    key = _column_key(col, alias_map, ctx.snapshot, ctx.shadowed)
+    key = _catalog_key(col, col_scope, alias_map, ctx.snapshot, ctx.shadowed)
     return key is not None and _class_of_key(key) is not None
 
 
@@ -1616,7 +1746,7 @@ def _resolve_projection(
                 return None
             classes.append(dc_scope)
             continue
-        key = _column_key(col, alias_map, snapshot, ctx.shadowed)
+        key = _catalog_key(col, col_scope, alias_map, snapshot, ctx.shadowed)
         if key is None:
             return None  # unresolvable — the outermost caller supplies the floor
         dc = _class_of_key(key)

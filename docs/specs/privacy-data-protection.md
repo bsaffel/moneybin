@@ -291,6 +291,19 @@ class DatabaseConfig(BaseModel):
 | `data/<profile>/raw/` | 0700 | Imported source files |
 | `logs/<profile>/moneybin.log` | 0600 | Profile log file |
 
+### Read-only key verification
+
+`moneybin db key verify` verifies that the selected profile’s effective current
+credential can open its existing encrypted database. It uses an explicit
+`SecretStore` with `Database(read_only=True)` to bypass the process key cache
+and the factory’s migration escalation. Keychain-first and environment-fallback
+precedence are unchanged. Verification never initializes a database or profile,
+changes credentials or configuration, migrates, or refreshes. Standard diagnostic
+logs and JSON privacy events remain enabled; no database-backed metrics are
+persisted by this read-only invocation. Success proves access, not complete file
+integrity; failure does not distinguish a wrong key from every kind of corruption.
+Key export/import and passphrase policy are outside this verification slice.
+
 ## Implementation Plan
 
 ### Files to Create

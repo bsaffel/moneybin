@@ -24,6 +24,7 @@ import stat
 import sys
 import threading
 import time
+import uuid
 import warnings
 from collections.abc import Callable, Generator, Mapping
 from contextlib import ExitStack, contextmanager
@@ -1192,30 +1193,43 @@ class Database:
                     type=pa.timestamp("us", tz="UTC"),
                 )
             arrow_table = arrow_table.set_column(index, field.name, normalized)
-        self.conn.register("_ingest_tmp", arrow_table)
-        try:
+        with self.registered_dataframe(arrow_table) as view:
             if on_conflict == "replace":
                 result = self.conn.execute(
-                    f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
+                    f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "upsert":
                 result = self.conn.execute(
-                    f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
+                    f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "ignore":
                 result = self.conn.execute(
-                    f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
+                    f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             else:
                 result = self.conn.execute(
-                    f"INSERT INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
+                    f"INSERT INTO {safe_ref} BY NAME SELECT * FROM {view}"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             # DuckDB returns a single-row "Count" for each of these statements.
-            # It is read inside the try so the temp view is still registered.
+            # It is read inside the block so the temp view is still registered.
             written = result.fetchone()
-        finally:
-            self.conn.unregister("_ingest_tmp")
         return int(written[0]) if written else 0
+
+    @contextmanager
+    def registered_dataframe(self, df: Any) -> Generator[str, None, None]:
+        """Expose a DataFrame or Arrow table as a temporary view.
+
+        Yields the view name to interpolate into SQL; the view is dropped on exit.
+        The name is unique per call so a nested registration cannot shadow it.
+        """
+        import pyarrow as pa
+
+        view = f"_df_{uuid.uuid4().hex[:12]}"
+        self.conn.register(view, df if isinstance(df, pa.Table) else df.to_arrow())
+        try:
+            yield view
+        finally:
+            self.conn.unregister(view)
 
     @property
     def path(self) -> Path:
@@ -1375,6 +1389,20 @@ class Database:
             except Exception:  # noqa: S110  # DETACH is best-effort; pass is correct here
                 pass
         self.close()
+
+
+def verify_database_key(db_path: Path, *, secret_store: SecretStore) -> None:
+    """Verify current credential access without initializing or upgrading the file."""
+    try:
+        # The factory may escalate read-only opens into schema upgrades.
+        with Database(db_path, read_only=True, secret_store=secret_store):
+            pass
+    except duckdb.Error as e:
+        raise OSError(
+            "Could not verify the encryption key against the database. "
+            "The credential may not match, or the database may be unreadable "
+            "or corrupt."
+        ) from e
 
 
 def invalidate_encryption_key_cache() -> None:

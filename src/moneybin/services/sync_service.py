@@ -622,6 +622,7 @@ class SyncService:
         if progress is not None:
             progress(ProgressEvent("Loading synced data"))
         receipt_writes = 0
+        plaid_rows_written = 0
         repo = SyncJobStateRepo(self.db)
         previous = repo.get(job_id, self.consumer_id)
         new_job = previous is None
@@ -686,7 +687,7 @@ class SyncService:
                         loaded_plaid = self.loader.load(
                             native, job_id, batch_id=batch.batch_id, in_outer_txn=True
                         )
-                        receipt_writes += loaded_plaid.holdings_snapshots_loaded
+                        plaid_rows_written += loaded_plaid.rows_written
                         counts[source.provider] += loaded_plaid.transactions_loaded
                         for field in (
                             "accounts_loaded",
@@ -788,19 +789,11 @@ class SyncService:
                         else {},
                     )
                 )
-            if not receipt_writes and not any(
-                getattr(result, field)
-                for field in (
-                    "accounts_loaded",
-                    "transactions_loaded",
-                    "balances_loaded",
-                    "transactions_removed",
-                    "securities_loaded",
-                    "investment_transactions_loaded",
-                    "holdings_loaded",
-                    "holding_lots_loaded",
-                    "security_prices_loaded",
-                )
+            # Unchanged Plaid content still advances raw metadata read by models.
+            if (
+                not receipt_writes
+                and not plaid_rows_written
+                and not result.transactions_removed
             ):
                 result.refresh_state = "complete"
             repo.ensure(

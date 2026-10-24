@@ -957,14 +957,24 @@ def test_plaid_batch_receipts_preserve_job_and_provider_order(db: Database) -> N
     assert sequences[0][2] < sequences[1][1] <= sequences[1][2] < sequences[2][1]
 
 
-def test_rolled_back_plaid_job_does_not_emit_durable_load_metrics(db: Database) -> None:
+@pytest.mark.parametrize(
+    "table",
+    [
+        "plaid_securities",
+        "plaid_investment_transactions",
+        "plaid_investment_holdings",
+        "plaid_investment_holding_lots",
+        "plaid_investment_holdings_snapshots",
+    ],
+)
+def test_rolled_back_plaid_job_does_not_emit_durable_load_metrics(
+    db: Database, table: str
+) -> None:
     """Transaction-owned metric buffering must discard receipts that never commit."""
     from moneybin.metrics.observations import MetricObservations
     from moneybin.metrics.registry import SYNC_INVESTMENTS_RECORDS_LOADED
 
-    metric = SYNC_INVESTMENTS_RECORDS_LOADED.labels(
-        table="plaid_investment_transactions"
-    )
+    metric = SYNC_INVESTMENTS_RECORDS_LOADED.labels(table=table)
     before = metric._value.get()  # pyright: ignore[reportPrivateUsage]  # inspect the real counter
     observations = MetricObservations()
     loader = PlaidExtractor(db, observations=observations)

@@ -1365,6 +1365,51 @@ class TestPullAutoRefreshes:
         assert result.transforms_applied is False
         assert result.transforms_error is None
 
+    def test_unchanged_new_job_refreshes_advanced_raw_metadata(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: PlaidSyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Zero content changes still advance the raw observations models read."""
+        snapshots = sync_data.model_copy(
+            update={"transactions": [], "removed_transactions": []}
+        )
+        client = MagicMock()
+        _set_v2_job(client, snapshots, job_label="unchanged-first")
+        service = SyncService(client=client, db=db, loader=loader)
+        service.pull(refresh=False)
+        before = db.execute(
+            "SELECT source_file FROM raw.plaid_accounts ORDER BY account_id"
+        ).fetchall()
+        observed_sources: list[str] = []
+
+        def refresh_written_data(
+            database: Database, **_kwargs: object
+        ) -> RefreshResult:
+            observed_sources.extend(
+                row[0]
+                for row in database.execute(
+                    "SELECT source_file FROM raw.plaid_accounts ORDER BY account_id"
+                ).fetchall()
+            )
+            return RefreshResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(sync_service, "_refresh", refresh_written_data)
+        _set_v2_job(client, snapshots, job_label="unchanged-second")
+        result = service.pull()
+        after = db.execute(
+            "SELECT source_file FROM raw.plaid_accounts ORDER BY account_id"
+        ).fetchall()
+
+        assert result.accounts_loaded == result.balances_loaded == 0
+        assert result.transactions_loaded == 0
+        assert before != after
+        assert observed_sources == [row[0] for row in after]
+        assert result.transforms_applied
+        assert result.refresh_state == "complete"
+
     def test_pull_refreshes_when_only_a_holdings_receipt_landed(
         self,
         db: Database,
@@ -1471,6 +1516,7 @@ class TestPullAutoRefreshes:
                 transactions_loaded=0,
                 balances_loaded=0,
                 security_prices_loaded=3,
+                rows_written=3,
             )
 
         monkeypatch.setattr(loader, "load", fake_load)

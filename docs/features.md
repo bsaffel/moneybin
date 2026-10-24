@@ -20,6 +20,7 @@ Capabilities below are shipped and exercised end-to-end. Work that has not shipp
 ## Storage and security
 
 - **Encrypted DuckDB at rest** — AES-256-GCM by default. Argon2id KDF for passphrase mode; OS keychain for auto-key mode. One encrypted DuckDB file per profile under `~/.moneybin/profiles/<name>/`. -> [Database and security guide](guides/database-security.md)
+- **Encryption key verification** — `moneybin db key verify` checks the selected profile’s effective credential against its existing encrypted database without changing the database, credentials, or profile configuration. -> [Key management](guides/database-security.md#key-management)
 - **Threat model** — What encryption protects against, and what it doesn't (forgotten passphrase, malware on your machine, AI-vendor data flow). -> [Threat model](guides/threat-model.md)
 - **Key management and lifecycle** — `moneybin db init / lock / unlock / backup / restore` and `moneybin db key show / rotate`. Encryption CLI is symmetric with the rest of the surface. -> [Database and security guide](guides/database-security.md)
 - **Backup and restore** — `moneybin db backup` produces a portable encrypted snapshot; `db restore` recovers it. Snapshots are point-in-time of when the command ran; automated schedules are not yet built — use cron or your platform's scheduler. -> [Database and security guide](guides/database-security.md)
