@@ -34,7 +34,7 @@ from moneybin.reports._framework.registry import register_generic_reports_tool
 from moneybin.services.currency_service import ResolvedRate
 from moneybin.services.matching_service import PENDING_MATCHES_HINT
 from moneybin.tables import TableRef
-from tests.database_mocks import without_a_profile
+from tests.database_mocks import with_reporting_timezone
 from tests.moneybin.db_helpers import create_core_tables_raw, seed_pending_dedup_pair
 
 _SEMANTICS = ReportSemantics(
@@ -99,25 +99,17 @@ def _transport_report() -> ReportSpec:
 
 
 def _mock_database() -> Database:
-    """A mock connection that answers the profile's home-currency read.
-
-    ``reports`` reads it before executing, and a mock answers that read with a
-    child mock the repository cannot unpack — see ``tests/database_mocks.py``.
-    Tests taking the real ``db`` fixture answer the read for themselves.
-    """
-    return cast(Database, without_a_profile(MagicMock(spec=Database)))
+    """A saved UTC reporting calendar with no chosen home currency."""
+    return cast(Database, with_reporting_timezone(MagicMock(spec=Database)))
 
 
 def _transport_database() -> Database:
     """``_mock_database()``, plus ``_transport_report()``'s own two-row cursor.
 
-    ``db.execute`` returns the same child mock for every call, so this
-    configures both the home-currency probe (``fetchone`` → None, set by
-    ``without_a_profile``) and the transport report's own SELECT
-    (``description`` / ``fetchmany``) on that one shared cursor.
+    The profile-settings reads use a separate cursor from the report SELECT.
     """
     raw = MagicMock(spec=Database)
-    without_a_profile(raw)
+    with_reporting_timezone(raw)
     cursor = raw.execute.return_value
     cursor.description = [(column.name,) for column in _COLUMNS]
     cursor.fetchmany.return_value = [

@@ -13,6 +13,7 @@ from typing import Any
 
 from moneybin.database import Database
 from moneybin.matching import UNIONED_TABLE, quote_table_ref
+from moneybin.matching.native_identity import native_event_scopes
 from moneybin.matching.persistence import MatchTier
 
 logger = logging.getLogger(__name__)
@@ -281,7 +282,7 @@ def _get_candidates(
         source_filter = """
             AND a.source_type = b.source_type
             AND a.source_origin = b.source_origin
-            AND a.source_file != b.source_file
+            AND (a.source_file != b.source_file OR a.source_type = 'simplefin')
         """
     else:
         source_filter = """
@@ -395,6 +396,16 @@ def _get_candidates(
 
     rows = db.execute(query, [date_window_days]).fetchall()
 
+    native_scopes = native_event_scopes(
+        db,
+        (
+            row[offset]
+            for row in rows
+            for offset in (0, 5)
+            if row[offset + 1] == "simplefin"
+        ),
+    )
+
     # Build rejected pair set for fast lookup
     rejected_set: set[tuple[str, ...]] = set()
     if rejected_pairs:
@@ -432,6 +443,11 @@ def _get_candidates(
             desc_sim,
             desc_agree,
         ) = row
+
+        if st_a == st_b == "simplefin":
+            scope_a, scope_b = native_scopes.get(stid_a), native_scopes.get(stid_b)
+            if scope_a is None or scope_b is None or scope_a == scope_b:
+                continue  # Different events in one native account are never duplicates.
 
         if excluded_ids and (
             (stid_a, acct) in excluded_ids or (stid_b, acct) in excluded_ids

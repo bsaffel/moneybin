@@ -126,7 +126,7 @@ number that lands.
 | `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: {from, to, reason}}` — `from` is the derived class the downgrade was approved against (R4) |
 | `class_fingerprint` | `VARCHAR NOT NULL` | Drift key over the derivation inputs (R4) |
 | `is_active` | `BOOLEAN NOT NULL DEFAULT true` | False = archived; hidden from the default catalog |
-| `created_at` / `updated_at` | `TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP` | House convention |
+| `created_at` / `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP` | [Warehouse UTC](warehouse-utc.md); explanation freshness uses canonical machine timestamps and the saved calendar in human output. |
 
 Under [Invariant 10](app-integrity-invariant.md), all mutation routes through
 `UserReportsRepo(BaseRepo)` in `src/moneybin/repositories/` — `create`, `set`,
@@ -1069,7 +1069,7 @@ this draft assigns it no MCP identity. If its implementing PR cannot place the
 outcome behind an admitted existing projection, it must pass the bounded-
 registry admission record before receiving a public name. Its handle resolves
 by the shared reference contract's order — an exact `report_id` first, then an
-exact name (`.claude/rules/mcp.md` "Entity resolution") — so a report whose name
+exact name (`.claude/rules/services.md` "Entity resolution") — so a report whose name
 is contested by a registry collision (R5) stays inspectable by its stable
 `report_id`. Every handle-taking operation resolves the same way: the shipped
 `reports` tool already accepts `report_id`, and the CLI's `reports run` /

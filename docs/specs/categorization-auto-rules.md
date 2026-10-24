@@ -79,8 +79,8 @@ CREATE TABLE IF NOT EXISTS app.proposed_rules (
     trigger_count INTEGER DEFAULT 1,       -- Number of categorizations that triggered or reinforced this proposal
     source VARCHAR DEFAULT 'pattern_detection', -- How the proposal was generated: pattern_detection or ml
     sample_txn_ids VARCHAR[],              -- Up to 5 transaction_ids that triggered this proposal
-    proposed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the proposal was created
-    decided_at TIMESTAMP,                  -- When the user approved or rejected; NULL if pending
+    proposed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- When the proposal was created
+    decided_at TIMESTAMPTZ,                  -- When the user approved or rejected; NULL if pending
     decided_by VARCHAR                     -- Who decided: 'user' or NULL if still pending
 );
 ```

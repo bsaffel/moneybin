@@ -907,10 +907,17 @@ def test_run_all_returns_expected_invariants(
     # + investment_match_decisions audit coverage for durable review Proposals.
     # + account_archive_intent_ambiguous (M2B.2: cascade-written exclusions
     # V063 could not tell from a chosen one).
-    # + net_worth_unanchored_accounts + net_worth_stale_balance (M2B.3: the
-    # unanchored-account net-worth guard).
-    assert len(report.invariants) == 66
+    # + sync_completeness + sync_health + net_worth_stale_balance (MB-86).
+    # + net_worth_unanchored_accounts (M2B.3).
+    assert len(report.invariants) == 68
     names = [r.name for r in report.invariants]
+    for name in (
+        "sync_completeness",
+        "sync_health",
+        "net_worth_unanchored_accounts",
+        "net_worth_stale_balance",
+    ):
+        assert names.count(name) == 1
     assert "app_audit_coverage_investment_match_decisions" in names
     assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
@@ -3214,7 +3221,8 @@ def test_stale_balance_reads_the_newest_counting_date_not_the_spine_end(
     _spine_row(db, "out", 0, observed=True, in_net_worth=False)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.status == "warn"
-    assert result.affected_ids == ["account:a"]
+    assert result.affected_ids == []
+    assert result.detail is not None and "1 included accounts" in result.detail
 
 
 @pytest.mark.unit
@@ -3227,7 +3235,8 @@ def test_stale_balance_reads_the_spines_last_date_not_today(
     _spine_row(db, "a", 5)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.status == "warn"
-    assert result.affected_ids == ["account:a"]
+    assert result.affected_ids == []
+    assert result.detail is not None and "1 included accounts" in result.detail
 
 
 @pytest.mark.unit
@@ -3240,7 +3249,8 @@ def test_stale_balance_warns_on_an_entirely_stale_profile(
         _observed_then_carried(db, acct, 45)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
     assert result.status == "warn"
-    assert result.affected_ids == ["account:a", "account:b"]
+    assert result.affected_ids == []
+    assert result.detail is not None and "2 included accounts" in result.detail
 
 
 @pytest.mark.unit
@@ -3252,7 +3262,9 @@ def test_stale_balance_skips_an_account_outside_net_worth_on_the_last_date(
     _spine_row(db, "closed", 46, observed=True)
     _spine_row(db, "closed", 0, in_net_worth=False)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
-    assert result.affected_ids == ["account:live"]
+    assert result.status == "warn"
+    assert result.affected_ids == []
+    assert result.detail is not None and "1 included accounts" in result.detail
 
 
 @pytest.mark.unit
@@ -3274,7 +3286,9 @@ def test_stale_balance_threshold_is_exclusive(
     _observed_then_carried(db, "at_threshold", 30)
     _observed_then_carried(db, "past_threshold", 31)
     result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
-    assert result.affected_ids == ["account:past_threshold"]
+    assert result.status == "warn"
+    assert result.affected_ids == []
+    assert result.detail is not None and "1 included accounts" in result.detail
 
 
 @pytest.mark.unit
@@ -3305,7 +3319,7 @@ def test_stale_balance_is_warn_so_it_never_counts_as_failing(
 def test_net_worth_checks_mask_a_source_native_account_id(
     db: Database, monkeypatch: pytest.MonkeyPatch, check: str
 ) -> None:
-    """An unlinked account surfaces its raw source key; affected_ids must mask it."""
+    """Unanchored IDs are masked; stale-balance diagnostics disclose counts only."""
     _net_worth_guard_ddl(db)
     raw_id = "123456789012"  # synthetic account-number-shaped key
     if check == "net_worth_unanchored_accounts":
@@ -3314,9 +3328,12 @@ def test_net_worth_checks_mask_a_source_native_account_id(
         _observed_then_carried(db, raw_id, 45)
     result = _investment_result(db, monkeypatch, check)
     assert result.status in ("fail", "warn")
-    assert len(result.affected_ids) == 1
-    assert result.affected_ids[0].startswith("account:")
-    assert raw_id not in result.affected_ids[0]
+    if check == "net_worth_stale_balance":
+        assert result.affected_ids == []
+    else:
+        assert len(result.affected_ids) == 1
+        assert result.affected_ids[0].startswith("account:")
+    assert raw_id not in repr(result)
 
 
 @pytest.mark.unit
@@ -3350,6 +3367,26 @@ def test_net_worth_checks_leave_their_gauges_when_skipped(
     for check in ("net_worth_unanchored_accounts", "net_worth_stale_balance"):
         assert _investment_result(db, monkeypatch, check).status == "skipped"
     assert NET_WORTH_UNANCHORED_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("missing_column", ["balance", "is_observed", "in_net_worth"])
+def test_stale_balance_discloses_an_outdated_balance_spine(
+    db: Database, monkeypatch: pytest.MonkeyPatch, missing_column: str
+) -> None:
+    """A partially upgraded spine must not turn unknown observation age into success."""
+    _net_worth_guard_ddl(db)
+    db.execute(
+        f"""ALTER TABLE core.fct_balances_daily DROP COLUMN {missing_column}"""  # fixed test column names, not user input
+    )
+    NET_WORTH_STALE_BALANCE_ACCOUNTS.set(4242)
+
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+
+    assert result.status == "skipped"
+    assert result.affected_ids == []
+    assert result.detail is not None and "refresh --step transform" in result.detail
     assert NET_WORTH_STALE_BALANCE_ACCOUNTS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
 
 

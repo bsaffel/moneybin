@@ -29,7 +29,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.progress import operation_progress
-from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.render import build_summary, compose_human_result, format_instant
 from moneybin.cli.utils import (
     emit_json_failure,
     generated_cli_command,
@@ -58,6 +58,7 @@ from moneybin.privacy.payloads.gsheet import (
 )
 from moneybin.progress import ProgressEvent
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.temporal import parse_utc
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -571,9 +572,22 @@ def gsheet_list(
             "to add one."
         )
         return
+    reporting_timezone = None
+    if any(c.last_success_at is not None for c in connections):
+        from moneybin.database import get_database
+        from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+        with get_database(read_only=True) as db:
+            reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
     lines: list[str] = []
     for c in connections:
-        last = c.last_success_at or "never"
+        last = (
+            format_instant(
+                parse_utc(c.last_success_at), reporting_timezone=reporting_timezone
+            )
+            if c.last_success_at is not None
+            else "never"
+        )
         lines.append(
             f"{c.connection_id}  {c.workbook_name}/{c.sheet_name}  "
             f"adapter={c.adapter}  status={c.status}  last_success={last}"
@@ -627,9 +641,22 @@ def gsheet_status(
     if not connections:
         typer.echo("No Google Sheets connections.")
         return
+    reporting_timezone = None
+    if any(c.last_success_at is not None for c in connections):
+        from moneybin.database import get_database
+        from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+
+        with get_database(read_only=True) as db:
+            reporting_timezone = ProfileSettingsRepo(db).get_reporting_timezone()
     lines: list[str] = []
     for c in connections:
-        last = c.last_success_at or "never"
+        last = (
+            format_instant(
+                parse_utc(c.last_success_at), reporting_timezone=reporting_timezone
+            )
+            if c.last_success_at is not None
+            else "never"
+        )
         lines.append(
             f"{c.connection_id}  status={c.status}  "
             f"adapter={c.adapter}  last_success={last}  "

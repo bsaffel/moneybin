@@ -59,11 +59,12 @@ def transactions_create(
         None, "--currency", help="ISO 4217 currency code"
     ),
     yes: bool = typer.Option(
-        False, "--yes", "-y", help="Skip confirmation"
-    ),  # no interactive prompt yet; flag reserved for parity
+        False, "--yes", "-y", help="Compatibility flag; creation never prompts"
+    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Create a single manual transaction."""
+    from moneybin.services.profile_settings_service import ProfileSettingsService
     from moneybin.services.transaction_service import TransactionService
 
     try:
@@ -77,9 +78,9 @@ def transactions_create(
             message=f"Invalid --amount {amount!r}: not a decimal",
         )
 
-    parsed_date: date_cls
+    parsed_date: date_cls | None
     if date is None:
-        parsed_date = date_cls.today()
+        parsed_date = None
     else:
         try:
             parsed_date = date_cls.fromisoformat(date)
@@ -118,6 +119,8 @@ def transactions_create(
     try:
         with handle_cli_errors():
             with get_database(read_only=False) as db:
+                if parsed_date is None:
+                    entry["transaction_date"] = ProfileSettingsService(db).today()
                 svc = TransactionService(db)
                 batch = svc.create_manual_batch([entry], actor="cli")
                 row = batch.results[0]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import duckdb
 import pytest
@@ -144,7 +145,8 @@ def test_set_home_currency_persists_and_emits_one_audit_row(
     assert (schema, table) == ("app", "profile_settings")
     assert action == "profile_settings.set"
     assert target_id == "profile"
-    assert before is None
+    assert '"reporting_timezone":"UTC"' in before.replace(" ", "")
+    assert '"home_currency":null' in before.replace(" ", "")
     assert '"home_currency":"EUR"' in after.replace(" ", "")
     assert actor == "cli"
 
@@ -247,3 +249,118 @@ def test_setting_the_home_currency_is_undoable(
 
     UndoService(db).undo(first_write, actor="cli")
     assert repo.get_home_currency() is None
+
+
+def test_profile_timezone_survives_host_change(
+    db: Database, repo: ProfileSettingsRepo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from moneybin.reports.definitions._shared import default_window
+
+    repo.set_reporting_timezone("America/New_York", actor="cli")
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    reopened = ProfileSettingsRepo(db)
+    assert reopened.get_reporting_timezone() == "America/New_York"
+    assert default_window(
+        reporting_timezone=reopened.get_reporting_timezone(),
+        now=datetime(2026, 3, 1, 0, 30, tzinfo=UTC),
+    ) == ("2025-03", "2026-02")
+    before = _audit_rows(db)
+    with pytest.raises(ValueError):
+        reopened.set_reporting_timezone("Invalid/Timezone", actor="cli")
+    assert reopened.get_reporting_timezone() == "America/New_York"
+    assert _audit_rows(db) == before
+
+
+def test_profile_timezone_audit_undo(db: Database, repo: ProfileSettingsRepo) -> None:
+    repo.set_reporting_timezone("America/New_York", actor="cli")
+    with operation() as change:
+        repo.set_reporting_timezone("Asia/Tokyo", actor="cli")
+    UndoService(db).undo(change, actor="cli")
+    assert repo.get_reporting_timezone() == "America/New_York"
+
+
+def test_legacy_currency_undo_cannot_remove_reporting_policy(
+    db: Database, repo: ProfileSettingsRepo
+) -> None:
+    from moneybin.errors import UserError
+    from moneybin.services.audit_service import AuditService
+
+    repo.set_reporting_timezone("America/New_York", actor="cli")
+    repo.set_home_currency("EUR", actor="cli")
+    event = AuditService(db).record_audit_event(
+        action="profile_settings.set",
+        target=("app", "profile_settings", "profile"),
+        before=None,
+        after={"scope": "profile", "home_currency": "EUR"},
+        actor="legacy",
+    )
+    before = _audit_rows(db)
+    with pytest.raises(UserError, match="reporting timezone"):
+        repo.undo_event(event, actor="cli")
+    assert repo.get_reporting_timezone() == "America/New_York"
+    assert repo.get_home_currency() == "EUR"
+    assert _audit_rows(db) == before
+
+
+@pytest.fixture
+def host_special_timezone_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model a host whose TZPATH resolves special keys, independently of macOS."""
+
+    def resolve(value: str) -> ZoneInfo:
+        if value in {"localtime", "posixrules"} or value.startswith((
+            "posix/",
+            "right/",
+        )):
+            return ZoneInfo("UTC")
+        return ZoneInfo(value)
+
+    monkeypatch.setattr("moneybin.repositories.profile_settings_repo.ZoneInfo", resolve)
+
+
+@pytest.mark.parametrize(
+    "zone", ["localtime", "posixrules", "posix/America/New_York", "right/UTC"]
+)
+def test_host_special_timezone_rejected_without_mutation(
+    db: Database,
+    repo: ProfileSettingsRepo,
+    host_special_timezone_resolver: None,
+    zone: str,
+) -> None:
+    repo.set_reporting_timezone("America/New_York", actor="cli")
+    before = _audit_rows(db)
+    with pytest.raises(ValueError, match="IANA"):
+        repo.set_reporting_timezone(zone, actor="cli")
+    assert repo.get_reporting_timezone() == "America/New_York"
+    assert _audit_rows(db) == before
+
+
+@pytest.mark.parametrize(
+    "zone", ["localtime", "posixrules", "posix/America/New_York", "right/UTC"]
+)
+def test_existing_host_special_timezone_requires_upgrade(
+    db: Database,
+    repo: ProfileSettingsRepo,
+    host_special_timezone_resolver: None,
+    zone: str,
+) -> None:
+    from moneybin.temporal_contract import (
+        UTCUpgradeRequiredError,
+        inspect_temporal_contract,
+    )
+
+    db.execute("UPDATE app.profile_settings SET reporting_timezone = ?", [zone])
+    before = _audit_rows(db)
+    with pytest.raises(UTCUpgradeRequiredError):
+        repo.get_reporting_timezone()
+    assert inspect_temporal_contract(db.conn) == "incomplete"
+    assert _audit_rows(db) == before
+
+
+@pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Etc/UTC", "US/Eastern"])
+def test_portable_iana_timezone_keys_remain_available(
+    repo: ProfileSettingsRepo, zone: str
+) -> None:
+    repo.set_reporting_timezone(zone, actor="cli")
+    assert repo.get_reporting_timezone() == zone

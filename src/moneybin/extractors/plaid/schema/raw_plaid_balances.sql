@@ -11,8 +11,8 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
     source_file VARCHAR NOT NULL,
     source_type VARCHAR NOT NULL DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,
-    last_updated_datetime TIMESTAMP,    -- Provider "as-of" time for the balance; populated only by some institutions
-    extracted_at TIMESTAMP,
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_updated_datetime TIMESTAMPTZ,    -- Provider "as-of" time for the balance; populated only by some institutions
+    extracted_at TIMESTAMPTZ,
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, balance_date, source_origin)
 );

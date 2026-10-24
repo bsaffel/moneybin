@@ -239,7 +239,7 @@ def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     )
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, timeout_seconds=180.0)
 def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayload]:
     """Reverse every app.* mutation in one operation as a unit, keyed on operation_id.
 
@@ -263,10 +263,10 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     calling system_audit_undo again on the returned undo_operation_id.
     """
     from moneybin.database import get_database
-    from moneybin.services.undo_service import UndoService
+    from moneybin.orchestration.account_mutations import undo_operation
 
     with get_database(read_only=False) as db:
-        result = UndoService(db).undo(operation_id, actor="mcp")
+        result = undo_operation(db, operation_id, actor="mcp")
     return build_envelope(
         data=SystemAuditUndoPayload(
             undo_operation_id=result.undo_operation_id,
@@ -515,10 +515,12 @@ def _audit_position(
         return decode_keyset_cursor(
             cursor,
             namespace="system_audit",
-            scope={"view": view},
+            scope={"view": view, "temporal_contract": 2},
         )
     except ValueError as exc:
-        raise ValueError("invalid audit cursor") from exc
+        raise ValueError(
+            "invalid audit cursor; restart pagination without a cursor"
+        ) from exc
 
 
 def _audit_bounds(
@@ -536,7 +538,9 @@ def _audit_bounds(
             _AUDIT_KEY_DIRECTIONS,
         )
     except ValueError as exc:
-        raise ValueError("invalid audit cursor") from exc
+        raise ValueError(
+            "invalid audit cursor; restart pagination without a cursor"
+        ) from exc
     return (
         snapshot,
         after,
@@ -544,15 +548,7 @@ def _audit_bounds(
 
 
 def _canonical_audit_key(key: tuple[object, ...]) -> tuple[str, str]:
-    """Return one audit key with its timestamp in canonical space-separated ISO.
-
-    ``datetime.fromisoformat`` accepts both ``2025-06-01T01:00:00`` and
-    ``2025-06-01 02:00:00``; lexicographically the space form sorts behind the
-    ``T`` form even when it is the later instant, so comparing raw keys would
-    let a forged cursor mixing the two defeat the ordering guard. An offset
-    would break the same ordering, and every timestamp this log stores is
-    naive, so an aware one is refused rather than converted.
-    """
+    """Return one audit key in canonical UTC before comparing its text."""
     occurred_at, row_id = cast(tuple[str, str], key)
     if not row_id:
         raise ValueError("audit cursor carries an empty id")
@@ -737,7 +733,7 @@ async def system_audit_coarse(
         if has_more and page and snapshot_key is not None:
             next_cursor = encode_keyset_cursor(
                 namespace="system_audit",
-                scope={"view": "events"},
+                scope={"view": "events", "temporal_contract": 2},
                 snapshot=snapshot_key,
                 after=(str(page[-1].occurred_at), page[-1].audit_id),
                 total=total_count,
@@ -788,7 +784,7 @@ async def system_audit_coarse(
         if has_more and page and snapshot_key is not None:
             next_cursor = encode_keyset_cursor(
                 namespace="system_audit",
-                scope={"view": "history"},
+                scope={"view": "history", "temporal_contract": 2},
                 snapshot=snapshot_key,
                 after=(str(page[-1].occurred_at), page[-1].operation_id),
                 total=total_count,

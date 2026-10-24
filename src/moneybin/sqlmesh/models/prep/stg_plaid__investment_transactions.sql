@@ -272,7 +272,9 @@ SELECT
   r.account_id AS source_account_key,
   sl.security_id AS security_id,
   r.security_id AS source_security_key,
-  COALESCE(r.transaction_datetime::DATE, r.transaction_date) AS trade_date,
+  COALESCE((
+    r.transaction_datetime AT TIME ZONE 'UTC'
+  )::DATE, r.transaction_date) AS trade_date,
   CASE WHEN r.transaction_datetime IS NULL THEN 'posting_fallback' ELSE 'explicit' END AS trade_date_basis,
   r.transaction_date AS settlement_date,
   NULL::DATE AS original_acquisition_date,

@@ -612,12 +612,188 @@ class DoctorService:
             *app_integrity,
             orphan_app_state,
             archive_intent,
+            self._run_sync_completeness(),
+            self._run_sync_health(),
             self._run_net_worth_unanchored_accounts(),
             self._run_net_worth_stale_balance(),
             *investment_checks,
         ]
         invariants = [self._apply_recipe(r) for r in raw_invariants]
         return DoctorReport(invariants=invariants, transaction_count=transaction_count)
+
+    def _run_sync_completeness(self) -> InvariantResult:
+        from moneybin.services.sync_completeness import SyncCompletenessService
+
+        name = "sync_completeness"
+        actions = [
+            RecoveryAction(
+                tool="sync_status",
+                arguments={},
+                rationale="Inspect local source coverage and resolve account setup or pending reviews.",
+                confidence="suggested",
+                idempotent=True,
+            )
+        ]
+        try:
+            result = SyncCompletenessService(self._db).assess()
+        except Exception:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail="Local sync coverage is unknown; evidence could not be read.",
+                affected_ids=[],
+                recovery_actions=actions,
+            )
+        if not result.applicable:
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail="No local sync evidence.",
+                affected_ids=[],
+            )
+        if result.complete:
+            return InvariantResult(
+                name=name,
+                status="pass",
+                detail="No known gaps in local sync evidence.",
+                affected_ids=[],
+            )
+        return InvariantResult(
+            name=name,
+            status="warn",
+            detail="Local sync coverage is incomplete: "
+            + "; ".join(
+                f"{reason.kind} ({reason.affected_account_count} affected accounts, "
+                f"{reason.unresolved_scope_count} unresolved scopes)"
+                for reason in result.reasons
+            ),
+            affected_ids=[],
+            recovery_actions=actions,
+        )
+
+    def _run_sync_health(self) -> InvariantResult:
+        from moneybin.connectors.sync_client import SyncClient
+
+        name = "sync_health"
+        settings = get_settings()
+        if not settings.sync.server_url:
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail="Sync is not configured.",
+                affected_ids=[],
+            )
+        actions = [
+            RecoveryAction(
+                tool="sync_status",
+                arguments={},
+                rationale="Check the configured broker connection and existing login session, then rerun doctor.",
+                confidence="suggested",
+                idempotent=True,
+            )
+        ]
+        # Diagnostics must neither create a broker identity nor launch login.
+        try:
+            profile_id = (settings.profile_dir / "profile_id").read_text().strip()
+            if not profile_id:
+                raise ValueError("No existing sync profile identity")
+            institutions = SyncClient(
+                settings.sync.server_url, profile_id=profile_id
+            ).list_institutions()
+        except Exception:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail="Current broker health is unknown; the configured session could not be read.",
+                affected_ids=[],
+                recovery_actions=actions,
+            )
+        if any(item.status != "active" for item in institutions):
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail="The broker reports unavailable or revoked connections.",
+                affected_ids=[],
+                recovery_actions=actions,
+            )
+        return InvariantResult(
+            name=name,
+            status="pass",
+            detail="Broker connection listing is reachable; local history coverage is checked separately.",
+            affected_ids=[],
+        )
+
+    def _run_net_worth_stale_balance(self) -> InvariantResult:
+        """Age observations for known balances counted on the latest net-worth date."""
+        name = "net_worth_stale_balance"
+        if not all(
+            has_column(self._db, FCT_BALANCES_DAILY, column)
+            for column in ("is_observed", "balance", "in_net_worth")
+        ):
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=(
+                    "The balance spine is unavailable or outdated; run "
+                    "`moneybin refresh --step transform` before checking observation age."
+                ),
+                affected_ids=[],
+            )
+        threshold = get_settings().doctor.balance_staleness_threshold_days
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH counted AS (
+                    SELECT c.account_id
+                    FROM {FCT_BALANCES_DAILY.full_name} AS c
+                    WHERE c.balance_date = (
+                        SELECT MAX(balance_date)
+                        FROM {FCT_BALANCES_DAILY.full_name}
+                        WHERE in_net_worth
+                    )
+                      AND c.in_net_worth
+                      AND c.balance IS NOT NULL
+                )
+                SELECT d.account_id
+                FROM {FCT_BALANCES_DAILY.full_name} AS d
+                JOIN counted AS k ON k.account_id = d.account_id
+                WHERE d.is_observed
+                GROUP BY d.account_id
+                HAVING ?::DATE - MAX(d.balance_date) > ?
+                ORDER BY d.account_id
+                """,  # trusted TableRefs; reporting date and threshold bound
+                [ProfileSettingsService(self._db).today(), threshold],
+            ).fetchall()
+        except Exception:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail="Balance observation age is unknown; local evidence could not be read.",
+                affected_ids=[],
+            )
+        NET_WORTH_STALE_BALANCE_ACCOUNTS.set(len(rows))
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} included accounts have balance observations "
+                    f"older than {threshold} days; their values remain in totals. "
+                    "Import a recent statement, sync, or record one with "
+                    "`moneybin accounts balance assert` and run `moneybin refresh`."
+                ),
+                affected_ids=[],
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="sync_pull",
+                        arguments={},
+                        rationale="Refresh the source or import a newer statement, then refresh local reports.",
+                        confidence="suggested",
+                        idempotent=False,
+                    )
+                ],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _apply_recipe(self, result: InvariantResult) -> InvariantResult:
         """Populate ``recovery_actions`` from the recipe registry, if a recipe exists.
@@ -935,7 +1111,7 @@ class DoctorService:
             sampled_sql = (
                 f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # TableRef + sqlglot-quoted pk + trusted watermark_sql
                 f"FROM {table_ref.full_name} "
-                f"WHERE {watermark_sql} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
+                f"WHERE {watermark_sql} >= (now()::TIMESTAMPTZ - (? * INTERVAL 1 DAY)) "
                 f"ORDER BY {watermark_sql} DESC LIMIT ?"
             )
             sample_params = [
@@ -1045,7 +1221,7 @@ class DoctorService:
                 f"""
                 SELECT m.merchant_id
                 FROM {USER_MERCHANTS.full_name} m
-                WHERE m.updated_at < (now()::TIMESTAMP - (? * INTERVAL 1 DAY))
+                WHERE m.updated_at < (now()::TIMESTAMPTZ - (? * INTERVAL 1 DAY))
                   AND NOT EXISTS (
                     SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} c
                     WHERE c.merchant_id = m.merchant_id
@@ -2182,65 +2358,6 @@ class DoctorService:
                     "receipt names — so the total and this check pick it up"
                 ),
                 affected_ids=_masked_account_affected_ids(unanchored),
-            )
-        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
-
-    def _run_net_worth_stale_balance(self) -> InvariantResult:
-        """Accounts in net worth whose latest observed balance is older than the threshold.
-
-        Each account's OWN latest observed row, compared against today — never
-        a shared balance_date = CURRENT_DATE filter, which finds nothing when
-        every account has gone stale together. Scoped to the accounts that count
-        toward net worth with a known balance on the newest date any account
-        counts; an unknown balance is net_worth_unanchored_accounts' to report.
-        `warn`: the balance still counts; it is aging, not wrong.
-        """
-        name = "net_worth_stale_balance"
-        threshold = get_settings().doctor.balance_staleness_threshold_days
-        try:
-            rows = self._db.execute(
-                f"""
-                WITH counted AS (
-                    SELECT c.account_id
-                    FROM {FCT_BALANCES_DAILY.full_name} AS c
-                    WHERE c.balance_date = (
-                        SELECT MAX(balance_date)
-                        FROM {FCT_BALANCES_DAILY.full_name}
-                        WHERE in_net_worth
-                    )
-                      AND c.in_net_worth
-                      AND c.balance IS NOT NULL
-                )
-                SELECT d.account_id,
-                       CAST(CURRENT_DATE - MAX(d.balance_date) AS INTEGER) AS age_days
-                FROM {FCT_BALANCES_DAILY.full_name} AS d
-                JOIN counted AS k ON k.account_id = d.account_id
-                WHERE d.is_observed
-                GROUP BY d.account_id
-                ORDER BY d.account_id
-                """  # TableRef constants, no user input
-            ).fetchall()
-        except Exception as e:  # spine absent before first transform
-            return InvariantResult(
-                name=name,
-                status="skipped",
-                detail=f"balance spine unavailable: {e}",
-                affected_ids=[],
-            )
-        stale = [str(aid) for aid, age in rows if is_stale(int(age), threshold)]
-        NET_WORTH_STALE_BALANCE_ACCOUNTS.set(len(stale))
-        if stale:
-            return InvariantResult(
-                name=name,
-                status="warn",
-                detail=(
-                    f"{len(stale)} account(s) in net worth have no balance "
-                    f"observed in the last {threshold} days, so their balances "
-                    "are carried forward — import a recent statement, sync, or "
-                    "record one with `moneybin accounts balance assert` and run "
-                    "`moneybin refresh`"
-                ),
-                affected_ids=_masked_account_affected_ids(stale),
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

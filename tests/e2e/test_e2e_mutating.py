@@ -1017,7 +1017,7 @@ class TestBalanceAssertions:
     def test_balance_assert_then_delete(
         self, _accounts_with_data_template: Path, tmp_path: Path
     ) -> None:
-        """Balance assert then delete round-trip; list returns empty after delete."""
+        """Non-interactive deletion requires --yes and preserves refused assertions."""
         env = make_workflow_env_fast(
             tmp_path, "bal-assert-del", _accounts_with_data_template
         )
@@ -1040,6 +1040,38 @@ class TestBalanceAssertions:
             self._DATE,
             env=env,
         )
+        assert result.exit_code == 1, result.output
+        assert "interactive terminal" in result.stderr
+        assert "--yes" in result.stderr
+
+        result = run_cli(
+            "accounts",
+            "balance",
+            "list",
+            "--account",
+            account_id,
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        assertions = json.loads(result.stdout, parse_float=Decimal)["data"][
+            "assertions"
+        ]
+        assert len(assertions) == 1
+        assert assertions[0]["account_id"] == account_id
+        assert assertions[0]["assertion_date"] == self._DATE
+        assert assertions[0]["balance"] == Decimal(self._AMOUNT)
+
+        result = run_cli(
+            "accounts",
+            "balance",
+            "assertion-delete",
+            account_id,
+            self._DATE,
+            "--yes",
+            env=env,
+        )
         result.assert_success()
 
         # After delete, list should return an empty assertions array
@@ -1054,7 +1086,7 @@ class TestBalanceAssertions:
             env=env,
         )
         result.assert_success()
-        assert '"data": []' in result.stdout or "data" in result.stdout
+        assert json.loads(result.stdout)["data"]["assertions"] == []
 
     def test_balance_delete_nonexistent_is_noop(
         self, _mutating_profile_template: Path, tmp_path: Path

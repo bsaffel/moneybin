@@ -126,8 +126,8 @@ CREATE TABLE IF NOT EXISTS app.match_decisions (
     match_status VARCHAR NOT NULL,       -- pending, accepted, rejected
     match_reason VARCHAR,                -- Human-readable explanation of why this match was proposed
     decided_by VARCHAR NOT NULL,         -- auto, user, system
-    decided_at TIMESTAMP NOT NULL,       -- When the decision was made
-    reversed_at TIMESTAMP,              -- When the match was undone; NULL if active
+    decided_at TIMESTAMPTZ NOT NULL,       -- When the decision was made
+    reversed_at TIMESTAMPTZ,              -- When the match was undone; NULL if active
     reversed_by VARCHAR,                -- Who reversed: user or system; NULL if active
     PRIMARY KEY (match_id)
 );
@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS prep.seed_source_priority (
 | `source_type` | VARCHAR | Import pathway / origin system |
 | `source_origin` | VARCHAR | Institution/connection/format that produced this row |
 | `source_file` | VARCHAR | File that produced this source row |
-| `source_extracted_at` | TIMESTAMP | When the source row was parsed |
+| `source_extracted_at` | TIMESTAMPTZ | When the source row was parsed |
 | `match_id` | VARCHAR | FK to `app.match_decisions`; NULL for unmatched records |
 
 ### New and modified prep models

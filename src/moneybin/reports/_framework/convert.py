@@ -119,6 +119,7 @@ def rates_pricing(
     date_column: str | None,
     columns: Sequence[OutputColumn] | None = None,
     home_currency: str | None = None,
+    today: date | None,
 ) -> tuple[ResolvedRate, ...]:
     """The subset of ``rates`` that priced a figure in ``rows``.
 
@@ -171,9 +172,11 @@ def rates_pricing(
     if needs_home and (home is None or not _is_currency_code(home)):
         return rates
     priced: set[tuple[str, date]] = set()
+    if today is None:
+        raise ValueError("Converted execution is missing its report calendar date")
     for row in rows:
         source = row.get(ORIGINAL_CURRENCY_COLUMN)
-        on = _rate_date(row.get(date_column))
+        on = _rate_date(row.get(date_column), today=today)
         if not isinstance(source, str) or on is None:
             return rates
         priced.add((source, on))
@@ -193,6 +196,7 @@ def convert_records(
     service: CurrencyService,
     columns: Sequence[OutputColumn] | None = None,
     home_currency: str | None = None,
+    today: date,
 ) -> ConversionOutcome:
     """Price every row's money columns in ``to_currency``, or segment and say why.
 
@@ -303,7 +307,7 @@ def convert_records(
             return ConversionOutcome(
                 rows, None, "some rows do not record which currency they hold"
             )
-        on = _rate_date(row.get(date_column))
+        on = _rate_date(row.get(date_column), today=today)
         if on is None:
             return ConversionOutcome(
                 rows,
@@ -462,7 +466,7 @@ def _as_decimal(value: Any) -> Decimal | None:
     return None
 
 
-def _rate_date(value: Any) -> date | None:
+def _rate_date(value: Any, *, today: date) -> date | None:
     """The day a row's amounts are priced on, or ``None`` if it names none.
 
     A ``YYYY-MM`` grain resolves to that month's close, because a month's flows
@@ -488,7 +492,7 @@ def _rate_date(value: Any) -> date | None:
             # report, which is what every other unpriceable row does — raising
             # would take down the read instead.
             return None
-        return min(close, date.today())  # a rate date is a calendar day, not an instant
+        return min(close, today)  # a rate date is a calendar day, not an instant
     try:
         return date.fromisoformat(text[:10])
     except ValueError:

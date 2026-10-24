@@ -69,7 +69,6 @@ UNIMPLEMENTED_CLI_PATHS = set(UNIMPLEMENTED_CLI_INVOCATIONS)
 UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS = {
     "db key export": (),
     "db key import": ("envelope.bin",),
-    "db key verify": (),
 }
 UNIMPLEMENTED_EXIT_ONE_CLI_PATHS = set(UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS)
 HIDDEN_COMPATIBILITY_ALIASES = {
@@ -285,10 +284,12 @@ def test_hidden_sync_aliases_execute_the_canonical_callback(
     assert link_calls == [
         {
             "institution": "Parity Bank",
+            "provider": None,
+            "connection_id": None,
             "no_pull": False,
             "no_browser": True,
             "yes": False,
-            "output": "text",
+            "output": OutputFormat.TEXT,
         }
     ]
     assert status_calls == [

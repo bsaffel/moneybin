@@ -30,6 +30,7 @@ def _seed_test_data(db: Database) -> None:
             account_id VARCHAR,
             transaction_type VARCHAR,
             date_posted TIMESTAMP,
+            date_posted_source_date DATE,
             amount DECIMAL(18,2),
             payee VARCHAR,
             memo VARCHAR,
@@ -108,10 +109,10 @@ def _seed_test_data(db: Database) -> None:
     # so jaro_winkler similarity = 1.0, confidence >= high_confidence_threshold
     db.execute("""
         INSERT INTO raw.ofx_transactions
-        (source_transaction_id, account_id, transaction_type, date_posted,
+        (source_transaction_id, account_id, transaction_type, date_posted, date_posted_source_date,
          amount, payee, memo, check_number, source_file, extracted_at)
         VALUES
-        ('FITID001', 'acct_checking', 'DEBIT', '2026-03-15 00:00:00',
+        ('FITID001', 'acct_checking', 'DEBIT', '2026-03-15 00:00:00', DATE '2026-03-15',
          -42.50, 'STARBUCKS 1234', NULL, NULL,
          '/tmp/test.ofx', '2026-03-16 10:00:00')
     """)
@@ -156,7 +157,7 @@ def _create_test_unioned_view(db: Database) -> None:
         SELECT
             t.source_transaction_id,
             t.account_id,
-            t.date_posted::DATE AS transaction_date,
+            t.date_posted_source_date AS transaction_date,
             amount::DECIMAL(18,2) AS amount,
             TRIM(payee) AS description,
             'ofx' AS source_type,

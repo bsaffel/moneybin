@@ -22,6 +22,7 @@ from moneybin.privacy.payloads.transactions import (
     MatchPendingRow,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.temporal import format_utc
 
 
 def _score(row: dict[str, Any]) -> float | None:
@@ -62,7 +63,7 @@ def match_history_row(row: dict[str, Any]) -> MatchHistoryRow:
         match_tier=cast("str | None", row.get("match_tier")),
         confidence_score=_score(row),
         decided_by=str(row.get("decided_by") or "unknown"),
-        decided_at=None if decided_at is None else str(decided_at),
+        decided_at=None if decided_at is None else format_utc(decided_at),
         source_type_a=str(row["source_type_a"]),
         source_type_b=str(row["source_type_b"]),
     )

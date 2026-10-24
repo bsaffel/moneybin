@@ -25,6 +25,7 @@ from moneybin.privacy.sql_lineage import (
     _combined_class,  # pyright: ignore[reportPrivateUsage]
     _conservative_floor,  # pyright: ignore[reportPrivateUsage]
     _scope_input_max,  # pyright: ignore[reportPrivateUsage]
+    _scope_source_names,  # pyright: ignore[reportPrivateUsage]
     _table_scope_max,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
     expand_star,
@@ -354,24 +355,23 @@ def test_unresolvable_projection_falls_back_to_max_input_tier(
     snap = get_current_schema_snapshot(populated_db)
     tree = lin.expand_star(lin.parse_cached(sql), snap)
 
-    real = lin._column_key  # pyright: ignore[reportPrivateUsage]
+    real = lin._catalog_key  # pyright: ignore[reportPrivateUsage]
 
     def flaky(
         col: object,
+        scope: object,
         alias_map: object,
         snapshot: object,
-        shadowed: object = frozenset(),
+        shadowed: object,
     ) -> object:
-        # _column_key(col, alias_map, snapshot, shadowed) — fail only for
-        # 'credit_limit'. ``shadowed`` defaults so the call sites that omit it
-        # (collect_input_columns) keep working through the patch.
+        # The projection path's catalog lookup — fail only for 'credit_limit'.
         from sqlglot import exp as _exp
 
         if isinstance(col, _exp.Column) and col.name == "credit_limit":
             return None
-        return real(col, alias_map, snapshot, shadowed)  # type: ignore[arg-type]
+        return real(col, scope, alias_map, snapshot, shadowed)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(lin, "_column_key", flaky)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(lin, "_catalog_key", flaky)  # pyright: ignore[reportPrivateUsage]
 
     out = lin.resolve_output_classes(tree, snap, sql)
     # routing_number still resolves to CRITICAL; credit_limit falls back to max
@@ -784,15 +784,12 @@ def test_cte_named_after_catalog_table_never_resolves_to_it(
     catalog scan matches any CTE named like a real table). The decline became a
     confident TXN_TYPE/LOW and the routing number came back in the clear.
 
-    The expected class is UNRESOLVED, not ROUTING_NUMBER: the projection is
-    answered by ``_conservative_floor``, which reports a BOUND and so never
-    names a specific CRITICAL class (see that function). This assertion read
-    ROUTING_NUMBER until the equal-CRITICAL tie-break was fixed — the floor
-    returned its column-max, which happened to be the right class here but was
-    an unrelated one (and a WEAKER, partial mask) whenever the query merely
-    co-referenced a different CRITICAL column. UNRESOLVED discriminates the
-    guarded leak exactly as well: TXN_TYPE/LOW remains the failure mode, and
-    the value is still masked whole end-to-end.
+    The expected class splits by depth, as in the FROM-alias twin below: a
+    chain shallower than ``_MAX_SCOPE_DEPTH`` resolves through the CTEs to the
+    true source class, while a deeper one is answered by
+    ``_conservative_floor``, which reports a BOUND (UNRESOLVED) and so never
+    names a specific CRITICAL class. Either way TXN_TYPE/LOW remains the
+    failure mode, and the value is masked whole end-to-end.
     """
     ctes = _shadow_chain(depth)
     ctes.append(f"dim_accounts AS (SELECT account_type FROM c{depth})")  # noqa: S608  # test input string, not executing SQL
@@ -800,7 +797,10 @@ def test_cte_named_after_catalog_table_never_resolves_to_it(
 
     out = _classes(sql, populated_db)
 
-    assert out["account_type"] is DataClass.UNRESOLVED
+    expected = (
+        DataClass.ROUTING_NUMBER if depth < _MAX_SCOPE_DEPTH else DataClass.UNRESOLVED
+    )
+    assert out["account_type"] is expected
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
@@ -837,26 +837,41 @@ def test_cte_aliased_to_a_catalog_table_name_never_resolves_to_it(
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
+def test_correlated_null_test_over_an_unpivot_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """The pivot check reads the scope that BINDS the column, not its own.
+
+    The inner subquery holds no ``Pivot`` node, so judging it by its own scope
+    let the null-test exemption through for a value column fed by
+    routing-number digits — the per-digit reconstruction, one subquery away.
+    """
+    out = _classes(
+        "SELECT (SELECT COUNT(*) FILTER (WHERE dim_accounts.last_four IS NULL)) AS c "
+        "FROM core.dim_accounts UNPIVOT INCLUDE NULLS (last_four FOR arm IN "
+        "(last_four, NULLIF(substr(routing_number, 1, 1), '0') AS d0)) "
+        "AS dim_accounts GROUP BY arm",
+        populated_db,
+    )
+
+    assert out["c"] is not DataClass.AGGREGATE
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
 def test_shadowing_cte_resolves_by_semantics_not_by_the_depth_guard(
     populated_db: Database,
 ) -> None:
-    """A shadowing CTE with NO depth exhaustion still refuses the catalog.
+    """A shadowing CTE with NO depth exhaustion resolves THROUGH the CTE.
 
-    CORRECTED EXPECTATION AND DOCSTRING. This test previously asserted
-    ROUTING_NUMBER and claimed that "the floor is not what saves it — the column
-    must resolve THROUGH the CTE". That claim was false: this query has ALWAYS
-    been answered by ``_conservative_floor`` (verified by the fallback WARNING
-    it emits), and it passed only because the floor's buggy equal-CRITICAL
-    tie-break returned the column-max, which here coincided with the right
-    answer. Fixing the tie-break — which stopped an unrelated co-referenced
-    CRITICAL column from substituting its WEAKER partial mask — surfaced the
-    discrepancy.
+    The column's class is the CTE's own projection, ROUTING_NUMBER — never the
+    same-named catalog table's TXN_TYPE (LOW), which is the failure mode.
 
-    So this does NOT separate resolution from the floor, and naming it as if it
-    did was worse than not having it. What it genuinely pins is unchanged and
-    still worth pinning: a name shadowing a catalog table never borrows that
-    table's classes, at one level of nesting, with no depth exhaustion involved.
-    TXN_TYPE (LOW) remains the failure mode it guards against.
+    This asserted UNRESOLVED for a while, and its docstring said resolution
+    never answered it: the whole-query shadowed set refused ``dim_accounts``
+    everywhere, including the CTE body's own ``core.dim_accounts`` reference, so
+    ``_conservative_floor`` always answered. Resolution now asks the scope that
+    binds the name (``_binds_a_catalog_table``), so the body resolves against
+    the real table and the outer reference against the CTE.
     """
     out = _classes(
         "WITH dim_accounts AS "
@@ -864,7 +879,7 @@ def test_shadowing_cte_resolves_by_semantics_not_by_the_depth_guard(
         "SELECT account_type FROM dim_accounts",
         populated_db,
     )
-    assert out == {"account_type": DataClass.UNRESOLVED}
+    assert out == {"account_type": DataClass.ROUTING_NUMBER}
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
@@ -873,15 +888,15 @@ def test_derived_table_named_after_catalog_table_never_resolves_to_it(
 ) -> None:
     """The non-CTE shadowing form: a derived table aliased to a catalog name.
 
-    Answered by ``_conservative_floor`` (UNRESOLVED, a bound) rather than by
-    resolution — same correction as the test above; see its docstring.
+    Resolves through the derived table to ROUTING_NUMBER, never the catalog's
+    TXN_TYPE — same reasoning as the test above; see its docstring.
     """
     out = _classes(
         "SELECT dim_accounts.account_type FROM "
         "(SELECT routing_number AS account_type FROM core.dim_accounts) AS dim_accounts",
         populated_db,
     )
-    assert out == {"account_type": DataClass.UNRESOLVED}
+    assert out == {"account_type": DataClass.ROUTING_NUMBER}
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
@@ -1446,7 +1461,9 @@ def test_a_pure_column_predicate_on_an_unpivot_value_column_is_not_exempt(
         "GROUP BY arm",
         populated_db,
     )
-    assert out == {"c": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+    # UNRESOLVED, not last_four's catalog class: a pivot output never borrows a
+    # catalog class, so the conservative floor answers.
+    assert out == {"c": DataClass.UNRESOLVED}
 
 
 def test_a_pure_column_predicate_against_a_hoisted_literal_is_not_exempt(
@@ -1702,7 +1719,9 @@ def test_a_null_test_on_an_unpivot_value_column_is_not_exempt(
         populated_db,
     )
 
-    assert out == {"c": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+    # UNRESOLVED, not last_four's catalog class: a pivot output never borrows a
+    # catalog class, so the conservative floor answers.
+    assert out == {"c": DataClass.UNRESOLVED}
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
@@ -1726,7 +1745,9 @@ def test_a_null_test_is_not_exempt_anywhere_a_pivot_is_in_scope(
         populated_db,
     )
 
-    assert out == {"c": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+    # UNRESOLVED, not last_four's catalog class: a pivot output never borrows a
+    # catalog class, so the conservative floor answers.
+    assert out == {"c": DataClass.UNRESOLVED}
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
@@ -2221,6 +2242,120 @@ def test_a_placeholder_fails_closed_when_two_tables_bind_its_alias(
     )
 
     assert resolve_placeholder_classes(tree, snapshot) == {"tag": FAIL_CLOSED_CLASS}
+
+
+_NON_CATALOG_DIM_ACCOUNTS_SOURCES = {
+    "values": "(VALUES ('x')) AS dim_accounts(account_type)",
+    "unnest": "UNNEST(['x']) AS dim_accounts(account_type)",
+    "lateral": "LATERAL (SELECT 'x' AS account_type) AS dim_accounts",
+    "cte-alias": "c AS dim_accounts",
+    "unpivot-over-base-table": (
+        "core.dim_accounts UNPIVOT (account_type FOR n IN "
+        "(routing_number, account_type)) AS dim_accounts"
+    ),
+    "renamed-catalog-table": (
+        "core.dim_accounts AS dim_accounts(routing_number_alias, account_type)"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "source",
+    list(_NON_CATALOG_DIM_ACCOUNTS_SOURCES.values()),
+    ids=list(_NON_CATALOG_DIM_ACCOUNTS_SOURCES),
+)
+def test_a_placeholder_on_a_non_catalog_source_never_takes_a_catalog_class(
+    source: str, populated_db: Database
+) -> None:
+    """The placeholder path has no scopes, so the shadowed set alone guards it.
+
+    ``resolve_placeholder_classes`` keys every comparison through one tree-wide
+    ``_column_key`` call, and ``dim_accounts.account_type`` here never names
+    ``core.dim_accounts``'s own column. Each source used to resolve through the
+    bare-name catalog scan to TXN_TYPE (LOW) — the tier at which a bound value
+    is spliced in as a literal.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    cte = "WITH c AS (SELECT routing_number AS account_type FROM core.dim_accounts)"
+    tree = expand_star(
+        parse_cached(
+            f"{cte} SELECT 1 AS one FROM {source} WHERE dim_accounts.account_type = $kind"  # noqa: S608  # test input string, not executing SQL
+        ),
+        snapshot,
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {"kind": FAIL_CLOSED_CLASS}
+
+
+def test_a_placeholder_on_a_catalog_table_still_takes_its_class(
+    populated_db: Database,
+) -> None:
+    """The benign twin: a real catalog binding keeps its class, aliased or not."""
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = expand_star(
+        parse_cached(
+            "SELECT 1 AS one FROM core.dim_accounts d WHERE d.account_type = $kind"
+        ),
+        snapshot,
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {"kind": DataClass.TXN_TYPE}
+
+
+def test_an_alias_reused_in_another_scope_resolves_to_its_own_table(
+    populated_db: Database,
+) -> None:
+    """The class comes from the binder, not the last-write-wins alias map.
+
+    ``t`` is ``app.account_links`` where ``t.ref_value`` is read; the map ended
+    on the inner ``app.merchant_links`` and answered RECORD_ID (LOW) for an
+    ACCOUNT_IDENTIFIER.
+    """
+    out = _classes(
+        "SELECT t.ref_value FROM app.account_links t "
+        "WHERE EXISTS (SELECT 1 FROM app.merchant_links t)",
+        populated_db,
+    )
+
+    assert out == {"ref_value": DataClass.ACCOUNT_IDENTIFIER}
+
+
+def test_a_pivot_beside_a_catalog_table_leaves_that_table_resolvable(
+    populated_db: Database,
+) -> None:
+    """The benign twin of the pivot rule: only the pivoted source declines."""
+    out = _classes(
+        "SELECT d.account_type FROM core.dim_accounts d, "
+        "core.dim_accounts UNPIVOT (x FOR n IN (routing_number)) u",
+        populated_db,
+    )
+
+    assert out == {"account_type": DataClass.TXN_TYPE}
+
+
+def test_a_cte_reference_is_recognized_whatever_its_case() -> None:
+    """DuckDB matches identifiers without regard to case; the shadowed set must too."""
+    tree = parse_cached(
+        "WITH C AS (SELECT routing_number AS account_id FROM core.dim_accounts) "
+        "SELECT dim_accounts.account_id FROM c AS dim_accounts"
+    )
+
+    assert "dim_accounts" in _scope_source_names(tree)
+
+
+def test_projection_sources_name_no_upstream_for_an_aliased_cte(
+    populated_db: Database,
+) -> None:
+    """``FROM c AS dim_accounts`` is the CTE, not ``core.dim_accounts``."""
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached(
+        "WITH c AS (SELECT routing_number AS account_id FROM core.dim_accounts) "
+        "SELECT dim_accounts.account_id FROM c AS dim_accounts"
+    )
+
+    sources = resolve_projection_sources(tree, snapshot)
+
+    assert sources["account_id"] == ProjectionSource(passthrough=True, upstream=None)
 
 
 def test_projection_sources_withhold_an_upstream_two_tables_bind(

@@ -7,7 +7,7 @@ tests (test_stg_plaid.py) don't exercise:
   owed, but core.fct_balances / reports.net_worth treat liabilities as negative
   (net_worth sums balances; positive = asset, negative = liability). The CTE
   must negate credit/loan balances.
-- **Null current balance** — SyncBalance.current_balance is nullable; a NULL
+- **Null current balance** — PlaidSyncBalance.current_balance is nullable; a NULL
   would become a false $0 anchor once fct_balances_daily._to_decimal() coerces
   it, so such rows must be dropped.
 - **Margin loan** — Plaid reports an investment account's current_balance as the
@@ -163,7 +163,7 @@ def test_plaid_null_account_type_dropped(db: Database) -> None:
 
     Without a type we can't tell asset from liability, so signing it as a positive
     asset (the CASE ELSE branch) would reintroduce the P1 liability-inversion bug
-    for the NULL path. account_type is nullable end-to-end (SyncAccount.account_type
+    for the NULL path. account_type is nullable end-to-end (PlaidSyncAccount.account_type
     is `str | None`), so this is reachable, not hypothetical.
     """
     _insert_plaid_account(

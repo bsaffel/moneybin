@@ -23,6 +23,7 @@ from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 from moneybin.mcp.tools.reports import reports
 from moneybin.protocol.pagination import decode_keyset_cursor
 from moneybin.reports._framework.catalog import get_report_catalog
+from tests.database_mocks import with_reporting_timezone
 
 _ROOT = Path(__file__).parents[3]
 _SRC_DIR = _ROOT / "src/moneybin"
@@ -341,7 +342,7 @@ def test_report_result_actions_use_executable_standard_calls() -> None:
         cursor.fetchmany.return_value = []
         db_mock = MagicMock(spec=Database)
         db_mock.execute.return_value = cursor
-        db = cast(Database, db_mock)
+        db = cast(Database, with_reporting_timezone(db_mock))
         result = catalog.execute(
             db,
             report_id=report_id,

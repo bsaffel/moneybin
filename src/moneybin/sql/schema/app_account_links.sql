@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS app.account_links (
         CHECK (status IN ('accepted', 'reversed')),
     decided_by VARCHAR NOT NULL                -- domain actor: auto, user (human OR agent ratification), or system
         CHECK (decided_by IN ('auto', 'user', 'system')),
-    decided_at TIMESTAMP NOT NULL,             -- when this mapping was decided
-    reversed_at TIMESTAMP,                     -- when reversed; NULL while accepted
+    decided_at TIMESTAMPTZ NOT NULL,             -- when this mapping was decided
+    reversed_at TIMESTAMPTZ,                     -- when reversed; NULL while accepted
     reversed_by VARCHAR                        -- domain actor who reversed; NULL while accepted
         CHECK (reversed_by IS NULL OR reversed_by IN ('auto', 'user', 'system')),
     PRIMARY KEY (link_id)

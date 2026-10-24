@@ -74,6 +74,19 @@ WITH notes_agg AS (
     COALESCE(t.currency_code, a.currency_code) AS currency_code,
     CASE WHEN t.currency_code IS NULL THEN a.updated_at END AS inherited_currency_latest,
     a.archived_changed_at, /* Moves is_categorizable for every row of the account, so every row folds it into updated_at. */
+    CASE
+      WHEN EXISTS(
+        SELECT
+          1
+        FROM app.account_links AS links
+        WHERE
+          links.account_id = t.account_id
+          AND links.source_type = 'simplefin'
+          AND links.ref_kind = 'source_native'
+          AND links.status = 'accepted'
+      )
+      THEN GREATEST(account_base.account_type_changed_at, account_base.account_subtype_changed_at)
+    END AS classification_latest, /* Retained links survive SimpleFIN eligibility holds and a change of canonical source in mixed groups. */
     t.canonical_source_type AS source_type,
     t.source_count,
     t.match_confidence,
@@ -108,6 +121,8 @@ WITH notes_agg AS (
     ON t.transaction_id = bt_debit.debit_transaction_id
   LEFT JOIN core.bridge_transfers AS bt_credit
     ON t.transaction_id = bt_credit.credit_transaction_id
+  LEFT JOIN prep.int_accounts__merged AS account_base
+    ON t.account_id = account_base.account_id
   LEFT JOIN core.dim_accounts AS a
     ON t.account_id = a.account_id
   LEFT JOIN notes_agg AS n
@@ -174,6 +189,7 @@ SELECT
     COALESCE(tags_latest, loaded_at),
     COALESCE(splits_latest, loaded_at),
     COALESCE(inherited_currency_latest, loaded_at),
-    COALESCE(archived_changed_at, loaded_at)
+    COALESCE(archived_changed_at, loaded_at),
+    COALESCE(classification_latest, loaded_at)
   ) AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, categorization, an Account Currency inherited by a transaction without its own Currency, or archiving or restoring the account, which moves is_categorizable. Does not advance on idempotent SQLMesh re-applies. NULL-safe: DuckDB's GREATEST returns NULL if any arg is NULL, so optional inputs from LEFT JOINs are COALESCEd to loaded_at — without this, every uncategorized transaction had updated_at=NULL and incremental sync `WHERE updated_at > :last_sync` silently missed them. See docs/specs/core-updated-at-convention.md. */
 FROM enriched

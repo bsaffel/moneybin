@@ -208,12 +208,12 @@ def refresh_views(db: Database) -> None:
     override_updated_at_expr = (
         "o.updated_at"
         if has_column(db, CATEGORY_OVERRIDES, "updated_at")
-        else "NULL::TIMESTAMP"
+        else "NULL::TIMESTAMPTZ"
     )
     user_updated_at_expr = (
         "updated_at"
         if has_column(db, USER_CATEGORIES, "updated_at")
-        else "NULL::TIMESTAMP"
+        else "NULL::TIMESTAMPTZ"
     )
     db.execute(
         f"""
@@ -226,7 +226,7 @@ def refresh_views(db: Database) -> None:
             {seed_class_expr},
             true AS is_default,
             COALESCE(o.is_active, true) AS is_active,
-            NULL::TIMESTAMP AS created_at,
+            NULL::TIMESTAMPTZ AS created_at,
             {override_updated_at_expr} AS updated_at
         FROM {SEED_CATEGORIES.full_name} s
         LEFT JOIN {CATEGORY_OVERRIDES.full_name} o USING (category_id)
@@ -317,7 +317,7 @@ def refresh_views(db: Database) -> None:
                 category, subcategory, created_by,
                 CAST([] AS VARCHAR[]) AS exemplars,
                 created_at,
-                CAST(NULL AS TIMESTAMP) AS updated_at
+                CAST(NULL AS TIMESTAMPTZ) AS updated_at
             FROM app.merchants
             """  # noqa: S608  # MERCHANTS is a TableRef constant; app.merchants is the legacy TABLE
         )

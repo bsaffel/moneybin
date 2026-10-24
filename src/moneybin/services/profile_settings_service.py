@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -21,12 +23,19 @@ from moneybin.tables import PROFILE_SETTINGS
 #: Keys ``profile set`` routes to the database instead of ``config.yaml``.
 #: Undotted by construction, so they can never collide with a
 #: ``section.field`` config key.
-MANAGED_SETTING_KEYS: tuple[str, ...] = ("home_currency", "display_currency_targets")
+MANAGED_SETTING_KEYS: tuple[str, ...] = (
+    "home_currency",
+    "display_currency_targets",
+    "reporting_timezone",
+)
 
 
 @dataclass(frozen=True)
 class ProfileSettings:
     """Resolved managed settings for one profile."""
+
+    reporting_timezone: str
+    """Persisted IANA calendar for report defaults and human instant display."""
 
     home_currency: str | None
     """ISO 4217 home currency, or ``None`` when the user has not chosen one.
@@ -53,8 +62,19 @@ class ProfileSettingsService:
     def get_settings(self) -> ProfileSettings:
         """Return the profile's managed settings."""
         return ProfileSettings(
+            reporting_timezone=self._repo.get_reporting_timezone(),
             home_currency=self._repo.get_home_currency(),
             display_currency_targets=self._repo.get_display_currency_targets(),
+        )
+
+    def today(self, *, now: datetime | None = None) -> date:
+        """Resolve a default calendar day using the saved profile policy."""
+        from moneybin.temporal import as_utc
+
+        return (
+            as_utc(now or datetime.now(UTC))
+            .astimezone(ZoneInfo(self._repo.get_reporting_timezone()))
+            .date()
         )
 
     def set_setting(self, key: str, value: str | Sequence[str], *, actor: str) -> None:
@@ -65,6 +85,17 @@ class ProfileSettingsService:
                 f"Unknown profile setting {key!r}. Managed settings: {known}.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
+        if key == "reporting_timezone":
+            try:
+                if not isinstance(value, str):
+                    raise ValueError("Expected one IANA timezone")
+                self._repo.set_reporting_timezone(value, actor=actor)
+            except ValueError as exc:
+                raise UserError(
+                    str(exc), code=error_codes.MUTATION_INVALID_INPUT
+                ) from exc
+            self._restate()
+            return
         if key == "home_currency":
             if not isinstance(value, str):
                 raise UserError(
@@ -118,3 +149,17 @@ def _parse_display_currency_targets(value: str | Sequence[str]) -> tuple[str, ..
     if any(not target for target in targets):
         raise ValueError("empty target")
     return targets
+
+
+def suggest_reporting_timezone() -> str:
+    """Suggest an available machine IANA key, or explicitly offer UTC."""
+    from tzlocal import get_localzone_name
+
+    from moneybin.repositories.profile_settings_repo import validate_reporting_timezone
+
+    try:
+        zone = get_localzone_name()
+        validate_reporting_timezone(zone)
+    except (ValueError, OSError, KeyError):
+        return "UTC"
+    return zone

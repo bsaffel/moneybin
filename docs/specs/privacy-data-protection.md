@@ -14,9 +14,9 @@ account numbers, or spending patterns.
 - [ADR-002: Privacy Tiers](../decisions/002-privacy-tiers.md) — data custody model
   (Local Only / Encrypted Sync / Managed). This spec governs **data at rest** in the
   Local Only tier; `privacy-and-ai-trust.md` governs **data in motion** to AI backends.
-- [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md) — age + Argon2 encryption
-  for Plaid sync payloads flowing through the server. Different problem from local file
-  encryption (this spec).
+- [ADR-017: Client-owned encryption and recovery](../decisions/017-client-owned-encryption-and-recovery.md) —
+  custody and recovery principles; [ADR-004](../decisions/004-e2e-encryption.md)
+  is historical. Local database key management remains governed by ADR-009.
 - [ADR-005: Security Tradeoffs](../decisions/005-security-tradeoffs.md) — threat model
   for the sync tier.
 - [ADR-009: Encryption Key Management](../decisions/009-encryption-key-management.md) —
@@ -290,6 +290,19 @@ class DatabaseConfig(BaseModel):
 | `data/<profile>/temp/` | 0700 | DuckDB temp spill (encrypted) |
 | `data/<profile>/raw/` | 0700 | Imported source files |
 | `logs/<profile>/moneybin.log` | 0600 | Profile log file |
+
+### Read-only key verification
+
+`moneybin db key verify` verifies that the selected profile’s effective current
+credential can open its existing encrypted database. It uses an explicit
+`SecretStore` with `Database(read_only=True)` to bypass the process key cache
+and the factory’s migration escalation. Keychain-first and environment-fallback
+precedence are unchanged. Verification never initializes a database or profile,
+changes credentials or configuration, migrates, or refreshes. Standard diagnostic
+logs and JSON privacy events remain enabled; no database-backed metrics are
+persisted by this read-only invocation. Success proves access, not complete file
+integrity; failure does not distinguish a wrong key from every kind of corruption.
+Key export/import and passphrase policy are outside this verification slice.
 
 ## Implementation Plan
 

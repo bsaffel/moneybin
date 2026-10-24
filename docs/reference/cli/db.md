@@ -134,6 +134,11 @@ Usage: `moneybin db backup [OPTIONS]`
 
 Restore database from a backup file.
 
+Before validation, stop other processes and close connections using either
+the source or destination database. Keep them closed through replacement
+and any recovery. This offline prerequisite means no other database users,
+not merely no network connection.
+
 Usage: `moneybin db restore [OPTIONS]`
 
 **Options**
@@ -142,6 +147,7 @@ Usage: `moneybin db restore [OPTIONS]`
 |---|---|---|---|
 | `--from` | path |  | Path to backup file to restore from |
 | `--yes, -y` | flag |  | Skip confirmation prompt |
+| `--recover` | flag |  | Reconcile a completed interrupted restore using retained recovery evidence |
 | `--latest` | flag |  | Auto-select the most recent backup (non-interactive) |
 
 ## moneybin db lock
@@ -196,6 +202,7 @@ Usage: `moneybin db key [OPTIONS] COMMAND [ARGS]...`
 |---|---|
 | [`moneybin db key show`](#moneybin-db-key-show) | Print the database encryption key. |
 | [`moneybin db key rotate`](#moneybin-db-key-rotate) | Re-encrypt the database with a new key. |
+| [`moneybin db key verify`](#moneybin-db-key-verify) | Verify the effective credential can open the existing database read-only. |
 
 ## moneybin db key show
 
@@ -221,6 +228,19 @@ Usage: `moneybin db key rotate [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--yes, -y` | flag |  | Skip confirmation prompt |
+
+## moneybin db key verify
+
+Verify the effective credential can open the existing database read-only.
+
+Usage: `moneybin db key verify [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin db migrate
 

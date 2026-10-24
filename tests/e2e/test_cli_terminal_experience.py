@@ -140,7 +140,9 @@ def _stable_termios(state: str) -> str:
     other observed field remain part of the exact pre/post comparison.
     """
     values = state.split(":")
-    values[3] = f"{int(values[3], 16) & ~termios.PENDIN:x}"
+    lflag = values[3]
+    prefix = "lflag=" if lflag.startswith("lflag=") else ""
+    values[3] = f"{prefix}{int(lflag[len(prefix) :], 16) & ~termios.PENDIN:x}"
     return ":".join(values)
 
 
@@ -281,6 +283,7 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             """
             fx rate
             db key show
+            db key verify
             system doctor
             mcp config path
             import inbox path
@@ -323,7 +326,6 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             transactions categorize ml train
             db key export
             db key import
-            db key verify
             """
         ),
         "mutation_or_receipt": _paths(
@@ -883,7 +885,8 @@ def test_actual_sync_wrapper_interrupts_with_balanced_cursor_and_shell_recovery(
                 raise AssertionError("the interruption should arrive before this")
 
         @contextmanager
-        def synthetic_service():
+        def synthetic_service(*, local_only: bool = False):
+            assert local_only is False
             yield SyntheticService()
 
         sync._build_sync_service = synthetic_service

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import SQLMESH_ROOT, Database, sqlmesh_context
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.investment_service import InvestmentService
+from tests.moneybin.sqlmesh_model_helpers import rendered_model_sql
 
 pytestmark = pytest.mark.integration
 
@@ -49,17 +51,17 @@ def _case_origin(case_id: str) -> str:
 
 
 def _db_today(db: Database) -> date:
-    """The database's own CURRENT_DATE — the clock ``core.dim_holdings`` reads.
+    """Read the saved reporting day before seeding and again after planning.
 
-    Python's ``date.today()`` is evaluated before ``ctx.plan()``, a multi-second
-    operation, while the model re-evaluates SQL ``CURRENT_DATE`` *during* the plan.
-    A shard seeding at 23:59:58 and materializing at 00:00:03 sees the two disagree,
-    flipping ``days_since_observed`` from 0 to 1 and ``valuation_status`` from
-    ``valued`` to ``carried_forward``. Every date-sensitive assertion in this module
-    is therefore anchored to this function's value read before seeding, and compared
-    against it re-read after the plan — never against the wall clock.
+    Planning can cross midnight; elapsed-day assertions must use the same calendar
+    as the model, independent of the host and the UTC database session.
     """
-    row = db.execute("SELECT CURRENT_DATE").fetchone()
+    row = db.execute(
+        """
+        SELECT timezone(reporting_timezone, CURRENT_TIMESTAMP)::DATE
+        FROM app.profile_settings WHERE scope = 'profile'
+        """
+    ).fetchone()
     assert row is not None
     return row[0]
 
@@ -91,8 +93,8 @@ _POSITION_TRADE_DATE = date(2026, 1, 5)
 # The two fixture timestamps behind the overlap-watermark case. Spelled here as
 # constants because the assertion is an equality against them, not a comparison
 # against whatever the model happened to produce.
-_OVERLAP_HELD_LOT_AT = "2026-01-06 09:00:00"
-_OVERLAP_SECOND_SOURCE_AT = "2026-02-10 09:00:00"
+_OVERLAP_HELD_LOT_AT = "2026-01-06 09:00:00+00:00"
+_OVERLAP_SECOND_SOURCE_AT = "2026-02-10 09:00:00+00:00"
 
 
 def _seed_position(
@@ -128,7 +130,7 @@ def _seed_position(
             investment_transaction_id, currency_code, created_at
         ) VALUES (?, ?, ?, ?, 'VTI', ?,
                   ?::DATE, ?, ?, ?, 0.00, 'test', ?, ?,
-                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
+                  COALESCE(?::TIMESTAMPTZ, CURRENT_TIMESTAMP))
         """,  # test fixture, not executing user SQL
         [
             transaction_id,
@@ -173,7 +175,7 @@ def _seed_price(
             (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?, ?, 'plaid', 'item_1', ?, 'raw',
-                COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                COALESCE(?::TIMESTAMPTZ, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         """,  # test fixture, not executing user SQL
         [provider_key, price_date, quote_currency, close, extracted_at],
     )
@@ -222,7 +224,7 @@ def _seed_broker_snapshot(
             source_origin, source_file, holdings_date, holdings_count,
             transactions_window_start, source_type, extracted_at, loaded_at
         ) VALUES (?, ?, CURRENT_DATE, 1, DATE '2026-01-01', 'plaid',
-                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                  COALESCE(?::TIMESTAMPTZ, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         ON CONFLICT DO NOTHING
         """,  # test fixture, not executing user SQL
         [source_origin, source_file, extracted_at],
@@ -292,7 +294,7 @@ def _seed_plaid_buy(
             investment_transaction_id, source_origin, source_file,
             observation_version, extracted_at, loaded_at
         ) VALUES (?, ?, 'sync_test', 'plaid_fixture', CURRENT_TIMESTAMP,
-                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))""",
+                  COALESCE(?::TIMESTAMPTZ, CURRENT_TIMESTAMP))""",
         [f"itx_buy_{account_id}", source_origin, loaded_at],
     )
 
@@ -470,6 +472,29 @@ def valuation_cases_template(
     )
     request.addfinalizer(db.close)
     anchor = _db_today(db)
+
+    for calendar, day in (("year", date(2026, 1, 1)), ("dst", date(2026, 3, 9))):
+        for kind, prices in (
+            ("latest", ((-2, "110.00"), (-1, "120.00"), (0, "130.00"), (1, "500.00"))),
+            ("stale", ((-3, "100.00"),)),
+            ("future", ((1, "500.00"),)),
+        ):
+            case = f"calendar_{calendar}_{kind}"
+            _seed_position(
+                db,
+                account_id=_case_account(case),
+                security_id=_case_security(case),
+                transaction_id=f"{case}_buy",
+                trade_date=date(2025, 12, 1),
+                price=None,
+            )
+            for offset, close in prices:
+                _seed_price(
+                    db,
+                    security_id=_case_security(case),
+                    price_date=day + timedelta(days=offset),
+                    close=close,
+                )
 
     def account(case_id: str) -> str:
         return _case_account(case_id)
@@ -913,6 +938,192 @@ def valuation_cases(
     )
     request.addfinalizer(db.close)
     return _ValuationCases(db=db, anchor=valuation_cases_template.anchor)
+
+
+def _install_calendar_view(db: Database, instant: str) -> None:
+    """Freeze only SQL clocks; keep the shipped valuation query intact."""
+    body = rendered_model_sql(SQLMESH_ROOT / "models/core/dim_holdings.sql")
+    body = body.replace("CURRENT_TIMESTAMP", f"TIMESTAMPTZ '{instant}'")
+    body = body.replace("CURRENT_DATE", f"DATE '{instant[:10]}'")
+    db.execute(
+        f"CREATE VIEW calendar_holdings AS {body}"  # rendered model SQL and test clock, no user input
+    )
+
+
+def _calendar_holdings(db: Database, calendar: str) -> list[tuple[object, ...]]:
+    return db.execute(
+        """
+        SELECT account_id, price_date, market_value, valuation_status,
+               days_since_observed
+        FROM calendar_holdings
+        WHERE account_id IN (?, ?, ?)
+        ORDER BY account_id
+        """,
+        [
+            _case_account(f"calendar_{calendar}_{kind}")
+            for kind in ("future", "latest", "stale")
+        ],
+    ).fetchall()
+
+
+@pytest.mark.parametrize(
+    ("zone", "instant", "calendar", "latest_date", "latest_value", "stale_age"),
+    [
+        (
+            "America/New_York",
+            "2026-01-01 04:59:59+00",
+            "year",
+            date(2025, 12, 31),
+            "1200.00",
+            2,
+        ),
+        (
+            "America/New_York",
+            "2026-01-01 05:00:00+00",
+            "year",
+            date(2026, 1, 1),
+            "1300.00",
+            3,
+        ),
+        (
+            "Pacific/Kiritimati",
+            "2025-12-31 09:59:59+00",
+            "year",
+            date(2025, 12, 31),
+            "1200.00",
+            2,
+        ),
+        (
+            "Pacific/Kiritimati",
+            "2025-12-31 10:00:00+00",
+            "year",
+            date(2026, 1, 1),
+            "1300.00",
+            3,
+        ),
+        (
+            "America/New_York",
+            "2026-03-09 03:59:59+00",
+            "dst",
+            date(2026, 3, 8),
+            "1200.00",
+            2,
+        ),
+        (
+            "America/New_York",
+            "2026-03-09 04:00:00+00",
+            "dst",
+            date(2026, 3, 9),
+            "1300.00",
+            3,
+        ),
+    ],
+    ids=[
+        "west-before-new-year",
+        "west-new-year",
+        "east-before-new-year",
+        "east-new-year",
+        "dst-before-midnight",
+        "dst-midnight",
+    ],
+)
+def test_holdings_calendar_controls_eligibility_status_and_age(
+    valuation_cases: _ValuationCases,
+    zone: str,
+    instant: str,
+    calendar: str,
+    latest_date: date,
+    latest_value: str,
+    stale_age: int,
+) -> None:
+    db = valuation_cases.db
+    ProfileSettingsRepo(db).set_reporting_timezone(zone, actor="test")
+    _install_calendar_view(db, instant)
+    stale_date = date(2025, 12, 29) if calendar == "year" else date(2026, 3, 6)
+
+    assert _calendar_holdings(db, calendar) == [
+        (_case_account(f"calendar_{calendar}_future"), None, None, "unpriced", None),
+        (
+            _case_account(f"calendar_{calendar}_latest"),
+            latest_date,
+            Decimal(latest_value),
+            "valued",
+            0,
+        ),
+        (
+            _case_account(f"calendar_{calendar}_stale"),
+            stale_date,
+            Decimal("1000.00"),
+            "carried_forward",
+            stale_age,
+        ),
+    ]
+    assert db.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)
+    assert db.execute(
+        """
+        SELECT DISTINCT price_date, typeof(price_date)
+        FROM raw.security_prices WHERE provider_security_key = ?
+        ORDER BY price_date
+        """,
+        [_provider_key(_case_security(f"calendar_{calendar}_latest"))],
+    ).fetchall() == [
+        (latest, "DATE")
+        for latest in (
+            (date(2025, 12, 30), date(2025, 12, 31), date(2026, 1, 1), date(2026, 1, 2))
+            if calendar == "year"
+            else (
+                date(2026, 3, 7),
+                date(2026, 3, 8),
+                date(2026, 3, 9),
+                date(2026, 3, 10),
+            )
+        )
+    ]
+
+
+def test_holdings_calendar_change_applies_without_replanning(
+    valuation_cases: _ValuationCases,
+) -> None:
+    db = valuation_cases.db
+    settings = ProfileSettingsRepo(db)
+    settings.set_reporting_timezone("America/New_York", actor="test")
+    _install_calendar_view(db, "2026-01-01 00:30:00+00")
+    assert _calendar_holdings(db, "year")[1:] == [
+        (
+            _case_account("calendar_year_latest"),
+            date(2025, 12, 31),
+            Decimal("1200.00"),
+            "valued",
+            0,
+        ),
+        (
+            _case_account("calendar_year_stale"),
+            date(2025, 12, 29),
+            Decimal("1000.00"),
+            "carried_forward",
+            2,
+        ),
+    ]
+
+    settings.set_reporting_timezone("Pacific/Kiritimati", actor="test")
+
+    assert _calendar_holdings(db, "year")[1:] == [
+        (
+            _case_account("calendar_year_latest"),
+            date(2026, 1, 1),
+            Decimal("1300.00"),
+            "valued",
+            0,
+        ),
+        (
+            _case_account("calendar_year_stale"),
+            date(2025, 12, 29),
+            Decimal("1000.00"),
+            "carried_forward",
+            3,
+        ),
+    ]
+    assert db.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)
 
 
 @pytest.mark.slow
@@ -1459,7 +1670,7 @@ def test_updated_at_reflects_the_resolved_close_freshness(
         [_case_account("updated_close")],
     ).fetchone()
     assert row is not None
-    assert row[0] == datetime(2099, 1, 1), (
+    assert row[0] == datetime(2099, 1, 1, tzinfo=UTC), (
         "the resolved close's freshness must fold into the row watermark"
     )
 
@@ -1488,7 +1699,7 @@ def test_updated_at_reflects_an_omitting_snapshot(
     assert row[0] == "withheld", (
         "the newest snapshot omits the position — it is a phantom"
     )
-    assert row[1] == datetime(2099, 1, 1), (
+    assert row[1] == datetime(2099, 1, 1, tzinfo=UTC), (
         "the omitting pull's receipt freshness must fold into the row watermark"
     )
 

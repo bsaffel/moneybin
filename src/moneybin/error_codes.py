@@ -178,6 +178,7 @@ INFRA_TOO_MANY_ITEMS = "infra_too_many_items"
 # mask_error_details would otherwise leave. Carries the exception *type* only —
 # never its message, which can embed file paths, SQL, and financial data.
 INFRA_UNCLASSIFIED_ERROR = "infra_unclassified_error"
+INFRA_UTC_UPGRADE_REQUIRED = "infra_utc_upgrade_required"
 INFRA_WRONG_KEY = "infra_wrong_key"
 
 
@@ -257,6 +258,8 @@ SQL_SCHEMA_NOT_ALLOWED = "sql_schema_not_allowed"
 # entry. The caller's recovery differs — reach for DESCRIBE, not a name fix.
 SQL_TABLE_NOT_CURATED = "sql_table_not_curated"
 SQL_UNKNOWN_TABLE = "sql_unknown_table"
+# A column the query names does not exist; the table is fine, so fix the column.
+SQL_UNKNOWN_COLUMN = "sql_unknown_column"
 
 
 # ---------------------------------------------------------------------------

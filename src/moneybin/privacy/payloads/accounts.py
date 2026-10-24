@@ -26,6 +26,7 @@ from moneybin.privacy.payloads.balances import (
 )
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.row_set import NO_ROW_SET, row_set
+from moneybin.temporal import format_utc
 from moneybin.utils.parsing import signal_from_match_signals
 
 if TYPE_CHECKING:
@@ -53,6 +54,9 @@ class AccountSummary:
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     last_four: Annotated[str | None, DataClass.INSTITUTION_ACCOUNT_NUMBER]
     credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
+
+    account_type_override: Annotated[str | None, DataClass.TXN_TYPE] = None
+    source_account_type: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 @row_set("rows")
@@ -83,6 +87,9 @@ class AccountDetail:
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     investment_source_type: Annotated[str | None, DataClass.TXN_TYPE]
     source_type: Annotated[str | None, DataClass.TXN_TYPE]
+
+    account_type_override: Annotated[str | None, DataClass.TXN_TYPE] = None
+    source_account_type: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +261,7 @@ class AccountSettingsPayload:
     field existed, reading the ``archived`` FALSE->TRUE transition out of
     ``app.audit_log``. An inferred date a caller cannot read back is an
     inference nobody can check."""
+    account_type: Annotated[str | None, DataClass.TXN_TYPE] = None
     warnings: Annotated[list[str], DataClass.DESCRIPTION] = field(default_factory=list)
 
 
@@ -416,7 +424,7 @@ class LinkHistoryRow:
             status=r["status"],
             decided_by=r["decided_by"],
             decided_at=(
-                str(r["decided_at"]) if r.get("decided_at") is not None else None
+                format_utc(r["decided_at"]) if r.get("decided_at") is not None else None
             ),
             signal=signal_from_match_signals(r.get("match_signals")),
         )

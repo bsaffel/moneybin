@@ -37,9 +37,10 @@
    would be taken over the very set it filters and admit every row by construction.
    The failure a floor guards — valuing a 2018 position from a 2024 listing price —
    needs resolution to reach FORWARD in time, which the bounded-lookback rule forbids:
-   core.dim_holdings takes `price_date <= CURRENT_DATE` ordered `price_date DESC`. A
-   floor becomes meaningful only if C.3's fct_holdings_daily fills its spine backward,
-   and that model should not. See docs/specs/investments-price-feeds.md.
+   core.dim_holdings takes `price_date <= today` in the saved reporting calendar,
+   ordered `price_date DESC`. A floor becomes meaningful only if C.3's
+   fct_holdings_daily fills its spine backward, and that model should not.
+   See docs/specs/investments-price-feeds.md.
 
    The ORDER BY is a deterministic pick over every column this model exposes — not an
    unqualified total order over the raw input. source_rank picks a preferred source;

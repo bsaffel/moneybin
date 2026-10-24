@@ -195,9 +195,11 @@ def test_raw_data_summary_derives_date_range_from_transaction_date(
 
 
 @pytest.mark.unit
-def test_raw_data_summary_uses_date_posted_for_ofx_tables(db: Database) -> None:
-    """An OFX-named transaction table derives its date range from date_posted."""
-    db.conn.execute("CREATE TABLE raw.ofx_test_transactions (date_posted VARCHAR)")
+def test_raw_data_summary_uses_source_date_for_ofx_tables(db: Database) -> None:
+    """An OFX-named transaction table summarizes the source calendar dates."""
+    db.conn.execute(
+        "CREATE TABLE raw.ofx_test_transactions (date_posted_source_date DATE)"
+    )
     db.conn.execute(
         "INSERT INTO raw.ofx_test_transactions VALUES ('2026-03-01'), ('2026-03-15')"
     )

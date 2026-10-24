@@ -29,13 +29,13 @@ even though the higher-priority OFX source has no currency of its own.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import polars as pl
 import pytest
 
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import PlaidSyncDataResponse
 from moneybin.database import Database
 from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
@@ -130,7 +130,8 @@ def _seed_ofx_twin(db: Database, *, account_id: str) -> None:
                 "source_transaction_id": "ofx_currency_gap_001",
                 "account_id": account_id,
                 "transaction_type": "DEBIT",
-                "date_posted": datetime(2026, 6, 1, tzinfo=UTC).replace(tzinfo=None),
+                "date_posted": datetime(2026, 6, 1, tzinfo=UTC),
+                "date_posted_source_date": date.fromisoformat(_DEDUP_DATE),
                 "amount": _OFX_RAW_AMOUNT,
                 "payee": "EURO MERCHANT CO",
                 "memo": None,
@@ -163,7 +164,7 @@ def test_merge_prefers_known_currency_over_higher_priority_null() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         # --- Load Plaid, resolve its account → canonical id C ---
-        sync_data = SyncDataResponse.model_validate(_PLAID_PAYLOAD)
+        sync_data = PlaidSyncDataResponse.model_validate(_PLAID_PAYLOAD)
         loader = PlaidExtractor(db)
         loader.load(sync_data, job_id=sync_data.metadata.job_id)
 

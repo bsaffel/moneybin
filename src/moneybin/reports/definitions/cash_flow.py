@@ -12,7 +12,12 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import CASHFLOW_GROUPINGS, resolve_window
+from moneybin.reports.definitions._shared import (
+    CASHFLOW_GROUPINGS,
+    resolve_window,
+    validate_month,
+)
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.tables import REPORTS_CASH_FLOW
 
 
@@ -141,9 +146,14 @@ def cash_flow(
     """
     if by not in CASHFLOW_GROUPINGS:
         raise ValueError(f"Unknown by: {by}")
+    if from_month is not None:
+        validate_month(from_month, "from_month")
+    if to_month is not None:
+        validate_month(to_month, "to_month")
     from_month, to_month, period, hint = resolve_window(
         from_month,
         to_month,
+        reporting_timezone=ProfileSettingsRepo(db).get_reporting_timezone(),
         report_id="core:cash_flow",
         cli=("reports", "cash-flow"),
     )

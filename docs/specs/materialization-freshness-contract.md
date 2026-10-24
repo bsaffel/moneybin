@@ -119,11 +119,12 @@ such table: its display fields read through and everything else restates.
 | `app.match_decisions` | `RESTATES` |
 | `app.seed_source_priority` | `RESTATES` (seeded from config before every apply) |
 | `app.account_links`, `app.account_link_decisions` | `RESTATES` |
-| `app.account_settings` | `READ_THROUGH`: `display_name`, `official_name`, `last_four`, `account_subtype`, `holder_category`, `credit_limit`, `updated_at`. Every other column `RESTATES` |
+| `app.account_settings` | `READ_THROUGH`: `display_name`, `official_name`, `last_four`, `holder_category`, `credit_limit`, `updated_at`. Every other column `RESTATES` |
 | `app.balance_assertions` | `RESTATES` |
 | `app.securities`, `app.security_links`, `app.security_price_overrides` | `RESTATES` |
 | `app.lot_selections` | `RESTATES` (newly declared as an external model) |
 | `app.exchange_rate_overrides`, `app.profile_settings` | `RESTATES` |
+| `app.utc_upgrade_provenance` | `RESTATES` (fresh bootstrap precedes model builds; offline changes require rebuilding dependent materializations) |
 | `app.audit_log` | `TARGET_SCOPED` |
 | `app.transaction_categories`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` | `READ_THROUGH` |
 | `app.user_categories`, `app.category_overrides`, `app.user_merchants`, `app.category_source_map` | `READ_THROUGH` |
@@ -159,11 +160,21 @@ sources (including the raw `account_label`, `last_four_derived` and
 `official_name` the display ladder needs), plus the restating settings resolved
 onto it: `currency_code` (the override, else the source's), `archived`,
 `include_in_net_worth`, `archived_at`, `default_cost_basis_method`,
-`investment_source_type`, and the four change stamps. Its `updated_at` is
-`GREATEST(loaded_at, <the four change stamps>)`.
+`investment_source_type`, effective `account_type` and `account_subtype`, and
+six change stamps. Type retains `account_type_override` and
+`source_account_type` provenance. Its `updated_at` is
+`GREATEST(loaded_at, <the six change stamps>)`.
+
+Classification affects SimpleFIN transaction and balance eligibility, so type
+and subtype edits both restate from `app.account_settings`. The aware UTC
+`account_type_changed_at` and `account_subtype_changed_at` stamps advance on
+actual edits, clears, merge moves and undo. A repeated value keeps its stamp;
+a display-only rename remains read-through. SimpleFIN eligibility joins the
+materialized base rather than the display dimension, without a reverse
+dependency from account staging onto financial staging.
 
 `core.dim_accounts` keeps its columns, order and comments. It selects the base
-and joins the display ladder, `official_name`, `last_four`, `account_subtype`,
+and joins the display ladder, `official_name`, `last_four`,
 `holder_category` and `credit_limit` from `app.account_settings`. Its
 `updated_at` is `GREATEST(base.updated_at, settings.updated_at)`.
 
@@ -186,8 +197,10 @@ def restate_after_write(
 ```
 
 - Keeps only inputs that restate: a read-through or unclassified `app.*` table
-  is dropped, so a caller that wrote a mixed set may pass all of it. Inputs
-  outside `app` always restate.
+  is dropped, so a caller that wrote a mixed set may pass all of it. A table
+  `external_models.yaml` does not declare (`raw.gsheet_seeds`, `raw.pdf_seeds`)
+  cannot be a restate root, and naming it would fail the plan, so it is
+  dropped too.
 - Returns without work when the warehouse has never been built.
 - Restates the named tables through `TransformService.restate_models`. SQLMesh
   accepts an external model as a restate root and restates every downstream
@@ -221,6 +234,8 @@ currency settings only, is removed; its callers use this module.
 | `app.exchange_rate_overrides`, `raw.exchange_rates` | `CurrencyService.set_override`, `delete_override`, `_store`; the refresh rates step |
 | `app.profile_settings` | `ProfileSettingsService.set_setting` |
 | `app.account_links` and the purged `raw.plaid_*` rows | `SyncService.purge_confirmed` |
+| the purged `raw.tabular_*` rows | `GSheetConnectionService.purge_confirmed` (a seed connection's `raw.gsheet_seeds` is not a declared external model, so that purge restates nothing) |
+| the reverted batch's `raw.*` rows (`REVERT_TABLES`) and the `app.security_links` it reverses | `ImportService.revert_confirmed` |
 | `raw.manual_transactions` | `TransactionService.create_manual_batch`, after its category step commits |
 
 An account merge moves links, decisions, lot selections and settings in one
@@ -232,7 +247,9 @@ does on request.
 
 Writes that touch only pending decisions — the account-link backfill, a
 proposed pair, a standalone reject — restate nothing, because no model reads a
-pending decision. The behavioural guard confirms each write it covers.
+pending decision. A purge or revert that deleted no row and reversed no link
+restates nothing either, for the same reason. The behavioural guard confirms
+each write it covers.
 
 An import or sync run with `refresh=False`, `import confirm`, and MCP
 `gsheet_pull` write raw rows together with the links and settings that describe
@@ -250,12 +267,17 @@ breaks the converse: the timestamp moves at write time and the row does not
 move until the next refresh, so a consumer polling `updated_at > :cursor` sees a
 change that has not happened yet.
 
-- `AccountService.settings_update` stamps `currency_code_changed_at` and
-  `default_cost_basis_method_changed_at` on a real change; repeating the current
+- `AccountService.settings_update` stamps `currency_code_changed_at`,
+  `default_cost_basis_method_changed_at`, `account_type_changed_at` and
+  `account_subtype_changed_at` on a real change; repeating the current
   value is a no-op for the field. A merge stamps the fields it moves, and an
   undo advances them through the settings repo's existing `_CHANGE_STAMPS`
-  mechanism. V075 backfills both from `updated_at`, the value the models folded
-  before, so nothing rewinds.
+  mechanism. V075 backfills the currency and cost-basis stamps from `updated_at`,
+  the value the models folded before, so nothing rewinds. Pending V077 appends
+  the type override and the
+  two aware UTC classification stamps after published V075; historical
+  migrations V001–V075 retain their published definitions. Fresh UTC bootstrap
+  already declares all these instants as `TIMESTAMPTZ`.
 - `FULL` models fold `prep.int_accounts__merged.updated_at` where they folded
   `core.dim_accounts.updated_at`, the merge's `loaded_at` plus the account
   base's stamps where they folded `core.fct_transactions.updated_at`, and

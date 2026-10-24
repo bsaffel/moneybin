@@ -9,7 +9,7 @@ freshness. See docs/specs/core-updated-at-convention.md.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -75,7 +75,7 @@ def test_user_assertion_carries_updated_at() -> None:
         ).fetchone()
 
     assert row is not None, "user assertion did not surface in fct_balances"
-    assert row[0] == datetime(2020, 1, 2, 12, 0, 0), (
+    assert row[0] == datetime(2020, 1, 2, 12, 0, 0, tzinfo=UTC), (
         f"updated_at={row[0]} did not match inserted updated_at"
     )
 

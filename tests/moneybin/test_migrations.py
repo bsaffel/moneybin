@@ -748,3 +748,27 @@ class TestSqlmeshStateAssessment:
         assert "transform engine state" in message
         assert not names_an_internal_dependency(message)
         assert needs_migration is True
+
+
+@pytest.mark.parametrize(
+    "version,checksum",
+    [
+        (50, "40d7c8af508681cd2b7ede10a06900bb980854e1a6f417f36e4dfd1a9592c559"),
+        (58, "9a74ff353502c6ea5b68d2a66bd4a42336aea0f2f443cd56744c91c26ee55b91"),
+    ],
+)
+def test_original_shipped_migration_checksums_remain_accepted(
+    db: Database, version: int, checksum: str
+) -> None:
+    # Complete-file hashes from integrated main 1f67a14cdc6f, including docstrings.
+    migration = next(m for m in discover_migrations() if m.version == version)
+    db.execute(
+        "INSERT OR REPLACE INTO app.schema_migrations "
+        "(version, filename, checksum, success) VALUES (?, ?, ?, true)",
+        [version, migration.filename, checksum],
+    )
+    assert not [
+        warning
+        for warning in MigrationRunner(db).check_drift()
+        if warning.version == version
+    ]

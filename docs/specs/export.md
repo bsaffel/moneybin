@@ -21,6 +21,10 @@ Parquet, XLSX, or a dedicated Google Sheets destination. Every artifact is
 verifiable: it names its data contract, redaction mode, creation time, and
 integrity checks.
 
+Artifact version 2 serializes instants as `YYYY-MM-DDTHH:MM:SS.ffffffZ` in
+manifests, row output and checksums. DATE values retain `YYYY-MM-DD` under
+[Warehouse UTC](warehouse-utc.md).
+
 ## Background
 
 MoneyBin imports from files and live Sheets. M1O closes the reciprocal data-exit
@@ -434,7 +438,7 @@ an `ExportDestinationsRepo`. The table contains:
 | `local_path` | `VARCHAR NULL` | Absolute root for a local destination only. |
 | `spreadsheet_id` | `VARCHAR NULL` | Stable Google workbook identity for Sheets only. |
 | `managed_tab_prefix` | `VARCHAR NULL` | MoneyBin-owned Sheets tab namespace. |
-| `created_at`, `updated_at` | `TIMESTAMP` | House timestamps. |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | [Warehouse UTC](warehouse-utc.md) instants. |
 
 The kind-specific fields are mutually exclusive and validated before mutation.
 The built-in `local:exports` remains derived from

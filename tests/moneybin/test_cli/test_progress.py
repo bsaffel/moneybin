@@ -7,6 +7,8 @@ from io import StringIO
 from typing import Never
 
 import pytest
+from rich.console import Console
+from rich.progress import Progress
 
 from moneybin.cli.progress import operation_progress
 from moneybin.cli.terminal import (
@@ -148,9 +150,6 @@ def test_progress_uses_one_active_task_and_never_writes_stdout(
     assert driver.stopped
     assert driver.active_tasks == 0
     assert [call[0] for call in driver.calls].count("Syncing institutions") == 1
-    assert any(
-        column.__class__.__name__ == "MofNCompleteColumn" for column in driver.columns
-    )
     assert driver.calls[1] == (
         "update",
         {"description": "Loading transactions", "completed": 3, "total": 10},
@@ -268,3 +267,29 @@ def test_static_progress_deduplicates_stages_and_preserves_warnings(
         "Refreshing reports",
         "Syncing institutions",
     ]
+
+
+def _render(columns: tuple[object, ...], *, total: int | None) -> str:
+    """One frame of a real Rich progress row built from ``columns``."""
+    console = Console(file=StringIO(), width=80, color_system=None)
+    progress = Progress(*columns, console=console)  # type: ignore[arg-type]  # captured Rich columns
+    progress.add_task("Syncing institutions", completed=3, total=total)
+    with console.capture() as capture:
+        console.print(progress.make_tasks_table(progress.tasks))
+    return capture.get()
+
+
+def test_animated_progress_shows_a_count_only_when_the_total_is_known(
+    animated_policy: TerminalPolicy, progress_driver: dict[str, _ProgressDriver]
+) -> None:
+    """A stage with no total shows its spinner and label, never ``0/?``."""
+    with operation_progress(animated_policy):
+        pass
+    columns = progress_driver["driver"].columns
+
+    uncounted = _render(columns, total=None)
+    counted = _render(columns, total=10)
+
+    assert "Syncing institutions" in uncounted
+    assert "?" not in uncounted
+    assert "3/10" in counted

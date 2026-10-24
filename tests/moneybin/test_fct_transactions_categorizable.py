@@ -9,7 +9,7 @@ condition.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -39,9 +39,10 @@ def _insert_transaction(
         """
         INSERT INTO raw.ofx_transactions
             (source_transaction_id, account_id, transaction_type, date_posted,
+             date_posted_source_date,
              amount, payee, source_file, extracted_at, source_type,
              source_origin, currency_code)
-        VALUES (?, ?, 'DEBIT', '2026-07-01'::TIMESTAMP, ?, 'Test Payee',
+        VALUES (?, ?, 'DEBIT', '2026-07-01'::TIMESTAMP, DATE '2026-07-01', ?, 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', 'USD')
         """,  # test fixture, not executing user SQL
         [source_id, account_id, amount],
@@ -167,7 +168,7 @@ def test_an_archive_change_advances_updated_at_on_every_row_of_the_account(
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    stamp = datetime(2099, 1, 1)
+    stamp = datetime(2099, 1, 1, tzinfo=UTC)
     rows = {
         account_id: (currency_code, updated_at)
         for account_id, currency_code, updated_at in db.execute(

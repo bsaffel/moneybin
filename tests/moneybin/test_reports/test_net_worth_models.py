@@ -107,9 +107,8 @@ def model_db(
 def _install_net_worth_sources(db: Database) -> None:
     """Create the account-grain rung's core.* stub tables.
 
-    ``app.profile_settings`` already exists (empty) via ``init_schemas`` — no
-    row means no home currency chosen, which is the default state ``_home``
-    below opts into.
+    Fresh UTC bootstrap creates the profile settings row with no home currency.
+    ``_home`` below chooses that currency without replacing its saved timezone.
     """
     db.execute("""
         CREATE TABLE core.fct_balances_daily (
@@ -237,9 +236,9 @@ def _rate(
 
 
 def _home(db: Database, currency: str) -> None:
-    """Insert the singleton app.profile_settings row with a chosen home currency."""
+    """Choose a home currency on the bootstrap singleton, preserving its timezone."""
     db.execute(
-        "INSERT INTO app.profile_settings (home_currency) VALUES (?)",
+        "UPDATE app.profile_settings SET home_currency = ? WHERE scope = 'profile'",
         [currency],
     )
 
@@ -330,7 +329,7 @@ def test_accounts_rung_unknown_currency_is_never_priced(model_db: Database) -> N
 
 
 def test_accounts_rung_null_home_currency_prices_nothing(model_db: Database) -> None:
-    """No app.profile_settings row means every account is unpriced.
+    """An unchosen home currency means every account is unpriced.
 
     A USD→USD identity rate exists for the test date, so a mutation that
     defaulted the missing home currency to 'USD' (e.g.
@@ -663,7 +662,7 @@ def test_currencies_rung_pools_unknown_currency_into_one_segment(
 def test_currencies_rung_null_home_currency_prices_nothing(
     model_db: Database,
 ) -> None:
-    """No app.profile_settings row means every currency is unpriced.
+    """An unchosen home currency means every currency is unpriced.
 
     A USD->USD identity rate exists for the test date, so a mutation that
     defaulted the missing home currency to 'USD' (e.g.
@@ -934,7 +933,7 @@ def test_day_rung_rate_join_binds_to_the_same_balance_date(
 
 
 def test_day_rung_null_home_currency_prices_nothing(model_db: Database) -> None:
-    """No app.profile_settings row means every date is unpriced.
+    """An unchosen home currency means every date is unpriced.
 
     A USD->USD identity rate exists for the test date, so a mutation that
     defaulted the missing home currency to 'USD' (e.g.

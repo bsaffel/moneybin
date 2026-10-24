@@ -110,7 +110,9 @@ from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.tables import (
     IMPORTS,
     OFX_TRANSACTIONS,
+    SECURITY_LINKS,
     TABULAR_TRANSACTIONS,
+    TableRef,
 )
 from moneybin.utils.file import source_sha256
 
@@ -1586,7 +1588,7 @@ def _refuse_unknown_binding_targets(
     entry carrying it. The statement's rows then landed under an account the
     caller invented by typo, under a name no surface would ever show them. That
     is what the shared reference-resolution contract exists to prevent: a write
-    never invents its own target (``.claude/rules/mcp.md``, "Entity resolution").
+    never invents its own target (``.claude/rules/services.md``, "Entity resolution").
 
     Scoped to values that arrived through ``account_bindings``, which is why it
     reads them rather than every ``explicit_account_id``. A binding answers a
@@ -1865,7 +1867,7 @@ class ImportService:
 
         Backs ``moneybin import status``. Transaction tables (name containing
         ``"transaction"``) additionally report a date range, read from
-        ``date_posted`` for OFX tables and ``transaction_date`` otherwise.
+        ``date_posted_source_date`` for OFX tables and ``transaction_date`` otherwise.
         """
         from sqlglot import exp
 
@@ -1888,7 +1890,9 @@ class ImportService:
             date_min: date | None = None
             date_max: date | None = None
             if "transaction" in table:
-                date_col = "date_posted" if "ofx" in table else "transaction_date"
+                date_col = (
+                    "date_posted_source_date" if "ofx" in table else "transaction_date"
+                )
                 safe_date_col = exp.to_identifier(date_col, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
                 try:
                     dates = self._db.execute(
@@ -1926,8 +1930,7 @@ class ImportService:
         Args:
             table: Qualified table name (e.g. ``raw.ofx_transactions``).
             date_expr: SQL expression for the date value — may be a bare column
-                name (``transaction_date``) or a cast expression
-                (``CAST(date_posted AS DATE)``).
+                name (``transaction_date`` or ``date_posted_source_date``).
             file_path: Source file path to filter on.
 
         Returns:
@@ -2239,7 +2242,7 @@ class ImportService:
 
         if transactions_imported > 0:
             result.date_range = self._query_date_range(
-                OFX_TRANSACTIONS.full_name, "CAST(date_posted AS DATE)", canonical_path
+                OFX_TRANSACTIONS.full_name, "date_posted_source_date", canonical_path
             )
 
         return result
@@ -6891,6 +6894,20 @@ class ImportService:
         logger.info(
             f"Reverted import {import_id[:8]}...: {live.rows_to_delete} rows deleted"
         )
+        # Materialized models read these raw tables and app.security_links, so
+        # without a restate the reverted rows and the reversed links stay in
+        # every report until the next refresh. Last, so a failed rebuild leaves
+        # the revert itself intact; the error names `moneybin refresh`. A
+        # revert that changed nothing restates nothing.
+        changed: list[TableRef] = []
+        if live.rows_to_delete:
+            changed.extend(REVERT_TABLES[cast(str, live.source_type)])
+        if live.security_link_ids:
+            changed.append(SECURITY_LINKS)
+        if changed:
+            from moneybin.services.restate import restate_after_write
+
+            restate_after_write(self._db, changed, committed_change="import revert")
         return {"status": "reverted", "rows_deleted": live.rows_to_delete}
 
     # ------------------------------------------------------------------

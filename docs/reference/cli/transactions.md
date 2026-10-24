@@ -72,7 +72,7 @@ Usage: `moneybin transactions create [OPTIONS] {amount} {description}`
 | `--check-number` | text |  | Check number |
 | `--payment-channel` | text |  | Payment channel (e.g., online, in_store) |
 | `--currency` | text |  | ISO 4217 currency code |
-| `--yes, -y` | flag |  | Skip confirmation |
+| `--yes, -y` | flag |  | Compatibility flag; creation never prompts |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin transactions audit

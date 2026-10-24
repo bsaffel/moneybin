@@ -367,9 +367,9 @@ CREATE TABLE IF NOT EXISTS raw.plaid_securities (
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes dedup to the institution connection; part of the PK
-    extracted_at TIMESTAMP                    -- When the server fetched this data from Plaid (metadata.synced_at)
+    extracted_at TIMESTAMPTZ                    -- When the server fetched this data from Plaid (metadata.synced_at)
         DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+    loaded_at TIMESTAMPTZ                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (security_id, source_origin)
 );
@@ -385,7 +385,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     account_id VARCHAR NOT NULL,                -- Plaid account_id; foreign key to raw.plaid_accounts
     security_id VARCHAR,                        -- Plaid security_id; NULL for cash-only events (deposit, withdrawal, account fee)
     transaction_date DATE NOT NULL,             -- Plaid date; POSTING date ("typically the settlement date" per Plaid docs) — NOT the trade date; staging derives trade_date
-    transaction_datetime TIMESTAMP,             -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
+    transaction_datetime TIMESTAMPTZ,             -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
     transaction_name VARCHAR,                   -- Plaid name; broker's description of the event
     quantity DECIMAL(28, 10),                   -- Plaid quantity; already signed per ledger convention (+ acquire, − dispose)
     amount DECIMAL(18, 2) NOT NULL,             -- Plaid amount (required field → NOT NULL faithful); CAUTION: positive = cash out (opposite of ledger); staging flips sign and maps basis-unknown transfers (amount 0) to a NULL ledger amount
@@ -420,8 +420,8 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transaction_receipts (
     source_file VARCHAR NOT NULL,                -- Logical sync_{job_id}; idempotent delivery identity and PK
     observation_version VARCHAR NOT NULL,        -- Exact immutable transaction revision delivered by this job
     source_type VARCHAR NOT NULL DEFAULT 'plaid', -- Always 'plaid' for this table
-    extracted_at TIMESTAMP NOT NULL,             -- Server metadata.synced_at for this delivery
-    loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Local receipt insertion time
+    extracted_at TIMESTAMPTZ NOT NULL,             -- Server metadata.synced_at for this delivery
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Local receipt insertion time
     ingestion_sequence BIGINT NOT NULL DEFAULT nextval(
         'raw.plaid_investment_transaction_receipt_sequence'
     ),                                           -- Local monotonic tie-breaker, preserved on replay
@@ -461,9 +461,9 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes the snapshot to the institution connection; part of the PK
-    extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
+    extracted_at TIMESTAMPTZ                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
         DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+    loaded_at TIMESTAMPTZ                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, security_id, source_origin, source_file)
 );
@@ -514,9 +514,9 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
     transactions_window_start DATE NOT NULL,  -- Per-item metadata.transactions_window_start, mirrored from the holdings rows this accounts for. Also stored on raw.plaid_investment_holdings, but that table is EMPTY for exactly the item that reported nothing — so a consumer asking "when did this item's window open" for a liquidated broker has nowhere else to read it. NOT NULL holds because the receipt is written iff the server declared a window.
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
+    extracted_at TIMESTAMPTZ                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
         DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+    loaded_at TIMESTAMPTZ                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
     ingestion_sequence BIGINT NOT NULL DEFAULT nextval(
         'raw.plaid_investment_holdings_snapshot_receipt_sequence'
@@ -571,7 +571,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holding_lots (
     security_id VARCHAR NOT NULL,             -- Plaid security_id
     lot_index INTEGER NOT NULL,               -- Loader-assigned position within Holding.tax_lots[]; PK disambiguator (institution_lot_id is nullable)
     institution_lot_id VARCHAR,               -- Broker's lot identifier; NULL where the institution does not provide one
-    original_purchase_datetime TIMESTAMP,     -- HoldingTaxLot.original_purchase_datetime; acquisition timestamp, NULL where absent
+    original_purchase_datetime TIMESTAMPTZ,     -- HoldingTaxLot.original_purchase_datetime; acquisition timestamp, NULL where absent
     quantity DECIMAL(28, 10),                 -- Units in this lot
     purchase_price DECIMAL(28, 10),           -- Per-unit acquisition price for this lot (matches the schema-wide price precision)
     cost_basis DECIMAL(18, 2),                -- Broker-reported total cost basis of this lot (Plaid documents it fee-inclusive)
@@ -580,8 +580,8 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holding_lots (
     source_file VARCHAR NOT NULL,             -- Snapshot identity (part of the PK), same as the parent holdings table
     source_type VARCHAR NOT NULL DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,           -- Plaid item_id; part of the PK
-    extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    extracted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    loaded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, security_id, source_origin, lot_index, source_file)
 );
 ```
@@ -607,8 +607,8 @@ ref_value    TEXT     NOT NULL,      -- the provider ref (see ref_kind semantics
 source_type  TEXT     NOT NULL,      -- issuing provider: plaid (future: ofx institutions, ...)
 status       TEXT     NOT NULL,      -- CHECK (status IN ('accepted', 'reversed'))
 decided_by   TEXT     NOT NULL,      -- CHECK (decided_by IN ('auto', 'user', 'system'))
-decided_at   TIMESTAMP NOT NULL,
-reversed_at  TIMESTAMP,
+decided_at   TIMESTAMPTZ NOT NULL,
+reversed_at  TIMESTAMPTZ,
 reversed_by  TEXT
 ```
 
@@ -643,8 +643,8 @@ match_signals          TEXT,               -- JSON: which signal fired + value (
 status                 TEXT  NOT NULL,     -- CHECK (status IN ('pending', 'accepted', 'rejected', 'reversed'))
 decided_by             TEXT  NOT NULL,     -- CHECK (decided_by IN ('auto', 'user'))
 match_reason           TEXT,
-decided_at             TIMESTAMP NOT NULL,
-reversed_at            TIMESTAMP,
+decided_at             TIMESTAMPTZ NOT NULL,
+reversed_at            TIMESTAMPTZ,
 reversed_by            TEXT
 ```
 
@@ -884,7 +884,7 @@ The heaviest view in this spec. In order:
    never as a settled fact, and do not build a silent derivation on it alone.
    The open question below records what evidence would actually settle it.
 
-4. **Map dates:** `trade_date = COALESCE(transaction_datetime::DATE,
+4. **Map dates:** `trade_date = COALESCE((transaction_datetime AT TIME ZONE 'UTC')::DATE,
    transaction_date)`; `settlement_date = transaction_date`; and
    `trade_date_basis = CASE WHEN transaction_datetime IS NOT NULL THEN
    'explicit' ELSE 'posting_fallback' END`. Plaid's `date`
@@ -900,6 +900,10 @@ The heaviest view in this spec. In order:
    ST/LT by the settlement lag. Named limitation; the real-broker 1099-B
    tie-out (the M1J close gate) is the corrective that catches it on affected
    accounts.
+
+   Optional provider date-times require an explicit offset and normalize to aware
+   UTC. Posting and settlement DATEs retain their source meaning under
+   [Warehouse UTC](warehouse-utc.md).
 
    **No original-acquisition-date on the transaction (named limitation + the
    differentiation lever).** Plaid's `InvestmentTransaction` carries no

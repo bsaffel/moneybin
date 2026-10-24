@@ -19,6 +19,7 @@ from moneybin.matching.assignment import (
     assign_greedy,
     connected_components,
 )
+from moneybin.matching.native_identity import native_event_scopes
 from moneybin.matching.persistence import (
     MatchStatus,
     MatchTier,
@@ -380,7 +381,23 @@ class TransactionMatcher:
         if not mergeable:
             return []
 
-        assigned = assign_components(list(mergeable), seed_edges=seed_edges)
+        native_references = {
+            reference
+            for pair in mergeable
+            for source_type, reference in (
+                (pair.source_type_a, pair.source_transaction_id_a),
+                (pair.source_type_b, pair.source_transaction_id_b),
+            )
+            if source_type == "simplefin"
+        }
+        native_references.update(
+            node[1] for edge in seed_edges for node in edge if node[0] == "simplefin"
+        )
+        assigned = assign_components(
+            list(mergeable),
+            seed_edges=seed_edges,
+            native_scopes=native_event_scopes(self._db, native_references),
+        )
         newly_added: list[tuple[NodeKey, NodeKey]] = []
         tier_merged = 0
         tier_pending = 0

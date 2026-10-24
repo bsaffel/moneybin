@@ -10,7 +10,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,6 +41,7 @@ from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
 )
+from tests.database_mocks import with_reporting_timezone
 
 runner = CliRunner()
 
@@ -1383,7 +1384,9 @@ class TestLinksHistory:
         hashes, so the record of an irreversible decision was unreadable to the
         person who made it.
         """
-        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = with_reporting_timezone(
+            MagicMock()
+        )
         mock_history.return_value = [
             {
                 "decision_id": "dh001",
@@ -1393,7 +1396,7 @@ class TestLinksHistory:
                 "candidate_display_name": "Candidate Alpha",
                 "status": "accepted",
                 "decided_by": "user",
-                "decided_at": "2025-06-01T10:00:00",
+                "decided_at": datetime(2025, 6, 1, 10, 0, tzinfo=UTC),
                 "confidence_score": 0.85,
                 "match_signals": {"signal": "name"},
             }
@@ -1421,7 +1424,9 @@ class TestLinksHistory:
         the guard is that this command keeps using it rather than reacquiring a
         guessed width.
         """
-        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = with_reporting_timezone(
+            MagicMock()
+        )
         mock_history.return_value = [
             {
                 "decision_id": "dh002",
@@ -1431,7 +1436,7 @@ class TestLinksHistory:
                 "candidate_display_name": "Example Bank savings \u20261111",
                 "status": "accepted",
                 "decided_by": "user",
-                "decided_at": "2025-06-01T10:00:00",
+                "decided_at": datetime(2025, 6, 1, 10, 0, tzinfo=UTC),
                 "confidence_score": 0.85,
                 "match_signals": {"signal": "name"},
             }
@@ -1462,7 +1467,9 @@ class TestLinksHistory:
         this row and the one ``core.dim_accounts`` produces for an account it
         could not name cannot drift into two spellings of the same answer.
         """
-        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = with_reporting_timezone(
+            MagicMock()
+        )
         mock_history.return_value = [
             {
                 "decision_id": "dh003",
@@ -1472,7 +1479,7 @@ class TestLinksHistory:
                 "candidate_display_name": "Candidate Alpha",
                 "status": "rejected",
                 "decided_by": "user",
-                "decided_at": "2025-06-01T10:00:00",
+                "decided_at": datetime(2025, 6, 1, 10, 0, tzinfo=UTC),
                 "confidence_score": 0.85,
                 "match_signals": {"signal": "name"},
             }
@@ -1491,7 +1498,9 @@ class TestLinksHistory:
         self, mock_history: MagicMock, mock_get_db: MagicMock
     ) -> None:
         """Empty history exits 0."""
-        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = with_reporting_timezone(
+            MagicMock()
+        )
         mock_history.return_value = []
 
         result = runner.invoke(app, ["history"])
@@ -1503,7 +1512,9 @@ class TestLinksHistory:
         self, mock_history: MagicMock, mock_get_db: MagicMock
     ) -> None:
         """--output json returns an envelope with decisions[]."""
-        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = with_reporting_timezone(
+            MagicMock()
+        )
         mock_history.return_value = [
             {
                 "decision_id": "dh001",
@@ -1511,7 +1522,7 @@ class TestLinksHistory:
                 "candidate_account_id": "CAND_H",
                 "status": "accepted",
                 "decided_by": "user",
-                "decided_at": "2025-06-01T10:00:00",
+                "decided_at": datetime(2025, 6, 1, 10, 0, tzinfo=UTC),
                 "confidence_score": 0.85,
                 "match_signals": {"signal": "name"},
             }
@@ -1539,7 +1550,9 @@ class TestLinksHistory:
         self, mock_history: MagicMock, mock_get_db: MagicMock
     ) -> None:
         """--limit is forwarded to the service."""
-        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = with_reporting_timezone(
+            MagicMock()
+        )
         mock_history.return_value = []
 
         runner.invoke(app, ["history", "--limit", "10"])

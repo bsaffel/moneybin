@@ -78,6 +78,16 @@ WITH ofx_balances AS (
     ON a.source_account_key = b.source_account_key AND a.source_origin = b.source_origin
   WHERE
     NOT b.current_balance IS NULL AND NOT a.account_type IS NULL
+), simplefin_balances AS (
+  SELECT
+    account_id,
+    balance_date,
+    current_balance AS balance,
+    source_type,
+    source_file AS source_ref,
+    loaded_at AS updated_at,
+    currency_code
+  FROM prep.stg_simplefin__balances
 ), unioned AS (
   SELECT
     *
@@ -94,6 +104,10 @@ WITH ofx_balances AS (
   SELECT
     *
   FROM plaid_balances
+  UNION ALL
+  SELECT
+    *
+  FROM simplefin_balances
 )
 SELECT
   u.account_id, /* Source-system account identifier */
@@ -102,7 +116,17 @@ SELECT
   COALESCE(u.currency_code, a.currency_code) AS currency_code, /* the observation's own captured currency, else inherited from core.dim_accounts.currency_code (multi-currency.md Requirement 3) */
   u.balance, /* Observed balance amount */
   u.balance_date, /* Date the balance was observed */
-  u.updated_at /* Latest of all per-row input timestamps contributing to this row's current values. From the contributing observation's loaded_at (OFX/tabular) or created_at (user assertion). See docs/specs/core-updated-at-convention.md. */
+  CASE
+    WHEN u.source_type = 'simplefin'
+    THEN GREATEST(
+      u.updated_at,
+      account_base.account_type_changed_at,
+      account_base.account_subtype_changed_at
+    )
+    ELSE u.updated_at
+  END AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. From the contributing observation's loaded_at (OFX/tabular) or created_at (user assertion). See docs/specs/core-updated-at-convention.md. */
 FROM unioned AS u
+LEFT JOIN prep.int_accounts__merged AS account_base
+  ON u.account_id = account_base.account_id
 LEFT JOIN core.dim_accounts AS a
   ON u.account_id = a.account_id

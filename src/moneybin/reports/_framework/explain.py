@@ -45,6 +45,7 @@ from moneybin.reports._framework.catalog import (
 from moneybin.reports._framework.contract import ReportSpec
 from moneybin.reports._framework.derive import type_sentinel
 from moneybin.reports._framework.provenance import SqlForms, render_sql_forms
+from moneybin.temporal import format_utc
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,7 @@ def _freshness(db: Database, report: ReportSpec) -> _Freshness:
         class_fingerprint=str(row["class_fingerprint"]) or None,
         drift_detected=dynamic.degraded,
         drift_reason=dynamic.degraded_reason,
-        updated_at=None if updated_at is None else str(updated_at),
+        updated_at=None if updated_at is None else format_utc(updated_at),
     )
 
 

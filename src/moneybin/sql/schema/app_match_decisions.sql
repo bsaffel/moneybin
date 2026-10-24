@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS app.match_decisions (
     match_status VARCHAR NOT NULL CHECK (match_status IN ('pending', 'accepted', 'rejected', 'reversed')), -- pending, accepted, rejected, reversed
     match_reason VARCHAR,                      -- Human-readable explanation of why this match was proposed
     decided_by VARCHAR NOT NULL,               -- auto, user, system
-    decided_at TIMESTAMP NOT NULL,             -- When the decision was made
-    reversed_at TIMESTAMP,                     -- When the match was undone; NULL if active
+    decided_at TIMESTAMPTZ NOT NULL,             -- When the decision was made
+    reversed_at TIMESTAMPTZ,                     -- When the match was undone; NULL if active
     reversed_by VARCHAR,                       -- Who reversed: user or system; NULL if active
     PRIMARY KEY (match_id)
 );

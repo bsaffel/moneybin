@@ -27,7 +27,11 @@ from moneybin.exports.manifest import (
     bundle_table_path,
     safe_table_identifier,
 )
-from moneybin.exports.snapshot import PreparedExport, PreparedTable
+from moneybin.exports.snapshot import (
+    PreparedExport,
+    PreparedTable,
+    format_export_datetime,
+)
 
 _MANIFEST_SHEET = "MoneyBin Manifest"
 _DICTIONARY_SHEET = "MoneyBin Data Dictionary"
@@ -285,7 +289,9 @@ def normalize_tabular_cell(value: object) -> TabularCell:
     if isinstance(value, Decimal):
         # Text preserves DECIMAL precision; XLSX numeric cells are IEEE-754 doubles.
         return str(value)
-    if isinstance(value, (datetime, date, time)):
+    if isinstance(value, datetime):
+        return format_export_datetime(value)
+    if isinstance(value, (date, time)):
         return value.isoformat()
     if isinstance(value, bytes):
         return value.hex()
@@ -301,7 +307,12 @@ def normalize_tabular_cell(value: object) -> TabularCell:
 def _payload_json_safe(value: object) -> object:
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        return {str(key): _payload_json_safe(item) for key, item in mapping.items()}
+        return {
+            (
+                format_export_datetime(key) if isinstance(key, datetime) else str(key)
+            ): _payload_json_safe(item)
+            for key, item in mapping.items()
+        }
     if isinstance(value, (list, tuple)):
         sequence = cast(Sequence[object], value)
         return [_payload_json_safe(item) for item in sequence]

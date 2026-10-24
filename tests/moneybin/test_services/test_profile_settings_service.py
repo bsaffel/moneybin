@@ -119,3 +119,17 @@ def test_home_currency_is_the_registered_managed_key() -> None:
     would silently route to the config.yaml path and write a key nothing reads.
     """
     assert "home_currency" in MANAGED_SETTING_KEYS
+
+
+def test_reporting_timezone_changes_restate_profile_settings(
+    service: ProfileSettingsService, db: Database, mocker: MockerFixture
+) -> None:
+    restate = mocker.patch("moneybin.services.restate.restate_after_write")
+    service.set_setting("reporting_timezone", "America/New_York", actor="cli")
+    assert service.get_settings().reporting_timezone == "America/New_York"
+    restate.assert_called_once_with(db, [PROFILE_SETTINGS], committed_change="setting")
+    restate.reset_mock()
+    with pytest.raises(UserError):
+        service.set_setting("reporting_timezone", "Unknown/Zone", actor="cli")
+    assert service.get_settings().reporting_timezone == "America/New_York"
+    restate.assert_not_called()

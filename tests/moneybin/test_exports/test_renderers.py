@@ -46,7 +46,9 @@ def make_snapshot(*, report: bool = False) -> PreparedExport:
         PreparedColumn("entry_id", "INTEGER", DataClass.AGGREGATE),
         PreparedColumn("amount", "DECIMAL(18,2)", DataClass.TXN_AMOUNT),
         PreparedColumn("entry_date", "DATE", DataClass.TXN_DATE),
-        PreparedColumn("recorded_at", "TIMESTAMP", DataClass.TIMESTAMP_OBSERVABILITY),
+        PreparedColumn(
+            "recorded_at", "TIMESTAMP WITH TIME ZONE", DataClass.TIMESTAMP_OBSERVABILITY
+        ),
         PreparedColumn("note", "VARCHAR", DataClass.DESCRIPTION),
     )
     rows = (
@@ -54,7 +56,7 @@ def make_snapshot(*, report: bool = False) -> PreparedExport:
             1,
             Decimal("12.30"),
             date(2026, 7, 20),
-            datetime(2026, 7, 20, 8, 9, 10),
+            datetime(2026, 7, 20, 8, 9, 10, tzinfo=UTC),
             "café, quoted",
         ),
         (2, Decimal("-4.50"), date(2026, 7, 21), None, None),
@@ -68,7 +70,7 @@ def make_snapshot(*, report: bool = False) -> PreparedExport:
     )
     tables = (table,)
     return PreparedExport(
-        artifact_version=1,
+        artifact_version=2,
         profile="personal",
         created_at=datetime(2026, 7, 21, 18, 42, 33, tzinfo=UTC),
         subject=ExportSubject(
@@ -110,7 +112,7 @@ def make_text_snapshot(
         for index, name in enumerate(table_names)
     )
     return PreparedExport(
-        artifact_version=1,
+        artifact_version=2,
         profile="personal",
         created_at=datetime(2026, 7, 21, 18, 42, 33, tzinfo=UTC),
         subject=ExportSubject(kind="bundle"),
@@ -131,7 +133,7 @@ def test_csv_round_trips_typed_values_through_duckdb(tmp_path: Path) -> None:
             "entry_id": "INTEGER",
             "amount": "DECIMAL(18,2)",
             "entry_date": "DATE",
-            "recorded_at": "TIMESTAMP",
+            "recorded_at": "TIMESTAMP WITH TIME ZONE",
             "note": "VARCHAR",
         },
         na_values="\\N",
@@ -377,7 +379,7 @@ def test_bundle_manifest_and_sidecars_come_from_the_prepared_snapshot(
     table_path = rendered.table_files["activity"]
     table_digest = hashlib.sha256(table_path.read_bytes()).hexdigest()
 
-    assert manifest["created_at"] == "2026-07-21T18:42:33+00:00"
+    assert manifest["created_at"] == "2026-07-21T18:42:33.000000Z"
     assert manifest["format"] == "csv"
     assert manifest["redaction_mode"] == "redacted"
     assert manifest["subject"]["report_id"] == "test:activity"
@@ -438,7 +440,7 @@ def test_xlsx_contains_data_and_visible_receipt_sheets(tmp_path: Path) -> None:
     assert all(workbook[name].sheet_state == "visible" for name in workbook.sheetnames)
     assert list(workbook["activity"].values) == [
         ("entry_id", "amount", "entry_date", "recorded_at", "note"),
-        (1, "12.30", "2026-07-20", "2026-07-20T08:09:10", "café, quoted"),
+        (1, "12.30", "2026-07-20", "2026-07-20T08:09:10.000000Z", "café, quoted"),
         (2, "-4.50", "2026-07-21", None, None),
     ]
     manifest = json.loads(workbook["MoneyBin Manifest"]["A2"].value)
@@ -557,3 +559,46 @@ def test_xlsx_worksheet_names_avoid_case_insensitive_and_receipt_collisions(
     assert len({name.casefold() for name in workbook.sheetnames}) == len(
         workbook.sheetnames
     )
+
+
+def test_utc_export_checksums_and_csv_are_offset_invariant(tmp_path: Path) -> None:
+    """Canonical artifact bytes represent an instant identically across offsets."""
+    from moneybin.exports.snapshot import ARTIFACT_VERSION
+
+    columns = (
+        PreparedColumn(
+            "at", "TIMESTAMP WITH TIME ZONE", DataClass.TIMESTAMP_OBSERVABILITY
+        ),
+        PreparedColumn("day", "DATE", DataClass.TXN_DATE),
+        PreparedColumn("amount", "DECIMAL(18,2)", DataClass.TXN_AMOUNT),
+    )
+    first = datetime.fromisoformat("2026-10-01T09:00:00.1-04:00")
+    second = datetime.fromisoformat("2026-10-01T13:00:00.100000Z")
+    rows = ((first, date(2026, 10, 1), Decimal("12.30")),)
+    other = ((second, date(2026, 10, 1), Decimal("12.30")),)
+    digest = prepared_table_checksum(columns, rows)
+    assert digest == prepared_table_checksum(columns, other)
+    table = PreparedTable(
+        name="instants", source=None, columns=columns, rows=rows, checksum_sha256=digest
+    )
+    snapshot = replace(
+        make_snapshot(),
+        artifact_version=ARTIFACT_VERSION,
+        created_at=first,
+        tables=(table,),
+        _data_dictionary=build_data_dictionary((table,)),
+    )
+    rendered = render_csv(snapshot, tmp_path / "utc")
+    assert rendered.manifest["artifact_version"] == 2
+    assert rendered.manifest["created_at"] == "2026-10-01T13:00:00.100000Z"
+    path = rendered.table_files["instants"]
+    assert (
+        path.read_text()
+        == "at,day,amount\n2026-10-01T13:00:00.100000Z,2026-10-01,12.30\n"
+    )
+    encoded = json.dumps(rendered.manifest)
+    assert "2026-10-01T13:00:00.100000Z" in encoded
+    expected_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert (
+        rendered.path / "checksums.sha256"
+    ).read_text() == f"{expected_digest}  tables/instants.csv\n"

@@ -22,6 +22,7 @@ class TestMatchingSettings:
             "parquet",
             "feather",
             "pipe",
+            "simplefin",
         ]
 
     def test_source_priority_must_not_be_empty(self) -> None:
