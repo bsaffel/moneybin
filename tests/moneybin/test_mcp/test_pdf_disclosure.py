@@ -213,6 +213,7 @@ async def test_relay_token_releases_once(
     rows = _consent_rows()
     assert [r["outcome"] for r in rows] == ["approved", "expired"]
     assert rows[0]["approved_via"] == "agent_relay"
+    assert rows[0]["released"] is True
     assert rows[0]["refusal_code"] is None
     assert rows[1]["refusal_code"] == error_codes.MUTATION_CONFIRMATION_REPLAYED
 
@@ -603,26 +604,36 @@ async def test_import_files_tool_timeout_fires_during_blocking_import(
 
     import moneybin.mcp.tools.import_tools as tools_module
 
-    def _slow_import(**_kwargs: object) -> object:
-        time.sleep(1.5)
-        raise AssertionError("the cap should have answered first")
+    release = threading.Event()
+    finished = threading.Event()
 
-    monkeypatch.setattr(tools_module, "import_files", _slow_import)
+    def _blocking_import(**_kwargs: object) -> None:
+        try:
+            release.wait(timeout=5.0)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(tools_module, "import_files", _blocking_import)
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.2)
 
     started = time.monotonic()
-    env = await import_files_coarse(paths=["/tmp/x.csv"], refresh=False)  # noqa: S108  # never read: the stub blocks
+    try:
+        env = await import_files_coarse(paths=["/tmp/x.csv"], refresh=False)  # noqa: S108  # never read: the stub blocks
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        assert finished.wait(timeout=5.0)
 
     assert env.error is not None
     assert env.error.code == error_codes.INFRA_TIMED_OUT
-    assert time.monotonic() - started < 1.5
+    assert elapsed < 5.0
 
 
 @pytest.mark.parametrize("path", ["prompt", "agent_relay"])
-async def test_failed_release_creates_no_grant_or_approval(
+async def test_failed_release_records_approval_but_no_grant(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch, path: str
 ) -> None:
-    """Remembering is written only after the content is actually released."""
+    """The person's yes is audited; remembering waits for an actual release."""
     import moneybin.mcp.tools.import_tools as tools_module
 
     if path == "prompt":
@@ -650,7 +661,55 @@ async def test_failed_release_creates_no_grant_or_approval(
     assert env.error is not None
     _assert_no_canary(env)
     assert _host_grants() == []
-    assert [r for r in _consent_rows() if r["outcome"] == "approved"] == []
+    [row] = _consent_rows()
+    assert row["outcome"] == "approved" and row["approved_via"] == path
+    assert row["released"] is False
+    assert row["remembered"] is False and row["grant_id"] is None
+
+
+async def test_batch_bytes_changed_records_approval_but_no_grant(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    async def _accept_then_change(*_a: object, **_k: object) -> object:
+        pdf.write_bytes(pdf.read_bytes() + b"\n% edited after consent\n")
+        return AcceptedElicitation(data=DisclosureAnswer(accept=True, remember=True))
+
+    use_mcp_host(
+        monkeypatch,
+        mcp_host_ctx(elicit=AsyncMock(side_effect=_accept_then_change)),
+        elicits=True,
+    )
+
+    env = await import_files_coarse(paths=[str(pdf)], refresh=False)
+
+    _assert_no_canary(env)
+    assert _host_grants() == []
+    [row] = _consent_rows()
+    assert row["outcome"] == "approved" and row["approved_via"] == "prompt"
+    assert row["released"] is False
+    assert row["remembered"] is False and row["grant_id"] is None
+
+
+async def test_elicitation_remember_states_revoke_and_is_the_stored_prompt(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    elicit = AsyncMock(
+        return_value=AcceptedElicitation(
+            data=DisclosureAnswer(accept=True, remember=True)
+        )
+    )
+    use_mcp_host(monkeypatch, mcp_host_ctx(elicit=elicit), elicits=True)
+
+    env = await import_preview_coarse(file_path=str(pdf))
+
+    assert CANARY_DESCRIPTION in _released_text(env)
+    message = elicit.call_args.args[0]
+    assert "future PDFs to Claude" in message
+    assert "privacy revoke smart-import-parsing --recipient claude-ai" in message
+    [(_backend, _via, prompt)] = _host_grants()
+    assert prompt == message
+    [row] = _consent_rows()
+    assert row["released"] is True and row["remembered"] is True
 
 
 async def test_relay_remember_grant_prompt_is_the_relayed_text(

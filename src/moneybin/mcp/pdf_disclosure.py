@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -52,6 +53,8 @@ from moneybin.services.import_confirmation import (
 
 if TYPE_CHECKING:
     from fastmcp.server.context import Context
+
+logger = logging.getLogger(__name__)
 
 _SITE = "pdf_disclosure"
 _HOST_CATEGORY = "smart-import-parsing"
@@ -183,6 +186,7 @@ def _record(
     grant_id: str | None,
     refusal_code: str | None = None,
     binding_id: str | None = None,
+    released: bool = False,
 ) -> None:
     from moneybin.services.import_service import ImportService
 
@@ -196,6 +200,7 @@ def _record(
             pending=pending,
             refusal_code=refusal_code,
             binding_id=binding_id,
+            released=released,
         )
 
 
@@ -242,11 +247,9 @@ def _revoked_since(host: AIHost, since: datetime) -> bool:
 
 
 def _elicitation_message(host: AIHost, statement: str) -> str:
-    if host.identified:
-        tail = (
-            f" Set remember to true to send future PDFs to {display_label(host)} "
-            "without asking."
-        )
+    remember = remember_text(host, lead="Setting remember to true")
+    if remember is not None:
+        tail = f" {remember}"
     else:
         tail = (
             " MoneyBin cannot identify this AI app, so this consent covers this "
@@ -340,8 +343,8 @@ async def obtain_disclosure_consent(
     """Return a verified consent or raise ``DisclosureConsentPendingError``.
 
     Order: remembered grant, elicitation, relay token, else issue a token.
-    Refusals are audited here; an approval is remembered and audited by
-    ``settle_disclosure_consent`` only after the release succeeds.
+    Refusals are audited here; ``settle_disclosure_consent`` audits an approval
+    after the release attempt and remembers it only if content was released.
     """
     if not pending:
         raise ValueError("obtain_disclosure_consent needs at least one file")
@@ -479,11 +482,16 @@ def _one_time(
     )
 
 
-def settle_disclosure_consent(obtained: ObtainedConsent) -> None:
-    """After a successful release: remember if asked, then audit the approval."""
+def settle_disclosure_consent(obtained: ObtainedConsent, *, released: bool) -> None:
+    """After the release attempt: audit the approval; remember only if released.
+
+    A remembered grant that released nothing involved no decision: no row.
+    """
     consent = obtained.consent
-    grant_id = consent.grant_id
-    if obtained.remember_prompt is not None:
+    if not released and consent.approved_via == "remembered":
+        return
+    grant_id = consent.grant_id if released else None
+    if released and obtained.remember_prompt is not None:
         grant_id = _remember(
             consent.host, consent.approved_via, obtained.remember_prompt
         )
@@ -495,7 +503,21 @@ def settle_disclosure_consent(obtained: ObtainedConsent) -> None:
         remembered=grant_id is not None,
         grant_id=grant_id,
         binding_id=consent.binding_id,
+        released=released,
     )
+
+
+async def settle_after_error(
+    obtained: ObtainedConsent, *, released: bool = False
+) -> None:
+    """Audit an approval whose release step raised; never mask that error."""
+    try:
+        await asyncio.to_thread(settle_disclosure_consent, obtained, released=released)
+    except Exception as exc:  # the release error is the one to surface
+        logger.error(
+            f"Could not audit an unreleased PDF disclosure approval: "
+            f"{type(exc).__name__}"
+        )
 
 
 async def _redeem(

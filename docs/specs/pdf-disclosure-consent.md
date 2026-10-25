@@ -412,7 +412,12 @@ binding and the grant).
   `declined`, `timeout`, `expired`), `approved_via` (table above), recipient
   key, `identified`, `terms_version`, `remembered`, `grant_id` when one is
   created, `binding_id` for a one-time decision (joining it to its
-  `smart_import_parse` row), file SHA-256s, and the `decision_reason`. No content. A refused
+  `smart_import_parse` row), `released` (whether any content left after an
+  approval; `false` when the file changed after consent or the release
+  failed), file SHA-256s, and the `decision_reason`. A person's approval is
+  recorded after the release attempt whether or not anything was released;
+  `remembered` and `grant_id` are set only when it was. A remembered grant that
+  releases nothing records no row, since no one decided anything. No content. A refused
   relay token is recorded as `expired` with `refusal_code`, the broker error
   code (expired, replayed or mismatched), so abuse stays distinguishable. A
   token refused because its recipient was revoked currently records
@@ -508,8 +513,9 @@ number, an SSN):
   `cli/commands/_import_pdf_disclosure.py`.
 - MCP surface: no new tool. `import_preview` and `import_files` gain
   `confirmation_token` and `remember_disclosure`. `privacy_consent_set` refuses
-  `ai_host` recipients. As on the CLI, a remembered grant is created, and the
-  approval audited, only after the release succeeds. A relay-token consent
+  `ai_host` recipients. On both surfaces a person's approval is audited after
+  the release attempt with `released` (§9), and a remembered grant is created
+  only when content was released. A relay-token consent
   that remembers stores the risk statement plus the remember sentence the
   agent was told to show the person verbatim. The tools run file reads,
   imports, the refresh and consent database calls off the event loop, so the

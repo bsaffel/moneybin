@@ -3760,6 +3760,7 @@ def _preview_pdf(
                 emit_released_bridge,
                 obtain_cli_disclosure_consent,
                 settle_cli_disclosure,
+                settle_cli_unreleased,
             )
 
             # Detects the calling AI host (an agent shell), not configuration.
@@ -3773,23 +3774,33 @@ def _preview_pdf(
             )
             if obtained is None:
                 return
+            # The person's yes is audited whatever the release does (spec §9).
+            settled = False
             try:
-                _call(obtained.consent)
-            except ImportConfirmationRequiredError as released:
-                bridge = released.outcome.proposed
-                # Content without the consent we just verified: fail closed.
-                if not isinstance(bridge, BridgePayload):
-                    raise RuntimeError(
-                        "pdf_preview did not release under a verified consent"
-                    ) from released
-                notice = settle_cli_disclosure(obtained)
-                if notice:
-                    typer.echo(notice, err=True)
-                emit_released_bridge(
-                    source, released.outcome, bridge.payload, output, notice
-                )
-                return
-            raise RuntimeError("pdf_preview returned without a release decision") from e
+                try:
+                    _call(obtained.consent)
+                except ImportConfirmationRequiredError as released:
+                    bridge = released.outcome.proposed
+                    # Content without the consent we just verified: fail closed.
+                    if not isinstance(bridge, BridgePayload):
+                        raise RuntimeError(
+                            "pdf_preview did not release under a verified consent"
+                        ) from released
+                    settled = True
+                    notice = settle_cli_disclosure(obtained, released=True)
+                    if notice:
+                        typer.echo(notice, err=True)
+                    emit_released_bridge(
+                        source, released.outcome, bridge.payload, output, notice
+                    )
+                    return
+                raise RuntimeError(
+                    "pdf_preview returned without a release decision"
+                ) from e
+            except BaseException:
+                if not settled:
+                    settle_cli_unreleased(obtained)
+                raise
         if isinstance(proposed, SignConventionProposal):
             if output == OutputFormat.JSON:
                 payload = confirmation_payload_dict(outcome)

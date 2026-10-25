@@ -1,12 +1,13 @@
 """`import preview` consent before a PDF's content leaves (pdf-disclosure-consent.md §3).
 
 Order: a stale flag is refused, then a remembered grant, the flag, the
-terminal prompt, else the content-free result. Approval is audited, and a
-remembered grant written, only after the release succeeds.
+terminal prompt, else the content-free result. A person's approval is audited
+after the release attempt; a remembered grant is written only if it released.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -47,6 +48,8 @@ from moneybin.services.import_confirmation import (
     DisclosureConsent,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class CLIConsent:
@@ -67,6 +70,7 @@ def _record(
     grant_id: str | None = None,
     refusal_code: str | None = None,
     binding_id: str | None = None,
+    released: bool = False,
 ) -> None:
     from moneybin.services.import_service import ImportService
 
@@ -80,6 +84,7 @@ def _record(
             pending=pending,
             refusal_code=refusal_code,
             binding_id=binding_id,
+            released=released,
         )
 
 
@@ -217,13 +222,18 @@ def obtain_cli_disclosure_consent(
     return None
 
 
-def settle_cli_disclosure(obtained: CLIConsent) -> str | None:
-    """After a successful release: remember if due, audit the approval, return notice."""
+def settle_cli_disclosure(obtained: CLIConsent, *, released: bool) -> str | None:
+    """After the release attempt: audit the approval, remember only if released.
+
+    A remembered grant that released nothing involved no decision: no row.
+    """
     from moneybin.services.consent_service import ConsentService
 
     consent = obtained.consent
-    grant_id = consent.grant_id
-    if obtained.remember_prompt is not None:
+    if not released and consent.approved_via == "remembered":
+        return None
+    grant_id = consent.grant_id if released else None
+    if released and obtained.remember_prompt is not None:
         with get_database(read_only=False) as db:
             grant, _created = ConsentService(db).grant_host_consent(
                 host=consent.host,
@@ -240,10 +250,22 @@ def settle_cli_disclosure(obtained: CLIConsent) -> str | None:
         remembered=grant_id is not None,
         grant_id=grant_id,
         binding_id=consent.binding_id,
+        released=released,
     )
     if consent.approved_via == "remembered" and grant_id is not None:
         return remembered_notice(consent.host, grant_id)
     return None
+
+
+def settle_cli_unreleased(obtained: CLIConsent) -> None:
+    """Audit an approval whose release failed; never mask the release error."""
+    try:
+        settle_cli_disclosure(obtained, released=False)
+    except Exception as exc:  # the release error is the one to surface
+        logger.error(
+            f"Could not audit an unreleased PDF disclosure approval: "
+            f"{type(exc).__name__}"
+        )
 
 
 def _emit_ai_assistance_required(

@@ -4598,11 +4598,13 @@ class ImportService:
         pending: Sequence[AIAssistanceRequired],
         refusal_code: str | None = None,
         binding_id: str | None = None,
+        released: bool = False,
     ) -> None:
         """Audit one consent decision covering ``pending``; no document content.
 
         ``refusal_code`` is the error code behind a refused relay token or flag;
-        ``binding_id`` joins a one-time decision to its ``smart_import_parse`` row.
+        ``binding_id`` joins a one-time decision to its ``smart_import_parse`` row;
+        ``released`` says whether any content actually left after an approval.
         """
         from moneybin.metrics.registry import PDF_DISCLOSURE_CONSENT_TOTAL
         from moneybin.privacy.disclosure import (
@@ -4624,6 +4626,7 @@ class ImportService:
                 "remembered": remembered,
                 "grant_id": grant_id,
                 "binding_id": binding_id,
+                "released": released,
                 "file_sha256s": sorted(p.file_sha256 for p in pending),
                 "decision_reason": ",".join(
                     sorted({p.decision_reason for p in pending})

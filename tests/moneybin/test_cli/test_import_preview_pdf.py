@@ -992,10 +992,10 @@ def test_released_text_strips_terminal_escapes(
     assert "CELL" in out.stdout
 
 
-def test_failed_release_leaves_no_grant_or_approval(
+def test_failed_release_records_approval_but_no_grant(
     consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """M5: a consent whose release fails records no grant and no approval."""
+    """M5/R23: a failed release audits the yes with released=False; no grant."""
 
     def _boom(_e: object) -> Exception:
         return RuntimeError("release failed")
@@ -1010,9 +1010,10 @@ def test_failed_release_leaves_no_grant_or_approval(
 
     assert out.exit_code != 0
     assert _host_grants() == []
-    assert [
-        r for r in _audit_after("smart_import_consent") if r["outcome"] == "approved"
-    ] == []
+    [row] = _audit_after("smart_import_consent")
+    assert row["outcome"] == "approved" and row["approved_via"] == "cli_flag"
+    assert row["released"] is False
+    assert row["remembered"] is False and row["grant_id"] is None
 
 
 def test_receipts_label_the_two_reasons_distinctly(

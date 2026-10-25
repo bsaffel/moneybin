@@ -67,6 +67,7 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.pdf_disclosure import (
     DisclosureConsentPendingError,
     obtain_disclosure_consent,
+    settle_after_error,
     settle_disclosure_consent,
 )
 from moneybin.privacy.classified_envelope import build_classified_envelope, classify
@@ -1170,15 +1171,22 @@ async def import_preview_coarse(
                     ),
                 )
             # Same snapshot bytes as the consented call: content matches the binding.
-            response = await asyncio.to_thread(
-                _import_preview_pdf,
-                path,
-                source_bytes=source_bytes,
-                disclosure_consent=obtained.consent,
+            try:
+                response = await asyncio.to_thread(
+                    _import_preview_pdf,
+                    path,
+                    source_bytes=source_bytes,
+                    disclosure_consent=obtained.consent,
+                )
+            except Exception:
+                await settle_after_error(obtained)
+                raise
+            # The yes is always audited; remembering waits for a real release.
+            await asyncio.to_thread(
+                settle_disclosure_consent,
+                obtained,
+                released="bridge_payload" in response.data,
             )
-            # Remember and audit the approval only once the content was released.
-            if "bridge_payload" in response.data:
-                await asyncio.to_thread(settle_disclosure_consent, obtained)
             disclosure_notice = obtained.notice
     else:
         if confirmation_token is not None or remember_disclosure:
@@ -2656,48 +2664,57 @@ async def _with_disclosure_consent(
     actions = [obtained.notice] if obtained.notice else []
     staged: dict[str, ImportPdfBridgePreviewPayload | None] = {}
     files: list[ImportPerFileRow] = []
-    for row in response.data.files:
-        if row.status != "confirmation_required" or not (
-            row.confirmation_payload or {}
-        ).get("ai_assistance"):
-            files.append(row)
-            continue
-        if row.path not in staged:
-            staged[row.path] = await asyncio.to_thread(
-                _stage_pdf_bridge_preview, Path(row.path), consent=obtained.consent
-            )
-            if staged[row.path] is None:
-                actions.append(
-                    f"{caller_paths.get(row.path, row.path)} changed or could not "
-                    "be read after the person consented; nothing from it was "
-                    "sent. Call import_files again to ask about the current file."
+    try:
+        for row in response.data.files:
+            if row.status != "confirmation_required" or not (
+                row.confirmation_payload or {}
+            ).get("ai_assistance"):
+                files.append(row)
+                continue
+            if row.path not in staged:
+                staged[row.path] = await asyncio.to_thread(
+                    _stage_pdf_bridge_preview, Path(row.path), consent=obtained.consent
                 )
-        preview = staged[row.path]
-        if preview is None:
-            files.append(row)
-            continue
-        files.append(
-            replace(
-                row,
-                preview_id=preview.preview_id,
-                confirmation_payload=cast(
-                    ImportConfirmationPayload,
-                    {
-                        "channel": preview.channel,
-                        "tier": preview.tier,
-                        "score": preview.score,
-                        "reason": preview.reason,
-                        "bridge_payload": preview.bridge_payload.model_dump(
-                            mode="json"
-                        ),
-                        "ai_assistance": None,
-                    },
-                ),
+                if staged[row.path] is None:
+                    actions.append(
+                        f"{caller_paths.get(row.path, row.path)} changed or could not "
+                        "be read after the person consented; nothing from it was "
+                        "sent. Call import_files again to ask about the current file."
+                    )
+            preview = staged[row.path]
+            if preview is None:
+                files.append(row)
+                continue
+            files.append(
+                replace(
+                    row,
+                    preview_id=preview.preview_id,
+                    confirmation_payload=cast(
+                        ImportConfirmationPayload,
+                        {
+                            "channel": preview.channel,
+                            "tier": preview.tier,
+                            "score": preview.score,
+                            "reason": preview.reason,
+                            "bridge_payload": preview.bridge_payload.model_dump(
+                                mode="json"
+                            ),
+                            "ai_assistance": None,
+                        },
+                    ),
+                )
             )
+    except Exception:
+        await settle_after_error(
+            obtained, released=any(p is not None for p in staged.values())
         )
-    if any(preview is not None for preview in staged.values()):
-        # Remember and audit the approval only once content was released.
-        await asyncio.to_thread(settle_disclosure_consent, obtained)
+        raise
+    # The yes is always audited; remembering waits for a real release.
+    await asyncio.to_thread(
+        settle_disclosure_consent,
+        obtained,
+        released=any(p is not None for p in staged.values()),
+    )
     return replace(response, data=replace(response.data, files=files)), actions
 
 
