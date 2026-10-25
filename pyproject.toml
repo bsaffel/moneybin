@@ -50,7 +50,7 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     # Data transforms (SQLMesh manages raw → staging → core pipeline)
-    "sqlmesh[duckdb]>=0.236.2",
+    "sqlmesh[duckdb]>=0.236.3",
     # SQL AST parsing for schema introspection and package-write validation.
     # Also a transitive dep of sqlmesh, but declared directly because schema.py,
     # privacy/comment_sync.py, and the package framework import it independently —
