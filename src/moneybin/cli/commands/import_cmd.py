@@ -57,10 +57,13 @@ if TYPE_CHECKING:
 
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
+    from moneybin.privacy.disclosure import AIHost
     from moneybin.privacy.payloads.imports import CLIConfirmationRequiredPayload
     from moneybin.repositories.pdf_formats_repo import PdfFormat
     from moneybin.services.import_confirmation import (
+        AIAssistanceRequired,
         ConfirmationRequired,
+        DisclosureConsent,
         SignConventionProposal,
         TabularReadOptions,
     )
@@ -3689,81 +3692,157 @@ def import_revert(
         )
 
 
-def _preview_pdf(source: Path) -> None:
+def _preview_pdf(
+    source: Path, *, output: OutputFormat, allow_ai_disclosure: str | None
+) -> None:
     """Inspect a PDF statement without importing it.
 
     PDFs never reach the tabular detector's format/read/column-map stages — a
     statement's structure is derived by the recipe rung, not by column mapping —
     so preview routes them to the same ``ImportService.pdf_preview`` the MCP
-    ``import_preview`` tool uses. Without this branch the detector rejected
-    ``.pdf`` outright and the whole PDF debug loop was MCP-only.
+    ``import_preview`` tool uses.
 
-    ``read_only=False`` matches the MCP path: a bridge escalation writes the
-    Req 14 egress audit row before raising.
+    A bridge-eligible PDF releases content only under consent
+    (pdf-disclosure-consent.md §3): a remembered grant, the terminal prompt, or
+    ``--allow-ai-disclosure`` with the file's request id. Without one it emits
+    the content-free result. ``read_only=False``: a consented release writes its
+    audit row.
     """
-    from moneybin.database import (
-        DatabaseKeyError,
-        database_key_error_hint,
-        get_database,
-    )
+    import os
+
+    from moneybin.cli.output import render_or_json
+    from moneybin.privacy.disclosure import host_from_environment
+    from moneybin.protocol.envelope import build_envelope
     from moneybin.services.import_confirmation import (
+        AIAssistanceRequired,
+        BridgePayload,
         ImportConfirmationRequiredError,
         SignConventionProposal,
+        confirmation_payload_dict,
     )
-    from moneybin.services.import_service import ImportService
+    from moneybin.services.import_service import PdfPreviewResult
+
+    # One read: the consented release must extract the bytes the request id names.
+    source_bytes = source.read_bytes()
+
+    def _call(consent: DisclosureConsent | None) -> PdfPreviewResult:
+        from moneybin.database import (
+            DatabaseKeyError,
+            database_key_error_hint,
+            get_database,
+        )
+        from moneybin.services.import_service import ImportService
+
+        try:
+            with get_database(read_only=False) as db:
+                return ImportService(db).pdf_preview(
+                    source, source_bytes=source_bytes, disclosure_consent=consent
+                )
+        except DatabaseKeyError as e:
+            # A PDF cannot degrade to built-in formats like the tabular branch:
+            # the recipe rung reads app.pdf_formats. read_only=False never raises
+            # DatabaseNotInitializedError, so a fresh install arrives here too;
+            # database_key_error_hint() picks init vs unlock.
+            logger.error(
+                format_cli_failure(
+                    f"Can't open the database, so {source.name} wasn't read: {e}"
+                )
+            )
+            typer.echo(database_key_error_hint(), err=True)
+            raise typer.Exit(1) from e
 
     try:
-        with get_database(read_only=False) as db:
-            preview = ImportService(db).pdf_preview(source)
-    except DatabaseKeyError as e:
-        # The tabular branch degrades to built-in formats when there's no
-        # database; a PDF cannot — the recipe rung reads app.pdf_formats. Say so
-        # rather than dumping a traceback on a fresh install.
-        #
-        # This one exception covers both "never initialized" and "locked":
-        # read_only=False never raises DatabaseNotInitializedError (that path is
-        # read_only=True only), so a fresh install arrives here via
-        # SecretNotFoundError. database_key_error_hint() is what picks the right
-        # recovery — a hardcoded "db unlock" strands a fresh install on the one
-        # command that cannot work, since there is no salt to re-derive from.
-        logger.error(
-            format_cli_failure(
-                f"Can't open the database, so {source.name} wasn't read: {e}"
-            )
-        )
-        typer.echo(database_key_error_hint(), err=True)
-        raise typer.Exit(1) from e
+        preview = _call(None)
     except ImportConfirmationRequiredError as e:
-        # pdf_preview signals both the sign gate and a bridge escalation by
-        # raising. Preview's job is to report what is pending, not to resolve
-        # it, so this is a successful inspection — not an error exit.
+        # Preview reports what is pending; a raised proposal is not an error exit.
         outcome = e.outcome
         proposed = outcome.proposed
-        if isinstance(proposed, SignConventionProposal):
-            # Reuses the shared renderer rather than logging the proposal:
-            # sample rows carry merchant descriptions and bare amounts, and
-            # SanitizedLogFormatter masks neither (_DOLLAR_PATTERN requires a
-            # literal "$"; nothing matches descriptions). Logging them would
-            # persist transaction detail to the session log, which
-            # `.claude/rules/security.md` forbids. typer.echo is the correct
-            # channel for user-facing proposal output, and the shared renderer
-            # also emits the real recovery commands.
-            _render_sign_convention_prompt(proposed, str(source), channel="pdf")
-        else:
-            _confirm_receipt(
-                "PDF preview requires assisted extraction",
-                [
-                    ("File", source.name),
-                    ("Reason", outcome.reason),
-                    (
-                        "Next",
-                        "Apply an assisted-reader result with `moneybin import confirm "
-                        "<file> --bridge-response <file>.json`.",
-                    ),
-                ],
+        if isinstance(proposed, AIAssistanceRequired):
+            # Detects the calling AI host (an agent shell), not configuration.
+            host = host_from_environment(os.environ)
+            consent, notice = _obtain_cli_disclosure_consent(
+                source,
+                proposed,
+                host,
+                output=output,
+                allow_ai_disclosure=allow_ai_disclosure,
             )
+            if consent is None:
+                return
+            try:
+                _call(consent)
+            except ImportConfirmationRequiredError as released:
+                bridge = released.outcome.proposed
+                # Content without the consent we just verified: fail closed.
+                if not isinstance(bridge, BridgePayload):
+                    raise RuntimeError(
+                        "pdf_preview did not release under a verified consent"
+                    ) from released
+                if notice:
+                    typer.echo(notice, err=True)
+                _emit_released_bridge(
+                    source, released.outcome, bridge.payload, output, notice
+                )
+                return
+            raise RuntimeError("pdf_preview returned without a release decision") from e
+        if isinstance(proposed, SignConventionProposal):
+            if output == OutputFormat.JSON:
+                payload = confirmation_payload_dict(outcome)
+                render_or_json(
+                    build_envelope(
+                        sensitivity="medium",
+                        data={
+                            "status": "confirmation_required",
+                            "channel": outcome.channel,
+                            "file": source.name,
+                            "reason": outcome.reason,
+                            "sign_convention": payload["sign_convention"],
+                            "sign_prior_convention": payload["sign_prior_convention"],
+                            "sign_evidence": payload["sign_evidence"],
+                            "sign_sample_rows": payload["sign_sample_rows"],
+                        },
+                        actions=_sign_recovery_commands(
+                            str(source),
+                            channel="pdf",
+                            proposed_sign=proposed.sign_convention,
+                            prior_sign=proposed.prior_sign_convention,
+                        ),
+                    ),
+                    output,
+                    cli_actor="import_preview",
+                )
+                return
+            # The shared renderer, never the logger: sample rows carry
+            # descriptions and bare amounts that SanitizedLogFormatter misses.
+            _render_sign_convention_prompt(proposed, str(source), channel="pdf")
         return
 
+    if allow_ai_disclosure is not None:
+        logger.warning(
+            format_cli_attention(
+                "--allow-ai-disclosure ignored: this PDF needs no AI help, so "
+                "nothing was sent."
+            )
+        )
+    if output == OutputFormat.JSON:
+        render_or_json(
+            build_envelope(
+                sensitivity="medium",
+                data={
+                    "status": "preview",
+                    "file": preview.file_path,
+                    "channel": "pdf",
+                    "deterministic": preview.deterministic,
+                    "decision_reason": preview.decision_reason,
+                    "confidence": preview.confidence,
+                    "row_count": preview.row_count,
+                    "fingerprint": preview.fingerprint,
+                },
+            ),
+            output,
+            cli_actor="import_preview",
+        )
+        return
     verdict = "deterministic" if preview.deterministic else "NOT deterministic"
     pairs = [
         ("File", source.name),
@@ -3780,6 +3859,293 @@ def _preview_pdf(source: Path) -> None:
             "This statement would be stored as an unparsed seed rather than transactions.",
         ))
     _confirm_receipt("PDF preview", pairs)
+
+
+def _obtain_cli_disclosure_consent(
+    source: Path,
+    proposal: AIAssistanceRequired,
+    host: AIHost,
+    *,
+    output: OutputFormat,
+    allow_ai_disclosure: str | None,
+) -> tuple[DisclosureConsent | None, str | None]:
+    """Return a verified consent and its notice, or emit the content-free result.
+
+    Order: a stale flag is refused, then a remembered grant, the flag, the
+    terminal prompt, else the content-free result. Every decision is audited.
+    """
+    from dataclasses import replace
+
+    from moneybin.adapters.pdf_disclosure import (
+        display_label,
+        file_names,
+        record_decision,
+        remember_host,
+        remembered_grant_id,
+        remembered_notice,
+    )
+    from moneybin.privacy.disclosure import disclosure_request_id, risk_statement
+    from moneybin.services.import_confirmation import DisclosureConsent
+
+    pending = [replace(proposal, file_path=str(source))]
+    request_id = disclosure_request_id(file_sha256s=[proposal.file_sha256], host=host)
+    statement = risk_statement(host, file_names=file_names(pending))
+    one_time = frozenset({proposal.file_sha256})
+
+    if allow_ai_disclosure is not None and allow_ai_disclosure != request_id:
+        record_decision(
+            host,
+            pending,
+            outcome="expired",
+            approved_via="cli_flag",
+            remembered=False,
+            grant_id=None,
+            refusal_code=error_codes.IMPORT_PDF_DISCLOSURE_REQUEST_MISMATCH,
+        )
+        raise UserError(
+            "This --allow-ai-disclosure id does not match this file, AI app or "
+            "current terms; nothing was sent.",
+            code=error_codes.IMPORT_PDF_DISCLOSURE_REQUEST_MISMATCH,
+            hint=(
+                f"Run `{generated_cli_command('import', 'preview', source, '--output', 'json')}` "
+                "for the current request id and show the person its risk statement."
+            ),
+        )
+
+    grant_id = remembered_grant_id(host)
+    if grant_id is not None:
+        record_decision(
+            host,
+            pending,
+            outcome="approved",
+            approved_via="remembered",
+            remembered=True,
+            grant_id=grant_id,
+        )
+        consent = DisclosureConsent(
+            host=host,
+            approved_via="remembered",
+            grant_id=grant_id,
+            binding_id=None,
+            remembered=True,
+            file_sha256s=None,
+        )
+        return consent, remembered_notice(host, grant_id)
+
+    if allow_ai_disclosure is not None:
+        # The flag remembers for an identified host (spec §3); never otherwise.
+        new_grant = (
+            remember_host(host, "cli_flag", actor="cli", prompt=statement)
+            if host.identified
+            else None
+        )
+        record_decision(
+            host,
+            pending,
+            outcome="approved",
+            approved_via="cli_flag",
+            remembered=new_grant is not None,
+            grant_id=new_grant,
+        )
+        consent = DisclosureConsent(
+            host=host,
+            approved_via="cli_flag",
+            grant_id=new_grant,
+            binding_id=request_id,
+            remembered=new_grant is not None,
+            file_sha256s=one_time,
+        )
+        return consent, None
+
+    # An identified host means an agent shell; an agent with a pty could answer
+    # the prompt itself, so it gets the receipt and asks the person in chat.
+    if (
+        output == OutputFormat.TEXT
+        and not host.identified
+        and get_terminal_policy().interactive
+    ):
+        typer.echo(statement, err=True)
+        if not typer.confirm(
+            f"Send this PDF's contents to {display_label(host)}?",
+            default=False,
+            err=True,
+        ):
+            record_decision(
+                host,
+                pending,
+                outcome="declined",
+                approved_via="cli_prompt",
+                remembered=False,
+                grant_id=None,
+            )
+            _confirm_receipt(
+                "PDF not sent",
+                [
+                    ("File", source.name),
+                    ("Result", "Nothing from the document was sent"),
+                ],
+            )
+            return None, None
+        # Unidentified host: one-time only, no remember prompt (nothing to key it on).
+        record_decision(
+            host,
+            pending,
+            outcome="approved",
+            approved_via="cli_prompt",
+            remembered=False,
+            grant_id=None,
+        )
+        consent = DisclosureConsent(
+            host=host,
+            approved_via="cli_prompt",
+            grant_id=None,
+            binding_id=request_id,
+            remembered=False,
+            file_sha256s=one_time,
+        )
+        return consent, None
+
+    _emit_ai_assistance_required(
+        source, pending, host, statement, request_id, output=output
+    )
+    return None, None
+
+
+def _emit_ai_assistance_required(
+    source: Path,
+    pending: Sequence[AIAssistanceRequired],
+    host: AIHost,
+    statement: str,
+    request_id: str,
+    *,
+    output: OutputFormat,
+) -> None:
+    """The content-free result: receipt, request id and risk statement."""
+    from moneybin.adapters.pdf_disclosure import consent_request, display_label
+    from moneybin.cli.output import render_or_json
+    from moneybin.protocol.envelope import build_envelope
+
+    allow = generated_cli_command(
+        "import",
+        "preview",
+        source,
+        "--allow-ai-disclosure",
+        request_id,
+        "--output",
+        "json",
+    )
+    if output == OutputFormat.JSON:
+        request = consent_request(
+            host=host,
+            pending=pending,
+            statement=statement,
+            token=None,
+            expires_at=None,
+            refusal_reason=None,
+        )
+        del request["confirmation_token"]
+        request["request_id"] = request_id
+        render_or_json(
+            build_envelope(
+                data={
+                    "kind": "pdf_ai_assistance",
+                    "status": "ai_assistance_required",
+                    "channel": "pdf",
+                    "consent_request": request,
+                },
+                actions=[
+                    "MoneyBin could not parse this PDF locally and needs AI help. "
+                    "Nothing from the document has been sent. Show the person "
+                    "data.consent_request.risk_statement verbatim and ask whether "
+                    f"to send the document to {display_label(host)}.",
+                    f"Only on a clear yes, run `{allow}`.",
+                    "On no, stop: nothing is sent, and `moneybin import files` "
+                    "can still store the file as a queryable seed.",
+                ],
+            ),
+            output,
+            cli_actor="import_preview",
+        )
+        return
+    host_label = display_label(host) + ("" if host.identified else " (unidentified)")
+    _confirm_receipt(
+        "PDF preview needs AI assistance",
+        [
+            ("File", source.name),
+            ("Reason", pending[0].decision_reason),
+            ("AI host", host_label),
+            ("Request id", request_id),
+            ("Result", "Nothing from the document was sent"),
+        ],
+    )
+    typer.echo(statement)
+    # The command on its own line so a narrow receipt never wraps it.
+    typer.echo(
+        f"{get_terminal_policy().symbols.action} Next, only if the person agrees "
+        f"to the statement above: {allow}"
+    )
+
+
+def _emit_released_bridge(
+    source: Path,
+    outcome: ConfirmationRequired,
+    payload: dict[str, Any],
+    output: OutputFormat,
+    notice: str | None,
+) -> None:
+    """Print the released bridge request: same data as MCP, or text to hand on."""
+    from moneybin.cli.output import render_or_json
+    from moneybin.cli.render import render_rows
+    from moneybin.protocol.envelope import build_envelope
+
+    confirm = generated_cli_command(
+        "import",
+        "confirm",
+        source,
+        "--bridge-response",
+        f"{source.name}.json",
+        "--confirm",
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(
+            build_envelope(
+                sensitivity="medium",
+                data={
+                    "status": "confirmation_required",
+                    "channel": outcome.channel,
+                    "file": source.name,
+                    "tier": outcome.confidence.tier,
+                    "score": outcome.confidence.score,
+                    "reason": outcome.reason,
+                    "bridge_payload": payload,
+                },
+                actions=[
+                    *([notice] if notice else []),
+                    "Read data.bridge_payload (only the account numbers, routing "
+                    "numbers and SSNs MoneyBin identified are redacted), write "
+                    "{'recipe': ..., 'rows': [...]} to a JSON file, then run "
+                    f"`{confirm}` to reconcile and load.",
+                ],
+            ),
+            output,
+            cli_actor="import_preview",
+        )
+        return
+    _confirm_receipt(
+        "PDF released for AI-assisted extraction",
+        [("File", source.name), ("Reason", outcome.reason)],
+    )
+    typer.echo(str(payload.get("document_text", "")))
+    for table in payload.get("tables_preview", []):
+        header = [str(cell or "") for cell in table.get("header", [])]
+        rows = [[str(cell or "") for cell in row] for row in table.get("rows", [])]
+        width = max([len(header), *(len(r) for r in rows)], default=0)
+        if not rows or width == 0:
+            continue
+        columns = header + [""] * (width - len(header))
+        typer.echo(f"Table on page {table.get('page')}")
+        render_rows(columns, [r + [""] * (width - len(r)) for r in rows])
+    typer.echo(f"{get_terminal_policy().symbols.action} Next: {confirm}")
 
 
 @app.command("preview")
@@ -3830,6 +4196,18 @@ def import_preview(
         "--omit-field",
         help="Omit an optional destination field, repeatable. Tabular files only.",
     ),
+    allow_ai_disclosure: str | None = typer.Option(
+        None,
+        "--allow-ai-disclosure",
+        metavar="REQUEST_ID",
+        help=(
+            "PDF only: consent to send this statement's text to the AI app; only "
+            "the account numbers, routing numbers and SSNs MoneyBin identified are "
+            "redacted. REQUEST_ID comes from a preview without this flag; pass it only "
+            "after the person agrees to that preview's risk statement."
+        ),
+    ),
+    output: OutputFormat = output_option,
 ) -> None:
     """Preview file structure without importing.
 
@@ -3839,12 +4217,16 @@ def import_preview(
 
     PDF statements: runs the deterministic recipe rung and reports whether
     the statement extracts cleanly, how many rows it would yield, and any
-    pending sign-convention confirmation. Nothing is imported either way.
+    pending sign-convention confirmation. A statement that needs AI help sends
+    nothing until the person consents (a terminal prompt, a remembered consent,
+    or --allow-ai-disclosure); then it prints the redacted text for the AI app.
+    Nothing is imported either way. --output json applies to PDFs only.
 
     Examples:
         moneybin import preview ~/Downloads/chase_activity.csv
         moneybin import preview ~/Downloads/transactions.xlsx --sheet Sheet1
         moneybin import preview ~/Downloads/chase_statement.pdf
+        moneybin import preview statement.pdf --allow-ai-disclosure 0123456789abcdef -o json
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.extractors.tabular.column_mapper import map_columns
@@ -3877,6 +4259,18 @@ def import_preview(
 
             if detect_import_file_type(source) != "tabular":
                 raise typer.BadParameter("--omit-field requires a tabular file.")
+
+    if source.suffix.lower() != ".pdf":
+        if allow_ai_disclosure is not None:
+            raise typer.BadParameter(
+                "--allow-ai-disclosure applies only to a PDF statement.",
+                param_hint="'--allow-ai-disclosure'",
+            )
+        if output == OutputFormat.JSON:
+            raise typer.BadParameter(
+                "--output json is available for PDF previews only.",
+                param_hint="'--output'",
+            )
 
     if source.suffix.lower() == ".pdf":
         # Routed before the tabular stages below: none of format detection,
@@ -3919,7 +4313,7 @@ def import_preview(
         # for every PermissionError, which named the wrong pane for a TCC block
         # and offered the macOS fix on Linux and for mode denials chmod solves.
         with handle_cli_errors():
-            _preview_pdf(source)
+            _preview_pdf(source, output=output, allow_ai_disclosure=allow_ai_disclosure)
         return
 
     overrides = _parse_overrides(override)

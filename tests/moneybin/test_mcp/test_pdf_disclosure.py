@@ -34,6 +34,8 @@ from tests.moneybin.pdf_statement_fixtures import (
     CANARIES,
     CANARY_ACCOUNT_MIDDLE,
     CANARY_DESCRIPTION,
+    CANARY_RECIPE,
+    CANARY_ROWS,
     CANARY_SSN_PREFIX,
 )
 
@@ -400,58 +402,6 @@ def _parse_rows() -> int:
     return int(row[0]) if row else 0
 
 
-_CANARY_RECIPE: dict[str, Any] = {
-    "metadata_anchors": [
-        {
-            "name": "account_id",
-            "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{4} \d{4})",
-            "cast": "str",
-        },
-        {
-            "name": "period_start",
-            "pattern": r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
-            "cast": "date",
-            "date_format": "%m/%d/%Y",
-        },
-        {
-            "name": "period_end",
-            "pattern": r"to\s+(\d{2}/\d{2}/\d{4})",
-            "cast": "date",
-            "date_format": "%m/%d/%Y",
-        },
-        {
-            "name": "opening_balance",
-            "pattern": r"Opening\s+Funds:\s+\$([\d,]+\.\d{2})",
-            "cast": "decimal",
-        },
-        {
-            "name": "closing_balance",
-            "pattern": r"Closing\s+Funds:\s+\$([\d,]+\.\d{2})",
-            "cast": "decimal",
-        },
-    ],
-    "row_region": {"start_anchor": "Date", "end_anchor": "@@END@@"},
-    "row_split": r"\s{2,}",
-    "fields": [
-        {
-            "name": "date",
-            "pattern": r"\d{2}/\d{2}/\d{4}",
-            "cast": "date",
-            "date_format": "%m/%d/%Y",
-        },
-        {"name": "description", "pattern": r".+", "cast": "str"},
-        {"name": "amount", "pattern": r"-?[\d,]+\.\d{2}", "cast": "decimal"},
-    ],
-    "sign_convention": "negative_is_expense",
-    "routing": "transactions",
-}
-_CANARY_ROWS = [
-    {"date": "01/03/2024", "description": CANARY_DESCRIPTION, "amount": "-47.31"},
-    {"date": "01/10/2024", "description": "PAYROLL DEPOSIT", "amount": "1500.00"},
-    {"date": "01/20/2024", "description": "UTILITY PAYMENT", "amount": "-152.69"},
-]
-
-
 async def test_batch_consent_reaches_import_confirm_with_one_decision(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -471,7 +421,7 @@ async def test_batch_consent_reaches_import_confirm_with_one_decision(
 
     confirmed = await import_confirm_coarse(
         preview_id=preview_id,
-        bridge_response={"recipe": _CANARY_RECIPE, "rows": _CANARY_ROWS},
+        bridge_response={"recipe": CANARY_RECIPE, "rows": CANARY_ROWS},
         account_bindings={"@0": "new"},
     )
 

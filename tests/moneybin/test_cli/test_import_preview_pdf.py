@@ -476,3 +476,398 @@ def test_tcc_denied_confirm_is_classified_not_a_traceback(
     assert result.exception is None or isinstance(result.exception, SystemExit), (
         f"unhandled exception leaked: {result.exception!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Consented disclosure (pdf-disclosure-consent.md §3, CLI rows). Real service,
+# real encrypted database, synthetic canary statement.
+# ---------------------------------------------------------------------------
+
+_REVOKE_HINT = "privacy revoke smart-import-parsing --recipient claude-code"
+
+
+@pytest.fixture()
+def consent_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An isolated encrypted profile database that ``get_database()`` opens."""
+    import moneybin.database as db_module
+    from moneybin.database import Database
+    from tests.moneybin.db_helpers import create_core_tables_raw
+
+    store = MagicMock()
+    store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db_path = tmp_path / "consent.duckdb"
+    database = Database(
+        db_path, secret_store=store, no_auto_upgrade=True, read_only=False
+    )
+    create_core_tables_raw(database.conn)
+    database.close()
+
+    settings = MagicMock()
+    settings.database.path = db_path
+    monkeypatch.setattr("moneybin.database.get_settings", lambda: settings)
+    monkeypatch.setattr("moneybin.database.SecretStore", lambda: store)
+    monkeypatch.setattr(db_module, "_migration_check_done", set[Path]())
+    monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+    monkeypatch.setattr(db_module, "_active_write_conn", None)
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: tmp_path / "privacy_log",
+    )
+    return db_path
+
+
+def _audit_after(action: str) -> list[dict[str, object]]:
+    import json
+
+    from moneybin.database import get_database
+
+    with get_database(read_only=True) as db:
+        rows = db.execute(
+            "SELECT after_value FROM app.audit_log WHERE action = ? "
+            "ORDER BY occurred_at",
+            [action],
+        ).fetchall()
+    return [json.loads(r[0]) if r[0] else {} for r in rows]
+
+
+def _host_grants() -> list[tuple[str, str | None]]:
+    from moneybin.database import get_database
+
+    with get_database(read_only=True) as db:
+        return db.execute(
+            "SELECT backend, approved_via FROM app.ai_consent_grants "
+            "WHERE recipient_kind = 'ai_host' AND revoked_at IS NULL"
+        ).fetchall()
+
+
+def _assert_no_canary(*texts: str) -> None:
+    from tests.moneybin.pdf_statement_fixtures import CANARIES
+
+    for text in texts:
+        for canary in CANARIES:
+            assert canary not in text
+
+
+def _request_id(pdf: Path) -> str:
+    import json
+
+    result = runner.invoke(app, ["preview", str(pdf), "-o", "json"])
+    assert result.exit_code == 0, result.output
+    return json.loads(result.stdout)["data"]["consent_request"]["request_id"]
+
+
+def _interactive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulate a person at a terminal (stdin, stdout and stderr all TTYs)."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    policy = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=200,
+        height=50,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+    def _policy(**_: object) -> TerminalPolicy:
+        return policy
+
+    monkeypatch.setattr("moneybin.cli.commands.import_cmd.get_terminal_policy", _policy)
+
+
+def test_preview_non_tty_content_free_text_and_json(
+    consent_db: Path,
+    canary_pdf: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Without consent: a receipt naming the request id, and no document content."""
+    import json
+
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+
+    with caplog.at_level("DEBUG", logger="moneybin"):
+        text = runner.invoke(app, ["preview", str(canary_pdf)])
+        js = runner.invoke(app, ["preview", str(canary_pdf), "-o", "json"])
+
+    assert text.exit_code == 0, text.output
+    assert js.exit_code == 0, js.output
+    moneybin_log = "\n".join(
+        r.getMessage() for r in caplog.records if r.name.startswith("moneybin")
+    )
+    _assert_no_canary(text.stdout, text.stderr, js.stdout, js.stderr, moneybin_log)
+    wire = json.loads(js.stdout)
+    assert wire["status"] == "ok"
+    assert wire["data"]["status"] == "ai_assistance_required"
+    req = wire["data"]["consent_request"]
+    assert "confirmation_token" not in req
+    assert req["request_id"] == req["binding_id"]
+    assert req["remember_available"] is False
+    assert req["risk_statement"] in text.stdout
+    assert req["request_id"] in text.stdout
+    assert f"--allow-ai-disclosure {req['request_id']}" in text.stdout
+    assert _audit_after("smart_import_consent") == []
+
+
+def test_preview_writes_no_parse_audit_without_consent(
+    consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    result = runner.invoke(app, ["preview", str(canary_pdf), "-o", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert _audit_after("smart_import_parse") == []
+
+
+def test_flag_with_matching_request_id_releases_redacted_json(
+    consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from tests.moneybin.pdf_statement_fixtures import (
+        CANARY_ACCOUNT_MIDDLE,
+        CANARY_DESCRIPTION,
+    )
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    rid = _request_id(canary_pdf)
+
+    out = runner.invoke(
+        app,
+        ["preview", str(canary_pdf), "--allow-ai-disclosure", rid, "-o", "json"],
+    )
+
+    assert out.exit_code == 0, out.output
+    assert CANARY_DESCRIPTION in out.stdout
+    assert CANARY_ACCOUNT_MIDDLE not in out.stdout
+    data = json.loads(out.stdout)["data"]
+    assert data["status"] == "confirmation_required"
+    assert "document_text" in data["bridge_payload"]
+    assert _host_grants() == [("local:claude-code", "cli_flag")]
+    [decision] = _audit_after("smart_import_consent")
+    assert decision["outcome"] == "approved"
+    assert decision["approved_via"] == "cli_flag"
+    assert decision["remembered"] is True
+    assert len(_audit_after("smart_import_parse")) == 1
+
+
+@pytest.mark.parametrize("which", ["stale", "other"])
+def test_flag_stale_or_other_file_request_id_refused(
+    consent_db: Path,
+    canary_pdf: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    which: str,
+) -> None:
+    """An id bound to other bytes releases nothing, even for the same path."""
+    import json
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    if which == "stale":
+        rid = _request_id(canary_pdf)
+        canary_pdf.write_bytes(canary_pdf.read_bytes() + b"\n% edited\n")
+    else:
+        other = tmp_path / "other" / "statement.pdf"
+        other.parent.mkdir()
+        other.write_bytes(canary_pdf.read_bytes() + b"\n% another file\n")
+        rid = _request_id(other)
+
+    out = runner.invoke(
+        app,
+        ["preview", str(canary_pdf), "--allow-ai-disclosure", rid, "-o", "json"],
+    )
+
+    assert out.exit_code == 1, out.output
+    _assert_no_canary(out.stdout, out.stderr)
+    assert (
+        json.loads(out.stdout)["error"]["code"]
+        == "import_pdf_disclosure_request_mismatch"
+    )
+    assert _audit_after("smart_import_parse") == []
+    assert _host_grants() == []
+
+
+def test_bare_flag_is_usage_error(canary_pdf: Path) -> None:
+    result = runner.invoke(app, ["preview", str(canary_pdf), "--allow-ai-disclosure"])
+
+    assert result.exit_code == 2
+
+
+def test_unidentified_host_flag_releases_once_no_grant(
+    consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.moneybin.pdf_statement_fixtures import CANARY_DESCRIPTION
+
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    rid = _request_id(canary_pdf)
+
+    out = runner.invoke(
+        app,
+        ["preview", str(canary_pdf), "--allow-ai-disclosure", rid, "-o", "json"],
+    )
+    again = runner.invoke(app, ["preview", str(canary_pdf), "-o", "json"])
+
+    assert out.exit_code == 0, out.output
+    assert CANARY_DESCRIPTION in out.stdout
+    assert _host_grants() == []
+    [decision] = _audit_after("smart_import_consent")
+    assert decision["approved_via"] == "cli_flag"
+    assert decision["remembered"] is False
+    assert again.exit_code == 0, again.output
+    _assert_no_canary(again.stdout)
+
+
+def test_remembered_grant_releases_with_notice(
+    consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from moneybin.database import get_database
+    from moneybin.privacy.disclosure import host_from_environment
+    from moneybin.services.consent_service import ConsentService
+    from tests.moneybin.pdf_statement_fixtures import CANARY_DESCRIPTION
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    with get_database(read_only=False) as db:
+        grant, _ = ConsentService(db).grant_host_consent(
+            host=host_from_environment(os.environ),
+            approved_via="cli_flag",
+            actor="cli",
+        )
+
+    out = runner.invoke(app, ["preview", str(canary_pdf), "-o", "json"])
+
+    assert out.exit_code == 0, out.output
+    assert CANARY_DESCRIPTION in out.stdout
+    assert grant.grant_id in out.stderr
+    assert _REVOKE_HINT in out.stderr
+    assert _audit_after("smart_import_consent")[-1]["approved_via"] == "remembered"
+
+
+def test_tty_prompt_accept_releases_once_and_names_confirm(
+    consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.moneybin.pdf_statement_fixtures import CANARY_DESCRIPTION
+
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    _interactive(monkeypatch)
+
+    out = runner.invoke(app, ["preview", str(canary_pdf)], input="y\n")
+
+    assert out.exit_code == 0, out.output
+    assert "Send this PDF's contents to your AI app?" in out.output
+    assert "MoneyBin cannot pull it back" in out.output
+    assert CANARY_DESCRIPTION in out.stdout
+    assert "moneybin import confirm" in out.stdout
+    assert "--bridge-response" in out.stdout
+    [decision] = _audit_after("smart_import_consent")
+    assert decision["approved_via"] == "cli_prompt"
+    assert decision["outcome"] == "approved"
+    assert _host_grants() == []
+
+
+def test_tty_prompt_decline_releases_nothing(
+    consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    _interactive(monkeypatch)
+
+    out = runner.invoke(app, ["preview", str(canary_pdf)], input="n\n")
+
+    assert out.exit_code == 0, out.output
+    _assert_no_canary(out.stdout, out.stderr)
+    [decision] = _audit_after("smart_import_consent")
+    assert decision["outcome"] == "declined"
+    assert decision["approved_via"] == "cli_prompt"
+    assert _audit_after("smart_import_parse") == []
+
+
+def test_agent_shell_with_tty_shows_no_prompt(
+    consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R18: an agent with a pty must not answer the consent prompt itself."""
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _interactive(monkeypatch)
+
+    out = runner.invoke(app, ["preview", str(canary_pdf)], input="y\ny\n")
+
+    assert out.exit_code == 0, out.output
+    assert "Send this PDF" not in out.output
+    _assert_no_canary(out.stdout, out.stderr)
+    assert "--allow-ai-disclosure" in out.stdout
+    assert _audit_after("smart_import_consent") == []
+    assert _audit_after("smart_import_parse") == []
+    assert _host_grants() == []
+
+
+def test_import_files_yes_never_discloses(
+    consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`import files --yes` keeps its meaning and never consents, even remembered."""
+    import os
+
+    from moneybin.database import get_database
+    from moneybin.privacy.disclosure import host_from_environment
+    from moneybin.services.consent_service import ConsentService
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    with get_database(read_only=False) as db:
+        ConsentService(db).grant_host_consent(
+            host=host_from_environment(os.environ),
+            approved_via="cli_flag",
+            actor="cli",
+        )
+
+    out = runner.invoke(
+        app, ["files", str(canary_pdf), "--yes", "--no-refresh", "-o", "json"]
+    )
+
+    _assert_no_canary(out.stdout, out.stderr)
+    assert _audit_after("smart_import_parse") == []
+    assert _audit_after("smart_import_consent") == []
+
+
+def test_released_bridge_payload_reaches_import_confirm(
+    consent_db: Path,
+    canary_pdf: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The preview's Next step works: a response authored from it imports."""
+    import json
+
+    from tests.moneybin.pdf_statement_fixtures import CANARY_RECIPE, CANARY_ROWS
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    rid = _request_id(canary_pdf)
+    released = runner.invoke(
+        app,
+        ["preview", str(canary_pdf), "--allow-ai-disclosure", rid, "-o", "json"],
+    )
+    assert released.exit_code == 0, released.output
+    response = tmp_path / "response.json"
+    response.write_text(json.dumps({"recipe": CANARY_RECIPE, "rows": CANARY_ROWS}))
+
+    confirmed = runner.invoke(
+        app,
+        [
+            "confirm",
+            str(canary_pdf),
+            "--bridge-response",
+            str(response),
+            "--confirm",
+            "--account-binding",
+            "@0=new",
+            "-o",
+            "json",
+        ],
+    )
+
+    assert confirmed.exit_code == 0, confirmed.output

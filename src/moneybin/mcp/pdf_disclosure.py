@@ -13,13 +13,21 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.elicitation import AcceptedElicitation
 
 from moneybin import error_codes
+from moneybin.adapters.pdf_disclosure import (
+    consent_request,
+    display_label,
+    file_names,
+    record_decision,
+    remember_host,
+    remembered_grant_id,
+    remembered_notice,
+)
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -39,10 +47,8 @@ from moneybin.privacy.disclosure import (
 )
 from moneybin.services.import_confirmation import (
     AIAssistanceRequired,
-    DisclosureApproval,
     DisclosureConsent,
 )
-from moneybin.temporal import format_utc
 
 if TYPE_CHECKING:
     from fastmcp.server.context import Context
@@ -50,13 +56,6 @@ if TYPE_CHECKING:
 _SITE = "pdf_disclosure"
 _HOST_CATEGORY = "smart-import-parsing"
 _MAX_ISSUED = 1024
-
-WHAT_IS_SENT: tuple[str, ...] = (
-    "the statement's document text",
-    "the first rows of each table it contains",
-    "only the account numbers, routing numbers and SSNs MoneyBin identified are "
-    "redacted; everything else is sent as-is",
-)
 
 
 @dataclass
@@ -169,49 +168,6 @@ def _request_kind(pending: Sequence[AIAssistanceRequired]) -> str:
     return kinds[0] if len(kinds) == 1 else "+".join(kinds)
 
 
-def _file_names(pending: Sequence[AIAssistanceRequired]) -> list[str]:
-    return list(dict.fromkeys(PurePath(p.file_path).name for p in pending))
-
-
-def _display_label(host: AIHost) -> str:
-    return host.display_name or host.name or "your AI app"
-
-
-def _record(
-    host: AIHost,
-    pending: Sequence[AIAssistanceRequired],
-    *,
-    outcome: Literal["approved", "declined", "timeout", "expired"],
-    approved_via: DisclosureApproval,
-    remembered: bool,
-    grant_id: str | None,
-    refusal_code: str | None = None,
-) -> None:
-    from moneybin.services.import_service import ImportService
-
-    with get_database(read_only=False) as db:
-        ImportService(db).record_disclosure_decision(
-            host=host,
-            outcome=outcome,
-            approved_via=approved_via,
-            remembered=remembered,
-            grant_id=grant_id,
-            file_sha256s=[p.file_sha256 for p in pending],
-            decision_reason=",".join(sorted({p.decision_reason for p in pending})),
-            refusal_code=refusal_code,
-        )
-
-
-def _remember(host: AIHost, approved_via: DisclosureApproval, prompt: str) -> str:
-    from moneybin.services.consent_service import ConsentService
-
-    with get_database(read_only=False) as db:
-        grant, _created = ConsentService(db).grant_host_consent(
-            host=host, approved_via=approved_via, actor="mcp", grant_prompt=prompt
-        )
-    return grant.grant_id
-
-
 def _revoked_since(host: AIHost, since: datetime) -> bool:
     from moneybin.services.consent_service import ConsentService
 
@@ -234,30 +190,10 @@ def _revoked_since(host: AIHost, since: datetime) -> bool:
     return False
 
 
-def _remembered_grant_id(host: AIHost) -> str | None:
-    from moneybin.services.consent_service import ConsentService
-
-    if host.recipient_key is None:
-        return None
-    with get_database(read_only=True) as db:
-        grant = ConsentService(db).active_host_grant(host=host)
-    return grant.grant_id if grant is not None else None
-
-
-def remembered_notice(host: AIHost, grant_id: str) -> str:
-    """The visible notice that content left under a remembered consent."""
-    return (
-        f"This PDF's content was sent to {_display_label(host)} under remembered "
-        f"consent {grant_id}; nothing asked the person this time. Tell them, and "
-        "that `moneybin privacy revoke smart-import-parsing --recipient "
-        f"{host.name}` (run in a terminal) stops it."
-    )
-
-
 def _elicitation_message(host: AIHost, statement: str) -> str:
     if host.identified:
         tail = (
-            f" Set remember to true to send future PDFs to {_display_label(host)} "
+            f" Set remember to true to send future PDFs to {display_label(host)} "
             "without asking."
         )
     else:
@@ -266,62 +202,6 @@ def _elicitation_message(host: AIHost, statement: str) -> str:
             "request only."
         )
     return f"{statement}{tail} Set accept to true only if you agree."
-
-
-def consent_request(
-    *,
-    host: AIHost,
-    pending: Sequence[AIAssistanceRequired],
-    statement: str,
-    token: str | None,
-    expires_at: datetime | None,
-    refusal_reason: str | None,
-) -> dict[str, Any]:
-    """The §1 consent request; carries no document content."""
-    terms = host.terms
-    return {
-        "binding_id": disclosure_request_id(
-            file_sha256s=[p.file_sha256 for p in pending], host=host
-        ),
-        "confirmation_token": token,
-        "expires_at": format_utc(expires_at) if expires_at is not None else None,
-        "risk_statement": statement,
-        "recipient": {
-            "host_name": host.display_name or host.name,
-            "host_version": host.version,
-            "identified": host.identified,
-            "source": host.source,
-        },
-        "vendor_terms": (
-            {
-                "vendor": terms.vendor,
-                "retention": terms.retention,
-                "training_use": terms.training_use,
-                "policy_url": terms.policy_url,
-                "plan_caveat": terms.plan_caveat,
-                "terms_version": terms.terms_version,
-            }
-            if terms is not None
-            else None
-        ),
-        "vendor_terms_unavailable_reason": (
-            None
-            if terms is not None
-            else "MoneyBin has no data-terms summary for this AI app"
-        ),
-        "remember_available": host.identified,
-        "what_is_sent": list(WHAT_IS_SENT),
-        "files": [
-            {
-                "file": p.file_path,
-                "file_sha256": p.file_sha256,
-                "decision_reason": p.decision_reason,
-                "request_kind": p.request_kind,
-            }
-            for p in pending
-        ],
-        "refusal_reason": refusal_reason,
-    }
 
 
 def _retry_call(tool: str, pending: Sequence[AIAssistanceRequired], extra: str) -> str:
@@ -334,7 +214,7 @@ def _retry_call(tool: str, pending: Sequence[AIAssistanceRequired], extra: str) 
 def _relay_actions(
     host: AIHost, pending: Sequence[AIAssistanceRequired], token: str, tool: str
 ) -> list[str]:
-    label = _display_label(host)
+    label = display_label(host)
     call = _retry_call(tool, pending, f", confirmation_token={token!r}")
     remember = (
         f" Add remember_disclosure=True only if they also want MoneyBin to send "
@@ -410,11 +290,11 @@ async def obtain_disclosure_consent(
         raise ValueError("obtain_disclosure_consent needs at least one file")
     ctx = _active_context()
     host = current_ai_host(ctx)
-    statement = risk_statement(host, file_names=_file_names(pending))
+    statement = risk_statement(host, file_names=file_names(pending))
 
-    grant_id = _remembered_grant_id(host)
+    grant_id = remembered_grant_id(host)
     if grant_id is not None:
-        _record(
+        record_decision(
             host,
             pending,
             outcome="approved",
@@ -491,7 +371,7 @@ async def _elicit(
         reason: Literal["declined", "timeout"] = (
             "timeout" if result is None else "declined"
         )
-        _record(
+        record_decision(
             host,
             pending,
             outcome=reason,
@@ -512,8 +392,12 @@ async def _elicit(
         )
     data = result.data if isinstance(result, AcceptedElicitation) else None
     wants_remember = host.identified and getattr(data, "remember", False) is True
-    grant_id = _remember(host, "prompt", message) if wants_remember else None
-    _record(
+    grant_id = (
+        remember_host(host, "prompt", actor="mcp", prompt=message)
+        if wants_remember
+        else None
+    )
+    record_decision(
         host,
         pending,
         outcome="approved",
@@ -561,7 +445,7 @@ def _redeem(
         if _revoked_since(host, issued.issued_at):
             raise _revoked_error()
     except UserError as refused:
-        _record(
+        record_decision(
             host,
             pending,
             outcome="expired",
@@ -572,11 +456,11 @@ def _redeem(
         )
         raise
     grant_id = (
-        _remember(host, "agent_relay", issued.statement)
+        remember_host(host, "agent_relay", actor="mcp", prompt=issued.statement)
         if remember and host.identified
         else None
     )
-    _record(
+    record_decision(
         host,
         pending,
         outcome="approved",

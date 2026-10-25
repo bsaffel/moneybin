@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -66,6 +67,58 @@ CANARIES = (
     CANARY_ACCOUNT_MIDDLE,
     CANARY_SSN_PREFIX,
 )
+
+#: A bridge response that reconciles against the canary statement.
+CANARY_RECIPE: dict[str, Any] = {
+    "metadata_anchors": [
+        {
+            "name": "account_id",
+            "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{4} \d{4})",
+            "cast": "str",
+        },
+        {
+            "name": "period_start",
+            "pattern": r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {
+            "name": "period_end",
+            "pattern": r"to\s+(\d{2}/\d{2}/\d{4})",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {
+            "name": "opening_balance",
+            "pattern": r"Opening\s+Funds:\s+\$([\d,]+\.\d{2})",
+            "cast": "decimal",
+        },
+        {
+            "name": "closing_balance",
+            "pattern": r"Closing\s+Funds:\s+\$([\d,]+\.\d{2})",
+            "cast": "decimal",
+        },
+    ],
+    "row_region": {"start_anchor": "Date", "end_anchor": "@@END@@"},
+    "row_split": r"\s{2,}",
+    "fields": [
+        {
+            "name": "date",
+            "pattern": r"\d{2}/\d{2}/\d{4}",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {"name": "description", "pattern": r".+", "cast": "str"},
+        {"name": "amount", "pattern": r"-?[\d,]+\.\d{2}", "cast": "decimal"},
+    ],
+    "sign_convention": "negative_is_expense",
+    "routing": "transactions",
+}
+CANARY_ROWS = [
+    {"date": "01/03/2024", "description": CANARY_DESCRIPTION, "amount": "-47.31"},
+    {"date": "01/10/2024", "description": "PAYROLL DEPOSIT", "amount": "1500.00"},
+    {"date": "01/20/2024", "description": "UTILITY PAYMENT", "amount": "-152.69"},
+]
 
 # Balances use labels DEFAULT_ANCHORS does not know, so the deterministic rung
 # routes to `metadata_incomplete` (bridge-eligible). The rows reconcile:
