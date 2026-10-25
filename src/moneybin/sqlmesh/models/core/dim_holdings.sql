@@ -1,4 +1,10 @@
-/* Current positions: the sum of open lots per (account, security). The "now"
+/* One current position per (account_id, security_id), summed from open lots.
+   Account/security joins are many-to-one; position enrichments preserve this key.
+   Sum cost_basis and market_value only within one currency at this snapshot;
+   quantities add only for the same security, never across snapshot dates.
+   Recompute average_cost from summed cost_basis / quantity rather than summing
+   or averaging per-position ratios. Valuation status governs usable values.
+   Current positions: the sum of open lots per (account, security). The "now"
    snapshot with no date dimension, rebuilt on every run. Carries cost basis and,
    since Pillar C, market value and unrealized gain against the most recent close at
    or before today. Uses cost_basis_remaining (not cost_basis_total) because under

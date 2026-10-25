@@ -113,7 +113,7 @@ Usage: `moneybin transactions list [OPTIONS]`
 | `--amount-min` | text |  | Minimum amount as decimal string (e.g. '-50.00'). |
 | `--amount-max` | text |  | Maximum amount as decimal string. |
 | `--description` | text |  | ILIKE pattern against description and memo. |
-| `--uncategorized` | flag |  | Only transactions with no user/AI/rule categorization assigned. |
+| `--uncategorized` | flag |  | Only transactions that still need a category: the rows `moneybin review` offers (transfers and archived accounts excluded). |
 | `--limit` | int | `50` | Maximum rows to return. |
 | `--cursor` | text |  | Pagination token from previous call. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

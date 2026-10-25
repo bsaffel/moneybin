@@ -54,8 +54,6 @@ from moneybin.tables import REPORTS_REALIZED_FX
         "executed_rate": DataClass.AGGREGATE,
         "valuation_rate": DataClass.AGGREGATE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
-        "from_amount": DataClass.TXN_AMOUNT,
-        "to_amount": DataClass.TXN_AMOUNT,
         "disposed_amount": DataClass.TXN_AMOUNT,
         "proceeds": DataClass.BALANCE,
         "cost_basis": DataClass.BALANCE,
@@ -209,23 +207,6 @@ from moneybin.tables import REPORTS_REALIZED_FX
             DataClass.TIMESTAMP_OBSERVABILITY,
         ),
         OutputColumn(
-            "from_amount",
-            "Positive magnitude actually sent in from_currency for the whole "
-            "conversion; repeats on every lot row from the same disposal, so "
-            "it is not additive at this row's grain (sum disposed_amount "
-            "instead).",
-            DataClass.TXN_AMOUNT,
-            money_kind="magnitude",
-        ),
-        OutputColumn(
-            "to_amount",
-            "Positive magnitude actually received in to_currency for the "
-            "whole conversion; repeats on every lot row from the same "
-            "disposal, so it is not additive at this row's grain.",
-            DataClass.TXN_AMOUNT,
-            money_kind="magnitude",
-        ),
-        OutputColumn(
             "disposed_amount",
             "Positive amount of Currency disposed.",
             DataClass.TXN_AMOUNT,
@@ -269,8 +250,8 @@ from moneybin.tables import REPORTS_REALIZED_FX
             "historical Home-currency basis"
         ),
         fx_basis=(
-            "each row is deliberately mixed-unit: disposed and conversion-leg "
-            "amounts retain their stated currencies, while proceeds, cost_basis, "
+            "each row is deliberately mixed-unit: disposed_amount retains "
+            "currency_code, while proceeds, cost_basis, "
             "fee_amount, and gain_loss retain the historical Home currency. Display "
             "conversion does not re-price these audited amounts"
         ),
@@ -347,8 +328,7 @@ def realized_fx(
                from_source_origin, to_source_type, to_source_origin,
                coverage_status, coverage_reason, acquisition_date, disposal_date,
                valuation_rate_date, executed_rate, valuation_rate, updated_at,
-               from_amount, to_amount, disposed_amount, proceeds, cost_basis,
-               fee_amount, gain_loss
+               disposed_amount, proceeds, cost_basis, fee_amount, gain_loss
         FROM {REPORTS_REALIZED_FX.full_name}
         WHERE 1=1
     """  # noqa: S608  # TableRef interpolation

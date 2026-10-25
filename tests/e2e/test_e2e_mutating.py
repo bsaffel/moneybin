@@ -1758,6 +1758,7 @@ class TestCategoriesMappingsMutating:
         ignored.assert_success()
         data = json.loads(ignored.stdout)["data"]
         assert (data["action"], data["category_id"]) == ("ignored", None)
+
         # Ignoring withdraws what the mapping categorized and keeps the term known.
         assert data["recategorized"] == term["transaction_count"]
         assert data["categorized"] == 0
@@ -1769,6 +1770,29 @@ class TestCategoriesMappingsMutating:
             (t["category"], t["subcategory"])
             for t in json.loads(still_pending.stdout)["data"]["terms"]
         ]
+
+        removed = run_cli(
+            "categories",
+            "mappings",
+            "remove",
+            "--namespace",
+            term["source_origin"],
+            "--category",
+            term["category"],
+            *subcategory,
+            "--output",
+            "json",
+            env=env,
+        )
+        removed.assert_success()
+        assert json.loads(removed.stdout)["data"]["action"] == "removed"
+        reopened = run_cli(
+            "categories", "mappings", "pending", "--output", "json", env=env
+        )
+        reopened.assert_success()
+        assert term["category"] in {
+            t["category"] for t in json.loads(reopened.stdout)["data"]["terms"]
+        }
 
     def test_categories_mappings_set_unknown_term_is_refused(
         self, _mutating_profile_template: Path, tmp_path: Path

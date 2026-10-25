@@ -1589,6 +1589,17 @@ def bootstrap_cases_template(
         quantity="2",
         cost_basis="300.03",
     )
+    _raw_holding(
+        db, security_id="mb305_below_tie", quantity="0.4999999999", cost_basis="0.01"
+    )
+    _raw_lot(
+        db,
+        "mb305_below_tie",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="1",
+        cost_basis="0.01",
+    )
     for security_id in ("mb21_id_x", "mb21_id_y"):
         _raw_holding(db, security_id=security_id, quantity="100", cost_basis="1000.00")
         _raw_lot(
@@ -1964,9 +1975,7 @@ def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(
     The gap falls short of the eligible lots' total (an in-window ACATS transfer_in
     whose shares Plaid folds into a lot carrying its ORIGINAL, pre-window purchase
     date), so the boundary lot is only partially drawn and prorates its basis. The
-    fully-drawn lot must keep its basis to the cent — DuckDB has no decimal division,
-    so `basis * drawn / qty` detours through DOUBLE; only the boundary row may pay
-    that, never a full draw.
+    fully-drawn lot must keep its original basis to the cent.
     """
     rows = _opening(bootstrap_cases, "mb21_prorate")  # gap = 130 - 60 = 70
     assert len(rows) == 2  # 30 drawn in full, 40 of 100 drawn from the boundary lot
@@ -1978,23 +1987,45 @@ def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(
 def test_boundary_lot_prorates_a_half_cent_tie_up(
     bootstrap_cases: Database,
 ) -> None:
-    """DECIMAL / DECIMAL in DuckDB returns DOUBLE.
-
-    A cast straight from that DOUBLE to DECIMAL(18,2) truncates a half-cent tie
-    instead of rounding it. 300.03 x 1/2 = 150.015 exactly; DECIMAL(18,2)'s HALF_UP convention rounds that
-    UP to 150.02. The prior boundary-lot test (sec_h, above) rounds identically
-    under a naive direct cast OR the DECIMAL(28,10) round-trip -- it asserts
-    precision without ever exercising a tie. This case does discriminate: a naive
-    ``(lot_basis * drawn_qty / lot_qty)::DECIMAL(18,2)`` cast emits -150.01 (the
-    DOUBLE holds 150.01499999999999...); the DECIMAL(28,10) round-trip emits the
-    correct -150.02. Verified by reverting the round-trip cast locally: this test
-    goes RED (-150.01 != -150.02) without it, GREEN with it restored.
-    """
+    """300.03 * 1/2 = 150.015 exactly; HALF_UP rounds the tie to 150.02."""
     rows = _opening(
         bootstrap_cases, "mb21_tie"
     )  # gap = 1 - 0 = 1; boundary draws 1 of 2
     assert len(rows) == 1
     assert rows[0][:3] == (Decimal("1"), Decimal("-150.02"), "2021-01-01")
+
+
+@pytest.mark.slow
+def test_boundary_lot_below_half_cent_rounds_once(bootstrap_cases: Database) -> None:
+    """0.01 * 0.4999999999 = 0.004999999999, strictly below half a cent."""
+    rows = _opening(bootstrap_cases, "mb305_below_tie")
+    assert len(rows) == 1
+    assert rows[0][1] == Decimal("0.00")
+
+
+@pytest.mark.slow
+def test_boundary_lot_proration_preserves_declared_decimal_range(
+    bootstrap_rebuild_case: Database,
+) -> None:
+    """Just below half of the maximum basis rounds down without product overflow."""
+    db = bootstrap_rebuild_case
+    _raw_holding(
+        db,
+        security_id="mb305_wide_proration",
+        quantity="499999999999999999.9999999999",
+        cost_basis="9999999999999999.99",
+    )
+    _raw_lot(
+        db,
+        "mb305_wide_proration",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="999999999999999999.9999999999",
+        cost_basis="9999999999999999.99",
+    )
+    rows = _opening(db, "mb305_wide_proration")
+    assert len(rows) == 1
+    assert rows[0][1] == Decimal("-4999999999999999.99")
 
 
 @pytest.mark.slow

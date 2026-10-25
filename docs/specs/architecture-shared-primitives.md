@@ -323,6 +323,29 @@ The conventions exist because the SQL layer is a **primary consumer interface** 
 
 **`core` does not use `agg_` going forward.** Time-series and cross-entity rollups live in `reports.*` instead, mirroring the CLI `reports` namespace one-to-one. The single legacy `core.agg_net_worth` migrates to `reports.net_worth` as part of this spec landing — see [Cascading edits](#cascading-edits).
 
+### Grain, keys, joins, and aggregation
+
+A model's table description owns its row meaning, key (or explicit absence of
+one), expected join cardinality, and aggregation limits. Use the existing
+model/schema comments and SQLMesh `grain` declaration where defined; consumers
+read those descriptions rather than maintaining a parallel semantic registry.
+A grain declaration describes the intended key; it does not replace uniqueness
+checks. Describe a row in domain terms before listing its identifying columns.
+
+Keep header, line, observation, daily snapshot, and current-position grains
+separate. Joining a transaction header to its lines repeats the header amount;
+aggregate children before enriching headers or sum line amounts at line grain.
+Balance observations may repeat an account/date and require source selection in
+`core.fct_balances_daily` before account/day analysis. Current holdings identify
+one account/security position rather than a history of daily positions.
+
+Monetary flows add within one currency. Balances and holding values add across
+compatible entities at one instant or snapshot date, never across dates or
+competing observations. Holding quantities add only for the same security.
+Recompute ratios from aggregated components; do not sum or average ratios such
+as average cost. Preserve NULL and valuation-status semantics when aggregating:
+`SUM` silently skips unknown values and cannot establish completeness.
+
 ### Comment placement
 
 Per `.claude/rules/database.md` "Table and Column Comments":

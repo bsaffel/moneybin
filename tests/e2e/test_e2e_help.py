@@ -184,6 +184,7 @@ _HELP_COMMANDS: list[list[str]] = [
     # categories mappings subgroup + leaves
     ["categories", "mappings"],
     ["categories", "mappings", "pending"],
+    ["categories", "mappings", "remove"],
     ["categories", "mappings", "set"],
 ]
 

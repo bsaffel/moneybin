@@ -227,7 +227,9 @@ def test_sync_data_response_parses_full_payload() -> None:
     parsed = PlaidSyncDataResponse.model_validate(payload)
     assert len(parsed.transactions) == 1
     assert parsed.transactions[0].amount == Decimal("42.50")
-    assert parsed.removed_transactions == ["txn_old"]
+    assert parsed.model_dump()["removed_transactions"] == [
+        {"transaction_id": "txn_old", "account_id": None}
+    ]
     assert parsed.metadata.institutions[0].provider_item_id == "item_abc"
 
 
@@ -259,18 +261,24 @@ def test_sync_trigger_response_status_literal() -> None:
         SyncTriggerResponse(job_id="j1", status="weird_status")  # type: ignore[arg-type]
 
 
-def test_removed_transactions_accepts_provider_native_records() -> None:
-    """A removed transaction arrives as a provider-native record, not a bare id.
-
-    moneybin-sync widened this field to a full record; a client still declaring
-    ``list[str]`` raises ValidationError and aborts the whole pull for any
-    institution that has removals.
-    """
+@pytest.mark.parametrize(
+    ("removal", "account_id"),
+    [
+        ({"transaction_id": "txn_old", "account_id": "acc_001"}, "acc_001"),
+        ({"transaction_id": "txn_old"}, None),
+        ({"transaction_id": "txn_old", "account_id": None}, None),
+        ("txn_old", None),
+    ],
+)
+def test_removed_transactions_preserve_account_scope(
+    removal: object, account_id: str | None
+) -> None:
+    """Native account scope survives parsing; legacy IDs remain accepted."""
     payload = {
         "accounts": [],
         "transactions": [],
         "balances": [],
-        "removed_transactions": [{"transaction_id": "txn_old"}],
+        "removed_transactions": [removal],
         "metadata": {
             "job_id": "job_abc",
             "synced_at": "2026-04-08T12:00:00Z",
@@ -280,17 +288,13 @@ def test_removed_transactions_accepts_provider_native_records() -> None:
 
     parsed = PlaidSyncDataResponse.model_validate(payload)
 
-    assert parsed.removed_transactions == ["txn_old"]
+    assert parsed.model_dump()["removed_transactions"] == [
+        {"transaction_id": "txn_old", "account_id": account_id}
+    ]
 
 
 def test_removed_transactions_missing_transaction_id_rejects_the_batch() -> None:
-    """A record with no ``transaction_id`` fails the response, never a silent drop.
-
-    The field is ``str``, not ``str | None``, so the validator's ``None`` fails.
-    Rejecting the whole response matches how every other list on this model
-    already treats a malformed element; pinning it keeps that intentional
-    rather than incidental.
-    """
+    """A removal without its transaction ID rejects the whole response."""
     payload = {
         "accounts": [],
         "transactions": [],

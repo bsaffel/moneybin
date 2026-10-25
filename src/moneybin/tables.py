@@ -190,6 +190,7 @@ INT_ACCOUNTS_MERGED = TableRef("prep", "int_accounts__merged")
 STG_OFX_ACCOUNTS = TableRef("prep", "stg_ofx__accounts")
 STG_PLAID_ACCOUNTS = TableRef("prep", "stg_plaid__accounts")
 STG_PLAID_TRANSACTIONS = TableRef("prep", "stg_plaid__transactions")
+STG_SIMPLEFIN_TRANSACTIONS = TableRef("prep", "stg_simplefin__transactions")
 STG_SECURITY_PRICES = TableRef("prep", "stg_security_prices")
 STG_TABULAR_ACCOUNTS = TableRef("prep", "stg_tabular__accounts")
 

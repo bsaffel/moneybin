@@ -112,17 +112,43 @@ WITH bootstrappable AS (
   FROM eligible_lots
   WHERE
     cumulative_qty - lot_qty < gap_qty
+), proration_units AS (
+  /* Integer cents and scale-10 quantity units avoid DuckDB's DOUBLE division.
+     Split cents into base-1e9 limbs: cents < 1e18 and quantity units < 1e28,
+     so each limb product is < 1e37 and the combined remainder is < 2e37,
+     within HUGEINT. A direct cents * quantity product could overflow. */
+  SELECT
+    *,
+    CASE
+      WHEN drawn_qty < lot_qty
+      THEN (
+        ABS(lot_basis)::DECIMAL(38, 2) * 100
+      )::INT128
+    END AS basis_cents,
+    (
+      drawn_qty::DECIMAL(28, 10) * 10000000000
+    )::INT128 AS drawn_units,
+    (
+      lot_qty * 10000000000
+    )::INT128 AS lot_units
+  FROM draw_plan
+), high_limb AS (
+  SELECT
+    *,
+    DIVIDE(basis_cents, 1000000000) * drawn_units AS high_numerator
+  FROM proration_units
+), low_limb AS (
+  SELECT
+    *,
+    (
+      high_numerator % lot_units
+    ) * 1000000000 + (
+      basis_cents % 1000000000
+    ) * drawn_units AS low_numerator
+  FROM high_limb
 ), drawn_rows AS (
-  /* A fully-drawn lot keeps its basis EXACTLY — no arithmetic touches it. Only the
-     boundary lot prorates, and only that row pays DuckDB's DECIMAL -> DOUBLE detour
-     (it has no decimal division; `/` on two DECIMALs returns DOUBLE). The DOUBLE is
-     cast to DECIMAL(28,10) BEFORE narrowing to DECIMAL(18,2): that first cast lands
-     the double on the exact decimal tie, so the (28,10) -> (18,2) narrowing is exact
-     decimal rounding, not float truncation — casting straight to DECIMAL(18,2)
-     truncates a tie instead of rounding it (e.g. 150.015 -> 150.01, not 150.02).
-     Prorating a full draw instead of short-circuiting it would put every lot's basis
-     through that detour, which is exactly what the money-type rule forbids. A lot
-     with no basis at all prorates to NULL -> basis_incomplete. */
+  /* Round once, HALF_UP: twice the exact remainder decides the final cent.
+     Full draws retain the original basis; unknown basis remains NULL. */
   SELECT
     source_account_key,
     source_security_key,
@@ -136,15 +162,17 @@ WITH bootstrappable AS (
       WHEN drawn_qty = lot_qty
       THEN lot_basis
       ELSE (
-        (
-          lot_basis * drawn_qty / lot_qty
-        )::DECIMAL(28, 10)
+        SIGN(lot_basis) * (
+          DIVIDE(high_numerator, lot_units) * 1000000000 + DIVIDE(low_numerator, lot_units) + CASE WHEN (
+            low_numerator % lot_units
+          ) * 2 >= lot_units THEN 1 ELSE 0 END
+        ) * 0.01
       )::DECIMAL(18, 2)
     END AS basis_amount,
     COALESCE((
       original_purchase_datetime AT TIME ZONE 'UTC'
     )::DATE, window_start) AS acquisition_date
-  FROM draw_plan
+  FROM low_limb
 ), residuals AS (
   /* The sliver the eligible lots cannot cover: shares bought pre-window and sold
      in-window (gone from the snapshot, and Plaid's sell row carries proceeds but no

@@ -16,7 +16,7 @@ Usage: `moneybin db [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin db ui`](#moneybin-db-ui) | Open DuckDB web UI with encrypted database auto-attached. |
 | [`moneybin db query`](#moneybin-db-query) | Execute a SQL query against the encrypted DuckDB database. |
 | [`moneybin db info`](#moneybin-db-info) | Display database metadata: file size, tables, encryption status, versions. |
-| [`moneybin db backup`](#moneybin-db-backup) | Create a timestamped backup of the encrypted database file. |
+| [`moneybin db backup`](#moneybin-db-backup) | Create a verified encrypted backup after closing database writers. |
 | [`moneybin db restore`](#moneybin-db-restore) | Restore database from a backup file. |
 | [`moneybin db lock`](#moneybin-db-lock) | Clear the cached encryption key from OS keychain. |
 | [`moneybin db unlock`](#moneybin-db-unlock) | Derive key from passphrase and cache in OS keychain. |
@@ -120,7 +120,7 @@ Usage: `moneybin db info [OPTIONS]`
 
 ## moneybin db backup
 
-Create a timestamped backup of the encrypted database file.
+Create a verified encrypted backup after closing database writers.
 
 Usage: `moneybin db backup [OPTIONS]`
 
