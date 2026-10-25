@@ -15,6 +15,7 @@ routing math (which has its own dedicated tests in ``test_routing.py``).
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -51,21 +52,30 @@ from tests.moneybin.pdf_statement_fixtures import (
     write_card_statement_pdf,
 )
 
+_STUB_PDF_BYTES = b"%PDF-1.4\n%dummy\n"
+
 
 def _consent(
     *,
     approved_via: str = "prompt",
     grant_id: str | None = None,
     binding_id: str | None = "binding-0001",
+    path: Path | None = None,
 ) -> DisclosureConsent:
+    """A verified consent bound to ``path``'s bytes (default: the stub PDF)."""
     host = host_for_recipient_name("claude-code")
     assert host is not None
+    remembered = approved_via == "remembered"
+    content = path.read_bytes() if path is not None else _STUB_PDF_BYTES
     return DisclosureConsent(
         host=host,
         approved_via=approved_via,  # type: ignore[arg-type]  # test literal
         grant_id=grant_id,
         binding_id=binding_id,
-        remembered=approved_via == "remembered",
+        remembered=remembered,
+        file_sha256s=None
+        if remembered
+        else frozenset({hashlib.sha256(content).hexdigest()}),
     )
 
 
@@ -178,7 +188,7 @@ def stub_pdf_pipeline(
 def _make_pdf_path(tmp_path: Path) -> Path:
     """Create a dummy file path with .pdf suffix (content irrelevant — stubbed)."""
     path = tmp_path / "stub.pdf"
-    path.write_bytes(b"%PDF-1.4\n%dummy\n")
+    path.write_bytes(_STUB_PDF_BYTES)
     return path
 
 
@@ -550,7 +560,9 @@ def test_preview_with_consent_releases_redacted_payload(
     db: Database, canary_pdf: Path
 ) -> None:
     with pytest.raises(ImportConfirmationRequiredError) as exc:
-        ImportService(db).pdf_preview(canary_pdf, disclosure_consent=_consent())
+        ImportService(db).pdf_preview(
+            canary_pdf, disclosure_consent=_consent(path=canary_pdf)
+        )
 
     proposed = exc.value.outcome.proposed
     assert isinstance(proposed, BridgePayload)
@@ -569,7 +581,8 @@ def test_release_writes_parse_audit_with_consent_reference(
 ) -> None:
     with pytest.raises(ImportConfirmationRequiredError):
         ImportService(db).pdf_preview(
-            canary_pdf, disclosure_consent=_consent(approved_via="agent_relay")
+            canary_pdf,
+            disclosure_consent=_consent(approved_via="agent_relay", path=canary_pdf),
         )
 
     rows = db.conn.execute(
@@ -631,7 +644,9 @@ def test_recipe_from_redacted_text_replays_against_original(
 ) -> None:
     """A recipe written from the redacted release reconciles locally."""
     with pytest.raises(ImportConfirmationRequiredError) as exc:
-        ImportService(db).pdf_preview(canary_pdf, disclosure_consent=_consent())
+        ImportService(db).pdf_preview(
+            canary_pdf, disclosure_consent=_consent(path=canary_pdf)
+        )
     proposed = exc.value.outcome.proposed
     assert isinstance(proposed, BridgePayload)
     released_text = proposed.payload["document_text"]
@@ -805,3 +820,41 @@ def test_pdf_preview_returned_fingerprint_headers_are_redacted(
     assert "5926" not in dumped
     assert "5358" in dumped
     assert "Balance" in dumped
+
+
+@pytest.mark.parametrize(
+    "file_sha256s",
+    [frozenset({"0" * 64}), None],
+    ids=["other_bytes", "unbound_one_time"],
+)
+def test_one_time_consent_not_covering_live_bytes_releases_nothing(
+    db: Database,
+    canary_pdf: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_sha256s: frozenset[str] | None,
+) -> None:
+    """A one-time consent releases only the bytes the person consented to."""
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("build_bridge_request called for unconsented bytes")
+
+    monkeypatch.setattr(bridge_mod, "build_bridge_request", _boom)
+    consent = dataclasses.replace(
+        _consent(approved_via="prompt", path=canary_pdf), file_sha256s=file_sha256s
+    )
+    before = _released()
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).pdf_preview(canary_pdf, disclosure_consent=consent)
+
+    assert isinstance(exc.value.outcome.proposed, AIAssistanceRequired)
+    assert _released() == before
+
+
+def test_remembered_consent_is_not_file_bound(db: Database, canary_pdf: Path) -> None:
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).pdf_preview(
+            canary_pdf,
+            disclosure_consent=_consent(approved_via="remembered", grant_id="g-1"),
+        )
+    assert isinstance(exc.value.outcome.proposed, BridgePayload)

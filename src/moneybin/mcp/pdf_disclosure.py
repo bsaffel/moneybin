@@ -9,7 +9,6 @@ carrying the content-free consent request.
 from __future__ import annotations
 
 import hashlib
-import logging
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -47,8 +46,6 @@ from moneybin.temporal import format_utc
 
 if TYPE_CHECKING:
     from fastmcp.server.context import Context
-
-logger = logging.getLogger(__name__)
 
 _SITE = "pdf_disclosure"
 _HOST_CATEGORY = "smart-import-parsing"
@@ -188,6 +185,7 @@ def _record(
     approved_via: DisclosureApproval,
     remembered: bool,
     grant_id: str | None,
+    refusal_code: str | None = None,
 ) -> None:
     from moneybin.services.import_service import ImportService
 
@@ -200,6 +198,7 @@ def _record(
             grant_id=grant_id,
             file_sha256s=[p.file_sha256 for p in pending],
             decision_reason=",".join(sorted({p.decision_reason for p in pending})),
+            refusal_code=refusal_code,
         )
 
 
@@ -430,6 +429,7 @@ async def obtain_disclosure_consent(
                 grant_id=grant_id,
                 binding_id=None,
                 remembered=True,
+                file_sha256s=None,
             ),
             notice=remembered_notice(host, grant_id),
         )
@@ -528,6 +528,7 @@ async def _elicit(
             grant_id=grant_id,
             binding_id=binding_id,
             remembered=grant_id is not None,
+            file_sha256s=frozenset(p.file_sha256 for p in pending),
         ),
         notice=None,
     )
@@ -559,7 +560,7 @@ def _redeem(
             )
         if _revoked_since(host, issued.issued_at):
             raise _revoked_error()
-    except UserError:
+    except UserError as refused:
         _record(
             host,
             pending,
@@ -567,6 +568,7 @@ def _redeem(
             approved_via="agent_relay",
             remembered=False,
             grant_id=None,
+            refusal_code=refused.code,
         )
         raise
     grant_id = (
@@ -589,6 +591,7 @@ def _redeem(
             grant_id=grant_id,
             binding_id=binding_id,
             remembered=grant_id is not None,
+            file_sha256s=frozenset(p.file_sha256 for p in pending),
         ),
         notice=None,
     )

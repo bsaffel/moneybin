@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import Field, JsonValue, TypeAdapter
+from pydantic import BaseModel, Field, JsonValue, TypeAdapter
 
 from moneybin import error_codes
 
@@ -1006,6 +1006,100 @@ def _read_pdf_preview_bytes(path: Path) -> bytes:
     return source_bytes
 
 
+def _preview_window() -> tuple[datetime, datetime]:
+    """Issue time and expiry for a staged preview."""
+    issued_at = datetime.now(UTC)
+    return issued_at, issued_at + timedelta(
+        seconds=get_settings().mcp.confirmation_ttl_seconds
+    )
+
+
+def _persist_staged_preview[P: BaseModel](
+    path: Path,
+    *,
+    source_bytes: bytes,
+    payload: P,
+    actions: list[str],
+    reviewed_plan: dict[str, Any] | None,
+    omit_fields: list[str] | None,
+    issued_at: datetime,
+    expires_at: datetime,
+) -> tuple[P, str]:
+    """Redact and persist a staged preview; return it with its real preview_id."""
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    sha256, size = _bytes_identity(source_bytes)
+    redacted_payload: P = redact_typed(payload, None)
+    persisted_data = redacted_payload.model_dump(
+        mode="json",
+        exclude={"preview_id", "expires_at"},
+    )
+    snapshot: dict[str, Any] = {
+        "data": persisted_data,
+        "actions": actions,
+        "sensitivity": classify(type(payload)).sensitivity,
+        "plan": reviewed_plan,
+    }
+    if omit_fields:
+        # Retain explicit intent for fresh-preview recovery, without inferring
+        # omissions from destinations absent in the resolved mapping.
+        snapshot["omit_fields"] = sorted(set(omit_fields))
+    channel: Literal["tabular", "pdf", "ofx"] = (
+        "pdf" if path.suffix.lower() == ".pdf" else "tabular"
+    )
+    with get_database(read_only=False) as db:
+        repo = ImportPreviewsRepo(db)
+        repo.purge_expired(now=issued_at, actor="system")
+        preview_id = repo.issue(
+            file_path=str(path),
+            file_sha256=sha256,
+            file_size_bytes=size,
+            channel=channel,
+            source_bytes=source_bytes,
+            snapshot=snapshot,
+            issued_at=issued_at,
+            expires_at=expires_at,
+            actor="mcp",
+        )
+    return redacted_payload.model_copy(update={"preview_id": preview_id}), preview_id
+
+
+def _stage_pdf_bridge_preview(
+    path: Path, *, consent: DisclosureConsent
+) -> ImportPdfBridgePreviewPayload | None:
+    """Release one consented PDF and stage it for import_confirm.
+
+    Reads the bytes once; the service releases them only if the consent covers
+    their digest. Returns None when nothing was released.
+    """
+    try:
+        source_bytes = _read_pdf_preview_bytes(path)
+        response = _import_preview_pdf(
+            path, source_bytes=source_bytes, disclosure_consent=consent
+        )
+    except (_PdfAIAssistancePendingError, UserError):
+        return None
+    wire = TypeAdapter(dict[str, Any]).validate_json(response.to_json())
+    data = TypeAdapter(dict[str, Any]).validate_python(wire["data"])
+    if data.get("status") != "confirmation_required" or "bridge_payload" not in data:
+        return None
+    issued_at, expires_at = _preview_window()
+    payload = ImportPdfBridgePreviewPayload(
+        **data, preview_id="pending", expires_at=format_utc(expires_at)
+    )
+    staged, _preview_id = _persist_staged_preview(
+        path,
+        source_bytes=source_bytes,
+        payload=payload,
+        actions=[_bridge_confirm_action(payload_ref="data.bridge_payload")],
+        reviewed_plan=None,
+        omit_fields=None,
+        issued_at=issued_at,
+        expires_at=expires_at,
+    )
+    return staged
+
+
 @mcp_tool(
     read_only=False,
     idempotent=False,
@@ -1032,9 +1126,6 @@ async def import_preview_coarse(
     result first; ``confirmation_token`` and ``remember_disclosure`` carry the
     person's relayed consent back (pdf-disclosure-consent.md).
     """
-    from moneybin.config import get_settings
-    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
-
     path = _validate_file_path(file_path)
     if path.suffix.lower() in {".ofx", ".qfx", ".qbo"}:
         raise UserError(
@@ -1095,11 +1186,7 @@ async def import_preview_coarse(
         )
         response = _import_preview_tabular(path, _prepared=prepared)
         reviewed_plan = prepared[0].to_dict()
-    sha256, size = _bytes_identity(source_bytes)
-    issued_at = datetime.now(UTC)
-    expires_at = issued_at + timedelta(
-        seconds=get_settings().mcp.confirmation_ttl_seconds
-    )
+    issued_at, expires_at = _preview_window()
     wire = TypeAdapter(dict[str, Any]).validate_json(response.to_json())
     data = TypeAdapter(dict[str, Any]).validate_python(wire["data"])
     pending_id = "pending"
@@ -1206,40 +1293,15 @@ async def import_preview_coarse(
             expires_at=expires_wire,
         )
         actions = list(response.actions)
-    redacted_payload = redact_typed(payload, None)
-    persisted_data = redacted_payload.model_dump(
-        mode="json",
-        exclude={"preview_id", "expires_at"},
-    )
-    snapshot: dict[str, Any] = {
-        "data": persisted_data,
-        "actions": actions,
-        "sensitivity": classify(type(payload)).sensitivity,
-        "plan": reviewed_plan,
-    }
-    if omit_fields:
-        # Retain explicit intent for fresh-preview recovery, without inferring
-        # omissions from destinations absent in the resolved mapping.
-        snapshot["omit_fields"] = sorted(set(omit_fields))
-    channel: Literal["tabular", "pdf", "ofx"] = (
-        "pdf" if path.suffix.lower() == ".pdf" else "tabular"
-    )
-    with get_database(read_only=False) as db:
-        repo = ImportPreviewsRepo(db)
-        repo.purge_expired(now=issued_at, actor="system")
-        preview_id = repo.issue(
-            file_path=str(path),
-            file_sha256=sha256,
-            file_size_bytes=size,
-            channel=channel,
-            source_bytes=source_bytes,
-            snapshot=snapshot,
-            issued_at=issued_at,
-            expires_at=expires_at,
-            actor="mcp",
-        )
-    final_payload = redacted_payload.model_copy(
-        update={"preview_id": preview_id},
+    final_payload, preview_id = _persist_staged_preview(
+        path,
+        source_bytes=source_bytes,
+        payload=payload,
+        actions=actions,
+        reviewed_plan=reviewed_plan,
+        omit_fields=omit_fields,
+        issued_at=issued_at,
+        expires_at=expires_at,
     )
     if isinstance(final_payload, ImportTabularPreviewCoarsePayload):
         # Only a confirmable plan gains anything from naming the real
@@ -2518,15 +2580,14 @@ async def _with_disclosure_consent(
     response: ResponseEnvelope[ImportFilesPayload],
     *,
     paths: list[str],
-    force: bool,
-    account_bindings: dict[str, str] | None,
     confirmation_token: str | None,
     remember_disclosure: bool,
 ) -> tuple[ResponseEnvelope[ImportFilesPayload], list[str]]:
-    """One consent for every bridge-eligible PDF in the batch, then re-run them.
+    """One consent for every bridge-eligible PDF in the batch, then stage them.
 
-    Deterministic files already imported on the first pass; only the files
-    that stopped for consent are re-run, under the one verified consent.
+    Deterministic files already imported on the first pass. Each consented PDF
+    is staged as a confirmable preview, so ``import_confirm`` finishes it with
+    no second consent; the service releases only bytes the consent covers.
     """
     caller_paths = {str(Path(p).expanduser().resolve()): p for p in paths}
     pending = _ai_assistance_pending(response.data.files, caller_paths)
@@ -2545,28 +2606,49 @@ async def _with_disclosure_consent(
             consent_request=cast(ImportConsentRequest, needed.consent_request),
         )
         return replace(response, data=data), needed.actions
-    pending_paths = {
-        row.path
-        for row in response.data.files
-        if (row.confirmation_payload or {}).get("ai_assistance")
-    }
-    rerun = import_files(
-        paths=sorted(pending_paths),
-        refresh=False,
-        force=force,
-        account_bindings=account_bindings if len(paths) == 1 else None,
-        disclosure_consent=obtained.consent,
-    )
-    released = {row.path: row for row in rerun.data.files}
-    files = [released.get(row.path, row) for row in response.data.files]
-    data = replace(
-        response.data,
-        files=files,
-        imported_count=sum(1 for r in files if r.status == "imported"),
-        failed_count=sum(1 for r in files if r.status == "failed"),
-    )
-    notices = [obtained.notice] if obtained.notice else []
-    return replace(response, data=data), notices
+    actions = [obtained.notice] if obtained.notice else []
+    staged: dict[str, ImportPdfBridgePreviewPayload | None] = {}
+    files: list[ImportPerFileRow] = []
+    for row in response.data.files:
+        if row.status != "confirmation_required" or not (
+            row.confirmation_payload or {}
+        ).get("ai_assistance"):
+            files.append(row)
+            continue
+        if row.path not in staged:
+            staged[row.path] = _stage_pdf_bridge_preview(
+                Path(row.path), consent=obtained.consent
+            )
+            if staged[row.path] is None:
+                actions.append(
+                    f"{caller_paths.get(row.path, row.path)} changed or could not "
+                    "be read after the person consented; nothing from it was "
+                    "sent. Call import_files again to ask about the current file."
+                )
+        preview = staged[row.path]
+        if preview is None:
+            files.append(row)
+            continue
+        files.append(
+            replace(
+                row,
+                preview_id=preview.preview_id,
+                confirmation_payload=cast(
+                    ImportConfirmationPayload,
+                    {
+                        "channel": preview.channel,
+                        "tier": preview.tier,
+                        "score": preview.score,
+                        "reason": preview.reason,
+                        "bridge_payload": preview.bridge_payload.model_dump(
+                            mode="json"
+                        ),
+                        "ai_assistance": None,
+                    },
+                ),
+            )
+        )
+    return replace(response, data=replace(response.data, files=files)), actions
 
 
 @mcp_tool(read_only=False, idempotent=False)
@@ -2588,8 +2670,6 @@ async def import_files_coarse(
     response, disclosure_actions = await _with_disclosure_consent(
         response,
         paths=paths,
-        force=force,
-        account_bindings=account_bindings,
         confirmation_token=confirmation_token,
         remember_disclosure=remember_disclosure,
     )
@@ -2599,6 +2679,18 @@ async def import_files_coarse(
             payload = row.confirmation_payload or {}
             if payload.get("ai_assistance"):
                 # The consent request's own actions already name the next call.
+                continue
+            if row.preview_id is not None:
+                actions.append(
+                    _bridge_confirm_action(
+                        payload_ref="data.files[].confirmation_payload.bridge_payload"
+                    )
+                )
+                actions.append(
+                    f"Use import_confirm(preview_id='{row.preview_id}', "
+                    "bridge_response={...}) for "
+                    f"{Path(row.path).name} before the preview expires."
+                )
                 continue
             if payload.get("reason") == "account_confirmation":
                 # NOT import_preview: it refuses .ofx/.qfx/.qbo outright, and the
@@ -2755,9 +2847,11 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "import runs the refresh cascade, whose match step can reverse a "
             "transfer the user already accepted: `transfers_retired` counts "
             "those, and system_audit_undo(operation_id=...) restores them. "
-            "PDFs needing AI help send nothing and return one consent_request; "
-            "relay its risk_statement verbatim, and only on a yes repeat with "
-            "confirmation_token (remember_disclosure=true only if asked).",
+            "PDFs needing AI help send nothing until the person consents: "
+            "MoneyBin returns one consent_request, or prompts the person "
+            "directly. Relay its risk_statement verbatim; only on a yes repeat "
+            "with confirmation_token (remember_disclosure=true only if asked). "
+            "Consented PDFs return a preview_id for import_confirm.",
         ),
         (
             import_preview_coarse,
@@ -2774,7 +2868,7 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "sent until the person consents. Show them "
             "consent_request.risk_statement verbatim; only on a yes repeat with "
             "confirmation_token, adding remember_disclosure=true only if they "
-            "ask. Only parsed account and routing numbers and SSNs MoneyBin "
+            "ask. Only the account numbers, routing numbers and SSNs MoneyBin "
             "identified are redacted.",
         ),
         (

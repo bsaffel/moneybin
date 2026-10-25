@@ -33,7 +33,8 @@ from moneybin.services.import_confirmation import (
 from moneybin.services.import_service import ImportService
 
 
-def _consent() -> DisclosureConsent:
+def _consent(path: Path) -> DisclosureConsent:
+    """A one-time consent bound to ``path``'s current bytes."""
     host = host_for_recipient_name("claude-code")
     assert host is not None
     return DisclosureConsent(
@@ -42,6 +43,7 @@ def _consent() -> DisclosureConsent:
         grant_id=None,
         binding_id="binding-0001",
         remembered=False,
+        file_sha256s=frozenset({hashlib.sha256(path.read_bytes()).hexdigest()}),
     )
 
 
@@ -170,7 +172,7 @@ def test_agent_bridge_eligible_with_consent_releases_payload(
 
     with pytest.raises(ImportConfirmationRequiredError) as excinfo:
         ImportService(db).import_file(
-            path, refresh=False, actor_kind="agent", disclosure_consent=_consent()
+            path, refresh=False, actor_kind="agent", disclosure_consent=_consent(path)
         )
 
     assert isinstance(excinfo.value.outcome.proposed, BridgePayload)
@@ -212,7 +214,7 @@ def test_agent_release_audits_and_bumps_metric(
     before = _released()
     with pytest.raises(ImportConfirmationRequiredError):
         ImportService(db).import_file(
-            path, refresh=False, actor_kind="agent", disclosure_consent=_consent()
+            path, refresh=False, actor_kind="agent", disclosure_consent=_consent(path)
         )
 
     assert _audit_count(db) == 1
@@ -249,7 +251,7 @@ def test_import_files_applies_consent_to_bridge_files(
     path = _pdf_path(tmp_path)
 
     batch = ImportService(db).import_files(
-        [path], refresh=False, actor_kind="agent", disclosure_consent=_consent()
+        [path], refresh=False, actor_kind="agent", disclosure_consent=_consent(path)
     )
 
     (row,) = batch.per_file
@@ -304,7 +306,7 @@ def test_human_bridge_eligible_seeds_not_escalates(
     path = _pdf_path(tmp_path)
 
     result = ImportService(db).import_file(
-        path, refresh=False, actor_kind="human", disclosure_consent=_consent()
+        path, refresh=False, actor_kind="human", disclosure_consent=_consent(path)
     )
 
     assert result.import_id is not None

@@ -77,7 +77,9 @@ class DisclosureConsent:
 
     Adapters verify it (prompt, relay token, CLI flag or remembered grant); the
     service only acts on it. ``binding_id`` names a one-time consent,
-    ``grant_id`` a remembered one.
+    ``grant_id`` a remembered one. ``file_sha256s`` are the PDF digests the
+    person consented to; ``None`` only for a remembered grant, which is not
+    file-bound. A one-time consent releases nothing whose live digest is absent.
     """
 
     host: AIHost
@@ -85,6 +87,13 @@ class DisclosureConsent:
     grant_id: str | None
     binding_id: str | None
     remembered: bool
+    file_sha256s: frozenset[str] | None
+
+    def covers(self, file_sha256: str) -> bool:
+        """Whether this consent may release the bytes with ``file_sha256``."""
+        if self.file_sha256s is None:
+            return self.approved_via == "remembered"
+        return file_sha256 in self.file_sha256s
 
 
 @dataclass(frozen=True)

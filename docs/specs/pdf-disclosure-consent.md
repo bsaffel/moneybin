@@ -365,7 +365,9 @@ binding and the grant).
 - `smart_import_consent` audit row per decision: outcome (`approved`,
   `declined`, `timeout`, `expired`), `approved_via` (table above), recipient
   key, `identified`, `terms_version`, `remembered`, `grant_id` when one is
-  created, file SHA-256s, and the `decision_reason`. No content.
+  created, file SHA-256s, and the `decision_reason`. No content. A refused
+  relay token is recorded as `expired` with `refusal_code`, the broker error
+  code (expired, replayed or mismatched), so abuse stays distinguishable.
 - `smart_import_parse` (existing action) is now written **only when content is
   actually released**, carrying the consent reference (grant id or binding
   id) and `approved_via`. The current pre-release write in

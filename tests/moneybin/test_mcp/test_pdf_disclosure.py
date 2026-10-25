@@ -22,7 +22,11 @@ import moneybin.mcp.pdf_disclosure as disclosure_module
 from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.mcp.pdf_disclosure import DisclosureAnswer
-from moneybin.mcp.tools.import_tools import import_files_coarse, import_preview_coarse
+from moneybin.mcp.tools.import_tools import (
+    import_confirm_coarse,
+    import_files_coarse,
+    import_preview_coarse,
+)
 from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope
@@ -226,6 +230,8 @@ async def test_relay_token_releases_once(
     rows = _consent_rows()
     assert [r["outcome"] for r in rows] == ["approved", "expired"]
     assert rows[0]["approved_via"] == "agent_relay"
+    assert rows[0]["refusal_code"] is None
+    assert rows[1]["refusal_code"] == error_codes.MUTATION_CONFIRMATION_REPLAYED
 
 
 @pytest.mark.parametrize("change", ["expired", "file_bytes", "recipient"])
@@ -255,6 +261,7 @@ async def test_relay_token_expired_and_mismatched(
     _assert_no_canary(env)
     [row] = _consent_rows()
     assert row["outcome"] == "expired"
+    assert row["refusal_code"] == expected
 
 
 async def test_remember_creates_host_grant_and_next_call_is_silent_with_notice(
@@ -358,6 +365,12 @@ async def test_batch_one_consent_only_bridge_files(
         bridge = row["confirmation_payload"]["bridge_payload"]
         assert CANARY_DESCRIPTION in bridge["document_text"]
         assert CANARY_ACCOUNT_MIDDLE not in bridge["document_text"]
+        assert row["preview_id"]
+        assert any(
+            f"import_confirm(preview_id='{row['preview_id']}'" in a
+            for a in second.actions
+        )
+    assert not any("import_preview(" in a for a in second.actions)
     assert _wire(second)["data"]["consent_request"] is None
     [row] = [r for r in _consent_rows() if r["outcome"] == "approved"]
     assert len(row["file_sha256s"]) == 2
@@ -377,3 +390,159 @@ def test_ai_assistance_payload_declares_no_financial_class() -> None:
         DataClass.TXN_DATE,
     ):
         assert forbidden not in classes
+
+
+def _parse_rows() -> int:
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE action = 'smart_import_parse'"
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+_CANARY_RECIPE: dict[str, Any] = {
+    "metadata_anchors": [
+        {
+            "name": "account_id",
+            "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{4} \d{4})",
+            "cast": "str",
+        },
+        {
+            "name": "period_start",
+            "pattern": r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {
+            "name": "period_end",
+            "pattern": r"to\s+(\d{2}/\d{2}/\d{4})",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {
+            "name": "opening_balance",
+            "pattern": r"Opening\s+Funds:\s+\$([\d,]+\.\d{2})",
+            "cast": "decimal",
+        },
+        {
+            "name": "closing_balance",
+            "pattern": r"Closing\s+Funds:\s+\$([\d,]+\.\d{2})",
+            "cast": "decimal",
+        },
+    ],
+    "row_region": {"start_anchor": "Date", "end_anchor": "@@END@@"},
+    "row_split": r"\s{2,}",
+    "fields": [
+        {
+            "name": "date",
+            "pattern": r"\d{2}/\d{2}/\d{4}",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {"name": "description", "pattern": r".+", "cast": "str"},
+        {"name": "amount", "pattern": r"-?[\d,]+\.\d{2}", "cast": "decimal"},
+    ],
+    "sign_convention": "negative_is_expense",
+    "routing": "transactions",
+}
+_CANARY_ROWS = [
+    {"date": "01/03/2024", "description": CANARY_DESCRIPTION, "amount": "-47.31"},
+    {"date": "01/10/2024", "description": "PAYROLL DEPOSIT", "amount": "1500.00"},
+    {"date": "01/20/2024", "description": "UTILITY PAYMENT", "amount": "-152.69"},
+]
+
+
+async def test_batch_consent_reaches_import_confirm_with_one_decision(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """One consent in import_files is enough to finish the import."""
+    _use(monkeypatch, None)
+    first = _wire(await import_files_coarse(paths=[str(pdf)], refresh=False))
+    token = first["data"]["consent_request"]["confirmation_token"]
+
+    second = _wire(
+        await import_files_coarse(
+            paths=[str(pdf)], refresh=False, confirmation_token=token
+        )
+    )
+    [row] = second["data"]["files"]
+    preview_id = row["preview_id"]
+    assert preview_id
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"recipe": _CANARY_RECIPE, "rows": _CANARY_ROWS},
+        account_bindings={"@0": "new"},
+    )
+
+    assert confirmed.error is None, confirmed.error
+    assert [r["outcome"] for r in _consent_rows()] == ["approved"]
+    assert _parse_rows() == 1
+
+
+async def test_batch_bytes_changed_after_consent_release_nothing(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Consent covers the bytes the person was asked about, not a later file."""
+
+    async def _accept_then_change(*_a: object, **_k: object) -> object:
+        pdf.write_bytes(pdf.read_bytes() + b"\n% edited after consent\n")
+        return AcceptedElicitation(data=DisclosureAnswer(accept=True))
+
+    _use(
+        monkeypatch,
+        _ctx(elicit=AsyncMock(side_effect=_accept_then_change)),
+        elicits=True,
+    )
+
+    env = await import_files_coarse(paths=[str(pdf)], refresh=False)
+
+    _assert_no_canary(env)
+    [row] = _wire(env)["data"]["files"]
+    assert row["preview_id"] is None
+    assert row["confirmation_payload"]["bridge_payload"] is None
+    assert _parse_rows() == 0
+    assert any("changed" in a for a in env.actions)
+
+
+async def test_batch_elicitation_releases_with_preview(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    elicit = AsyncMock(
+        return_value=AcceptedElicitation(data=DisclosureAnswer(accept=True))
+    )
+    _use(monkeypatch, _ctx(elicit=elicit), elicits=True)
+
+    env = await import_files_coarse(paths=[str(pdf)], refresh=False)
+
+    [row] = _wire(env)["data"]["files"]
+    assert (
+        CANARY_DESCRIPTION
+        in row["confirmation_payload"]["bridge_payload"]["document_text"]
+    )
+    assert row["preview_id"]
+    elicit.assert_awaited_once()
+    [decision] = _consent_rows()
+    assert decision["approved_via"] == "prompt"
+
+
+async def test_batch_remembered_grant_releases_with_notice(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    from moneybin.services.consent_service import ConsentService
+
+    ctx = _ctx()
+    _use(monkeypatch, ctx)
+    with get_database(read_only=False) as db:
+        grant, _ = ConsentService(db).grant_host_consent(
+            host=disclosure_module.current_ai_host(ctx),
+            approved_via="cli_prompt",
+            actor="cli",
+        )
+
+    env = await import_files_coarse(paths=[str(pdf)], refresh=False)
+
+    [row] = _wire(env)["data"]["files"]
+    assert row["preview_id"]
+    assert any(grant.grant_id in a and "privacy revoke" in a for a in env.actions)
+    assert _consent_rows()[-1]["approved_via"] == "remembered"

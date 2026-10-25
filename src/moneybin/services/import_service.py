@@ -4458,6 +4458,14 @@ class ImportService:
             flagged=(),
             missing_required=(),
         )
+        if disclosure_consent is not None and not disclosure_consent.covers(
+            file_sha256
+        ):
+            # Consent is bound to the bytes the person saw; these differ.
+            logger.info(
+                "PDF disclosure consent does not cover these bytes; asking again"
+            )
+            disclosure_consent = None
         if disclosure_consent is None:
             raise ImportConfirmationRequiredError(
                 ConfirmationRequired(
@@ -4589,8 +4597,12 @@ class ImportService:
         grant_id: str | None,
         file_sha256s: Sequence[str],
         decision_reason: str,
+        refusal_code: str | None = None,
     ) -> None:
-        """Audit one PDF disclosure consent decision; carries no document content."""
+        """Audit one PDF disclosure consent decision; carries no document content.
+
+        ``refusal_code`` is the broker error code behind a refused relay token.
+        """
         from moneybin.metrics.registry import PDF_DISCLOSURE_CONSENT_TOTAL
         from moneybin.privacy.disclosure import (
             REDACTION_POLICY_VERSION,
@@ -4612,6 +4624,7 @@ class ImportService:
                 "grant_id": grant_id,
                 "file_sha256s": sorted(file_sha256s),
                 "decision_reason": decision_reason,
+                "refusal_code": refusal_code,
             },
             actor="system",
         )

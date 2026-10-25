@@ -326,6 +326,9 @@ class ImportPerFileRow:
     # confirmation, so this row is where an agent learns an account came into
     # existence; empty on every re-import, which is the common case.
     accounts_created: list[ImportCreatedAccount] = field(default_factory=list)
+    # A staged preview for a PDF released under disclosure consent, ready for
+    # import_confirm(preview_id=..., bridge_response=...); None otherwise.
+    preview_id: Annotated[str | None, DataClass.RECORD_ID] = None
     # Populated only when status == "confirmation_required": typed detector
     # proposal + samples + flagged + missing_required so nested CRITICAL PDF
     # bridge values receive the same redaction as import_preview.
