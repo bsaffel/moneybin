@@ -12,7 +12,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-in-progress
+implemented
 
 ## Intent
 
@@ -129,7 +129,7 @@ sequenceDiagram
             M-->>A: bridge payload
         end
     end
-    A->>M: import_confirm(bridge_response) — unchanged
+    A->>M: import_confirm(preview_id=..., bridge_response=...) — unchanged
 ```
 
 ### 1. The content-free result
@@ -153,6 +153,11 @@ whose payload carries:
 fingerprint, `saved_recipe_for_re_derive`, row counts tied to content, and any
 image. The payload type declares its data classes like every typed payload, and
 a test pins that it carries no financial value class.
+
+After consent, the `fingerprint` that `import_preview` returns for
+deterministic and non-bridge outcomes is redacted with the same policy as the
+bridge payload, and `saved_recipe_for_re_derive` has its string values redacted
+before release; digit masking leaves labels and anchors intact.
 
 Scanned or image-only PDFs keep today's explicit unsupported outcome. Nothing
 leaves, so no consent is asked.
@@ -196,7 +201,17 @@ revocation postdates the token's issue time. The builder picks one.
 
 A batch call (`import_files` over several PDFs) produces **one** consent covering
 every bridge-eligible file in that call, listed by name. One user action gets one
-prompt (`privacy-and-ai-trust.md` §Tier 3).
+prompt (`privacy-and-ai-trust.md` §Tier 3). Deterministic files in the batch
+import without a prompt, and after consent `import_files` stages one preview per
+released file and returns each `preview_id`, so a single decision reaches
+`import_confirm(preview_id=..., bridge_response=...)`.
+
+**Consent is bound to the file bytes.** A one-time consent carries the SHA-256s
+it was given for, and the service refuses to release a file whose live bytes are
+not in that set (the content-free result is returned instead; nothing is built,
+audited as a release or counted). A remembered grant is not file-bound. The CLI
+reads the file once and uses those bytes for both the request id and the
+release; the MCP preview path re-uses the snapshot bytes.
 
 ### 3. Per-surface consent
 
@@ -204,8 +219,8 @@ prompt (`privacy-and-ai-trust.md` §Tier 3).
 |---|---|---|---|
 | MCP, client supports elicitation | Elicitation prompt: risk statement, AI host, vendor terms, accept boolean + remember boolean. No token is issued on this path. | Offered when the host is identified | `prompt` |
 | MCP, tools-only client | Phase 1 returns the consent request + token. The agent shows the risk statement verbatim, gets a yes in chat, and repeats the call with the token (and `remember`). | Offered when the host is identified | `agent_relay` |
-| CLI, interactive terminal (stdin is a TTY) | Typer prompt showing the same text; a second prompt for remember | Offered when the host is identified | `cli_prompt` |
-| CLI, non-interactive | Without the flag: the content-free result (exit code distinct from failure), carrying a `request_id` and the flag in its hint. With `--allow-ai-disclosure <request_id>`: consent + disclosure. A bare flag or a non-matching id is refused. | **Always remembered** when the host is identified; one-time otherwise | `cli_flag` |
+| CLI, interactive terminal (stdin, stdout and stderr are TTYs), host not identified | Typer prompt showing the same text. One-time only: no remember prompt exists, because an identified host never reaches this row (see below). | Never | `cli_prompt` |
+| CLI, non-interactive, or inside an identified agent shell | Without the flag: the content-free result (exit 0; JSON `status` is `ok` with `data.status = "ai_assistance_required"`), carrying a `request_id` and the flag in its hint. With `--allow-ai-disclosure <request_id>`: consent + disclosure. A bare flag is a usage error (exit 2); a non-matching id is refused (exit 1, `import_pdf_disclosure_request_mismatch`). | **Always remembered** when the host is identified, and the shown text says so; one-time otherwise | `cli_flag` |
 | Remembered consent present | No prompt; disclosure carries a visible notice naming the grant and the revoke command | — | `remembered` |
 | Web UI (future) | A dialog equivalent to the elicitation prompt. No AI hand-off exists today. | Same rules | `web_prompt` |
 
@@ -216,10 +231,28 @@ prompt (`privacy-and-ai-trust.md` §Tier 3).
   token is refused. Otherwise an agent could skip the prompt by relaying.
 - The CLI `request_id` is derived from the PDF SHA-256s, the recipient key, the
   `terms_version` and the redaction policy version, so it survives across
-  separate CLI processes and changes whenever any of them changes. It is not a
-  secret. It makes the agent receive the risk statement before it can consent,
-  the same guarantee the MCP relay token gives. It does not prove a person read
-  it.
+  separate CLI processes and changes whenever any of them changes. It is
+  deterministic for the same file, recipient, terms and redaction policy. It is
+  not a secret and not single-use, unlike the MCP token: anyone who can compute
+  it can replay it for as long as those inputs hold. It makes the agent receive
+  the risk statement before it can consent, the same guarantee the MCP relay
+  token gives. It does not prove a person read it.
+- **The CLI prompt faces only unidentified hosts.** An agent shell MoneyBin
+  identifies (today `CLAUDECODE=1`) gets no prompt, whatever its TTY state: an
+  agent with a pty could otherwise answer the prompt itself. It gets the
+  receipt and `request_id`, and consent arrives through `--allow-ai-disclosure`
+  after the agent asks the person. The same rule makes `privacy grant
+  --recipient` refuse inside an identified agent shell. So the "Remember for
+  <host>?" prompt is not shipped: the one place a CLI prompt appears is an
+  unidentified host, which gets one-time consent. An agent MoneyBin cannot
+  identify, if it has a pty, could still answer that prompt. That gives it no
+  more release power than the flag, but its approval is attributed as
+  `cli_prompt`, not `cli_flag`.
+- **Remembering from the flag is disclosed.** For an identified host the shown
+  text adds that saying yes also lets MoneyBin send future PDFs to that host
+  without asking, with the revoke command, and that exact text is stored as the
+  grant's `grant_prompt`. The grant is created only after the release
+  succeeds.
 - The `agent_relay` path is weaker by construction: MoneyBin cannot prove a
   person said yes. The audit row says so, and `privacy` status shows
   remembered grants by how they were made.
@@ -259,6 +292,11 @@ a disclosure that never happened. §9 removes that write.
 - Nothing in `src/` reads `clientInfo` today. The builder confirms FastMCP
   exposes it (expected: `ctx.session.client_params.clientInfo`). If it is
   absent, every MCP host is unidentified (one-time only), not guessed.
+- The shipped table maps `claude-ai` (Claude Desktop), `cursor-vscode`
+  (Cursor) and the `CLAUDECODE=1` shell marker (Claude Code). Claude Code's own
+  MCP `clientInfo.name` is not verified, so Claude Code over MCP is
+  unidentified: one-time consent only, no remember option, until its name is
+  verified. Hosts not verified from a primary source are left out.
 - Both are self-reported. Text says "as reported by your AI app". Tying consent
   to the host prevents accidental reuse across apps, not a host that lies.
 - **Remote MCP** (MB-32, not shipped): the recipient key includes the
@@ -342,6 +380,11 @@ so that agent-authored patterns still match locally and account identity
 (last four) still resolves. Tests must replay a bridge recipe derived from
 redacted text against the original and reconcile.
 
+The redaction scope is exactly the account numbers, routing numbers and SSNs
+MoneyBin identified; nothing else is masked, and the consent text, the
+`import_preview` tool description and the post-consent hint all say so in the
+same words.
+
 If a page-image path ever ships, images are unredactable. Its consent text says
 "page images are sent with nothing masked", and that path cannot reuse a grant
 made under text-only terms (the redaction policy version is part of the
@@ -354,7 +397,7 @@ binding and the grant).
 | Decline / cancel | Nothing released. Audit `declined`. Retrying issues a fresh request. |
 | Elicitation timeout | Same as decline, reason `timeout`. |
 | Token expired / replayed / mismatched | Refused with the distinct broker error. Nothing released. Rerun to get a fresh request. |
-| Revocation | Takes effect for the next call. Also invalidates outstanding unexpired tokens for that recipient. |
+| Revocation | Takes effect for the next call. Also invalidates outstanding unexpired tokens for that recipient: a token is refused if any grant for that recipient was revoked at or after the token was issued. Tokens are process-local; one whose issue record is gone is refused as expired. |
 | Interrupted call (transport drop mid-call) | Content is released only in the response of the call that verified consent. A drop before verification records nothing. A drop after records the disclosure (it may have left). |
 | Retry after disclosure | With a remembered consent: discloses again, audited again. With one-time consent: asks again. |
 | Terms version change | Grant inactive; asks again. |
@@ -367,7 +410,12 @@ binding and the grant).
   key, `identified`, `terms_version`, `remembered`, `grant_id` when one is
   created, file SHA-256s, and the `decision_reason`. No content. A refused
   relay token is recorded as `expired` with `refusal_code`, the broker error
-  code (expired, replayed or mismatched), so abuse stays distinguishable.
+  code (expired, replayed or mismatched), so abuse stays distinguishable. A
+  token refused because its recipient was revoked currently records
+  `MUTATION_CONFIRMATION_EXPIRED`, indistinguishable from expiry. A
+  mismatched CLI `request_id` is recorded as `outcome="expired"`,
+  `approved_via="cli_flag"`, `refusal_code="import_pdf_disclosure_request_mismatch"`.
+  The outcome enum has no separate `refused` value.
 - `smart_import_parse` (existing action) is now written **only when content is
   actually released**, carrying the consent reference (grant id or binding
   id) and `approved_via`. The current pre-release write in
@@ -375,7 +423,11 @@ binding and the grant).
   removed. The consent row never carries the fingerprint.
 - Metrics: `pdf_bridge_egress_total{outcome}` keeps counting releases. A new
   `pdf_disclosure_consent_total{outcome, approved_via}` counts decisions.
-  Register both in `metrics/registry.py`.
+  Both are registered in `metrics/registry.py` as
+  `moneybin_pdf_bridge_egress_total` and `moneybin_pdf_disclosure_consent_total`.
+- Logging: no document content reaches a log record. The `pdfminer` logger is
+  pinned to WARNING in `logging/config.py`, because at DEBUG it writes raw PDF
+  tokens (document text) to the root logger, including under `--verbose`.
 
 ### 10. Wording
 
@@ -441,3 +493,21 @@ number, an SSN):
 - The host-name and environment-marker table contents, verified against each
   host's docs.
 - Shape-preserving redaction details (§7) and the migration shape (§5).
+
+## As delivered
+
+- Module map: host table and risk statement in `privacy/disclosure.py`; grants
+  in `ConsentService` (`active_host_grant`, `grant_host_consent`); the service
+  gate in `ImportService.pdf_preview` / `record_disclosure_decision`; MCP
+  consent in `mcp/pdf_disclosure.py`; shared pure helpers in
+  `adapters/pdf_disclosure_adapters.py`; CLI consent in
+  `cli/commands/_import_pdf_disclosure.py`.
+- MCP surface: no new tool. `import_preview` and `import_files` gain
+  `confirmation_token` and `remember_disclosure`. `privacy_consent_set` refuses
+  `ai_host` recipients.
+- CLI surface: `import preview <pdf> --allow-ai-disclosure <request_id>` and
+  `-o json`; `privacy grant/revoke --recipient <host>`. `import files --yes`
+  never consents.
+- Not shipped: a CLI "Remember for <host>?" prompt (see §3), and a typed payload
+  for the released CLI JSON bridge (its privacy-log classes come from
+  `ImportPdfBridgePreviewPayload`).

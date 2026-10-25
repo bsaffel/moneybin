@@ -324,9 +324,19 @@ _Avoid_: masking, sanitization, scrubbing, anonymization, obfuscation
 
 **Consent**:
 The user's recorded, revocable grant pairing one feature category with the one
-AI backend that may receive data for it. It is a ledger of what the user
-intends: the gate that withholds data per call is not yet built.
+recipient that may receive data for it: an AI backend, or an **AI host**. A
+persistent grant is a ledger row; a one-time consent leaves only its audit row.
+The per-call gate is enforced for one category, `smart-import-parsing` (PDF
+content reaching an AI host); the other categories remain ledger-only.
 _Avoid_: permission, opt-in, authorization, approval
+
+**AI host**:
+The app a person drives MoneyBin with (Claude Desktop, Claude Code, Cursor),
+identified from the MCP `clientInfo` name or a known agent-shell environment
+marker, as reported by the client. A remembered **Consent** for PDF content is
+tied to one AI host and its vendor-terms version; a host MoneyBin cannot
+identify gets one-time consent only.
+_Avoid_: client, agent (when the recipient of consent is meant)
 
 ### Verification
 

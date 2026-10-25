@@ -37,8 +37,10 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
    folded in as a floor (it raises the derived tier, never lowers it). Without
    it, a prompt rendering transaction dates through a tool whose response holds
    only record ids audits as `low`. Critical-field masking is wired;
-   **global consent enforcement is deferred**. Do not claim or depend on an
-   automatic consent gate or degraded response until that gate ships.
+   **global consent enforcement is deferred**; the one enforced flow is PDF
+   content released to an AI host (`import_preview` / `import_files`, spec
+   `pdf-disclosure-consent.md`). Do not claim or depend on an automatic consent
+   gate or degraded response for any other tool until that gate ships.
 3. **Batch-first, composable.** Each tool is called once per turn with a complete result. Collection operations accept lists, not single items.
 4. **AI-ergonomic.** Tool names, descriptions, and parameter schemas are designed for LLM tool selection.
 5. **CLI capability symmetry.** MCP and CLI map to the same capability IDs,
@@ -172,7 +174,9 @@ tell callers to refine the query or rerun with a larger limit.
 | `critical` | Account and routing identifiers | Critical masking wired; consent enforcement deferred |
 
 The consent ledger is not yet a global runtime gate, so a missing grant neither
-degrades nor blocks data today. Tool code must not assume otherwise — never rely
+degrades nor blocks data today. The exception is `smart-import-parsing`: PDF
+content is released only after consent for the identified AI host (a
+content-free `ai_assistance_required` result comes first). Tool code must not assume otherwise — never rely
 on an automatic consent gate, or on a degraded response that has not shipped.
 
 ## When CLI-only is justified
