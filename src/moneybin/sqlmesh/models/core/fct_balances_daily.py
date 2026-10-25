@@ -67,12 +67,7 @@ _SOURCE_PRECEDENCE = {
 
 
 def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
-    """Convert pandas float64 (from fetchdf) to Decimal.
-
-    fetchdf() returns DECIMAL columns as float64; Decimal(str()) recovers the
-    value faithfully for personal-finance-scale amounts (float64 precision is
-    adequate below ~$10B per the project's amount range).
-    """
+    """Parse exact VARCHAR-cast money cells, preserving NULL defaults."""
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return default
     return Decimal(str(value))
@@ -81,10 +76,8 @@ def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
 def _to_currency(value: object) -> str | None:
     """Normalise a pandas currency cell to a hashable str | None.
 
-    Unlike ``_to_decimal``, whose NaN branch is load-bearing (fetchdf renders an
-    all-NULL DECIMAL column as float64, so its NULLs really do arrive as NaN),
-    a VARCHAR column comes back as object dtype with None even when every value
-    is NULL — so the NaN check here is defensive, not a live path.
+    VARCHAR columns return None even when every value is NULL, so the NaN
+    check here is defensive against a future pandas reshape.
 
     It stays because the failure it prevents is silent and expensive: NaN !=
     NaN, so an un-normalised NaN would never match the carried currency, and
@@ -396,6 +389,9 @@ def _build_spine_rows(
         "An account holding value with no balance observation has NULL-balance "
         "rows. in_net_worth says whether the row counts toward net worth. "
         "Self-heals on every sqlmesh run."
+        " Key: (account_id, balance_date); account joins are many-to-one. "
+        "Balances are additive across accounts in one currency on one date, "
+        "never across dates; count NULL balances before summing."
     ),
 )
 def execute(
@@ -420,7 +416,7 @@ def execute(
     # time orders evidence; core.updated_at also advances for classification edits.
     obs: pd.DataFrame = context.fetchdf(
         f"""
-        SELECT b.account_id, b.balance_date, b.balance, b.source_type,
+        SELECT b.account_id, b.balance_date, b.balance::VARCHAR AS balance, b.source_type,
             CASE WHEN b.source_type = 'simplefin' THEN sf.loaded_at
                  ELSE b.updated_at END AS updated_at,
             b.currency_code
@@ -442,7 +438,8 @@ def execute(
     # against the account) sees two matching USD values and passes the blend.
     txns: pd.DataFrame = context.fetchdf(
         f"""
-        SELECT account_id, transaction_date AS d, currency_code, SUM(amount) AS net_amount
+        SELECT account_id, transaction_date AS d, currency_code,
+            SUM(amount)::VARCHAR AS net_amount
         FROM {fct_transactions_table}
         GROUP BY account_id, transaction_date, currency_code
         """  # noqa: S608  # table name from context.resolve_table(), not user input
