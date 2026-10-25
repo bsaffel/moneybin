@@ -19,13 +19,10 @@ from fastmcp.server.dependencies import get_context
 from fastmcp.server.elicitation import AcceptedElicitation
 
 from moneybin import error_codes
-from moneybin.adapters.pdf_disclosure import (
+from moneybin.adapters.pdf_disclosure_adapters import (
     consent_request,
     display_label,
     file_names,
-    record_decision,
-    remember_host,
-    remembered_grant_id,
     remembered_notice,
 )
 from moneybin.config import get_settings
@@ -47,6 +44,7 @@ from moneybin.privacy.disclosure import (
 )
 from moneybin.services.import_confirmation import (
     AIAssistanceRequired,
+    DisclosureApproval,
     DisclosureConsent,
 )
 
@@ -166,6 +164,50 @@ def disclosure_binding(
 def _request_kind(pending: Sequence[AIAssistanceRequired]) -> str:
     kinds = sorted({p.request_kind for p in pending})
     return kinds[0] if len(kinds) == 1 else "+".join(kinds)
+
+
+def _record(
+    host: AIHost,
+    pending: Sequence[AIAssistanceRequired],
+    *,
+    outcome: Literal["approved", "declined", "timeout", "expired"],
+    approved_via: DisclosureApproval,
+    remembered: bool,
+    grant_id: str | None,
+    refusal_code: str | None = None,
+) -> None:
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        ImportService(db).record_disclosure_decision(
+            host=host,
+            outcome=outcome,
+            approved_via=approved_via,
+            remembered=remembered,
+            grant_id=grant_id,
+            pending=pending,
+            refusal_code=refusal_code,
+        )
+
+
+def _remember(host: AIHost, approved_via: DisclosureApproval, prompt: str) -> str:
+    from moneybin.services.consent_service import ConsentService
+
+    with get_database(read_only=False) as db:
+        grant, _created = ConsentService(db).grant_host_consent(
+            host=host, approved_via=approved_via, actor="mcp", grant_prompt=prompt
+        )
+    return grant.grant_id
+
+
+def _remembered_grant_id(host: AIHost) -> str | None:
+    from moneybin.services.consent_service import ConsentService
+
+    if host.recipient_key is None:
+        return None
+    with get_database(read_only=True) as db:
+        grant = ConsentService(db).active_host_grant(host=host)
+    return grant.grant_id if grant is not None else None
 
 
 def _revoked_since(host: AIHost, since: datetime) -> bool:
@@ -292,9 +334,9 @@ async def obtain_disclosure_consent(
     host = current_ai_host(ctx)
     statement = risk_statement(host, file_names=file_names(pending))
 
-    grant_id = remembered_grant_id(host)
+    grant_id = _remembered_grant_id(host)
     if grant_id is not None:
-        record_decision(
+        _record(
             host,
             pending,
             outcome="approved",
@@ -371,7 +413,7 @@ async def _elicit(
         reason: Literal["declined", "timeout"] = (
             "timeout" if result is None else "declined"
         )
-        record_decision(
+        _record(
             host,
             pending,
             outcome=reason,
@@ -392,12 +434,8 @@ async def _elicit(
         )
     data = result.data if isinstance(result, AcceptedElicitation) else None
     wants_remember = host.identified and getattr(data, "remember", False) is True
-    grant_id = (
-        remember_host(host, "prompt", actor="mcp", prompt=message)
-        if wants_remember
-        else None
-    )
-    record_decision(
+    grant_id = _remember(host, "prompt", message) if wants_remember else None
+    _record(
         host,
         pending,
         outcome="approved",
@@ -445,7 +483,7 @@ def _redeem(
         if _revoked_since(host, issued.issued_at):
             raise _revoked_error()
     except UserError as refused:
-        record_decision(
+        _record(
             host,
             pending,
             outcome="expired",
@@ -456,11 +494,11 @@ def _redeem(
         )
         raise
     grant_id = (
-        remember_host(host, "agent_relay", actor="mcp", prompt=issued.statement)
+        _remember(host, "agent_relay", issued.statement)
         if remember and host.identified
         else None
     )
-    record_decision(
+    _record(
         host,
         pending,
         outcome="approved",

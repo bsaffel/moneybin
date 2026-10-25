@@ -422,3 +422,17 @@ class TestPydanticLoggingConfig:
 
         config = PydanticLoggingConfig()
         assert not hasattr(config, "sanitize")
+
+
+class TestThirdPartyContentLoggers(_LoggingSetupTestBase):
+    """Loggers that echo parsed document content never reach a handler."""
+
+    @pytest.mark.unit
+    def test_pdfminer_is_pinned_to_warning_under_verbose(self) -> None:
+        """The pdfminer DEBUG records carry raw PDF text strings (R19)."""
+        logging.getLogger("pdfminer").setLevel(logging.NOTSET)
+
+        setup_logging(stream="cli", verbose=True)
+
+        assert logging.getLogger("pdfminer").getEffectiveLevel() == logging.WARNING
+        assert not logging.getLogger("pdfminer.psparser").isEnabledFor(logging.DEBUG)

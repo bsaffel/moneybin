@@ -99,6 +99,7 @@ from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
     ActorKind,
+    AIAssistanceRequired,
     BridgePayload,
     Channel,
     ConfirmationRequired,
@@ -4439,7 +4440,6 @@ class ImportService:
         """
         from moneybin.config import get_settings
         from moneybin.extractors.confidence import Confidence, tier_for
-        from moneybin.services.import_confirmation import AIAssistanceRequired
 
         # Routing guarantees matched_format_name is non-None for
         # replay_reconciliation_failed, but its annotation allows None —
@@ -4595,13 +4595,12 @@ class ImportService:
         approved_via: DisclosureApproval,
         remembered: bool,
         grant_id: str | None,
-        file_sha256s: Sequence[str],
-        decision_reason: str,
+        pending: Sequence[AIAssistanceRequired],
         refusal_code: str | None = None,
     ) -> None:
-        """Audit one PDF disclosure consent decision; carries no document content.
+        """Audit one consent decision covering ``pending``; no document content.
 
-        ``refusal_code`` is the broker error code behind a refused relay token.
+        ``refusal_code`` is the error code behind a refused relay token or flag.
         """
         from moneybin.metrics.registry import PDF_DISCLOSURE_CONSENT_TOTAL
         from moneybin.privacy.disclosure import (
@@ -4622,8 +4621,10 @@ class ImportService:
                 "redaction_policy_version": REDACTION_POLICY_VERSION,
                 "remembered": remembered,
                 "grant_id": grant_id,
-                "file_sha256s": sorted(file_sha256s),
-                "decision_reason": decision_reason,
+                "file_sha256s": sorted(p.file_sha256 for p in pending),
+                "decision_reason": ",".join(
+                    sorted({p.decision_reason for p in pending})
+                ),
                 "refusal_code": refusal_code,
             },
             actor="system",

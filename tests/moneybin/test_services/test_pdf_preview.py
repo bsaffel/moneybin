@@ -614,8 +614,20 @@ def test_record_disclosure_decision_declined(db: Database) -> None:
         approved_via="cli_prompt",
         remembered=False,
         grant_id=None,
-        file_sha256s=["b" * 64, "a" * 64],
-        decision_reason="metadata_incomplete",
+        pending=[
+            AIAssistanceRequired(
+                file_path="b.pdf",
+                file_sha256="b" * 64,
+                decision_reason="metadata_incomplete",
+                request_kind="propose_recipe",
+            ),
+            AIAssistanceRequired(
+                file_path="a.pdf",
+                file_sha256="a" * 64,
+                decision_reason="metadata_incomplete",
+                request_kind="propose_recipe",
+            ),
+        ],
     )
 
     rows = db.conn.execute(
