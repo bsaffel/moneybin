@@ -17,6 +17,7 @@ from moneybin.extractors.pdf.redaction import redact_critical, redact_tables
         "123456789012",
         "1234.5678.9012",
         "1234/5678/9012",
+        "1234 - 5678 - 9012",
     ],
 )
 def test_identified_account_redacted_in_any_separator_form(spelling: str) -> None:

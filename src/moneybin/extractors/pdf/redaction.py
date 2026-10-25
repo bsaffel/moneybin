@@ -28,7 +28,7 @@ def _identifier_pattern(identifier: str) -> re.Pattern[str] | None:
     digits = re.sub(r"\D", "", identifier)
     if len(digits) <= _KEEP_LAST:
         return None
-    body = r"[\s./-]{0,2}".join(digits)
+    body = r"[\s./-]{0,3}".join(digits)
     return re.compile(rf"(?<!\d)0*{body}(?!\d)")
 
 
