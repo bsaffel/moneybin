@@ -1957,7 +1957,7 @@ requires-dist = [
     { name = "rich", specifier = ">=15.0.0" },
     { name = "soupsieve", specifier = ">=2.9.2" },
     { name = "sqlglot", specifier = ">=30.8.0" },
-    { name = "sqlmesh", extras = ["duckdb"], specifier = ">=0.236.2" },
+    { name = "sqlmesh", extras = ["duckdb"], specifier = ">=0.236.3" },
     { name = "starlette", specifier = ">=1.8.0" },
     { name = "tomlkit", specifier = ">=0.15.2" },
     { name = "typer", specifier = ">=0.27.3" },
