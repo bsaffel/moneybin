@@ -13,8 +13,10 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp.server.elicitation import DeclinedElicitation
 from pytest import MonkeyPatch
 from typer.testing import CliRunner
 
@@ -29,6 +31,11 @@ from moneybin.privacy.disclosure import host_for_recipient_name
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.consent_service import ConsentService
 from moneybin.services.inbox_service import InboxService
+from tests.moneybin.pdf_disclosure_helpers import (
+    make_inbox_settings,
+    mcp_host_ctx,
+    use_mcp_host,
+)
 from tests.moneybin.pdf_statement_fixtures import (
     CANARIES,
     CANARY_ACCOUNT_MIDDLE,
@@ -41,16 +48,10 @@ from tests.moneybin.pdf_statement_fixtures import (
     write_canary_deterministic_pdf,
     write_canary_replay_failure_pdf,
 )
-from tests.moneybin.test_mcp.test_pdf_disclosure import (
-    _use,  # pyright: ignore[reportPrivateUsage]  # reuse the MCP host-context stub
-)
-from tests.moneybin.test_services.test_inbox_pdf import (
-    _make_settings,  # pyright: ignore[reportPrivateUsage]  # reuse inbox settings
-)
 
 runner = CliRunner()
 
-_REDACTED = (CANARY_ACCOUNT_MIDDLE, CANARY_SSN_PREFIX, CANARY_ROUTING)
+_REDACTED: tuple[str, ...] = (CANARY_ACCOUNT_MIDDLE, CANARY_SSN_PREFIX, CANARY_ROUTING)
 
 
 @pytest.fixture()
@@ -79,27 +80,46 @@ def _cli_text(*results: Any) -> str:
     return "\n".join(f"{r.stdout}\n{r.stderr}\n{r.exception!r}" for r in results)
 
 
-def _audit_text() -> str:
+def _audit_rows(*, skip: int = 0, action: str | None = None) -> list[str]:
+    sql = "SELECT before_value, after_value, context_json FROM app.audit_log"
+    params: list[str] = []
+    if action:
+        sql += " WHERE action = ?"
+        params.append(action)
     with get_database(read_only=True) as db:
-        rows = db.execute(
-            "SELECT before_value, after_value, context_json FROM app.audit_log"
-        ).fetchall()
-    return "\n".join(str(v) for row in rows for v in row if v is not None)
+        rows = db.execute(sql + " ORDER BY occurred_at", params).fetchall()
+    return ["\n".join(str(v) for v in row if v is not None) for row in rows[skip:]]
 
 
-def _parse_audit_text() -> str:
-    with get_database(read_only=True) as db:
-        rows = db.execute(
-            "SELECT before_value, after_value, context_json FROM app.audit_log "
-            "WHERE action = 'smart_import_parse'"
-        ).fetchall()
-    assert rows, "expected a smart_import_parse audit row"
-    return "\n".join(str(v) for row in rows for v in row if v is not None)
-
-
-def _privacy_log_text(tmp_path: Path) -> str:
+def _privacy_log_text(tmp_path: Path, *, required: bool) -> str:
     log = tmp_path / "privacy_log" / "privacy.log.jsonl"
+    if required:
+        assert log.exists(), "expected a privacy log row for the consented release"
+        assert log.read_text().strip(), "privacy log is empty"
     return log.read_text() if log.exists() else ""
+
+
+def _assert_sinks_absent(
+    canaries: tuple[str, ...],
+    *,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    log_dir: Path,
+    response: str | None = None,
+    audit_skip: int = 0,
+    privacy_log_required: bool = False,
+) -> None:
+    sinks = {
+        "caplog": caplog.text,
+        "log file": "\n".join(p.read_text() for p in log_dir.glob("*.log")),
+        "audit_log": "\n".join(_audit_rows(skip=audit_skip)),
+        "privacy log": _privacy_log_text(tmp_path, required=privacy_log_required),
+    }
+    if response is not None:
+        sinks["response"] = response
+    for sink, text in sinks.items():
+        for canary in canaries:
+            assert canary not in text, f"canary leaked into {sink}"
 
 
 def _assert_sinks_clean(
@@ -109,17 +129,10 @@ def _assert_sinks_clean(
     caplog: pytest.LogCaptureFixture,
     log_dir: Path,
 ) -> None:
-    file_logs = "\n".join(p.read_text() for p in log_dir.glob("*.log"))
-    sinks = {
-        "response": response,
-        "caplog": caplog.text,
-        "log file": file_logs,
-        "audit_log": _audit_text(),
-        "privacy log": _privacy_log_text(tmp_path),
-    }
-    for sink, text in sinks.items():
-        for canary in CANARIES:
-            assert canary not in text, f"canary leaked into {sink}"
+    """Pre-consent: no canary anywhere; a privacy-log row is not expected."""
+    _assert_sinks_absent(
+        CANARIES, tmp_path=tmp_path, caplog=caplog, log_dir=log_dir, response=response
+    )
 
 
 def _relay_token(env: ResponseEnvelope[Any]) -> str:
@@ -136,7 +149,7 @@ async def test_mcp_import_preview_is_content_free(
     caplog: pytest.LogCaptureFixture,
     verbose_file_logging: Path,
 ) -> None:
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
 
     env = await import_preview_coarse(file_path=str(sweep))
 
@@ -157,7 +170,7 @@ async def test_mcp_import_preview_deterministic_fingerprint_is_redacted(
     verbose_file_logging: Path,
 ) -> None:
     """R14: header cells in the preview fingerprint carry no account number."""
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
     deterministic = write_canary_deterministic_pdf(tmp_path)
 
     env = await import_preview_coarse(file_path=str(deterministic))
@@ -165,16 +178,14 @@ async def test_mcp_import_preview_deterministic_fingerprint_is_redacted(
     data = json.loads(env.to_json())["data"]
     assert data.get("fingerprint"), data  # deterministic path reached a fingerprint
     assert "consent_request" not in data or data["consent_request"] is None
-    for canary in (CANARY_ACCOUNT_MIDDLE,):
-        assert canary not in json.dumps(data["fingerprint"])
-        assert canary not in _envelope_text(env)
-    log_dir = verbose_file_logging
-    assert CANARY_ACCOUNT_MIDDLE not in caplog.text
-    assert CANARY_ACCOUNT_MIDDLE not in "\n".join(
-        p.read_text() for p in log_dir.glob("*.log")
+    assert CANARY_ACCOUNT_MIDDLE not in json.dumps(data["fingerprint"])
+    _assert_sinks_absent(
+        (CANARY_ACCOUNT_MIDDLE,),
+        tmp_path=tmp_path,
+        caplog=caplog,
+        log_dir=verbose_file_logging,
+        response=_envelope_text(env),
     )
-    assert CANARY_ACCOUNT_MIDDLE not in _audit_text()
-    assert CANARY_ACCOUNT_MIDDLE not in _privacy_log_text(tmp_path)
 
 
 async def test_mcp_declined_elicitation_is_content_free(
@@ -184,16 +195,8 @@ async def test_mcp_declined_elicitation_is_content_free(
     caplog: pytest.LogCaptureFixture,
     verbose_file_logging: Path,
 ) -> None:
-    from unittest.mock import AsyncMock, MagicMock
-
-    from fastmcp.server.elicitation import DeclinedElicitation
-
-    ctx = MagicMock()
-    ctx.session.client_params.clientInfo.name = "claude-ai"
-    ctx.session.client_params.clientInfo.version = "1.0.0"
-    ctx.transport = "stdio"
-    ctx.elicit = AsyncMock(return_value=DeclinedElicitation())
-    _use(monkeypatch, ctx, elicits=True)
+    elicit = AsyncMock(return_value=DeclinedElicitation())
+    use_mcp_host(monkeypatch, mcp_host_ctx(elicit=elicit), elicits=True)
 
     env = await import_preview_coarse(file_path=str(sweep))
 
@@ -212,7 +215,7 @@ async def test_mcp_import_files_single_is_content_free(
     caplog: pytest.LogCaptureFixture,
     verbose_file_logging: Path,
 ) -> None:
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
 
     env = await import_files_coarse(paths=[str(sweep)], refresh=False)
 
@@ -231,7 +234,7 @@ async def test_mcp_import_files_batch_is_content_free(
     caplog: pytest.LogCaptureFixture,
     verbose_file_logging: Path,
 ) -> None:
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
     twin = tmp_path / "canary_statement_copy.pdf"
     shutil.copy(sweep, twin)
 
@@ -253,7 +256,7 @@ async def test_mcp_recipe_replay_failure_is_content_free(
     verbose_file_logging: Path,
 ) -> None:
     """A saved recipe that no longer reconciles escalates without leaking content."""
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
     first = await import_preview_coarse(file_path=str(sweep))
     released = await import_preview_coarse(
         file_path=str(sweep), confirmation_token=_relay_token(first)
@@ -266,6 +269,7 @@ async def test_mcp_recipe_replay_failure_is_content_free(
     )
     assert confirmed.error is None, confirmed.error
     caplog.clear()
+    audit_before = len(_audit_rows())
     changed = write_canary_replay_failure_pdf(tmp_path)
 
     env = await import_preview_coarse(file_path=str(changed))
@@ -275,9 +279,14 @@ async def test_mcp_recipe_replay_failure_is_content_free(
     assert data["consent_request"]["files"][0]["decision_reason"] == (
         "replay_reconciliation_failed"
     )
-    for canary in CANARIES:
-        assert canary not in _envelope_text(env)
-        assert canary not in caplog.text
+    _assert_sinks_absent(
+        CANARIES,
+        tmp_path=tmp_path,
+        caplog=caplog,
+        log_dir=verbose_file_logging,
+        response=_envelope_text(env),
+        audit_skip=audit_before,
+    )
 
 
 # --- CLI, no consent ------------------------------------------------------
@@ -310,6 +319,12 @@ def test_cli_entry_points_are_content_free(
 
     result = runner.invoke(app, [argv[0], str(sweep), *argv[1:]])
 
+    # `files` is the human path: it seeds the PDF without disclosing, so the
+    # sweep pins its logs/audit/errors, not the escalation branch.
+    assert result.exit_code == 0, result.output
+    if argv[0] == "files" and "json" in argv:
+        [row] = json.loads(result.stdout)["data"]["files"]
+        assert row["status"] == "imported"
     _assert_sinks_clean(
         _cli_text(result),
         tmp_path=tmp_path,
@@ -336,11 +351,12 @@ def test_inbox_drain_is_content_free(
             ConsentService(db).grant_host_consent(
                 host=host, approved_via="cli_prompt", actor="test"
             )
-        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc = InboxService(db=db, settings=make_inbox_settings(tmp_path))
         svc.ensure_layout()
         shutil.copy(sweep, svc.inbox_dir / "canary_statement.pdf")
         result = svc.sync(year_month="2026-05", refresh=False)
 
+    assert len(result.processed) == 1 and not result.failed
     _assert_sinks_clean(
         repr(result),
         tmp_path=tmp_path,
@@ -352,32 +368,54 @@ def test_inbox_drain_is_content_free(
 # --- Post consent ---------------------------------------------------------
 
 
-def _assert_released(text: str) -> None:
-    assert CANARY_DESCRIPTION in text
-    assert CANARY_AMOUNT in text
-    for redacted in _REDACTED:
-        assert redacted not in text, "redacted canary survived release"
+def _assert_released_and_redacted(
+    response: str,
+    *,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    log_dir: Path,
+) -> None:
+    assert CANARY_DESCRIPTION in response
+    assert CANARY_AMOUNT in response
+    assert _audit_rows(action="smart_import_parse"), "expected a parse audit row"
+    _assert_sinks_absent(
+        _REDACTED,
+        tmp_path=tmp_path,
+        caplog=caplog,
+        log_dir=log_dir,
+        response=response,
+        privacy_log_required=True,
+    )
 
 
 async def test_mcp_post_consent_release_is_redacted(
-    sweep: Path, tmp_path: Path, monkeypatch: MonkeyPatch
+    sweep: Path,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    verbose_file_logging: Path,
 ) -> None:
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
     first = await import_preview_coarse(file_path=str(sweep))
 
     released = await import_preview_coarse(
         file_path=str(sweep), confirmation_token=_relay_token(first)
     )
 
-    _assert_released(_envelope_text(released))
-    parse_audit = _parse_audit_text()
-    for redacted in _REDACTED:
-        assert redacted not in parse_audit
-        assert redacted not in _privacy_log_text(tmp_path)
+    _assert_released_and_redacted(
+        _envelope_text(released),
+        tmp_path=tmp_path,
+        caplog=caplog,
+        log_dir=verbose_file_logging,
+    )
 
 
 def test_cli_json_post_consent_release_is_redacted(
-    sweep: Path, tmp_path: Path, monkeypatch: MonkeyPatch
+    sweep: Path,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    verbose_file_logging: Path,
 ) -> None:
     monkeypatch.setenv("CLAUDECODE", "1")
     receipt = runner.invoke(app, ["preview", str(sweep), "-o", "json"])
@@ -388,8 +426,9 @@ def test_cli_json_post_consent_release_is_redacted(
     )
 
     assert released.exit_code == 0, released.output
-    _assert_released(_cli_text(released))
-    parse_audit = _parse_audit_text()
-    for redacted in _REDACTED:
-        assert redacted not in parse_audit
-        assert redacted not in _privacy_log_text(tmp_path)
+    _assert_released_and_redacted(
+        _cli_text(released),
+        tmp_path=tmp_path,
+        caplog=caplog,
+        log_dir=verbose_file_logging,
+    )

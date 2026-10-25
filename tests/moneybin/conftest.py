@@ -499,20 +499,17 @@ def consent_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture()
-def verbose_file_logging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Generator[Path, None, None]:
+def verbose_file_logging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """``--verbose`` CLI logging wired to a log file; yields the log directory.
 
     Resets the ``pdfminer`` logger first so the config's WARNING pin is what the
-    test exercises. Request ``caplog`` before this fixture so its handler is saved.
+    test exercises. Logging state is restored by the autouse
+    ``_isolate_logging_config``.
     """
     import logging
 
     from moneybin.logging.config import setup_logging
 
-    root = logging.getLogger()
-    saved_handlers, saved_level = list(root.handlers), root.level
     monkeypatch.setattr(logging.getLogger("pdfminer"), "level", logging.NOTSET)
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
@@ -522,11 +519,4 @@ def verbose_file_logging(
         log_to_file=True,
         log_file_path=log_dir / "moneybin.log",
     )
-    try:
-        yield log_dir
-    finally:
-        for handler in root.handlers[:]:
-            if handler not in saved_handlers:
-                handler.close()
-        root.handlers = saved_handlers
-        root.level = saved_level
+    return log_dir

@@ -14,18 +14,11 @@ from pathlib import Path
 import pytest
 
 import moneybin.extractors.pdf.bridge as bridge_mod
-from moneybin.config import ImportSettings, MoneyBinSettings
 from moneybin.database import Database
 from moneybin.privacy.disclosure import host_for_recipient_name
 from moneybin.services.consent_service import ConsentService
 from moneybin.services.inbox_service import InboxService
-
-
-def _make_settings(tmp_path: Path) -> MoneyBinSettings:
-    return MoneyBinSettings(
-        profile="test",
-        import_=ImportSettings(inbox_root=tmp_path / "MoneyBin"),
-    )
+from tests.moneybin.pdf_disclosure_helpers import make_inbox_settings
 
 
 @pytest.mark.integration
@@ -34,7 +27,7 @@ def test_inbox_processes_pdf(
 ) -> None:
     """PDF dropped in inbox/ is imported and moved to processed/YYYY-MM/."""
     year_month = "2026-05"
-    svc = InboxService(db=db, settings=_make_settings(tmp_path))
+    svc = InboxService(db=db, settings=make_inbox_settings(tmp_path))
     svc.ensure_layout()
 
     shutil.copy(simple_statement_pdf, svc.inbox_dir / "simple_statement.pdf")
@@ -89,7 +82,7 @@ def test_inbox_drain_never_builds_bridge_request(
         raise AssertionError("inbox drain built a bridge request")
 
     monkeypatch.setattr(bridge_mod, "build_bridge_request", _boom)
-    svc = InboxService(db=db, settings=_make_settings(tmp_path))
+    svc = InboxService(db=db, settings=make_inbox_settings(tmp_path))
     svc.ensure_layout()
     shutil.copy(canary_pdf, svc.inbox_dir / "canary_statement.pdf")
 

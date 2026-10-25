@@ -8,7 +8,7 @@ import shutil
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastmcp.server.elicitation import (
@@ -30,6 +30,7 @@ from moneybin.mcp.tools.import_tools import (
 from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope
+from tests.moneybin.pdf_disclosure_helpers import mcp_host_ctx, use_mcp_host
 from tests.moneybin.pdf_statement_fixtures import (
     CANARIES,
     CANARY_ACCOUNT_MIDDLE,
@@ -40,27 +41,6 @@ from tests.moneybin.pdf_statement_fixtures import (
 )
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
-
-
-def _ctx(
-    *, name: str | None = "claude-ai", elicit: AsyncMock | None = None
-) -> MagicMock:
-    ctx = MagicMock()
-    ctx.session.client_params.clientInfo.name = name
-    ctx.session.client_params.clientInfo.version = "1.0.0"
-    ctx.transport = "stdio"
-    ctx.elicit = elicit or AsyncMock()
-    return ctx
-
-
-def _use(
-    monkeypatch: MonkeyPatch, ctx: MagicMock | None, *, elicits: bool = False
-) -> None:
-    def _supports(_ctx: object) -> bool:
-        return elicits
-
-    monkeypatch.setattr(disclosure_module, "_active_context", lambda: ctx)
-    monkeypatch.setattr(disclosure_module, "supports_elicitation", _supports)
 
 
 @pytest.fixture()
@@ -110,7 +90,7 @@ def _released_text(env: ResponseEnvelope[Any]) -> str:
 async def test_preview_first_call_content_free_with_consent_request(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
 
     env = await import_preview_coarse(file_path=str(pdf))
 
@@ -135,7 +115,7 @@ async def test_elicitation_accept_releases_and_audits_prompt(
     elicit = AsyncMock(
         return_value=AcceptedElicitation(data=DisclosureAnswer(accept=True))
     )
-    _use(monkeypatch, _ctx(elicit=elicit), elicits=True)
+    use_mcp_host(monkeypatch, mcp_host_ctx(elicit=elicit), elicits=True)
 
     env = await import_preview_coarse(file_path=str(pdf))
 
@@ -180,7 +160,7 @@ async def test_elicitation_decline_cancel_timeout_release_nothing(
         )
     else:
         elicit = AsyncMock(return_value=answer)
-    _use(monkeypatch, _ctx(elicit=elicit), elicits=True)
+    use_mcp_host(monkeypatch, mcp_host_ctx(elicit=elicit), elicits=True)
 
     env = await import_preview_coarse(file_path=str(pdf))
 
@@ -197,18 +177,18 @@ async def test_elicitation_decline_cancel_timeout_release_nothing(
 async def test_token_on_elicitation_client_refused_unconsumed(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    ctx = _ctx()
-    _use(monkeypatch, ctx)
+    ctx = mcp_host_ctx()
+    use_mcp_host(monkeypatch, ctx)
     token = await _token(pdf)
 
-    _use(monkeypatch, ctx, elicits=True)
+    use_mcp_host(monkeypatch, ctx, elicits=True)
     refused = await import_preview_coarse(file_path=str(pdf), confirmation_token=token)
     assert refused.error is not None
     assert refused.error.code == error_codes.MUTATION_INVALID_INPUT
     _assert_no_canary(refused)
     ctx.elicit.assert_not_called()
 
-    _use(monkeypatch, ctx)
+    use_mcp_host(monkeypatch, ctx)
     released = await import_preview_coarse(file_path=str(pdf), confirmation_token=token)
     assert CANARY_DESCRIPTION in _released_text(released)
 
@@ -216,7 +196,7 @@ async def test_token_on_elicitation_client_refused_unconsumed(
 async def test_relay_token_releases_once(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
     token = await _token(pdf)
 
     released = await import_preview_coarse(file_path=str(pdf), confirmation_token=token)
@@ -240,7 +220,7 @@ async def test_relay_token_releases_once(
 async def test_relay_token_expired_and_mismatched(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch, change: str
 ) -> None:
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
     token = await _token(pdf)
 
     expected = {
@@ -254,7 +234,7 @@ async def test_relay_token_expired_and_mismatched(
     elif change == "file_bytes":
         pdf.write_bytes(pdf.read_bytes() + b"\n% trailing comment\n")
     else:
-        _use(monkeypatch, _ctx(name="claude-ai"))
+        use_mcp_host(monkeypatch, mcp_host_ctx(name="claude-ai"))
 
     env = await import_preview_coarse(file_path=str(pdf), confirmation_token=token)
 
@@ -269,7 +249,7 @@ async def test_relay_token_expired_and_mismatched(
 async def test_remember_creates_host_grant_and_next_call_is_silent_with_notice(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    _use(monkeypatch, _ctx())
+    use_mcp_host(monkeypatch, mcp_host_ctx())
     first = _wire(await import_preview_coarse(file_path=str(pdf)))
     req = first["data"]["consent_request"]
     assert req["remember_available"] is True
@@ -300,7 +280,11 @@ async def test_unidentified_host_remember_ignored(
             data=DisclosureAnswer(accept=True, remember=True)
         )
     )
-    _use(monkeypatch, _ctx(name="some-unknown-client", elicit=elicit), elicits=True)
+    use_mcp_host(
+        monkeypatch,
+        mcp_host_ctx(name="some-unknown-client", elicit=elicit),
+        elicits=True,
+    )
 
     env = await import_preview_coarse(file_path=str(pdf))
 
@@ -316,8 +300,8 @@ async def test_revocation_invalidates_outstanding_token(
 ) -> None:
     from moneybin.services.consent_service import ConsentService
 
-    ctx = _ctx()
-    _use(monkeypatch, ctx)
+    ctx = mcp_host_ctx()
+    use_mcp_host(monkeypatch, ctx)
     token = await _token(pdf)
     host = disclosure_module.current_ai_host(ctx)
     with get_database(read_only=False) as db:
@@ -338,7 +322,7 @@ async def test_revocation_invalidates_outstanding_token(
 async def test_batch_one_consent_only_bridge_files(
     mcp_db: object, pdf: Path, tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
     twin = tmp_path / "canary_statement_copy.pdf"
     shutil.copy(pdf, twin)
     qfx = tmp_path / "statement.qfx"
@@ -406,7 +390,7 @@ async def test_batch_consent_reaches_import_confirm_with_one_decision(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
 ) -> None:
     """One consent in import_files is enough to finish the import."""
-    _use(monkeypatch, None)
+    use_mcp_host(monkeypatch, None)
     first = _wire(await import_files_coarse(paths=[str(pdf)], refresh=False))
     token = first["data"]["consent_request"]["confirmation_token"]
 
@@ -439,9 +423,9 @@ async def test_batch_bytes_changed_after_consent_release_nothing(
         pdf.write_bytes(pdf.read_bytes() + b"\n% edited after consent\n")
         return AcceptedElicitation(data=DisclosureAnswer(accept=True))
 
-    _use(
+    use_mcp_host(
         monkeypatch,
-        _ctx(elicit=AsyncMock(side_effect=_accept_then_change)),
+        mcp_host_ctx(elicit=AsyncMock(side_effect=_accept_then_change)),
         elicits=True,
     )
 
@@ -461,7 +445,7 @@ async def test_batch_elicitation_releases_with_preview(
     elicit = AsyncMock(
         return_value=AcceptedElicitation(data=DisclosureAnswer(accept=True))
     )
-    _use(monkeypatch, _ctx(elicit=elicit), elicits=True)
+    use_mcp_host(monkeypatch, mcp_host_ctx(elicit=elicit), elicits=True)
 
     env = await import_files_coarse(paths=[str(pdf)], refresh=False)
 
@@ -481,8 +465,8 @@ async def test_batch_remembered_grant_releases_with_notice(
 ) -> None:
     from moneybin.services.consent_service import ConsentService
 
-    ctx = _ctx()
-    _use(monkeypatch, ctx)
+    ctx = mcp_host_ctx()
+    use_mcp_host(monkeypatch, ctx)
     with get_database(read_only=False) as db:
         grant, _ = ConsentService(db).grant_host_consent(
             host=disclosure_module.current_ai_host(ctx),
