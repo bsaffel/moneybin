@@ -1,7 +1,17 @@
 # ADR-004: End-to-End Encryption Design
 
 ## Status
-proposed
+Superseded proposal by
+[ADR-017: Client-owned encryption, device authorization, and recovery](017-client-owned-encryption-and-recovery.md)
+on 2026-10-18.
+
+The original proposal below is retained as history, not implementation
+authority. ADR-017 supersedes its master-password/session-key scheme,
+password-coupled whole-data rotation, and no-recovery policy. Client custody
+and encryption before durable broker storage remain principles. This does not
+invalidate age or other primitives independently selected by a later scoped
+contract. The broker sees provider plaintext during processing; the broad
+protection claims below must be read against ADR-005's clarified trust boundary.
 
 ## Context
 
