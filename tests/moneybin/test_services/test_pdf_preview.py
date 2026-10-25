@@ -763,3 +763,45 @@ def test_release_audit_row_fingerprint_headers_are_redacted(
     audited_fp = json.dumps(json.loads(str(row[0]))["fingerprint"])
     assert "314159265358" not in audited_fp
     assert "5358" in audited_fp
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [("transactions", "passed"), ("seed", "no_transaction_table")],
+    ids=["deterministic", "non_bridge_fallback"],
+)
+def test_pdf_preview_returned_fingerprint_headers_are_redacted(
+    db: Database,
+    tmp_path: Path,
+    stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
+    outcome: str,
+    reason: str,
+) -> None:
+    """The preview fingerprint reaches MCP and CLI JSON, so it is redacted too."""
+    decisions, docs = stub_pdf_pipeline
+    docs.append(
+        PdfDocument(
+            source_file="stub.pdf",
+            text_lines=["Account Number: 3141 5926 5358", "Date Description Amount"],
+            tables=[],
+        )
+    )
+    decision = _decision(outcome=outcome, reason=reason, confidence=0.9)
+    decisions.append(
+        dataclasses.replace(
+            decision,
+            fp={
+                "issuer": "example",
+                "headers": ["Account 314159265358", "Balance"],
+                "page_bucket": "1",
+            },
+        )
+    )
+
+    result = ImportService(db).pdf_preview(_make_pdf_path(tmp_path))
+
+    dumped = json.dumps(result.fingerprint)
+    assert "314159265358" not in dumped
+    assert "5926" not in dumped
+    assert "5358" in dumped
+    assert "Balance" in dumped

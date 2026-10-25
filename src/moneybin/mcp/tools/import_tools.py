@@ -32,7 +32,11 @@ from moneybin import error_codes
 if TYPE_CHECKING:
     from collections.abc import Container, Sequence
 
-    from moneybin.services.import_confirmation import ConfirmationRequired
+    from moneybin.services.import_confirmation import (
+        AIAssistanceRequired,
+        ConfirmationRequired,
+        DisclosureConsent,
+    )
     from moneybin.services.import_service import (
         CreatedAccount,
         ImportRevertPlan,
@@ -60,11 +64,17 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pdf_disclosure import (
+    DisclosureConsentPendingError,
+    obtain_disclosure_consent,
+)
 from moneybin.privacy.classified_envelope import build_classified_envelope, classify
 from moneybin.privacy.payloads.imports import (
+    ImportAIAssistanceRequiredPayload,
     ImportConfirmationPayload,
     ImportConfirmCoarsePayload,
     ImportConfirmRequiredPayload,
+    ImportConsentRequest,
     ImportCreatedAccount,
     ImportFilesPayload,
     ImportFormatEntry,
@@ -197,17 +207,26 @@ def _reject_unsupported_pdf_account_signals(
 
 
 def _bridge_confirm_action(*, payload_ref: str) -> str:
-    """The agent-facing hint for a PDF bridge confirmation_required.
+    """The agent-facing hint for a released PDF bridge confirmation_required.
 
     `payload_ref` names where the bridge payload sits in *that* envelope —
     top-level `bridge_payload` for the preview envelope.
     """
     return (
-        f"This PDF needs agent extraction. Read {payload_ref} (note its "
-        "transparency_notice — proceeding surfaces the document to you), "
-        "propose a recipe + rows, then call import_confirm(preview_id=..., "
-        "bridge_response={'recipe': ..., 'rows': [...]}) to reconcile and load."
+        "This PDF needs agent extraction and the person consented to send it. "
+        f"Read {payload_ref} (only the account numbers, routing numbers and "
+        "SSNs MoneyBin identified are redacted), propose a recipe + rows, then "
+        "call import_confirm(preview_id=..., bridge_response={'recipe': ..., "
+        "'rows': [...]}) to reconcile and load."
     )
+
+
+class _PdfAIAssistancePendingError(Exception):
+    """The service needs disclosure consent before it releases this PDF."""
+
+    def __init__(self, proposal: AIAssistanceRequired) -> None:
+        super().__init__("ai_assistance_required")
+        self.proposal = proposal
 
 
 def _created_account_rows(
@@ -351,6 +370,7 @@ def import_files(
     refresh: bool = True,
     force: bool = False,
     account_bindings: dict[str, str] | None = None,
+    disclosure_consent: DisclosureConsent | None = None,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import one or more financial data files into MoneyBin.
 
@@ -381,6 +401,8 @@ def import_files(
             mapping is already settled and which therefore stopped only on the
             account gate. Use import_confirm when the same file also needs a
             column mapping ratified.
+        disclosure_consent: A verified consent that releases this call's
+            bridge-eligible PDFs; obtained by ``import_files_coarse``.
 
     Returns:
         Envelope with data containing imported/failed/total counts,
@@ -435,6 +457,7 @@ def import_files(
                     force=force,
                     actor_kind="agent",
                     account_bindings=account_bindings,
+                    disclosure_consent=disclosure_consent,
                 )
                 loaded_import_id = one.import_id
                 # Include PDFs only when the deterministic path produced rows —
@@ -591,6 +614,7 @@ def import_files(
                 refresh=refresh,
                 force=force,
                 actor_kind="agent",
+                disclosure_consent=disclosure_consent,
             )
 
     files = [
@@ -725,15 +749,18 @@ def _import_preview_pdf(
     path: Path,
     *,
     source_bytes: bytes | None = None,
+    disclosure_consent: DisclosureConsent | None = None,
 ) -> ResponseEnvelope[dict[str, Any]]:
     """Preview a PDF via ImportService.pdf_preview (deterministic, bridge, or sign).
 
     Returns a deterministic preview dict, or a ``confirmation_required`` envelope
-    — carrying the bridge payload when the layout is bridge-eligible (and writing
-    the Req 14 egress audit row, so a writable DB is required), or the proposed
-    sign inversion when the statement names itself a credit card.
+    carrying the proposed sign inversion, or — only under ``disclosure_consent``
+    — the redacted bridge payload (the release writes its audit row, so a
+    writable DB is required). A bridge-eligible PDF without consent raises
+    ``_PdfAIAssistancePendingError``.
     """
     from moneybin.services.import_confirmation import (
+        AIAssistanceRequired,
         BridgePayload,
         ImportConfirmationRequiredError,
         SignConventionProposal,
@@ -743,9 +770,15 @@ def _import_preview_pdf(
 
     try:
         with get_database(read_only=False) as db:
-            preview = ImportService(db).pdf_preview(path, source_bytes=source_bytes)
+            preview = ImportService(db).pdf_preview(
+                path,
+                source_bytes=source_bytes,
+                disclosure_consent=disclosure_consent,
+            )
     except ImportConfirmationRequiredError as e:
         proposed = e.outcome.proposed
+        if isinstance(proposed, AIAssistanceRequired):
+            raise _PdfAIAssistancePendingError(proposed) from e
         if isinstance(proposed, SignConventionProposal):
             # A credit-card statement: every amount's sign is about to be
             # inverted. Serialize the proposal (evidence + printed-vs-recorded
@@ -775,15 +808,12 @@ def _import_preview_pdf(
                     prior_sign=proposed.prior_sign_convention,
                 ),
             )
-        # Otherwise pdf_preview escalated via _raise_pdf_bridge_escalation, which
-        # always constructs a BridgePayload — so proposed is never the tabular
-        # ProposedMapping here. Fail loudly on a contract break rather than carry
-        # a dead `else None` that would emit bridge_payload=null while actions[]
-        # still tells the agent to "Read bridge_payload".
-        if not isinstance(proposed, BridgePayload):
+        # Otherwise pdf_preview released a BridgePayload under consent. Content
+        # without a consent is a contract break: fail closed, never forward it.
+        if not isinstance(proposed, BridgePayload) or disclosure_consent is None:
             raise RuntimeError(
-                "pdf_preview escalation must carry a BridgePayload or a "
-                f"SignConventionProposal, got {type(proposed).__name__}"
+                "pdf_preview may release a BridgePayload only under consent, got "
+                f"{type(proposed).__name__}"
             ) from e
         bridge_payload = proposed.payload
         return build_envelope(
@@ -839,13 +869,9 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
 
     PDF files: runs the deterministic extraction rung. A clean native-text
     statement returns its routing outcome (row count, confidence,
-    fingerprint). A bridge-eligible layout (low confidence, failed
-    reconciliation, …) returns ``confirmation_required`` carrying the bridge
-    payload — the document text + table preview + a transparency notice (this
-    surfaces the document's content to you) — so you can propose a recipe +
-    rows and ratify via ``import_confirm(bridge_response=...)``. Because the
-    PDF branch can return row-level document content, this tool's sensitivity
-    is ``medium`` for PDFs.
+    fingerprint). A bridge-eligible layout returns a content-free
+    ``ai_assistance_required`` result: this legacy entry cannot obtain
+    disclosure consent, so the registered ``import_preview`` tool owns that.
 
     Args:
         file_path: Absolute path to the file to preview.
@@ -853,10 +879,24 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
     validated = _validate_file_path(file_path)
 
     if validated.suffix.lower() == ".pdf":
-        return cast(
-            ResponseEnvelope[ImportPreviewPayload],
-            _import_preview_pdf(validated),
-        )
+        try:
+            pdf_response = _import_preview_pdf(validated)
+        except _PdfAIAssistancePendingError as pending:
+            pdf_response = build_envelope(
+                sensitivity="low",
+                data={
+                    "status": "ai_assistance_required",
+                    "channel": "pdf",
+                    "file": validated.name,
+                    "decision_reason": pending.proposal.decision_reason,
+                    "request_kind": pending.proposal.request_kind,
+                },
+                actions=[
+                    "Use the import_preview tool to request the person's "
+                    "consent before MoneyBin sends this PDF to you."
+                ],
+            )
+        return cast(ResponseEnvelope[ImportPreviewPayload], pdf_response)
 
     return _import_preview_tabular(validated)
 
@@ -972,10 +1012,12 @@ def _read_pdf_preview_bytes(path: Path) -> bytes:
     dynamic_classification=True,
     maximum_sensitivity=Sensitivity.CRITICAL,
 )
-def import_preview_coarse(
+async def import_preview_coarse(
     file_path: str,
     mapping: dict[str, str] | None = None,
     omit_fields: list[str] | None = None,
+    confirmation_token: str | None = None,
+    remember_disclosure: bool = False,
 ) -> ResponseEnvelope[ImportPreviewCoarsePayload]:
     """Persist a complete staged-import preview for one exact file snapshot.
 
@@ -986,6 +1028,9 @@ def import_preview_coarse(
     made here, at preview time, never at ``import_confirm``.
     ``omit_fields`` suppresses optional tabular destinations before detection;
     required destinations and conflicts with ``mapping`` are refused.
+    A PDF that needs AI help returns a content-free ``ai_assistance_required``
+    result first; ``confirmation_token`` and ``remember_disclosure`` carry the
+    person's relayed consent back (pdf-disclosure-consent.md).
     """
     from moneybin.config import get_settings
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
@@ -999,6 +1044,7 @@ def import_preview_coarse(
         )
     response: ResponseEnvelope[ImportPreviewPayload] | ResponseEnvelope[dict[str, Any]]
     reviewed_plan: dict[str, Any] | None = None
+    disclosure_notice: str | None = None
     if path.suffix.lower() == ".pdf":
         if mapping is not None or omit_fields:
             raise UserError(
@@ -1007,8 +1053,40 @@ def import_preview_coarse(
                 code=error_codes.IMPORT_PREVIEW_CHANNEL_CONFLICT,
             )
         source_bytes = _read_pdf_preview_bytes(path)
-        response = _import_preview_pdf(path, source_bytes=source_bytes)
+        try:
+            response = _import_preview_pdf(path, source_bytes=source_bytes)
+        except _PdfAIAssistancePendingError as pending:
+            try:
+                obtained = await obtain_disclosure_consent(
+                    pending=[replace(pending.proposal, file_path=file_path)],
+                    confirmation_token=confirmation_token,
+                    remember=remember_disclosure,
+                    tool="import_preview",
+                )
+            except DisclosureConsentPendingError as needed:
+                return cast(
+                    ResponseEnvelope[ImportPreviewCoarsePayload],
+                    build_classified_envelope(
+                        ImportAIAssistanceRequiredPayload(
+                            consent_request=cast(
+                                ImportConsentRequest, needed.consent_request
+                            )
+                        ),
+                        actions=needed.actions,
+                    ),
+                )
+            # Same snapshot bytes as the consented call: content matches the binding.
+            response = _import_preview_pdf(
+                path, source_bytes=source_bytes, disclosure_consent=obtained.consent
+            )
+            disclosure_notice = obtained.notice
     else:
+        if confirmation_token is not None or remember_disclosure:
+            raise UserError(
+                "confirmation_token and remember_disclosure apply only to a PDF "
+                "that needs AI assistance.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
         from moneybin.services.tabular_preparation import prepare_tabular_preview
 
         source_bytes = _read_tabular_preview_bytes(path)
@@ -1179,6 +1257,8 @@ def import_preview_coarse(
             )
     elif isinstance(final_payload, ImportPdfBridgePreviewPayload):
         actions = [
+            *([disclosure_notice] if disclosure_notice else []),
+            _bridge_confirm_action(payload_ref="data.bridge_payload"),
             f"Use import_confirm(preview_id='{preview_id}', "
             "bridge_response={...}) before the preview expires.",
         ]
@@ -2411,12 +2491,92 @@ def register_import_coarse_reads(mcp: FastMCP) -> None:
     )
 
 
+def _ai_assistance_pending(
+    rows: Sequence[ImportPerFileRow], caller_paths: dict[str, str]
+) -> list[AIAssistanceRequired]:
+    """Collect the files that stopped for disclosure consent, by caller path."""
+    from moneybin.services.import_confirmation import AIAssistanceRequired
+
+    pending: list[AIAssistanceRequired] = []
+    for row in rows:
+        payload = row.confirmation_payload or {}
+        ai = payload.get("ai_assistance")
+        if row.status != "confirmation_required" or not ai:
+            continue
+        pending.append(
+            AIAssistanceRequired(
+                file_path=caller_paths.get(row.path, row.path),
+                file_sha256=ai["file_sha256"],
+                decision_reason=ai["decision_reason"],
+                request_kind=ai["request_kind"],
+            )
+        )
+    return pending
+
+
+async def _with_disclosure_consent(
+    response: ResponseEnvelope[ImportFilesPayload],
+    *,
+    paths: list[str],
+    force: bool,
+    account_bindings: dict[str, str] | None,
+    confirmation_token: str | None,
+    remember_disclosure: bool,
+) -> tuple[ResponseEnvelope[ImportFilesPayload], list[str]]:
+    """One consent for every bridge-eligible PDF in the batch, then re-run them.
+
+    Deterministic files already imported on the first pass; only the files
+    that stopped for consent are re-run, under the one verified consent.
+    """
+    caller_paths = {str(Path(p).expanduser().resolve()): p for p in paths}
+    pending = _ai_assistance_pending(response.data.files, caller_paths)
+    if not pending:
+        return response, []
+    try:
+        obtained = await obtain_disclosure_consent(
+            pending=pending,
+            confirmation_token=confirmation_token,
+            remember=remember_disclosure,
+            tool="import_files",
+        )
+    except DisclosureConsentPendingError as needed:
+        data = replace(
+            response.data,
+            consent_request=cast(ImportConsentRequest, needed.consent_request),
+        )
+        return replace(response, data=data), needed.actions
+    pending_paths = {
+        row.path
+        for row in response.data.files
+        if (row.confirmation_payload or {}).get("ai_assistance")
+    }
+    rerun = import_files(
+        paths=sorted(pending_paths),
+        refresh=False,
+        force=force,
+        account_bindings=account_bindings if len(paths) == 1 else None,
+        disclosure_consent=obtained.consent,
+    )
+    released = {row.path: row for row in rerun.data.files}
+    files = [released.get(row.path, row) for row in response.data.files]
+    data = replace(
+        response.data,
+        files=files,
+        imported_count=sum(1 for r in files if r.status == "imported"),
+        failed_count=sum(1 for r in files if r.status == "failed"),
+    )
+    notices = [obtained.notice] if obtained.notice else []
+    return replace(response, data=data), notices
+
+
 @mcp_tool(read_only=False, idempotent=False)
-def import_files_coarse(
+async def import_files_coarse(
     paths: list[str],
     refresh: bool = True,
     force: bool = False,
     account_bindings: dict[str, str] | None = None,
+    confirmation_token: str | None = None,
+    remember_disclosure: bool = False,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import files while keeping actions inside the staged-import cohort."""
     response = import_files(
@@ -2425,10 +2585,21 @@ def import_files_coarse(
         force=force,
         account_bindings=account_bindings,
     )
-    actions = list(response.actions)
+    response, disclosure_actions = await _with_disclosure_consent(
+        response,
+        paths=paths,
+        force=force,
+        account_bindings=account_bindings,
+        confirmation_token=confirmation_token,
+        remember_disclosure=remember_disclosure,
+    )
+    actions = [*disclosure_actions, *response.actions]
     for row in response.data.files:
         if row.status == "confirmation_required":
             payload = row.confirmation_payload or {}
+            if payload.get("ai_assistance"):
+                # The consent request's own actions already name the next call.
+                continue
             if payload.get("reason") == "account_confirmation":
                 # NOT import_preview: it refuses .ofx/.qfx/.qbo outright, and the
                 # account gate carries no error_message, so the generic hint was
@@ -2583,7 +2754,10 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "proposal_ref (@0 is the file's first source account). A completed "
             "import runs the refresh cascade, whose match step can reverse a "
             "transfer the user already accepted: `transfers_retired` counts "
-            "those, and system_audit_undo(operation_id=...) restores them.",
+            "those, and system_audit_undo(operation_id=...) restores them. "
+            "PDFs needing AI help send nothing and return one consent_request; "
+            "relay its risk_statement verbatim, and only on a yes repeat with "
+            "confirmation_token (remember_disclosure=true only if asked).",
         ),
         (
             import_preview_coarse,
@@ -2595,7 +2769,13 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "transaction_date, description, and either amount or the "
             "debit_amount/credit_amount pair (never both shapes). A staged "
             "preview is immutable, so this is the only place to correct a "
-            "mapping; import_confirm ratifies the preview unchanged.",
+            "mapping; import_confirm ratifies the preview unchanged. A PDF "
+            "needing AI help first returns ai_assistance_required: nothing is "
+            "sent until the person consents. Show them "
+            "consent_request.risk_statement verbatim; only on a yes repeat with "
+            "confirmation_token, adding remember_disclosure=true only if they "
+            "ask. Only parsed account and routing numbers and SSNs MoneyBin "
+            "identified are redacted.",
         ),
         (
             import_confirm_coarse,

@@ -119,21 +119,21 @@ def build_bridge_request(
         document_text=redact("\n".join(doc.text_lines)),
         tables_preview=tables_preview,
         # Fingerprint headers are raw table cells; local matching recomputes it.
-        fingerprint=_redact_strings(compute_fingerprint(doc), redact),
+        fingerprint=redact_strings(compute_fingerprint(doc), redact),
         request_kind=request_kind,
-        saved_recipe_for_re_derive=_redact_strings(saved_recipe_for_re_derive, redact),
+        saved_recipe_for_re_derive=redact_strings(saved_recipe_for_re_derive, redact),
     )
 
 
-def _redact_strings[T](value: T, redact: Callable[[str], str]) -> T:
+def redact_strings[T](value: T, redact: Callable[[str], str]) -> T:
     """Apply ``redact`` to every string leaf of nested dicts and lists."""
     if isinstance(value, str):
         return cast(T, redact(value))
     if isinstance(value, dict):
         items = cast(dict[Any, Any], value).items()
-        return cast(T, {k: _redact_strings(v, redact) for k, v in items})
+        return cast(T, {k: redact_strings(v, redact) for k, v in items})
     if isinstance(value, list):
-        return cast(T, [_redact_strings(v, redact) for v in cast(list[Any], value)])
+        return cast(T, [redact_strings(v, redact) for v in cast(list[Any], value)])
     return value
 
 

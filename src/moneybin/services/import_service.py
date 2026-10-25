@@ -619,6 +619,28 @@ def _pdf_account_identifiers(
     return found
 
 
+def _redacted_fingerprint(
+    doc: "PdfDocument", decision: "RouteDecision", file_sha256: str
+) -> dict[str, Any] | None:
+    """The preview fingerprint with identified Critical values redacted.
+
+    Its headers are raw table cells, and the preview result reaches MCP and
+    CLI JSON, so it gets the same redaction as a released bridge request.
+    """
+    import functools
+
+    from moneybin.extractors.pdf.bridge import redact_strings
+    from moneybin.extractors.pdf.redaction import redact_critical
+
+    if decision.fp is None:
+        return None
+    redact = functools.partial(
+        redact_critical,
+        account_identifiers=_pdf_account_identifiers(doc, decision, file_sha256),
+    )
+    return redact_strings(decision.fp, redact)
+
+
 def _no_text_layer_error() -> UserError:
     """The explicit unsupported outcome for a scanned / image-only PDF."""
     return UserError(
@@ -4662,6 +4684,7 @@ class ImportService:
         decision = route_pdf_import(doc, self._db)
         decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
 
+        file_sha256 = source_sha256(canonical, source_bytes)
         if decision.outcome == "transactions":
             return PdfPreviewResult(
                 file_path=str(canonical),
@@ -4669,7 +4692,7 @@ class ImportService:
                 decision_reason=decision.reason,
                 confidence=decision.confidence,
                 row_count=len(decision.rows),
-                fingerprint=decision.fp,
+                fingerprint=_redacted_fingerprint(doc, decision, file_sha256),
             )
 
         if decision.reason in _BRIDGE_ELIGIBLE_REASONS:
@@ -4678,7 +4701,7 @@ class ImportService:
                 canonical,
                 doc,
                 decision,
-                file_sha256=source_sha256(canonical, source_bytes),
+                file_sha256=file_sha256,
                 disclosure_consent=disclosure_consent,
             )
 
@@ -4689,7 +4712,7 @@ class ImportService:
             decision_reason=decision.reason,
             confidence=decision.confidence,
             row_count=0,
-            fingerprint=decision.fp,
+            fingerprint=_redacted_fingerprint(doc, decision, file_sha256),
         )
 
     def apply_pdf_bridge_response(

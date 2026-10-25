@@ -1,5 +1,5 @@
 {
-  "sha256": "025f864689d5f66b7315cb3e758600742dc49009a36a21efc052845d4575f9aa",
+  "sha256": "98dcdf27861b4d3d11fbbe98d87efa3d0a80ca9f016d0ac262e629188a32931b",
   "tool_count": 50,
   "tools": [
     {
@@ -1683,7 +1683,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them.",
+        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. PDFs needing AI help send nothing and return one consent_request; relay its risk_statement verbatim, and only on a yes repeat with confirmation_token (remember_disclosure=true only if asked).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1694,6 +1694,17 @@
                     "type": "string"
                   },
                   "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -1714,6 +1725,10 @@
             "refresh": {
               "default": true,
               "type": "boolean"
+            },
+            "remember_disclosure": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "required": [
@@ -1724,12 +1739,12 @@
         "name": "import_files",
         "title": "Import Files"
       },
-      "description_bytes": 493,
-      "input_schema_bytes": 341,
+      "description_bytes": 685,
+      "input_schema_bytes": 480,
       "name": "import_files",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 1052
+      "total_bytes": 1383
     },
     {
       "annotation_bytes": 91,
@@ -1824,10 +1839,21 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping \u2014 it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged.",
+        "description": "Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping \u2014 it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged. A PDF needing AI help first returns ai_assistance_required: nothing is sent until the person consents. Show them consent_request.risk_statement verbatim; only on a yes repeat with confirmation_token, adding remember_disclosure=true only if they ask. Only parsed account and routing numbers and SSNs MoneyBin identified are redacted.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "file_path": {
               "type": "string"
             },
@@ -1858,6 +1884,10 @@
                 }
               ],
               "default": null
+            },
+            "remember_disclosure": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "required": [
@@ -1868,12 +1898,12 @@
         "name": "import_preview",
         "title": "Import Preview"
       },
-      "description_bytes": 494,
-      "input_schema_bytes": 328,
+      "description_bytes": 827,
+      "input_schema_bytes": 467,
       "name": "import_preview",
       "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 1045
+      "total_bytes": 1517
     },
     {
       "annotation_bytes": 90,
@@ -5480,5 +5510,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 66545
+  "total_bytes": 67348
 }

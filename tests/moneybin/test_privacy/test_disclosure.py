@@ -114,3 +114,16 @@ def test_host_for_recipient_name_known_and_unknown() -> None:
     assert host is not None and host.identified
     assert host.recipient_key == "local:claude-code" and host.transport == "cli"
     assert host_for_recipient_name("nope") is None
+
+
+def test_risk_statement_names_the_exact_redaction_scope() -> None:
+    """It names what is redacted and never implies everything is masked."""
+    text = risk_statement(
+        host_from_client_info("claude-ai", "1", transport="stdio"),
+        file_names=["a.pdf"],
+    )
+    assert (
+        "Only the account numbers, routing numbers and SSNs MoneyBin identified "
+        "are redacted" in text
+    )
+    assert "including any it did not identify" in text

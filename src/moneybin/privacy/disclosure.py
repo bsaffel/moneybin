@@ -205,9 +205,9 @@ def risk_statement(host: AIHost, *, file_names: Sequence[str]) -> str:
         )
     return (
         f"To read {files}, MoneyBin will send its statement text and table rows "
-        f"to {label} (as reported by your AI app). Only account numbers MoneyBin "
-        "identified, SSNs and routing numbers are redacted; everything else is "
-        "sent as-is. "
+        f"to {label} (as reported by your AI app). Only the account numbers, "
+        "routing numbers and SSNs MoneyBin identified are redacted; everything "
+        "else, including any it did not identify, is sent as-is. "
         f"{terms} "
         "Once sent, MoneyBin cannot pull it back. "
         "This covers what MoneyBin sends. If you already shared this file with "
