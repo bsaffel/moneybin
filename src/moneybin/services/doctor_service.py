@@ -635,7 +635,13 @@ class DoctorService:
             )
         ]
         try:
-            result = SyncCompletenessService(self._db).assess()
+            completeness = SyncCompletenessService(self._db)
+            result = completeness.assess()
+            transactions = SyncCompletenessService(self._db, transaction_scope=True)
+            transaction_result = transactions.assess()
+            affected_windows = (
+                completeness.affected_windows | transactions.affected_windows
+            )
         except Exception:
             return InvariantResult(
                 name=name,
@@ -651,24 +657,64 @@ class DoctorService:
                 detail="No local sync evidence.",
                 affected_ids=[],
             )
-        if result.complete:
+        if result.complete and transaction_result.complete:
             return InvariantResult(
                 name=name,
                 status="pass",
                 detail="No known gaps in local sync evidence.",
                 affected_ids=[],
             )
+        transaction_reasons = [
+            reason
+            for reason in transaction_result.reasons
+            if reason not in result.reasons
+        ]
         return InvariantResult(
             name=name,
             status="warn",
-            detail="Local sync coverage is incomplete: "
+            detail="Local SimpleFIN sync coverage is incomplete: "
             + "; ".join(
                 f"{reason.kind} ({reason.affected_account_count} affected accounts, "
                 f"{reason.unresolved_scope_count} unresolved scopes)"
                 for reason in result.reasons
-            ),
+            )
+            + (
+                (". " if result.reasons else "")
+                + "Transaction evidence: "
+                + "; ".join(
+                    f"{reason.kind} ({reason.affected_account_count} affected accounts, "
+                    f"{reason.unresolved_scope_count} unresolved scopes)"
+                    for reason in transaction_reasons
+                )
+                if transaction_reasons
+                else ""
+            )
+            + (
+                ". Affected evidence dates/windows (UTC): "
+                + "; ".join(sorted(affected_windows))
+                if affected_windows
+                else ""
+            )
+            + ". Inspect sync_status for connection details and the account-link "
+            "review queue for unresolved accounts; native identifiers are withheld.",
             affected_ids=[],
-            recovery_actions=actions,
+            recovery_actions=[
+                *actions,
+                RecoveryAction(
+                    tool="accounts",
+                    arguments={},
+                    rationale="Inspect included resolved accounts; sync_status locates affected connections.",
+                    confidence="suggested",
+                    idempotent=True,
+                ),
+                RecoveryAction(
+                    tool="reviews",
+                    arguments={"kind": "account_links"},
+                    rationale="Locate unresolved or overlapping accounts without exposing native identifiers.",
+                    confidence="suggested",
+                    idempotent=True,
+                ),
+            ],
         )
 
     def _run_sync_health(self) -> InvariantResult:

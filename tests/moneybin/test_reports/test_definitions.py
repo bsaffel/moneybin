@@ -1057,3 +1057,161 @@ def test_every_assigned_category_column_declares_uncategorized() -> None:
 
     assert declared == categories
     assert ("spending_trend", "category") in declared
+
+
+@pytest.mark.parametrize(
+    ("runner", "expected_start"),
+    [(cash_flow, "2026-09-01"), (spending_trend, "2025-09-01")],
+)
+def test_transaction_report_declares_evidence_window_including_comparisons(
+    db: Database, runner: Runner, expected_start: str
+) -> None:
+    from datetime import date
+
+    query = runner(db, from_month="2026-09", to_month="2026-09")
+    assert query.sync_scope is not None
+    assert query.sync_scope.transaction_scope
+    assert query.sync_scope.from_date == date.fromisoformat(expected_start)
+    assert query.sync_scope.to_date == date(2026, 9, 30)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_cashflow_known_partial_warns_without_audit_metadata(
+    db: Database, empty: bool
+) -> None:
+    from moneybin.connectors.sync_models import ScopeOutcome
+    from moneybin.reports._framework.catalog import get_report_catalog
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+    from tests.moneybin.test_services.test_sync_completeness import (
+        _bind,  # pyright: ignore[reportPrivateUsage]  # shared synthetic fixture
+        _history,  # pyright: ignore[reportPrivateUsage]  # shared synthetic fixture
+    )
+
+    _install_cash_flow_view(db)
+    data = source()
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=_history(1).accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="partial",
+            error_code="provider_error",
+        )
+    ]
+    load(db, data, status="partial")
+    _bind(db)
+    result = get_report_catalog().execute(
+        db,
+        report_id="core:cash_flow",
+        parameters={
+            "from_month": "2026-09" if empty else "2026-01",
+            "to_month": "2026-09",
+        },
+        limit=100,
+    )
+    assert bool(result.records) is not empty
+    assert "Some transaction data may be incomplete" in (result.degraded_reason or "")
+    assert "retrieval_partial" not in (result.degraded_reason or "")
+    assert "sync_completeness" not in result.to_envelope().to_dict()["summary"]
+
+
+def test_cashflow_without_evidence_has_normal_result_without_warning(
+    db: Database,
+) -> None:
+    from moneybin.reports._framework.catalog import get_report_catalog
+
+    _install_cash_flow_view(db)
+    result = get_report_catalog().execute(
+        db,
+        report_id="core:cash_flow",
+        parameters={"from_month": "2026-01"},
+        limit=100,
+    )
+    assert result.records
+    assert result.degraded_reason is None
+    assert "sync_completeness" not in result.to_envelope().to_dict()["summary"]
+
+
+@pytest.mark.parametrize(
+    ("month", "warn"),
+    [
+        ("2026-01", False),
+        ("2025-09", True),
+        ("2026-07", True),
+        ("2026-08", True),
+        ("2026-09", True),
+    ],
+)
+def test_spending_warning_uses_disjoint_calculation_windows(
+    db: Database, month: str, warn: bool
+) -> None:
+    from calendar import monthrange
+    from datetime import UTC, datetime, timedelta
+
+    from moneybin.connectors.sync_models import (
+        ScopeOutcome,
+        SimpleFINV2ConnectionScope,
+        UTCWindow,
+    )
+    from moneybin.reports._framework.catalog import get_report_catalog
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+
+    _install_spending_trend(db)
+    start = datetime.fromisoformat(month + "-01").replace(tzinfo=UTC)
+    end = start + timedelta(days=monthrange(start.year, start.month)[1])
+    data = source()
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=SimpleFINV2ConnectionScope(
+                kind="simplefin_v2_connection", conn_id="native-connection"
+            ),
+            window=UTCWindow(start=start, end=end),
+            status="failed",
+            error_code="upstream_unavailable",
+        )
+    ]
+    data.batches = []
+    load(db, data, status="failed")
+    result = get_report_catalog().execute(
+        db,
+        report_id="core:spending_trend",
+        parameters={"from_month": "2026-09", "to_month": "2026-09"},
+        limit=100,
+    )
+    assert (
+        "Some transaction data may be incomplete" in (result.degraded_reason or "")
+    ) is warn
+
+
+@pytest.mark.parametrize(
+    ("lower", "upper"),
+    [
+        ("0001-01", "0001-01"),
+        ("0001-02", "0001-02"),
+        (None, "0001-02"),
+        ("0001-01", None),
+    ],
+)
+def test_spending_comparison_windows_respect_supported_date_floor(
+    db: Database, lower: str | None, upper: str | None
+) -> None:
+    from datetime import date
+
+    query = spending_trend(db, from_month=lower, to_month=upper)
+    assert query.sync_scope is not None
+    windows = query.sync_scope.transaction_windows
+    assert windows
+    assert all(
+        bound is None or bound >= date.min for window in windows for bound in window
+    )
+    if upper is not None:
+        assert len(windows) == 1  # Prior-year months precede the supported calendar.
+
+
+def test_spending_prior_year_window_includes_leap_month_end(db: Database) -> None:
+    from datetime import date
+
+    query = spending_trend(db, from_month="2025-02", to_month="2025-02")
+    assert query.sync_scope is not None
+    assert (date(2024, 2, 1), date(2024, 2, 29)) in query.sync_scope.transaction_windows
