@@ -1,4 +1,9 @@
-/* Split-expanded transaction grain: one row per unsplit transaction, N rows per
+/* One row per split child, or one whole row for an unsplit transaction.
+   Key: (transaction_id, line_id); each line joins to exactly one transaction
+   header. Header-to-line joins are one-to-many and repeat header amounts.
+   Sum line_amount within one currency for split-category totals; never add
+   header amounts to line amounts.
+   Split-expanded transaction grain: one row per unsplit transaction, N rows per
    split transaction. Reads from core.fct_transactions (not app.transaction_splits
    directly), preserving the rule that consumers don't touch app.* — if it's not
    resolved in the fact, it didn't happen.

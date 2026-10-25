@@ -38,6 +38,18 @@ Driver infinity sentinels retain their existing output refusal.
 
 ## Source meaning
 
+Storage resolution and display precision do not establish source precision.
+Six fractional digits in canonical output do not prove that the source measured
+microseconds or supplied a time of day. A business `DATE` identifies a calendar
+day, not an instant; protocol defaults and midnight placeholders do not add
+observed time-of-day precision.
+
+UTC normalization preserves the instant, not the original timezone or offset.
+Retain original timezone, offset and precision evidence where the source supplies
+it; leave missing evidence unknown. Before using normalized timestamps for
+intraday ordering or analysis, establish that the source precision supports
+that use from retained source evidence.
+
 | Input | Treatment |
 |---|---|
 | SimpleFIN epoch seconds | Convert directly to UTC instants. |

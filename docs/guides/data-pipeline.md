@@ -202,7 +202,12 @@ Trace a single transaction end to end, starting from a CSV row.
 9. **`core.fct_transactions`** joins the merged row with `app.transaction_categories` (your categorization), `core.dim_categories` and `core.dim_merchants` (canonical taxonomies), `core.bridge_transfers` (the `is_transfer` and `transfer_pair_id` flags), and the curation aggregates (`notes`, `tags`, `splits` as nested types). This is the row you actually query.
 10. **`reports.*` views shape it for display.** `reports.cash_flow` pivots into period/category buckets; `reports.net_worth` joins with `core.fct_balances_daily`; etc.
 
-The chain is fully reproducible from `raw` + `app`. If you ever wipe `core/prep/reports`, a `moneybin refresh` rebuilds them. The unrecoverable state is `app.*` — that's why `moneybin db backup` exists.
+Derived values depend on retained `raw` evidence, authoritative `app` state,
+and compatible code and reference data. Recover from a verified encrypted
+snapshot, then refresh its materializations. Arbitrary deletion of derived
+schemas or SQLMesh state is not a supported recovery procedure. Preserve the
+snapshot and its encryption key: a new provider sync may omit expired history,
+and Raw alone cannot reproduce user mappings, notes, or decisions.
 
 ## What dedup actually compares
 

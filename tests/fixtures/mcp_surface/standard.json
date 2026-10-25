@@ -1,5 +1,5 @@
 {
-  "sha256": "6a43ceaba4e140b7a5c6d59095cda6bef7065ea4d7f31061d7b11b132b4af9fc",
+  "sha256": "e54ac0793b6f7e2044055639df77ce8cdf4659d4b87c5fdab324750ba621ad44",
   "tool_count": 50,
   "tools": [
     {
@@ -2903,7 +2903,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted.",
+        "description": "Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted. kind='source_categories' holds category terms imported files carry: pending terms have no mapping yet, history holds mapped and ignored terms; resolve either with taxonomy_set kind='source_category'.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2929,7 +2929,8 @@
                 "rule_conflicts",
                 "account_links",
                 "merchant_links",
-                "security_links"
+                "security_links",
+                "source_categories"
               ],
               "type": "string"
             },
@@ -2952,12 +2953,12 @@
         "name": "reviews",
         "title": "Reviews"
       },
-      "description_bytes": 331,
-      "input_schema_bytes": 452,
+      "description_bytes": 531,
+      "input_schema_bytes": 472,
       "name": "reviews",
       "other_bytes": 68,
       "output_schema_bytes": 0,
-      "total_bytes": 987
+      "total_bytes": 1207
     },
     {
       "annotation_bytes": 90,
@@ -4070,7 +4071,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically declare categories present, inactive, or absent and merchant mappings present or absent. The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.",
+        "description": "Atomically declare category, merchant, and imported category-term target states. Categories are present, inactive, or absent; merchant mappings present or absent; imported terms (kind='source_category', listed by reviews(kind='source_categories')) present, mapped to a category that may be one the same batch creates, ignored, or absent. A changed term re-categorizes its transactions at once; results report categorized and recategorized. Terms are stored in app.category_source_map; every write is audited and undone with system_audit_undo(operation_id=...). The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -4497,6 +4498,170 @@
                       "state"
                     ],
                     "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "ignored"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "category_id"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "category"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "subcategory"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "absent"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "category_id"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "category"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "subcategory"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Declare one imported category term's mapping state.",
+                    "properties": {
+                      "category": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "category_id": {
+                        "anyOf": [
+                          {
+                            "maxLength": 64,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "kind": {
+                        "const": "source_category",
+                        "type": "string"
+                      },
+                      "source_category_code": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "source_origin": {
+                        "type": "string"
+                      },
+                      "source_subcategory_code": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "source_type": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "state": {
+                        "enum": [
+                          "present",
+                          "ignored",
+                          "absent"
+                        ],
+                        "type": "string"
+                      },
+                      "subcategory": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "state",
+                      "source_origin",
+                      "source_category_code"
+                    ],
+                    "type": "object"
                   }
                 ]
               },
@@ -4511,12 +4676,12 @@
         "name": "taxonomy_set",
         "title": "Taxonomy Set"
       },
-      "description_bytes": 205,
-      "input_schema_bytes": 3257,
+      "description_bytes": 666,
+      "input_schema_bytes": 4552,
       "name": "taxonomy_set",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 3676
+      "total_bytes": 5432
     },
     {
       "annotation_bytes": 89,
@@ -5557,5 +5722,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 67542
+  "total_bytes": 69518
 }

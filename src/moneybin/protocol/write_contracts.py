@@ -602,8 +602,60 @@ class MerchantStateRequest(_StrictRequest):
         return self
 
 
+# No length cap: imports bound none of a term's parts, and the service accepts
+# only a term an imported row carries or one already mapped.
+SourceTermText = Annotated[
+    str,
+    Field(min_length=1),
+    AfterValidator(_reject_whitespace_only),
+]
+
+
+class SourceCategoryStateRequest(_StrictRequest):
+    """Declare one imported category term's mapping state."""
+
+    model_config = ConfigDict(
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "state",
+                "ignored",
+                forbidden=("category_id", "category", "subcategory"),
+            ),
+            _conditional_schema_branch(
+                "state",
+                "absent",
+                forbidden=("category_id", "category", "subcategory"),
+            ),
+        )
+    )
+
+    kind: Literal["source_category"]
+    state: Literal["present", "ignored", "absent"]
+    source_type: SlugString | None = None
+    # Blank is a real origin: an import whose account label slugs to nothing.
+    source_origin: str
+    source_category_code: SourceTermText
+    source_subcategory_code: SourceTermText | None = None
+    category_id: IdentifierString | None = None
+    category: CategoryName | None = None
+    subcategory: CategoryName | None = None
+
+    @model_validator(mode="after")
+    def _validate_state(self) -> Self:
+        target_fields = {"category_id", "category", "subcategory"}
+        if self.state != "present":
+            if self.model_fields_set & target_fields:
+                raise ValueError(f"{self.state.capitalize()} forbids a target category")
+            return self
+        if (self.category_id is None) == (self.category is None):
+            raise ValueError("Present requires exactly one of category_id or category")
+        if self.subcategory is not None and self.category is None:
+            raise ValueError("Source category subcategory requires category")
+        return self
+
+
 TaxonomyStateRequest = Annotated[
-    CategoryStateRequest | MerchantStateRequest,
+    CategoryStateRequest | MerchantStateRequest | SourceCategoryStateRequest,
     Field(discriminator="kind"),
 ]
 

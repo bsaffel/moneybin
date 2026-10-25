@@ -48,7 +48,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`system_audit_undo`](#system_audit_undo) | Undo one complete audited operation by operation_id. | write, idempotent | at least `low` |
 | [`system_status`](#system_status) | Return selected operator status sections. | write, idempotent | up to `medium` |
 | [`taxonomy`](#taxonomy) | Read categories or merchant mappings with deterministic filtering and exact cursor pagination. | read-only, idempotent | up to `medium` |
-| [`taxonomy_set`](#taxonomy_set) | Atomically declare categories present, inactive, or absent and merchant mappings present or absent. | write, destructive, idempotent | at least `low` |
+| [`taxonomy_set`](#taxonomy_set) | Atomically declare category, merchant, and imported category-term target states. | write, destructive, idempotent | at least `low` |
 | [`transactions`](#transactions) | Query operational transactions with exact cursor pagination. | read-only, idempotent | at least `high` |
 | [`transactions_annotate`](#transactions_annotate) | Atomically add, edit, or delete stable-ID notes; declare complete tag and split states; or rename one tag globally. | write, destructive, not idempotent | at least `low` |
 | [`transactions_categorize_assist`](#transactions_categorize_assist) | Fetch uncategorized transactions as PII-scrubbed records for LLM-assisted categorization. | read-only, idempotent | at least `medium` |
@@ -546,13 +546,13 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### reviews
 
-Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted.
+Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted. kind='source_categories' holds category terms imported files carry: pending terms have no mapping yet, history holds mapped and ignored terms; resolve either with taxonomy_set kind='source_category'.
 
 Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `kind` | one of `summary`, `categorization`, `auto_rules`, `matches`, `investment_matches`, `rule_conflicts`, `account_links`, `merchant_links`, `security_links` | `summary` |  |
+| `kind` | one of `summary`, `categorization`, `auto_rules`, `matches`, `investment_matches`, `rule_conflicts`, `account_links`, `merchant_links`, `security_links`, `source_categories` | `summary` |  |
 | `status` | one of `pending`, `history` | `pending` |  |
 | `limit` | integer | `100` | ≥ 1 |
 | `cursor` | string |  |  |
@@ -758,13 +758,13 @@ Access: read-only, idempotent. Sensitivity: up to `medium`.
 
 ### taxonomy_set
 
-Atomically declare categories present, inactive, or absent and merchant mappings present or absent. The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.
+Atomically declare category, merchant, and imported category-term target states. Categories are present, inactive, or absent; merchant mappings present or absent; imported terms (kind='source_category', listed by reviews(kind='source_categories')) present, mapped to a category that may be one the same batch creates, ignored, or absent. A changed term re-categorizes its transactions at once; results report categorized and recategorized. Terms are stored in app.category_source_map; every write is audited and undone with system_audit_undo(operation_id=...). The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.
 
 Access: write, destructive, idempotent. Sensitivity: at least `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `items` | array of one of `category`, `merchant` |  | required |
+| `items` | array of one of `category`, `merchant`, `source_category` |  | required |
 | `confirmation_token` | string |  |  |
 
 #### Variants of `items`
@@ -797,6 +797,22 @@ Declare one merchant mapping's target state.
 | `match_type` | one of `exact`, `contains`, `regex` |  | forbidden when `state` is `absent` |
 | `category` | string |  | min length 1; max length 100; forbidden when `state` is `absent`; required when `subcategory` is set |
 | `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `absent` |
+
+##### `source_category`
+
+Declare one imported category term's mapping state.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `source_category` |  | required |
+| `state` | one of `present`, `ignored`, `absent` |  | required |
+| `source_type` | string |  | min length 1; max length 100 |
+| `source_origin` | string |  | required |
+| `source_category_code` | string |  | required; min length 1 |
+| `source_subcategory_code` | string |  | min length 1 |
+| `category_id` | string |  | min length 1; max length 64; forbidden when `state` is `ignored` or `absent` |
+| `category` | string |  | min length 1; max length 100; forbidden when `state` is `ignored` or `absent` |
+| `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `ignored` or `absent` |
 
 ### transactions
 

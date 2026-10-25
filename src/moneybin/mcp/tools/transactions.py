@@ -163,8 +163,9 @@ def transactions_get(
             = expense, positive = income.
         amount_max: Maximum amount as a decimal string.
         description: Case-insensitive pattern matched against description and memo.
-        uncategorized_only: Only return transactions with no user/AI/rule
-            categorization assigned (includes source-provided categories).
+        uncategorized_only: Only return transactions that still need a
+            category: the rows reviews(kind='categorization') offers, so
+            transfer legs and archived accounts are excluded.
         limit: Maximum rows to return (default 50).
         cursor: Opaque pagination token from a previous response's next_cursor.
     """

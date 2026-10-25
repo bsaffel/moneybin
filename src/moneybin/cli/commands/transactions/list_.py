@@ -121,7 +121,10 @@ def transactions_list(
     uncategorized: bool = typer.Option(
         False,
         "--uncategorized",
-        help="Only transactions with no user/AI/rule categorization assigned.",
+        help=(
+            "Only transactions that still need a category: the rows "
+            "`moneybin review` offers (transfers and archived accounts excluded)."
+        ),
     ),
     limit: int = typer.Option(50, "--limit", help="Maximum rows to return."),
     cursor: str | None = typer.Option(

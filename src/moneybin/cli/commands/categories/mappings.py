@@ -1,6 +1,6 @@
 """categories mappings — curation commands for imported category-source text.
 
-Subcommands: pending, set. Mirrors `merchants links` — thin wrappers over
+Subcommands: pending, set, remove. Mirrors `merchants links` — thin wrappers over
 CategorizationService. Imported category text is never displayed as a
 category and never passed through; it is only ever an input the curator
 matches against an existing MoneyBin category or uses to mint a new one
@@ -259,6 +259,86 @@ def mappings_set(
     )
     emit_human_result(
         compose_human_result([build_summary(receipt, title=title)]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
+
+
+@app.command("remove")
+def mappings_remove(
+    namespace: str = typer.Option(
+        ..., "--namespace", help="Term's source_origin (e.g. an exporter slug)"
+    ),
+    source_type: str | None = typer.Option(
+        None,
+        "--source-type",
+        help="Term's source type (csv, excel, ...); derived when only one carries it",
+    ),
+    category: str = typer.Option(
+        ..., "--category", help="Term's imported category text"
+    ),
+    subcategory: str | None = typer.Option(
+        None, "--subcategory", help="Term's imported subcategory text, if any"
+    ),
+    output: OutputFormat = output_option,
+) -> None:
+    """Remove one imported term's mapping or ignore, returning it to pending.
+
+    Identify the term as `categories mappings set` does. The categories the
+    mapping assigned are withdrawn and re-evaluated at once; categories you
+    set by hand, by rule, or by merchant are never touched. A term with no
+    mapping is refused.
+
+    Example:
+      moneybin categories mappings remove --namespace mint --category Uncategorized
+    """
+    from moneybin.services.categorization import CategorizationService
+
+    with handle_cli_errors(cli_actor="categories_mappings_remove"):
+        with get_database(read_only=False) as db:
+            mapping = CategorizationService(db).remove_source_term(
+                source_type=source_type,
+                source_origin=namespace,
+                category=category,
+                subcategory=subcategory,
+                actor="cli",
+            )
+
+    payload = CategoryMappingSetPayload(
+        source_type=mapping.source_type,
+        source_origin=mapping.source_origin,
+        category=mapping.category,
+        subcategory=mapping.subcategory,
+        category_id=None,
+        action="removed",
+        categorized=mapping.categorized,
+        recategorized=mapping.recategorized,
+    )
+    if output == OutputFormat.JSON:
+        from moneybin.cli.output import render_or_json
+
+        render_or_json(
+            build_envelope(data=payload, sensitivity="low"),
+            output,
+            cli_actor="categories_mappings_remove",
+        )
+        return
+    receipt = [
+        ("Source type", payload.source_type),
+        ("Namespace", payload.source_origin),
+        ("Category", payload.category),
+    ]
+    if payload.subcategory:
+        receipt.append(("Subcategory", payload.subcategory))
+    receipt.append((
+        "Transactions",
+        f"categorized {payload.categorized}, recategorized {payload.recategorized}",
+    ))
+    emit_human_result(
+        compose_human_result([
+            build_summary(receipt, title="Category mapping removed")
+        ]),
         policy=get_terminal_policy(),
         finite_read=False,
         receipt=True,
