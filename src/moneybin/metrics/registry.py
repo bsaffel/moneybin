@@ -790,6 +790,12 @@ INVESTMENT_MATCH_DURATION_SECONDS = Histogram(
     ["operation"],
 )
 
+INVESTMENT_MATCH_DECISIONS_TOTAL = Counter(
+    "moneybin_investment_match_decisions_total",
+    "Committed first human investment decisions and subsequent reversals",
+    ["decision", "auto_eligible"],
+)
+
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
@@ -1257,6 +1263,7 @@ HISTOGRAM_UNITS: dict[str, str] = {
 # `app.metrics` kept from a version that has since renamed the metric keep
 # their value, the way an undeclared histogram keeps its sum.
 METRIC_DOMAINS: dict[str, str] = {
+    "moneybin_investment_match_decisions": "Investment matching",
     "moneybin_investment_match_proposals": "Investment matching",
     "moneybin_investment_match_duration_seconds": "Investment matching",
     # Import pipeline

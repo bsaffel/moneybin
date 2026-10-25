@@ -1,9 +1,4 @@
-"""Unified review queue: walks pending matches + uncategorized transactions + account-links.
-
-CLI-only collapse (per moneybin-cli.md v2). MCP keeps separate
-``transactions_matches_pending`` and ``transactions_categorize_pending``
-tools because their result shapes differ; the orientation tool
-``review`` returns the counts.
+"""Unified cash, investment, categorization, and identity review queue.
 
 Counts are the default. ``--interactive`` walks the selected queues in a terminal
 with explicit per-item decisions, skip, and quit.
@@ -38,6 +33,7 @@ logger = logging.getLogger(__name__)
 _VALID_TYPES = {
     "all",
     "matches",
+    "investment-matches",
     "categorize",
     "account-links",
     "merchant-links",
@@ -56,6 +52,8 @@ def review_impl(
     no_pager: bool,
     output: OutputFormat,
     quiet: bool,  # the status path emits data only; nothing to suppress
+    field_choices: list[str] | None = None,
+    confirm_count: int | None = None,
 ) -> None:
     """Shared impl for `moneybin review` and its deprecated `transactions review` alias.
 
@@ -88,6 +86,20 @@ def review_impl(
             f"--type must be one of {sorted(_VALID_TYPES)}, got {type_!r}"
         )
 
+    confirms = (
+        confirm_count if confirm_count is not None else int(confirm_id is not None)
+    )
+    if confirms > 1:
+        raise typer.BadParameter("Pass exactly one --confirm")
+    if field_choices and (
+        type_ != "investment-matches" or confirms != 1 or reject_id or confirm_all
+    ):
+        raise typer.BadParameter(
+            "--field-choice requires exactly one investment confirmation"
+        )
+    if confirm_all and type_ in {"all", "investment-matches"}:
+        raise typer.BadParameter("Investment Proposals require individual review")
+
     # Three mutually exclusive modes. Silently letting one win would either drop
     # a requested mutation or perform an unrequested one, so say so instead —
     # the same call the two guards in `_review_matches_noninteractive` make.
@@ -99,6 +111,13 @@ def review_impl(
         raise typer.Exit(2)
 
     if decides:
+        if type_ == "investment-matches":
+            if confirm_id and reject_id:
+                raise typer.BadParameter("Choose exactly one investment decision")
+            _review_investment_decision(
+                confirm_id, reject_id, field_choices or [], output
+            )
+            return
         if type_ == "categorize":
             if not reject_id or confirm_id or confirm_all:
                 raise typer.BadParameter(
@@ -121,6 +140,12 @@ def review_impl(
         return
 
     if interactive:
+        if type_ == "investment-matches":
+            raise typer.BadParameter(
+                "Investment proposals require separate scripted review: use "
+                "'moneybin review --type investment-matches --reject <proposal-id>'. "
+                "Investment acceptance remains unavailable."
+            )
         if limit < 1:
             raise typer.BadParameter("--limit must be at least 1", param_hint="--limit")
         policy = get_terminal_policy(no_pager=True)
@@ -130,6 +155,14 @@ def review_impl(
             )
         from moneybin.cli.commands.interactive_review import run_review
 
+        if type_ == "all":
+            typer.echo(
+                "Investment proposals require separate scripted review: use "
+                "'moneybin review --type investment-matches' to inspect the queue "
+                "and '--reject <proposal-id>' to reject a proposal. "
+                "Investment acceptance remains unavailable.",
+                err=True,
+            )
         run_review(type_, limit, policy)
         return
 
@@ -142,7 +175,7 @@ def transactions_review(
     type_: str | None = typer.Option(
         None,
         "--type",
-        help="all | matches | categorize | account-links | merchant-links | security-links",
+        help="all | matches | investment-matches | categorize | account-links | merchant-links | security-links",
     ),
     status: bool = typer.Option(
         False, "--status", help="Show queue counts (the default)"
@@ -152,8 +185,8 @@ def transactions_review(
         "--interactive",
         help="Review pending items with explicit decisions, skip, or quit",
     ),
-    confirm_id: str | None = typer.Option(
-        None, "--confirm", help="Non-interactive: confirm one item by ID"
+    confirm_id: list[str] | None = typer.Option(
+        None, "--confirm", help="Confirm exactly one item by ID; repeats are invalid"
     ),
     reject_id: str | None = typer.Option(
         None,
@@ -162,6 +195,11 @@ def transactions_review(
     ),
     confirm_all: bool = typer.Option(
         False, "--confirm-all", help="Non-interactive: confirm all items in scope"
+    ),
+    field_choice: list[str] | None = typer.Option(
+        None,
+        "--field-choice",
+        help="Investment confirmation: conflict-id=choice-id (repeatable)",
     ),
     limit: int = typer.Option(50, "--limit", help="Cap items per session"),
     no_pager: bool = no_pager_option,
@@ -181,7 +219,9 @@ def transactions_review(
         type_=type_,
         status=status,
         interactive=interactive,
-        confirm_id=confirm_id,
+        confirm_id=confirm_id[0] if confirm_id else None,
+        confirm_count=len(confirm_id or []),
+        field_choices=field_choice,
         reject_id=reject_id,
         confirm_all=confirm_all,
         limit=limit,
@@ -189,6 +229,71 @@ def transactions_review(
         output=output,
         quiet=quiet,
     )
+
+
+def _review_investment_decision(
+    confirm_id: str | None,
+    reject_id: str | None,
+    field_choices: list[str],
+    output: OutputFormat,
+) -> None:
+    from pydantic import ValidationError
+
+    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.privacy.payloads.reviews import (
+        ReviewDecisionOutcome,
+        ReviewsDecidePayload,
+    )
+    from moneybin.protocol.write_contracts import InvestmentMatchDecisionRequest
+    from moneybin.services.mutation_context import current_operation_id
+    from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+    choices: list[dict[str, str]] = []
+    for value in field_choices:
+        parts = value.split("=")
+        if len(parts) != 2 or not all(parts):
+            raise typer.BadParameter("--field-choice must be conflict-id=choice-id")
+        choices.append({"conflict_id": parts[0], "choice_id": parts[1]})
+    request_payload: dict[str, object] = {
+        "kind": "investment_match",
+        "decision_id": confirm_id or reject_id,
+        "decision": "accept" if confirm_id else "reject",
+    }
+    if confirm_id:
+        request_payload["field_choices"] = choices
+    try:
+        request = InvestmentMatchDecisionRequest.model_validate(request_payload)
+    except ValidationError as exc:
+        raise typer.BadParameter(
+            "Invalid investment decision or field choices"
+        ) from exc
+    with handle_cli_errors(cli_actor="review"):
+        with get_database(read_only=False) as db:
+            applied = ReviewDecisionsService(db, actor="cli").apply_ordinary([request])
+        operation_id = current_operation_id()
+        payload = ReviewsDecidePayload(
+            results=[
+                ReviewDecisionOutcome(
+                    kind=item.request.kind,
+                    decision_id=item.request.decision_id,
+                    decision=item.request.decision,
+                    status=item.status,
+                    changed=item.changed,
+                    operation_id=operation_id,
+                )
+                for item in applied.items
+            ],
+            applied_count=len(applied.items),
+            operation_id=operation_id,
+        )
+        render_or_json(
+            build_envelope(data=payload),
+            output,
+            render_fn=lambda _envelope: typer.echo(
+                "Rejected investment Proposal and unchanged supersets."
+            ),
+            cli_actor="review",
+        )
 
 
 def _review_categorization_reject(decision_id: str, *, output: OutputFormat) -> None:
@@ -516,6 +621,7 @@ def _print_status(type_: str, output: OutputFormat, *, no_pager: bool) -> None:
     from moneybin.config import get_settings
     from moneybin.services.account_links_service import AccountLinksService
     from moneybin.services.categorization import CategorizationService
+    from moneybin.services.investment_matching_service import InvestmentMatchingService
     from moneybin.services.matching_service import MatchingService
     from moneybin.services.merchant_links_service import MerchantLinksService
     from moneybin.services.review_service import ReviewService
@@ -529,6 +635,7 @@ def _print_status(type_: str, output: OutputFormat, *, no_pager: bool) -> None:
                 account_links_service=AccountLinksService(db),
                 merchant_links_service=MerchantLinksService(db),
                 security_links_service=SecurityLinksService(db),
+                investment_matching_service=InvestmentMatchingService(db),
             )
             s = review_svc.status()
 
@@ -545,9 +652,12 @@ def _print_status(type_: str, output: OutputFormat, *, no_pager: bool) -> None:
                 merchant_links_pending=s.merchant_links_pending,
                 security_links_pending=s.security_links_pending,
                 total=s.total,
+                investment_matches_pending=s.investment_matches_pending,
             )
         elif type_ == "matches":
             data = {"matches_pending": s.matches_pending}
+        elif type_ == "investment-matches":
+            data = {"investment_matches_pending": s.investment_matches_pending}
         elif type_ == "categorize":
             data = {"categorize_pending": s.categorize_pending}
         elif type_ == "account-links":
@@ -565,6 +675,10 @@ def _print_status(type_: str, output: OutputFormat, *, no_pager: bool) -> None:
 
     labels = {
         "matches": ("Matches pending", s.matches_pending),
+        "investment-matches": (
+            "Investment matches pending",
+            s.investment_matches_pending,
+        ),
         "categorize": ("Categorization decisions pending", s.categorize_pending),
         "account-links": ("Account-link decisions pending", s.account_links_pending),
         "merchant-links": ("Merchant-link decisions pending", s.merchant_links_pending),

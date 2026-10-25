@@ -288,6 +288,39 @@ class MatchDecisionRequest(_StrictRequest):
     decision: Literal["accept", "reject"]
 
 
+class InvestmentFieldChoiceRequest(_StrictRequest):
+    """Select an observed value issued by the current Proposal."""
+
+    conflict_id: IdentifierString
+    choice_id: IdentifierString
+
+
+class InvestmentMatchDecisionRequest(_StrictRequest):
+    """Decide one whole investment Proposal with an exact choice set."""
+
+    model_config = ConfigDict(
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "decision", "reject", forbidden=("field_choices",)
+            )
+        )
+    )
+
+    kind: Literal["investment_match"]
+    decision_id: IdentifierString
+    decision: Literal["accept", "reject"]
+    field_choices: list[InvestmentFieldChoiceRequest] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_decision(self) -> Self:
+        if self.decision == "reject" and "field_choices" in self.model_fields_set:
+            raise ValueError("Reject forbids field choices")
+        ids = [choice.conflict_id for choice in self.field_choices]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Each conflict requires exactly one choice")
+        return self
+
+
 class AutoRuleDecisionRequest(_StrictRequest):
     """Accept or reject one auto-generated categorization-rule proposal."""
 
@@ -363,7 +396,11 @@ class RuleConflictDecisionRequest(_StrictRequest):
         return self
 
 
-OrdinaryReviewDecisionRequest = CategorizationDecisionRequest | MatchDecisionRequest
+OrdinaryReviewDecisionRequest = (
+    CategorizationDecisionRequest
+    | MatchDecisionRequest
+    | InvestmentMatchDecisionRequest
+)
 
 
 ReviewDecisionRequest = Annotated[

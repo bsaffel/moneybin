@@ -15,7 +15,8 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.repositories import concrete_repo_classes
 from moneybin.repositories.base import BaseRepo
-from moneybin.services.audit_service import AuditService
+from moneybin.services.audit_service import AuditEvent, AuditService
+from moneybin.tables import INVESTMENT_MATCH_DECISIONS
 
 
 def _build_registry() -> dict[tuple[str, str], type[BaseRepo]]:
@@ -39,6 +40,24 @@ _REGISTRY: dict[tuple[str, str], type[BaseRepo]] = _build_registry()
 def is_registered(schema: str, table: str) -> bool:
     """Whether a repo owns ``schema.table`` (i.e. it sits on the undoable surface)."""
     return (schema, table) in _REGISTRY
+
+
+def undo_investment_operation(
+    events: list[AuditEvent], db: Database, *, actor: str
+) -> set[str]:
+    """Dispatch investment decisions before generic per-row reversal."""
+    selected = [
+        event
+        for event in events
+        if event.target_schema == INVESTMENT_MATCH_DECISIONS.schema
+        and event.target_table == INVESTMENT_MATCH_DECISIONS.name
+    ]
+    if not selected:
+        return set()
+    from moneybin.services.investment_matching_service import InvestmentMatchingService
+
+    InvestmentMatchingService(db).undo_rejections(selected, actor=actor)
+    return {event.audit_id for event in selected}
 
 
 def repo_for(

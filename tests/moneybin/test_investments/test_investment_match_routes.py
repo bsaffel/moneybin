@@ -605,5 +605,6 @@ def test_pending_proposals_advertise_the_existing_reviews_route(
     result = refresh(comparison_db, steps=["investment_match"])
     envelope = refresh_envelope(result, requested=frozenset({"investment_match"}))
     assert any(
-        'reviews(kind="investment_matches")' in action for action in envelope.actions
+        'reviews(kind="investment_matches", status="pending")' in action
+        for action in envelope.actions
     )

@@ -42,7 +42,9 @@ ReviewQueueKind = Literal[
     "source_categories",
 ]
 ReviewStatus = Literal["pending", "history"]
-ReviewDecisionKind = Literal["categorization", "auto_rule", "match", "rule_conflict"]
+ReviewDecisionKind = Literal[
+    "categorization", "auto_rule", "match", "investment_match", "rule_conflict"
+]
 #: Every verb a review decision can carry. The first two are the accept/reject
 #: axis every other queue uses; the last three are the rule-conflict
 #: resolutions, which are not accept/reject — a conflict has three outcomes and

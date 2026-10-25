@@ -229,7 +229,7 @@ def system_audit_undo(
     undone, when it touched a table outside the undoable app.* surface, or when
     restoring the captured row would write back a value the write path no longer
     admits (``undo_value_inadmissible`` — e.g. a pre-existing blank category).
-    The returned ``undo_operation_id`` is itself undoable.
+    Redo guidance is shown only when the returned ``undo_operation_id`` is undoable.
     """
     from moneybin.services.undo_service import UndoService
 
@@ -298,15 +298,17 @@ def system_audit_undo(
                 actor="cli",
                 expected_audit_ids=expected_audit_ids,
             )
+            can_redo = UndoService(db).get(result.undo_operation_id).can_undo
 
     def _render_text(_: object) -> None:
         tables = ", ".join(result.tables) if result.tables else "no"
         typer.echo(f"Reversed operation {result.undone_operation_id}")
         typer.echo(f"Rows reversed: {result.reversed_row_count}")
         typer.echo(f"Tables: {tables}")
-        typer.echo(
-            f"Undo this undo: moneybin system audit undo {result.undo_operation_id}"
-        )
+        if can_redo:
+            typer.echo(
+                f"Undo this undo: moneybin system audit undo {result.undo_operation_id}"
+            )
 
     render_or_json(
         build_envelope(data=dataclasses.asdict(result), sensitivity="low"),

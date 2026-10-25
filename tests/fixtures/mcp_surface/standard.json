@@ -1,5 +1,5 @@
 {
-  "sha256": "ebc2ed1f5015f82846b5c753c9ce39d1238ea557f9710a00ba7003b03acd9ab8",
+  "sha256": "e54ac0793b6f7e2044055639df77ce8cdf4659d4b87c5fdab324750ba621ad44",
   "tool_count": 50,
   "tools": [
     {
@@ -2974,7 +2974,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts \u2014 reverse either with system_audit_undo. Keep each kind in its own call. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
+        "description": "Accept or reject an atomic batch of transaction, match, or investment_match review decisions. Investment rejection requires human Elicitation for the complete batch; investment acceptance remains unavailable. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts \u2014 reverse either with system_audit_undo. Keep auto-rule and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3125,6 +3125,83 @@
                       },
                       "kind": {
                         "const": "match",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "decision_id",
+                      "decision"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "reject"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "field_choices"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Decide one whole investment Proposal with an exact choice set.",
+                    "properties": {
+                      "decision": {
+                        "enum": [
+                          "accept",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "field_choices": {
+                        "items": {
+                          "additionalProperties": false,
+                          "description": "Select an observed value issued by the current Proposal.",
+                          "properties": {
+                            "choice_id": {
+                              "maxLength": 64,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "conflict_id": {
+                              "maxLength": 64,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "conflict_id",
+                            "choice_id"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "kind": {
+                        "const": "investment_match",
                         "type": "string"
                       }
                     },
@@ -3315,12 +3392,12 @@
         "name": "reviews_decide",
         "title": "Reviews Decide"
       },
-      "description_bytes": 717,
-      "input_schema_bytes": 3211,
+      "description_bytes": 854,
+      "input_schema_bytes": 4047,
       "name": "reviews_decide",
       "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 4153
+      "total_bytes": 5126
     },
     {
       "annotation_bytes": 89,
@@ -3828,7 +3905,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Undo one complete audited operation by operation_id. The inverse mutation is itself audited and undoable; dependency conflicts return the blocking operation IDs.",
+        "description": "Undo one complete audited operation by operation_id. The inverse mutation is itself audited; redo is offered only when supported. Dependency conflicts return the blocking operation IDs.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3844,12 +3921,12 @@
         "name": "system_audit_undo",
         "title": "System Audit Undo"
       },
-      "description_bytes": 161,
+      "description_bytes": 185,
       "input_schema_bytes": 122,
       "name": "system_audit_undo",
       "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 508
+      "total_bytes": 532
     },
     {
       "annotation_bytes": 90,
@@ -5645,5 +5722,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 68521
+  "total_bytes": 69518
 }

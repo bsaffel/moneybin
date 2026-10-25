@@ -28,6 +28,7 @@ from moneybin.errors import UserError
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.price_sources import PRICE_SOURCES
 from moneybin.services.price_service import PullResult, UnpricedSecurity
+from moneybin.services.refresh_outcome import StageOutcome
 
 runner = CliRunner()
 
@@ -174,6 +175,71 @@ class TestPricesPullRefresh:
 
         assert result.exit_code == 0
         assert json.loads(result.output)["data"]["refreshed"] is False
+
+
+@pytest.mark.parametrize("deterministic", [False, True])
+@pytest.mark.parametrize("flags", [[], ["--quiet"], ["--output", "json"]])
+def test_pull_preserves_prices_when_planning_blocks_refresh(
+    deterministic: bool, flags: list[str]
+) -> None:
+    refreshed = RefreshResult(
+        applied=False,
+        duration_seconds=None,
+        requested_steps=("investment_match", "transform"),
+        stages=(
+            StageOutcome(
+                "investment_match",
+                ran=True,
+                error="Planner failed",
+                error_code=(
+                    error_codes.INVESTMENT_MATCH_COMPONENT_TOO_LARGE
+                    if deterministic
+                    else None
+                ),
+            ),
+        ),
+    )
+    with (
+        patch("moneybin.cli.commands.investments.prices.get_database"),
+        _patched_pull(_pull_result()),
+        patch("moneybin.orchestration.refresh.refresh", return_value=refreshed),
+    ):
+        result = runner.invoke(app, ["pull", "--refresh", *flags])
+    assert result.exit_code == 1, result.output
+    if "json" in flags:
+        envelope = json.loads(result.stdout)
+        assert envelope["data"]["rows_written"] == 12
+        assert envelope["data"]["refreshed"] is False
+        assert envelope["data"]["refresh_error"] is None
+        assert envelope["data"]["stages"] == [
+            {
+                "step": "investment_match",
+                "ran": True,
+                "counts": {},
+                "error": "Planner failed",
+            }
+        ]
+        retries = [
+            action["arguments"]
+            for action in envelope.get("recovery_actions", [])
+            if action["tool"] == "refresh_run"
+        ]
+        assert retries == ([] if deterministic else [{"steps": ["transform"]}])
+        if deterministic:
+            assert "Retrying unchanged inputs cannot succeed" in " ".join(
+                envelope["actions"]
+            )
+    else:
+        output = " ".join(result.output.split())
+        assert "partial" in output
+        assert "12" in output
+        assert "saved" in output
+        assert "not valuing holdings yet" in output
+        if deterministic:
+            assert "Retrying unchanged inputs cannot succeed" in output
+            assert "moneybin refresh" not in output
+        else:
+            assert "moneybin refresh --step transform" in output
 
 
 def _patched_resolve():
