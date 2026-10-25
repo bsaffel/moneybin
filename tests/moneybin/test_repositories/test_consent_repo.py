@@ -34,6 +34,7 @@ def test_consent_grants_table_exists(db: Database) -> None:
         "recipient_kind",
         "terms_version",
         "approved_via",
+        "redaction_policy_version",
     }
 
 

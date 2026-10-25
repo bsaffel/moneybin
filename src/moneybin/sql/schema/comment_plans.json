@@ -1594,13 +1594,13 @@
   ]
  },
  "sql/schema/app_ai_consent_grants.sql": {
-  "sha256": "745575e085e46cdb4a78cac4d092950ccea6d5d7eb743852c8d6f60754c01d8f",
+  "sha256": "79b791a553de3878d05d732ee0ecfcdb2ca59abac9980c5e672137c6ca582619",
   "plan": [
    {
     "schema_name": "app",
     "table_name": "ai_consent_grants",
     "table_sql": "app.ai_consent_grants",
-    "table_comment": "Consent ledger: one row per granted (feature_category, backend, recipient_kind) authorization for sending real financial data to an AI backend or, for ai_host rows, to the AI app that reads MoneyBin output. Persisted record + user control surface; the data-withholding enforcement gate is deferred (ledger-first, see privacy-and-ai-trust.md). All mutations route through ConsentRepo to emit paired app.audit_log rows per app-integrity-invariant.md. Revoked grants are retained (revoked_at set) for audit history.",
+    "table_comment": "Consent ledger: one row per granted (feature_category, backend, recipient_kind) authorization for sending real financial data to an AI backend or, for ai_host rows, to the AI app that reads MoneyBin output. Persisted record + user control surface. smart-import-parsing is enforced: the PDF disclosure gate sends PDF content to an AI host only under an active ai_host grant (see pdf-disclosure-consent.md); every other category remains record-only (ledger-first, enforcement gate deferred, see privacy-and-ai-trust.md). All mutations route through ConsentRepo to emit paired app.audit_log rows per app-integrity-invariant.md. Revoked grants are retained (revoked_at set) for audit history.",
     "column_comments": [
      [
       "grant_id",
@@ -1612,7 +1612,7 @@
      ],
      [
       "backend",
-      "AI backend this consent applies to (e.g. anthropic, openai, ollama); consent is per (feature_category, backend)"
+      "Recipient this consent applies to: an AI backend name (e.g. anthropic, openai, ollama) when recipient_kind='ai_backend', or the host recipient key (transport-class:name, e.g. local:claude-code) when recipient_kind='ai_host'; consent is per (feature_category, backend, recipient_kind)"
      ],
      [
       "consent_mode",
@@ -1641,6 +1641,10 @@
      [
       "approved_via",
       "Surface that recorded the consent, e.g. cli_prompt (ai_host rows only; NULL for ai_backend)"
+     ],
+     [
+      "redaction_policy_version",
+      "Redaction policy version the user consented under (ai_host rows only; NULL for ai_backend); a release that changes the redaction policy stops honoring the grant"
      ]
     ]
    }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 import typer
@@ -18,6 +19,7 @@ from moneybin.database import get_database
 from moneybin.privacy.consent import ConsentMode
 from moneybin.privacy.disclosure import (
     host_for_recipient_name,
+    host_from_environment,
     known_host_names,
     risk_statement,
 )
@@ -142,6 +144,13 @@ def _grant_recipient(
             f"Unknown recipient {recipient!r}. "
             f"Known recipients: {', '.join(known_host_names())}."
         )
+    # Detects the calling agent host; this is not configuration.
+    if host_from_environment(os.environ).identified:
+        raise typer.BadParameter(
+            "This command is running inside an AI agent's shell. Granting "
+            "consent to an AI host must be done by you: run it from your own "
+            "terminal."
+        )
     if yes or output == OutputFormat.JSON or not _stdin_is_tty():
         raise typer.BadParameter(
             "Granting consent to an AI host requires an interactive terminal "
@@ -155,15 +164,18 @@ def _grant_recipient(
         cli_actor="privacy_grant", payload_type=ConsentMutationPayload
     ):
         with get_database(read_only=False) as db:
-            grant = ConsentService(db).grant_host_consent(
+            grant, created = ConsentService(db).grant_host_consent(
                 host=host, approved_via="cli_prompt", actor="cli.privacy_grant"
             )
     emit_receipt(
-        "Consent granted",
+        "Consent granted" if created else "Consent unchanged",
         [
             ("Category", grant.feature_category),
             ("Recipient", grant.backend),
             ("Terms", grant.terms_version or ""),
-            ("Outcome", "Granted"),
+            (
+                "Outcome",
+                "Granted" if created else "Already active; no change made",
+            ),
         ],
     )

@@ -2,9 +2,9 @@
 
 Thin wrapper over ``ConsentRepo`` that resolves the backend, validates
 the feature category, and emits a ``privacy.log`` event after each
-mutation (fail-soft, outside the DB transaction). The data-withholding
-enforcement gate is deferred — this service only records and reports
-consent.
+mutation (fail-soft, outside the DB transaction). ``smart-import-parsing``
+is enforced by the PDF disclosure gate (``ai_host`` grants); every other
+category remains record-only until its gate ships.
 """
 
 from __future__ import annotations
@@ -18,7 +18,12 @@ from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.consent import FEATURE_CATEGORIES, ConsentMode, GrantInfo
-from moneybin.privacy.disclosure import AIHost, risk_statement, terms_version_for
+from moneybin.privacy.disclosure import (
+    REDACTION_POLICY_VERSION,
+    AIHost,
+    risk_statement,
+    terms_version_for,
+)
 from moneybin.privacy.log import build_consent_event, write_privacy_event
 from moneybin.repositories.consent_repo import ConsentRepo
 from moneybin.services.mutation_context import operation
@@ -232,26 +237,39 @@ class ConsentService:
                 and grant.consent_mode == ConsentMode.PERSISTENT
                 and grant.backend == key
                 and grant.terms_version == terms_version_for(host)
+                and grant.redaction_policy_version == REDACTION_POLICY_VERSION
             ):
                 return grant
         return None
 
     def grant_host_consent(
-        self, *, host: AIHost, approved_via: str, actor: str
-    ) -> GrantInfo:
-        """Remember consent to disclose PDF content to an identified AI host."""
+        self,
+        *,
+        host: AIHost,
+        approved_via: str,
+        actor: str,
+        grant_prompt: str | None = None,
+    ) -> tuple[GrantInfo, bool]:
+        """Remember consent to disclose PDF content to an identified AI host.
+
+        Returns ``(grant, created)``; ``grant_prompt`` is the exact text the
+        person saw (defaults to the shared risk statement).
+        """
         key = host.recipient_key
         if key is None:
             raise ValueError("An unidentified AI host cannot be remembered.")
         terms_version = terms_version_for(host)
-        # A grant under superseded terms is replaced, not returned as current.
+        # A grant under superseded terms or redaction policy is replaced, not returned as current.
         stale = [
             g
             for g in self._repo.list_active()
             if g.recipient_kind == "ai_host"
             and g.feature_category == _HOST_CATEGORY
             and g.backend == key
-            and g.terms_version != terms_version
+            and (
+                g.terms_version != terms_version
+                or g.redaction_policy_version != REDACTION_POLICY_VERSION
+            )
         ]
         if stale:
             self._repo.revoke(
@@ -264,11 +282,12 @@ class ConsentService:
             feature_category=_HOST_CATEGORY,
             backend=key,
             consent_mode=ConsentMode.PERSISTENT,
-            grant_prompt=risk_statement(host, file_names=[]),
+            grant_prompt=grant_prompt or risk_statement(host, file_names=[]),
             actor=actor,
             recipient_kind="ai_host",
             terms_version=terms_version,
             approved_via=approved_via,
+            redaction_policy_version=REDACTION_POLICY_VERSION,
         )
         if created:
             write_privacy_event(
@@ -280,7 +299,7 @@ class ConsentService:
                     consent_mode=ConsentMode.PERSISTENT.value,
                 )
             )
-        return grant
+        return grant, created
 
     def revoke_host_consent(self, *, recipient_key: str, actor: str) -> RevokeResult:
         """Revoke the remembered consent for a host recipient key."""

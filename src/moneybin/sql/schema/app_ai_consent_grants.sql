@@ -1,13 +1,14 @@
-/* Consent ledger: one row per granted (feature_category, backend, recipient_kind) authorization for sending real financial data to an AI backend or, for ai_host rows, to the AI app that reads MoneyBin output. Persisted record + user control surface; the data-withholding enforcement gate is deferred (ledger-first, see privacy-and-ai-trust.md). All mutations route through ConsentRepo to emit paired app.audit_log rows per app-integrity-invariant.md. Revoked grants are retained (revoked_at set) for audit history. */
+/* Consent ledger: one row per granted (feature_category, backend, recipient_kind) authorization for sending real financial data to an AI backend or, for ai_host rows, to the AI app that reads MoneyBin output. Persisted record + user control surface. smart-import-parsing is enforced: the PDF disclosure gate sends PDF content to an AI host only under an active ai_host grant (see pdf-disclosure-consent.md); every other category remains record-only (ledger-first, enforcement gate deferred, see privacy-and-ai-trust.md). All mutations route through ConsentRepo to emit paired app.audit_log rows per app-integrity-invariant.md. Revoked grants are retained (revoked_at set) for audit history. */
 CREATE TABLE IF NOT EXISTS app.ai_consent_grants (
     grant_id VARCHAR PRIMARY KEY, -- Truncated UUID4 (uuid4().hex[:12]) per identifiers.md strategy 3
     feature_category VARCHAR NOT NULL, -- AI flow category: mcp-data-sharing, smart-import-parsing, ml-categorization, matching-overview (free string; per-tool granularity deferred)
-    backend VARCHAR NOT NULL, -- AI backend this consent applies to (e.g. anthropic, openai, ollama); consent is per (feature_category, backend)
+    backend VARCHAR NOT NULL, -- Recipient this consent applies to: an AI backend name (e.g. anthropic, openai, ollama) when recipient_kind='ai_backend', or the host recipient key (transport-class:name, e.g. local:claude-code) when recipient_kind='ai_host'; consent is per (feature_category, backend, recipient_kind)
     consent_mode VARCHAR NOT NULL CHECK (consent_mode IN ('persistent', 'one-time')), -- persistent: survives sessions until revoked; one-time: single authorized use
     granted_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the user granted this consent
     revoked_at TIMESTAMPTZ, -- When revoked; NULL while active. Revoked rows are retained for audit history.
     grant_prompt TEXT NOT NULL, -- Exact consent text the user saw and agreed to (source of truth for "what did I consent to?"); not surfaced in read payloads
     recipient_kind VARCHAR DEFAULT 'ai_backend', -- Kind of recipient the backend column names: ai_backend (a model vendor, set by privacy grant --backend) or ai_host (the AI app reading the output, keyed transport-class:name such as local:claude-code); consent is per (feature_category, backend, recipient_kind)
     terms_version VARCHAR, -- Vendor terms version the user consented under (ai_host rows only; NULL for ai_backend); a release that changes the shipped terms stops honoring the grant
-    approved_via VARCHAR -- Surface that recorded the consent, e.g. cli_prompt (ai_host rows only; NULL for ai_backend)
+    approved_via VARCHAR, -- Surface that recorded the consent, e.g. cli_prompt (ai_host rows only; NULL for ai_backend)
+    redaction_policy_version VARCHAR -- Redaction policy version the user consented under (ai_host rows only; NULL for ai_backend); a release that changes the redaction policy stops honoring the grant
 );

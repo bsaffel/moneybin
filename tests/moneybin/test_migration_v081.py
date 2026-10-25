@@ -8,7 +8,12 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V081__add_consent_recipient_kind import migrate
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
-_NEW = ("recipient_kind", "terms_version", "approved_via")
+_NEW = (
+    "recipient_kind",
+    "terms_version",
+    "approved_via",
+    "redaction_policy_version",
+)
 
 
 @pytest.fixture()
@@ -35,10 +40,13 @@ def test_v081_adds_columns_and_backfills(pre_v081_db: Database) -> None:
     for column in _NEW:
         assert not column_exists(pre_v081_db, "app", "ai_consent_grants", column)
     run_migration(pre_v081_db, migrate)
+    for column in _NEW:
+        assert column_exists(pre_v081_db, "app", "ai_consent_grants", column)
     row = pre_v081_db.execute(
-        "SELECT recipient_kind, terms_version, approved_via FROM app.ai_consent_grants"
+        "SELECT recipient_kind, terms_version, approved_via, "
+        "redaction_policy_version FROM app.ai_consent_grants"
     ).fetchone()
-    assert row == ("ai_backend", None, None)
+    assert row == ("ai_backend", None, None, None)
 
 
 def test_v081_is_idempotent(pre_v081_db: Database) -> None:

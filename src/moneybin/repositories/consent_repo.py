@@ -34,6 +34,7 @@ _COLUMNS = (
     "recipient_kind",
     "terms_version",
     "approved_via",
+    "redaction_policy_version",
 )
 
 _RECIPIENT_KINDS = frozenset({"ai_backend", "ai_host"})  # no CHECK: DuckDB ADD COLUMN
@@ -50,6 +51,7 @@ def _row_to_grant(row: dict[str, Any]) -> GrantInfo:
         recipient_kind=row["recipient_kind"],
         terms_version=row["terms_version"],
         approved_via=row["approved_via"],
+        redaction_policy_version=row["redaction_policy_version"],
     )
 
 
@@ -105,6 +107,7 @@ class ConsentRepo(BaseRepo):
         recipient_kind: str = "ai_backend",
         terms_version: str | None = None,
         approved_via: str | None = None,
+        redaction_policy_version: str | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> tuple[GrantInfo, bool]:
@@ -129,8 +132,9 @@ class ConsentRepo(BaseRepo):
                 INSERT INTO {AI_CONSENT_GRANTS.full_name}
                     (grant_id, feature_category, backend, consent_mode,
                      granted_at, revoked_at, grant_prompt,
-                     recipient_kind, terms_version, approved_via)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, ?, ?, ?, ?)
+                     recipient_kind, terms_version, approved_via,
+                     redaction_policy_version)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, ?, ?, ?, ?, ?)
                 """,  # noqa: S608  # TableRef + parameterized values
                 [
                     grant_id,
@@ -141,6 +145,7 @@ class ConsentRepo(BaseRepo):
                     recipient_kind,
                     terms_version,
                     approved_via,
+                    redaction_policy_version,
                 ],
             )
             after = self._fetch_row(grant_id)

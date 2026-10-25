@@ -40,6 +40,10 @@ def privacy_revoke(
             raise typer.BadParameter(
                 "--recipient and --backend are mutually exclusive."
             )
+        if category != "smart-import-parsing":
+            raise typer.BadParameter(
+                "--recipient applies only to 'smart-import-parsing'."
+            )
         host = host_for_recipient_name(recipient)
         if host is None:
             raise typer.BadParameter(

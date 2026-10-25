@@ -23,11 +23,16 @@ _COLUMNS = (
         "VARCHAR",
         "Surface that recorded the consent, e.g. cli_prompt (ai_host rows only; NULL for ai_backend)",
     ),
+    (
+        "redaction_policy_version",
+        "VARCHAR",
+        "Redaction policy version the user consented under (ai_host rows only; NULL for ai_backend); a release that changes the redaction policy stops honoring the grant",
+    ),
 )
 
 
 def migrate(conn: object) -> None:
-    """Add the three columns with comments. Idempotent."""
+    """Add the columns with comments. Idempotent."""
     for column, ddl, comment in _COLUMNS:
         conn.execute(  # type: ignore[attr-defined]
             f"ALTER TABLE app.ai_consent_grants ADD COLUMN IF NOT EXISTS {column} {ddl}"
