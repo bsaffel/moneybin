@@ -61,11 +61,13 @@ CANARY_ACCOUNT_MIDDLE = "5926"
 CANARY_ACCOUNT_LAST_FOUR = "5358"
 CANARY_SSN = "900-12-3456"
 CANARY_SSN_PREFIX = "900-12"
+CANARY_ROUTING = "021000021"
 CANARIES = (
     CANARY_DESCRIPTION,
     CANARY_AMOUNT,
     CANARY_ACCOUNT_MIDDLE,
     CANARY_SSN_PREFIX,
+    CANARY_ROUTING,
 )
 
 #: A bridge response that reconciles against the canary statement.
@@ -124,6 +126,7 @@ CANARY_ROWS = [
 # routes to `metadata_incomplete` (bridge-eligible). The rows reconcile:
 # -47.31 + 1500.00 - 152.69 = 1300.00 = 3300.00 - 2000.00.
 _CANARY_LINES: tuple[tuple[float, float, str], ...] = (
+    (72, 756, f"Routing Number: {CANARY_ROUTING}"),
     (72, 740, "Canary Savings Union"),
     (72, 724, f"Account Number: {CANARY_ACCOUNT_NUMBER}"),
     (72, 708, f"Primary SSN: {CANARY_SSN}"),
@@ -208,4 +211,51 @@ def write_scanned_statement_pdf(tmp_path: Path) -> Path:
     """A PDF with no text layer, as a scanned statement presents."""
     dest = tmp_path / "scanned_statement.pdf"
     dest.write_bytes(_minimal_pdf(()))
+    return dest
+
+
+def write_canary_replay_failure_pdf(tmp_path: Path) -> Path:
+    """The canary layout with a closing balance the saved recipe cannot reconcile."""
+    lines = tuple(
+        (x, y, "Closing Funds: $9999.00" if text.startswith("Closing Funds") else text)
+        for x, y, text in _CANARY_LINES
+    )
+    dest = tmp_path / "canary_replay_failure.pdf"
+    dest.write_bytes(
+        _minimal_pdf(lines, rule_xs=_CANARY_RULE_XS, rule_ys=_CANARY_RULE_YS)
+    )
+    return dest
+
+
+_DETERMINISTIC_LINES: tuple[tuple[float, float, str], ...] = (
+    (72, 740, "Canary Savings Union"),
+    (72, 724, f"Account Number: {CANARY_ACCOUNT_NUMBER}"),
+    (72, 692, "Statement Period: 01/01/2024 to 01/31/2024"),
+    (72, 676, "Beginning Balance: $2000.00"),
+    (72, 660, "Ending Balance: $3300.00"),
+    (72, 616, "Date"),
+    (168, 616, f"Description {CANARY_ACCOUNT_NUMBER}"),
+    (456, 616, "Amount"),
+    (72, 600, "01/03/2024"),
+    (168, 600, CANARY_DESCRIPTION),
+    (456, 600, CANARY_AMOUNT),
+    (72, 584, "01/10/2024"),
+    (168, 584, "PAYROLL DEPOSIT"),
+    (456, 584, "1500.00"),
+    (72, 568, "01/20/2024"),
+    (168, 568, "UTILITY PAYMENT"),
+    (456, 568, "-152.69"),
+)
+
+
+def write_canary_deterministic_pdf(tmp_path: Path) -> Path:
+    """A statement the deterministic rung parses, with an account number in a header."""
+    dest = tmp_path / "canary_deterministic.pdf"
+    dest.write_bytes(
+        _minimal_pdf(
+            _DETERMINISTIC_LINES,
+            rule_xs=(72, 168, 456, 540),
+            rule_ys=(628, 612, 596, 580, 564),
+        )
+    )
     return dest

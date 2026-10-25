@@ -486,36 +486,6 @@ def test_tcc_denied_confirm_is_classified_not_a_traceback(
 _REVOKE_HINT = "privacy revoke smart-import-parsing --recipient claude-code"
 
 
-@pytest.fixture()
-def consent_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """An isolated encrypted profile database that ``get_database()`` opens."""
-    import moneybin.database as db_module
-    from moneybin.database import Database
-    from tests.moneybin.db_helpers import create_core_tables_raw
-
-    store = MagicMock()
-    store.get_key.return_value = "test-encryption-key-for-unit-tests"
-    db_path = tmp_path / "consent.duckdb"
-    database = Database(
-        db_path, secret_store=store, no_auto_upgrade=True, read_only=False
-    )
-    create_core_tables_raw(database.conn)
-    database.close()
-
-    settings = MagicMock()
-    settings.database.path = db_path
-    monkeypatch.setattr("moneybin.database.get_settings", lambda: settings)
-    monkeypatch.setattr("moneybin.database.SecretStore", lambda: store)
-    monkeypatch.setattr(db_module, "_migration_check_done", set[Path]())
-    monkeypatch.setattr(db_module, "_cached_encryption_key", None)
-    monkeypatch.setattr(db_module, "_active_write_conn", None)
-    monkeypatch.setattr(
-        "moneybin.privacy.log._resolve_privacy_log_dir",
-        lambda: tmp_path / "privacy_log",
-    )
-    return db_path
-
-
 def _audit_after(action: str) -> list[dict[str, object]]:
     import json
 
@@ -902,37 +872,19 @@ def _wrap_consented_release(monkeypatch: pytest.MonkeyPatch, change: object) -> 
 def test_verbose_preview_leaks_no_document_text(
     consent_db: Path,
     canary_pdf: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    verbose_file_logging: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """R19: DEBUG logging must not carry PDF text before consent, anywhere."""
     import logging
 
-    from moneybin.logging.config import setup_logging
-
     monkeypatch.delenv("CLAUDECODE", raising=False)
-    root = logging.getLogger()
-    saved_handlers, saved_level = list(root.handlers), root.level
-    pdfminer = logging.getLogger("pdfminer")
-    monkeypatch.setattr(pdfminer, "level", logging.NOTSET)
-    log_path = tmp_path / "logs" / "moneybin.log"
-    log_path.parent.mkdir()
-    try:
-        setup_logging(
-            stream="cli", verbose=True, log_to_file=True, log_file_path=log_path
-        )
-        with caplog.at_level(logging.DEBUG):
-            result = runner.invoke(app, ["preview", str(canary_pdf)])
-    finally:
-        for handler in root.handlers[:]:
-            if handler not in saved_handlers:
-                handler.close()
-        root.handlers = saved_handlers
-        root.level = saved_level
+    with caplog.at_level(logging.DEBUG):
+        result = runner.invoke(app, ["preview", str(canary_pdf)])
 
     assert result.exit_code == 0, result.output
-    logged = "\n".join(p.read_text() for p in log_path.parent.glob("*.log"))
+    logged = "\n".join(p.read_text() for p in verbose_file_logging.glob("*.log"))
     _assert_no_canary(result.stdout, result.stderr, caplog.text, logged)
 
 

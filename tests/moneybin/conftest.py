@@ -466,3 +466,67 @@ def declare_only_models(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
         )
 
     return _declare
+
+
+@pytest.fixture()
+def consent_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An isolated encrypted profile database that ``get_database()`` opens."""
+    import moneybin.database as db_module
+    from moneybin.database import Database
+    from tests.moneybin.db_helpers import create_core_tables_raw
+
+    store = MagicMock()
+    store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    db_path = tmp_path / "consent.duckdb"
+    database = Database(
+        db_path, secret_store=store, no_auto_upgrade=True, read_only=False
+    )
+    create_core_tables_raw(database.conn)
+    database.close()
+
+    settings = MagicMock()
+    settings.database.path = db_path
+    monkeypatch.setattr("moneybin.database.get_settings", lambda: settings)
+    monkeypatch.setattr("moneybin.database.SecretStore", lambda: store)
+    monkeypatch.setattr(db_module, "_migration_check_done", set[Path]())
+    monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+    monkeypatch.setattr(db_module, "_active_write_conn", None)
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: tmp_path / "privacy_log",
+    )
+    return db_path
+
+
+@pytest.fixture()
+def verbose_file_logging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Generator[Path, None, None]:
+    """``--verbose`` CLI logging wired to a log file; yields the log directory.
+
+    Resets the ``pdfminer`` logger first so the config's WARNING pin is what the
+    test exercises. Request ``caplog`` before this fixture so its handler is saved.
+    """
+    import logging
+
+    from moneybin.logging.config import setup_logging
+
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
+    monkeypatch.setattr(logging.getLogger("pdfminer"), "level", logging.NOTSET)
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    setup_logging(
+        stream="cli",
+        verbose=True,
+        log_to_file=True,
+        log_file_path=log_dir / "moneybin.log",
+    )
+    try:
+        yield log_dir
+    finally:
+        for handler in root.handlers[:]:
+            if handler not in saved_handlers:
+                handler.close()
+        root.handlers = saved_handlers
+        root.level = saved_level
