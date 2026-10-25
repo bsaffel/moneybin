@@ -2,11 +2,22 @@
 
 import pytest
 
+from moneybin.extractors.pdf.identity import (
+    is_aba_checksum_valid,
+    is_valid_aba_routing_number,
+)
 from moneybin.extractors.pdf.redaction import redact_critical, redact_tables
 
 
 @pytest.mark.parametrize(
-    "spelling", ["1234-5678-9012", "1234 5678 9012", "123456789012"]
+    "spelling",
+    [
+        "1234-5678-9012",
+        "1234 5678 9012",
+        "123456789012",
+        "1234.5678.9012",
+        "1234/5678/9012",
+    ],
 )
 def test_identified_account_redacted_in_any_separator_form(spelling: str) -> None:
     text = f"Account {spelling} summary"
@@ -49,3 +60,16 @@ def test_tables_redacted_cellwise() -> None:
     assert out[0][0][1] == "XXXXXXXX9012"
     assert out[0][1] == ["Desc", "-4.00"]
     assert out[0][2][0] is None
+
+
+def test_routing_checksum_valid_outside_account_prefix_ranges_redacted() -> None:
+    assert is_aba_checksum_valid("500000005")
+    assert not is_valid_aba_routing_number("500000005")
+    assert redact_critical("RTN 500000005", account_identifiers=[]) == "RTN XXXXX0005"
+
+
+def test_zero_padded_identifier_redacted() -> None:
+    out = redact_critical(
+        "Acct 000123456789012 x", account_identifiers=["123456789012"]
+    )
+    assert out == "Acct XXXXXXXXXXX9012 x"

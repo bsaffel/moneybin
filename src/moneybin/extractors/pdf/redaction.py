@@ -3,7 +3,7 @@
 import re
 from collections.abc import Sequence
 
-from moneybin.extractors.pdf.identity import is_valid_aba_routing_number
+from moneybin.extractors.pdf.identity import is_aba_checksum_valid
 
 _KEEP_LAST = 4
 _SSN = re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")
@@ -28,8 +28,8 @@ def _identifier_pattern(identifier: str) -> re.Pattern[str] | None:
     digits = re.sub(r"\D", "", identifier)
     if len(digits) <= _KEEP_LAST:
         return None
-    body = r"[\s-]?".join(digits)
-    return re.compile(rf"(?<!\d){body}(?!\d)")
+    body = r"[\s./-]{0,2}".join(digits)
+    return re.compile(rf"(?<!\d)0*{body}(?!\d)")
 
 
 def redact_critical(text: str, *, account_identifiers: Sequence[str]) -> str:
@@ -41,9 +41,7 @@ def redact_critical(text: str, *, account_identifiers: Sequence[str]) -> str:
     text = _SSN.sub(lambda m: _mask_digits(m.group()), text)
     return _ROUTING.sub(
         lambda m: (
-            _mask_digits(m.group())
-            if is_valid_aba_routing_number(m.group())
-            else m.group()
+            _mask_digits(m.group()) if is_aba_checksum_valid(m.group()) else m.group()
         ),
         text,
     )
