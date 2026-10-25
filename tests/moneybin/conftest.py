@@ -360,6 +360,22 @@ def simple_statement_pdf() -> Path:
 
 
 @pytest.fixture()
+def canary_pdf(tmp_path: Path) -> Path:
+    """Synthetic bridge-eligible statement seeded with disclosure canaries."""
+    from tests.moneybin.pdf_statement_fixtures import write_canary_statement_pdf
+
+    return write_canary_statement_pdf(tmp_path)
+
+
+@pytest.fixture()
+def scanned_pdf(tmp_path: Path) -> Path:
+    """A PDF with no text layer."""
+    from tests.moneybin.pdf_statement_fixtures import write_scanned_statement_pdf
+
+    return write_scanned_statement_pdf(tmp_path)
+
+
+@pytest.fixture()
 def empty_statement_pdf() -> Path:
     """Path to the committed empty-statement fixture PDF (no table structure).
 

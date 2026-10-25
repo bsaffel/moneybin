@@ -59,10 +59,17 @@ class ImportConfirmationBridgeTable(TypedDict, total=False):
     rows: list[list[Annotated[str, DataClass.DESCRIPTION]]]
 
 
+class ImportConfirmationAIAssistance(TypedDict):
+    """Content-free notice that a PDF needs AI help; no document content."""
+
+    file_sha256: Annotated[str, DataClass.RECORD_ID]
+    decision_reason: Annotated[str, DataClass.TXN_TYPE]
+    request_kind: Annotated[str, DataClass.TXN_TYPE]
+
+
 class ImportConfirmationBridgePayload(TypedDict, total=False):
     """Typed PDF bridge content shared with the import-preview classification."""
 
-    transparency_notice: Annotated[str, DataClass.DESCRIPTION]
     source_file: Annotated[str, DataClass.RECORD_ID]
     document_text: Annotated[str, DataClass.DESCRIPTION]
     tables_preview: list[ImportConfirmationBridgeTable]
@@ -157,6 +164,7 @@ class ImportConfirmationPayload(TypedDict, total=False):
     missing_required: Annotated[list[str], DataClass.TXN_TYPE]
     unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
     bridge_payload: ImportConfirmationBridgePayload | None
+    ai_assistance: ImportConfirmationAIAssistance | None
     sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
     sign_prior_convention: Annotated[str | None, DataClass.TXN_TYPE]
     sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
@@ -213,6 +221,7 @@ class CLIConfirmationRequiredPayload:
     missing_required: Annotated[list[str], DataClass.TXN_TYPE]
     unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
     bridge_payload: ImportConfirmationBridgePayload | None
+    ai_assistance: ImportConfirmationAIAssistance | None
     sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
     sign_prior_convention: Annotated[str | None, DataClass.TXN_TYPE]
     sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
@@ -416,7 +425,6 @@ class ImportBridgeStatementPayload(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    transparency_notice: Annotated[str, DataClass.DESCRIPTION]
     source_file: Annotated[str, DataClass.RECORD_ID]
     document_text: Annotated[str, DataClass.DESCRIPTION]
     tables_preview: list[ImportBridgeTablePreview]

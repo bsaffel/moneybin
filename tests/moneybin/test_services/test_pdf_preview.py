@@ -2,9 +2,10 @@
 
 The preview method runs the deterministic rung, then either returns a typed
 ``PdfPreviewResult`` (when the deterministic outcome is final) or raises
-``ImportConfirmationRequiredError`` carrying a ``BridgePayload`` (when the
-agent can help — bridge-eligible failure modes). The escalation also writes
-a ``smart_import_parse`` audit row (Req 14) and bumps the egress metric.
+``ImportConfirmationRequiredError``. On a bridge-eligible failure without a
+recorded consent the proposal is a content-free ``AIAssistanceRequired``; with
+consent it is a redacted ``BridgePayload``, and only that release writes the
+``smart_import_parse`` audit row and bumps the egress metric.
 
 These tests stub ``route_pdf_import`` and ``PDFExtractor.extract`` because
 the unit under test is the dispatch logic in ``pdf_preview``, not the
@@ -13,24 +14,70 @@ routing math (which has its own dedicated tests in ``test_routing.py``).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import moneybin.extractors.pdf.bridge as bridge_mod
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.recipe import Recipe
 from moneybin.extractors.pdf.routing import RouteDecision
-from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+from moneybin.metrics.registry import (
+    PDF_BRIDGE_EGRESS_TOTAL,
+    PDF_DISCLOSURE_CONSENT_TOTAL,
+)
+from moneybin.privacy.disclosure import host_for_recipient_name
 from moneybin.services.import_confirmation import (
+    AIAssistanceRequired,
     BridgePayload,
+    DisclosureConsent,
     ImportConfirmationRequiredError,
     SignConventionProposal,
 )
 from moneybin.services.import_service import ImportService, PdfPreviewResult
-from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
+from tests.moneybin.pdf_statement_fixtures import (
+    CANARIES,
+    CANARY_ACCOUNT_LAST_FOUR,
+    CANARY_ACCOUNT_MIDDLE,
+    CANARY_AMOUNT,
+    CANARY_DESCRIPTION,
+    CANARY_SSN_PREFIX,
+    write_card_statement_pdf,
+)
+
+
+def _consent(
+    *,
+    approved_via: str = "prompt",
+    grant_id: str | None = None,
+    binding_id: str | None = "binding-0001",
+) -> DisclosureConsent:
+    host = host_for_recipient_name("claude-code")
+    assert host is not None
+    return DisclosureConsent(
+        host=host,
+        approved_via=approved_via,  # type: ignore[arg-type]  # test literal
+        grant_id=grant_id,
+        binding_id=binding_id,
+        remembered=approved_via == "remembered",
+    )
+
+
+def _released() -> float:
+    return PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="released")._value.get()  # type: ignore[reportPrivateUsage]  # prometheus internals
+
+
+def _parse_audit_count(db: Database) -> int:
+    row = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'smart_import_parse'"
+    ).fetchone()
+    return row[0] if row else 0
 
 
 def _make_recipe() -> Recipe:
@@ -161,7 +208,7 @@ def test_pdf_preview_deterministic_returns_typed_result(
     assert result.fingerprint is not None
 
 
-def test_pdf_preview_low_confidence_raises_bridge_escalation(
+def test_pdf_preview_low_confidence_without_consent_requires_ai_assistance(
     db: Database,
     tmp_path: Path,
     stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
@@ -175,12 +222,35 @@ def test_pdf_preview_low_confidence_raises_bridge_escalation(
 
     outcome = excinfo.value.outcome
     assert outcome.channel == "pdf"
+    assert outcome.reason == "ai_assistance_required"
+    assert isinstance(outcome.proposed, AIAssistanceRequired)
+    assert outcome.proposed.request_kind == "propose_recipe"
+    assert outcome.proposed.decision_reason == "low_confidence"
+    assert len(outcome.proposed.file_sha256) == 64
+
+
+def test_pdf_preview_low_confidence_with_consent_releases_bridge_payload(
+    db: Database,
+    tmp_path: Path,
+    stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
+) -> None:
+    decisions, docs = stub_pdf_pipeline
+    docs.append(_doc())
+    decisions.append(_decision(reason="low_confidence", confidence=0.4))
+
+    with pytest.raises(ImportConfirmationRequiredError) as excinfo:
+        ImportService(db).pdf_preview(
+            _make_pdf_path(tmp_path), disclosure_consent=_consent()
+        )
+
+    outcome = excinfo.value.outcome
+    assert outcome.channel == "pdf"
     assert outcome.reason == "unknown_layout"
     assert isinstance(outcome.proposed, BridgePayload)
     payload = outcome.proposed.payload
     assert payload["request_kind"] == "propose_recipe"
     assert payload["saved_recipe_for_re_derive"] is None
-    assert "transparency_notice" in payload
+    assert "transparency_notice" not in payload
     # compute_fingerprint resolves issuer from the document — not the stub.fp.
     assert set(payload["fingerprint"].keys()) >= {"issuer", "headers", "page_bucket"}
 
@@ -203,7 +273,9 @@ def test_pdf_preview_replay_failed_uses_replay_request_kind(
     )
 
     with pytest.raises(ImportConfirmationRequiredError) as excinfo:
-        ImportService(db).pdf_preview(_make_pdf_path(tmp_path))
+        ImportService(db).pdf_preview(
+            _make_pdf_path(tmp_path), disclosure_consent=_consent()
+        )
 
     outcome = excinfo.value.outcome
     assert outcome.reason == "validation_failure"
@@ -261,11 +333,12 @@ def test_pdf_preview_all_bridge_eligible_reasons_escalate(
         )
     )
 
-    with pytest.raises(ImportConfirmationRequiredError):
+    with pytest.raises(ImportConfirmationRequiredError) as excinfo:
         ImportService(db).pdf_preview(_make_pdf_path(tmp_path))
+    assert isinstance(excinfo.value.outcome.proposed, AIAssistanceRequired)
 
 
-def test_pdf_preview_escalation_writes_smart_import_parse_audit_row(
+def test_pdf_preview_release_writes_smart_import_parse_audit_row(
     db: Database,
     tmp_path: Path,
     stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
@@ -275,7 +348,10 @@ def test_pdf_preview_escalation_writes_smart_import_parse_audit_row(
     decisions.append(_decision(reason="low_confidence", confidence=0.4))
 
     with pytest.raises(ImportConfirmationRequiredError):
-        ImportService(db).pdf_preview(_make_pdf_path(tmp_path))
+        ImportService(db).pdf_preview(
+            _make_pdf_path(tmp_path),
+            disclosure_consent=_consent(approved_via="remembered", grant_id="g-1"),
+        )
 
     rows = db.conn.execute(
         "SELECT actor, action, target_schema, target_table, after_value, context_json "
@@ -292,9 +368,13 @@ def test_pdf_preview_escalation_writes_smart_import_parse_audit_row(
     context_json = json.loads(context)
     assert context_json["confidence"] == 0.4
     assert context_json["decision_reason"] == "low_confidence"
+    assert context_json["approved_via"] == "remembered"
+    assert context_json["grant_id"] == "g-1"
+    assert context_json["binding_id"] == "binding-0001"
+    assert context_json["recipient"] == "local:claude-code"
 
 
-def test_pdf_preview_escalation_increments_egress_metric(
+def test_pdf_preview_release_increments_egress_metric(
     db: Database,
     tmp_path: Path,
     stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
@@ -303,11 +383,12 @@ def test_pdf_preview_escalation_increments_egress_metric(
     docs.append(_doc())
     decisions.append(_decision(reason="low_confidence", confidence=0.4))
 
-    before = PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed")._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+    before = _released()
     with pytest.raises(ImportConfirmationRequiredError):
-        ImportService(db).pdf_preview(_make_pdf_path(tmp_path))
-    after = PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed")._value.get()  # type: ignore[reportPrivateUsage]
-    assert after == before + 1
+        ImportService(db).pdf_preview(
+            _make_pdf_path(tmp_path), disclosure_consent=_consent()
+        )
+    assert _released() == before + 1
 
 
 @pytest.mark.parametrize(
@@ -413,3 +494,217 @@ def test_pdf_preview_card_statement_confirm_true_returns_deterministic_result(
     assert result.deterministic is True
     assert result.decision_reason == "passed"
     assert result.row_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Disclosure consent — the canary statement goes through the REAL extractor
+# and router; nothing it contains may leave before consent.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_without_consent_is_content_free(
+    db: Database, canary_pdf: Path
+) -> None:
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).pdf_preview(canary_pdf)
+
+    outcome = exc.value.outcome
+    proposed = outcome.proposed
+    assert isinstance(proposed, AIAssistanceRequired)
+    assert outcome.reason == "ai_assistance_required"
+    dumped = json.dumps(dataclasses.asdict(outcome), default=str)
+    for canary in CANARIES:
+        assert canary not in dumped
+    assert "fingerprint" not in dumped
+
+
+def test_preview_without_consent_writes_no_parse_audit_and_no_release_metric(
+    db: Database, canary_pdf: Path
+) -> None:
+    before = _released()
+    with pytest.raises(ImportConfirmationRequiredError):
+        ImportService(db).pdf_preview(canary_pdf)
+
+    assert _parse_audit_count(db) == 0
+    assert _released() == before
+    audit_dump = json.dumps(
+        db.conn.execute("SELECT * FROM app.audit_log").fetchall(), default=str
+    )
+    for canary in CANARIES:
+        assert canary not in audit_dump
+
+
+def test_build_bridge_request_not_called_without_consent(
+    db: Database, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("build_bridge_request called before consent")
+
+    monkeypatch.setattr(bridge_mod, "build_bridge_request", _boom)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).pdf_preview(canary_pdf)
+    assert isinstance(exc.value.outcome.proposed, AIAssistanceRequired)
+
+
+def test_preview_with_consent_releases_redacted_payload(
+    db: Database, canary_pdf: Path
+) -> None:
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).pdf_preview(canary_pdf, disclosure_consent=_consent())
+
+    proposed = exc.value.outcome.proposed
+    assert isinstance(proposed, BridgePayload)
+    payload = proposed.payload
+    text = json.dumps(payload)
+    assert CANARY_DESCRIPTION in text
+    assert CANARY_AMOUNT in text
+    assert CANARY_ACCOUNT_LAST_FOUR in text
+    assert CANARY_ACCOUNT_MIDDLE not in text
+    assert CANARY_SSN_PREFIX not in text
+    assert "transparency_notice" not in payload
+
+
+def test_release_writes_parse_audit_with_consent_reference(
+    db: Database, canary_pdf: Path
+) -> None:
+    with pytest.raises(ImportConfirmationRequiredError):
+        ImportService(db).pdf_preview(
+            canary_pdf, disclosure_consent=_consent(approved_via="agent_relay")
+        )
+
+    rows = db.conn.execute(
+        "SELECT after_value, context_json FROM app.audit_log "
+        "WHERE action = 'smart_import_parse'"
+    ).fetchall()
+    assert len(rows) == 1
+    after, context = rows[0]
+    context_json = json.loads(context)
+    assert context_json["approved_via"] == "agent_relay"
+    assert context_json["binding_id"] == "binding-0001"
+    assert context_json["grant_id"] is None
+    for canary in CANARIES:
+        assert canary not in after
+        assert canary not in context
+
+
+def test_record_disclosure_decision_declined(db: Database) -> None:
+    host = host_for_recipient_name("claude-code")
+    assert host is not None
+    counter = PDF_DISCLOSURE_CONSENT_TOTAL.labels(
+        outcome="declined", approved_via="cli_prompt"
+    )
+    before = counter._value.get()  # type: ignore[reportPrivateUsage]  # prometheus internals
+
+    ImportService(db).record_disclosure_decision(
+        host=host,
+        outcome="declined",
+        approved_via="cli_prompt",
+        remembered=False,
+        grant_id=None,
+        file_sha256s=["b" * 64, "a" * 64],
+        decision_reason="metadata_incomplete",
+    )
+
+    rows = db.conn.execute(
+        "SELECT actor, target_schema, target_table, after_value, context_json "
+        "FROM app.audit_log WHERE action = 'smart_import_consent'"
+    ).fetchall()
+    assert len(rows) == 1
+    _actor, schema, table, after, _context = rows[0]
+    assert (schema, table) == ("app", "ai_consent_grants")
+    after_json = json.loads(after)
+    assert after_json["outcome"] == "declined"
+    assert after_json["approved_via"] == "cli_prompt"
+    assert after_json["recipient"] == "local:claude-code"
+    assert after_json["identified"] is True
+    assert after_json["terms_version"] == "anthropic-2026-10"
+    assert after_json["remembered"] is False
+    assert after_json["grant_id"] is None
+    assert after_json["file_sha256s"] == ["a" * 64, "b" * 64]
+    assert after_json["decision_reason"] == "metadata_incomplete"
+    assert "fingerprint" not in after_json
+    assert counter._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+
+
+def test_recipe_from_redacted_text_replays_against_original(
+    db: Database, canary_pdf: Path
+) -> None:
+    """A recipe written from the redacted release reconciles locally."""
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).pdf_preview(canary_pdf, disclosure_consent=_consent())
+    proposed = exc.value.outcome.proposed
+    assert isinstance(proposed, BridgePayload)
+    released_text = proposed.payload["document_text"]
+    # What the agent sees and patterns against: the redacted account line.
+    assert "XXXX XXXX 5358" in released_text
+
+    recipe = {
+        "metadata_anchors": [
+            {
+                "name": "account_id",
+                "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{4} \d{4})",
+                "cast": "str",
+            },
+            {
+                "name": "period_start",
+                "pattern": r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
+                "cast": "date",
+                "date_format": "%m/%d/%Y",
+            },
+            {
+                "name": "period_end",
+                "pattern": r"to\s+(\d{2}/\d{2}/\d{4})",
+                "cast": "date",
+                "date_format": "%m/%d/%Y",
+            },
+            {
+                "name": "opening_balance",
+                "pattern": r"Opening\s+Funds:\s+\$([\d,]+\.\d{2})",
+                "cast": "decimal",
+            },
+            {
+                "name": "closing_balance",
+                "pattern": r"Closing\s+Funds:\s+\$([\d,]+\.\d{2})",
+                "cast": "decimal",
+            },
+        ],
+        "row_region": {"start_anchor": "Date", "end_anchor": "@@END@@"},
+        "row_split": r"\s{2,}",
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}/\d{4}",
+                "cast": "date",
+                "date_format": "%m/%d/%Y",
+            },
+            {"name": "description", "pattern": r".+", "cast": "str"},
+            {"name": "amount", "pattern": r"-?[\d,]+\.\d{2}", "cast": "decimal"},
+        ],
+        "sign_convention": "negative_is_expense",
+        "routing": "transactions",
+    }
+    rows = [
+        {"date": "01/03/2024", "description": CANARY_DESCRIPTION, "amount": "-47.31"},
+        {"date": "01/10/2024", "description": "PAYROLL DEPOSIT", "amount": "1500.00"},
+        {"date": "01/20/2024", "description": "UTILITY PAYMENT", "amount": "-152.69"},
+    ]
+
+    result = ImportService(db).apply_pdf_bridge_response(
+        canary_pdf,
+        {"recipe": recipe, "rows": rows},
+        account_bindings={"@0": "new"},
+    )
+
+    assert result.outcome == "applied", result.reject_reason
+    assert result.rows_loaded == 3
+    loaded = db.conn.execute(
+        "SELECT DISTINCT account_number_masked FROM raw.tabular_accounts "
+        "WHERE source_type = 'pdf'"
+    ).fetchall()
+    assert loaded and all(str(r[0]).endswith(CANARY_ACCOUNT_LAST_FOUR) for r in loaded)
+
+
+def test_scanned_pdf_unchanged(db: Database, scanned_pdf: Path) -> None:
+    with pytest.raises(UserError) as exc:
+        ImportService(db).pdf_preview(scanned_pdf)
+    assert exc.value.code == error_codes.IMPORT_PDF_NO_TEXT_LAYER

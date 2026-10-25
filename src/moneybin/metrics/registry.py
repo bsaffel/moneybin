@@ -135,19 +135,27 @@ PDF_SEED_ROWS_TOTAL = Counter(
     ["alias"],
 )
 
-# Phase 2b — bridge egress events (Req 14). One increment per hand-off to the
-# driving agent. Outcomes: "proposed" (egress occurred, no response yet),
-# "applied" (agent returned a vetted recipe + rows that landed), "declined"
-# (agent or user rejected the proposal), "invalid" (response failed
-# parse_bridge_response / Recipe.model_validate). Labels stay bounded for stable
-# dashboards.
+# Phase 2b — bridge egress events. Outcomes: "released" (consented, redacted
+# content left in a response), "applied" (agent returned a vetted recipe + rows
+# that landed), "declined" (agent or user rejected the proposal), "invalid"
+# (response failed parse_bridge_response / Recipe.model_validate). A content-free
+# ai_assistance_required result counts nothing here. Labels stay bounded.
 PDF_BRIDGE_EGRESS_TOTAL = Counter(
     "moneybin_pdf_bridge_egress_total",
-    # Unit is tool invocations, NOT unique documents: "proposed" bumps once per
-    # escalating call, so one document previewed then imported emits two
-    # "proposed" increments. Do not normalize as a per-document count.
+    # Unit is tool invocations, NOT unique documents: "released" bumps once per
+    # consented call, so one document previewed then imported emits two
+    # "released" increments. Do not normalize as a per-document count.
     "PDF bridge hand-offs (per escalating tool call) to the driving agent by outcome.",
-    ["outcome"],  # values: "proposed", "applied", "declined", "invalid"
+    ["outcome"],  # values: "released", "applied", "declined", "invalid"
+)
+
+# PDF disclosure consent decisions (pdf-disclosure-consent.md section 9).
+PDF_DISCLOSURE_CONSENT_TOTAL = Counter(
+    "moneybin_pdf_disclosure_consent_total",
+    "PDF disclosure consent decisions by outcome and how consent was given.",
+    # outcome: "approved", "declined", "timeout", "expired"; approved_via:
+    # "prompt", "agent_relay", "cli_prompt", "cli_flag", "remembered".
+    ["outcome", "approved_via"],
 )
 
 # Sign-convention gate outcomes (ImportService._gate_pdf_sign_convention). A
