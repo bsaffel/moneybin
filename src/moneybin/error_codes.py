@@ -333,6 +333,7 @@ INVESTMENT_SOURCE_EXCLUDED = "investment_source_excluded"
 
 PRIVACY_CURSOR_INVALID = "privacy_cursor_invalid"
 PRIVACY_PAGINATION_NOT_ALLOWED = "privacy_pagination_not_allowed"
+PRIVACY_CONSENT_RECIPIENT_UNSUPPORTED = "privacy_consent_recipient_unsupported"
 
 
 # ---------------------------------------------------------------------------

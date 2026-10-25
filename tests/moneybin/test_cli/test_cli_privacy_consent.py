@@ -402,3 +402,82 @@ def test_cli_privacy_status_and_log_accept_complete_read_presentation_controls(
     assert "Category" in status.output
     assert log.exit_code == 0, log.output
     assert "Showing last 1 event" in log.output
+
+
+def test_cli_grant_recipient_requires_tty(runner: CliRunner, db: Database) -> None:
+    result = runner.invoke(
+        app, ["privacy", "grant", "smart-import-parsing", "--recipient", "claude-code"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "interactive" in result.output
+    assert db.execute("SELECT COUNT(*) FROM app.ai_consent_grants").fetchone() == (0,)
+
+
+def test_cli_grant_recipient_and_backend_exclusive(
+    runner: CliRunner, db: Database
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "privacy",
+            "grant",
+            "smart-import-parsing",
+            "--recipient",
+            "claude-code",
+            "--backend",
+            "anthropic",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+
+
+def test_cli_grant_unknown_recipient_lists_known_names(
+    runner: CliRunner, db: Database
+) -> None:
+    result = runner.invoke(
+        app, ["privacy", "grant", "smart-import-parsing", "--recipient", "nope"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "claude-code" in result.output and "cursor" in result.output
+
+
+def test_cli_grant_and_revoke_recipient_round_trip(
+    runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.cli.commands.privacy.grant._stdin_is_tty", lambda: True
+    )
+    granted = runner.invoke(
+        app,
+        ["privacy", "grant", "smart-import-parsing", "--recipient", "claude-code"],
+        input="y\n",
+    )
+    assert granted.exit_code == 0, granted.output
+    row = db.execute(
+        "SELECT recipient_kind, backend, approved_via, consent_mode "
+        "FROM app.ai_consent_grants WHERE revoked_at IS NULL"
+    ).fetchone()
+    assert row == ("ai_host", "local:claude-code", "cli_prompt", "persistent")
+
+    status = runner.invoke(app, ["privacy", "status", "--output", "json"])
+    assert status.exit_code == 0, status.output
+    grants = json.loads(status.output)["data"]["active_grants"]
+    assert grants[0]["recipient_kind"] == "ai_host"
+    assert grants[0]["approved_via"] == "cli_prompt"
+    assert grants[0]["terms_version"]
+
+    revoked = runner.invoke(
+        app,
+        [
+            "privacy",
+            "revoke",
+            "smart-import-parsing",
+            "--recipient",
+            "claude-code",
+            "--yes",
+        ],
+    )
+    assert revoked.exit_code == 0, revoked.output
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.ai_consent_grants WHERE revoked_at IS NULL"
+    ).fetchone() == (0,)

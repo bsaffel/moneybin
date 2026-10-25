@@ -31,7 +31,12 @@ _COLUMNS = (
     "granted_at",
     "revoked_at",
     "grant_prompt",
+    "recipient_kind",
+    "terms_version",
+    "approved_via",
 )
+
+_RECIPIENT_KINDS = frozenset({"ai_backend", "ai_host"})  # no CHECK: DuckDB ADD COLUMN
 
 
 def _row_to_grant(row: dict[str, Any]) -> GrantInfo:
@@ -42,6 +47,9 @@ def _row_to_grant(row: dict[str, Any]) -> GrantInfo:
         consent_mode=ConsentMode(row["consent_mode"]),
         granted_at=row["granted_at"],
         revoked_at=row["revoked_at"],
+        recipient_kind=row["recipient_kind"],
+        terms_version=row["terms_version"],
+        approved_via=row["approved_via"],
     )
 
 
@@ -71,12 +79,18 @@ class ConsentRepo(BaseRepo):
         ).fetchone()
         return row is not None
 
-    def _active_for(self, feature_category: str, backend: str) -> dict[str, Any] | None:
+    def _active_for(
+        self,
+        feature_category: str,
+        backend: str,
+        recipient_kind: str = "ai_backend",
+    ) -> dict[str, Any] | None:
         cols = ", ".join(quote_ident(c) for c in _COLUMNS)
         row = self._db.execute(
             f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
-            "WHERE feature_category = ? AND backend = ? AND revoked_at IS NULL",
-            [feature_category, backend],
+            "WHERE feature_category = ? AND backend = ? AND recipient_kind = ? "
+            "AND revoked_at IS NULL",
+            [feature_category, backend, recipient_kind],
         ).fetchone()
         return dict(zip(_COLUMNS, row, strict=True)) if row is not None else None
 
@@ -88,6 +102,9 @@ class ConsentRepo(BaseRepo):
         consent_mode: ConsentMode,
         grant_prompt: str,
         actor: str,
+        recipient_kind: str = "ai_backend",
+        terms_version: str | None = None,
+        approved_via: str | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> tuple[GrantInfo, bool]:
@@ -100,8 +117,10 @@ class ConsentRepo(BaseRepo):
         a mode, revoke then re-grant. Otherwise a new active grant is inserted
         with a paired audit row and ``created=True``.
         """
+        if recipient_kind not in _RECIPIENT_KINDS:
+            raise ValueError(f"Unknown recipient_kind: {recipient_kind!r}")
         with self._transaction(in_outer_txn=in_outer_txn):
-            existing = self._active_for(feature_category, backend)
+            existing = self._active_for(feature_category, backend, recipient_kind)
             if existing is not None:
                 return _row_to_grant(existing), False
             grant_id = uuid.uuid4().hex[:12]
@@ -109,10 +128,20 @@ class ConsentRepo(BaseRepo):
                 f"""
                 INSERT INTO {AI_CONSENT_GRANTS.full_name}
                     (grant_id, feature_category, backend, consent_mode,
-                     granted_at, revoked_at, grant_prompt)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, ?)
+                     granted_at, revoked_at, grant_prompt,
+                     recipient_kind, terms_version, approved_via)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, ?, ?, ?, ?)
                 """,  # noqa: S608  # TableRef + parameterized values
-                [grant_id, feature_category, backend, consent_mode.value, grant_prompt],
+                [
+                    grant_id,
+                    feature_category,
+                    backend,
+                    consent_mode.value,
+                    grant_prompt,
+                    recipient_kind,
+                    terms_version,
+                    approved_via,
+                ],
             )
             after = self._fetch_row(grant_id)
             if after is None:  # pragma: no cover — just inserted, must exist
@@ -135,12 +164,13 @@ class ConsentRepo(BaseRepo):
         feature_category: str,
         backend: str,
         actor: str,
+        recipient_kind: str = "ai_backend",
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> int:
-        """Revoke the active grant for (feature_category, backend). Returns 0 or 1."""
+        """Revoke the active grant for the (category, backend, kind). Returns 0 or 1."""
         with self._transaction(in_outer_txn=in_outer_txn):
-            existing = self._active_for(feature_category, backend)
+            existing = self._active_for(feature_category, backend, recipient_kind)
             if existing is None:
                 return 0
             grant_id = existing["grant_id"]

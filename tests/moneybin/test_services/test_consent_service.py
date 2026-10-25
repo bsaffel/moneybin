@@ -346,3 +346,95 @@ def test_consent_target_batch_rolls_back_late_failure(
         "SELECT COUNT(*) FROM app.audit_log WHERE action = 'consent.revoke'"
     ).fetchone() == (0,)
     assert read_privacy_events({"action": "consent.revoke"}, max_rows=10) == []
+
+
+# --- ai_host recipients (MB-59) ---
+
+from moneybin.privacy.disclosure import (  # noqa: E402  # grouped with the MB-59 tests
+    host_from_client_info,
+    host_from_environment,
+    terms_version_for,
+)
+
+_HOST_CATEGORY = "smart-import-parsing"
+
+
+def _host(name: str = "claude-ai", transport: str = "stdio"):  # test helper
+    return host_from_client_info(name, "1", transport=transport)  # type: ignore[arg-type]  # test transport literal
+
+
+def test_host_grant_does_not_collide_with_backend_grant(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_consent(
+        feature_category=_HOST_CATEGORY,
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    grant = svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+    assert grant.recipient_kind == "ai_host"
+    assert grant.backend == "local:claude-ai"
+    assert grant.approved_via == "cli_prompt"
+    assert grant.terms_version == terms_version_for(_host())
+    assert svc.active_host_grant(host=_host()) is not None
+
+
+def test_legacy_backend_grant_does_not_satisfy_host_gate(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_consent(
+        feature_category=_HOST_CATEGORY,
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    assert svc.active_host_grant(host=_host()) is None
+
+
+def test_terms_version_bump_deactivates_host_grant(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+
+    def _bumped(_host: object) -> str:
+        return "bumped"
+
+    monkeypatch.setattr("moneybin.services.consent_service.terms_version_for", _bumped)
+    assert svc.active_host_grant(host=_host()) is None
+
+
+def test_active_host_grant_requires_matching_transport(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+    assert svc.active_host_grant(host=_host(transport="http")) is None
+
+
+def test_unidentified_host_cannot_be_granted(db: Database) -> None:
+    svc = ConsentService(db)
+    with pytest.raises(ValueError):
+        svc.grant_host_consent(
+            host=host_from_environment({}), approved_via="cli_prompt", actor="cli"
+        )
+    assert svc.active_host_grant(host=host_from_environment({})) is None
+
+
+def test_revoke_host_consent(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+    result = svc.revoke_host_consent(recipient_key="local:claude-ai", actor="cli")
+    assert result.count == 1 and result.backend == "local:claude-ai"
+    assert svc.active_host_grant(host=_host()) is None
+    assert (
+        svc.revoke_host_consent(recipient_key="local:claude-ai", actor="cli").count == 0
+    )
+
+
+def test_backend_name_shaped_like_recipient_key_is_refused(db: Database) -> None:
+    with pytest.raises(UserError) as exc:
+        ConsentService(db).grant_consent(
+            feature_category=_HOST_CATEGORY,
+            backend="local:claude-ai",
+            consent_mode=ConsentMode.PERSISTENT,
+            actor="mcp",
+        )
+    assert exc.value.code == "privacy_consent_recipient_unsupported"

@@ -31,6 +31,9 @@ def test_consent_grants_table_exists(db: Database) -> None:
         "granted_at",
         "revoked_at",
         "grant_prompt",
+        "recipient_kind",
+        "terms_version",
+        "approved_via",
     }
 
 

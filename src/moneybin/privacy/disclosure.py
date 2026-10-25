@@ -92,8 +92,16 @@ _HOSTS: dict[str, _HostEntry] = {
 }
 
 
+_MAX_REPORTED_NAME = 64
+
+
 def _normalize(name: str) -> str:
     return name.strip().lower()
+
+
+def _printable_capped(name: str) -> str:
+    """Self-reported names reach consent text: printable characters only, capped."""
+    return "".join(c for c in name if c.isprintable())[:_MAX_REPORTED_NAME]
 
 
 def _entry_for_client_name(name: str) -> tuple[str, _HostEntry] | None:
@@ -116,7 +124,13 @@ def host_from_client_info(
     match = _entry_for_client_name(normalized)
     if match is None:
         return AIHost(
-            normalized, version, False, "reported_by_client", transport, None, None
+            _printable_capped(normalized),
+            version,
+            False,
+            "reported_by_client",
+            transport,
+            None,
+            None,
         )
     host_id, entry = match
     return AIHost(
@@ -148,6 +162,17 @@ def host_from_environment(env: Mapping[str, str]) -> AIHost:
     return AIHost(None, None, False, "none", "cli", None, None)
 
 
+def host_for_recipient_name(name: str) -> AIHost | None:
+    """The CLI-transport host for a known host name, or None if unknown."""
+    host_id = _normalize(name)
+    entry = _HOSTS.get(host_id)
+    if entry is None:
+        return None
+    return AIHost(
+        host_id, None, True, "cli_environment", "cli", entry.display_name, entry.terms
+    )
+
+
 def known_host_names() -> tuple[str, ...]:
     """Normalized ids of the hosts in the release table."""
     return tuple(_HOSTS)
@@ -160,7 +185,7 @@ def terms_version_for(host: AIHost) -> str:
 
 def risk_statement(host: AIHost, *, file_names: Sequence[str]) -> str:
     """The one consent text shared by every surface (spec section 10)."""
-    files = ", ".join(file_names)
+    files = ", ".join(file_names) or "your PDF statements"
     label = host.display_name or host.name or "your AI app"
     if host.terms is None:
         terms = (

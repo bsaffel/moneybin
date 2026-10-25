@@ -2,6 +2,7 @@
 
 from moneybin.privacy.disclosure import (
     disclosure_request_id,
+    host_for_recipient_name,
     host_from_client_info,
     host_from_environment,
     risk_statement,
@@ -91,3 +92,25 @@ def test_request_id_changes_with_inputs() -> None:
 
 def test_terms_version_for_unidentified_is_none() -> None:
     assert terms_version_for(host_from_environment({})) == "none"
+
+
+def test_risk_statement_with_no_files_has_no_empty_artifact() -> None:
+    host = host_from_client_info("claude-ai", "1", transport="stdio")
+    text = risk_statement(host, file_names=[])
+    assert "To read ," not in text and "To read  " not in text
+    assert "your PDF statements" in text
+
+
+def test_unidentified_host_name_is_capped_and_printable() -> None:
+    raw = "evil\x1b[31m\nname" + "x" * 500
+    host = host_from_client_info(raw, "1", transport="stdio")
+    text = risk_statement(host, file_names=["a.pdf"])
+    assert "\x1b" not in text and "\n\n" not in text.split("(as reported")[0]
+    assert "x" * 65 not in text
+
+
+def test_host_for_recipient_name_known_and_unknown() -> None:
+    host = host_for_recipient_name(" Claude-Code ")
+    assert host is not None and host.identified
+    assert host.recipient_key == "local:claude-code" and host.transport == "cli"
+    assert host_for_recipient_name("nope") is None
