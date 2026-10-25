@@ -133,7 +133,7 @@ dependencies = [
     # peer or a snapshot must pass by_alias=True (see surface_inventory).
     "mcp>=2.2.0,<3",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
-    "tomlkit>=0.15.1",
+    "tomlkit>=0.15.2",
     "httpx>=0.28.1",
     "pdfplumber>=0.11.10",
     # Used instead of stdlib `re` because stdlib has no `timeout=` parameter.
