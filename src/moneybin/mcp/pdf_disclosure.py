@@ -8,6 +8,7 @@ carrying the content-free consent request.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import threading
 from collections.abc import Sequence
@@ -23,6 +24,7 @@ from moneybin.adapters.pdf_disclosure_adapters import (
     consent_request,
     display_label,
     file_names,
+    remember_text,
     remembered_notice,
 )
 from moneybin.config import get_settings
@@ -89,10 +91,15 @@ class DisclosureConsentPendingError(Exception):
 
 @dataclass(frozen=True)
 class ObtainedConsent:
-    """A verified consent plus the notice the response must carry, if any."""
+    """A verified consent awaiting release; settle it only after the release.
+
+    ``remember_prompt`` is the exact text shown, stored as the grant's prompt.
+    """
 
     consent: DisclosureConsent
     notice: str | None
+    pending: tuple[AIAssistanceRequired, ...]
+    remember_prompt: str | None
 
 
 # Issue time and the exact statement shown, keyed by token digest; the broker
@@ -175,6 +182,7 @@ def _record(
     remembered: bool,
     grant_id: str | None,
     refusal_code: str | None = None,
+    binding_id: str | None = None,
 ) -> None:
     from moneybin.services.import_service import ImportService
 
@@ -187,6 +195,7 @@ def _record(
             grant_id=grant_id,
             pending=pending,
             refusal_code=refusal_code,
+            binding_id=binding_id,
         )
 
 
@@ -258,10 +267,11 @@ def _relay_actions(
 ) -> list[str]:
     label = display_label(host)
     call = _retry_call(tool, pending, f", confirmation_token={token!r}")
-    remember = (
-        f" Add remember_disclosure=True only if they also want MoneyBin to send "
-        f"future PDFs to {label} without asking."
-        if host.identified
+    remember = _relay_remember_text(host)
+    remember_hint = (
+        f' If they also want that, show them "{remember}" verbatim and add '
+        "remember_disclosure=True."
+        if remember is not None
         else " Remembering is unavailable: MoneyBin cannot identify this AI app."
     )
     return [
@@ -269,10 +279,14 @@ def _relay_actions(
         "from the document has been sent. Show the person "
         "data.consent_request.risk_statement verbatim and ask whether to send "
         f"the document to {label}.",
-        f"Only on a clear yes, call {call} before it expires.{remember}",
+        f"Only on a clear yes, call {call} before it expires.{remember_hint}",
         "On no, stop: nothing is sent, and the file can still be imported as a "
         "queryable seed from a terminal with `moneybin import files`.",
     ]
+
+
+def _relay_remember_text(host: AIHost) -> str | None:
+    return remember_text(host, lead="Remembering this consent")
 
 
 def _refusal_actions(
@@ -326,7 +340,8 @@ async def obtain_disclosure_consent(
     """Return a verified consent or raise ``DisclosureConsentPendingError``.
 
     Order: remembered grant, elicitation, relay token, else issue a token.
-    Every consent decision is audited; issuing a request is not a decision.
+    Refusals are audited here; an approval is remembered and audited by
+    ``settle_disclosure_consent`` only after the release succeeds.
     """
     if not pending:
         raise ValueError("obtain_disclosure_consent needs at least one file")
@@ -334,16 +349,8 @@ async def obtain_disclosure_consent(
     host = current_ai_host(ctx)
     statement = risk_statement(host, file_names=file_names(pending))
 
-    grant_id = _remembered_grant_id(host)
+    grant_id = await asyncio.to_thread(_remembered_grant_id, host)
     if grant_id is not None:
-        _record(
-            host,
-            pending,
-            outcome="approved",
-            approved_via="remembered",
-            remembered=True,
-            grant_id=grant_id,
-        )
         return ObtainedConsent(
             DisclosureConsent(
                 host=host,
@@ -354,6 +361,8 @@ async def obtain_disclosure_consent(
                 file_sha256s=None,
             ),
             notice=remembered_notice(host, grant_id),
+            pending=tuple(pending),
+            remember_prompt=None,
         )
 
     binding_id = disclosure_request_id(
@@ -366,7 +375,9 @@ async def obtain_disclosure_consent(
         return await _elicit(ctx, host, pending, statement, binding_id, tool)
 
     if confirmation_token is not None:
-        return _redeem(host, pending, confirmation_token, remember, binding_id, broker)
+        return await _redeem(
+            host, pending, confirmation_token, remember, binding_id, broker
+        )
 
     binding = disclosure_binding(
         file_sha256s=[p.file_sha256 for p in pending],
@@ -413,13 +424,15 @@ async def _elicit(
         reason: Literal["declined", "timeout"] = (
             "timeout" if result is None else "declined"
         )
-        _record(
+        await asyncio.to_thread(
+            _record,
             host,
             pending,
             outcome=reason,
             approved_via="prompt",
             remembered=False,
             grant_id=None,
+            binding_id=binding_id,
         )
         raise DisclosureConsentPendingError(
             consent_request(
@@ -434,29 +447,58 @@ async def _elicit(
         )
     data = result.data if isinstance(result, AcceptedElicitation) else None
     wants_remember = host.identified and getattr(data, "remember", False) is True
-    grant_id = _remember(host, "prompt", message) if wants_remember else None
-    _record(
+    return _one_time(
         host,
         pending,
-        outcome="approved",
-        approved_via="prompt",
-        remembered=grant_id is not None,
-        grant_id=grant_id,
+        "prompt",
+        binding_id,
+        remember_prompt=message if wants_remember else None,
     )
+
+
+def _one_time(
+    host: AIHost,
+    pending: Sequence[AIAssistanceRequired],
+    approved_via: DisclosureApproval,
+    binding_id: str,
+    *,
+    remember_prompt: str | None,
+) -> ObtainedConsent:
     return ObtainedConsent(
         DisclosureConsent(
             host=host,
-            approved_via="prompt",
-            grant_id=grant_id,
+            approved_via=approved_via,
+            grant_id=None,
             binding_id=binding_id,
-            remembered=grant_id is not None,
+            remembered=False,
             file_sha256s=frozenset(p.file_sha256 for p in pending),
         ),
         notice=None,
+        pending=tuple(pending),
+        remember_prompt=remember_prompt,
     )
 
 
-def _redeem(
+def settle_disclosure_consent(obtained: ObtainedConsent) -> None:
+    """After a successful release: remember if asked, then audit the approval."""
+    consent = obtained.consent
+    grant_id = consent.grant_id
+    if obtained.remember_prompt is not None:
+        grant_id = _remember(
+            consent.host, consent.approved_via, obtained.remember_prompt
+        )
+    _record(
+        consent.host,
+        obtained.pending,
+        outcome="approved",
+        approved_via=consent.approved_via,
+        remembered=grant_id is not None,
+        grant_id=grant_id,
+        binding_id=consent.binding_id,
+    )
+
+
+async def _redeem(
     host: AIHost,
     pending: Sequence[AIAssistanceRequired],
     token: str,
@@ -480,10 +522,11 @@ def _redeem(
                 "Confirmation token has expired.",
                 code=error_codes.MUTATION_CONFIRMATION_EXPIRED,
             )
-        if _revoked_since(host, issued.issued_at):
+        if await asyncio.to_thread(_revoked_since, host, issued.issued_at):
             raise _revoked_error()
     except UserError as refused:
-        _record(
+        await asyncio.to_thread(
+            _record,
             host,
             pending,
             outcome="expired",
@@ -491,29 +534,15 @@ def _redeem(
             remembered=False,
             grant_id=None,
             refusal_code=refused.code,
+            binding_id=binding_id,
         )
         raise
-    grant_id = (
-        _remember(host, "agent_relay", issued.statement)
-        if remember and host.identified
-        else None
-    )
-    _record(
+    # The stored prompt is what the agent was told to show, remembering included.
+    shown = _relay_remember_text(host) if remember else None
+    return _one_time(
         host,
         pending,
-        outcome="approved",
-        approved_via="agent_relay",
-        remembered=grant_id is not None,
-        grant_id=grant_id,
-    )
-    return ObtainedConsent(
-        DisclosureConsent(
-            host=host,
-            approved_via="agent_relay",
-            grant_id=grant_id,
-            binding_id=binding_id,
-            remembered=grant_id is not None,
-            file_sha256s=frozenset(p.file_sha256 for p in pending),
-        ),
-        notice=None,
+        "agent_relay",
+        binding_id,
+        remember_prompt=f"{issued.statement} {shown}" if shown else None,
     )

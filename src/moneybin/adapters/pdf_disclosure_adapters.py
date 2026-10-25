@@ -32,6 +32,17 @@ def file_names(pending: Sequence[AIAssistanceRequired]) -> list[str]:
     return list(dict.fromkeys(PurePath(p.file_path).name for p in pending))
 
 
+def remember_text(host: AIHost, *, lead: str) -> str | None:
+    """What remembering does for an identified host (R20); None when it cannot."""
+    if not host.identified:
+        return None
+    return (
+        f"{lead} lets MoneyBin send future PDFs to {display_label(host)} without "
+        "asking; `moneybin privacy revoke smart-import-parsing --recipient "
+        f"{host.name}` stops it."
+    )
+
+
 def remembered_notice(host: AIHost, grant_id: str) -> str:
     """The visible notice that content left under a remembered consent."""
     return (

@@ -67,6 +67,7 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.pdf_disclosure import (
     DisclosureConsentPendingError,
     obtain_disclosure_consent,
+    settle_disclosure_consent,
 )
 from moneybin.privacy.classified_envelope import build_classified_envelope, classify
 from moneybin.privacy.payloads.imports import (
@@ -1143,9 +1144,11 @@ async def import_preview_coarse(
                 "column-mapping proposal to override.",
                 code=error_codes.IMPORT_PREVIEW_CHANNEL_CONFLICT,
             )
-        source_bytes = _read_pdf_preview_bytes(path)
+        source_bytes = await asyncio.to_thread(_read_pdf_preview_bytes, path)
         try:
-            response = _import_preview_pdf(path, source_bytes=source_bytes)
+            response = await asyncio.to_thread(
+                _import_preview_pdf, path, source_bytes=source_bytes
+            )
         except _PdfAIAssistancePendingError as pending:
             try:
                 obtained = await obtain_disclosure_consent(
@@ -1167,9 +1170,15 @@ async def import_preview_coarse(
                     ),
                 )
             # Same snapshot bytes as the consented call: content matches the binding.
-            response = _import_preview_pdf(
-                path, source_bytes=source_bytes, disclosure_consent=obtained.consent
+            response = await asyncio.to_thread(
+                _import_preview_pdf,
+                path,
+                source_bytes=source_bytes,
+                disclosure_consent=obtained.consent,
             )
+            # Remember and audit the approval only once the content was released.
+            if "bridge_payload" in response.data:
+                await asyncio.to_thread(settle_disclosure_consent, obtained)
             disclosure_notice = obtained.notice
     else:
         if confirmation_token is not None or remember_disclosure:
@@ -1178,14 +1187,52 @@ async def import_preview_coarse(
                 "that needs AI assistance.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
-        from moneybin.services.tabular_preparation import prepare_tabular_preview
-
-        source_bytes = _read_tabular_preview_bytes(path)
-        prepared = prepare_tabular_preview(
-            path, source_bytes=source_bytes, mapping=mapping, omit_fields=omit_fields
+        source_bytes, response, reviewed_plan = await asyncio.to_thread(
+            _prepare_tabular_preview_response,
+            path,
+            mapping=mapping,
+            omit_fields=omit_fields,
         )
-        response = _import_preview_tabular(path, _prepared=prepared)
-        reviewed_plan = prepared[0].to_dict()
+    return await asyncio.to_thread(
+        _stage_preview_coarse,
+        path,
+        file_path=file_path,
+        response=response,
+        source_bytes=source_bytes,
+        reviewed_plan=reviewed_plan,
+        omit_fields=omit_fields,
+        disclosure_notice=disclosure_notice,
+    )
+
+
+def _prepare_tabular_preview_response(
+    path: Path,
+    *,
+    mapping: dict[str, str] | None,
+    omit_fields: list[str] | None,
+) -> tuple[bytes, ResponseEnvelope[ImportPreviewPayload], dict[str, Any]]:
+    """Read one tabular snapshot and build its preview; blocking, run off the loop."""
+    from moneybin.services.tabular_preparation import prepare_tabular_preview
+
+    source_bytes = _read_tabular_preview_bytes(path)
+    prepared = prepare_tabular_preview(
+        path, source_bytes=source_bytes, mapping=mapping, omit_fields=omit_fields
+    )
+    response = _import_preview_tabular(path, _prepared=prepared)
+    return source_bytes, response, prepared[0].to_dict()
+
+
+def _stage_preview_coarse(
+    path: Path,
+    *,
+    file_path: str,
+    response: ResponseEnvelope[ImportPreviewPayload] | ResponseEnvelope[dict[str, Any]],
+    source_bytes: bytes,
+    reviewed_plan: dict[str, Any] | None,
+    omit_fields: list[str] | None,
+    disclosure_notice: str | None,
+) -> ResponseEnvelope[ImportPreviewCoarsePayload]:
+    """Shape and persist the staged preview; blocking, run off the loop."""
     issued_at, expires_at = _preview_window()
     wire = TypeAdapter(dict[str, Any]).validate_json(response.to_json())
     data = TypeAdapter(dict[str, Any]).validate_python(wire["data"])
@@ -2616,8 +2663,8 @@ async def _with_disclosure_consent(
             files.append(row)
             continue
         if row.path not in staged:
-            staged[row.path] = _stage_pdf_bridge_preview(
-                Path(row.path), consent=obtained.consent
+            staged[row.path] = await asyncio.to_thread(
+                _stage_pdf_bridge_preview, Path(row.path), consent=obtained.consent
             )
             if staged[row.path] is None:
                 actions.append(
@@ -2648,6 +2695,9 @@ async def _with_disclosure_consent(
                 ),
             )
         )
+    if any(preview is not None for preview in staged.values()):
+        # Remember and audit the approval only once content was released.
+        await asyncio.to_thread(settle_disclosure_consent, obtained)
     return replace(response, data=replace(response.data, files=files)), actions
 
 
@@ -2661,7 +2711,8 @@ async def import_files_coarse(
     remember_disclosure: bool = False,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import files while keeping actions inside the staged-import cohort."""
-    response = import_files(
+    response = await asyncio.to_thread(
+        import_files,
         paths=paths,
         refresh=refresh,
         force=force,

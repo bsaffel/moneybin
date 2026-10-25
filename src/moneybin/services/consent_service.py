@@ -271,12 +271,20 @@ class ConsentService:
                 or g.redaction_policy_version != REDACTION_POLICY_VERSION
             )
         ]
-        if stale:
-            self._repo.revoke(
-                feature_category=_HOST_CATEGORY,
-                backend=key,
-                actor=actor,
-                recipient_kind="ai_host",
+        if stale and self._repo.revoke(
+            feature_category=_HOST_CATEGORY,
+            backend=key,
+            actor=actor,
+            recipient_kind="ai_host",
+        ):
+            write_privacy_event(
+                build_consent_event(
+                    actor=actor,
+                    action="consent.revoke",
+                    feature_category=_HOST_CATEGORY,
+                    backend=key,
+                    consent_mode=None,
+                )
             )
         grant, created = self._repo.grant(
             feature_category=_HOST_CATEGORY,

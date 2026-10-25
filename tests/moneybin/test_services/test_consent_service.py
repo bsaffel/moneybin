@@ -517,3 +517,25 @@ def test_host_grant_records_the_given_prompt(db: Database) -> None:
         "SELECT grant_prompt FROM app.ai_consent_grants WHERE recipient_kind='ai_host'"
     ).fetchone()
     assert row == ("exact text shown",)
+
+
+def test_stale_terms_regrant_logs_consent_revoke(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Privacy log shows the stale grant's revoke before the replacing grant."""
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir", lambda: tmp_path
+    )
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+
+    def _bumped(_host: object) -> str:
+        return "bumped"
+
+    monkeypatch.setattr("moneybin.services.consent_service.terms_version_for", _bumped)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+
+    revokes = read_privacy_events({"action": "consent.revoke"}, max_rows=10)
+    assert [(e["feature_category"], e["backend"]) for e in revokes] == [
+        (_HOST_CATEGORY, "local:claude-ai")
+    ]

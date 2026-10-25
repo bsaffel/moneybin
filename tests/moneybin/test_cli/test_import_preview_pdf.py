@@ -1031,3 +1031,30 @@ def test_receipts_label_the_two_reasons_distinctly(
     assert "Reason:" not in before.stdout
     assert "Reason:" in after.stdout
     assert "Why AI help is needed" not in after.stdout
+
+
+@pytest.mark.parametrize("interactive", [False, True], ids=["receipt", "prompt"])
+def test_risk_statement_file_name_cannot_drive_the_terminal(
+    consent_db: Path,
+    canary_pdf: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interactive: bool,
+) -> None:
+    """The risk statement embeds the file name; its control sequences are stripped."""
+    import shutil
+
+    evil = tmp_path / "stmt\x1b]0;owned\x07\x1b[2J.pdf"
+    shutil.copy(canary_pdf, evil)
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    if interactive:
+        _interactive(monkeypatch)
+
+    out = runner.invoke(
+        app, ["preview", str(evil)], input="n\n" if interactive else None
+    )
+
+    assert out.exit_code == 0, out.output
+    assert "\x1b" not in out.stdout and "\x07" not in out.stdout
+    assert "\x1b" not in out.stderr and "\x07" not in out.stderr
+    assert "MoneyBin cannot pull it back" in out.output

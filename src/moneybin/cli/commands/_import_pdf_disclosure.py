@@ -21,6 +21,9 @@ from moneybin.adapters.pdf_disclosure_adapters import (
     file_names,
     remembered_notice,
 )
+from moneybin.adapters.pdf_disclosure_adapters import (
+    remember_text as shared_remember_text,
+)
 from moneybin.cli.output import OutputFormat, emit_human_result, render_or_json
 from moneybin.cli.render import build_summary, compose_human_result, render_rows
 from moneybin.cli.utils import (
@@ -63,6 +66,7 @@ def _record(
     remembered: bool = False,
     grant_id: str | None = None,
     refusal_code: str | None = None,
+    binding_id: str | None = None,
 ) -> None:
     from moneybin.services.import_service import ImportService
 
@@ -75,6 +79,7 @@ def _record(
             grant_id=grant_id,
             pending=pending,
             refusal_code=refusal_code,
+            binding_id=binding_id,
         )
 
 
@@ -92,17 +97,6 @@ def _safe(text: str) -> str:
     return "\t".join(terminal_safe_text(part) for part in text.split("\t"))
 
 
-def _flag_remember_text(host: AIHost) -> str | None:
-    """What the flag also does for an identified host (spec §3: always remembered)."""
-    if not host.identified:
-        return None
-    return (
-        "Saying yes also lets MoneyBin send future PDFs to "
-        f"{display_label(host)} without asking; `moneybin privacy revoke "
-        f"smart-import-parsing --recipient {host.name}` stops it."
-    )
-
-
 def obtain_cli_disclosure_consent(
     source: Path,
     proposal: AIAssistanceRequired,
@@ -117,7 +111,8 @@ def obtain_cli_disclosure_consent(
     pending = (replace(proposal, file_path=str(source)),)
     request_id = disclosure_request_id(file_sha256s=[proposal.file_sha256], host=host)
     statement = risk_statement(host, file_names=file_names(pending))
-    remember_text = _flag_remember_text(host)
+    # The flag always remembers for an identified host (spec §3).
+    remember_text = shared_remember_text(host, lead="Saying yes also")
     shown = statement if remember_text is None else f"{statement} {remember_text}"
     one_time = frozenset({proposal.file_sha256})
 
@@ -128,6 +123,7 @@ def obtain_cli_disclosure_consent(
             outcome="expired",
             approved_via="cli_flag",
             refusal_code=error_codes.IMPORT_PDF_DISCLOSURE_REQUEST_MISMATCH,
+            binding_id=request_id,
         )
         current = generated_cli_command("import", "preview", source, "--output", "json")
         raise UserError(
@@ -176,13 +172,19 @@ def obtain_cli_disclosure_consent(
         and not host.identified
         and get_terminal_policy().interactive
     ):
-        typer.echo(statement, err=True)
+        typer.echo(_safe(statement), err=True)
         if not typer.confirm(
             f"Send this PDF's contents to {display_label(host)}?",
             default=False,
             err=True,
         ):
-            _record(host, pending, outcome="declined", approved_via="cli_prompt")
+            _record(
+                host,
+                pending,
+                outcome="declined",
+                approved_via="cli_prompt",
+                binding_id=request_id,
+            )
             _receipt(
                 "PDF not sent",
                 [
@@ -237,6 +239,7 @@ def settle_cli_disclosure(obtained: CLIConsent) -> str | None:
         approved_via=consent.approved_via,
         remembered=grant_id is not None,
         grant_id=grant_id,
+        binding_id=consent.binding_id,
     )
     if consent.approved_via == "remembered" and grant_id is not None:
         return remembered_notice(consent.host, grant_id)
@@ -312,11 +315,11 @@ def _emit_ai_assistance_required(
             ("Result", "Nothing from the document was sent"),
         ],
     )
-    typer.echo(shown)
+    typer.echo(_safe(shown))
     # The command on its own line so a narrow receipt never wraps it.
     typer.echo(
         f"{get_terminal_policy().symbols.action} Next, only if the person agrees "
-        f"to the text above: {allow}"
+        f"to the text above: {_safe(allow)}"
     )
 
 
@@ -379,4 +382,4 @@ def emit_released_bridge(
         columns = header + [""] * (width - len(header))
         typer.echo(f"Table on page {table.get('page')}")
         render_rows(columns, [r + [""] * (width - len(r)) for r in rows])
-    typer.echo(f"{get_terminal_policy().symbols.action} Next: {confirm}")
+    typer.echo(f"{get_terminal_policy().symbols.action} Next: {_safe(confirm)}")

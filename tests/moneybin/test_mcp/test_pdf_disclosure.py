@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -262,7 +263,8 @@ async def test_remember_creates_host_grant_and_next_call_is_silent_with_notice(
     [(backend, approved_via, prompt)] = _host_grants()
     assert backend == "local:claude-ai"
     assert approved_via == "agent_relay"
-    assert prompt == req["risk_statement"]
+    assert prompt is not None and prompt.startswith(req["risk_statement"])
+    assert "future PDFs" in prompt
 
     again = await import_preview_coarse(file_path=str(pdf))
     assert CANARY_DESCRIPTION in _released_text(again)
@@ -480,3 +482,215 @@ async def test_batch_remembered_grant_releases_with_notice(
     assert row["preview_id"]
     assert any(grant.grant_id in a and "privacy revoke" in a for a in env.actions)
     assert _consent_rows()[-1]["approved_via"] == "remembered"
+
+
+# --- Final-review fixes (R22) ---------------------------------------------
+
+
+def _track_threads(
+    monkeypatch: MonkeyPatch,
+    module: object,
+    names: list[str],
+    seen: list[tuple[str, int]],
+) -> None:
+    """Record the thread each named module function runs on."""
+    for name in names:
+        original = getattr(module, name)
+
+        def _wrapped(
+            *args: Any, _orig: Any = original, _name: str = name, **kwargs: Any
+        ) -> Any:
+            seen.append((_name, threading.get_ident()))
+            return _orig(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, _wrapped)
+
+
+_DISCLOSURE_DB_CALLS = [
+    "_remembered_grant_id",
+    "_record",
+    "_remember",
+    "_revoked_since",
+]
+
+
+async def test_import_files_runs_sync_work_off_the_event_loop(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    import moneybin.mcp.tools.import_tools as tools_module
+
+    use_mcp_host(monkeypatch, mcp_host_ctx())
+    first = _wire(await import_files_coarse(paths=[str(pdf)], refresh=False))
+    token = first["data"]["consent_request"]["confirmation_token"]
+    seen: list[tuple[str, int]] = []
+    _track_threads(
+        monkeypatch, tools_module, ["import_files", "_stage_pdf_bridge_preview"], seen
+    )
+    _track_threads(monkeypatch, disclosure_module, _DISCLOSURE_DB_CALLS, seen)
+
+    env = await import_files_coarse(
+        paths=[str(pdf)],
+        refresh=False,
+        confirmation_token=token,
+        remember_disclosure=True,
+    )
+
+    assert env.error is None, env.error
+    loop_thread = threading.get_ident()
+    assert {name for name, _ in seen} == {
+        "import_files",
+        "_stage_pdf_bridge_preview",
+        *_DISCLOSURE_DB_CALLS,
+    }
+    assert [name for name, ident in seen if ident == loop_thread] == []
+
+
+async def test_import_preview_pdf_runs_sync_work_off_the_event_loop(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    import moneybin.mcp.tools.import_tools as tools_module
+
+    use_mcp_host(monkeypatch, mcp_host_ctx())
+    token = await _token(pdf)
+    seen: list[tuple[str, int]] = []
+    preview_calls = [
+        "_read_pdf_preview_bytes",
+        "_import_preview_pdf",
+        "_persist_staged_preview",
+    ]
+    _track_threads(monkeypatch, tools_module, preview_calls, seen)
+    _track_threads(monkeypatch, disclosure_module, _DISCLOSURE_DB_CALLS, seen)
+
+    env = await import_preview_coarse(
+        file_path=str(pdf), confirmation_token=token, remember_disclosure=True
+    )
+
+    assert CANARY_DESCRIPTION in _released_text(env)
+    loop_thread = threading.get_ident()
+    assert {name for name, _ in seen} == {*preview_calls, *_DISCLOSURE_DB_CALLS}
+    assert [name for name, ident in seen if ident == loop_thread] == []
+
+
+async def test_import_preview_tabular_runs_sync_work_off_the_event_loop(
+    mcp_db: object, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    import moneybin.mcp.tools.import_tools as tools_module
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "statement.csv"
+    csv.write_bytes(b"Date,Description,Amount\n2026-07-01,Coffee,-4.50\n")
+    seen: list[tuple[str, int]] = []
+    calls = [
+        "_read_tabular_preview_bytes",
+        "_import_preview_tabular",
+        "_persist_staged_preview",
+    ]
+    _track_threads(monkeypatch, tools_module, calls, seen)
+
+    env = await import_preview_coarse(file_path=str(csv))
+
+    assert env.error is None, env.error
+    loop_thread = threading.get_ident()
+    assert {name for name, _ in seen} == set(calls)
+    assert [name for name, ident in seen if ident == loop_thread] == []
+
+
+async def test_import_files_tool_timeout_fires_during_blocking_import(
+    mcp_db: object, monkeypatch: MonkeyPatch
+) -> None:
+    """A blocking import yields to the loop, so the per-tool cap can fire."""
+    import time
+
+    import moneybin.mcp.tools.import_tools as tools_module
+
+    def _slow_import(**_kwargs: object) -> object:
+        time.sleep(1.5)
+        raise AssertionError("the cap should have answered first")
+
+    monkeypatch.setattr(tools_module, "import_files", _slow_import)
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.2)
+
+    started = time.monotonic()
+    env = await import_files_coarse(paths=["/tmp/x.csv"], refresh=False)  # noqa: S108  # never read: the stub blocks
+
+    assert env.error is not None
+    assert env.error.code == error_codes.INFRA_TIMED_OUT
+    assert time.monotonic() - started < 1.5
+
+
+@pytest.mark.parametrize("path", ["prompt", "agent_relay"])
+async def test_failed_release_creates_no_grant_or_approval(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch, path: str
+) -> None:
+    """Remembering is written only after the content is actually released."""
+    import moneybin.mcp.tools.import_tools as tools_module
+
+    if path == "prompt":
+        elicit = AsyncMock(
+            return_value=AcceptedElicitation(
+                data=DisclosureAnswer(accept=True, remember=True)
+            )
+        )
+        use_mcp_host(monkeypatch, mcp_host_ctx(elicit=elicit), elicits=True)
+        kwargs: dict[str, Any] = {}
+    else:
+        use_mcp_host(monkeypatch, mcp_host_ctx())
+        kwargs = {"confirmation_token": await _token(pdf), "remember_disclosure": True}
+    real = tools_module._import_preview_pdf  # pyright: ignore[reportPrivateUsage]
+
+    def _fail_release(*args: Any, **kw: Any) -> Any:
+        if kw.get("disclosure_consent") is not None:
+            raise RuntimeError("release failed")
+        return real(*args, **kw)
+
+    monkeypatch.setattr(tools_module, "_import_preview_pdf", _fail_release)
+
+    env = await import_preview_coarse(file_path=str(pdf), **kwargs)
+
+    assert env.error is not None
+    _assert_no_canary(env)
+    assert _host_grants() == []
+    assert [r for r in _consent_rows() if r["outcome"] == "approved"] == []
+
+
+async def test_relay_remember_grant_prompt_is_the_relayed_text(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """R11/R20: the stored prompt is what the agent was told to show, remembering included."""
+    use_mcp_host(monkeypatch, mcp_host_ctx())
+    first = await import_preview_coarse(file_path=str(pdf))
+    req = _wire(first)["data"]["consent_request"]
+
+    await import_preview_coarse(
+        file_path=str(pdf),
+        confirmation_token=req["confirmation_token"],
+        remember_disclosure=True,
+    )
+
+    [(_backend, _via, prompt)] = _host_grants()
+    assert prompt is not None
+    statement = req["risk_statement"]
+    assert prompt.startswith(statement)
+    remember = prompt[len(statement) :].strip()
+    assert "future PDFs" in remember and "Claude" in remember
+    assert any(remember in action for action in first.actions)
+
+
+async def test_consent_row_carries_binding_id_of_parse_row(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    use_mcp_host(monkeypatch, None)
+    first = _wire(await import_preview_coarse(file_path=str(pdf)))
+    req = first["data"]["consent_request"]
+
+    await import_preview_coarse(
+        file_path=str(pdf), confirmation_token=req["confirmation_token"]
+    )
+
+    [consent] = _consent_rows()
+    with get_database(read_only=True) as db:
+        [(parse_context,)] = db.execute(
+            "SELECT context_json FROM app.audit_log WHERE action = 'smart_import_parse'"
+        ).fetchall()
+    assert consent["binding_id"] == req["binding_id"]
+    assert consent["binding_id"] == json.loads(parse_context)["binding_id"]

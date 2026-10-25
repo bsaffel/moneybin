@@ -1,5 +1,7 @@
 """AI host identity, vendor terms, risk statement and request id."""
 
+import pytest
+
 from moneybin.privacy.disclosure import (
     disclosure_request_id,
     host_for_recipient_name,
@@ -127,3 +129,14 @@ def test_risk_statement_names_the_exact_redaction_scope() -> None:
         "are redacted" in text
     )
     assert "including any it did not identify" in text
+
+
+@pytest.mark.parametrize("name", ["claude-ai", "some-new-app", None])
+def test_host_version_is_capped_and_printable(name: str | None) -> None:
+    raw = "1.0\x1b[2J\x07" + "9" * 200
+    host = host_from_client_info(name, raw, transport="stdio")
+    assert host.version is not None
+    assert all(c.isprintable() for c in host.version)
+    assert "\x1b" not in host.version
+    assert host.version.startswith("1.0[2J")
+    assert len(host.version) <= 64

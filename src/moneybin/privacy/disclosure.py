@@ -100,7 +100,7 @@ def _normalize(name: str) -> str:
 
 
 def _printable_capped(name: str) -> str:
-    """Self-reported names reach consent text: printable characters only, capped."""
+    """Self-reported names and versions reach consent text and audit: printable, capped."""
     return "".join(c for c in name if c.isprintable())[:_MAX_REPORTED_NAME]
 
 
@@ -118,6 +118,8 @@ def host_from_client_info(
     transport: Literal["stdio", "http"],
 ) -> AIHost:
     """Identify the host from MCP initialize clientInfo; unknown names stay unidentified."""
+    if version is not None:
+        version = _printable_capped(version)
     if not name or not name.strip():
         return AIHost(None, version, False, "none", transport, None, None)
     normalized = _normalize(name)

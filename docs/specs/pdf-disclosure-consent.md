@@ -328,7 +328,8 @@ enforced.
   collides with, revokes, or is revoked by an `ai_backend` row.
 - A legacy `smart-import-parsing` grant for an AI backend (`anthropic`) does
   **not** satisfy this gate. The recipient here is the host.
-- `grant_prompt` stores the shared risk statement (§10) verbatim. That replaces
+- `grant_prompt` stores the shared risk statement (§10) verbatim, followed by
+  the sentence on remembering that the person was shown. That replaces
   `ConsentService._build_prompt` for `ai_host` grants.
 - `moneybin privacy grant/revoke` gain `--recipient <host>` beside `--backend`
   (mutually exclusive). `privacy status` lists `ai_host` grants with
@@ -375,9 +376,11 @@ numbers", and says everything else is sent as-is.
 
 **Risk the builder must close:** the agent derives a recipe from redacted text,
 but `execute_recipe` replays it against the local, unredacted text. Redaction
-must preserve token shape (length and character class, keeping the last four)
-so that agent-authored patterns still match locally and account identity
-(last four) still resolves. Tests must replay a bridge recipe derived from
+must preserve token shape: each masked digit becomes `X`, while length,
+separators and the last four digits are kept, so that agent-authored patterns
+still match locally and account identity (last four) still resolves. Replacing
+digits with `X` changes their character class; this is acceptable because
+identifiers rarely sit inside the row tokens a recipe matches. Tests must replay a bridge recipe derived from
 redacted text against the original and reconcile.
 
 The redaction scope is exactly the account numbers, routing numbers and SSNs
@@ -408,7 +411,8 @@ binding and the grant).
 - `smart_import_consent` audit row per decision: outcome (`approved`,
   `declined`, `timeout`, `expired`), `approved_via` (table above), recipient
   key, `identified`, `terms_version`, `remembered`, `grant_id` when one is
-  created, file SHA-256s, and the `decision_reason`. No content. A refused
+  created, `binding_id` for a one-time decision (joining it to its
+  `smart_import_parse` row), file SHA-256s, and the `decision_reason`. No content. A refused
   relay token is recorded as `expired` with `refusal_code`, the broker error
   code (expired, replayed or mismatched), so abuse stays distinguishable. A
   token refused because its recipient was revoked currently records
@@ -504,7 +508,12 @@ number, an SSN):
   `cli/commands/_import_pdf_disclosure.py`.
 - MCP surface: no new tool. `import_preview` and `import_files` gain
   `confirmation_token` and `remember_disclosure`. `privacy_consent_set` refuses
-  `ai_host` recipients.
+  `ai_host` recipients. As on the CLI, a remembered grant is created, and the
+  approval audited, only after the release succeeds. A relay-token consent
+  that remembers stores the risk statement plus the remember sentence the
+  agent was told to show the person verbatim. The tools run file reads,
+  imports, the refresh and consent database calls off the event loop, so the
+  per-tool timeout still applies; only the elicitation wait stays on it.
 - CLI surface: `import preview <pdf> --allow-ai-disclosure <request_id>` and
   `-o json`; `privacy grant/revoke --recipient <host>`. `import files --yes`
   never consents.
