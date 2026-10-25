@@ -45,21 +45,3 @@ def redact_critical(text: str, *, account_identifiers: Sequence[str]) -> str:
         ),
         text,
     )
-
-
-def redact_tables(
-    tables: list[list[list[str | None]]], *, account_identifiers: Sequence[str]
-) -> list[list[list[str | None]]]:
-    """Apply `redact_critical` to every non-empty cell."""
-    return [
-        [
-            [
-                None
-                if cell is None
-                else redact_critical(cell, account_identifiers=account_identifiers)
-                for cell in row
-            ]
-            for row in table
-        ]
-        for table in tables
-    ]

@@ -708,3 +708,58 @@ def test_scanned_pdf_unchanged(db: Database, scanned_pdf: Path) -> None:
     with pytest.raises(UserError) as exc:
         ImportService(db).pdf_preview(scanned_pdf)
     assert exc.value.code == error_codes.IMPORT_PDF_NO_TEXT_LAYER
+
+
+def test_release_audit_row_fingerprint_headers_are_redacted(
+    db: Database,
+    tmp_path: Path,
+    stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
+) -> None:
+    """The fingerprint released and audited carries no raw account digits."""
+    from moneybin.extractors.pdf.metadata import StatementMetadata
+
+    decisions, docs = stub_pdf_pipeline
+    docs.append(
+        PdfDocument(
+            source_file="stub.pdf",
+            text_lines=["Account Number: 314159265358", "Summary"],
+            tables=[
+                PdfTable(
+                    page=1,
+                    header=["Account 314159265358", "Balance"],
+                    rows=[["Opening", "10.00"]],
+                )
+            ],
+        )
+    )
+    decision = _decision(reason="low_confidence", confidence=0.4)
+    decisions.append(
+        dataclasses.replace(
+            decision,
+            metadata=StatementMetadata(
+                account_id="314159265358",
+                period_start=None,
+                period_end=None,
+                opening_balance=None,
+                closing_balance=None,
+            ),
+        )
+    )
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).pdf_preview(
+            _make_pdf_path(tmp_path), disclosure_consent=_consent()
+        )
+
+    proposed = exc.value.outcome.proposed
+    assert isinstance(proposed, BridgePayload)
+    released_fp = json.dumps(proposed.payload["fingerprint"])
+    assert "314159265358" not in released_fp
+    assert "5358" in released_fp
+    row = db.conn.execute(
+        "SELECT after_value FROM app.audit_log WHERE action = 'smart_import_parse'"
+    ).fetchone()
+    assert row is not None
+    audited_fp = json.dumps(json.loads(str(row[0]))["fingerprint"])
+    assert "314159265358" not in audited_fp
+    assert "5358" in audited_fp

@@ -6,7 +6,7 @@ from moneybin.extractors.pdf.identity import (
     is_aba_checksum_valid,
     is_valid_aba_routing_number,
 )
-from moneybin.extractors.pdf.redaction import redact_critical, redact_tables
+from moneybin.extractors.pdf.redaction import redact_critical
 
 
 @pytest.mark.parametrize(
@@ -51,16 +51,6 @@ def test_identifier_embedded_in_longer_digit_run_untouched() -> None:
 
 def test_short_identifier_ignored() -> None:
     assert redact_critical("code 1234", account_identifiers=["1234"]) == "code 1234"
-
-
-def test_tables_redacted_cellwise() -> None:
-    t: list[list[list[str | None]]] = [
-        [["Acct", "123456789012"], ["Desc", "-4.00"], [None, "x"]]
-    ]
-    out = redact_tables(t, account_identifiers=["123456789012"])
-    assert out[0][0][1] == "XXXXXXXX9012"
-    assert out[0][1] == ["Desc", "-4.00"]
-    assert out[0][2][0] is None
 
 
 def test_routing_checksum_valid_outside_account_prefix_ranges_redacted() -> None:
