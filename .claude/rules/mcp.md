@@ -173,11 +173,11 @@ tell callers to refine the query or rerun with a larger limit.
 | `high` | Financial amounts and balances | Consent ledger exists; enforcement deferred |
 | `critical` | Account and routing identifiers | Critical masking wired; consent enforcement deferred |
 
-The consent ledger is not yet a global runtime gate, so a missing grant neither
-degrades nor blocks data today. The exception is `smart-import-parsing`: PDF
-content is released only after consent for the identified AI host (a
-content-free `ai_assistance_required` result comes first). Tool code must not assume otherwise — never rely
-on an automatic consent gate, or on a degraded response that has not shipped.
+The consent ledger is not a global runtime gate: for every tool, a missing
+grant neither degrades nor blocks data, and tool code must never rely on an
+automatic consent gate or a degraded response. The single exception is
+`smart-import-parsing`: PDF content is released only after consent for the
+identified AI host (a content-free `ai_assistance_required` result comes first).
 
 ## When CLI-only is justified
 
