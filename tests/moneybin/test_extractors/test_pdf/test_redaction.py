@@ -137,3 +137,22 @@ def test_alphanumeric_identifier_letters_must_match() -> None:
 def test_alphanumeric_identifier_embedded_in_digit_run_untouched() -> None:
     text = "ref 9AB12CD3456789"
     assert redact_critical(text, account_identifiers=["AB12CD345678"]) == text
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    ["XXXX12345678", "xxxx12345678", "****12345678", "12345678 CHK", "Acct 12345678"],
+)
+def test_identifier_with_mask_or_label_still_masks_bare_digits(
+    identifier: str,
+) -> None:
+    """Letters in a captured identifier only add coverage, never remove it."""
+    out = redact_critical("Acct 1234-5678 x", account_identifiers=[identifier])
+    assert out == "Acct XXXX-5678 x"
+
+
+def test_masked_prefix_alphanumeric_identifier_still_masked() -> None:
+    out = redact_critical(
+        "Acct AB12CD345678 x", account_identifiers=["XXXXAB12CD345678"]
+    )
+    assert out == "Acct XXXXXXXX5678 x"

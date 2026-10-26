@@ -411,7 +411,10 @@ separators and the last four digits are kept, so that agent-authored patterns
 still match locally and account identity (last four) still resolves. An
 identified account number that contains letters is matched as it appears
 (letters in any case, the same separator tolerance) and its letters become `X`
-too, since they are part of the number. Replacing
+too, since they are part of the number. That letter-bearing match only adds
+coverage: the identifier's bare digits are always matched as well, and a
+captured label word (`Acct`, `CHK`) or leading mask (`XXXX`, `****`) never
+becomes part of the pattern. Replacing
 digits with `X` changes their character class; this is acceptable because
 identifiers rarely sit inside the row tokens a recipe matches. Tests must replay a bridge recipe derived from
 redacted text against the original and reconcile.
