@@ -309,7 +309,7 @@ the observed-evidence gates below close.
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | Read views; ledger events; security catalog; specific-lot overrides |
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate`, `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules`, `transactions_categorize_rules_set` | Query; manual entries; notes/tags/splits; assisted and deterministic categorization; rule lifecycle |
 | Reviews | `reviews`, `reviews_decide`, `identity_links_decide` | Normalized queue/history, including auto-rule proposals; ordinary and auto-rule decisions; destructive identity merges |
-| Taxonomy | `taxonomy`, `taxonomy_set` | Category and merchant reads; category target-state and merchant mappings |
+| Taxonomy | `taxonomy`, `taxonomy_set` | Category and merchant reads; category target-state, merchant mappings, and imported category-term mappings |
 | Import | `import_files`, `import_preview`, `import_confirm`, `import_status`, `import_revert`, `import_inbox_sync`, `import_labels_set` | Batch/staged ingest, status/formats/inbox, recovery, labels |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect`, `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | Mediated bank sync and user-controlled Google Sheets flows |
 | Privacy | `privacy`, `privacy_consent_set` | Consent/audit status and declarative consent |
@@ -426,12 +426,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic current
 [`standard.json`](../../tests/fixtures/mcp_surface/standard.json) snapshot
-contains 50 tools, 67,466 bytes of serialized metadata, zero advertised output schemas,
+contains 50 tools, 70,439 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`f6bc6922c7e899d9230a2c871cca3f197344f1f237bbba874aba568b4f5a740e`.
+`5be6804f460c99ae61e850655b6c5c378baf7ac1225b8f914ec300a69d8cd49b`.
 The frozen baseline is 90,839 bytes with SHA-256
 `b789459f13f3e7e5caa476ca7d4d1e2fa4f19f9b107bc93f2edbceeeb2abe7a7`.
-The delta is -23,373 bytes (-25.7%). The deterministic estimate is 16,867
+The delta is -20,400 bytes (-22.5%). The deterministic estimate is 17,610
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
@@ -464,6 +464,30 @@ calls, rather than on an unmeasured claim that it scores better.
 `accounts_links_run` was admitted on exactly that basis: it appears in neither
 capture, and the merge it proposes was previously unreachable from MCP for a
 duplicate no signal finds (#450).
+
+### Extension record: imported category-term curation
+
+Capability `taxonomy.source-categories.curate` reached MCP without a new tool,
+closing its `admission-pending` exemption:
+
+1. **Capability and intent.** Map, ignore, or remove a category term that an
+   imported file carries.
+2. **Closest tools.** `reviews` for the inbox and `taxonomy_set` for the write.
+3. **Why no new identity.** The inbox is a review queue with pending and
+   history, so it is a `reviews` kind. A mapping is a target state of the same
+   taxonomy, audit, and recovery contract as a category or merchant item, so
+   it is a `taxonomy_set` item kind. Creating a category and mapping a term to
+   it in one batch needs the two in one tool.
+4. **Contract differences.** None that need another identity. `absent` on a
+   mapped term is a hard delete and confirms like a merchant `absent`; the
+   sensitivity tier is `low`.
+5. **Byte delta.** +1,976 bytes on an unchanged 50-tool count: `reviews`
+   +220 (987 → 1,207) and `taxonomy_set` +1,756 (3,676 → 5,432).
+6. **Evaluation.** Deferred, with the reason in "Evaluation coverage for
+   admitted tools" above. The map-the-label versus create-a-category pair
+   can be written but not scored until a current-registry capture exists.
+7. **Budget and closure.** The registry stays at 50 tools, and the CLI
+   curation outcomes are now reachable from MCP.
 
 ### Historical evidence location
 

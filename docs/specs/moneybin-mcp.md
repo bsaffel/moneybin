@@ -27,12 +27,13 @@ registry.
 > Elicitation bound to the exact complete batch for both accept and reject. It
 > accepts and issues no fallback token, refuses non-eliciting clients with
 > `mutation_confirmation_required` naming the CLI, and declares the prompt's
-> dynamic disclosure up to Tier HIGH. A mixed batch containing any
+> disclosure at Tier HIGH. A compatible mixed batch containing any
 > investment-Match decision ratifies or rejects the entire atomic batch. Slice
-> 4 enables acceptance through that same gate. Slice 3 also adds the six stable
-> investment-planner result fields and recovery behavior defined in the owning
-> matching spec to direct and embedded refresh payloads. Until those slices
-> land, these are planned extensions, not claims about the live 50-tool schema.
+> 4 enables acceptance through that same gate; acceptance is currently refused
+> after field-choice validation. The planner reports through its existing
+> `stages` entry with counts, `ran`, and `error`, and shared recovery actions
+> across direct and embedded refreshes. No parallel flat result fields are added.
+> Auto-rule and rule-conflict decisions retain their separate atomic batches.
 
 ## Standard registry
 
@@ -88,11 +89,11 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / at least low |
 | `transactions_categorize_rules` | `view` | Current categorization rules | Read / at least high |
 | `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state; fails the whole batch with `taxonomy_rule_conflict` when a target claims an active rule's matcher under a different category | Confirmed write / at least low |
-| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows and both sides of each `kind='rule_conflicts'` row | Read / dynamic / up to critical / queue-derived |
-| `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` (an accept refused by the broad or short-pattern guard stays `pending`, `changed: false`, with a result `reason` naming the guard; a batch that applied nothing returns `status: "error"` with code `mutation_constraint_violation` and `details.refused_broad` / `refused_unselective`, still carrying `data.results[]`, while a partial batch stays `ok`), `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least low |
+| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows, both sides of each `kind='rule_conflicts'` row, and `kind='source_categories'` (unmapped imported category terms pending; mapped and ignored terms in history) | Read / dynamic / up to critical / queue-derived |
+| `reviews_decide` | `decisions` | Resolve ordinary, investment-match, auto-rule, or rule-conflict review items; investment rejections require human Elicitation and accepts remain unavailable; `kind='auto_rule'` carries proposal-scoped `allow_broad` (an accept refused by the broad or short-pattern guard stays `pending`, `changed: false`, with a result `reason` naming the guard; a batch that applied nothing returns `status: "error"` with code `mutation_constraint_violation` and `details.refused_broad` / `refused_unselective`, still carrying `data.results[]`, while a partial batch stays `ok`), `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least high |
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / at least medium (prompt-disclosed) |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / up to medium / view-derived |
-| `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / at least low |
+| `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state: `category`, `merchant`, and `source_category` items; a `source_category` item maps an imported term to a category (by id, or by name including one the same batch creates), ignores it, or removes its mapping, and its result reports `categorized` / `recategorized` | Audited write / at least low |
 | `import_files` | `account_bindings`, `confirmation_token`, `force`, `paths`, `refresh`, `remember_disclosure` | Import files | Audited workflow / at least critical / file-derived |
 | `import_preview` | `confirmation_token`, `file_path`, `mapping`, `omit_fields`, `remember_disclosure` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / up to critical / file-derived |
 | `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / up to critical / preview-derived |
@@ -273,13 +274,14 @@ and confirmation contracts.
   configured TTL. Its `readOnlyHint=false` annotation reflects that retained
   state even though it does not commit ledger rows.
 - `refresh_run` owns the bounded derived-state workflow. Its `steps` vocabulary
-  is currently `gsheet`, `match`, `transform`, `categorize`, `identity`,
+  is currently `gsheet`, `match`, `investment_match`, `transform`, `categorize`, `identity`,
   `rates`, executed in that canonical order. Each step reports its own error,
   its own counts, and whether it ran in one `stages` entry —
   `{"step": "match", "ran": true, "counts": {"auto_merged": 1,
   "pending_review": 0, "pending_transfers": 0}, "error": null}` — so a caller
   reads one place per step, and the payload's top-level `error` describes the
-  SQLMesh apply step alone, the only step that can hard-fail. Three states stay
+  SQLMesh apply step alone. A failed investment planner blocks the dependent
+  transform while retaining its error in the planner stage. Three states stay
   distinct: no entry at all means the caller never requested that step,
   `ran: false` means it was requested and declined (a missing-view
   precondition), and `ran: true` with zero counts means it examined rows and

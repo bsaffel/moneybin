@@ -578,8 +578,8 @@ CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
 CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL = Counter(
     "moneybin_category_source_mapping_outcomes_total",
     "Outcomes of curating one imported category term into "
-    "app.category_source_map via resolve_source_term.",
-    # outcome: added | updated | refused
+    "app.category_source_map (categories mappings set/remove, taxonomy_set).",
+    # outcome: added | updated | removed | refused
     ["outcome"],
 )
 
@@ -796,6 +796,12 @@ INVESTMENT_MATCH_DURATION_SECONDS = Histogram(
     "moneybin_investment_match_duration_seconds",
     "Investment matching operation duration",
     ["operation"],
+)
+
+INVESTMENT_MATCH_DECISIONS_TOTAL = Counter(
+    "moneybin_investment_match_decisions_total",
+    "Committed first human investment decisions and subsequent reversals",
+    ["decision", "auto_eligible"],
 )
 
 
@@ -1265,6 +1271,7 @@ HISTOGRAM_UNITS: dict[str, str] = {
 # `app.metrics` kept from a version that has since renamed the metric keep
 # their value, the way an undeclared histogram keeps its sum.
 METRIC_DOMAINS: dict[str, str] = {
+    "moneybin_investment_match_decisions": "Investment matching",
     "moneybin_investment_match_proposals": "Investment matching",
     "moneybin_investment_match_duration_seconds": "Investment matching",
     # Import pipeline

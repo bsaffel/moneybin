@@ -164,7 +164,10 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # from the description that `rule_conflicts` names both rules and the
     # category each assigns has to open the queue to find out what it is.
     # Plus 21 bytes for the investment_matches read selector.
-    "reviews": (987, 8_698),
+    # Plus 220 for the source_categories queue: one more `kind` enum member and
+    # the sentence routing its terms to taxonomy_set, without which an agent
+    # cannot tell that queue resolves through a write tool, not a decide tool.
+    "reviews": (1_207, 8_698),
     "taxonomy": (689, 622),
     "import_status": (667, 1_239),
     "gsheet": (459, 1_018),
@@ -182,19 +185,17 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # failure retries the batch instead of opening the conflict queue.
     "transactions_categorize_rules_set": (3_334, 2_672),
     # The one cohort whose candidate now costs more than the four tools it
-    # replaced (4,127 vs 2,566). The overrun is two disclosures the replaced
+    # replaced (5,126 vs 2,568). The overrun includes disclosures the replaced
     # tools never owed. First: accepting a match can reverse a transfer the
     # user accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Then more for the rule-conflict
     # variant — its own request schema plus the three resolutions, which are
     # not the accept/reject axis every other kind uses, so an agent given
     # only `kind="rule_conflict"` would guess "accept" and get a validation
-    # error. Registry-wide the consolidation still stands at -31.7% — 61,933
-    # bytes against the baseline's 90,734, both readable as `total_bytes` in
-    # the two fixtures this test loads. (The figure has drifted before —
-    # because nothing fails when a comment goes stale. Recompute it from the
-    # fixtures rather than trusting this line.)
-    "reviews_decide": (4_153, 2_568),
+    # error. Investment decisions add issued field choices, reject-only
+    # validation, and whole-batch human confirmation. Registry-wide carrying
+    # weight is measured from the fixtures below, including these additions.
+    "reviews_decide": (5_126, 2_568),
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user
     # accepted. Still less than half the cohort it replaced.
@@ -216,7 +217,12 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # 36 of those bytes came back when the condition dropped its redundant
     # `state` test: the `absent` branch already forbids `subcategory`, so
     # naming `state` narrowed the `if` without narrowing what validates.
-    "taxonomy_set": (3_676, 3_227),
+    #
+    # 1,756 bytes for the source_category item: its variant schema, and the
+    # description naming the item, its three states, the same-batch category,
+    # the follow-through counts, and the table it writes, so an agent maps a
+    # reviews(kind="source_categories") row without opening another tool.
+    "taxonomy_set": (5_432, 3_227),
     "privacy_consent_set": (1_248, 2_190),
 }
 

@@ -1201,7 +1201,7 @@
   ]
  },
  "extractors/tabular/schema/raw_tabular_accounts.sql": {
-  "sha256": "0a22ad51ff78d94b6eda907190f36235c0515a45e7ca46e99ad6d418e9cb6d74",
+  "sha256": "05171ea21d2e70c6e9ab5838c148181e2e513275c85d7f07763af75348eb4ac7",
   "plan": [
    {
     "schema_name": "raw",
@@ -1243,7 +1243,7 @@
      ],
      [
       "source_file",
-      "Absolute path to the imported file that created or updated this account record"
+      "Source path or locator supplied to the extractor; not necessarily absolute"
      ],
      [
       "source_type",
@@ -1270,7 +1270,7 @@
   ]
  },
  "extractors/tabular/schema/raw_tabular_transactions.sql": {
-  "sha256": "4af63989164b02919a5dc28acf0e1f433fc31c11ab50f6d2b9615f26ff2f7267",
+  "sha256": "8b71724aa84fa99ca8a23aab9e8a0a469f9801f453540650db5ac64c8c9b4645",
   "plan": [
    {
     "schema_name": "raw",
@@ -1280,7 +1280,7 @@
     "column_comments": [
      [
       "transaction_id",
-      "Deterministic identifier: source_transaction_id when available, else SHA-256 hash of date|amount|description|account_id|row_number"
+      "Deterministic identifier: account_id:source_transaction_id when available, else source-prefixed SHA-256 of date|amount|description|account_id; only repeated identical content adds an occurrence suffix"
      ],
      [
       "account_id",
@@ -1356,7 +1356,7 @@
      ],
      [
       "source_file",
-      "Absolute path to the imported file at time of extraction"
+      "Source path or locator supplied to the extractor; not necessarily absolute"
      ],
      [
       "source_type",
@@ -1372,7 +1372,7 @@
      ],
      [
       "row_number",
-      "1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation"
+      "1-based row/line number in the source file for import diagnostics; never contributes to transaction identity"
      ],
      [
       "extracted_at",

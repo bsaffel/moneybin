@@ -39,7 +39,11 @@ from fastmcp import FastMCP
 from pydantic import Field, StrictBool
 
 from moneybin import error_codes
-from moneybin.adapters.rematch_report import rematch_actions, rematch_count
+from moneybin.adapters.rematch_report import (
+    rematch_actions,
+    rematch_count,
+    rematch_recovery_actions,
+)
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
@@ -907,6 +911,7 @@ async def accounts_links_set(
             ),
         ),
         actions=actions,
+        recovery_actions=rematch_recovery_actions(rematch) or None,
     )
 
 

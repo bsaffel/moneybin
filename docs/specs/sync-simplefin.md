@@ -617,6 +617,21 @@ saved SQL does not infer an account universe or acquire a completeness claim.
 Existing FX, duplicate-transaction, saved-definition drift and truncation
 disclosures remain independent and are preserved alongside attached metadata.
 
+Cash-flow and spending-trend reports keep their ordinary result shape. They add
+a concise warning and `system doctor` action only for affirmative local evidence
+that relevant transaction data is incomplete; no per-row audit fields or typed
+completeness attachment are added. Missing assessment, unknown history and
+pending retrieval intent alone do not warn. Balance-only errors and net-worth
+eligibility do not determine transaction coverage. The warning respects the
+report's account/archive scope and inclusive dates, matched to the existing UTC
+transaction dates. Spending assessments cover the selected months with the two
+preceding months used by trailing averages, plus the selected months shifted
+back one year. Unused months between those windows do not trigger warnings.
+Explicit source failures survive credential replacement until a later complete
+outcome covers the relevant failed interval for the same source/account scope.
+Doctor owns source, reason, affected-count and retained-window detail, with
+navigation through sync status, account listing and account-link review.
+
 Each reason identifies its diagnostic `kind` (separate from UserError codes)
 and reports `affected_account_count` (unique resolved targets after
 account filters) and `unresolved_scope_count` (unbound scopes).

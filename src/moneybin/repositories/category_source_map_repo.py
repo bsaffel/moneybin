@@ -54,7 +54,7 @@ class CategorySourceMapRepo(BaseRepo):
         return dict(zip(_COLUMNS, row, strict=True)) if row is not None else None
 
     @staticmethod
-    def _target_id(
+    def target_id(
         source_type: str,
         source_origin: str,
         source_category_code: str,
@@ -68,7 +68,7 @@ class CategorySourceMapRepo(BaseRepo):
 
     def _row_target_id(self, row: dict[str, Any]) -> str:
         """Mirror the forward mutation's composite audit target."""
-        return self._target_id(
+        return self.target_id(
             str(row["source_type"]),
             str(row["source_origin"]),
             str(row["source_category_code"]),
@@ -154,7 +154,7 @@ class CategorySourceMapRepo(BaseRepo):
                 action="category_source_map.upsert",
                 target=(
                     *self._audit_target,
-                    self._target_id(
+                    self.target_id(
                         source_type,
                         source_origin,
                         source_category_code,
@@ -187,7 +187,7 @@ class CategorySourceMapRepo(BaseRepo):
                     source_subcategory_code,
                 ),
                 "source mapping",
-                self._target_id(
+                self.target_id(
                     source_type,
                     source_origin,
                     source_category_code,
@@ -209,7 +209,7 @@ class CategorySourceMapRepo(BaseRepo):
                 action="category_source_map.delete",
                 target=(
                     *self._audit_target,
-                    self._target_id(
+                    self.target_id(
                         source_type,
                         source_origin,
                         source_category_code,

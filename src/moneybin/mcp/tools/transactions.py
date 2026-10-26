@@ -163,8 +163,9 @@ def transactions_get(
             = expense, positive = income.
         amount_max: Maximum amount as a decimal string.
         description: Case-insensitive pattern matched against description and memo.
-        uncategorized_only: Only return transactions with no user/AI/rule
-            categorization assigned (includes source-provided categories).
+        uncategorized_only: Only return transactions that still need a
+            category: the rows reviews(kind='categorization') offers, so
+            transfer legs and archived accounts are excluded.
         limit: Maximum rows to return (default 50).
         cursor: Opaque pagination token from a previous response's next_cursor.
     """
@@ -616,6 +617,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
     """
     from moneybin.services.account_links_service import AccountLinksService
     from moneybin.services.categorization import CategorizationService
+    from moneybin.services.investment_matching_service import InvestmentMatchingService
     from moneybin.services.merchant_links_service import MerchantLinksService
     from moneybin.services.review_service import ReviewService
     from moneybin.services.security_links_service import SecurityLinksService
@@ -627,6 +629,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             account_links_service=AccountLinksService(db=db),
             merchant_links_service=MerchantLinksService(db=db),
             security_links_service=SecurityLinksService(db=db),
+            investment_matching_service=InvestmentMatchingService(db=db),
         ).status()
 
     return build_envelope(
@@ -637,6 +640,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             merchant_links_pending=status.merchant_links_pending,
             security_links_pending=status.security_links_pending,
             total=status.total,
+            investment_matches_pending=status.investment_matches_pending,
         ),
         actions=[
             "Use reviews(kind='categorization') for the categorization queue",

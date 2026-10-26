@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING, Any, cast
 import typer
 
 from moneybin import error_codes
-from moneybin.adapters.refresh_adapters import refresh_steps_fields
+from moneybin.adapters.refresh_adapters import (
+    refresh_investment_hints,
+    refresh_step_actions,
+    refresh_steps_fields,
+)
 from moneybin.cli.commands import import_inbox, import_labels
 from moneybin.cli.output import (
     OutputFormat,
@@ -989,7 +993,15 @@ def import_files_command(
         classification = classify(ImportConfirmationPayload)
         batch_sensitivity = classification.sensitivity
         classes_returned = classification.classes_returned
-    envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
+    envelope = build_envelope(
+        data=data,
+        sensitivity=batch_sensitivity,
+        actions=refresh_investment_hints(refresh_steps),
+        recovery_actions=refresh_step_actions(
+            refresh_steps, apply_failed=bool(data.get("transforms_error"))
+        )
+        or None,
+    )
     if batch_result is not None:
         # Same gate the MCP import_files tool applies, from the same function:
         # "every file failed" must read as a failure on both surfaces, or a
@@ -1045,6 +1057,7 @@ def import_files_command(
     if (
         data.get("transforms_error")
         or envelope.status == "error"
+        or (refresh_steps is not None and refresh_steps.transform_blocked)
         or data.get("failed_count")
         or data.get("confirmation_required_count")
     ):
@@ -1152,9 +1165,7 @@ def _batch_payload(
         "files": files_list,
         # Flat, and named as every other surface names them: the import ran a
         # matcher, a categorizer, an identity pass and a network rate backfill,
-        # and `transforms_error` below reports only a blocking failure
-        # (SQLMesh apply, or an investment_match crash that kept apply from
-        # running).
+        # and `transforms_error` below reports only SQLMesh apply failures.
         **refresh_steps_fields(batch.refresh_steps),
     }
     if batch.transforms_error:
@@ -3411,6 +3422,11 @@ def _complete_import_confirmation(
         warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
         warn_refresh_steps(result.refresh_steps)
 
+    transform_blocked = bool(
+        result.refresh_steps is not None and result.refresh_steps.transform_blocked
+    )
+    recovery_actions = refresh_step_actions(result.refresh_steps, apply_failed=False)
+
     if output == OutputFormat.JSON:
         data: dict[str, Any] = {
             # Mirror the confirmation_required envelope's top-level status
@@ -3426,6 +3442,7 @@ def _complete_import_confirmation(
             # ImportResult.field_mapping); agents need it to verify which
             # column mapping was actually applied without re-detecting.
             "merged_mapping": dict(result.field_mapping or {}),
+            **refresh_steps_fields(result.refresh_steps),
         }
         # Same omit-when-empty rule as the files[] rows: present means news.
         if result.accounts_created:
@@ -3434,9 +3451,14 @@ def _complete_import_confirmation(
             )
         actions = [
             f"Use 'moneybin import revert {result.import_id}' to undo this import.",
-            "Run 'moneybin transform apply' to rebuild derived tables.",
             "Run 'moneybin import status' to confirm imported counts.",
         ]
+        if transform_blocked:
+            actions.extend(refresh_investment_hints(result.refresh_steps))
+        else:
+            actions.insert(
+                1, "Run 'moneybin transform apply' to rebuild derived tables."
+            )
         if result.sign_correction_suggested:
             actions.insert(
                 0,
@@ -3447,9 +3469,40 @@ def _complete_import_confirmation(
             actions.insert(
                 0, _sign_assumed_notice(result.sign_assumed, result.import_id)
             )
-        envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
+        envelope = build_envelope(
+            data=data,
+            sensitivity="medium",
+            actions=actions,
+            recovery_actions=recovery_actions or None,
+        )
         render_or_json(envelope, output, cli_actor=cli_actor)
+        if transform_blocked:
+            raise typer.Exit(1)
         return
+
+    if transform_blocked:
+        recovery = refresh_investment_hints(result.refresh_steps)
+        for action in recovery_actions:
+            if action.tool == "refresh_run":
+                steps = cast("list[str]", action.arguments["steps"])
+                command = generated_cli_command(
+                    "refresh", *(part for step in steps for part in ("--step", step))
+                )
+                recovery.append(f"Run '{command}'; do not repeat the import.")
+        _confirm_receipt(
+            "Import saved; refresh blocked",
+            [
+                ("File", str(file_path)),
+                ("Saved", f"{result.rows_loaded} rows"),
+                ("Import", str(result.import_id)),
+                (
+                    "Derived data",
+                    "Transform skipped because investment matching failed",
+                ),
+                *[("Recovery", hint) for hint in recovery],
+            ],
+        )
+        raise typer.Exit(1)
 
     _confirm_receipt(
         f"{get_terminal_policy().symbols.success} Import complete",

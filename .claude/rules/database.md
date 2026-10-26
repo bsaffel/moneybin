@@ -244,6 +244,21 @@ Claude defaults to PostgreSQL syntax. Use DuckDB equivalents:
 | Read file | `read_csv('f.csv')`, `read_parquet('*.parquet')` | N/A |
 | Write file | `COPY (...) TO 'f.csv' (HEADER, DELIMITER ',')` | `\copy` or `COPY` with different options |
 
+## Numeric boundaries
+
+- DuckDB DECIMAL division returns floating point; casting back cannot recover
+  digits. Keep authoritative arithmetic exact and round allocations once. For
+  pandas, use the existing VARCHAR/Decimal conversion to preserve cents.
+- Amount, quantity, price and rate scales differ. Follow the
+  [investment](../../docs/specs/investments-data-model.md) and
+  [currency](../../docs/specs/multi-currency.md) rounding policies; test ties,
+  type limits and residual allocation totals.
+- Unsupported source precision needs an explicit source policy: preserve the
+  original amount/currency and disclose withheld values rather than silently
+  rounding them into valid facts.
+- Numeric JSON uses binary floating point; exact consumers need decimal-preserving
+  CSV or Parquet. Changing JSON representation is a separate contract decision.
+
 ## Anti-Patterns
 
 - No MySQL/PostgreSQL-specific syntax (this is DuckDB).

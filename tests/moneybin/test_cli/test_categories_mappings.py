@@ -37,6 +37,7 @@ def _stored(
         category=category,
         subcategory=subcategory,
         category_id=category_id,
+        outcome="added",
         categorized=categorized,
         withdrawn_ids=withdrawn_ids,
     )
@@ -463,3 +464,93 @@ class TestMappingsSet:
         parsed = json.loads(result.output)
         assert parsed["data"]["category"] == "Groceries"
         assert parsed["data"]["subcategory"] == "Produce"
+
+
+# ---------------------------------------------------------------------------
+# mappings remove
+# ---------------------------------------------------------------------------
+
+
+class TestMappingsRemove:
+    """Tests for `categories mappings remove`."""
+
+    @patch("moneybin.cli.commands.categories.mappings.get_database")
+    @patch("moneybin.services.categorization.CategorizationService.remove_source_term")
+    def test_remove_calls_service_and_reports_removed(
+        self, mock_remove: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_remove.return_value = _stored(None, withdrawn_ids=frozenset({"t1", "t2"}))
+
+        result = runner.invoke(
+            app,
+            [
+                "remove",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "Groceries",
+                "--output",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_remove.assert_called_once_with(
+            source_type=None,
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory=None,
+            actor="cli",
+        )
+        parsed = json.loads(result.output)
+        assert parsed["data"]["action"] == "removed"
+        assert parsed["data"]["category_id"] is None
+        assert parsed["data"]["recategorized"] == 2
+
+    @patch("moneybin.cli.commands.categories.mappings.get_database")
+    @patch("moneybin.services.categorization.CategorizationService.remove_source_term")
+    def test_remove_text_receipt_names_the_term(
+        self, mock_remove: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_remove.return_value = _stored(None)
+
+        result = runner.invoke(
+            app,
+            ["remove", "--namespace", "chase_credit", "--category", "Groceries"],
+        )
+
+        assert result.exit_code == 0
+        assert "Category mapping removed" in result.output
+        assert "Groceries" in result.output
+
+    @patch("moneybin.cli.commands.categories.mappings.get_database")
+    @patch("moneybin.services.categorization.CategorizationService.remove_source_term")
+    def test_remove_of_an_unmapped_term_exits_1_with_its_code(
+        self, mock_remove: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        from moneybin import error_codes
+        from moneybin.errors import UserError
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_remove.side_effect = UserError(
+            "This term has no mapping to remove",
+            code=error_codes.MUTATION_NOT_FOUND,
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "remove",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "Groceries",
+                "--output",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert json.loads(result.output)["error"]["code"] == "mutation_not_found"

@@ -39,9 +39,12 @@ ReviewQueueKind = Literal[
     "account_links",
     "merchant_links",
     "security_links",
+    "source_categories",
 ]
 ReviewStatus = Literal["pending", "history"]
-ReviewDecisionKind = Literal["categorization", "auto_rule", "match", "rule_conflict"]
+ReviewDecisionKind = Literal[
+    "categorization", "auto_rule", "match", "investment_match", "rule_conflict"
+]
 #: Every verb a review decision can carry. The first two are the accept/reject
 #: axis every other queue uses; the last three are the rule-conflict
 #: resolutions, which are not accept/reject — a conflict has three outcomes and
@@ -647,6 +650,76 @@ class ReviewsSecurityLinksView(BaseModel):
     rows: list[SecurityLinkReviewRow]
 
 
+@row_set(NO_ROW_SET)
+class SourceCategoryPendingDetails(BaseModel):
+    """One imported category term with no mapping yet.
+
+    The term fields are the ones a ``source_category`` item in
+    ``taxonomy_set`` takes. ``suggestions`` are MoneyBin category names close
+    to the term.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Annotated[Literal["pending"], DataClass.TXN_TYPE] = "pending"
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    source_origin: Annotated[str, DataClass.TXN_TYPE]
+    source_category_code: Annotated[str, DataClass.CATEGORY]
+    source_subcategory_code: Annotated[str | None, DataClass.CATEGORY]
+    transaction_count: Annotated[int, DataClass.AGGREGATE]
+    suggestions: Annotated[list[str], DataClass.CATEGORY]
+
+
+class SourceCategoryHistoryDetails(BaseModel):
+    """One curated imported term: mapped to a category, or ignored."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Annotated[Literal["history"], DataClass.TXN_TYPE] = "history"
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    source_origin: Annotated[str, DataClass.TXN_TYPE]
+    source_category_code: Annotated[str, DataClass.CATEGORY]
+    source_subcategory_code: Annotated[str | None, DataClass.CATEGORY]
+    target_state: Annotated[Literal["present", "ignored"], DataClass.TXN_TYPE]
+    category_id: Annotated[str | None, DataClass.CATEGORY]
+    category: Annotated[str | None, DataClass.CATEGORY]
+    subcategory: Annotated[str | None, DataClass.CATEGORY]
+
+
+SourceCategoryDetails = Annotated[
+    SourceCategoryPendingDetails | SourceCategoryHistoryDetails,
+    Field(discriminator="state"),
+]
+
+
+class SourceCategoryReviewRow(BaseModel):
+    """Normalized imported-category-term queue row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    kind: Annotated[Literal["source_categories"], DataClass.TXN_TYPE] = (
+        "source_categories"
+    )
+    status: Annotated[str, DataClass.TXN_TYPE]
+    created_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    summary: Annotated[str, DataClass.CATEGORY]
+    details: SourceCategoryDetails
+
+
+@row_set("rows")
+class ReviewsSourceCategoriesView(BaseModel):
+    """Imported-category-term pending or history collection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["source_categories"], DataClass.TXN_TYPE] = (
+        "source_categories"
+    )
+    status: Annotated[ReviewStatus, DataClass.TXN_TYPE]
+    rows: list[SourceCategoryReviewRow]
+
+
 class RuleConflictMatcher(BaseModel):
     """The matcher both rules in a conflict share."""
 
@@ -741,6 +814,7 @@ ReviewsCoarsePayload = (
     | ReviewsAccountLinksView
     | ReviewsMerchantLinksView
     | ReviewsSecurityLinksView
+    | ReviewsSourceCategoriesView
 )
 
 

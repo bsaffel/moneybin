@@ -25,6 +25,69 @@ from moneybin.privacy.payloads.gsheet import GsheetConnectionsPayload
 runner = CliRunner()
 
 
+@pytest.mark.parametrize("output", ["text", "json"])
+@pytest.mark.parametrize("outcome", ["transient", "refusal", "pending"])
+def test_gsheet_pull_preserves_investment_stage_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+    outcome: str,
+) -> None:
+    from moneybin import error_codes
+    from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
+
+    service = MagicMock()
+    service.pull_all_healthy.return_value = [
+        PullResult(
+            connection_id="test", status="complete", load_result=_make_load_result()
+        )
+    ]
+    context = MagicMock()
+    context.__enter__.return_value = (service, MagicMock())
+    monkeypatch.setattr(
+        "moneybin.cli.commands.gsheet._build_pull_service",
+        MagicMock(return_value=context),
+    )
+    stage = StageOutcome(
+        step="investment_match",
+        ran=True,
+        counts={"pending_unique": 1} if outcome == "pending" else {},
+        error=None if outcome == "pending" else "Investment matching failed",
+        error_code=error_codes.INVESTMENT_MATCH_COMPONENT_TOO_LARGE
+        if outcome == "refusal"
+        else None,
+    )
+    monkeypatch.setattr(
+        "moneybin.orchestration.refresh.refresh",
+        MagicMock(
+            return_value=RefreshResult(
+                applied=outcome == "pending",
+                duration_seconds=0.1 if outcome == "pending" else None,
+                stages=(stage,),
+                requested_steps=("investment_match", "transform"),
+            )
+        ),
+    )
+    result = runner.invoke(app, ["gsheet", "pull", "--output", output])
+    assert result.exit_code == (0 if outcome == "pending" else 1), result.output
+    if output == "json":
+        envelope = json.loads(result.stdout)
+        assert envelope["data"]["refresh_error"] is None
+        retries = [
+            a["arguments"]
+            for a in envelope.get("recovery_actions", [])
+            if a["tool"] == "refresh_run"
+        ]
+        prose = " ".join(envelope["actions"])
+        if outcome == "transient":
+            assert retries == [{"steps": ["transform"]}]
+        elif outcome == "refusal":
+            assert retries == []
+            assert "refresh_run" not in prose and "unchanged" in prose
+        else:
+            assert 'reviews(kind="investment_matches", status="pending")' in prose
+
+
 def _make_connection(
     *,
     connection_id: str = "conn_abc123",

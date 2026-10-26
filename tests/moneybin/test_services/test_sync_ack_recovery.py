@@ -299,3 +299,30 @@ def test_mixed_replay_returns_delivery_counts_without_rewriting_ingestion_eviden
     assert replay.transactions_loaded < first.transactions_loaded
     assert replay.investment_transactions_loaded == 0
     assert replay.security_prices_loaded == 0
+
+
+def test_interrupted_job_evidence_write_rolls_back_ingestion_before_ack(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interruption after Raw writes cannot leave data without recovery evidence."""
+    client = _client(_envelope())
+
+    def interrupt_evidence(*args: Any, **kwargs: Any) -> None:
+        assert db.execute(
+            "SELECT count(*) FROM raw.simplefin_sync_receipts"
+        ).fetchone() == (1,)
+        raise KeyboardInterrupt("synthetic recovery evidence interruption")
+
+    monkeypatch.setattr(SyncJobStateRepo, "ensure", interrupt_evidence)
+
+    with pytest.raises(KeyboardInterrupt, match="recovery evidence interruption"):
+        _service(db, client).pull(refresh=False)
+
+    assert db.execute(
+        "SELECT count(*) FROM raw.simplefin_sync_receipts"
+    ).fetchone() == (0,)
+    assert db.execute("SELECT count(*) FROM raw.simplefin_transactions").fetchone() == (
+        0,
+    )
+    assert db.execute("SELECT count(*) FROM app.sync_job_state").fetchone() == (0,)
+    client.ack.assert_not_called()

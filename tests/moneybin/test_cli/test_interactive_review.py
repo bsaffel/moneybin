@@ -13,6 +13,46 @@ from moneybin.cli.utils import get_terminal_policy
 runner = CliRunner()
 
 
+@pytest.mark.parametrize("command", [["review"], ["transactions", "review"]])
+def test_interactive_investments_refused_before_database(command: list[str]) -> None:
+    policy = replace(get_terminal_policy(), interactive=True)
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_terminal_policy",
+            return_value=policy,
+        ),
+        patch("moneybin.cli.commands.transactions.review.get_database") as database,
+        patch("moneybin.cli.commands.interactive_review.get_database") as session_db,
+    ):
+        result = runner.invoke(
+            app, [*command, "--interactive", "--type", "investment-matches"]
+        )
+    assert result.exit_code == 2
+    assert "moneybin review --type investment-matches --reject" in result.output
+    assert "acceptance remains unavailable" in result.output
+    database.assert_not_called()
+    session_db.assert_not_called()
+
+
+@pytest.mark.parametrize("command", [["review"], ["transactions", "review"]])
+@pytest.mark.parametrize("scope", [[], ["--type", "all"]])
+def test_interactive_all_discloses_separate_investment_review(
+    command: list[str], scope: list[str]
+) -> None:
+    policy = replace(get_terminal_policy(), interactive=True)
+    with (
+        patch(
+            "moneybin.cli.commands.transactions.review.get_terminal_policy",
+            return_value=policy,
+        ),
+        patch("moneybin.cli.commands.interactive_review.load_items", return_value=[]),
+    ):
+        result = runner.invoke(app, [*command, "--interactive", *scope])
+    assert result.exit_code == 0
+    assert "Investment proposals require separate scripted review" in result.output
+    assert "moneybin review --type investment-matches" in result.output
+
+
 @pytest.mark.parametrize("args", [["--output", "json"], [], ["--limit", "0"]])
 def test_interactive_rejects_invalid_mode_before_database(args: list[str]) -> None:
     with patch("moneybin.cli.commands.transactions.review.get_database") as database:
@@ -111,8 +151,10 @@ def test_empty_review_does_not_prompt() -> None:
     choose.assert_not_called()
 
 
+@pytest.mark.parametrize("planner_blocked", [False, True])
 def test_failed_account_refresh_reports_saved_then_exits(
     capsys: pytest.CaptureFixture[str],
+    planner_blocked: bool,
 ) -> None:
     import typer
 
@@ -121,6 +163,8 @@ def test_failed_account_refresh_reports_saved_then_exits(
         ReviewItem,
         run_review,
     )
+    from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     item = ReviewItem(
         "account-links",
@@ -143,7 +187,17 @@ def test_failed_account_refresh_reports_saved_then_exits(
         patch("moneybin.cli.commands.accounts.links.report_rematch", return_value=[]),
         patch("moneybin.services.account_links_service.AccountLinksService") as service,
     ):
-        service.return_value.set.return_value = MagicMock(error="rebuild failed")
+        service.return_value.set.return_value = RefreshResult(
+            applied=False,
+            duration_seconds=None,
+            error=None if planner_blocked else "rebuild failed",
+            requested_steps=("investment_match", "transform"),
+            stages=(
+                (StageOutcome("investment_match", ran=True, error="planner failed"),)
+                if planner_blocked
+                else ()
+            ),
+        )
         with pytest.raises(typer.Exit) as stopped:
             run_review("account-links", 1, policy)
     assert stopped.value.exit_code == 1

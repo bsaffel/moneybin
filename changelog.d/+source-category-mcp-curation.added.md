@@ -1,0 +1,1 @@
+Agents can now curate imported category terms over MCP: `reviews(kind="source_categories")` lists unmapped terms and existing mappings, and a `source_category` item in `taxonomy_set` maps a term to a category (including one the same batch creates), ignores it, or removes its mapping. `moneybin categories mappings remove` returns a mapped or ignored term to pending on the CLI.

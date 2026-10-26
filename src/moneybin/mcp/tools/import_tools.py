@@ -49,6 +49,7 @@ from moneybin.adapters.imports_adapters import (
     tabular_format_row,
 )
 from moneybin.adapters.refresh_adapters import (
+    refresh_investment_hints,
     refresh_rate_gap_hints,
     refresh_step_actions,
     refresh_steps_fields,
@@ -488,10 +489,7 @@ def import_files(
                     # through ImportService, so it has to read the same
                     # best-effort outcomes the service path reads.
                     refresh_steps = step_outcome(refresh_result)
-                    if not refresh_result.applied:
-                        transforms_error = refresh_result.error or (
-                            "SQLMesh transforms failed (no error detail)"
-                        )
+                    transforms_error = refresh_result.error
         except ImportConfirmationRequiredError as e:
             # Match the multi-file path's shape: a confirmation-required
             # outcome on a single file lands as one entry in batch.per_file
@@ -698,7 +696,11 @@ def import_files(
         sum(len(r.accounts_created) for r in batch.per_file)
     ):
         actions.append(minted)
-    if not batch.transforms_applied and batch.imported_count > 0:
+    if (
+        not batch.transforms_applied
+        and batch.imported_count > 0
+        and batch.refresh_steps is None
+    ):
         actions.append("Run refresh_run when ready to refresh derived tables")
     if batch.transforms_error:
         actions.append("Refresh failed after import — call refresh_run to retry")
@@ -708,6 +710,7 @@ def import_files(
     if retired := retired_transfers_action(batch.transfers_retired, operation="import"):
         actions.append(retired)
     actions.extend(refresh_rate_gap_hints(batch.refresh_steps))
+    actions.extend(refresh_investment_hints(batch.refresh_steps))
     actions.append("Use system_status to confirm refreshed counts")
 
     envelope = build_envelope(

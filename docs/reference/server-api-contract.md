@@ -418,9 +418,12 @@ Transactions the provider has retracted (reversal, dedup, error correction). The
 
 | Field | Type | Notes |
 |---|---|---|
-| `transaction_id` | string | Provider transaction ID to delete. The only field the client reads; any other field on the record is ignored. |
+| `transaction_id` | string | Provider transaction ID to delete. |
+| `account_id` | string \| null | Optional provider account ID. When supplied, only a transaction belonging to this account can be removed. |
 
 A bare `transaction_id` string is accepted in place of a record, so a server predating the record shape still validates. A record missing `transaction_id` fails validation for the entire response rather than skipping that element — a retraction the client cannot identify is never silently dropped.
+
+Every removal is constrained to the batch's reported Plaid items. Records without an account ID retain transaction-and-item matching. Counts reflect rows actually deleted; unmatched and repeated removals count as zero.
 
 #### `securities[]`
 

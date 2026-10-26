@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+from moneybin import error_codes
 from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.errors import RecoveryAction
 from moneybin.orchestration.refresh import RefreshResult, step_outcome
@@ -55,24 +56,35 @@ def _stage_error(steps: RefreshStepOutcome, step: str) -> str | None:
     return stage.error if stage is not None else None
 
 
-def _apply_failed_hint(result: RefreshResult) -> str:
-    """Diagnosis + remedy for a blocked or failed apply, worded per stage.
-
-    ``result.error`` is set by exactly two stages (see the orchestration
-    module docstring): the SQLMesh apply itself, or an ``investment_match``
-    crash that blocked apply from ever starting. The remedy is identical
-    either way — retry ``refresh_run`` — so only the diagnosis clause varies;
-    one function builds both from the shared remedy rather than two
-    near-duplicate constants that could drift apart.
-    """
-    investment_stage = result.stage("investment_match")
-    if investment_stage is not None and investment_stage.error is not None:
-        diagnosis = (
-            "Investment matching failed and blocked the SQLMesh apply from running"
+def refresh_investment_hints(steps: RefreshStepOutcome | None) -> list[str]:
+    """Pending review and planner diagnostics shared by every refresh carrier."""
+    stage = None if steps is None else steps.stage("investment_match")
+    if stage is None:
+        return []
+    hints: list[str] = []
+    if stage.count("pending_unique") or stage.count("pending_competing"):
+        hints.append(
+            "Review pending investment Proposals with "
+            'reviews(kind="investment_matches", status="pending").'
         )
-    else:
-        diagnosis = "SQLMesh apply failed"
-    return f"{diagnosis} — {REFRESH_APPLY_FAILED_REMEDY}"
+    if stage.error_code == error_codes.INVESTMENT_MATCH_COMPONENT_TOO_LARGE:
+        hints.append(
+            "Investment matching exceeded its safe component bound; resolve the "
+            "component's ambiguity before planning again. Retrying unchanged "
+            "inputs cannot succeed."
+        )
+    elif stage.error is not None:
+        hints.append(
+            "Investment matching failed and blocked the SQLMesh apply from running."
+            if steps is not None and steps.transform_blocked
+            else "Investment matching failed; see its stage error and recovery action."
+        )
+    elif not stage.ran:
+        hints.append(
+            "Investment matching could not examine candidates because comparison "
+            "inputs were unavailable; see its recovery action."
+        )
+    return hints
 
 
 def _stage_rows(steps: RefreshStepOutcome | None) -> list[RefreshStageRow]:
@@ -129,13 +141,6 @@ def refresh_steps_fields(steps: RefreshStepOutcome | None) -> RefreshStepFields:
         "rate_pairs_unsupported": list(outcome.rate_pairs_unsupported),
         "rate_pairs_discarded": list(outcome.rate_pairs_discarded),
     }
-
-
-def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
-    """The step retries for a refresh whose SQLMesh apply survived."""
-    return refresh_step_actions(
-        step_outcome(result), apply_failed=result.error is not None
-    )
 
 
 def refresh_rate_gap_hints(steps: RefreshStepOutcome | None) -> list[str]:
@@ -195,7 +200,7 @@ def refresh_step_actions(
     crashed mid-import, and MCP has no equivalent, so without this the crash
     reaches the agent as a payload string with nothing naming its cure.
 
-    ``apply_failed`` withholds every retry, because a step that crashed beside a
+    ``apply_failed`` withholds ordinary step retries, because a step that crashed beside a
     failed SQLMesh apply is the symptom and the apply is the blocker: retrying it
     runs against the same broken warehouse and fails identically. It has no
     default on purpose. Those embedded callers hold the apply outcome in their
@@ -203,75 +208,49 @@ def refresh_step_actions(
     defaulted parameter would read as answered while silently meaning "no", which
     is exactly how the two surfaces drifted apart the first time.
 
-    ``investment_match`` is the one exception to that withholding. Per the
-    orchestration module docstring, its crash can itself be *why* apply never
-    ran — a precondition failure, not a symptom beside an unrelated apply
-    break — and the two can never coexist (a blocking crash short-circuits
-    before ``transform`` is attempted), so an ``investment_match`` error seen
-    together with ``apply_failed`` is unambiguously that case. Retrying is the
-    actual fix there, not a doomed repeat against a broken warehouse, so it
-    earns a targeted retry even though every other step stays withheld.
-    ``expand_steps`` always folds ``investment_match`` back in alongside
-    ``transform``, so the retry targets ``transform`` to re-run both.
+    An input-unavailable planner skip still retries the requested transform:
+    that route owns both the unavailable prerequisites and the failed apply.
 
-    That exception carries ``match`` with it. ``refresh`` records a match crash
-    on its stage and keeps going into investment planning, so both errors can
-    arrive on the same result — and the ``transform`` retry expands to the
-    planner and the apply, never to the cash matcher. Withholding the match
-    retry here leaves an agent that ran every action offered with matching
-    still incomplete, which is the opposite of what the withholding rule is
-    for: nothing about this apply is broken, so neither retry is doomed.
+    Investment planning failures belong to their stage, so they never set
+    ``apply_failed``. The expanded request determines whether recovery must
+    rebuild dependent models as well. A deterministic component-bound refusal
+    earns no unchanged retry, while independent cash failures remain retryable.
     """
     if steps is None:
         return []
-    investment_error = _stage_error(steps, "investment_match")
+    investment_stage = steps.stage("investment_match")
     match_error = _stage_error(steps, "match")
-    if apply_failed:
-        if investment_error is None:
-            return []
-        blocked: list[RecoveryAction] = []
-        if match_error is not None:
-            blocked.append(_match_retry())
-        blocked.extend([
-            RecoveryAction(
-                tool="refresh_run",
-                arguments={"steps": ["transform"]},
-                rationale=(
-                    "Investment matching crashed and blocked the SQLMesh "
-                    "apply from running; re-run transform to retry both."
-                ),
-                confidence="suggested",
-                idempotent=True,
-            ),
-            RecoveryAction(
-                tool="system_status",
-                arguments={"sections": ["doctor"], "detail": "full"},
-                rationale=(
-                    "Run pipeline integrity checks to diagnose what the "
-                    "partial refresh left inconsistent."
-                ),
-                confidence="suggested",
-                idempotent=True,
-            ),
-        ])
-        return blocked
+    if apply_failed and not (
+        investment_stage is not None
+        and not investment_stage.ran
+        and "transform" in steps.requested_steps
+    ):
+        return []
     actions: list[RecoveryAction] = []
-    if match_error is not None:
+    if match_error is not None and not apply_failed:
         actions.append(_match_retry())
-    if investment_error is not None:
+    if (
+        investment_stage is not None
+        and (investment_stage.error is not None or not investment_stage.ran)
+        and investment_stage.error_code
+        != error_codes.INVESTMENT_MATCH_COMPONENT_TOO_LARGE
+    ):
+        retry_step = (
+            "transform" if "transform" in steps.requested_steps else "investment_match"
+        )
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
-                arguments={"steps": ["investment_match"]},
+                arguments={"steps": [retry_step]},
                 rationale=(
-                    "Investment matching crashed mid-refresh; re-run just "
-                    "the investment_match step to retry."
+                    "Investment matching failed or comparison inputs were unavailable; "
+                    f"re-run {retry_step} to retry the requested pipeline."
                 ),
                 confidence="suggested",
                 idempotent=True,
             )
         )
-    if _stage_error(steps, "categorize") is not None:
+    if _stage_error(steps, "categorize") is not None and not apply_failed:
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
@@ -284,7 +263,7 @@ def refresh_step_actions(
                 idempotent=True,
             )
         )
-    if steps.identity_errors:
+    if steps.identity_errors and not apply_failed:
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
@@ -297,7 +276,9 @@ def refresh_step_actions(
                 idempotent=True,
             )
         )
-    if _stage_error(steps, "rates") is not None or steps.rate_pairs_failed:
+    if not apply_failed and (
+        _stage_error(steps, "rates") is not None or steps.rate_pairs_failed
+    ):
         # `pairs_failed` and a step crash, matching the CLI's `retryable_error`.
         # The other two lists name pairs a retry cannot fill: the provider
         # publishes no series at all for an unsupported one, and it *answered*
@@ -346,21 +327,10 @@ def refresh_envelope(
             ``expand_steps(...)`` result). Used to decide whether the
             categorize follow-up hint applies.
     """
-    actions: list[str] = []
-    investment_stage = result.stage("investment_match")
-    if (
-        investment_stage is not None
-        and investment_stage.ran
-        and (
-            investment_stage.count("pending_unique")
-            + investment_stage.count("pending_competing")
-        )
-    ):
-        actions.append(
-            'Review pending investment Proposals with reviews(kind="investment_matches").'
-        )
+    outcome = step_outcome(result, requested=requested)
+    actions = refresh_investment_hints(outcome)
     if not result.applied and result.error is not None:
-        actions.append(_apply_failed_hint(result))
+        actions.append(f"SQLMesh apply failed — {REFRESH_APPLY_FAILED_REMEDY}")
     # Gate the follow-up on success: when transform was requested but failed,
     # categorize would run against stale outputs — direct the agent to resolve
     # the apply failure first rather than chain categorize after it. Also gate
@@ -370,12 +340,17 @@ def refresh_envelope(
     match_stage = result.stage("match")
     if (
         result.error is None
+        and not outcome.transform_blocked
         and (match_stage is None or match_stage.error is None)
         and "match" in requested
         and "categorize" not in requested
     ):
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
-    if result.error is None and "identity" in requested:
+    if (
+        result.error is None
+        and not outcome.transform_blocked
+        and "identity" in requested
+    ):
         if "accounts" not in result.identity_errors:
             actions.append(REFRESH_ACCOUNT_LINKS_REVIEW_HINT)
         if "merchants" not in result.identity_errors:
@@ -390,7 +365,7 @@ def refresh_envelope(
         result.transfers_retired, operation="refresh"
     ):
         actions.insert(0, retired)
-    recovery = _step_crash_recovery_actions(result)
+    recovery = refresh_step_actions(outcome, apply_failed=result.error is not None)
     # `or None` (omit the key when empty) is correct here: refresh always uses
     # build_envelope, whose ResponseEnvelope.error is None, so there is no
     # error.recovery_actions to fall through to — the [] suppress vs None

@@ -38,12 +38,15 @@ from moneybin.protocol.pagination import (
 )
 from moneybin.protocol.write_contracts import (
     CategoryStateRequest,
+    MerchantStateRequest,
+    SourceCategoryStateRequest,
     TaxonomyStateRequest,
 )
 from moneybin.services.categorization import (
     CategorizationService,
     CategoryStateTarget,
     MerchantStateTarget,
+    SourceCategoryStateTarget,
     TaxonomyStateTarget,
     TaxonomyTargetPlan,
 )
@@ -326,6 +329,17 @@ def _to_taxonomy_target(request: TaxonomyStateRequest) -> TaxonomyStateTarget:
             description=request.description,
             force=bool(request.force),
         )
+    if isinstance(request, SourceCategoryStateRequest):
+        return SourceCategoryStateTarget(
+            state=request.state,
+            source_type=request.source_type,
+            source_origin=request.source_origin,
+            source_category_code=request.source_category_code,
+            source_subcategory_code=request.source_subcategory_code,
+            category_id=request.category_id,
+            category=request.category,
+            subcategory=request.subcategory,
+        )
     return MerchantStateTarget(
         state=request.state,
         merchant_id=request.merchant_id,
@@ -381,9 +395,13 @@ def _taxonomy_binding(
     for request, planned in zip(items, plan.items, strict=True):
         for value in (
             planned.target_id,
-            request.category_id
-            if isinstance(request, CategoryStateRequest)
-            else request.merchant_id,
+            request.merchant_id
+            if isinstance(request, MerchantStateRequest)
+            else request.category_id,
+            # A by-name mapping's destination: it must not re-resolve unseen.
+            planned.source_term.category_id
+            if planned.source_term is not None
+            else None,
         ):
             if value is not None and value not in resolved_ids:
                 resolved_ids.append(value)
@@ -444,6 +462,16 @@ def _apply_taxonomy_targets(
             target_id=result.target_id,
             state=result.state,
             changed=result.changed,
+            categorized=(
+                result.source_mapping.categorized
+                if result.source_mapping is not None
+                else None
+            ),
+            recategorized=(
+                result.source_mapping.recategorized
+                if result.source_mapping is not None
+                else None
+            ),
         )
         for result in results
     ]
@@ -454,7 +482,7 @@ async def taxonomy_set_coarse(
     items: list[TaxonomyStateRequest],
     confirmation_token: str | None = None,
 ) -> ResponseEnvelope[TaxonomySetPayload]:
-    """Atomically declare category and merchant mapping target states."""
+    """Atomically declare category, merchant, and source-category target states."""
     if not items:
         raise UserError(
             "items must contain at least one taxonomy target.",
@@ -507,9 +535,17 @@ def register_taxonomy_coarse_writes(mcp: FastMCP) -> None:
         mcp,
         taxonomy_set_coarse,
         "taxonomy_set",
-        "Atomically declare categories present, inactive, or absent and merchant "
-        "mappings present or absent. The tool advertises maximum destructive "
-        "risk and confirms only batches containing a resolved hard delete.",
+        "Atomically declare category, merchant, and imported category-term "
+        "target states. Categories are present, inactive, or absent; merchant "
+        "mappings present or absent; imported terms (kind='source_category', "
+        "listed by reviews(kind='source_categories')) present, mapped to a "
+        "category that may be one the same batch creates, ignored, or absent. "
+        "A changed term re-categorizes its transactions at once; results report "
+        "categorized and recategorized. Terms are stored in "
+        "app.category_source_map; every write is audited and undone with "
+        "system_audit_undo(operation_id=...). "
+        "The tool advertises maximum destructive risk and confirms only batches "
+        "containing a resolved hard delete.",
         privacy_actor="taxonomy_set",
     )
 
