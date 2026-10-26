@@ -29,8 +29,7 @@ def _identifier_pattern(identifier: str) -> re.Pattern[str] | None:
     if len(digits) <= _KEEP_LAST:
         return None
     body = r"[\s./-]{0,3}".join(digits)
-    # A match ending in a decimal amount shape (d.dd) is an amount: never masked.
-    return re.compile(rf"(?<!\d)0*{body}(?!\d)(?<!\d\.\d\d)")
+    return re.compile(rf"(?<!\d)0*{body}(?!\d)")
 
 
 def redact_critical(text: str, *, account_identifiers: Sequence[str]) -> str:

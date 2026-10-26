@@ -66,12 +66,34 @@ def test_zero_padded_identifier_redacted() -> None:
     assert out == "Acct XXXXXXXXXXX9012 x"
 
 
+def test_amount_spelling_the_identifier_is_masked_fail_closed() -> None:
+    """Deliberate: 123456.78 is the identifier 12345678 written with a dot.
+
+    Shape cannot tell them apart, and a leaked account number costs more than
+    a non-reconciling row, so the redactor masks it.
+    """
+    out = redact_critical("Balance 123456.78 end", account_identifiers=["12345678"])
+    assert out == "Balance XXXX56.78 end"
+
+
 @pytest.mark.parametrize(
-    "line",
-    ["Balance 123456.78 end", "Debit -123456.78", "Total 1234 56.78 due"],
+    ("spelling", "masked"),
+    [
+        ("1234567890.12", "XXXXXXXX90.12"),
+        ("123456789012", "XXXXXXXX9012"),
+        ("1234-5678-9012", "XXXX-XXXX-9012"),
+        ("1234 5678 9012", "XXXX XXXX 9012"),
+    ],
 )
-def test_decimal_amount_never_masked_for_short_identifier(line: str) -> None:
-    assert redact_critical(line, account_identifiers=["12345678"]) == line
+def test_amount_shaped_identifier_still_masked(spelling: str, masked: str) -> None:
+    """Fail closed: an amount-shaped spelling of the identifier still masks."""
+    out = redact_critical(f"Acct {spelling} x", account_identifiers=["123456789012"])
+    assert out == f"Acct {masked} x"
+
+
+def test_amount_adjacent_to_number_masks_only_the_number() -> None:
+    out = redact_critical("Total 1234 56.78 due", account_identifiers=["12345678"])
+    assert out == "Total XXXX 56.78 due"
 
 
 @pytest.mark.parametrize(
