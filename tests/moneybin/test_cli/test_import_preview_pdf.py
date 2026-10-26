@@ -581,7 +581,7 @@ def test_preview_non_tty_content_free_text_and_json(
     req = wire["data"]["consent_request"]
     assert "confirmation_token" not in req
     assert req["request_id"] == req["binding_id"]
-    assert req["remember_available"] is False
+    assert "remember_available" not in req
     assert req["risk_statement"] in text.stdout
     assert req["request_id"] in text.stdout
     assert f"--allow-ai-disclosure {req['request_id']}" in text.stdout
@@ -623,11 +623,13 @@ def test_flag_with_matching_request_id_releases_redacted_json(
     data = json.loads(out.stdout)["data"]
     assert data["status"] == "confirmation_required"
     assert "document_text" in data["bridge_payload"]
-    assert _host_grants() == [("local:claude-code", "cli_flag")]
+    # The flag is carried by the agent: it approves this file only.
+    assert _host_grants() == []
     [decision] = _audit_after("smart_import_consent")
     assert decision["outcome"] == "approved"
     assert decision["approved_via"] == "cli_flag"
-    assert decision["remembered"] is True
+    assert decision["remembered"] is False
+    assert decision["grant_id"] is None
     assert len(_audit_after("smart_import_parse")) == 1
 
 
@@ -917,34 +919,36 @@ def test_released_json_privacy_log_records_bridge_classes(
     assert json.loads(out.stdout)["summary"]["sensitivity"] == expected.sensitivity
 
 
-def test_identified_flag_grant_prompt_is_the_displayed_text(
+def test_identified_flag_is_one_time_and_points_at_privacy_grant(
     consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R20: the person is told the flag remembers, and that text is the grant_prompt."""
+    """The flag never remembers; the person can pre-grant from their own terminal."""
     import json
+
+    from moneybin.privacy.disclosure import (
+        host_for_recipient_name,
+        host_from_environment,
+    )
 
     monkeypatch.setenv("CLAUDECODE", "1")
     text = runner.invoke(app, ["preview", str(canary_pdf)])
     js = json.loads(
         runner.invoke(app, ["preview", str(canary_pdf), "-o", "json"]).stdout
     )
+    command = "moneybin privacy grant smart-import-parsing --recipient claude-code"
+    assert "future PDFs" not in text.stdout
+    assert command in text.stdout
+    assert any(command in action for action in js["actions"])
     rid = js["data"]["consent_request"]["request_id"]
     out = runner.invoke(app, ["preview", str(canary_pdf), "--allow-ai-disclosure", rid])
     assert out.exit_code == 0, out.output
+    assert _host_grants() == []
 
-    from moneybin.database import get_database
-
-    with get_database(read_only=True) as db:
-        [(grant_prompt,)] = db.execute(
-            "SELECT grant_prompt FROM app.ai_consent_grants "
-            "WHERE recipient_kind = 'ai_host'"
-        ).fetchall()
-    assert "future PDFs" in grant_prompt
-    assert grant_prompt in text.stdout
-    statement = js["data"]["consent_request"]["risk_statement"]
-    assert grant_prompt.startswith(statement)
-    remember = grant_prompt[len(statement) :].strip()
-    assert any(remember in action for action in js["actions"])
+    # The printed command grants the key this agent shell is checked against.
+    granted = host_for_recipient_name(command.rsplit(" ", 1)[-1])
+    shell = host_from_environment({"CLAUDECODE": "1"})
+    assert granted is not None
+    assert granted.recipient_key == shell.recipient_key
 
 
 def test_unidentified_receipt_does_not_claim_remembering(
@@ -955,6 +959,7 @@ def test_unidentified_receipt_does_not_claim_remembering(
     text = runner.invoke(app, ["preview", str(canary_pdf)])
 
     assert "future PDFs" not in text.stdout
+    assert "privacy grant" not in text.stdout
 
 
 def test_released_text_strips_terminal_escapes(

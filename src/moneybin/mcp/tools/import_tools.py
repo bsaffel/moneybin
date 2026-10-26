@@ -1138,7 +1138,6 @@ async def import_preview_coarse(
     mapping: dict[str, str] | None = None,
     omit_fields: list[str] | None = None,
     confirmation_token: str | None = None,
-    remember_disclosure: bool = False,
 ) -> ResponseEnvelope[ImportPreviewCoarsePayload]:
     """Persist a complete staged-import preview for one exact file snapshot.
 
@@ -1150,8 +1149,8 @@ async def import_preview_coarse(
     ``omit_fields`` suppresses optional tabular destinations before detection;
     required destinations and conflicts with ``mapping`` are refused.
     A PDF that needs AI help returns a content-free ``ai_assistance_required``
-    result first; ``confirmation_token`` and ``remember_disclosure`` carry the
-    person's relayed consent back (pdf-disclosure-consent.md).
+    result first; ``confirmation_token`` carries the person's relayed one-time
+    consent back (pdf-disclosure-consent.md).
     """
     path = _validate_file_path(file_path)
     if path.suffix.lower() in {".ofx", ".qfx", ".qbo"}:
@@ -1180,7 +1179,6 @@ async def import_preview_coarse(
                 obtained = await obtain_disclosure_consent(
                     pending=[replace(pending.proposal, file_path=file_path)],
                     confirmation_token=confirmation_token,
-                    remember=remember_disclosure,
                     tool="import_preview",
                 )
             except DisclosureConsentPendingError as needed:
@@ -1214,10 +1212,9 @@ async def import_preview_coarse(
             )
             disclosure_notice = obtained.notice
     else:
-        if confirmation_token is not None or remember_disclosure:
+        if confirmation_token is not None:
             raise UserError(
-                "confirmation_token and remember_disclosure apply only to a PDF "
-                "that needs AI assistance.",
+                "confirmation_token applies only to a PDF that needs AI assistance.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
         source_bytes, response, reviewed_plan = await asyncio.to_thread(
@@ -2661,7 +2658,6 @@ async def _with_disclosure_consent(
     *,
     paths: list[str],
     confirmation_token: str | None,
-    remember_disclosure: bool,
 ) -> tuple[ResponseEnvelope[ImportFilesPayload], list[str]]:
     """One consent for every bridge-eligible PDF in the batch, then stage them.
 
@@ -2677,7 +2673,6 @@ async def _with_disclosure_consent(
         obtained = await obtain_disclosure_consent(
             pending=pending,
             confirmation_token=confirmation_token,
-            remember=remember_disclosure,
             tool="import_files",
         )
     except DisclosureConsentPendingError as needed:
@@ -2748,7 +2743,6 @@ async def import_files_coarse(
     force: bool = False,
     account_bindings: dict[str, str] | None = None,
     confirmation_token: str | None = None,
-    remember_disclosure: bool = False,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import files while keeping actions inside the staged-import cohort."""
     response = await asyncio.to_thread(
@@ -2762,7 +2756,6 @@ async def import_files_coarse(
         response,
         paths=paths,
         confirmation_token=confirmation_token,
-        remember_disclosure=remember_disclosure,
     )
     actions = [*disclosure_actions, *response.actions]
     for row in response.data.files:
@@ -2941,7 +2934,7 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "PDFs needing AI help send nothing until the person consents: "
             "MoneyBin returns one consent_request, or prompts the person "
             "directly. Relay its risk_statement verbatim; only on a yes repeat "
-            "with confirmation_token (remember_disclosure=true only if asked). "
+            "with confirmation_token, which covers that request only. "
             "Consented PDFs return a preview_id for import_confirm.",
         ),
         (
@@ -2958,8 +2951,7 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "needing AI help first returns ai_assistance_required: nothing is "
             "sent until the person consents. Show them "
             "consent_request.risk_statement verbatim; only on a yes repeat with "
-            "confirmation_token, adding remember_disclosure=true only if they "
-            "ask. Only the account numbers, routing numbers and SSNs MoneyBin "
+            "confirmation_token, which covers that request only. Only the account numbers, routing numbers and SSNs MoneyBin "
             "identified are redacted.",
         ),
         (

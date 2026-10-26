@@ -102,7 +102,8 @@ async def test_preview_first_call_content_free_with_consent_request(
     assert data["status"] == "ai_assistance_required"
     req = data["consent_request"]
     assert req["recipient"]["identified"] is False
-    assert req["remember_available"] is False
+    assert "remember_available" not in req
+    assert not any("privacy grant" in a for a in env.actions)
     assert "risk_statement" in req and req["confirmation_token"]
     assert req["files"][0]["file"] == str(pdf)
     assert env.actions
@@ -248,31 +249,56 @@ async def test_relay_token_expired_and_mismatched(
     assert row["refusal_code"] == expected
 
 
-async def test_remember_creates_host_grant_and_next_call_is_silent_with_notice(
+async def test_relay_approval_is_one_time_and_points_at_privacy_grant(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
 ) -> None:
+    """An agent-carried yes never remembers; only the person's own grant does."""
+    from moneybin.privacy.disclosure import host_for_recipient_name
+    from moneybin.services.consent_service import ConsentService
+
     use_mcp_host(monkeypatch, mcp_host_ctx())
-    first = _wire(await import_preview_coarse(file_path=str(pdf)))
-    req = first["data"]["consent_request"]
-    assert req["remember_available"] is True
+    first = await import_preview_coarse(file_path=str(pdf))
+    req = _wire(first)["data"]["consent_request"]
+    assert "remember_available" not in req
+    assert not any("remember" in a.lower() for a in first.actions)
+    command = "moneybin privacy grant smart-import-parsing --recipient claude-ai"
+    assert any(command in a for a in first.actions)
 
-    await import_preview_coarse(
-        file_path=str(pdf),
-        confirmation_token=req["confirmation_token"],
-        remember_disclosure=True,
+    released = await import_preview_coarse(
+        file_path=str(pdf), confirmation_token=req["confirmation_token"]
     )
-    [(backend, approved_via, prompt)] = _host_grants()
-    assert backend == "local:claude-ai"
-    assert approved_via == "agent_relay"
-    assert prompt is not None and prompt.startswith(req["risk_statement"])
-    assert "future PDFs" in prompt
+    assert CANARY_DESCRIPTION in _released_text(released)
+    assert _host_grants() == []
+    [row] = _consent_rows()
+    assert row["approved_via"] == "agent_relay" and row["released"] is True
+    assert row["remembered"] is False and row["grant_id"] is None
 
-    again = await import_preview_coarse(file_path=str(pdf))
-    assert CANARY_DESCRIPTION in _released_text(again)
-    grant_id = _consent_rows()[-1]["grant_id"]
-    assert grant_id
-    assert any(grant_id in a and "privacy revoke" in a for a in again.actions)
+    again = _wire(await import_preview_coarse(file_path=str(pdf)))
+    assert again["data"]["status"] == "ai_assistance_required"
+
+    # The printed command grants the key this session's host is checked against.
+    host = host_for_recipient_name(command.rsplit(" ", 1)[-1])
+    assert host is not None
+    with get_database(read_only=False) as db:
+        ConsentService(db).grant_host_consent(
+            host=host, approved_via="cli_prompt", actor="cli"
+        )
+    silent = await import_preview_coarse(file_path=str(pdf))
+    assert CANARY_DESCRIPTION in _released_text(silent)
     assert _consent_rows()[-1]["approved_via"] == "remembered"
+
+
+@pytest.mark.parametrize("tool", ["import_preview", "import_files"])
+def test_tools_take_no_remember_disclosure(tool: str) -> None:
+    """Remembering is never carried by the agent, so no tool parameter asks for it."""
+    import inspect
+
+    fn = import_preview_coarse if tool == "import_preview" else import_files_coarse
+    assert "remember_disclosure" not in inspect.signature(fn).parameters
+    assert (
+        "remember"
+        not in inspect.signature(disclosure_module.obtain_disclosure_consent).parameters
+    )
 
 
 async def test_unidentified_host_remember_ignored(
@@ -513,6 +539,8 @@ _DISCLOSURE_DB_CALLS = [
     "_remember",
     "_revoked_since",
 ]
+# A relayed approval never remembers, so it never reaches ``_remember``.
+_RELAY_DB_CALLS = [c for c in _DISCLOSURE_DB_CALLS if c != "_remember"]
 
 
 async def test_import_files_runs_sync_work_off_the_event_loop(
@@ -533,7 +561,6 @@ async def test_import_files_runs_sync_work_off_the_event_loop(
         paths=[str(pdf)],
         refresh=False,
         confirmation_token=token,
-        remember_disclosure=True,
     )
 
     assert env.error is None, env.error
@@ -541,7 +568,7 @@ async def test_import_files_runs_sync_work_off_the_event_loop(
     assert {name for name, _ in seen} == {
         "import_files",
         "_stage_pdf_bridge_preview",
-        *_DISCLOSURE_DB_CALLS,
+        *_RELAY_DB_CALLS,
     }
     assert [name for name, ident in seen if ident == loop_thread] == []
 
@@ -562,13 +589,11 @@ async def test_import_preview_pdf_runs_sync_work_off_the_event_loop(
     _track_threads(monkeypatch, tools_module, preview_calls, seen)
     _track_threads(monkeypatch, disclosure_module, _DISCLOSURE_DB_CALLS, seen)
 
-    env = await import_preview_coarse(
-        file_path=str(pdf), confirmation_token=token, remember_disclosure=True
-    )
+    env = await import_preview_coarse(file_path=str(pdf), confirmation_token=token)
 
     assert CANARY_DESCRIPTION in _released_text(env)
     loop_thread = threading.get_ident()
-    assert {name for name, _ in seen} == {*preview_calls, *_DISCLOSURE_DB_CALLS}
+    assert {name for name, _ in seen} == {*preview_calls, *_RELAY_DB_CALLS}
     assert [name for name, ident in seen if ident == loop_thread] == []
 
 
@@ -646,7 +671,7 @@ async def test_failed_release_records_approval_but_no_grant(
         kwargs: dict[str, Any] = {}
     else:
         use_mcp_host(monkeypatch, mcp_host_ctx())
-        kwargs = {"confirmation_token": await _token(pdf), "remember_disclosure": True}
+        kwargs = {"confirmation_token": await _token(pdf)}
     real = tools_module._import_preview_pdf  # pyright: ignore[reportPrivateUsage]
 
     def _fail_release(*args: Any, **kw: Any) -> Any:
@@ -712,29 +737,6 @@ async def test_elicitation_remember_states_revoke_and_is_the_stored_prompt(
     assert row["released"] is True and row["remembered"] is True
 
 
-async def test_relay_remember_grant_prompt_is_the_relayed_text(
-    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
-) -> None:
-    """R11/R20: the stored prompt is what the agent was told to show, remembering included."""
-    use_mcp_host(monkeypatch, mcp_host_ctx())
-    first = await import_preview_coarse(file_path=str(pdf))
-    req = _wire(first)["data"]["consent_request"]
-
-    await import_preview_coarse(
-        file_path=str(pdf),
-        confirmation_token=req["confirmation_token"],
-        remember_disclosure=True,
-    )
-
-    [(_backend, _via, prompt)] = _host_grants()
-    assert prompt is not None
-    statement = req["risk_statement"]
-    assert prompt.startswith(statement)
-    remember = prompt[len(statement) :].strip()
-    assert "future PDFs" in remember and "Claude" in remember
-    assert any(remember in action for action in first.actions)
-
-
 async def test_consent_row_carries_binding_id_of_parse_row(
     mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -790,13 +792,13 @@ async def test_network_transport_relay_offers_no_remember(
 
     first = await import_preview_coarse(file_path=str(pdf))
     req = _wire(first)["data"]["consent_request"]
-    assert req["remember_available"] is False
+    assert "remember_available" not in req
     assert not any("future PDFs" in a for a in first.actions)
+    # Unidentified: a pre-grant would not apply, so none is suggested.
+    assert not any("privacy grant" in a for a in first.actions)
 
     await import_preview_coarse(
-        file_path=str(pdf),
-        confirmation_token=req["confirmation_token"],
-        remember_disclosure=True,
+        file_path=str(pdf), confirmation_token=req["confirmation_token"]
     )
     assert _host_grants() == []
 

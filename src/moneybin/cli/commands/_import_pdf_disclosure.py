@@ -2,7 +2,9 @@
 
 Order: a stale flag is refused, then a remembered grant, the flag, the
 terminal prompt, else the content-free result. A person's approval is audited
-after the release attempt; a remembered grant is written only if it released.
+after the release attempt. Neither the flag (carried by an agent) nor the
+prompt (offered only to an unidentified host) remembers; `privacy grant
+--recipient` is the CLI's one way to remember.
 """
 
 from __future__ import annotations
@@ -20,10 +22,8 @@ from moneybin.adapters.pdf_disclosure_adapters import (
     consent_request,
     display_label,
     file_names,
+    pre_grant_text,
     remembered_notice,
-)
-from moneybin.adapters.pdf_disclosure_adapters import (
-    remember_text as shared_remember_text,
 )
 from moneybin.cli.output import OutputFormat, emit_human_result, render_or_json
 from moneybin.cli.render import build_summary, compose_human_result, render_rows
@@ -116,9 +116,6 @@ def obtain_cli_disclosure_consent(
     pending = (replace(proposal, file_path=str(source)),)
     request_id = disclosure_request_id(file_sha256s=[proposal.file_sha256], host=host)
     statement = risk_statement(host, file_names=file_names(pending))
-    # The flag always remembers for an identified host (spec §3).
-    remember_text = shared_remember_text(host, lead="Saying yes also")
-    shown = statement if remember_text is None else f"{statement} {remember_text}"
     one_time = frozenset({proposal.file_sha256})
 
     if allow_ai_disclosure is not None and allow_ai_disclosure != request_id:
@@ -165,10 +162,8 @@ def obtain_cli_disclosure_consent(
             remembered=False,
             file_sha256s=one_time,
         )
-        # The grant stores the exact text shown with the request id (R11).
-        return CLIConsent(
-            consent, pending, remember_prompt=shown if host.identified else None
-        )
+        # The agent carries the flag: one-time only, never a remembered grant.
+        return CLIConsent(consent, pending, remember_prompt=None)
 
     # An identified host means an agent shell; an agent with a pty could answer
     # the prompt itself, so it gets the receipt and asks the person in chat.
@@ -214,8 +209,6 @@ def obtain_cli_disclosure_consent(
         pending,
         host,
         statement=statement,
-        shown=shown,
-        remember_text=remember_text,
         request_id=request_id,
         output=output,
     )
@@ -274,12 +267,11 @@ def _emit_ai_assistance_required(
     host: AIHost,
     *,
     statement: str,
-    shown: str,
-    remember_text: str | None,
     request_id: str,
     output: OutputFormat,
 ) -> None:
     """The content-free result: receipt, request id and the consent text."""
+    pre_grant = pre_grant_text(host)
     allow = generated_cli_command(
         "import",
         "preview",
@@ -315,8 +307,8 @@ def _emit_ai_assistance_required(
                     "Nothing from the document has been sent. Show the person "
                     "data.consent_request.risk_statement verbatim and ask whether "
                     f"to send the document to {display_label(host)}.",
-                    *([f"Also tell them: {remember_text}"] if remember_text else []),
                     f"Only on a clear yes, run `{allow}`.",
+                    *([pre_grant] if pre_grant else []),
                     "On no, stop: nothing is sent, and `moneybin import files` "
                     "can still store the file as a queryable seed.",
                 ],
@@ -337,12 +329,14 @@ def _emit_ai_assistance_required(
             ("Result", "Nothing from the document was sent"),
         ],
     )
-    typer.echo(_safe(shown))
+    typer.echo(_safe(statement))
     # The command on its own line so a narrow receipt never wraps it.
     typer.echo(
         f"{get_terminal_policy().symbols.action} Next, only if the person agrees "
         f"to the text above: {_safe(allow)}"
     )
+    if pre_grant:
+        typer.echo(_safe(pre_grant))
 
 
 def emit_released_bridge(

@@ -346,7 +346,7 @@ Access: write, not idempotent. Sensitivity: up to `critical`.
 
 ### import_files
 
-Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or "new"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. PDFs needing AI help send nothing until the person consents: MoneyBin returns one consent_request, or prompts the person directly. Relay its risk_statement verbatim; only on a yes repeat with confirmation_token (remember_disclosure=true only if asked). Consented PDFs return a preview_id for import_confirm.
+Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or "new"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. PDFs needing AI help send nothing until the person consents: MoneyBin returns one consent_request, or prompts the person directly. Relay its risk_statement verbatim; only on a yes repeat with confirmation_token, which covers that request only. Consented PDFs return a preview_id for import_confirm.
 
 Access: write, not idempotent. Sensitivity: at least `critical`.
 
@@ -357,7 +357,6 @@ Access: write, not idempotent. Sensitivity: at least `critical`.
 | `force` | boolean | `false` |  |
 | `account_bindings` | object of string |  |  |
 | `confirmation_token` | string |  |  |
-| `remember_disclosure` | boolean | `false` |  |
 
 ### import_inbox_sync
 
@@ -382,7 +381,7 @@ Access: write, idempotent. Sensitivity: at least `medium`.
 
 ### import_preview
 
-Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping — it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged. A PDF needing AI help first returns ai_assistance_required: nothing is sent until the person consents. Show them consent_request.risk_statement verbatim; only on a yes repeat with confirmation_token, adding remember_disclosure=true only if they ask. Only the account numbers, routing numbers and SSNs MoneyBin identified are redacted.
+Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping — it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged. A PDF needing AI help first returns ai_assistance_required: nothing is sent until the person consents. Show them consent_request.risk_statement verbatim; only on a yes repeat with confirmation_token, which covers that request only. Only the account numbers, routing numbers and SSNs MoneyBin identified are redacted.
 
 Access: write, not idempotent. Sensitivity: up to `critical`.
 
@@ -392,7 +391,6 @@ Access: write, not idempotent. Sensitivity: up to `critical`.
 | `mapping` | object of string |  |  |
 | `omit_fields` | array of string |  |  |
 | `confirmation_token` | string |  |  |
-| `remember_disclosure` | boolean | `false` |  |
 
 ### import_revert
 

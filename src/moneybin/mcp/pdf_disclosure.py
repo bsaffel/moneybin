@@ -3,7 +3,8 @@
 The service stays synchronous and only acts on a verified ``DisclosureConsent``;
 this module obtains one: a remembered ``ai_host`` grant, an elicitation prompt,
 or a relayed single-use token. Without one it raises ``DisclosureConsentPendingError``
-carrying the content-free consent request.
+carrying the content-free consent request. Only the elicitation form, which the
+person answers directly, can create a remembered grant; a relayed token never does.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from moneybin.adapters.pdf_disclosure_adapters import (
     consent_request,
     display_label,
     file_names,
+    pre_grant_text,
     remember_text,
     remembered_notice,
 )
@@ -272,26 +274,17 @@ def _relay_actions(
 ) -> list[str]:
     label = display_label(host)
     call = _retry_call(tool, pending, f", confirmation_token={token!r}")
-    remember = _relay_remember_text(host)
-    remember_hint = (
-        f' If they also want that, show them "{remember}" verbatim and add '
-        "remember_disclosure=True."
-        if remember is not None
-        else " Remembering is unavailable: MoneyBin cannot identify this AI app."
-    )
+    pre_grant = pre_grant_text(host)
     return [
         "MoneyBin could not parse this PDF locally and needs AI help. Nothing "
         "from the document has been sent. Show the person "
         "data.consent_request.risk_statement verbatim and ask whether to send "
         f"the document to {label}.",
-        f"Only on a clear yes, call {call} before it expires.{remember_hint}",
+        f"Only on a clear yes, call {call} before it expires.",
+        *([pre_grant] if pre_grant is not None else []),
         "On no, stop: nothing is sent, and the file can still be imported as a "
         "queryable seed from a terminal with `moneybin import files`.",
     ]
-
-
-def _relay_remember_text(host: AIHost) -> str | None:
-    return remember_text(host, lead="Remembering this consent")
 
 
 def _refusal_actions(
@@ -338,7 +331,6 @@ async def obtain_disclosure_consent(
     *,
     pending: Sequence[AIAssistanceRequired],
     confirmation_token: str | None,
-    remember: bool,
     tool: Literal["import_preview", "import_files"],
     broker: ConfirmationBroker = confirmation_broker,
 ) -> ObtainedConsent:
@@ -380,9 +372,7 @@ async def obtain_disclosure_consent(
         return await _elicit(ctx, host, pending, statement, binding_id, tool)
 
     if confirmation_token is not None:
-        return await _redeem(
-            host, pending, confirmation_token, remember, binding_id, broker
-        )
+        return await _redeem(host, pending, confirmation_token, binding_id, broker)
 
     binding = disclosure_binding(
         file_sha256s=[p.file_sha256 for p in pending],
@@ -527,10 +517,14 @@ async def _redeem(
     host: AIHost,
     pending: Sequence[AIAssistanceRequired],
     token: str,
-    remember: bool,
     binding_id: str,
     broker: ConfirmationBroker,
 ) -> ObtainedConsent:
+    """Verify a relayed token: one-time only, never a remembered grant.
+
+    MoneyBin hears only the agent's word that the person agreed, so a
+    fabricated or injected yes costs at most this request (spec section 3).
+    """
     issued = _pop_issued(token)
     try:
         grant = broker.consume(token, now=_utcnow())
@@ -562,12 +556,4 @@ async def _redeem(
             binding_id=binding_id,
         )
         raise
-    # The stored prompt is what the agent was told to show, remembering included.
-    shown = _relay_remember_text(host) if remember else None
-    return _one_time(
-        host,
-        pending,
-        "agent_relay",
-        binding_id,
-        remember_prompt=f"{issued.statement} {shown}" if shown else None,
-    )
+    return _one_time(host, pending, "agent_relay", binding_id, remember_prompt=None)

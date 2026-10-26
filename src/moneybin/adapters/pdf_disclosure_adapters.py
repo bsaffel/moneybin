@@ -43,6 +43,21 @@ def remember_text(host: AIHost, *, lead: str) -> str | None:
     )
 
 
+def pre_grant_text(host: AIHost) -> str | None:
+    """How the person, not the agent, stops being asked; None when unidentified.
+
+    An agent-carried approval is one-time only (spec section 3), so this is the
+    one way an agent can tell the person to make consent stick.
+    """
+    if not host.identified:
+        return None
+    return (
+        f"To stop being asked about {display_label(host)}, the person can run "
+        f"`moneybin privacy grant smart-import-parsing --recipient {host.name}` "
+        "in their own terminal; an approval you relay covers only this request."
+    )
+
+
 def remembered_notice(host: AIHost, grant_id: str) -> str:
     """The visible notice that content left under a remembered consent."""
     return (
@@ -94,7 +109,6 @@ def consent_request(
             if terms is not None
             else "MoneyBin has no data-terms summary for this AI app"
         ),
-        "remember_available": host.identified,
         "what_is_sent": list(WHAT_IS_SENT),
         "files": [
             {

@@ -113,7 +113,6 @@ class ImportConsentRequest(TypedDict):
     recipient: ImportConsentRecipient
     vendor_terms: ImportConsentVendorTerms | None
     vendor_terms_unavailable_reason: Annotated[str | None, DataClass.TXN_TYPE]
-    remember_available: Annotated[bool, DataClass.TXN_TYPE]
     what_is_sent: Annotated[list[str], DataClass.TXN_TYPE]
     files: list[ImportConsentFile]
     refusal_reason: Annotated[str | None, DataClass.TXN_TYPE]
