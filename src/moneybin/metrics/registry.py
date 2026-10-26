@@ -1294,6 +1294,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_pdf_self_heal": "Tabular import",
     "moneybin_pdf_seed_rows": "Tabular import",
     "moneybin_pdf_bridge_egress": "Tabular import",
+    "moneybin_pdf_disclosure_consent": "Tabular import",
     "moneybin_pdf_sign_gate": "Tabular import",
     "moneybin_tabular_sign_gate": "Tabular import",
     # MCP elicitation
