@@ -1,5 +1,5 @@
 {
-  "sha256": "e54ac0793b6f7e2044055639df77ce8cdf4659d4b87c5fdab324750ba621ad44",
+  "sha256": "a264acf1b656587acac15c9aecff740c6c0339d2711611cc0e656009db0a011b",
   "tool_count": 50,
   "tools": [
     {
@@ -1683,7 +1683,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them.",
+        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. PDFs needing AI help send nothing until the person consents: MoneyBin returns one consent_request, or prompts the person directly. Relay its risk_statement verbatim; only on a yes repeat with confirmation_token, which covers that request only. Consented PDFs return a preview_id for import_confirm.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1694,6 +1694,17 @@
                     "type": "string"
                   },
                   "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -1724,12 +1735,12 @@
         "name": "import_files",
         "title": "Import Files"
       },
-      "description_bytes": 493,
-      "input_schema_bytes": 341,
+      "description_bytes": 792,
+      "input_schema_bytes": 423,
       "name": "import_files",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 1052
+      "total_bytes": 1433
     },
     {
       "annotation_bytes": 91,
@@ -1824,10 +1835,21 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping \u2014 it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged.",
+        "description": "Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping \u2014 it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged. A PDF needing AI help first returns ai_assistance_required: nothing is sent until the person consents. Show them consent_request.risk_statement verbatim; only on a yes repeat with confirmation_token, which covers that request only. Only the account numbers, routing numbers and SSNs MoneyBin identified are redacted.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "file_path": {
               "type": "string"
             },
@@ -1868,12 +1890,12 @@
         "name": "import_preview",
         "title": "Import Preview"
       },
-      "description_bytes": 494,
-      "input_schema_bytes": 328,
+      "description_bytes": 811,
+      "input_schema_bytes": 410,
       "name": "import_preview",
       "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 1045
+      "total_bytes": 1444
     },
     {
       "annotation_bytes": 90,
@@ -5722,5 +5744,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 69518
+  "total_bytes": 70298
 }

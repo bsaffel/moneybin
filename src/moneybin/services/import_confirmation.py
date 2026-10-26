@@ -22,6 +22,7 @@ from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
 )
+from moneybin.privacy.disclosure import AIHost
 from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf", "ofx"]
@@ -34,6 +35,7 @@ ConfirmationReason = Literal[
     "unreadable_date",
     "header_row_consumed",
     "header_position_ambiguous",
+    "ai_assistance_required",
 ]
 ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
@@ -62,6 +64,46 @@ class BridgePayload:
     """
 
     payload: dict[str, Any]
+
+
+DisclosureApproval = Literal[
+    "prompt", "agent_relay", "cli_prompt", "cli_flag", "remembered"
+]
+
+
+@dataclass(frozen=True)
+class DisclosureConsent:
+    """An already-verified consent to release one call's PDF content to ``host``.
+
+    Adapters verify it (prompt, relay token, CLI flag or remembered grant); the
+    service only acts on it. ``binding_id`` names a one-time consent,
+    ``grant_id`` a remembered one. ``file_sha256s`` are the PDF digests the
+    person consented to; ``None`` only for a remembered grant, which is not
+    file-bound. A one-time consent releases nothing whose live digest is absent.
+    """
+
+    host: AIHost
+    approved_via: DisclosureApproval
+    grant_id: str | None
+    binding_id: str | None
+    remembered: bool
+    file_sha256s: frozenset[str] | None
+
+    def covers(self, file_sha256: str) -> bool:
+        """Whether this consent may release the bytes with ``file_sha256``."""
+        if self.file_sha256s is None:
+            return self.approved_via == "remembered"
+        return file_sha256 in self.file_sha256s
+
+
+@dataclass(frozen=True)
+class AIAssistanceRequired:
+    """PDF-channel proposal raised before consent. Carries no document content."""
+
+    file_path: str
+    file_sha256: str
+    decision_reason: str
+    request_kind: str
 
 
 @dataclass(frozen=True)
@@ -205,7 +247,9 @@ class ConfirmationRequired:
 
     channel: Channel
     confidence: Confidence
-    proposed: ProposedMapping | BridgePayload | SignConventionProposal
+    proposed: (
+        ProposedMapping | BridgePayload | SignConventionProposal | AIAssistanceRequired
+    )
     reason: ConfirmationReason
     samples: dict[str, list[str]] = field(default_factory=dict)
     error_message: str = ""
@@ -333,7 +377,9 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     new channel field (e.g. ``bridge_payload``) should land in one place. The
     tabular fields (``proposed_mapping``, ``unmapped_columns``) are populated
     from a ``ProposedMapping`` proposal; ``bridge_payload`` from a
-    ``BridgePayload`` proposal; ``sign_convention``/``sign_prior_convention``/
+    ``BridgePayload`` proposal; ``ai_assistance`` (content-free: file digest,
+    routing reason, request kind) from an ``AIAssistanceRequired`` proposal;
+    ``sign_convention``/``sign_prior_convention``/
     ``sign_evidence``/``sign_sample_rows`` from a ``SignConventionProposal``;
     the unused fields are empty/None for the channel.
 
@@ -353,6 +399,7 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     sign_prior_convention: str | None = None
     sign_evidence: list[str] = []
     sign_sample_rows: list[dict[str, str]] = []
+    ai_assistance: dict[str, str] | None = None
     if isinstance(proposed, ProposedMapping):
         proposed_mapping = dict(proposed.field_mapping)
         unmapped = list(proposed.unmapped_columns)
@@ -361,6 +408,12 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         sign_prior_convention = proposed.prior_sign_convention
         sign_evidence = list(proposed.evidence)
         sign_sample_rows = [dict(r) for r in proposed.sample_rows]
+    elif isinstance(proposed, AIAssistanceRequired):
+        ai_assistance = {
+            "file_sha256": proposed.file_sha256,
+            "decision_reason": proposed.decision_reason,
+            "request_kind": proposed.request_kind,
+        }
     else:
         bridge_payload = proposed.payload
     return {
@@ -375,6 +428,7 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "missing_required": list(outcome.confidence.missing_required),
         "unmapped_columns": unmapped,
         "bridge_payload": bridge_payload,
+        "ai_assistance": ai_assistance,
         "sign_convention": sign_convention,
         "sign_prior_convention": sign_prior_convention,
         "sign_evidence": sign_evidence,

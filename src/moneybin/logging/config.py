@@ -282,6 +282,8 @@ def setup_logging(
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("plaid").setLevel(logging.INFO)
+    # pdfminer's DEBUG records carry raw PDF text strings (statement content).
+    logging.getLogger("pdfminer").setLevel(logging.WARNING)
     # Suppress SQLMesh analytics dispatcher via the same filter as other
     # noisy SQLMesh loggers — setLevel would hide file output too.
     # The _SuppressFilter below handles the specific shutdown message string.

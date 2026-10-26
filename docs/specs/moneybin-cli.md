@@ -147,6 +147,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- preview                    -- Inspect a file without writing: tabular -> format
 |   |                                 + column mapping; PDF -> extraction verdict, row
 |   |                                 count, and any pending sign confirmation
+|   |     [--output text|json]       PDF only; JSON emits the standard ResponseEnvelope
+|   |     [--allow-ai-disclosure ID] PDF only; releases a bridge-eligible PDF's redacted
+|   |                                 content after the content-free run issued ID
 |   +-- revert                     -- Undo a recent import batch by import_id
 |   +-- status                     -- End-to-end import health and diagnostics
 |   +-- formats                    -- Manage saved import format definitions (tabular + PDF)
@@ -569,11 +572,15 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- redact                     -- Test the project redaction pipeline on a value
 |   +-- grant <category>           -- Grant consent for an AI feature category
 |   |     [--backend NAME]           Override the configured backend for this grant
+|   |     [--recipient HOST]         Grant smart-import-parsing to an AI host (claude-ai,
+|   |                                 claude-code, cursor); exclusive with --backend;
+|   |                                 interactive only, refused inside an identified agent shell
 |   |     [--mode persistent|one-time]  Consent duration (default: persistent)
 |   |     [--output json]
 |   |     [--yes]                    Non-interactive mode
 |   +-- revoke <category>          -- Revoke a previously granted consent
 |   |     [--backend NAME]           Scope revocation to a specific backend
+|   |     [--recipient HOST]         Scope revocation to an AI host; exclusive with --backend
 |   |     [--output json]
 |   |     [--yes]
 |   +-- revoke-all                 -- Revoke all active consent grants (nuclear option)
