@@ -127,7 +127,7 @@ def _active_context() -> Context | None:
 
 
 def current_ai_host(ctx: Context | None) -> AIHost:
-    """The AI host as reported at initialize; any missing piece is unidentified."""
+    """The AI host as reported at initialize; only stdio can be identified."""
     if ctx is None:
         return host_from_client_info(None, None, transport="stdio")
     try:
@@ -140,10 +140,12 @@ def current_ai_host(ctx: Context | None) -> AIHost:
     transport = getattr(ctx, "transport", None)
     if transport == "stdio":
         return host_from_client_info(name, version, transport="stdio")
-    if transport in ("sse", "streamable-http"):
-        return host_from_client_info(name, version, transport="http")
-    # Unknown run mode: show the reported name, never remember for it.
-    host = host_from_client_info(name, version, transport="stdio")
+    # Network transports carry no authenticated principal (MB-32/MB-57), and an
+    # unknown run mode is unverifiable: show the reported name, never remember.
+    network = transport in ("sse", "streamable-http")
+    host = host_from_client_info(
+        name, version, transport="http" if network else "stdio"
+    )
     return replace(host, identified=False)
 
 

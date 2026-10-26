@@ -753,3 +753,58 @@ async def test_consent_row_carries_binding_id_of_parse_row(
         ).fetchall()
     assert consent["binding_id"] == req["binding_id"]
     assert consent["binding_id"] == json.loads(parse_context)["binding_id"]
+
+
+# --- Pre-push fixes --------------------------------------------------------
+
+
+@pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+async def test_network_transport_known_name_is_one_time_only(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch, transport: str
+) -> None:
+    """No authenticated principal on network transports: never offer remember."""
+    elicit = AsyncMock(
+        return_value=AcceptedElicitation(
+            data=DisclosureAnswer(accept=True, remember=True)
+        )
+    )
+    ctx = mcp_host_ctx(elicit=elicit, transport=transport)
+    use_mcp_host(monkeypatch, ctx, elicits=True)
+
+    assert disclosure_module.current_ai_host(ctx).identified is False
+    env = await import_preview_coarse(file_path=str(pdf))
+
+    assert CANARY_DESCRIPTION in _released_text(env)
+    message = elicit.call_args.args[0]
+    assert "future PDFs" not in message and "--recipient" not in message
+    assert elicit.call_args.kwargs["response_type"] is not DisclosureAnswer
+    assert _host_grants() == []
+    [row] = _consent_rows()
+    assert row["remembered"] is False and row["grant_id"] is None
+
+
+async def test_network_transport_relay_offers_no_remember(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    use_mcp_host(monkeypatch, mcp_host_ctx(transport="streamable-http"))
+
+    first = await import_preview_coarse(file_path=str(pdf))
+    req = _wire(first)["data"]["consent_request"]
+    assert req["remember_available"] is False
+    assert not any("future PDFs" in a for a in first.actions)
+
+    await import_preview_coarse(
+        file_path=str(pdf),
+        confirmation_token=req["confirmation_token"],
+        remember_disclosure=True,
+    )
+    assert _host_grants() == []
+
+
+async def test_stdio_known_name_still_offers_remember(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    ctx = mcp_host_ctx()
+    use_mcp_host(monkeypatch, ctx)
+    host = disclosure_module.current_ai_host(ctx)
+    assert host.identified is True and host.recipient_key == "local:claude-ai"

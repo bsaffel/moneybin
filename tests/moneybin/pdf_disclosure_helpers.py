@@ -12,13 +12,16 @@ from moneybin.config import ImportSettings, MoneyBinSettings
 
 
 def mcp_host_ctx(
-    *, name: str | None = "claude-ai", elicit: AsyncMock | None = None
+    *,
+    name: str | None = "claude-ai",
+    elicit: AsyncMock | None = None,
+    transport: str = "stdio",
 ) -> MagicMock:
     """A stand-in FastMCP context reporting the given ``clientInfo`` name."""
     ctx = MagicMock()
     ctx.session.client_params.clientInfo.name = name
     ctx.session.client_params.clientInfo.version = "1.0.0"
-    ctx.transport = "stdio"
+    ctx.transport = transport
     ctx.elicit = elicit or AsyncMock()
     return ctx
 

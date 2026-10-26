@@ -299,10 +299,14 @@ a disclosure that never happened. §9 removes that write.
   verified. Hosts not verified from a primary source are left out.
 - Both are self-reported. Text says "as reported by your AI app". Tying consent
   to the host prevents accidental reuse across apps, not a host that lies.
-- **Remote MCP** (MB-32, not shipped): the recipient key includes the
-  transport, so a grant made over local stdio never covers a remote session.
-  Remote sessions additionally bind the authenticated principal. MB-57 owns
-  the rest.
+- **Network MCP transports** (`sse`, `streamable-http`): only stdio can
+  identify a host. Network sessions carry no authenticated principal today,
+  so a known `clientInfo.name` over them is still **unidentified**: one-time
+  consent only, no remember option, no grant written, and no grant consulted.
+  Remembering over a remote transport waits on authenticated transports
+  (MB-32, MB-57), which bind the authenticated principal into the recipient
+  key. The key already carries the transport class (`remote:` vs `local:`),
+  so a grant made over local stdio never covers a remote session.
 
 ### 5. Remembered consent in the ledger
 
