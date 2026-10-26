@@ -54,10 +54,13 @@ def write_checking_statement_pdf(tmp_path: Path) -> Path:
 
 #: Values seeded into the canary statement. None of them may reach any
 #: emission before consent; after consent the account and SSN must be redacted.
+#: Sinks carry random hex ids and timestamps, so a digit-only canary is at least
+#: eight digits (a 4-digit one matched inside a hash); the others carry a
+#: letter, ``-`` or ``.`` that no hex run holds.
 CANARY_DESCRIPTION = "CANARYWREN BAKERY"
 CANARY_AMOUNT = "-47.31"
-CANARY_ACCOUNT_NUMBER = "3141 5926 5358"
-CANARY_ACCOUNT_MIDDLE = "5926"
+CANARY_ACCOUNT_NUMBER = "3141 59268979 5358"
+CANARY_ACCOUNT_MIDDLE = "59268979"
 CANARY_ACCOUNT_LAST_FOUR = "5358"
 CANARY_SSN = "900-12-3456"
 CANARY_SSN_PREFIX = "900-12"
@@ -75,7 +78,7 @@ CANARY_RECIPE: dict[str, Any] = {
     "metadata_anchors": [
         {
             "name": "account_id",
-            "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{4} \d{4})",
+            "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{8} \d{4})",
             "cast": "str",
         },
         {

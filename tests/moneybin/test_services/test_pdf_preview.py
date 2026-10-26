@@ -663,13 +663,13 @@ def test_recipe_from_redacted_text_replays_against_original(
     assert isinstance(proposed, BridgePayload)
     released_text = proposed.payload["document_text"]
     # What the agent sees and patterns against: the redacted account line.
-    assert "XXXX XXXX 5358" in released_text
+    assert "XXXX XXXXXXXX 5358" in released_text
 
     recipe = {
         "metadata_anchors": [
             {
                 "name": "account_id",
-                "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{4} \d{4})",
+                "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{8} \d{4})",
                 "cast": "str",
             },
             {
