@@ -145,13 +145,6 @@ BUILDS_OUTSIDE_THE_CLASSIFIER: dict[str, str] = {
         "comments, and example queries. The payload carries no user data and no "
         "typed contract, so there is nothing for the classifier to read."
     ),
-    "import_preview": (
-        "Its preview helpers build and declare their own envelopes — the PDF "
-        "confirmation branches on a bare dict, the tabular branch beside a "
-        "typed payload. The registered tool consumes those as intermediate "
-        "values and returns, at its single exit, one the classifier produced "
-        "from the payload it assembles."
-    ),
     "gsheet_connect": (
         "Its internal helpers build raw envelopes and carry "
         "`@internal_envelope_adapter(sensitivity=…)`, which stamps a static "
@@ -190,6 +183,14 @@ ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL: dict[str, str] = {
         "scan cannot follow it; `_run_import_confirm_attempt` lives in this "
         "same module and builds through the classifier."
     ),
+    "import_preview": (
+        "Its success exit returns what `asyncio.to_thread(_stage_preview_"
+        "coarse, …)` produced, keeping the blocking staging work off the event "
+        "loop. The producer is passed as an argument, so the scan cannot follow "
+        "it; `_stage_preview_coarse` lives in this same module and returns, at "
+        "its single exit, one the classifier built from the payload it "
+        "assembles."
+    ),
 }
 
 # Of the tools above, the ones whose entry says the raw envelope is safe
@@ -199,7 +200,6 @@ ENVELOPE_FROM_AN_UNFOLLOWABLE_CALL: dict[str, str] = {
 # list must not keep vouching for it. So these stay bound to the classifier;
 # only a mechanism that genuinely replaces it is excused.
 REBUILDS_THROUGH_THE_CLASSIFIER = frozenset({
-    "import_preview",
     "gsheet_connect",
     "sync_status",
 })
