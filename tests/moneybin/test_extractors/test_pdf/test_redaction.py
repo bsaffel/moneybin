@@ -64,3 +64,27 @@ def test_zero_padded_identifier_redacted() -> None:
         "Acct 000123456789012 x", account_identifiers=["123456789012"]
     )
     assert out == "Acct XXXXXXXXXXX9012 x"
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["Balance 123456.78 end", "Debit -123456.78", "Total 1234 56.78 due"],
+)
+def test_decimal_amount_never_masked_for_short_identifier(line: str) -> None:
+    assert redact_critical(line, account_identifiers=["12345678"]) == line
+
+
+@pytest.mark.parametrize(
+    ("spelling", "masked"),
+    [
+        ("1234.5678", "XXXX.5678"),
+        ("1234-5678", "XXXX-5678"),
+        ("1234 5678", "XXXX 5678"),
+        ("12345678", "XXXX5678"),
+    ],
+)
+def test_short_identifier_with_separators_still_masked(
+    spelling: str, masked: str
+) -> None:
+    out = redact_critical(f"Acct {spelling} x", account_identifiers=["12345678"])
+    assert out == f"Acct {masked} x"

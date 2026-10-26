@@ -372,7 +372,9 @@ Before `build_bridge_request`, `document_text` and `tables_preview` pass
 through a **new, narrow redactor**. It redacts:
 
 - every occurrence of the account number MoneyBin identified for this document
-  (`extractors/pdf/identity.py`), in any separator form; and
+  (`extractors/pdf/identity.py`), in any separator form. A run ending in a
+  decimal amount shape (`123456.78`) is an amount and is never masked, even
+  when its digits spell a short identifier; and
 - strictly formatted SSNs (`NNN-NN-NNNN`) and nine-digit routing numbers that
   pass the ABA checksum.
 
