@@ -509,12 +509,13 @@ def settle_disclosure_consent(obtained: ObtainedConsent, *, released: bool) -> N
     )
 
 
-async def settle_after_error(
-    obtained: ObtainedConsent, *, released: bool = False
-) -> None:
-    """Audit an approval whose release step raised; never mask that error."""
+async def settle_after_error(obtained: ObtainedConsent) -> None:
+    """Audit an approval whose call raised: the caller received no content.
+
+    Never masks the original error.
+    """
     try:
-        await asyncio.to_thread(settle_disclosure_consent, obtained, released=released)
+        await asyncio.to_thread(settle_disclosure_consent, obtained, released=False)
     except Exception as exc:  # the release error is the one to surface
         logger.error(
             f"Could not audit an unreleased PDF disclosure approval: "

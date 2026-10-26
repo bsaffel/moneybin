@@ -19,7 +19,7 @@ import json
 import logging
 import shlex
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
@@ -1063,25 +1063,50 @@ def _persist_staged_preview[P: BaseModel](
     return redacted_payload.model_copy(update={"preview_id": preview_id}), preview_id
 
 
+@dataclass(frozen=True)
+class _NotStaged:
+    """Why a consented PDF released nothing; ``reason`` completes "<path> ..."."""
+
+    reason: str
+
+
+_CHANGED_AFTER_CONSENT = (
+    "changed after the person consented; nothing from it was sent. Call "
+    "import_files again to ask about the current file."
+)
+
+
 def _stage_pdf_bridge_preview(
     path: Path, *, consent: DisclosureConsent
-) -> ImportPdfBridgePreviewPayload | None:
+) -> ImportPdfBridgePreviewPayload | _NotStaged:
     """Release one consented PDF and stage it for import_confirm.
 
     Reads the bytes once; the service releases them only if the consent covers
-    their digest. Returns None when nothing was released.
+    their digest. Returns ``_NotStaged`` when nothing was released.
     """
     try:
         source_bytes = _read_pdf_preview_bytes(path)
         response = _import_preview_pdf(
             path, source_bytes=source_bytes, disclosure_consent=consent
         )
-    except (_PdfAIAssistancePendingError, UserError):
-        return None
+    except _PdfAIAssistancePendingError:
+        # The consent does not cover these bytes.
+        return _NotStaged(_CHANGED_AFTER_CONSENT)
+    except UserError as err:
+        if err.code == error_codes.IMPORT_PREVIEW_CHANGED:
+            return _NotStaged(_CHANGED_AFTER_CONSENT)
+        hint = f" {err.hint}" if err.hint else ""
+        return _NotStaged(
+            f"could not be prepared after the person consented ({err.code}: "
+            f"{err.message}); nothing from it was sent.{hint}"
+        )
     wire = TypeAdapter(dict[str, Any]).validate_json(response.to_json())
     data = TypeAdapter(dict[str, Any]).validate_python(wire["data"])
     if data.get("status") != "confirmation_required" or "bridge_payload" not in data:
-        return None
+        return _NotStaged(
+            "no longer needs AI help after the person consented; nothing from it "
+            "was sent. Call import_files again to import it."
+        )
     issued_at, expires_at = _preview_window()
     payload = ImportPdfBridgePreviewPayload(
         **data, preview_id="pending", expires_at=format_utc(expires_at)
@@ -2659,7 +2684,7 @@ async def _with_disclosure_consent(
         )
         return replace(response, data=data), needed.actions
     actions = [obtained.notice] if obtained.notice else []
-    staged: dict[str, ImportPdfBridgePreviewPayload | None] = {}
+    staged: dict[str, ImportPdfBridgePreviewPayload | _NotStaged] = {}
     files: list[ImportPerFileRow] = []
     try:
         for row in response.data.files:
@@ -2672,14 +2697,13 @@ async def _with_disclosure_consent(
                 staged[row.path] = await asyncio.to_thread(
                     _stage_pdf_bridge_preview, Path(row.path), consent=obtained.consent
                 )
-                if staged[row.path] is None:
+                outcome = staged[row.path]
+                if isinstance(outcome, _NotStaged):
                     actions.append(
-                        f"{caller_paths.get(row.path, row.path)} changed or could not "
-                        "be read after the person consented; nothing from it was "
-                        "sent. Call import_files again to ask about the current file."
+                        f"{caller_paths.get(row.path, row.path)} {outcome.reason}"
                     )
             preview = staged[row.path]
-            if preview is None:
+            if isinstance(preview, _NotStaged):
                 files.append(row)
                 continue
             files.append(
@@ -2702,15 +2726,14 @@ async def _with_disclosure_consent(
                 )
             )
     except Exception:
-        await settle_after_error(
-            obtained, released=any(p is not None for p in staged.values())
-        )
+        # The caller receives none of the staged content: settle as unreleased.
+        await settle_after_error(obtained)
         raise
-    # The yes is always audited; remembering waits for a real release.
+    # The yes is always audited; remembering waits for content the caller gets.
     await asyncio.to_thread(
         settle_disclosure_consent,
         obtained,
-        released=any(p is not None for p in staged.values()),
+        released=any(not isinstance(p, _NotStaged) for p in staged.values()),
     )
     return replace(response, data=replace(response.data, files=files)), actions
 

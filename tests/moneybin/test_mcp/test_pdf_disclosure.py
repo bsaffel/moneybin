@@ -817,3 +817,74 @@ def test_legacy_import_files_takes_no_disclosure_consent() -> None:
     from moneybin.mcp.tools.import_tools import import_files
 
     assert "disclosure_consent" not in inspect.signature(import_files).parameters
+
+
+async def test_batch_staging_error_is_reported_as_itself(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A locked database is not a changed file: say what actually happened."""
+    import moneybin.mcp.tools.import_tools as tools_module
+    from moneybin.errors import UserError
+
+    elicit = AsyncMock(
+        return_value=AcceptedElicitation(data=DisclosureAnswer(accept=True))
+    )
+    use_mcp_host(monkeypatch, mcp_host_ctx(elicit=elicit), elicits=True)
+    real = tools_module._import_preview_pdf  # pyright: ignore[reportPrivateUsage]
+
+    def _locked(*args: Any, **kw: Any) -> Any:
+        if kw.get("disclosure_consent") is not None:
+            raise UserError(
+                "Database is locked by another process.",
+                code=error_codes.INFRA_DATABASE_LOCKED,
+            )
+        return real(*args, **kw)
+
+    monkeypatch.setattr(tools_module, "_import_preview_pdf", _locked)
+
+    env = await import_files_coarse(paths=[str(pdf)], refresh=False)
+
+    _assert_no_canary(env)
+    note = [a for a in env.actions if str(pdf) in a and "nothing from it" in a]
+    assert note, env.actions
+    assert "locked" in note[0]
+    assert "changed" not in note[0]
+    [row] = _consent_rows()
+    assert row["released"] is False
+
+
+async def test_batch_later_staging_crash_settles_unreleased(
+    mcp_db: object, pdf: Path, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """File 1 staged, file 2 crashed: the caller got nothing, so nothing is remembered."""
+    import moneybin.mcp.tools.import_tools as tools_module
+
+    twin = tmp_path / "canary_statement_copy.pdf"
+    shutil.copy(pdf, twin)
+    elicit = AsyncMock(
+        return_value=AcceptedElicitation(
+            data=DisclosureAnswer(accept=True, remember=True)
+        )
+    )
+    use_mcp_host(monkeypatch, mcp_host_ctx(elicit=elicit), elicits=True)
+    real = tools_module._stage_pdf_bridge_preview  # pyright: ignore[reportPrivateUsage]
+    calls: list[Path] = []
+
+    def _second_crashes(path: Path, **kw: Any) -> Any:
+        calls.append(path)
+        if len(calls) > 1:
+            raise RuntimeError("staging crashed")
+        return real(path, **kw)
+
+    monkeypatch.setattr(tools_module, "_stage_pdf_bridge_preview", _second_crashes)
+
+    env = await import_files_coarse(paths=[str(pdf), str(twin)], refresh=False)
+
+    assert env.error is not None
+    _assert_no_canary(env)
+    assert len(calls) == 2
+    assert _host_grants() == []
+    [row] = _consent_rows()
+    assert row["outcome"] == "approved"
+    assert row["released"] is False
+    assert row["remembered"] is False and row["grant_id"] is None
