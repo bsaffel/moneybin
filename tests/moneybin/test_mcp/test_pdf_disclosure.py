@@ -922,3 +922,72 @@ async def test_pre_grant_does_not_cover_an_unidentified_host(
     data = _wire(env)["data"]
     assert data["status"] == "ai_assistance_required"
     assert data["consent_request"]["recipient"]["identified"] is False
+
+
+@pytest.mark.parametrize(
+    ("redeemer", "session_id"),
+    [("other-agent", "session-a"), ("acme-agent", "session-b")],
+)
+async def test_unidentified_relay_token_bound_to_client_and_session(
+    mcp_db: object,
+    pdf: Path,
+    monkeypatch: MonkeyPatch,
+    redeemer: str,
+    session_id: str,
+) -> None:
+    """Unidentified recipients share no key, so the token binds the reporter."""
+    use_mcp_host(
+        monkeypatch, mcp_host_ctx(name="acme-agent", transport="streamable-http")
+    )
+    token = await _token(pdf)
+
+    use_mcp_host(
+        monkeypatch,
+        mcp_host_ctx(name=redeemer, transport="streamable-http", session_id=session_id),
+    )
+    env = await import_preview_coarse(file_path=str(pdf), confirmation_token=token)
+
+    assert env.error is not None
+    assert env.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    _assert_no_canary(env)
+
+
+async def test_unidentified_relay_token_redeemed_by_issuing_client(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    use_mcp_host(
+        monkeypatch, mcp_host_ctx(name="acme-agent", transport="streamable-http")
+    )
+    token = await _token(pdf)
+
+    released = await import_preview_coarse(file_path=str(pdf), confirmation_token=token)
+    assert CANARY_DESCRIPTION in _released_text(released)
+
+
+async def test_sessionless_protocol_relay_binds_client_name_only(
+    mcp_db: object, pdf: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A 2026-07-28 connection mints a session id per request; it cannot bind."""
+    modern = "2026-07-28"
+    use_mcp_host(
+        monkeypatch,
+        mcp_host_ctx(
+            name="acme-agent",
+            transport="streamable-http",
+            session_id="request-1",
+            protocol_version=modern,
+        ),
+    )
+    token = await _token(pdf)
+
+    use_mcp_host(
+        monkeypatch,
+        mcp_host_ctx(
+            name="acme-agent",
+            transport="streamable-http",
+            session_id="request-2",
+            protocol_version=modern,
+        ),
+    )
+    released = await import_preview_coarse(file_path=str(pdf), confirmation_token=token)
+    assert CANARY_DESCRIPTION in _released_text(released)

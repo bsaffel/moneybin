@@ -16,9 +16,13 @@ def mcp_host_ctx(
     name: str | None = "claude-ai",
     elicit: AsyncMock | None = None,
     transport: str = "stdio",
+    session_id: str = "session-a",
+    protocol_version: str = "2025-06-18",
 ) -> MagicMock:
     """A stand-in FastMCP context reporting the given ``clientInfo`` name."""
     ctx = MagicMock()
+    ctx.session_id = session_id
+    ctx.request_context.protocol_version = protocol_version
     ctx.session.client_params.clientInfo.name = name
     ctx.session.client_params.clientInfo.version = "1.0.0"
     ctx.transport = transport

@@ -204,7 +204,11 @@ Mapping onto the existing `ConfirmationBinding` (fixed fields, `extra="forbid"`)
 `operation_kind = "pdf_disclosure"`, `resolved_ids` = the PDF SHA-256s (sorted),
 `arguments` = `request_kind`, recipient key and redaction policy version,
 `authorization_context` = the transport, and `profile` / `actor` as today.
-`blast_radius` = `{files: n}`. No new binding type.
+`blast_radius` = `{files: n}`. No new binding type. An unidentified host has
+no recipient key, so its token's `arguments` also carry the reported client
+name and the MCP session id, and another client on the same server cannot
+redeem it. A 2026-07-28 connection mints a session id per request, so there
+the token binds the client name only.
 
 Tokens are **MCP-only**. The broker is process-local, so a CLI result carries
 no token; the CLI consents through its prompt or flag (§3). Revoking a

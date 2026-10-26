@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.elicitation import AcceptedElicitation
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from moneybin import error_codes
 from moneybin.adapters.pdf_disclosure_adapters import (
@@ -150,21 +151,46 @@ def current_ai_host(ctx: Context | None) -> AIHost:
     return replace(host, identified=False)
 
 
+def _stable_session_id(ctx: Context | None) -> str | None:
+    """The MCP session id, when it outlives the request (handshake-era only)."""
+    if ctx is None:
+        return None
+    try:
+        request = ctx.request_context
+        if request is not None and request.protocol_version in (
+            MODERN_PROTOCOL_VERSIONS
+        ):
+            return None  # 2026-07-28 mints a fresh id per request
+        session_id = ctx.session_id
+    except (RuntimeError, AttributeError):
+        return None
+    return session_id
+
+
 def disclosure_binding(
     *,
     file_sha256s: Sequence[str],
     request_kind: str,
     host: AIHost,
     profile: str,
+    session_id: str | None = None,
 ) -> ConfirmationBinding:
-    """Bind a relay token to the files, recipient, terms and redaction policy."""
+    """Bind a relay token to the files, recipient, terms and redaction policy.
+
+    An unidentified host has no recipient key, so the token also binds the
+    reported client name and session; another client cannot redeem it.
+    """
+    arguments: dict[str, Any] = {
+        "request_kind": request_kind,
+        "recipient": host.recipient_key or "unidentified",
+        "terms_version": terms_version_for(host),
+        "redaction_policy": REDACTION_POLICY_VERSION,
+    }
+    if host.recipient_key is None:
+        arguments["client_name"] = host.name or ""
+        arguments["session"] = session_id or ""
     return ConfirmationBinding(
-        arguments={
-            "request_kind": request_kind,
-            "recipient": host.recipient_key or "unidentified",
-            "terms_version": terms_version_for(host),
-            "redaction_policy": REDACTION_POLICY_VERSION,
-        },
+        arguments=arguments,
         resolved_ids=tuple(sorted(set(file_sha256s))),
         actor="mcp",
         profile=profile,
@@ -371,13 +397,21 @@ async def obtain_disclosure_consent(
         return await _elicit(ctx, host, pending, statement, binding_id, tool)
 
     if confirmation_token is not None:
-        return await _redeem(host, pending, confirmation_token, binding_id, broker)
+        return await _redeem(
+            host,
+            pending,
+            confirmation_token,
+            binding_id,
+            broker,
+            session_id=_stable_session_id(ctx),
+        )
 
     binding = disclosure_binding(
         file_sha256s=[p.file_sha256 for p in pending],
         request_kind=_request_kind(pending),
         host=host,
         profile=get_settings().profile,
+        session_id=_stable_session_id(ctx),
     )
     now = _utcnow()
     token = broker.issue(binding, now=now)
@@ -518,6 +552,8 @@ async def _redeem(
     token: str,
     binding_id: str,
     broker: ConfirmationBroker,
+    *,
+    session_id: str | None,
 ) -> ObtainedConsent:
     """Verify a relayed token: one-time only, never a remembered grant.
 
@@ -533,6 +569,7 @@ async def _redeem(
                 request_kind=_request_kind(pending),
                 host=host,
                 profile=get_settings().profile,
+                session_id=session_id,
             )
         )
         if issued is None:
