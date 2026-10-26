@@ -266,3 +266,26 @@ def test_revoke_all_audit_before_image_is_pre_update(db: Database) -> None:
     after = json.loads(row[1])
     assert before["revoked_at"] is None  # before-image: still active
     assert after["revoked_at"] is not None  # after-image: revoked
+
+
+def test_reads_tolerate_table_before_v081(db: Database) -> None:
+    """A read-only open skips migrations, so reads see the V022 shape."""
+    from moneybin.sql.migrations.V022__create_app_ai_consent_grants import migrate
+    from tests.moneybin.migration_helpers import run_migration
+
+    db.execute("DROP TABLE app.ai_consent_grants")
+    run_migration(db, migrate)
+    db.execute(
+        "INSERT INTO app.ai_consent_grants "
+        "(grant_id, feature_category, backend, consent_mode, grant_prompt) "
+        "VALUES ('g1', 'mcp-data-sharing', 'anthropic', 'persistent', 'prompt')"
+    )
+    repo = ConsentRepo(db)
+
+    for grants in (repo.list_active(), repo.list_all()):
+        [grant] = grants
+        assert grant.grant_id == "g1"
+        assert grant.recipient_kind == "ai_backend"
+        assert grant.terms_version is None
+        assert grant.approved_via is None
+        assert grant.redaction_policy_version is None

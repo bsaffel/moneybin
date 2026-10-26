@@ -18,6 +18,7 @@ from collections.abc import Set
 from typing import Any
 
 from moneybin import error_codes
+from moneybin.database import has_column
 from moneybin.errors import UserError
 from moneybin.privacy.consent import ConsentMode, GrantInfo
 from moneybin.repositories.base import BaseRepo, quote_ident
@@ -36,6 +37,14 @@ _COLUMNS = (
     "approved_via",
     "redaction_policy_version",
 )
+
+# V081 columns and their legacy values, for reads before V081 applies.
+_V081_DEFAULTS = {
+    "recipient_kind": "'ai_backend'",
+    "terms_version": "NULL",
+    "approved_via": "NULL",
+    "redaction_policy_version": "NULL",
+}
 
 _RECIPIENT_KINDS = frozenset({"ai_backend", "ai_host"})  # no CHECK: DuckDB ADD COLUMN
 
@@ -80,6 +89,23 @@ class ConsentRepo(BaseRepo):
             [AI_CONSENT_GRANTS.schema, AI_CONSENT_GRANTS.name],
         ).fetchone()
         return row is not None
+
+    def _read_projection(self) -> str:
+        """Select list that supplies V081 defaults when the columns are absent.
+
+        A read-only open skips migrations, so an upgraded profile can still
+        hold the V022 shape until the next write-mode open.
+        """
+        parts: list[str] = []
+        for column in _COLUMNS:
+            default = _V081_DEFAULTS.get(column)
+            if default is not None and not has_column(
+                self._db, AI_CONSENT_GRANTS, column
+            ):
+                parts.append(f"{default} AS {quote_ident(column)}")
+            else:
+                parts.append(quote_ident(column))
+        return ", ".join(parts)
 
     def _active_for(
         self,
@@ -247,9 +273,9 @@ class ConsentRepo(BaseRepo):
         """Return all active (non-revoked) grants, newest first."""
         if not self._table_exists():
             return []
-        cols = ", ".join(quote_ident(c) for c in _COLUMNS)
+        cols = self._read_projection()
         rows = self._db.execute(
-            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
+            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + quoted cols / constant defaults
             "WHERE revoked_at IS NULL ORDER BY granted_at DESC"
         ).fetchall()
         return [_row_to_grant(dict(zip(_COLUMNS, r, strict=True))) for r in rows]
@@ -258,9 +284,9 @@ class ConsentRepo(BaseRepo):
         """Return all grants including revoked, newest first (audit history)."""
         if not self._table_exists():
             return []
-        cols = ", ".join(quote_ident(c) for c in _COLUMNS)
+        cols = self._read_projection()
         rows = self._db.execute(
-            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
+            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + quoted cols / constant defaults
             "ORDER BY granted_at DESC"
         ).fetchall()
         return [_row_to_grant(dict(zip(_COLUMNS, r, strict=True))) for r in rows]
