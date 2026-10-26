@@ -363,7 +363,9 @@ The app a person drives MoneyBin with (Claude Desktop, Claude Code, Cursor),
 identified from the MCP `clientInfo` name or a known agent-shell environment
 marker, as reported by the client. A remembered **Consent** for PDF content is
 tied to one AI host and its vendor-terms version; a host MoneyBin cannot
-identify gets one-time consent only.
+identify gets one-time consent only, and so does any approval an agent carries
+(a relayed token or CLI flag): only the person answering MoneyBin directly can
+remember one.
 _Avoid_: client, agent (when the recipient of consent is meant)
 
 ### Verification

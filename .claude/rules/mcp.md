@@ -178,6 +178,8 @@ grant neither degrades nor blocks data, and tool code must never rely on an
 automatic consent gate or a degraded response. The single exception is
 `smart-import-parsing`: PDF content is released only after consent for the
 identified AI host (a content-free `ai_assistance_required` result comes first).
+An approval the agent carries back (`confirmation_token`) is one-time only and
+never remembers; never add a tool parameter that lets an agent ask to remember.
 
 ## When CLI-only is justified
 

@@ -62,6 +62,8 @@ step but cannot act as one, which is worse than none.
   without the risk statement reaching a person. The tools-only relay path below
   is the single accepted exception, and it is audited as such.
 - A remembered consent covering an AI host the person never chose ("any AI").
+- A remembered consent created from an approval an agent carried. A fabricated
+  or prompt-injected "the person said yes" must cost at most one request.
 - Product text implying MoneyBin controls a copy of the PDF the user gave
   their AI host directly.
 
@@ -81,13 +83,14 @@ it could not have prevented.
    outcome returns a content-free *AI assistance required* result with a
    consent request. Content is released only after consent.
 2. **Per-surface interaction, one rule.** The person is told exactly what the
-   risk is and must accept it, with an option to remember the choice.
+   risk is and must accept it. Where the person answers MoneyBin directly, they
+   may also remember the choice.
 3. **Tools-only MCP clients:** when the client cannot prompt (no elicitation),
    the agent may relay the risk statement and obtain approval in chat.
 4. **Agent-driven CLI:** agents cannot answer an interactive prompt, so a
    command-line flag approves. The flag takes the `request_id` from the
    content-free run, so the risk statement is always issued first. Flag
-   approval is remembered for that AI host.
+   approval covers that one request.
 5. **"Remember" is tied to the AI host** (the app: Claude Desktop, Claude Code,
    ChatGPT/Codex, Cursor), which is what people expect from app permission
    prompts and what MoneyBin can observe. The AI vendor's data-use terms are
@@ -97,6 +100,15 @@ it could not have prevented.
 7. **Critical fields MoneyBin parsed are redacted** before disclosure. Page
    images or the raw file cannot be redacted. If an image path ever ships, the
    consent text says plainly that images go unredacted.
+8. **Agent-carried approval → one-time only.** The MCP relay token and the CLI
+   `--allow-ai-disclosure` flag never create a remembered grant. On those paths
+   MoneyBin hears only the agent's claim that the person approved, so a
+   fabricated or prompt-injected approval must cost at most one request, never
+   every future PDF. Remembering is available only where the person answers
+   MoneyBin directly: the MCP elicitation form and the interactive
+   `moneybin privacy grant smart-import-parsing --recipient <host>` (refused
+   inside an agent shell). For an identified host, the relay and flag results
+   name that `privacy grant` command so the agent can pass it on.
 
 ## Design
 
@@ -124,7 +136,7 @@ sequenceDiagram
             M-->>A: ai_assistance_required (content-free) + consent request + token
             A->>H: relays risk statement verbatim
             H-->>A: yes / no in chat
-            A->>M: same call + disclosure_consent token (+ remember)
+            A->>M: same call + confirmation_token (one-time only)
             M->>M: verify binding, audit consent (agent_relay), audit disclosure
             M-->>A: bridge payload
         end
@@ -143,8 +155,9 @@ whose payload carries:
   `recipient` (`host_name`, `host_version`, `identified: bool`, `source:
   "reported_by_client" | "cli_environment" | "none"`), the vendor terms summary
   (or `null` with a reason such as "model depends on your app settings"),
-  `remember_available: bool`, and `what_is_sent` (document text, first rows of
-  each table, Critical fields redacted).
+  and `what_is_sent` (document text, first rows of each table, Critical fields
+  redacted). It carries no remember option: the request is answered through an
+  agent on the relay and flag paths, which never remember (Decision 8).
 - `file`: the caller-supplied path and the routing `decision_reason`, which is
   needed so the agent can explain why local parsing failed.
 - `actions[]`: per surface, how to consent and how to decline.
@@ -218,9 +231,9 @@ release; the MCP preview path re-uses the snapshot bytes.
 | Surface | How consent is given | Remember | Audited as |
 |---|---|---|---|
 | MCP, client supports elicitation | Elicitation prompt: risk statement, AI host, vendor terms, accept boolean + remember boolean. No token is issued on this path. | Offered when the host is identified | `prompt` |
-| MCP, tools-only client | Phase 1 returns the consent request + token. The agent shows the risk statement verbatim, gets a yes in chat, and repeats the call with the token (and `remember`). | Offered when the host is identified | `agent_relay` |
+| MCP, tools-only client | Phase 1 returns the consent request + token. The agent shows the risk statement verbatim, gets a yes in chat, and repeats the call with the token. | **Never** (agent-carried); for an identified host the actions name `privacy grant --recipient` for the person to run | `agent_relay` |
 | CLI, interactive terminal (stdin, stdout and stderr are TTYs), host not identified | Typer prompt showing the same text. One-time only: no remember prompt exists, because an identified host never reaches this row (see below). | Never | `cli_prompt` |
-| CLI, non-interactive, or inside an identified agent shell | Without the flag: the content-free result (exit 0; JSON `status` is `ok` with `data.status = "ai_assistance_required"`), carrying a `request_id` and the flag in its hint. With `--allow-ai-disclosure <request_id>`: consent + disclosure. A bare flag is a usage error (exit 2); a non-matching id is refused (exit 1, `import_pdf_disclosure_request_mismatch`). | **Always remembered** when the host is identified, and the shown text says so; one-time otherwise | `cli_flag` |
+| CLI, non-interactive, or inside an identified agent shell | Without the flag: the content-free result (exit 0; JSON `status` is `ok` with `data.status = "ai_assistance_required"`), carrying a `request_id` and the flag in its hint. With `--allow-ai-disclosure <request_id>`: consent + disclosure. A bare flag is a usage error (exit 2); a non-matching id is refused (exit 1, `import_pdf_disclosure_request_mismatch`). | **Never** (agent-carried); for an identified host the result names `privacy grant --recipient` for the person to run | `cli_flag` |
 | Remembered consent present | No prompt; disclosure carries a visible notice naming the grant and the revoke command | — | `remembered` |
 | Web UI (future) | A dialog equivalent to the elicitation prompt. No AI hand-off exists today. | Same rules | `web_prompt` |
 
@@ -248,14 +261,15 @@ release; the MCP preview path re-uses the snapshot bytes.
   identify, if it has a pty, could still answer that prompt. That gives it no
   more release power than the flag, but its approval is attributed as
   `cli_prompt`, not `cli_flag`.
-- **Remembering from the flag is disclosed.** For an identified host the shown
-  text adds that saying yes also lets MoneyBin send future PDFs to that host
-  without asking, with the revoke command, and that exact text is stored as the
-  grant's `grant_prompt`. The grant is created only after the release
-  succeeds.
+- **Agent-carried approvals never remember** (Decision 8). Neither the relay
+  token nor the flag accepts a remember choice, and neither writes a grant. For
+  an identified host the content-free result instead names
+  `moneybin privacy grant smart-import-parsing --recipient <host>`, which the
+  person runs in their own terminal; it grants the same recipient key the gate
+  checks (`local:<host>`).
 - The `agent_relay` path is weaker by construction: MoneyBin cannot prove a
-  person said yes. The audit row says so, and `privacy` status shows
-  remembered grants by how they were made.
+  person said yes. The audit row says so, and the one-time scope bounds what a
+  false yes can release to the files that token was bound to.
 
 **The CLI disclosure path is new.** Today the CLI never sends PDF content.
 `import preview` on a bridge-eligible PDF prints a content-free receipt, and
@@ -333,7 +347,8 @@ enforced.
 - A legacy `smart-import-parsing` grant for an AI backend (`anthropic`) does
   **not** satisfy this gate. The recipient here is the host.
 - `grant_prompt` stores the shared risk statement (§10) verbatim, followed by
-  the sentence on remembering that the person was shown. That replaces
+  the sentence on remembering that the person was shown (the elicitation
+  message, or the `privacy grant` statement). That replaces
   `ConsentService._build_prompt` for `ai_host` grants.
 - `moneybin privacy grant/revoke` gain `--recipient <host>` beside `--backend`
   (mutually exclusive). `privacy status` lists `ai_host` grants with
@@ -348,11 +363,11 @@ recipient, so it never covers a network MCP session. It
 requires an interactive terminal and shows the risk statement. MCP
 `privacy_consent_set` cannot grant an `ai_host` consent, because an agent would
 be granting itself standing access without the statement ever being issued.
-Every remembered `ai_host` grant therefore comes from a flow that issued the
-risk statement first: a prompt, a relay token, a CLI `request_id`, or the
-interactive `privacy grant`. An agent driving a pseudo-terminal can still
-answer a terminal prompt. That limit is the same one the `agent_relay` path
-accepts.
+Every remembered `ai_host` grant therefore comes from a flow the person answers
+directly: the MCP elicitation form or the interactive `privacy grant`. A relay
+token and a CLI `request_id` approve one request and never write a grant. An
+agent driving a pseudo-terminal outside a marked agent shell can still answer a
+terminal prompt; that residual limit is accepted.
 
 One-time consents are **not** written to the ledger. They live only as the
 consumed binding plus their audit row.
@@ -488,6 +503,10 @@ number, an SSN):
 10. Scanned PDF: unsupported outcome unchanged, no consent prompt.
 11. Inbox drain of a bridge-eligible PDF builds no bridge request, even with a
     remembered grant present.
+12. Agent-carried approval: a relay token or `--allow-ai-disclosure` for an
+    identified host releases once, writes no grant, and the next call asks
+    again; the consent request advertises no remember option, and the
+    `privacy grant --recipient` command it names grants the key the gate checks.
 
 ## Spec amendments on delivery
 
@@ -523,12 +542,11 @@ number, an SSN):
   `adapters/pdf_disclosure_adapters.py`; CLI consent in
   `cli/commands/_import_pdf_disclosure.py`.
 - MCP surface: no new tool. `import_preview` and `import_files` gain
-  `confirmation_token` and `remember_disclosure`. `privacy_consent_set` refuses
-  `ai_host` recipients. On both surfaces a person's approval is audited after
-  the release attempt with `released` (§9), and a remembered grant is created
-  only when content was released. A relay-token consent
-  that remembers stores the risk statement plus the remember sentence the
-  agent was told to show the person verbatim. The tools run file reads,
+  `confirmation_token` (one-time only; no remember parameter, per Decision 8).
+  `privacy_consent_set` refuses `ai_host` recipients. On both surfaces a
+  person's approval is audited after the release attempt with `released` (§9),
+  and an elicitation remember choice creates a grant only when content was
+  released; the grant stores the elicitation message. The tools run file reads,
   imports, the refresh and consent database calls off the event loop, so the
   per-tool timeout still applies; only the elicitation wait stays on it.
 - CLI surface: `import preview <pdf> --allow-ai-disclosure <request_id>` and
