@@ -24,12 +24,17 @@ def _mask_digits(value: str) -> str:
     return "".join(out)
 
 
+def _mask_identifier(value: str) -> str:
+    """Mask every letter, and every digit except the last four, keeping separators."""
+    return "".join("X" if c.isalpha() else c for c in _mask_digits(value))
+
+
 def _identifier_pattern(identifier: str) -> re.Pattern[str] | None:
-    digits = re.sub(r"\D", "", identifier)
-    if len(digits) <= _KEEP_LAST:
+    chars = re.sub(r"[^0-9A-Za-z]", "", identifier)
+    if len(chars) <= _KEEP_LAST:
         return None
-    body = r"[\s./-]{0,3}".join(digits)
-    return re.compile(rf"(?<!\d)0*{body}(?!\d)")
+    body = r"[\s./-]{0,3}".join(re.escape(c) for c in chars)
+    return re.compile(rf"(?<!\d)0*{body}(?!\d)", re.IGNORECASE)
 
 
 def redact_critical(text: str, *, account_identifiers: Sequence[str]) -> str:
@@ -37,7 +42,7 @@ def redact_critical(text: str, *, account_identifiers: Sequence[str]) -> str:
     for identifier in account_identifiers:
         pattern = _identifier_pattern(identifier)
         if pattern:
-            text = pattern.sub(lambda m: _mask_digits(m.group()), text)
+            text = pattern.sub(lambda m: _mask_identifier(m.group()), text)
     text = _SSN.sub(lambda m: _mask_digits(m.group()), text)
     return _ROUTING.sub(
         lambda m: (

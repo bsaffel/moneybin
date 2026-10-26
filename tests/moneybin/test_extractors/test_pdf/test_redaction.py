@@ -110,3 +110,30 @@ def test_short_identifier_with_separators_still_masked(
 ) -> None:
     out = redact_critical(f"Acct {spelling} x", account_identifiers=["12345678"])
     assert out == f"Acct {masked} x"
+
+
+@pytest.mark.parametrize(
+    ("spelling", "masked"),
+    [
+        ("AB12CD345678", "XXXXXXXX5678"),
+        ("ab12cd345678", "XXXXXXXX5678"),
+        ("AB-12CD-3456 78", "XX-XXXX-XX56 78"),
+        ("AB12 CD34.5678", "XXXX XXXX.5678"),
+    ],
+)
+def test_alphanumeric_identifier_redacted_letters_included(
+    spelling: str, masked: str
+) -> None:
+    """Letters are part of the account number, so they mask like digits."""
+    out = redact_critical(f"Acct {spelling} x", account_identifiers=["AB12CD345678"])
+    assert out == f"Acct {masked} x"
+
+
+def test_alphanumeric_identifier_letters_must_match() -> None:
+    text = "Acct ZZ12CD345678 x"
+    assert redact_critical(text, account_identifiers=["AB12CD345678"]) == text
+
+
+def test_alphanumeric_identifier_embedded_in_digit_run_untouched() -> None:
+    text = "ref 9AB12CD3456789"
+    assert redact_critical(text, account_identifiers=["AB12CD345678"]) == text
