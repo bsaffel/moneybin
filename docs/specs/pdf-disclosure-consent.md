@@ -340,7 +340,11 @@ enforced.
   `approved_via` and `terms_version`. `default_backend` fallback never applies
   to `ai_host`. Granting
 ahead of time (`moneybin privacy grant smart-import-parsing --recipient <host>`)
-is how a person makes consent stick for a host MoneyBin cannot detect. It
+remembers consent before the first disclosure. The gate matches it only when a
+session identifies that same host (§4): an unidentified host always gets
+one-time consent, whatever grants exist, so a pre-grant cannot make consent
+stick for a host MoneyBin cannot identify. The grant is keyed to a local
+recipient, so it never covers a network MCP session. It
 requires an interactive terminal and shows the risk statement. MCP
 `privacy_consent_set` cannot grant an `ai_host` consent, because an agent would
 be granting itself standing access without the statement ever being issued.

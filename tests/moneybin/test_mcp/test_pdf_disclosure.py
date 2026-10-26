@@ -888,3 +888,35 @@ async def test_batch_later_staging_crash_settles_unreleased(
     assert row["outcome"] == "approved"
     assert row["released"] is False
     assert row["remembered"] is False and row["grant_id"] is None
+
+
+@pytest.mark.parametrize(
+    ("name", "transport"),
+    [("claude-code", "stdio"), (None, "stdio"), ("claude-ai", "streamable-http")],
+)
+async def test_pre_grant_does_not_cover_an_unidentified_host(
+    mcp_db: object,
+    pdf: Path,
+    monkeypatch: MonkeyPatch,
+    name: str | None,
+    transport: str,
+) -> None:
+    """`privacy grant --recipient` applies only when the session identifies that host."""
+    from moneybin.privacy.disclosure import host_for_recipient_name, known_host_names
+    from moneybin.services.consent_service import ConsentService
+
+    with get_database(read_only=False) as db:
+        for host_name in known_host_names():
+            host = host_for_recipient_name(host_name)
+            assert host is not None
+            ConsentService(db).grant_host_consent(
+                host=host, approved_via="cli_prompt", actor="cli"
+            )
+    use_mcp_host(monkeypatch, mcp_host_ctx(name=name, transport=transport))
+
+    env = await import_preview_coarse(file_path=str(pdf))
+
+    _assert_no_canary(env)
+    data = _wire(env)["data"]
+    assert data["status"] == "ai_assistance_required"
+    assert data["consent_request"]["recipient"]["identified"] is False
