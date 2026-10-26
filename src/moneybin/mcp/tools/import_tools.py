@@ -372,7 +372,6 @@ def import_files(
     refresh: bool = True,
     force: bool = False,
     account_bindings: dict[str, str] | None = None,
-    disclosure_consent: DisclosureConsent | None = None,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import one or more financial data files into MoneyBin.
 
@@ -382,7 +381,9 @@ def import_files(
 
     Per-file failures do not abort the batch. The post-load refresh pipeline
     (matching + SQLMesh apply + categorization) runs once at end of batch by
-    default; pass refresh=False to defer.
+    default; pass refresh=False to defer. A PDF needing AI help stops with an
+    ``ai_assistance`` confirmation and releases nothing; ``import_files_coarse``
+    obtains consent and stages it separately.
 
     Args:
         paths: One or more absolute file paths to import. Each path must
@@ -403,8 +404,6 @@ def import_files(
             mapping is already settled and which therefore stopped only on the
             account gate. Use import_confirm when the same file also needs a
             column mapping ratified.
-        disclosure_consent: A verified consent that releases this call's
-            bridge-eligible PDFs; obtained by ``import_files_coarse``.
 
     Returns:
         Envelope with data containing imported/failed/total counts,
@@ -459,7 +458,6 @@ def import_files(
                     force=force,
                     actor_kind="agent",
                     account_bindings=account_bindings,
-                    disclosure_consent=disclosure_consent,
                 )
                 loaded_import_id = one.import_id
                 # Include PDFs only when the deterministic path produced rows —
@@ -616,7 +614,6 @@ def import_files(
                 refresh=refresh,
                 force=force,
                 actor_kind="agent",
-                disclosure_consent=disclosure_consent,
             )
 
     files = [

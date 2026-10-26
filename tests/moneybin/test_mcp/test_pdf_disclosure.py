@@ -808,3 +808,12 @@ async def test_stdio_known_name_still_offers_remember(
     use_mcp_host(monkeypatch, ctx)
     host = disclosure_module.current_ai_host(ctx)
     assert host.identified is True and host.recipient_key == "local:claude-ai"
+
+
+def test_legacy_import_files_takes_no_disclosure_consent() -> None:
+    """Consent is obtained only by the registered tool; no dead pass-through."""
+    import inspect
+
+    from moneybin.mcp.tools.import_tools import import_files
+
+    assert "disclosure_consent" not in inspect.signature(import_files).parameters
