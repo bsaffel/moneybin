@@ -951,6 +951,40 @@ def test_identified_flag_is_one_time_and_points_at_privacy_grant(
     assert granted.recipient_key == shell.recipient_key
 
 
+@pytest.mark.parametrize("claudecode", [True, False])
+def test_cli_disclosure_never_writes_a_grant(
+    consent_db: Path,
+    canary_pdf: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    claudecode: bool,
+) -> None:
+    """Only `privacy grant --recipient` writes an ai_host grant on the CLI."""
+    import inspect
+
+    import moneybin.cli.commands._import_pdf_disclosure as cli_disclosure
+    from moneybin.services.consent_service import ConsentService
+    from tests.moneybin.pdf_statement_fixtures import CANARY_DESCRIPTION
+
+    def _refuse(*_a: object, **_k: object) -> None:
+        raise AssertionError("the CLI disclosure path wrote a grant")
+
+    monkeypatch.setattr(ConsentService, "grant_host_consent", _refuse)
+    if claudecode:
+        monkeypatch.setenv("CLAUDECODE", "1")
+    else:
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+    rid = _request_id(canary_pdf)
+
+    out = runner.invoke(
+        app,
+        ["preview", str(canary_pdf), "--allow-ai-disclosure", rid, "-o", "json"],
+    )
+
+    assert out.exit_code == 0, out.output
+    assert CANARY_DESCRIPTION in out.stdout
+    assert "grant_host_consent" not in inspect.getsource(cli_disclosure)
+
+
 def test_unidentified_receipt_does_not_claim_remembering(
     consent_db: Path, canary_pdf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

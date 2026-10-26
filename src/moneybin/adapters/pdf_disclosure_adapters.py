@@ -54,7 +54,7 @@ def pre_grant_text(host: AIHost) -> str | None:
     return (
         f"To stop being asked about {display_label(host)}, the person can run "
         f"`moneybin privacy grant smart-import-parsing --recipient {host.name}` "
-        "in their own terminal; an approval you relay covers only this request."
+        "in their own terminal; an approval passed back through the agent covers only this request."
     )
 
 

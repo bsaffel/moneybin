@@ -53,11 +53,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class CLIConsent:
-    """A verified consent awaiting release; ``remember_prompt`` grants after it."""
+    """A verified consent awaiting release; the CLI import path never grants."""
 
     consent: DisclosureConsent
     pending: tuple[AIAssistanceRequired, ...]
-    remember_prompt: str | None
 
 
 def _record(
@@ -151,7 +150,7 @@ def obtain_cli_disclosure_consent(
             remembered=True,
             file_sha256s=None,
         )
-        return CLIConsent(consent, pending, remember_prompt=None)
+        return CLIConsent(consent, pending)
 
     if allow_ai_disclosure is not None:
         consent = DisclosureConsent(
@@ -163,7 +162,7 @@ def obtain_cli_disclosure_consent(
             file_sha256s=one_time,
         )
         # The agent carries the flag: one-time only, never a remembered grant.
-        return CLIConsent(consent, pending, remember_prompt=None)
+        return CLIConsent(consent, pending)
 
     # An identified host means an agent shell; an agent with a pty could answer
     # the prompt itself, so it gets the receipt and asks the person in chat.
@@ -202,7 +201,7 @@ def obtain_cli_disclosure_consent(
             remembered=False,
             file_sha256s=one_time,
         )
-        return CLIConsent(consent, pending, remember_prompt=None)
+        return CLIConsent(consent, pending)
 
     _emit_ai_assistance_required(
         source,
@@ -216,25 +215,14 @@ def obtain_cli_disclosure_consent(
 
 
 def settle_cli_disclosure(obtained: CLIConsent, *, released: bool) -> str | None:
-    """After the release attempt: audit the approval, remember only if released.
+    """After the release attempt: audit the approval; never writes a grant.
 
     A remembered grant that released nothing involved no decision: no row.
     """
-    from moneybin.services.consent_service import ConsentService
-
     consent = obtained.consent
     if not released and consent.approved_via == "remembered":
         return None
     grant_id = consent.grant_id if released else None
-    if released and obtained.remember_prompt is not None:
-        with get_database(read_only=False) as db:
-            grant, _created = ConsentService(db).grant_host_consent(
-                host=consent.host,
-                approved_via=consent.approved_via,
-                actor="cli",
-                grant_prompt=obtained.remember_prompt,
-            )
-        grant_id = grant.grant_id
     _record(
         consent.host,
         obtained.pending,

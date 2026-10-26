@@ -81,7 +81,6 @@ class _OneTimeAnswer:
 @dataclass(frozen=True)
 class _IssuedToken:
     issued_at: datetime
-    statement: str
 
 
 class DisclosureConsentPendingError(Exception):
@@ -107,8 +106,8 @@ class ObtainedConsent:
     remember_prompt: str | None
 
 
-# Issue time and the exact statement shown, keyed by token digest; the broker
-# stays generic. Revocation after issue invalidates a token (spec section 2).
+# Issue time, keyed by token digest; the broker stays generic. Revocation
+# after issue invalidates a token (spec section 2).
 _issued: dict[bytes, _IssuedToken] = {}
 _issued_lock = threading.Lock()
 
@@ -382,7 +381,7 @@ async def obtain_disclosure_consent(
     )
     now = _utcnow()
     token = broker.issue(binding, now=now)
-    _remember_issued(token, _IssuedToken(issued_at=now, statement=statement))
+    _remember_issued(token, _IssuedToken(issued_at=now))
     raise DisclosureConsentPendingError(
         consent_request(
             host=host,
