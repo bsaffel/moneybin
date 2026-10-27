@@ -31,7 +31,7 @@ Prefer this shape when the work fits.
 The project allowlist covers common downstream filters: `head`, `tail`, `grep` (only when the searched paths are inside the project directory — outside paths are denied by the sandbox), `wc`, `jq`, `sort`, `uniq`, `awk`, `sed`, `cut`, `tee`. Pipelines and `&&`/`||`/`;` chains around these pass without prompts and save context tokens vs. reading full output:
 
 ```bash
-make test 2>&1 | tail -100
+uv run pytest tests/moneybin/test_cli -q 2>&1 | tail -100
 ruff check src/ | grep D107
 gh api repos/x/y/issues | jq '.[].title'
 git add src/ && git commit -m "subject" -m "body"
