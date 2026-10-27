@@ -766,7 +766,9 @@ def _load_profile_home_freshness(
                     parent_audit_id=None,
                 )
                 try:
-                    decoded = decode_audit_row(event, before, policy)
+                    decoded = decode_audit_row(
+                        event, before, policy, image_side="before"
+                    )
                 except ValueError:
                     provenance = context.fetchdf(
                         f"SELECT contract_version, rules FROM {UTC_UPGRADE_PROVENANCE.full_name}"  # noqa: S608  # registered TableRef, not user input
@@ -775,7 +777,9 @@ def _load_profile_home_freshness(
                         (row["contract_version"], row["rules"])
                         for row in _records(provenance)
                     ])
-                    decoded = decode_audit_row(event, before, policy)
+                    decoded = decode_audit_row(
+                        event, before, policy, image_side="before"
+                    )
                 legacy_home_updated_at = _opt_timestamp(decoded.get("updated_at"))
     return home_changed_at, legacy_home_updated_at, bool(records)
 

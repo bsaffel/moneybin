@@ -222,9 +222,15 @@ class LegacyTimeRule:
     zone: str
     fold: Literal[0, 1] | None = None
     evidence: LegacyWriterEvidence | None = None
+    audit_id: str | None = None
+    image_side: Literal["before", "after"] | None = None
 
     def __post_init__(self) -> None:
         """Validate accepted evidence shape without inferring source semantics."""
+        if (self.audit_id is None) != (self.image_side is None):
+            raise ValueError("Legacy image provenance requires audit_id and image_side")
+        if self.audit_id is not None and not self.audit_id.strip():
+            raise ValueError("Legacy image provenance requires a nonempty audit_id")
         if (self.schema, self.table, self.column) not in _expected_instant_columns():
             raise ValueError("Legacy rule requires a maintained instant column")
         for bound in (self.recorded_from, self.recorded_until):
@@ -271,7 +277,11 @@ def parse_audit_temporal_policy(rows: Sequence[Sequence[Any]]) -> AuditTemporalP
 
 
 def decode_audit_row(
-    event: AuditEvent, image: Mapping[str, object], policy: AuditTemporalPolicy
+    event: AuditEvent,
+    image: Mapping[str, object],
+    policy: AuditTemporalPolicy,
+    *,
+    image_side: Literal["before", "after"],
 ) -> dict[str, object]:
     """Decode only known instant fields in a copy, before any replay mutation."""
     decoded = deepcopy(dict(image))
@@ -302,6 +312,10 @@ def decode_audit_row(
             for rule in policy.rules
             if (rule.schema, rule.table, rule.column) == key
             and rule.recorded_from <= recorded_at < rule.recorded_until
+            and (
+                rule.audit_id is None
+                or (rule.audit_id == event.audit_id and rule.image_side == image_side)
+            )
         ]
         if len(matches) != 1:
             raise ValueError(
