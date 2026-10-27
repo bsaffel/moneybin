@@ -107,6 +107,10 @@ TABULAR_FORMATS = TableRef("app", "tabular_formats")
 # -- App matching tables --
 MATCH_DECISIONS = TableRef("app", "match_decisions")
 INVESTMENT_MATCH_DECISIONS = TableRef("app", "investment_match_decisions")
+INVESTMENT_EVENT_MEMBERS = TableRef("app", "investment_event_members")
+INVESTMENT_MATCH_FIELD_RESOLUTIONS = TableRef(
+    "app", "investment_match_field_resolutions"
+)
 INVESTMENT_EVENT_HEADERS = TableRef("prep", "int_investment_events__headers")
 INVESTMENT_EVENT_LEGS = TableRef("prep", "int_investment_events__legs")
 INVESTMENT_EVENT_EVIDENCE = TableRef("prep", "int_investment_events__evidence")
