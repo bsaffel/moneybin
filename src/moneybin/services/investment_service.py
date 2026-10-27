@@ -1528,6 +1528,9 @@ class InvestmentService:
         then delegates to :meth:`LotSelectionsRepo.set_for_disposal` (the
         declarative set; ``selections=[]`` clears all overrides → FIFO).
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {FCT_INVESTMENT_TRANSACTIONS.full_name})
         row = self._db.execute(
             f"SELECT account_id, security_id, type, quantity, trade_date "  # TableRef constant
             f"FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "
@@ -1899,6 +1902,9 @@ class InvestmentService:
         ``security_ref`` accept free text and resolve to ids before binding
         (Guard 2). Carries no mandatory warning.
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {FCT_INVESTMENT_TRANSACTIONS.full_name})
         if type_filter is not None and type_filter not in TAXONOMY:
             raise ValueError(
                 f"type_filter must be one of {sorted(TAXONOMY)}, got {type_filter!r}"
@@ -1989,6 +1995,9 @@ class InvestmentService:
         shares one currency; otherwise it is NULL and
         ``market_value_by_currency`` carries the per-currency split.
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {DIM_HOLDINGS.full_name})
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
         where: list[str] = []
@@ -2224,6 +2233,9 @@ class InvestmentService:
         is a different claim from an incomplete basis (conservative, not wrong)
         and gets its own warning for that reason.
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {FCT_INVESTMENT_LOTS.full_name})
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
         where: list[str] = []
@@ -2313,6 +2325,9 @@ class InvestmentService:
         ledger arrives from two sources at once — proceeds, basis and gain all
         double-count until one of the two feeds is removed.
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {FCT_REALIZED_GAINS.full_name})
         if term is not None and term not in self._VALID_TERMS:
             raise ValueError(
                 f"term must be one of {sorted(self._VALID_TERMS)}, got {term!r}"

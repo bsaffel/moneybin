@@ -607,6 +607,9 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
                 is_metadata=True,
             )
 
+        from moneybin.investments.freshness import require_current_query
+
+        require_current_query(db, query)
         qtree = expand_star(tree, snapshot)
         _refuse_disallowed_schemas(qtree, snapshot)
         output_classes = resolve_output_classes(qtree, snapshot, query)

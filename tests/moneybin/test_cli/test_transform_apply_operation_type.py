@@ -38,9 +38,9 @@ def test_transform_apply_command_classifies_as_transform_apply() -> None:
     runner = CliRunner()
     with (
         patch("moneybin.database.get_database", fake_get_database),
-        patch("moneybin.services.transform_service.TransformService") as mock_service,
+        patch("moneybin.orchestration.refresh.refresh") as mock_refresh,
     ):
-        mock_service.return_value.apply.return_value = MagicMock(
+        mock_refresh.return_value = MagicMock(
             applied=True, duration_seconds=0.0, error=None
         )
         result = runner.invoke(transform_app, ["apply"])

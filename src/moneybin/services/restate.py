@@ -30,6 +30,7 @@ CommittedChange = Literal[
     "setting",
     "exchange rate",
     "match decision",
+    "investment decision",
     "undo",
     "account link",
     "balance assertion",
@@ -43,6 +44,12 @@ CommittedChange = Literal[
 
 
 def _committed_refresh_error(committed_change: CommittedChange) -> UserError:
+    if committed_change == "investment decision":
+        return UserError(
+            "The investment decision was committed, but derived financial data is stale. The visible-collision guard remains active.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+            hint="Run `moneybin refresh --step transform` before reading holdings, lots or gains.",
+        )
     verb = (
         "was saved"
         if committed_change in ("setting", "exchange rate", "price")

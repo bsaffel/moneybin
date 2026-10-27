@@ -295,7 +295,78 @@ class TransformService:
         """Bind to an open Database connection."""
         self._db = db
 
-    def apply(self) -> ApplyResult:
+    def bootstrap_investment_inputs(self) -> None:
+        """Build only fresh comparison/opening inputs and their ancestors."""
+        from sqlglot import exp
+
+        from moneybin import error_codes
+        from moneybin.errors import UserError
+
+        roots = {
+            "prep.int_investment_events__headers",
+            "prep.int_investment_events__legs",
+            "prep.int_investment_events__evidence",
+            "prep.stg_plaid__investment_holdings_snapshots",
+            "prep.int_plaid__opening_positions",
+            "prep.stg_plaid__opening_lots",
+        }
+        MatchingService(self._db).seed_priority()
+        with sqlmesh_context(self._db) as ctx:
+            by_relation = {
+                f"{table.db}.{table.name}": name
+                for name in ctx.models
+                for table in [exp.to_table(name)]
+            }
+            if roots - by_relation.keys():
+                raise UserError(
+                    "Required investment comparison models are missing from configuration.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            selected: set[str] = set()
+            for relation in roots:
+                name = by_relation[relation]
+                selected.add(name)
+                selected.update(ctx.dag.upstream(name))
+            selected.intersection_update(ctx.models)
+            golden = by_relation.get("core.fct_investment_transactions")
+            if golden is not None and selected & {golden, *ctx.dag.downstream(golden)}:
+                raise UserError(
+                    "Comparison bootstrap depends on Golden investment models.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            full_models = [name for name in selected if ctx.models[name].kind.is_full]
+            plan = ctx.plan(select_models=selected, no_prompts=True)
+            backfilled = _plan_backfills_full_models(
+                cast(_InitialPlan, plan), full_models
+            )
+            ctx.apply(plan)
+            status = ctx.run(select_models=selected, ignore_cron=True)
+            if status.is_failure:
+                raise RuntimeError("Investment input bootstrap run failed")
+            if full_models and not backfilled:
+                ctx.plan(
+                    select_models=selected,
+                    restate_models=full_models,
+                    start=_RESTATE_START,
+                    no_prompts=True,
+                    auto_apply=True,
+                )
+
+    def apply(self, *, actor: str = "system") -> ApplyResult:
+        """Use the prerequisite-aware full transform route."""
+        from moneybin.orchestration.refresh import refresh
+
+        result = refresh(self._db, steps=["transform"], actor=actor)
+        error = result.error or next(
+            (stage.error for stage in result.stages if stage.error), None
+        )
+        return ApplyResult(
+            applied=result.applied,
+            duration_seconds=result.duration_seconds or 0.0,
+            error=error,
+        )
+
+    def _apply_sqlmesh(self) -> ApplyResult:
         """Apply pending SQLMesh changes.
 
         Seeds ``app.seed_source_priority`` before running so
@@ -517,8 +588,10 @@ class TransformService:
         else:
             raw_ahead = landed_at > applied_at
 
+        from moneybin.investments.freshness import projection_pending
+
         return TransformFreshness(
-            pending=bool(missing_models) or raw_ahead,
+            pending=bool(missing_models) or raw_ahead or projection_pending(self._db),
             last_apply_at=self._max_dim_accounts_updated_at(),
             latest_import_at=self._max_completed_import_at(),
             missing_models=missing_models,

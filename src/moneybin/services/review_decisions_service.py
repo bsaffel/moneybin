@@ -736,6 +736,23 @@ class ReviewDecisionsService:
         from moneybin.services.restate import restate_after_match_effects
 
         restate_after_match_effects(self._db, effects)
+        if any(
+            isinstance(item.request, InvestmentMatchDecisionRequest)
+            and item.changed
+            and item.request.decision == "accept"
+            for item in live
+        ):
+            from moneybin.services.restate import restate_after_write
+            from moneybin.tables import (
+                INVESTMENT_EVENT_MEMBERS,
+                INVESTMENT_MATCH_FIELD_RESOLUTIONS,
+            )
+
+            restate_after_write(
+                self._db,
+                [INVESTMENT_EVENT_MEMBERS, INVESTMENT_MATCH_FIELD_RESOLUTIONS],
+                committed_change="investment decision",
+            )
         if touched_merchant_ids:
             category_service.record_committed_review_merchants(
                 created_merchant_ids=tuple(created_merchant_ids),

@@ -1,11 +1,9 @@
 """Reconstruct opening rows from retained snapshots and selected membership."""
 
 from collections.abc import Mapping, Sequence
-from importlib import resources
-from typing import Any, cast
+from typing import Any
 
-from sqlglot import exp, parse_one
-from sqlmesh.core.dialect import parse
+from sqlglot import exp
 
 from moneybin.database import Database
 from moneybin.investments.event_projection import (
@@ -13,6 +11,7 @@ from moneybin.investments.event_projection import (
     read_rows,
     source_revision,
 )
+from moneybin.investments.opening_sql import model_query, opening_query
 from moneybin.tables import (
     PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
     STG_PLAID_INVESTMENT_TRANSACTIONS,
@@ -20,20 +19,6 @@ from moneybin.tables import (
 
 # Stored provenance references immutable rows; financial values remain in Raw.
 ALGORITHM_VERSION = "opening_membership_v1"
-
-
-def _query(name: str) -> exp.Query:
-    text = (
-        resources
-        .files("moneybin")
-        .joinpath(f"sqlmesh/models/prep/{name}.sql")
-        .read_text()
-    )
-    return next(
-        node
-        for node in parse(text, default_dialect="duckdb")
-        if isinstance(node, exp.Query)
-    )
 
 
 def _relation(
@@ -58,7 +43,7 @@ def _relation(
 
 def first_snapshots(db: Database) -> list[dict[str, Any]]:
     """Rank only holdings-bearing receipts, independently for each native account."""
-    query = _query("int_plaid__opening_positions")
+    query = model_query("int_plaid__opening_positions")
     first = next(
         cte.this
         for cte in query.find_all(exp.CTE)
@@ -121,35 +106,9 @@ def reconstruct_openings(
         snapshots,
         {"account_id": "VARCHAR", "source_origin": "VARCHAR", "source_file": "VARCHAR"},
     )
-    positions = _query("int_plaid__opening_positions")
-    first = next(
-        cte
-        for cte in positions.find_all(exp.CTE)
-        if cte.alias_or_name == "first_snapshot"
-    )
-    first.set("this", parse_one(snapshot_sql, dialect="duckdb"))
-    position_sql = positions.sql(dialect="duckdb").replace(
-        "prep.stg_plaid__investment_transactions", "selected_transactions"
-    )
-    opening = cast(exp.Select, _query("stg_plaid__opening_lots"))
-    opening = opening.select(
-        "a.lot_key",
-        "b.source_file AS first_snapshot_source_file",
-        "b.window_start AS reconstruction_window_start",
-        "b.snapshot_date AS reconstruction_snapshot_date",
-        append=True,
-    )
-    opening = opening.join(
-        "bootstrappable AS b",
-        on="b.source_account_key = a.source_account_key AND b.source_security_key = a.source_security_key AND b.source_origin = a.source_origin",
-        join_type="INNER",
-    )
-    opening_sql = opening.sql(dialect="duckdb").replace(
-        "prep.int_plaid__opening_positions", "selected_positions"
-    )
     rows = read_rows(
         db,
-        f"WITH selected_transactions AS ({tx_sql}), selected_positions AS ({position_sql}), reconstructed AS ({opening_sql}) SELECT * FROM reconstructed",  # noqa: S608  # canonical model queries and parameterized inputs
+        opening_query(tx_sql, snapshot_sql).sql(dialect="duckdb"),
         parameters + snapshot_params,
     )
     contexts: dict[tuple[str, str, str], dict[str, Any]] = {}

@@ -594,6 +594,19 @@ class InvestmentMatchingService:
             duration_seconds=perf_counter() - started,
         )
 
+        if decision == "accept":
+            from moneybin.services.restate import restate_after_write
+            from moneybin.tables import (
+                INVESTMENT_EVENT_MEMBERS,
+                INVESTMENT_MATCH_FIELD_RESOLUTIONS,
+            )
+
+            restate_after_write(
+                self._db,
+                [INVESTMENT_EVENT_MEMBERS, INVESTMENT_MATCH_FIELD_RESOLUTIONS],
+                committed_change="investment decision",
+            )
+
     def undo_rejections(self, events: Sequence[AuditEvent], *, actor: str) -> None:
         """Undo constraints as an operation; never restore historical row images."""
         rejections = [

@@ -2030,20 +2030,20 @@ class ImportService:
         return ""
 
     def run_transforms(self) -> bool:
-        """Apply SQLMesh transforms via :class:`TransformService`.
+        """Run the prerequisite-aware transform route; fail loudly on any blocker."""
+        from moneybin.orchestration.refresh import refresh
 
-        Transitional shim: callers will move to ``TransformService.apply()``
-        directly in a later phase. Preserves the original fail-loud contract
-        — ``TransformService.apply()`` soft-fails to ``ApplyResult(error=...)``,
-        but several callers here (``transactions matches run/backfill``,
-        ``synthetic generate``) ignore the return value, so raising on
-        failure is required to keep the exit code honest.
-        """
-        from moneybin.services.transform_service import TransformService
-
-        result = TransformService(self._db).apply()
+        result = refresh(self._db, steps=["transform"], actor="import")
         if not result.applied:
-            raise RuntimeError(f"SQLMesh transforms failed: {result.error}")
+            failure = result.error or next(
+                (
+                    f"{stage.step}: {stage.error}"
+                    for stage in result.stages
+                    if stage.error
+                ),
+                "transform did not run",
+            )
+            raise RuntimeError(f"Transforms failed: {failure}")
         return True
 
     def _import_ofx(

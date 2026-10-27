@@ -7,7 +7,7 @@ from collections.abc import Callable, Generator
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -483,7 +483,7 @@ def test_apply_returns_apply_result_shape(
         fake_refresh,
     )
 
-    result = TransformService(db).apply()
+    result = TransformService(db)._apply_sqlmesh()  # type: ignore[reportPrivateUsage]  # SQLMesh primitive under test
 
     assert result.applied is True
     assert result.duration_seconds >= 0
@@ -583,7 +583,7 @@ def test_a_failing_duration_metric_does_not_abort_a_completed_apply(
     )
 
     with caplog.at_level("WARNING"):
-        result = TransformService(db).apply()
+        result = TransformService(db)._apply_sqlmesh()  # type: ignore[reportPrivateUsage]  # SQLMesh primitive under test
 
     assert result.applied is True
     assert result.error is None
@@ -630,7 +630,7 @@ def test_apply_soft_fails_when_run_reports_failure(
         fake_refresh,
     )
 
-    result = TransformService(db).apply()
+    result = TransformService(db)._apply_sqlmesh()  # type: ignore[reportPrivateUsage]  # SQLMesh primitive under test
 
     assert result.applied is False
     assert result.error is not None
@@ -668,7 +668,7 @@ def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(
         fake_seed,
     )
 
-    result = TransformService(db).apply()
+    result = TransformService(db)._apply_sqlmesh()  # type: ignore[reportPrivateUsage]  # SQLMesh primitive under test
 
     assert result.applied is False
     assert result.error == "RuntimeError"
@@ -710,31 +710,29 @@ def test_apply_logs_exception_message_for_debuggability(
     )
 
     with caplog.at_level(logging.WARNING, logger="moneybin.services.transform_service"):
-        result = TransformService(db).apply()
+        result = TransformService(db)._apply_sqlmesh()  # type: ignore[reportPrivateUsage]  # SQLMesh primitive under test
 
     assert result.error == "RuntimeError"  # envelope contract unchanged
     assert detail in caplog.text  # the message reached the log
 
 
-def test_import_service_run_transforms_delegates_to_transform_service(
+def test_import_service_run_transforms_delegates_to_refresh(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ImportService.run_transforms() delegates to TransformService.apply()."""
+    """The legacy import shim retains the complete transform prerequisite route."""
+    from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.import_service import ImportService
-    from moneybin.services.transform_service import ApplyResult
 
-    calls: list[str] = []
+    calls: list[dict[str, object]] = []
 
-    def fake_apply(self: TransformService) -> ApplyResult:
-        calls.append("apply")
-        return ApplyResult(applied=True, duration_seconds=0.0)
+    def fake_refresh(database: Database, **kwargs: Any) -> RefreshResult:
+        assert database is db
+        calls.append(kwargs)
+        return RefreshResult(applied=True, duration_seconds=0.0)
 
-    monkeypatch.setattr(TransformService, "apply", fake_apply)
-
-    result = ImportService(db).run_transforms()
-
-    assert result is True
-    assert calls == ["apply"]
+    monkeypatch.setattr("moneybin.orchestration.refresh.refresh", fake_refresh)
+    assert ImportService(db).run_transforms() is True
+    assert calls == [{"steps": ["transform"], "actor": "import"}]
 
 
 def test_status_uninitialized_environment(

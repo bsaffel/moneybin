@@ -115,6 +115,14 @@ PLAID_INVESTMENT_REVISIONS = TableRef("prep", "stg_plaid__investment_revisions")
 INVESTMENT_EVENT_HEADERS = TableRef("prep", "int_investment_events__headers")
 INVESTMENT_EVENT_LEGS = TableRef("prep", "int_investment_events__legs")
 INVESTMENT_EVENT_EVIDENCE = TableRef("prep", "int_investment_events__evidence")
+INVESTMENT_SOURCE_PROJECTION = TableRef(
+    "prep", "int_investment_events__source_projection"
+)
+INVESTMENT_OPENING_PROJECTION = TableRef(
+    "prep", "int_investment_events__opening_projection"
+)
+ALIAS_INVESTMENT_EVENT_IDS = TableRef("core", "alias_investment_event_ids")
+ALIAS_INVESTMENT_TRANSACTION_IDS = TableRef("core", "alias_investment_transaction_ids")
 SEED_SOURCE_PRIORITY = TableRef("app", "seed_source_priority")
 
 # -- App account-identity tables (M1S) --

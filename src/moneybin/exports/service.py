@@ -620,6 +620,10 @@ class ExportService:
             raise ValueError("bundle exports cannot include a report id")
         if report_parameters is not None:
             raise ValueError("bundle exports cannot include report parameters")
+        from moneybin.investments.freshness import require_current_relations
+        from moneybin.tables import FCT_INVESTMENT_TRANSACTIONS
+
+        require_current_relations(self._db, {FCT_INVESTMENT_TRANSACTIONS.full_name})
         snapshot = build_bundle_snapshot(
             self._db,
             profile=profile,

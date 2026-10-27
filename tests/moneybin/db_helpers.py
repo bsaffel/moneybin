@@ -624,6 +624,18 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_FCT_EXCHANGE_RATES_DAILY_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_STUB_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_EFFECTIVE_STUB_DDL)
+    from sqlmesh.core.dialect import parse
+
+    for name in ("alias_investment_event_ids", "alias_investment_transaction_ids"):
+        text = (SQLMESH_ROOT / "models" / "core" / f"{name}.sql").read_text()
+        query = next(
+            node
+            for node in parse(text, default_dialect="duckdb")
+            if isinstance(node, exp.Query)
+        )
+        db.execute(
+            f"CREATE OR REPLACE VIEW core.{name} AS {query.sql(dialect='duckdb')}"
+        )  # fixed shipped model names and parsed query
 
 
 def create_core_tables(db: Database) -> None:

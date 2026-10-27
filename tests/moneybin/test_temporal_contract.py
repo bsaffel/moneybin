@@ -108,6 +108,8 @@ _DERIVED_INSTANTS = {
     "prep.stg_plaid__balances": "last_updated_datetime extracted_at loaded_at",
     "prep.stg_plaid__investment_holdings": "extracted_at loaded_at",
     "prep.stg_plaid__investment_holdings_snapshots": "extracted_at loaded_at",
+    "prep.int_investment_events__source_projection": "created_at updated_at",
+    "prep.int_investment_events__opening_projection": "created_at updated_at",
     "prep.stg_plaid__investment_revisions": "extracted_at created_at",
     "prep.stg_plaid__investment_transactions": "extracted_at created_at",
     "prep.stg_plaid__opening_lots": "created_at",

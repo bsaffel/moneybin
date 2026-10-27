@@ -241,3 +241,39 @@ def test_unresolved_opening_account_is_not_published(comparison_db: Database) ->
     result = InvestmentMembershipService(db).reconcile(actor="test")
     assert result.registered == 0
     assert InvestmentEventMembersRepo(db).history() == []
+
+
+def test_link_to_missing_canonical_account_does_not_publish_opening(
+    comparison_db: Database,
+) -> None:
+    db = comparison_db
+    seed_snapshot(db, "first")
+    # A Link cannot establish a canonical entity that is absent from the
+    # Account dimension, even when the source supplies a Currency.
+    db.execute("DELETE FROM core.dim_accounts WHERE account_id = 'account'")
+    install_comparison_models(db)
+    service = InvestmentMembershipService(db)
+    result = service.reconcile(actor="test")
+    assert result.registered == 0
+    assert opening(service) == []
+
+
+def test_link_to_missing_security_catalog_entry_does_not_publish_opening(
+    comparison_db: Database,
+) -> None:
+    from moneybin.repositories.security_links_repo import SecurityLinksRepo
+
+    db = comparison_db
+    seed_snapshot(db, "first")
+    link_id = db.execute(
+        "SELECT link_id FROM app.security_links WHERE security_id = 'security' AND status = 'accepted'"
+    ).fetchall()[0][0]
+    SecurityLinksRepo(db).repoint(
+        link_id=link_id,
+        new_security_id="missing_security",
+        decided_by="user",
+        actor="test",
+    )
+    install_comparison_models(db)
+    assert InvestmentMembershipService(db).reconcile(actor="test").registered == 0
+    assert InvestmentEventMembersRepo(db).history() == []

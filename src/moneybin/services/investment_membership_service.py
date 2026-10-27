@@ -35,12 +35,14 @@ from moneybin.repositories.investment_match_field_resolutions_repo import (
 )
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.tables import (
+    ACCOUNT_LINKS,
     ACCOUNT_SETTINGS,
     AUDIT_LOG,
     DIM_ACCOUNTS,
     FCT_INVESTMENT_TRANSACTIONS,
     INVESTMENT_EVENT_LEGS,
     LOT_SELECTIONS,
+    SECURITIES,
 )
 
 
@@ -91,9 +93,35 @@ class InvestmentMembershipService:
 
     def project(self) -> list[dict[str, Any]]:
         """Read exact published evidence without current routing substitution."""
-        return self._project(
-            self._members.active_members(), self._resolutions.active_resolutions()
+        return self._visible_ledger(
+            self._project(
+                self._members.active_members(), self._resolutions.active_resolutions()
+            )
         )
+
+    def _visible_ledger(self, ledger: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Apply the shipped source-choice gate to projection and curation alike."""
+        settings = {
+            r["account_id"]: r
+            for r in read_rows(
+                self._db,
+                f"SELECT account_id, investment_source_type, investment_source_type_changed_at FROM {ACCOUNT_SETTINGS.full_name}",
+            )
+        }  # TableRef constant
+        result: list[dict[str, Any]] = []
+        for row in ledger:
+            setting = settings.get(row["account_id"], {})
+            choice = setting.get("investment_source_type")
+            if choice is not None and row["source_type"] != choice:
+                continue
+            stamp = setting.get("investment_source_type_changed_at")
+            result.append({
+                **row,
+                "updated_at": max(row["updated_at"], stamp)
+                if stamp
+                else row["updated_at"],
+            })
+        return result
 
     def _project(
         self, members: list[dict[str, Any]], resolutions: list[dict[str, Any]]
@@ -276,12 +304,31 @@ class InvestmentMembershipService:
             f"SELECT currency_code FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",
             [row["account_id"]],
         ).fetchone()  # TableRef, bound identity
-        if account is None or row["security_id"] is None:
+        route = self._db.execute(
+            f"""SELECT COUNT(*), MIN(account_id)
+            FROM {ACCOUNT_LINKS.full_name} WHERE status = 'accepted'
+            AND source_type = 'plaid' AND source_origin = ? AND ref_kind = 'source_native'
+            AND ref_value = ?""",  # TableRef and bound native identity
+            [row["source_origin"], row["source_account_key"]],
+        ).fetchall()[0]
+        currency = row["currency_code"] or (account[0] if account else None)
+        security = self._db.execute(
+            f"SELECT 1 FROM {SECURITIES.full_name} WHERE security_id = ?",  # TableRef and bound canonical identity
+            [row["security_id"]],
+        ).fetchone()
+        if (
+            account is None
+            or security is None
+            or route[0] != 1
+            or route[1] != row["account_id"]
+            or row["security_id"] is None
+            or currency is None
+        ):
             return None
         return self._binding({
             **row,
             "source_currency_code": row["currency_code"],
-            "currency_code": row["currency_code"] or (account[0] if account else None),
+            "currency_code": currency,
             "account_identity_generation": self._routing_generation(
                 "account_links",
                 "source_native",
@@ -551,8 +598,12 @@ class InvestmentMembershipService:
             mapping[row["investment_transaction_id"]] = member[
                 "investment_transaction_id"
             ]
-        projected = list(project_members(proposed, evidence, resolutions))
-        current = self._project(active, self._resolutions.active_resolutions())
+        projected = self._visible_ledger(
+            list(project_members(proposed, evidence, resolutions))
+        )
+        current = self._visible_ledger(
+            self._project(active, self._resolutions.active_resolutions())
+        )
         if (
             not active
             and self._db.execute(
