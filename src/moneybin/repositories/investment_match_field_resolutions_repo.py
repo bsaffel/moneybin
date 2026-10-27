@@ -4,6 +4,8 @@ from dataclasses import asdict
 from typing import Any
 from uuid import uuid4
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.investments.event_membership import FieldResolution
 from moneybin.repositories.base import BaseRepo
 from moneybin.tables import INVESTMENT_MATCH_FIELD_RESOLUTIONS
@@ -52,9 +54,10 @@ class InvestmentMatchFieldResolutionsRepo(BaseRepo):
         actor: str,
         in_outer_txn: bool = False,
         parent_audit_id: str | None = None,
+        resolution_id: str | None = None,
     ) -> str:
         """Record a validated choice within the caller's atomic membership operation."""
-        resolution_id = uuid4().hex[:12]
+        resolution_id = resolution_id or uuid4().hex[:12]
         columns = _COLUMNS[:8]
         values = asdict(resolution)
         with self._transaction(in_outer_txn=in_outer_txn):
@@ -73,3 +76,33 @@ class InvestmentMatchFieldResolutionsRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
         return resolution_id
+
+    def retire(
+        self,
+        resolution_id: str,
+        *,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> None:
+        """Retain an explicit choice's immutable evidence after supersession."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._fetch_row(resolution_id)
+            if before is None or before["retired_at"] is not None:
+                raise UserError(
+                    "Field resolution is no longer active.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            self._db.execute(
+                f"""UPDATE {INVESTMENT_MATCH_FIELD_RESOLUTIONS.full_name}
+                SET retired_at = CURRENT_TIMESTAMP WHERE resolution_id = ?""",  # noqa: S608  # TableRef and bound identity
+                [resolution_id],
+            )
+            self._emit_audit(
+                action="investment_resolution.retire",
+                target=(*self._audit_target, resolution_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(self._fetch_row(resolution_id)),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )

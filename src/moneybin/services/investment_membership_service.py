@@ -15,7 +15,11 @@ from moneybin.investments.event_curation import (
     preflight_membership_transition,
 )
 from moneybin.investments.event_fingerprints import fingerprint
-from moneybin.investments.event_membership import EventMember, MembershipBinding
+from moneybin.investments.event_membership import (
+    EventMember,
+    FieldResolution,
+    MembershipBinding,
+)
 from moneybin.investments.event_openings import ALGORITHM_VERSION, reconstruct_openings
 from moneybin.investments.event_projection import (
     load_member_evidence,
@@ -144,6 +148,129 @@ class InvestmentMembershipService:
             evidence[source_revision(member)] = {**row, "trade_date_basis": "explicit"}
         return list(project_members(members, evidence, resolutions))
 
+    def source_member(
+        self,
+        leg: dict[str, Any],
+        *,
+        event_group_id: str,
+        investment_transaction_id: str,
+        decision_id: str,
+    ) -> dict[str, Any]:
+        """Bind a currently verified Proposal leg before any publication."""
+        return {
+            **_member_row(
+                EventMember(
+                    event_group_id=event_group_id,
+                    investment_transaction_id=investment_transaction_id,
+                    source_event_key=leg["source_event_key"],
+                    source_type=leg["source_type"],
+                    source_origin=leg["source_origin"],
+                    native_reference=leg["native_reference"],
+                    observation_version=leg["observation_version"],
+                    semantic_leg_role=leg["leg_role"],
+                    binding=self._binding(leg),
+                    decision_id=decision_id,
+                ),
+                now=datetime.now(UTC),
+            ),
+            "membership_id": uuid4().hex[:12],
+        }
+
+    def invalidate_accepted(
+        self, *, actor: str, parent_audit_id: str | None = None
+    ) -> None:
+        """Stale drifted Matches while preserving reviewed projection and reservations."""
+        from moneybin.repositories.investment_match_decisions_repo import (
+            InvestmentMatchDecisionsRepo,
+        )
+
+        current = {
+            _identity(row): row
+            for row in read_rows(
+                self._db, f"SELECT * FROM {INVESTMENT_EVENT_LEGS.full_name}"
+            )
+        }  # TableRef constant
+        decisions = InvestmentMatchDecisionsRepo(self._db)
+        for member in self._members.active_members():
+            if member["decision_id"] is None:
+                continue
+            row = current.get(_identity(member))
+            changed = row is None or any(
+                member[key] != row.get(field)
+                for key, field in (
+                    ("source_event_key", "source_event_key"),
+                    ("observation_version", "observation_version"),
+                    ("semantic_leg_role", "leg_role"),
+                    ("bound_account_id", "account_id"),
+                    ("bound_security_id", "security_id"),
+                    ("bound_effective_currency", "currency_code"),
+                    ("account_generation", "account_identity_generation"),
+                    ("security_generation", "security_identity_generation"),
+                )
+            )
+            if row is not None and not changed:
+                changed = (
+                    self._binding(row).currency_generation
+                    != member["currency_generation"]
+                )
+            if changed:
+                decisions.mark_stale(
+                    member["decision_id"],
+                    actor=actor,
+                    in_outer_txn=True,
+                    parent_audit_id=parent_audit_id,
+                )
+
+    def locked_components(
+        self, decisions: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Derive complete reservations and topology only from durable membership."""
+        active = self._members.active_members()
+        resolutions = self._resolutions.active_resolutions()
+        selection_rows = read_rows(
+            self._db,
+            f"SELECT * FROM {LOT_SELECTIONS.full_name} ORDER BY investment_transaction_id, lot_id",
+        )  # TableRef constant
+        result: list[dict[str, Any]] = []
+        live = {
+            r["proposal_id"]: r
+            for r in decisions
+            if r["status"] == "accepted"
+            or (r["status"] == "stale" and r["accepted_at"] is not None)
+        }
+        if any(
+            m["decision_id"] is not None and m["decision_id"] not in live
+            for m in active
+        ):
+            raise UserError(
+                "Active investment membership decision linkage is incomplete.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        for decision_id, row in sorted(live.items()):
+            members = [m for m in active if m["decision_id"] == decision_id]
+            reserved = sorted(_identity(m) for m in members)
+            if (
+                not members
+                or set(reserved) != {_identity(leg) for leg in row["legs"]}
+                or {m["source_event_key"] for m in members} != set(row["members"])
+            ):
+                raise UserError(
+                    "Active investment membership topology is incomplete.",
+                    code=error_codes.RECOVERY_NO_PATH,
+                )
+            result.append({
+                "decision_id": decision_id,
+                "status": row["status"],
+                "members": sorted(row["members"]),
+                "reserved_rows": reserved,
+                "membership": sorted(members, key=lambda m: m["membership_id"]),
+                "field_resolutions": [
+                    r for r in resolutions if r["decision_id"] == decision_id
+                ],
+                "curation_impact": selection_rows,
+            })
+        return result
+
     def _opening_binding(self, row: dict[str, Any]) -> MembershipBinding | None:
         account = self._db.execute(
             f"SELECT currency_code FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",
@@ -222,6 +349,7 @@ class InvestmentMembershipService:
             raise
 
     def _reconcile(self, *, actor: str) -> MembershipReconciliationResult:
+        self.invalidate_accepted(actor=actor)
         rows = read_rows(
             self._db,
             f"""SELECT * FROM {INVESTMENT_EVENT_LEGS.full_name}
@@ -448,7 +576,7 @@ class InvestmentMembershipService:
                 mapping[original] = member["investment_transaction_id"]
         remap = preflight_membership_transition(self._db, current, projected, mapping)
         return MembershipTransition(
-            active, proposed, resolutions, current, projected, remap
+            active, proposed, resolutions, current, projected, remap, mapping
         )
 
     def publish_transition(
@@ -479,6 +607,37 @@ class InvestmentMembershipService:
                 in_outer_txn=True,
                 parent_audit_id=parent_audit_id,
             )
+        old_resolutions = self._resolutions.active_resolutions()
+        old_ids = {r["resolution_id"] for r in old_resolutions}
+        new_ids = {r["resolution_id"] for r in transition.resolutions}
+        for row in old_resolutions:
+            if row["resolution_id"] not in new_ids:
+                self._resolutions.retire(
+                    row["resolution_id"],
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                    in_outer_txn=True,
+                )
+        for row in transition.resolutions:
+            if row["resolution_id"] not in old_ids:
+                self._resolutions.record(
+                    FieldResolution(**{
+                        key: row[key]
+                        for key in (
+                            "decision_id",
+                            "investment_transaction_id",
+                            "field_name",
+                            "source_type",
+                            "source_origin",
+                            "native_reference",
+                            "observation_version",
+                        )
+                    }),
+                    resolution_id=row["resolution_id"],
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                    in_outer_txn=True,
+                )
         for disposal, selections in transition.curation.replacements.items():
             LotSelectionsRepo(self._db).set_for_disposal(
                 investment_transaction_id=disposal,
@@ -499,6 +658,7 @@ class MembershipTransition:
     current_ledger: list[dict[str, Any]]
     proposed_ledger: list[dict[str, Any]]
     curation: CurationRemap
+    semantic_id_map: dict[str, str]
 
 
 def _from_row(row: dict[str, Any]) -> EventMember:

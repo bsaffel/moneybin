@@ -1,8 +1,8 @@
-"""Human decisions retain exact evidence and never change the investment ledger."""
+"""Human decisions retain exact evidence and atomically enforce their lifecycle."""
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -87,16 +87,36 @@ def test_rejected_relationship_survives_new_alternative(
     assert all(row["members"] != original_members for row in service.pending())
 
 
-@pytest.mark.parametrize("drift", ["alternative", "currency", "revision"])
+@pytest.mark.parametrize("decision", ["accept", "reject"])
+@pytest.mark.parametrize("drift", ["alternative", "currency", "revision", "identity"])
 def test_decision_rechecks_live_facts_without_needing_another_planner_run(
     comparison_db: Database,
     drift: str,
+    decision: Literal["accept", "reject"],
 ) -> None:
     service, decision_id = planned_investment(comparison_db)
+    if decision == "accept":
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        InvestmentMembershipService(comparison_db).reconcile(actor="test")
     if drift == "alternative":
         seed_plaid_event(comparison_db, "alternative")
     elif drift == "currency":
         comparison_db.execute("UPDATE core.dim_accounts SET currency_code = 'CAD'")
+    elif drift == "identity":
+        from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+        comparison_db.execute(
+            "INSERT INTO core.dim_accounts VALUES ('other_account', 'USD')"
+        )
+        AccountLinksRepo(comparison_db).repoint(
+            link_id="account_link",
+            new_account_id="other_account",
+            decided_by="user",
+            actor="test",
+        )
     else:
         # A second delivery appends a revision; never alter captured Raw evidence.
         revised = SyncInvestmentTransaction(
@@ -121,8 +141,10 @@ def test_decision_rechecks_live_facts_without_needing_another_planner_run(
         )
     with operation() as op:
         with pytest.raises(UserError, match="[Ss]tale"):
-            service.decide(decision_id, decision="reject", actor="test")
-    assert not any(row["status"] == "rejected" for row in service.history())
+            service.decide(decision_id, decision=decision, actor="test")
+    assert not any(
+        row["status"] in {"accepted", "rejected"} for row in service.history()
+    )
     assert AuditService(comparison_db).events_for_operation(op) == []
 
 
@@ -135,11 +157,13 @@ def test_stale_proposal_cannot_be_rejected(comparison_db: Database) -> None:
     assert all(row["status"] == "stale" for row in service.history())
 
 
-def test_acceptance_is_unavailable_and_writes_nothing(comparison_db: Database) -> None:
+def test_acceptance_without_registered_membership_writes_nothing(
+    comparison_db: Database,
+) -> None:
     service, decision_id = planned_investment(comparison_db)
     before = service.pending()
     with operation() as op:
-        with pytest.raises(UserError, match="unavailable"):
+        with pytest.raises(UserError, match="membership"):
             service.decide(decision_id, decision="accept", actor="test")
     assert service.pending() == before
     assert AuditService(comparison_db).events_for_operation(op) == []

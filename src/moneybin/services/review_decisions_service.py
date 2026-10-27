@@ -34,9 +34,6 @@ from moneybin.protocol.write_contracts import (
 from moneybin.repositories.categorization_decisions_repo import (
     CategorizationDecisionsRepo,
 )
-from moneybin.repositories.investment_match_decisions_repo import (
-    InvestmentMatchDecisionsRepo,
-)
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services._text import build_match_inputs
 from moneybin.services.account_links_service import (
@@ -446,8 +443,15 @@ class ReviewDecisionsService:
         return OrdinaryDecisionPlanItem(
             request=request,
             changed=True,
-            status="rejected",
-            before_state=_json_safe(asdict(proposal)),
+            status="accepted" if request.decision == "accept" else "rejected",
+            before_state=_json_safe({
+                **asdict(proposal),
+                "membership_dependencies": InvestmentMatchingService(
+                    self._db
+                ).decision_dependencies()
+                if request.decision == "accept"
+                else None,
+            }),
         )
 
     def _cash_effect_dependencies(self) -> JsonValue:
@@ -570,6 +574,23 @@ class ReviewDecisionsService:
             isinstance(item.request, InvestmentMatchDecisionRequest)
             for item in prepared
         ):
+            investment_service = InvestmentMatchingService(self._db)
+            investment_service.preflight_batch([
+                (
+                    item.request.decision_id,
+                    item.request.decision,
+                    investment_service.prepare_decision(
+                        item.request.decision_id,
+                        decision=item.request.decision,
+                        field_choices=[
+                            choice.model_dump() for choice in item.request.field_choices
+                        ],
+                    ),
+                    [choice.model_dump() for choice in item.request.field_choices],
+                )
+                for item in prepared
+                if isinstance(item.request, InvestmentMatchDecisionRequest)
+            ])
             for index, item in enumerate(prepared):
                 if (
                     isinstance(item.request, MatchDecisionRequest)
@@ -597,6 +618,18 @@ class ReviewDecisionsService:
             live = self.plan_ordinary(decisions)
             if verify is not None:
                 verify(live)
+            investment_service = InvestmentMatchingService(self._db)
+            prepared_investments = {
+                item.request.decision_id: investment_service.prepare_decision(
+                    item.request.decision_id,
+                    decision=item.request.decision,
+                    field_choices=[
+                        choice.model_dump() for choice in item.request.field_choices
+                    ],
+                )
+                for item in live
+                if isinstance(item.request, InvestmentMatchDecisionRequest)
+            }
             decision_repo = CategorizationDecisionsRepo(self._db)
             for item in live:
                 if isinstance(item.request, CategorizationDecisionRequest):
@@ -607,7 +640,6 @@ class ReviewDecisionsService:
                         in_outer_txn=True,
                     )
             category_service = CategorizationService(self._db)
-            investment_repo = InvestmentMatchDecisionsRepo(self._db)
             investment_event = None
             match_repo = MatchDecisionsRepo(self._db)
             match_application = MatchDecisionApplication(
@@ -662,8 +694,16 @@ class ReviewDecisionsService:
                         in_outer_txn=True,
                     )
                 elif isinstance(request, InvestmentMatchDecisionRequest):
-                    investment_event = investment_repo.reject(
-                        request.decision_id, actor=self._actor, in_outer_txn=True
+                    investment_event = InvestmentMatchingService(
+                        self._db
+                    ).apply_in_active_txn(
+                        request.decision_id,
+                        decision=request.decision,
+                        actor=self._actor,
+                        field_choices=[
+                            choice.model_dump() for choice in request.field_choices
+                        ],
+                        prepared=prepared_investments[request.decision_id],
                     )
                 else:
                     match_application.set_status(
@@ -681,7 +721,12 @@ class ReviewDecisionsService:
             raise
         record_committed_investment_decisions(
             [
-                bool(cast(dict[str, JsonValue], item.before_state)["auto_eligible"])
+                (
+                    "accepted" if item.request.decision == "accept" else "rejected",
+                    bool(
+                        cast(dict[str, JsonValue], item.before_state)["auto_eligible"]
+                    ),
+                )
                 for item in live
                 if isinstance(item.request, InvestmentMatchDecisionRequest)
             ],
