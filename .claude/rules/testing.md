@@ -1,6 +1,6 @@
 ---
 description: "Testing standards: pytest patterns, fixtures, mocking strategy, database test helpers"
-paths: ["tests/**", "**/conftest.py", "src/moneybin/testing/**", "src/moneybin/schema.py", "src/moneybin/services/doctor_service.py", "src/moneybin/services/undo_dispatch.py", "src/moneybin/privacy/sql_query.py", "src/moneybin/privacy/sql_lineage.py", "src/moneybin/privacy/report_class_derivation.py", "src/moneybin/extractors/pdf/auto_derive.py"]
+paths: ["tests/**", "**/conftest.py", "src/moneybin/schema.py", "src/moneybin/services/doctor_service.py", "src/moneybin/services/undo_dispatch.py", "src/moneybin/privacy/sql_query.py", "src/moneybin/privacy/sql_lineage.py", "src/moneybin/privacy/report_class_derivation.py", "src/moneybin/extractors/pdf/auto_derive.py"]
 ---
 
 # Testing Standards
@@ -321,7 +321,7 @@ once worked. See `account-identity-resolution.md` (Decision 8).
     propose. If you cannot point at the proposal your binding answers, you are
     back to forcing the link.
 
-  Note also that imports no longer write to `app.account_link_decisions`; the
+  Note also that imports do not write to `app.account_link_decisions`; the
   resolver's candidates ride on the raised proposal. A test asserting on that
   queue is asserting about the backfill link service or sync, not about import.
 - **Derived `core.*` / pipeline-owned `app.*` state:** don't `INSERT` rows the

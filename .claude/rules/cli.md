@@ -1,6 +1,6 @@
 ---
 description: "CLI development: Typer patterns, error handling, command registration, non-interactive parity"
-paths: ["src/moneybin/cli/**", "src/moneybin/main.py"]
+paths: ["src/moneybin/cli/**"]
 ---
 
 # CLI Development
@@ -103,8 +103,7 @@ Every E2E test, every shell autocomplete, and every CLI invocation pays the full
 
   Say *why* in a plain comment, and never reach for `# noqa: PLC0415`: ruff's
   `select` omits `PL`, so the marker suppresses nothing and only looks
-  official — which is how 17 wrong justifications rode unchallenged until
-  MB-168 tested them. `RUF100` now rejects any inert `noqa` in `ruff check .`.
+  official. `RUF100` rejects any inert `noqa` in `ruff check .`.
 
 - **Verify with `importtime`.** When adding a new command module, confirm the cold-start path stays clean:
 
@@ -263,8 +262,7 @@ no `typer.echo` outside them carries an alignment format spec, and nothing calls
 `typer.secho`/`typer.style`.
 
 **No module is exempt** — every CLI module is held to these three guards
-unconditionally. The `_AWAITING_RENDER_ROWS` set that once carried eight
-unmigrated modules is gone; do not reintroduce a waiting list.
+unconditionally; do not add an exemption list.
 
 **A per-unit price is not an amount.** `fx list`'s rate, `investments prices
 list`'s close, and `investments holdings`' average cost are stored to ten
