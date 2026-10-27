@@ -14,8 +14,8 @@ from moneybin.errors import UserError
 from moneybin.investments.cost_basis import (
     LedgerEvent,
     compute_lot_id,
-    compute_lots_and_gains,
 )
+from moneybin.investments.event_curation import validate_complete_selections
 from moneybin.investments.identity import manual_identity_sql
 from moneybin.tables import (
     DIM_ACCOUNTS,
@@ -40,6 +40,7 @@ def _refuse() -> UserError:
 def _current_plaid_sql() -> str:
     """Read the canonical Plaid views directly, including bootstrap dependencies."""
     names = (
+        "stg_plaid__investment_revisions",
         "stg_plaid__investment_transactions",
         "stg_plaid__investment_holdings_snapshots",
         "int_plaid__opening_positions",
@@ -343,26 +344,6 @@ def validate_selection_quantities(
             row[1:]
         ):
             raise _refuse()
-    # Both disposal types consume in the same engine order; sell additionally
-    # returns the per-lot quantities needed to verify a transfer-out election.
-    replay = [
-        replace(event, type="sell") if event.type == "transfer_out" else event
-        for event in events
-    ]
-    _lots, gains = compute_lots_and_gains(
-        replay,
-        method_for=lambda _account, _security: "specific",
-        selections_for=lambda disposal: selections.get(disposal, []),
+    validate_complete_selections(
+        events, selections, {event.investment_transaction_id for event in events}
     )
-    consumed: dict[tuple[str, str], Decimal] = {}
-    for gain in gains:
-        key = (gain.disposal_txn_id, gain.lot_id)
-        consumed[key] = consumed.get(key, Decimal("0")) + gain.quantity
-    for event in events:
-        for lot, quantity in selections.get(event.investment_transaction_id, []):
-            if (
-                quantity <= 0
-                or consumed.get((event.investment_transaction_id, lot), Decimal("0"))
-                < quantity
-            ):
-                raise _refuse()

@@ -308,7 +308,9 @@ class InvestmentMatchingService:
             )
         return proposal
 
-    def invalidate_pending(self, *, actor: str, parent_audit_id: str) -> None:
+    def invalidate_pending(
+        self, *, actor: str, parent_audit_id: str | None = None
+    ) -> None:
         """Stale changed assignment space in the caller's decision transaction."""
         existing = self._repo.all_rows()
         desired = {

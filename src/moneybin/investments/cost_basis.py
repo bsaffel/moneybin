@@ -137,6 +137,15 @@ class LedgerEvent:
     updated_at: datetime | None = None
 
 
+def event_order_key(event: LedgerEvent) -> tuple[date, int, str]:
+    """Use the engine's economic same-day order at transition boundaries."""
+    return (
+        event.trade_date,
+        _SAME_DAY_TYPE_ORDER.get(event.type, _DEFAULT_SAME_DAY_ORDER),
+        event.investment_transaction_id,
+    )
+
+
 @dataclass(frozen=True)
 class PairedTransfer:
     """Two ledger legs that move lot slices between positions atomically."""
@@ -855,14 +864,7 @@ def _compute_independent_groups(
         method = method_for(account_id, security_id)
         # Average cost keeps a running pool for the group; other methods don't.
         pool = _Pool() if method == "average" else None
-        ordered = sorted(
-            group_events,
-            key=lambda e: (
-                e.trade_date,
-                _SAME_DAY_TYPE_ORDER.get(e.type, _DEFAULT_SAME_DAY_ORDER),
-                e.investment_transaction_id,
-            ),
-        )
+        ordered = sorted(group_events, key=event_order_key)
         lots: list[Lot] = []
         for event in ordered:
             if event.type in _ACQUISITION_TYPES:

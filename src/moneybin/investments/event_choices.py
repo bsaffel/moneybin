@@ -130,6 +130,14 @@ def _defaults(
     return defaults
 
 
+def default_selection(legs: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
+    """Apply projection precedence without treating standalone legs as Proposals."""
+    by_role: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for leg in legs:
+        by_role[leg["leg_role"]].append(leg)
+    return tuple(_defaults(by_role).values())
+
+
 def _validate_selected(rows: Sequence[Mapping[str, Any]]) -> None:
     """Reuse ledger signs while preserving normalized, non-manual subtypes."""
     invalid = UserError(

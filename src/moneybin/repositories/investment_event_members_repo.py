@@ -66,9 +66,10 @@ class InvestmentEventMembersRepo(BaseRepo):
         actor: str,
         in_outer_txn: bool = False,
         parent_audit_id: str | None = None,
+        membership_id: str | None = None,
     ) -> str:
         """Activate one exact member without replacing its historical evidence."""
-        membership_id = uuid4().hex[:12]
+        membership_id = membership_id or uuid4().hex[:12]
         values = asdict(member)
         binding = values.pop("binding")
         values.update({

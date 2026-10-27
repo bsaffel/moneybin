@@ -867,6 +867,8 @@ def install_prep_view(db: Database, name: str) -> None:
     from sqlglot import exp
     from sqlmesh.core.dialect import parse
 
+    if name == "stg_plaid__investment_transactions":
+        install_prep_view(db, "stg_plaid__investment_revisions")
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     path = SQLMESH_ROOT / "models" / "prep" / f"{name}.sql"
     query = next(

@@ -34,9 +34,13 @@ class InvestmentMatchFieldResolutionsRepo(BaseRepo):
 
     def active_resolutions(self) -> list[dict[str, Any]]:
         """Read active explicit choices in stable order."""
+        return [row for row in self.history() if row["retired_at"] is None]
+
+    def history(self) -> list[dict[str, Any]]:
+        """Retain choice provenance required by historical opening reconstructions."""
         cursor = self._db.execute(
             f"""SELECT * FROM {INVESTMENT_MATCH_FIELD_RESOLUTIONS.full_name}
-                WHERE retired_at IS NULL ORDER BY created_at, resolution_id"""  # noqa: S608  # fixed TableRef
+                ORDER BY created_at, resolution_id"""  # noqa: S608  # fixed TableRef
         )
         columns = [column[0] for column in cursor.description]
         return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]

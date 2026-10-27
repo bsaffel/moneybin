@@ -17,6 +17,7 @@ def install_comparison_models(db: Database) -> None:
     for name in [
         "int_manual__investment_identity",
         "stg_manual__investment_transactions",
+        "stg_plaid__investment_revisions",
         "stg_plaid__investment_transactions",
         "int_investment_events__observations",
         "int_investment_events__legs",

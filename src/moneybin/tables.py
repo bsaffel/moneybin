@@ -111,6 +111,7 @@ INVESTMENT_EVENT_MEMBERS = TableRef("app", "investment_event_members")
 INVESTMENT_MATCH_FIELD_RESOLUTIONS = TableRef(
     "app", "investment_match_field_resolutions"
 )
+PLAID_INVESTMENT_REVISIONS = TableRef("prep", "stg_plaid__investment_revisions")
 INVESTMENT_EVENT_HEADERS = TableRef("prep", "int_investment_events__headers")
 INVESTMENT_EVENT_LEGS = TableRef("prep", "int_investment_events__legs")
 INVESTMENT_EVENT_EVIDENCE = TableRef("prep", "int_investment_events__evidence")
