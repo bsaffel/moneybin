@@ -21,6 +21,7 @@ from moneybin.database import Database
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from tests.moneybin.db_helpers import create_core_dim_stub_views, create_core_tables
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 
 def _make_investments_db(tmp_path: Path) -> Database:
@@ -53,6 +54,7 @@ def _make_investments_db(tmp_path: Path) -> Database:
         VALUES ('acct_brokerage', 'investment', 'Fidelity', 'manual')
         """  # test fixture insert, static SQL
     )
+    seed_account_metadata(database, "acct_brokerage", currency="USD")
     return database
 
 
@@ -405,7 +407,7 @@ class TestSecuritiesAddAndBuy:
 
         rows = db.conn.execute(
             """
-            SELECT type FROM raw.manual_investment_transactions
+            SELECT type FROM core.fct_investment_transactions
              WHERE investment_transaction_id IN (?, ?)
             """,  # test read, static SQL
             ids,

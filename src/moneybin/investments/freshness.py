@@ -14,9 +14,12 @@ from moneybin.errors import RecoveryAction, UserError
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     FCT_INVESTMENT_TRANSACTIONS,
+    INVESTMENT_EVENT_LEGS,
     INVESTMENT_EVENT_MEMBERS,
     INVESTMENT_OPENING_PROJECTION,
     INVESTMENT_SOURCE_PROJECTION,
+    MODEL_FRESHNESS,
+    STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
 )
 
 
@@ -68,19 +71,26 @@ def projection_pending(
             return True
         executions = dict(
             db.execute(
-                "SELECT model_name, last_executed_at FROM meta.model_freshness"
+                f"SELECT model_name, last_executed_at FROM {MODEL_FRESHNESS.full_name}"  # noqa: S608  # fixed TableRef
             ).fetchall()
         )
         from moneybin.services.transform_service import TransformService
 
         landed = latest_raw_landing
         if landed is None:
-            landed = TransformService(db)._max_raw_landed_at()  # pyright: ignore[reportPrivateUsage]  # reuse canonical receipt/import landing scan
+            landed = TransformService(db)._max_raw_landed_at(  # pyright: ignore[reportPrivateUsage]  # reuse receipt/import scan for membership inputs
+                for_models={
+                    INVESTMENT_EVENT_LEGS.full_name,
+                    INVESTMENT_SOURCE_PROJECTION.full_name,
+                    INVESTMENT_OPENING_PROJECTION.full_name,
+                    STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name,
+                }
+            )
         timestamps = [value for value in (changed, landed) if value is not None]
         if cut_roots:
             epochs = dict(
                 db.execute(
-                    "SELECT model_name, last_changed_at FROM meta.model_freshness"
+                    f"SELECT model_name, last_changed_at FROM {MODEL_FRESHNESS.full_name}"  # noqa: S608  # fixed TableRef
                 ).fetchall()
             )
             for root in cut_roots:
@@ -139,6 +149,12 @@ def _read_relations(sql: str) -> set[str]:
 
 def require_current_query(db: Database, query: str) -> None:
     """Resolve query scopes and catalog views, including indirect and predicate reads."""
+    try:
+        relations = _read_relations(query)
+    except SqlglotError as exc:
+        raise _stale() from exc
+    if not relations:
+        return
     if not projection_pending(db):
         return
     dependent = sqlmesh_registry.relations_downstream_of(
@@ -152,7 +168,7 @@ def require_current_query(db: Database, query: str) -> None:
             ).fetchall()
             if sql
         }
-        pending = list(_read_relations(query))
+        pending = list(relations)
         seen: set[str] = set()
         while pending:
             name = pending.pop()

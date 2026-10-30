@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
-from moneybin.orchestration.refresh import RefreshResult, refresh
+from moneybin.orchestration.refresh import refresh
 from moneybin.repositories.investment_event_members_repo import (
     InvestmentEventMembersRepo,
 )
@@ -64,10 +64,6 @@ def _pipeline_spies(
         events.append("apply")
         return ApplyResult(applied=True, duration_seconds=0.1)
 
-    def legacy_apply(_self: object) -> ApplyResult:
-        events.append("legacy_apply")
-        return ApplyResult(applied=True, duration_seconds=0.1)
-
     monkeypatch.setattr(
         TransformService, "bootstrap_investment_inputs", bootstrap, raising=False
     )
@@ -80,7 +76,6 @@ def _pipeline_spies(
         membership,
     )
     monkeypatch.setattr(TransformService, "_apply_sqlmesh", apply, raising=False)
-    monkeypatch.setattr(TransformService, "apply", legacy_apply)
 
 
 def test_full_transform_order_is_bootstrap_plan_membership_apply(
@@ -104,7 +99,7 @@ def test_prerequisite_failure_prevents_golden_apply_and_acknowledgement(
     stage = result.stage("investment_match")
     assert stage is not None and stage.ran and stage.error
     assert result.stage("transform") is None
-    assert "apply" not in events and "legacy_apply" not in events
+    assert "apply" not in events
     assert InvestmentEventMembersRepo(db).history() == []
 
 
@@ -119,27 +114,33 @@ def test_planner_only_bootstraps_but_never_registers_or_applies(
     assert InvestmentEventMembersRepo(db).history() == []
 
 
-def test_public_apply_uses_prerequisite_aware_refresh(
+def test_public_apply_owns_prerequisites_without_calling_orchestration(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[dict[str, Any]] = []
-
-    def route(database: Database, **kwargs: Any) -> RefreshResult:
-        assert database is db
-        calls.append(kwargs)
-        return RefreshResult(applied=True, duration_seconds=0.2)
-
-    monkeypatch.setattr("moneybin.orchestration.refresh.refresh", route)
+    events: list[str] = []
+    _pipeline_spies(monkeypatch, events)
 
     def forbidden(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("public apply bypassed prerequisites")
+        raise AssertionError("service called orchestration")
 
-    monkeypatch.setattr(
-        "moneybin.services.transform_service.sqlmesh_context", forbidden
-    )
+    monkeypatch.setattr("moneybin.orchestration.refresh.refresh", forbidden)
     result = TransformService(db).apply()
     assert result.applied
-    assert calls == [{"steps": ["transform"], "actor": "system"}]
+    assert events == ["bootstrap", "planner", "membership", "apply"]
+
+
+@pytest.mark.parametrize("failure", ["bootstrap", "planner", "membership"])
+def test_public_apply_fails_closed_on_prerequisite_failure(
+    db: Database, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    events: list[str] = []
+    _pipeline_spies(monkeypatch, events, failure)
+
+    result = TransformService(db).apply()
+
+    assert not result.applied and result.error
+    assert "apply" not in events
+    assert InvestmentEventMembersRepo(db).history() == []
 
 
 @pytest.mark.parametrize("entry", ["cli", "mcp", "import"])

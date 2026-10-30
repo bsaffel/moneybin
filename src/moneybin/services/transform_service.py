@@ -21,6 +21,7 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
 from moneybin.services.matching_service import MatchingService
+from moneybin.services.refresh_outcome import StageOutcome
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG, MODEL_FRESHNESS
 
 logger = logging.getLogger(__name__)
@@ -275,6 +276,8 @@ class ApplyResult:
     applied: bool
     duration_seconds: float
     error: str | None = None
+    # Full applies carry their prerequisite separately from SQLMesh's own error.
+    investment_match: StageOutcome | None = None
 
 
 @dataclass(frozen=True)
@@ -375,18 +378,66 @@ class TransformService:
                     auto_apply=True,
                 )
 
-    def apply(self, *, actor: str = "system") -> ApplyResult:
-        """Use the prerequisite-aware full transform route."""
-        from moneybin.orchestration.refresh import refresh
-
-        result = refresh(self._db, steps=["transform"], actor=actor)
-        error = result.error or next(
-            (stage.error for stage in result.stages if stage.error), None
+    def prepare_investments(
+        self, *, actor: str = "system", reconcile_membership: bool = False
+    ) -> StageOutcome:
+        """Bootstrap comparison inputs and plan before any membership reconciliation."""
+        from moneybin.errors import classify_user_error, exception_origin
+        from moneybin.services.investment_matching_service import (
+            InvestmentMatchingService,
         )
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        try:
+            self.bootstrap_investment_inputs()
+            result = InvestmentMatchingService(self._db).run(actor=actor)
+            if reconcile_membership:
+                InvestmentMembershipService(self._db).reconcile(actor=actor)
+        except Exception as exc:  # prerequisite failure must prevent Golden apply
+            logger.error(
+                "Investment matching failed during refresh at "
+                f"{exception_origin(exc.__cause__ or exc)}"
+            )
+            classified = classify_user_error(exc)
+            return StageOutcome(
+                step="investment_match",
+                ran=True,
+                error=classified.message
+                if classified is not None
+                else "Investment matching failed — the cause is in the local log",
+                error_code=None if classified is None else classified.code,
+            )
+        return StageOutcome(
+            step="investment_match",
+            ran=True,
+            counts={
+                "pending_unique": result.pending_unique,
+                "pending_competing": result.pending_competing,
+                "stale": result.stale,
+                "suppressed": result.suppressed,
+            },
+        )
+
+    def apply(self, *, actor: str = "system") -> ApplyResult:
+        """Reconcile exact investment membership before rebuilding Golden models."""
+        investment_match = self.prepare_investments(
+            actor=actor, reconcile_membership=True
+        )
+        if investment_match.error is not None:
+            return ApplyResult(
+                applied=False,
+                duration_seconds=0.0,
+                error=investment_match.error,
+                investment_match=investment_match,
+            )
+        result = self._apply_sqlmesh()
         return ApplyResult(
             applied=result.applied,
-            duration_seconds=result.duration_seconds or 0.0,
-            error=error,
+            duration_seconds=result.duration_seconds,
+            error=result.error,
+            investment_match=investment_match,
         )
 
     def _apply_sqlmesh(self) -> ApplyResult:
@@ -618,9 +669,7 @@ class TransformService:
         from moneybin.investments.freshness import projection_pending
 
         return TransformFreshness(
-            pending=bool(missing_models)
-            or raw_ahead
-            or projection_pending(self._db, latest_raw_landing=landed_at),
+            pending=bool(missing_models) or raw_ahead or projection_pending(self._db),
             last_apply_at=self._max_dim_accounts_updated_at(),
             latest_import_at=self._max_completed_import_at(),
             missing_models=missing_models,
@@ -786,16 +835,33 @@ class TransformService:
             return None
         return row[0] if row and row[0] is not None else None
 
-    def _max_raw_landed_at(self) -> datetime | None:
-        """Latest landing time across every raw table the transforms read.
+    def _max_raw_landed_at(
+        self, *, for_models: Collection[str] | None = None
+    ) -> datetime | None:
+        """Latest Raw landing, across the project unless scoped to model ancestors.
 
         Excludes rows belonging to a reverted or failed import batch — a
         revert deletes its raw rows, but a failed ingest can leave rows
         behind, and those must not pin ``pending`` true forever. Tables that
         open no ``import_log`` batch (sync, price feeds) always pass.
         """
+        requested = set(_ALL_RAW_LANDING_COLUMNS)
+        if for_models is not None:
+            requested.intersection_update(
+                _RAW_RECEIPT_COVERAGE.get(name[4:], name[4:])
+                for model in for_models
+                for name in sqlmesh_registry.relations_upstream_of(model)
+                if name.startswith("raw.")
+            )
+        if not requested:
+            return None
+        scan = (
+            _RAW_LANDING_SCAN
+            if for_models is None
+            else _build_raw_landing_scan(requested)
+        )
         try:
-            row = self._db.execute(_RAW_LANDING_SCAN).fetchone()
+            row = self._db.execute(scan).fetchone()
         except duckdb.CatalogException:
             # One absent table must not blind the scan to the other sixteen.
             # Read-only opens never run `init_schemas`, so a raw table added
@@ -803,6 +869,7 @@ class TransformService:
             # and returning None there reports "nothing pending" for every
             # source, the exact fail-open this scan exists to close.
             present, has_import_log = self._present_raw_landing_tables()
+            present = present.intersection(requested)
             if not present:
                 return None
             row = self._db.execute(

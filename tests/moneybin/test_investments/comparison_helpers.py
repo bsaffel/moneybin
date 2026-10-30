@@ -10,6 +10,58 @@ from sqlmesh.core.dialect import parse
 from moneybin.connectors.sync_models import SyncInvestmentTransaction
 from moneybin.database import Database
 from moneybin.extractors.plaid.extractor import PlaidExtractor
+from moneybin.repositories.account_links_repo import AccountLinksRepo
+
+
+def seed_account_metadata(
+    db: Database,
+    account_id: str,
+    *,
+    native: str | None = None,
+    origin: str = "fixture_metadata",
+    currency: str | None = None,
+) -> None:
+    """Keep a synthetic canonical account available through real Core rebuilds."""
+    native = native or account_id
+    db.execute(
+        """INSERT INTO raw.plaid_accounts (
+            account_id, source_origin, account_type, account_subtype,
+            name, institution_name, source_file, extracted_at
+        ) VALUES (?, ?, 'investment', 'brokerage',
+                  'Synthetic Brokerage', 'Synthetic Broker', 'fixture',
+                  TIMESTAMPTZ '2026-01-01T00:00:00Z')
+        ON CONFLICT DO NOTHING""",
+        [native, origin],
+    )
+    if currency is not None:
+        db.execute(
+            """INSERT INTO raw.plaid_balances (
+                account_id, balance_date, iso_currency_code, source_origin,
+                source_file, extracted_at
+            ) VALUES (?, DATE '2026-01-01', ?, ?, 'fixture',
+                      TIMESTAMPTZ '2026-01-01T00:00:00Z')
+            ON CONFLICT DO NOTHING""",
+            [native, currency, origin],
+        )
+    if (
+        db.execute(
+            """SELECT 1 FROM app.account_links WHERE status = 'accepted'
+        AND ref_kind = 'source_native' AND source_type = 'plaid'
+        AND source_origin = ? AND ref_value = ?""",
+            [origin, native],
+        ).fetchone()
+        is None
+    ):
+        AccountLinksRepo(db).insert(
+            link_id=f"fixture_{origin}_{native}",
+            account_id=account_id,
+            ref_kind="source_native",
+            ref_value=native,
+            source_type="plaid",
+            source_origin=origin,
+            decided_by="user",
+            actor="test",
+        )
 
 
 def install_comparison_models(db: Database) -> None:

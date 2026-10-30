@@ -334,7 +334,7 @@ def _require_event_fields(item: dict[str, Any], index: int) -> tuple[str, str, s
     return str(account), str(type_), str(date_str)
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, timeout_seconds=180.0)
 def investments_record(
     events: list[dict[str, Any]],
 ) -> ResponseEnvelope[InvestmentRecordPayload]:

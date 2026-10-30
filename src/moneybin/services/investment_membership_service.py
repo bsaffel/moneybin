@@ -1552,6 +1552,22 @@ class InvestmentMembershipService:
                 f"SELECT 1 FROM {LOT_SELECTIONS.full_name} LIMIT 1"
             ).fetchone()
         ):  # fixed TableRef
+            if (
+                self._db.execute(
+                    """SELECT 1 FROM information_schema.tables
+                WHERE table_catalog = current_database()
+                  AND table_schema = ? AND table_name = ?""",
+                    [
+                        FCT_INVESTMENT_TRANSACTIONS.schema,
+                        FCT_INVESTMENT_TRANSACTIONS.name,
+                    ],
+                ).fetchone()
+                is None
+            ):
+                raise UserError(
+                    "Cannot preserve pre-cut lot selections without the prior ledger.",
+                    code=error_codes.RECOVERY_NO_PATH,
+                )
             current = read_rows(
                 self._db, f"SELECT * FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}"
             )  # fixed TableRef

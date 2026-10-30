@@ -730,7 +730,7 @@ def test_import_service_run_transforms_delegates_to_refresh(
         calls.append(kwargs)
         return RefreshResult(applied=True, duration_seconds=0.0)
 
-    monkeypatch.setattr("moneybin.orchestration.refresh.refresh", fake_refresh)
+    monkeypatch.setattr("moneybin.services.import_service._refresh", fake_refresh)
     assert ImportService(db).run_transforms() is True
     assert calls == [{"steps": ["transform"], "actor": "import"}]
 
@@ -1022,13 +1022,20 @@ def test_freshness_pending_after_a_manual_transaction_is_recorded(
 
 
 def test_freshness_pending_after_a_manual_investment_event_is_recorded(
-    db: Database, declare_only_models: Callable[..., None]
+    db: Database,
+    declare_only_models: Callable[..., None],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Same finding, the ``investments_record`` half of it."""
+    """A saved event remains pending when its one post-commit rebuild fails."""
+    from moneybin import error_codes
+    from moneybin.errors import UserError
     from moneybin.repositories.securities_repo import SecuritiesRepo
     from moneybin.services.investment_service import InvestmentService
+    from moneybin.services.transform_service import ApplyResult
+    from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
     manual_db = _manual_entry_db(db, declare_only_models)
+    seed_account_metadata(manual_db, "acct_brokerage", currency="USD")
     manual_db.execute(
         "INSERT INTO core.dim_accounts "
         "(account_id, account_type, institution_name, source_type) "
@@ -1042,24 +1049,35 @@ def test_freshness_pending_after_a_manual_investment_event_is_recorded(
         actor="cli",
     )
 
-    InvestmentService(manual_db).record_event(
-        account_ref="acct_brokerage",
-        security_ref="AAPL",
-        type_="buy",
-        subtype=None,
-        trade_date=date(2024, 1, 15),
-        quantity=Decimal("10"),
-        price=Decimal("150.00"),
-        amount=Decimal("-1500.00"),
-        fees=None,
-        acquired=None,
-        basis=None,
-        currency_code="USD",
-        description="buy aapl",
-        actor="cli",
-        created_by="cli",
+    apply = MagicMock(
+        return_value=ApplyResult(applied=False, duration_seconds=0, error="injected")
     )
+    monkeypatch.setattr(TransformService, "_apply_sqlmesh", apply)
+    with pytest.raises(UserError, match="saved") as failed:
+        InvestmentService(manual_db).record_event(
+            account_ref="acct_brokerage",
+            security_ref="AAPL",
+            type_="buy",
+            subtype=None,
+            trade_date=date(2024, 1, 15),
+            quantity=Decimal("10"),
+            price=Decimal("150.00"),
+            amount=Decimal("-1500.00"),
+            fees=None,
+            acquired=None,
+            basis=None,
+            currency_code="USD",
+            description="buy aapl",
+            actor="cli",
+            created_by="cli",
+        )
 
+    assert failed.value.code == error_codes.REFRESH_MODEL_FAILED
+    assert failed.value.hint is not None and "Do not record" in failed.value.hint
+    apply.assert_called_once()
+    assert manual_db.execute(
+        "SELECT COUNT(*) FROM raw.manual_investment_transactions"
+    ).fetchone() == (1,)
     assert TransformService(manual_db).freshness().pending is True
 
 

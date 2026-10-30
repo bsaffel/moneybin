@@ -2031,9 +2031,7 @@ class ImportService:
 
     def run_transforms(self) -> bool:
         """Run the prerequisite-aware transform route; fail loudly on any blocker."""
-        from moneybin.orchestration.refresh import refresh
-
-        result = refresh(self._db, steps=["transform"], actor="import")
+        result = _refresh(self._db, steps=["transform"], actor="import")
         if not result.applied:
             failure = result.error or next(
                 (

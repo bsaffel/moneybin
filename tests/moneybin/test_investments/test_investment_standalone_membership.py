@@ -139,6 +139,34 @@ def test_comparison_planning_alone_does_not_register_membership(
     assert InvestmentEventMembersRepo(comparison_db).history() == []
 
 
+def test_pre_cut_election_without_prior_ledger_refuses_atomically(
+    comparison_db: Database,
+) -> None:
+    from moneybin.errors import UserError
+    from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
+    from moneybin.services.investment_membership_service import (
+        InvestmentMembershipService,
+    )
+
+    db = comparison_db
+    seed_manual_event(db, "buy", quantity="2", amount="-20", price="10", day=1)
+    install_comparison_models(db)
+    repo = LotSelectionsRepo(db)
+    repo.set_for_disposal(
+        investment_transaction_id="sell",
+        selections=[("unknown_lot", Decimal(1))],
+        actor="test",
+    )
+    audit = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    with pytest.raises(UserError, match="prior ledger"):
+        InvestmentMembershipService(db).reconcile(actor="test")
+    assert repo.list_for_disposal("sell") == [("unknown_lot", Decimal(1))]
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.investment_event_members"
+    ).fetchone() == (0,)
+    assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == audit
+
+
 def test_populated_cutover_migrates_complete_source_id_elections(
     comparison_db: Database,
 ) -> None:

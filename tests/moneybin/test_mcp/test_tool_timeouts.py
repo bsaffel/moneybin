@@ -25,6 +25,13 @@ def _ok_envelope() -> ResponseEnvelope[Any]:
 
 
 @pytest.mark.unit
+def test_investment_recording_uses_the_bounded_rebuild_deadline() -> None:
+    from moneybin.mcp.tools.investments import investments_record
+
+    assert investments_record._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]  # decorator metadata
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("tool_name", ["accounts_set", "system_audit_undo"])
 async def test_account_processing_uses_the_bounded_long_workflow_deadline(
     monkeypatch: pytest.MonkeyPatch, tool_name: str

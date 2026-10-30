@@ -128,6 +128,23 @@ def test_retirement_still_requires_a_rebuild(published: Database) -> None:
     assert not projection_pending(published)
 
 
+def test_read_through_price_arrival_does_not_invalidate_membership(
+    published: Database,
+) -> None:
+    from moneybin.investments.freshness import projection_pending
+
+    acknowledge(published)
+    published.execute(
+        """INSERT INTO raw.security_prices (
+            provider_security_key, price_date, quote_currency, source_type,
+            source_origin, close, price_basis, extracted_at, loaded_at
+        ) VALUES ('native_security', DATE '2026-01-01', 'USD', 'plaid',
+                  'origin', 100, 'raw', ?, ?)""",
+        [datetime.now(UTC), datetime.now(UTC) + timedelta(seconds=2)],
+    )
+    assert not projection_pending(published)
+
+
 @pytest.mark.parametrize(
     "query",
     [

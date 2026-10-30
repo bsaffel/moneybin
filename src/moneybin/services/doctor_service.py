@@ -70,7 +70,9 @@ from moneybin.tables import (
     IMPORTS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
+    INVESTMENT_EVENT_MEMBERS,
     INVESTMENT_MATCH_DECISIONS,
+    INVESTMENT_MATCH_FIELD_RESOLUTIONS,
     LOT_SELECTIONS,
     MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
@@ -138,6 +140,7 @@ _EXCHANGE_RATE_OVERRIDES_PK_EXPR = (
 # code-supplied-literal contract per `.claude/rules/security.md` (allowlist
 # dynamic SQL), closing the door before a future caller passes a tainted value.
 _ALLOWED_UPDATED_EXPRS = frozenset({
+    "GREATEST(created_at, retired_at)",
     "GREATEST(decided_at, reversed_at)",
     "GREATEST(detected_at, resolved_at)",
 })
@@ -966,6 +969,18 @@ class DoctorService:
         job — the heuristic limitation the helper documents.
         """
         return [
+            self._run_app_audit_coverage(
+                INVESTMENT_EVENT_MEMBERS,
+                "membership_id",
+                updated_col="projection_changed_at",
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                INVESTMENT_MATCH_FIELD_RESOLUTIONS,
+                "resolution_id",
+                updated_expr="GREATEST(created_at, retired_at)",
+                full=full,
+            ),
             self._run_app_audit_coverage(
                 INVESTMENT_MATCH_DECISIONS, "proposal_id", full=full
             ),

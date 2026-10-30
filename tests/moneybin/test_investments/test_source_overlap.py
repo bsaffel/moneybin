@@ -141,16 +141,23 @@ def test_overlap_uses_current_receipt_after_account_correction(
 
 
 def test_investment_source_types_match_the_ledger_branches() -> None:
-    """Every ledger union branch is a source type; a new one must be choosable."""
-    model = (
-        Path(__file__).parents[3]
-        / "src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql"
-    ).read_text()
-    branches = set(re.findall(r"FROM\s+(prep\.\w+)", model))
-    assert branches == {
+    """Follow published membership back to every choosable source branch."""
+    models = Path(__file__).parents[3] / "src/moneybin/sqlmesh/models"
+
+    def branches(path: str) -> set[str]:
+        return set(re.findall(r"FROM\s+(prep\.\w+)", (models / path).read_text()))
+
+    assert branches("core/fct_investment_transactions.sql") == {
+        "prep.int_investment_events__source_projection",
+        "prep.int_investment_events__opening_projection",
+    }, "a new published ledger branch must preserve source-choice coverage"
+    assert branches("prep/int_investment_events__source_projection.sql") == {
+        "prep.int_investment_events__observations",
+        "prep.stg_plaid__investment_revisions",
+    }
+    assert branches("prep/int_investment_events__observations.sql") == {
         "prep.stg_manual__investment_transactions",
         "prep.stg_plaid__investment_transactions",
-        "prep.stg_plaid__opening_lots",
     }, "a new ledger branch means a new source type; update INVESTMENT_SOURCE_TYPES"
     assert frozenset({"manual", "plaid"}) == INVESTMENT_SOURCE_TYPES
 

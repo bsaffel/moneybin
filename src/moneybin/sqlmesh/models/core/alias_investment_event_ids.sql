@@ -9,14 +9,14 @@ MODEL (
    ratified target; changed structures and multiple successors never guess. */
 WITH requested AS (
   SELECT DISTINCT
-    event_group_id
-  FROM app.investment_event_members
+    m.event_group_id
+  FROM app.investment_event_members AS m
 ), active AS (
   SELECT DISTINCT
-    event_group_id
-  FROM app.investment_event_members
+    m.event_group_id
+  FROM app.investment_event_members AS m
   WHERE
-    retired_at IS NULL
+    m.retired_at IS NULL
 ), successors AS (
   SELECT
     old.event_group_id AS requested_id,

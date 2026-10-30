@@ -13,6 +13,7 @@ from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from tests.e2e.conftest import TEST_ENCRYPTION_KEY, make_workflow_env_fast, run_cli
 from tests.moneybin.test_investments.comparison_helpers import (
     install_comparison_models,
+    seed_account_metadata,
     seed_manual_event,
     seed_plaid_event,
 )
@@ -60,6 +61,9 @@ def test_plan_reject_undo_and_replan_across_processes(
                 source_origin="origin",
                 decided_by="user",
                 actor="test",
+            )
+            seed_account_metadata(
+                db, "account", native="native_account", origin="origin", currency="USD"
             )
             SecurityLinksRepo(db).insert(
                 security_id="security",
