@@ -21,10 +21,12 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.render import (
     Money,
+    build_next_step,
     build_rows,
     build_summary,
     column_view,
     compose_human_result,
+    render_human_text,
 )
 from moneybin.cli.utils import (
     generated_cli_command,
@@ -314,10 +316,16 @@ def investments_lots_select(
                                 "--method",
                                 "specific",
                             )
-                            error.hint = (
-                                "Elect specific identification first with "
-                                f"`{command}`, then retry the selection."
-                            )
+                            policy = get_terminal_policy()
+                            error.hint = render_human_text(
+                                build_next_step(
+                                    "Elect specific identification before "
+                                    "retrying the selection",
+                                    command,
+                                    terminal=policy,
+                                ),
+                                terminal=policy,
+                            ).rstrip("\n")
                             break
                 raise
 
