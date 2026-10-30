@@ -19,6 +19,7 @@ import logging
 import shlex
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,6 +28,11 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.cli.commands.fx import app
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+from moneybin.connectors.rates.errors import (
+    RateFeedAPIError,
+    RateFeedUnreachableError,
+)
+from moneybin.connectors.rates.protocol import RateObservation
 from moneybin.database import Database
 from moneybin.services.currency_service import (
     CurrencyService,
@@ -36,6 +42,34 @@ from moneybin.services.currency_service import (
 from moneybin.services.profile_settings_service import ProfileSettingsService
 
 runner = CliRunner()
+
+_RateFailure = Literal["network", "provider", "missing-date", "unsupported"]
+
+
+class _UnavailableRateAdapter:
+    """Make the real service classify one absent-rate cause without a network."""
+
+    source_type = "frankfurter"
+
+    def __init__(self, failure: _RateFailure) -> None:
+        self.failure = failure
+
+    def fetch(
+        self, from_currency: str, to_currency: str, on: date
+    ) -> RateObservation | None:
+        if self.failure == "network":
+            raise RateFeedUnreachableError("synthetic network unavailable")
+        if self.failure == "provider":
+            raise RateFeedAPIError("synthetic unusable provider response")
+        return None
+
+    def fetch_range(
+        self, from_currency: str, to_currency: str, start: date, end: date
+    ) -> tuple[RateObservation, ...]:
+        raise AssertionError("single-date resolution must not fetch a range")
+
+    def supported_currencies(self) -> frozenset[str]:
+        return frozenset({"USD"} if self.failure == "unsupported" else {"USD", "EUR"})
 
 
 def _resolved(
@@ -71,6 +105,77 @@ def _patched_resolve_raising(error: RateUnavailableError):
 
 class TestFxRate:
     """`fx rate` answers one pair and one date, with its provenance."""
+
+    @pytest.mark.parametrize(
+        ("failure", "advice"),
+        [
+            (None, "Record the rate yourself with the command below"),
+            ("network", "Retry when the network is back"),
+            ("provider", "Try again later"),
+            ("missing-date", "Try a nearby date"),
+            ("unsupported", "This pair will not become available by retrying"),
+        ],
+    )
+    def test_rate_recovery_preserves_cause_advice_and_only_one_profiled_command(
+        self, db: Database, failure: _RateFailure | None, advice: str
+    ) -> None:
+        from moneybin.cli.utils import stash_cli_flags
+
+        adapter = _UnavailableRateAdapter(failure) if failure else None
+        service = CurrencyService(db, adapter=adapter)
+        with (
+            patch("moneybin.cli.commands.fx.get_database") as opened,
+            patch(
+                "moneybin.services.currency_service.build_currency_service",
+                return_value=service,
+            ),
+        ):
+            opened.return_value.__enter__.return_value = db
+            stash_cli_flags("synthetic profile;$(literal)", False)
+            try:
+                result = runner.invoke(
+                    app, ["rate", "usd", "eur", "2026-03-13", "--quiet"]
+                )
+                json_result = runner.invoke(
+                    app,
+                    ["rate", "usd", "eur", "2026-03-13", "--output", "json"],
+                )
+            finally:
+                stash_cli_flags(None, False)
+
+        assert result.exit_code == 1, result.output
+        assert result.stdout == ""
+        assert advice in " ".join(result.stderr.split())
+        commands = [
+            line.strip()
+            for line in result.stderr.splitlines()
+            if line.strip().startswith("moneybin ")
+        ]
+        assert len(commands) == 1, result.stderr
+        assert shlex.split(commands[0]) == [
+            "moneybin",
+            "--profile",
+            "synthetic profile;$(literal)",
+            "fx",
+            "set",
+            "USD",
+            "EUR",
+            "2026-03-13",
+            "<rate>",
+        ]
+        assert "moneybin fx set" not in result.stderr
+        assert json_result.exit_code == 1, json_result.output
+        json_error = json.loads(json_result.stdout)["error"]
+        assert json_error["code"] == (
+            error_codes.FX_CURRENCY_UNSUPPORTED
+            if failure == "unsupported"
+            else error_codes.FX_RATE_UNAVAILABLE
+        )
+        assert "`moneybin fx set USD EUR 2026-03-13 '<rate>'`" in json_error["hint"]
+        assert "--profile" not in json_error["hint"]
+        assert "the command below" not in json_error["hint"]
+        if failure is not None:
+            assert advice in json_error["hint"]
 
     @pytest.mark.parametrize("date_args", [["2026-03-13"], []])
     def test_rate_recovery_preserves_explicit_profile_and_known_arguments_under_quiet(

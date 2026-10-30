@@ -504,28 +504,18 @@ def _missing_conversion(
     """Keep recovery commands separate from the durable conversion disclosure."""
     missing = service.explain_missing(base, target)
     actions: tuple[NextStep, ...] = ()
-    if missing.home_currency_unset and not missing.unsupported:
+    if missing.rate_targets_unset and not missing.unsupported:
         actions = (
             NextStep(
-                reason="choosing a home currency so refresh can gather rates; replace <CODE>",
-                cli=("profile", "set", "home_currency", "<CODE>"),
-                mcp="profile_set(home_currency='<CODE>')",
+                reason=f"configuring {missing.to_currency} as a display currency for this report",
+                cli=("profile", "set", "display_currency_targets", missing.to_currency),
+                mcp=f"profile_set(display_currency_targets=['{missing.to_currency}'])",
                 required=True,
             ),
             NextStep(
-                reason="recording a rate manually instead; replace <date> and <rate>",
-                cli=(
-                    "fx",
-                    "set",
-                    missing.from_currency,
-                    missing.to_currency,
-                    "<date>",
-                    "<rate>",
-                ),
-                mcp=(
-                    f"moneybin fx set {missing.from_currency} {missing.to_currency} "
-                    "'<date>' '<rate>'"
-                ),
+                reason="gathering the requested rates after configuring the display currency",
+                cli=("refresh",),
+                mcp="refresh_run()",
                 required=True,
             ),
         )
@@ -554,9 +544,10 @@ def _missing_reason(missing: MissingRate) -> str:
             f"'moneybin fx set {missing.from_currency} {missing.to_currency} "
             "<date> <rate>'"
         )
-    if missing.home_currency_unset:
+    if missing.rate_targets_unset:
         return (
-            f"{pair} is unfetched: refresh cannot gather rates without a home currency"
+            f"{pair} is unfetched: no home currency or display currency targets "
+            "are configured"
         )
     if not missing.gathered and not missing.targets:
         return (

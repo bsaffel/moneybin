@@ -156,7 +156,7 @@ class MissingRate:
     the pair is unfetched, and ``gathered`` says whether refresh plans it at all
     — when it does not, ``targets`` is the display-currency list that would, or
     empty when the profile already declares the most targets it may.
-    ``home_currency_unset`` means refresh cannot gather any pair yet.
+    ``rate_targets_unset`` means neither home nor display targets are configured.
     """
 
     from_currency: str
@@ -164,7 +164,7 @@ class MissingRate:
     unsupported: tuple[str, ...] = ()
     gathered: bool = True
     targets: tuple[str, ...] = ()
-    home_currency_unset: bool = False
+    rate_targets_unset: bool = False
 
 
 def apply_rate(amount: Decimal, rate: Decimal) -> Decimal:
@@ -722,12 +722,14 @@ class CurrencyService:
             return MissingRate(base, quote, unsupported=tuple(sorted(unsupported)))
         settings = ProfileSettingsRepo(self._db)
         home = settings.get_home_currency()
-        if home is None:
-            return MissingRate(base, quote, gathered=False, home_currency_unset=True)
         declared = settings.get_display_currency_targets()
         planned = {canonical_currency(code) for code in (*declared, home) if code}
         if quote in planned:
             return MissingRate(base, quote)
+        if home is None and not declared:
+            return MissingRate(
+                base, quote, gathered=False, targets=(quote,), rate_targets_unset=True
+            )
         if len(declared) >= DISPLAY_CURRENCY_TARGETS_MAX_COUNT:
             # Adding one more would be refused, so no target list is a fix.
             return MissingRate(base, quote, gathered=False)

@@ -702,8 +702,8 @@ def test_an_unfetched_pair_names_refresh_as_its_fix(saved_db: Database) -> None:
     assert "fx set" not in reason
 
 
-@pytest.mark.parametrize("targets", [[], ["USD"]])
-def test_missing_home_currency_does_not_offer_a_refresh_that_cannot_fetch(
+@pytest.mark.parametrize("targets", [[], ["USD"], ["GBP"]])
+def test_missing_home_currency_uses_configured_display_targets(
     saved_db: Database, targets: list[str]
 ) -> None:
     _record_provider_catalog(saved_db, "USD", "EUR")
@@ -720,18 +720,27 @@ def test_missing_home_currency_does_not_offer_a_refresh_that_cannot_fetch(
     reason = outcome.degraded_reason
 
     assert reason is not None
-    assert "home currency" in reason
-    assert "moneybin" not in reason
     assert "2026-03-05" not in reason
-    assert [action.cli for action in outcome.actions] == [
-        ("profile", "set", "home_currency", "<CODE>"),
-        ("fx", "set", "EUR", "USD", "<date>", "<rate>"),
-    ]
-    assert all(action.required for action in outcome.actions)
+    assert "cannot gather rates without a home currency" not in reason
+    if not targets:
+        assert "no home currency or display currency targets are configured" in reason
+        assert "moneybin" not in reason
+        assert [action.cli for action in outcome.actions] == [
+            ("profile", "set", "display_currency_targets", "USD"),
+            ("refresh",),
+        ]
+        assert all(action.required for action in outcome.actions)
+    elif "USD" in targets:
+        assert reason.endswith("run 'moneybin refresh' to gather them")
+        assert not outcome.actions
+    else:
+        assert "profile set display_currency_targets GBP,USD" in reason
+        assert "'moneybin refresh'" in reason
+        assert not outcome.actions
 
 
 @pytest.mark.parametrize("quiet", [False, True])
-def test_missing_home_recovery_survives_conversion_and_quiet_rendering(
+def test_missing_target_recovery_survives_conversion_and_quiet_rendering(
     saved_db: Database,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -787,25 +796,22 @@ def test_missing_home_recovery_survives_conversion_and_quiet_rendering(
         profile,
         "profile",
         "set",
-        "home_currency",
-        "<CODE>",
+        "display_currency_targets",
+        "USD",
     ] in commands
     assert [
         "moneybin",
         "--profile",
         profile,
-        "fx",
-        "set",
-        "EUR",
-        "USD",
-        "<date>",
-        "<rate>",
+        "refresh",
     ] in commands
     assert "! EUR->USD is unfetched" in output
     assert ("Optional exploration" in output) is not quiet
     notes = "\n".join(report_note_lines(result, quiet=quiet, symbols=policy.symbols))
-    assert "home_currency '<CODE>'" in notes
-    assert "fx set EUR USD '<date>' '<rate>'" in notes
+    assert "display_currency_targets USD" in notes
+    assert "refresh" in notes
+    assert "home_currency" not in notes
+    assert "fx set" not in notes
 
 
 def test_an_unrecorded_provider_list_never_claims_unsupported(
@@ -845,11 +851,15 @@ def test_an_undeclared_target_names_the_setting_refresh_reads(
     assert "'moneybin refresh'" in reason
 
 
-def test_a_full_target_list_is_not_offered_as_the_fix(saved_db: Database) -> None:
+@pytest.mark.parametrize("home_currency", [None, "GBP"])
+def test_a_full_target_list_is_not_offered_as_the_fix(
+    saved_db: Database, home_currency: str | None
+) -> None:
     """One more target than the limit allows would be refused, so name fx set."""
     _record_provider_catalog(saved_db, "USD", "EUR", "GBP")
     settings = ProfileSettingsRepo(saved_db)
-    settings.set_home_currency("GBP", actor="test")
+    if home_currency is not None:
+        settings.set_home_currency(home_currency, actor="test")
     full = (
         "AUD BRL CAD CHF CNY CZK DKK HKD HUF IDR ILS INR ISK JPY KRW MXN MYR NOK "
         "NZD PHP"

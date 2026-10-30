@@ -817,16 +817,20 @@ def test_missing_rate_hint_preserves_known_pair_and_date_with_unknown_rate(
     assert "moneybin fx set USD EUR 2026-03-16 '<rate>'" in hint
 
 
-@pytest.mark.parametrize("declared", [[], ["EUR"]])
-def test_missing_rate_without_home_currency_does_not_promise_refresh(
-    db: Database, declared: list[str]
+@pytest.mark.parametrize(
+    ("declared", "gathered", "targets"),
+    [([], False, ("EUR",)), (["EUR"], True, ()), (["GBP"], False, ("GBP", "EUR"))],
+)
+def test_missing_rate_without_home_currency_uses_declared_targets(
+    db: Database, declared: list[str], gathered: bool, targets: tuple[str, ...]
 ) -> None:
     ProfileSettingsRepo(db).set_display_currency_targets(declared, actor="cli")
 
     missing = CurrencyService(db, adapter=None).explain_missing("USD", "EUR")
 
-    assert missing.home_currency_unset
-    assert not missing.gathered
+    assert missing.gathered is gathered
+    assert missing.targets == targets
+    assert missing.rate_targets_unset is (not declared)
 
 
 def test_an_unsupported_currency_is_a_different_failure_from_a_missing_rate(

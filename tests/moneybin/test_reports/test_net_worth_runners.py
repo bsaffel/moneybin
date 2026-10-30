@@ -799,12 +799,18 @@ def test_source_metadata_survives_fx_fallback_drift_and_truncation(
     assert "EUR->GBP is unfetched" in result.degraded_reason
     if home_currency is None:
         assert (
-            "refresh cannot gather rates without a home currency"
+            "no home currency or display currency targets are configured"
             in result.degraded_reason
         )
         assert any(
             isinstance(action, NextStep)
-            and action.cli == ("profile", "set", "home_currency", "<CODE>")
+            and action.cli == ("profile", "set", "display_currency_targets", "GBP")
+            and action.required
+            for action in result.actions
+        )
+        assert any(
+            isinstance(action, NextStep)
+            and action.cli == ("refresh",)
             and action.required
             for action in result.actions
         )

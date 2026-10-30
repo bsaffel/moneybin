@@ -18,6 +18,7 @@ currency that spends them lands with the reports surface.
 from __future__ import annotations
 
 import logging
+import shlex
 
 import typer
 
@@ -123,18 +124,22 @@ def fx_rate(
                     error_codes.FX_CURRENCY_UNSUPPORTED,
                 ):
                     policy = get_terminal_policy()
+                    manual_args = (
+                        "fx",
+                        "set",
+                        canonical_currency(from_currency),
+                        canonical_currency(to_currency),
+                        requested.isoformat(),
+                        "<rate>",
+                    )
+                    service_command = shlex.join(("moneybin", *manual_args))
+                    reason = (error.hint or "Record the rate yourself").replace(
+                        f"`{service_command}`", "the command below"
+                    )
                     error.hint = render_human_text(
                         build_next_step(
-                            "Record a known rate for this pair and date; "
-                            "replace <rate> with that rate",
-                            generated_cli_command(
-                                "fx",
-                                "set",
-                                canonical_currency(from_currency),
-                                canonical_currency(to_currency),
-                                requested.isoformat(),
-                                "<rate>",
-                            ),
+                            reason,
+                            generated_cli_command(*manual_args),
                             terminal=policy,
                         ),
                         terminal=policy,
