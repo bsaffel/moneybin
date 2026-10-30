@@ -219,17 +219,21 @@ def cash_flow(
 
     actions: list[NextStep] = [
         NextStep(
-            reason="regrouping by category",
-            cli=("reports", "cash-flow", "--by", "category"),
-            mcp="reports(report_id='core:cash_flow', parameters={'by': 'category'})",
-            verb="Rerun",
-        ),
-        NextStep(
             reason="outflow-only MoM and YoY trends",
             cli=("reports", "spending-trend"),
             mcp="reports(report_id='core:spending_trend')",
         ),
     ]
+    if by != "category":
+        actions.insert(
+            0,
+            NextStep(
+                reason="regrouping by category",
+                cli=("reports", "cash-flow", "--by", "category"),
+                mcp="reports(report_id='core:cash_flow', parameters={'by': 'category'})",
+                verb="Rerun",
+            ),
+        )
     if hint:
         actions.insert(0, hint)
     start = date.fromisoformat(from_month + "-01") if from_month else None

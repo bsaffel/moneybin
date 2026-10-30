@@ -3,7 +3,7 @@
 
 One ledger of investment events is the source of truth. Tax lots, positions, and realized gain or loss are derived from it on every refresh, under one of four cost-basis methods, and nothing derived is ever stored as authoritative. Prices come from the broker's own closes, from Tiingo and CoinGecko, from the trades you recorded, or from a mark you set by hand, and a position with no usable price says so rather than reporting zero.
 
-Every transcript below is real output from the family demo persona, trimmed only by whole lines:
+The table and receipt excerpts below come from the family demo persona, trimmed only by whole lines. The net-worth report's next-step lines were refreshed separately at 100 columns with the current renderer and report actions without reopening the profile; retained tables and receipts are from the original capture:
 
 ```bash
 uv run moneybin demo --persona family
@@ -279,9 +279,11 @@ $ uv run moneybin reports net-worth-accounts
 
 › The single home-currency total: moneybin reports net-worth
 › The currency-level breakdown: moneybin reports net-worth-currencies
+› Converted totals; this profile has no usable home currency:
+moneybin profile set home_currency '<CODE>'
 ```
 
-The brokerage row carries the asserted 17,125.00 on and after 2025-12-31; the other four rows are the demo's own accounts. Two lines are trimmed above: the report's third hint, which points to `moneybin profile set home_currency` because the demo profile has none and wraps onto a second line at 100 columns. The asserted figure is what the statement says the account is worth on that date, cash and positions together. MoneyBin does not derive it from the ledger, so `reports balance-drift` has nothing to reconcile it against: the ledger's cash legs are not transactions, and valuing the positions on 2025-12-31 needs a price history nothing keeps. It says so rather than reporting the shares as drift:
+The brokerage row carries the asserted 17,125.00 on and after 2025-12-31; the other four rows are the demo's own accounts. Replace `<CODE>` in the hint with the home currency you choose. The asserted figure is what the statement says the account is worth on that date, cash and positions together. MoneyBin does not derive it from the ledger, so `reports balance-drift` has nothing to reconcile it against: the ledger's cash legs are not transactions, and valuing the positions on 2025-12-31 needs a price history nothing keeps. It says so rather than reporting the shares as drift:
 
 ```console
 $ uv run moneybin reports balance-drift

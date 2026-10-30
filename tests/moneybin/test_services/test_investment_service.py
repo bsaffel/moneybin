@@ -1448,6 +1448,28 @@ class TestSelectLots:
             )
         ]
 
+    def test_method_refusal_quotes_the_literal_security_id(self, db: Database) -> None:
+        _seed_disposal_and_lots(db, cost_basis_method=None)
+        security_id = "synthetic security;$(literal)"
+        db.conn.execute(
+            "UPDATE app.securities SET security_id = ? WHERE security_id = 'sec_1'",
+            [security_id],
+        )
+        db.conn.execute(
+            "UPDATE core.fct_investment_transactions SET security_id = ? "
+            "WHERE security_id = 'sec_1'",
+            [security_id],
+        )
+        with pytest.raises(UserError) as caught:
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+
+        assert caught.value.code == error_codes.INVESTMENT_METHOD_NOT_SPECIFIC
+        assert (
+            "moneybin investments securities set 'synthetic security;$(literal)' "
+            "--method specific"
+        ) in (caught.value.hint or "")
+        assert _selected_lots(db) == []
+
     def test_refuses_selection_when_the_security_row_is_gone(
         self, db: Database
     ) -> None:

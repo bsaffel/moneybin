@@ -44,6 +44,7 @@ Correctness contracts implemented here (see
 from __future__ import annotations
 
 import logging
+import shlex
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -1666,8 +1667,8 @@ class InvestmentService:
             "lot selections; only 'specific' identification consumes them.",
             code=error_codes.INVESTMENT_METHOD_NOT_SPECIFIC,
             hint=(
-                "Elect specific identification first — 'moneybin investments "
-                f"securities set {security_id} --method specific' — then "
+                "Elect specific identification first — `moneybin investments "
+                f"securities set {shlex.quote(security_id)} --method specific` — then "
                 "retry the selection."
             ),
             recovery_actions=[

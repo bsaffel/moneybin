@@ -1989,7 +1989,7 @@ class TestDbInfoCommand:
 
         assert default_result.exit_code == 0, default_result.output
         assert "20 of 25 shown, largest first" in default_result.output
-        assert "--limit 0 for all" in default_result.output
+        assert "moneybin db info --limit 0" in default_result.output
         assert "table_00" in default_result.output  # rows=25, the largest
         assert "table_24" not in default_result.output  # rows=1, dropped
 
@@ -2000,6 +2000,19 @@ class TestDbInfoCommand:
         assert json_result.exit_code == 0, json_result.output
         payload = json.loads(json_result.output)
         assert len(payload["tables"]) == 25
+
+        from moneybin.cli.utils import stash_cli_flags
+
+        stash_cli_flags("synthetic profile;$literal", False)
+        try:
+            profiled_result = runner.invoke(app, ["info", "--no-pager"])
+        finally:
+            stash_cli_flags(None, False)
+        assert profiled_result.exit_code == 0, profiled_result.output
+        assert (
+            "moneybin --profile 'synthetic profile;$literal' db info --limit 0"
+            in profiled_result.output
+        )
 
     def test_info_rejects_a_negative_limit_as_a_usage_error(
         self, runner: CliRunner

@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     currency_label,
@@ -25,8 +26,13 @@ from moneybin.cli.render import (
     column_view,
     compose_human_result,
 )
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.investments import (
     InvestmentLotSelectionEntry,
     InvestmentLotsPayload,
@@ -289,7 +295,31 @@ def investments_lots_select(
     ):
         selections = [] if clear else [_parse_lot_selection(entry) for entry in lot]
         with get_database(read_only=False) as db:
-            InvestmentService(db).select_lots(disposal_txn_id, selections, actor="cli")
+            try:
+                InvestmentService(db).select_lots(
+                    disposal_txn_id, selections, actor="cli"
+                )
+            except UserError as error:
+                if (
+                    output == OutputFormat.TEXT
+                    and error.code == error_codes.INVESTMENT_METHOD_NOT_SPECIFIC
+                ):
+                    for action in error.recovery_actions or []:
+                        if action.tool == "investments_securities_set":
+                            command = generated_cli_command(
+                                "investments",
+                                "securities",
+                                "set",
+                                action.arguments["security_id"],
+                                "--method",
+                                "specific",
+                            )
+                            error.hint = (
+                                "Elect specific identification first with "
+                                f"`{command}`, then retry the selection."
+                            )
+                            break
+                raise
 
     if output == OutputFormat.JSON:
         # No explicit sensitivity: selections[].quantity carries TXN_AMOUNT

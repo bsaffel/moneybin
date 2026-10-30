@@ -50,6 +50,7 @@ __all__ = [
     "color_enabled",
     "build_rows",
     "build_summary",
+    "build_next_step",
     "compose_human_result",
     "column_view",
     "count_wide_request",
@@ -939,6 +940,30 @@ def build_code(text: str) -> RenderableType:
     from rich.text import Text
 
     return Text(text, overflow="ignore")
+
+
+def build_next_step(
+    reason: str,
+    command: str,
+    *,
+    terminal: TerminalPolicy | None = None,
+    indent: str = "",
+) -> RenderableType:
+    """Wrap a hint's reason while preserving its command as one copyable line."""
+    from rich.console import Group
+    from rich.text import Text
+
+    from moneybin.cli.utils import get_terminal_policy, terminal_safe_text
+
+    if terminal is None:
+        terminal = get_terminal_policy()
+    reason = terminal_safe_text(reason).rstrip(" .:")
+    command = terminal_safe_text(command)
+    prefix = f"{indent}{terminal.symbols.action} {reason}:"
+    inline = Text(f"{prefix} {command}", overflow="ignore")
+    if inline.cell_len <= terminal.width:
+        return inline
+    return Group(Text(prefix), Text(f"{indent}{command}", overflow="ignore"))
 
 
 def compose_human_result(

@@ -35,7 +35,9 @@ from moneybin.cli.render import (
     UNCATEGORIZED_LABEL,
     Money,
     Placeholder,
+    build_next_step,
     build_rows,
+    compose_human_result,
     count_wide_request,
 )
 from moneybin.cli.utils import (
@@ -503,11 +505,22 @@ def render_report_result(
         )
         return
     policy = get_terminal_policy(no_pager=no_pager)
-    disclosures = report_note_lines(result, quiet=quiet, symbols=policy.symbols)
+    notes: list[object] = list(
+        report_note_lines(result, quiet=True, symbols=policy.symbols)
+    )
+    if not quiet:
+        for action in result.actions:
+            if isinstance(action, NextStep):
+                reason = action.reason[:1].upper() + action.reason[1:]
+                notes.append(
+                    build_next_step(
+                        reason, generated_cli_command(*action.cli), terminal=policy
+                    )
+                )
+            else:
+                notes.append(f"{policy.symbols.action} {action}")
+    parts: list[object] = []
     if result.records:
-        from rich.console import Group
-        from rich.text import Text
-
         human = build_rows(
             visible,
             [
@@ -526,19 +539,13 @@ def render_report_result(
             optional=optional,
             terminal=policy,
         )
-        if disclosures:
-            human = Group(human, Text("\n" + "\n".join(disclosures)))
+        parts.append(human)
+        if notes:
+            parts.append("")
+    parts.extend(notes)
+    if parts:
         emit_human_result(
-            human,
-            policy=policy,
-            finite_read=True,
-            no_pager=no_pager,
-        )
-    elif disclosures:
-        from rich.text import Text
-
-        emit_human_result(
-            Text("\n".join(disclosures)),
+            compose_human_result(parts),
             policy=policy,
             finite_read=True,
             no_pager=no_pager,

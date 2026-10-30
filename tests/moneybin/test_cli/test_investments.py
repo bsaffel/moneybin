@@ -2135,6 +2135,39 @@ class TestLotsSelect:
         assert count[0] == 0
 
     @pytest.mark.unit
+    def test_specific_method_recovery_quotes_literal_id_and_keeps_explicit_profile(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        from moneybin.cli.commands.investments.lots import app as lots_app
+        from moneybin.cli.utils import stash_cli_flags
+
+        _seed_single_lot_disposal(db, "fifo")
+        security_id = "synthetic security;$(literal)"
+        for table in (
+            "app.securities",
+            "core.fct_investment_transactions",
+            "core.fct_investment_lots",
+        ):
+            db.conn.execute(
+                f"UPDATE {table} SET security_id = ? WHERE security_id = 'sec_1'",  # noqa: S608  # fixed test table allowlist
+                [security_id],
+            )
+
+        stash_cli_flags("synthetic profile;$literal", False)
+        try:
+            result = runner.invoke(lots_app, ["select", "sell_1", "--lot", "lot_a:5"])
+        finally:
+            stash_cli_flags(None, False)
+
+        assert result.exit_code == 1, result.output
+        assert (
+            "moneybin --profile 'synthetic profile;$literal' investments securities "
+            "set 'synthetic security;$(literal)' --method specific"
+        ) in result.stderr
+        count = db.conn.execute("SELECT COUNT(*) FROM app.lot_selections").fetchone()
+        assert count is not None and count[0] == 0
+
+    @pytest.mark.unit
     def test_select_and_clear_mutually_exclusive_exits_2(
         self, runner: CliRunner, db: Database
     ) -> None:

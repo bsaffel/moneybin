@@ -30,6 +30,7 @@ from moneybin.connectors.rates.errors import (
 from moneybin.connectors.rates.protocol import RateAdapter, RateObservation
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services import currency_service
 from moneybin.services.currency_service import CurrencyService, RateUnavailableError
 from moneybin.tables import (
@@ -775,6 +776,57 @@ def test_a_missing_rate_while_offline_raises_rather_than_guessing(
 
     assert caught.value.code == error_codes.FX_RATE_UNAVAILABLE
     assert "1.0" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    [
+        None,
+        _OfflineAdapter(),
+        _BrokenAdapter(),
+        _StubAdapter(None),
+        _StubAdapter(None, supported=frozenset({"USD"})),
+        _StubAdapter(RateObservation("USD", "EUR", _MON, Decimal("0"), "frankfurter")),
+        _StubAdapter(
+            RateObservation("USD", "EUR", _TUE, Decimal("0.9"), "frankfurter")
+        ),
+        _StubAdapter(
+            RateObservation(
+                "USD", "EUR", date(1999, 1, 4), Decimal("0.9"), "frankfurter"
+            )
+        ),
+    ],
+    ids=[
+        "no-provider",
+        "offline",
+        "broken",
+        "missing-date",
+        "unsupported",
+        "invalid-rate",
+        "future-date",
+        "stale-date",
+    ],
+)
+def test_missing_rate_hint_preserves_known_pair_and_date_with_unknown_rate(
+    db: Database, adapter: RateAdapter | None
+) -> None:
+    with pytest.raises(RateUnavailableError) as caught:
+        CurrencyService(db, adapter=adapter).resolve_rate("USD", "EUR", _MON)
+
+    hint = caught.value.hint or ""
+    assert "moneybin fx set USD EUR 2026-03-16 '<rate>'" in hint
+
+
+@pytest.mark.parametrize("declared", [[], ["EUR"]])
+def test_missing_rate_without_home_currency_does_not_promise_refresh(
+    db: Database, declared: list[str]
+) -> None:
+    ProfileSettingsRepo(db).set_display_currency_targets(declared, actor="cli")
+
+    missing = CurrencyService(db, adapter=None).explain_missing("USD", "EUR")
+
+    assert missing.home_currency_unset
+    assert not missing.gathered
 
 
 def test_an_unsupported_currency_is_a_different_failure_from_a_missing_rate(

@@ -5,6 +5,8 @@ MoneyBin encrypts every profile database at rest by default. This guide covers t
 
 If you only read one other doc on this topic, read the [Threat Model](threat-model.md). It is the honest one-pager about what encryption protects and what it doesn't.
 
+The `db info` table-cap summary and next-step line below use the current renderer; the next-step line was captured separately without reopening the profile. The retained table and receipt excerpts are from the original capture.
+
 ## At-rest encryption
 
 - **Algorithm.** AES-256-GCM, provided natively by DuckDB. When MoneyBin opens the database it issues an `ATTACH '<path>' AS moneybin (TYPE DUCKDB, ENCRYPTION_KEY '...')` — there is no separate cipher layer.
@@ -57,7 +59,7 @@ File size:      14.3 MB
 Encryption:     AES-256-GCM (always on)
 Key mode:       auto
 Lock state:     unlocked
-Tables:         20 of 81 shown, largest first — --limit 0 for all
+Tables:         20 of 81 shown, largest first
 DuckDB version: v1.5.5
 ┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓
 ┃ schema         ┃ table                                      ┃  rows ┃
@@ -83,6 +85,7 @@ DuckDB version: v1.5.5
 │ app            │ versions                                   │     2 │
 │ raw            │ ofx_accounts                               │     2 │
 └────────────────┴────────────────────────────────────────────┴───────┘
+› Show all tables: moneybin db info --limit 0
 ```
 
 Three lines are cut: the `Database:` label and the two lines its path wrapped onto (`<base>/profiles/demo/moneybin.duckdb`). No table rows are cut. `db info` lists the 20 largest tables and discloses the cap on the `Tables:` line; `--limit 0` prints all 81, `--limit N` prints the N largest.

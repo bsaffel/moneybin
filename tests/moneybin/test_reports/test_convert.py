@@ -701,6 +701,21 @@ def test_an_unfetched_pair_names_refresh_as_its_fix(saved_db: Database) -> None:
     assert "fx set" not in reason
 
 
+@pytest.mark.parametrize("targets", [[], ["USD"]])
+def test_missing_home_currency_does_not_offer_a_refresh_that_cannot_fetch(
+    saved_db: Database, targets: list[str]
+) -> None:
+    _record_provider_catalog(saved_db, "USD", "EUR")
+    ProfileSettingsRepo(saved_db).set_display_currency_targets(targets, actor="test")
+
+    reason = _missing_eur_reason(saved_db)
+
+    assert "home currency" in reason
+    assert "`moneybin profile set home_currency '<CODE>'`" in reason
+    assert "`moneybin fx set EUR USD '<date>' '<rate>'`" in reason
+    assert "run 'moneybin refresh'" not in reason
+
+
 def test_an_unrecorded_provider_list_never_claims_unsupported(
     saved_db: Database,
 ) -> None:
