@@ -144,7 +144,7 @@ def review_impl(
             raise typer.BadParameter(
                 "Investment proposals require separate scripted review: use "
                 "'moneybin review --type investment-matches --reject <proposal-id>'. "
-                "Investment acceptance remains unavailable."
+                "Accept with --confirm <proposal-id> and any required --field-choice values."
             )
         if limit < 1:
             raise typer.BadParameter("--limit must be at least 1", param_hint="--limit")
@@ -160,7 +160,7 @@ def review_impl(
                 "Investment proposals require separate scripted review: use "
                 "'moneybin review --type investment-matches' to inspect the queue "
                 "and '--reject <proposal-id>' to reject a proposal. "
-                "Investment acceptance remains unavailable.",
+                "Accept with --confirm <proposal-id> and any required --field-choice values.",
                 err=True,
             )
         run_review(type_, limit, policy)
@@ -290,7 +290,9 @@ def _review_investment_decision(
             build_envelope(data=payload),
             output,
             render_fn=lambda _envelope: typer.echo(
-                "Rejected investment Proposal and unchanged supersets."
+                "Accepted investment Proposal into Golden membership."
+                if confirm_id
+                else "Rejected investment Proposal and unchanged supersets."
             ),
             cli_actor="review",
         )

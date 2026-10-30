@@ -230,6 +230,43 @@ class InvestmentMatchDecisionsRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def restore_lifecycle(
+        self,
+        proposal_id: str,
+        *,
+        status: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        undoes_operation_id: str | None = None,
+    ) -> AuditEvent:
+        """Publish a domain-validated reversal or restored ratified component."""
+        if status not in {"accepted", "stale", "reversed"}:
+            raise ValueError("Invalid restored investment lifecycle")
+        before = self._fetch_row(proposal_id)
+        if before is None or before["accepted_at"] is None:
+            raise UserError(
+                "Ratified investment topology is incomplete.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        self._db.execute(
+            f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
+                SET status = ?, actor = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE proposal_id = ?""",  # noqa: S608  # fixed TableRef, bound lifecycle
+            [status, actor, proposal_id],
+        )
+        return self._emit_audit(
+            action="investment_match.reverse"
+            if status == "reversed"
+            else "investment_match.restore",
+            target=(*self._audit_target, proposal_id),
+            before=self._serialize_for_audit(before),
+            after=self._serialize_for_audit(self._fetch_row(proposal_id)),
+            actor=actor,
+            parent_audit_id=parent_audit_id,
+            is_undo=undoes_operation_id is not None,
+            undoes_operation_id=undoes_operation_id,
+        )
+
     def undo_rejection(self, event: AuditEvent, *, actor: str) -> AuditEvent:
         """Remove a negative constraint inside the domain undo transaction."""
         before = self._fetch_row(str(event.target_id))

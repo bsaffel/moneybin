@@ -148,6 +148,20 @@ def plan_account_lot_selections(
     survivor: str,
 ) -> dict[str, list[tuple[str, Decimal]]]:
     """Map whole disposal selections or refuse before the first identity write."""
+    from moneybin.repositories.investment_event_members_repo import (
+        InvestmentEventMembersRepo,
+    )
+
+    if InvestmentEventMembersRepo(db).has_history():
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        return (
+            InvestmentMembershipService(db)
+            .plan_equivalence(kind="account", previous=provisional, proposed=survivor)
+            .replacements
+        )
     if not db.execute(
         f"SELECT 1 FROM {LOT_SELECTIONS.full_name} LIMIT 1"  # noqa: S608  # TableRef constant; existence only
     ).fetchone():

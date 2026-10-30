@@ -3,8 +3,8 @@
 This module provides commands for running SQLMesh transformations on the
 loaded DuckDB data. ``plan``/``apply``/``status``/``validate``/``audit``
 route through ``TransformService`` so the CLI and MCP layers share the same
-business logic and the same response envelope. ``restate`` keeps the direct
-``sqlmesh_context()`` path — it's operator-only and has no MCP equivalent.
+business logic and the same response envelope. Investment-dependent ``restate``
+runs membership prerequisites; other operator restates retain date-scoped SQLMesh planning.
 """
 
 from collections.abc import Sequence
@@ -448,14 +448,27 @@ def transform_restate(
                 finite_read=False,
             )
             return
-    with (
-        sqlmesh_command(f"Restating {model}", success=f"Restated {model}") as db,
-        sqlmesh_context(db) as ctx,
-    ):
-        ctx.plan(
-            restate_models=[model],
-            start=start,
-            end=end,
-            auto_apply=True,
-            no_prompts=True,
-        )
+    from moneybin.services.transform_service import (
+        TransformService,
+        requires_investment_reconciliation,
+    )
+
+    with sqlmesh_command(f"Restating {model}", success=f"Restated {model}") as db:
+        if requires_investment_reconciliation([model]):
+            typer.echo("Investment events, lots and gains rebuild together.", err=True)
+            result = TransformService(db).apply(actor="cli")
+            if not result.applied or result.error:
+                raise UserError(
+                    "Investment restatement could not finish.",
+                    code=error_codes.REFRESH_MODEL_FAILED,
+                    hint="Run moneybin refresh --step transform and retry dependent reads.",
+                )
+        else:
+            with sqlmesh_context(db) as ctx:
+                ctx.plan(
+                    restate_models=[model],
+                    start=start,
+                    end=end,
+                    auto_apply=True,
+                    no_prompts=True,
+                )

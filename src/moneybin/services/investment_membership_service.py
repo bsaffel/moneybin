@@ -2,16 +2,18 @@
 
 import json
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from moneybin import error_codes
-from moneybin.database import Database
+from moneybin.database import Database, has_column
 from moneybin.errors import UserError
 from moneybin.investments.event_curation import (
     CurationRemap,
+    Selection,
     preflight_membership_transition,
 )
 from moneybin.investments.event_fingerprints import fingerprint
@@ -34,6 +36,7 @@ from moneybin.repositories.investment_match_field_resolutions_repo import (
     InvestmentMatchFieldResolutionsRepo,
 )
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
+from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.tables import (
     ACCOUNT_LINKS,
     ACCOUNT_SETTINGS,
@@ -41,9 +44,14 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_INVESTMENT_TRANSACTIONS,
     INVESTMENT_EVENT_LEGS,
+    INVESTMENT_EVENT_MEMBERS,
+    INVESTMENT_MATCH_DECISIONS,
     LOT_SELECTIONS,
     SECURITIES,
 )
+
+if TYPE_CHECKING:
+    from moneybin.investments.source_choice import SourceChoicePreview
 
 
 @dataclass(frozen=True)
@@ -99,7 +107,11 @@ class InvestmentMembershipService:
             )
         )
 
-    def _visible_ledger(self, ledger: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _visible_ledger(
+        self,
+        ledger: list[dict[str, Any]],
+        overrides: dict[str, dict[str, Any] | None] | None = None,
+    ) -> list[dict[str, Any]]:
         """Apply the shipped source-choice gate to projection and curation alike."""
         settings = {
             r["account_id"]: r
@@ -108,6 +120,11 @@ class InvestmentMembershipService:
                 f"SELECT account_id, investment_source_type, investment_source_type_changed_at FROM {ACCOUNT_SETTINGS.full_name}",
             )
         }  # TableRef constant
+        for identity, before in (overrides or {}).items():
+            if before is None:
+                settings.pop(identity, None)
+            else:
+                settings[identity] = before
         result: list[dict[str, Any]] = []
         for row in ledger:
             setting = settings.get(row["account_id"], {})
@@ -115,6 +132,10 @@ class InvestmentMembershipService:
             if choice is not None and row["source_type"] != choice:
                 continue
             stamp = setting.get("investment_source_type_changed_at")
+            if isinstance(stamp, str):
+                from moneybin.temporal import parse_utc
+
+                stamp = parse_utc(stamp)
             result.append({
                 **row,
                 "updated_at": max(row["updated_at"], stamp)
@@ -124,7 +145,11 @@ class InvestmentMembershipService:
         return result
 
     def _project(
-        self, members: list[dict[str, Any]], resolutions: list[dict[str, Any]]
+        self,
+        members: list[dict[str, Any]],
+        resolutions: list[dict[str, Any]],
+        *,
+        source_choices: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         if not members:
             return []
@@ -158,6 +183,7 @@ class InvestmentMembershipService:
                 selected,
                 snapshots=[context["snapshot"]],
                 guards=context["split_revisions"],
+                source_choices=context.get("source_choices", {}),
             )
             row = next(
                 (
@@ -174,7 +200,138 @@ class InvestmentMembershipService:
                     code=error_codes.RECOVERY_NO_PATH,
                 )
             evidence[source_revision(member)] = {**row, "trade_date_basis": "explicit"}
-        return list(project_members(members, evidence, resolutions))
+        return list(
+            project_members(
+                members,
+                evidence,
+                resolutions,
+                source_choices=(
+                    self._source_choices() if source_choices is None else source_choices
+                ),
+            )
+        )
+
+    def preview_source_choice(
+        self, account_id: str, source: str | None
+    ) -> "SourceChoicePreview":
+        """Prove a source switch and describe its exact financial impact without writes."""
+        from moneybin.investments.source_choice import SourceChoicePreview
+
+        if source not in (None, "manual", "plaid"):
+            raise UserError(
+                "Invalid investment source type.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        from moneybin.investments.freshness import require_current_relations
+        from moneybin.services.restate import _has_prod_environment  # pyright: ignore[reportPrivateUsage]  # same established SQLMesh presence boundary as freshness
+
+        if _has_prod_environment(self._db):
+            require_current_relations(self._db, [FCT_INVESTMENT_TRANSACTIONS.full_name])
+        active = self._members.active_members() if self._members.has_history() else []
+        if not active:
+            return SourceChoicePreview(
+                account_id,
+                source,
+                {},
+                CurationRemap({}, {}),
+                fingerprint("investment_source_choice", [account_id, source]),
+            )
+        transition = self.build_membership_transition(
+            [row for row in active if row["member_kind"] == "source_event"],
+            proposed_settings={account_id: {"investment_source_type": source}},
+        )
+        fields = (
+            "account_id",
+            "security_id",
+            "source_type",
+            "source_origin",
+            "currency_code",
+            "type",
+            "subtype",
+            "trade_date",
+            "settlement_date",
+            "original_acquisition_date",
+            "quantity",
+            "price",
+            "amount",
+            "fees",
+        )
+        known = {row["investment_transaction_id"] for row in active}
+        provisional = {
+            row["investment_transaction_id"]: "new opening " + row["source_event_key"]
+            for row in transition.proposed
+            if row["investment_transaction_id"] not in known
+        }
+
+        def values(ledger: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+            return {
+                provisional.get(
+                    row["investment_transaction_id"], row["investment_transaction_id"]
+                ): {field: row.get(field) for field in fields}
+                for row in ledger
+                if row["account_id"] == account_id
+            }
+
+        before, after = (
+            values(transition.current_ledger),
+            values(transition.proposed_ledger),
+        )
+        changes: dict[str, dict[str, tuple[Any, Any]]] = {}
+        for identity in sorted(before.keys() | after.keys()):
+            old, new = before.get(identity, {}), after.get(identity, {})
+            changed = {
+                field: (old.get(field), new.get(field))
+                for field in fields
+                if old.get(field) != new.get(field)
+            }
+            if identity not in before or identity not in after:
+                changed["included"] = (identity in before, identity in after)
+            if changed:
+                changes[identity] = changed
+        return SourceChoicePreview(
+            account_id,
+            source,
+            changes,
+            transition.curation,
+            fingerprint(
+                "investment_source_choice",
+                [
+                    account_id,
+                    source,
+                    sorted(active, key=lambda row: row["membership_id"]),
+                    sorted(
+                        self._resolutions.active_resolutions(),
+                        key=lambda row: row["resolution_id"],
+                    ),
+                    read_rows(
+                        self._db,
+                        f"SELECT * FROM {ACCOUNT_SETTINGS.full_name} ORDER BY account_id",
+                    ),
+                    before,
+                    after,
+                    transition.curation.before,
+                ],
+            ),
+        )
+
+    def _source_choices(
+        self, overrides: dict[str, dict[str, Any] | None] | None = None
+    ) -> dict[str, str]:
+        choices = {
+            row["account_id"]: row["investment_source_type"]
+            for row in read_rows(
+                self._db,
+                f"SELECT account_id, investment_source_type FROM {ACCOUNT_SETTINGS.full_name}",
+            )
+            if row["investment_source_type"] is not None
+        }  # fixed TableRef
+        for identity, setting in (overrides or {}).items():
+            choice = (setting or {}).get("investment_source_type")
+            if choice is None:
+                choices.pop(identity, None)
+            else:
+                choices[identity] = choice
+        return choices
 
     def source_member(
         self,
@@ -182,7 +339,7 @@ class InvestmentMembershipService:
         *,
         event_group_id: str,
         investment_transaction_id: str,
-        decision_id: str,
+        decision_id: str | None,
     ) -> dict[str, Any]:
         """Bind a currently verified Proposal leg before any publication."""
         return {
@@ -204,6 +361,25 @@ class InvestmentMembershipService:
             "membership_id": uuid4().hex[:12],
         }
 
+    def _matches_current_binding(
+        self, member: dict[str, Any], row: dict[str, Any] | None
+    ) -> bool:
+        if row is None or any(
+            member[key] != row.get(field)
+            for key, field in (
+                ("source_event_key", "source_event_key"),
+                ("observation_version", "observation_version"),
+                ("semantic_leg_role", "leg_role"),
+                ("bound_account_id", "account_id"),
+                ("bound_security_id", "security_id"),
+                ("bound_effective_currency", "currency_code"),
+                ("account_generation", "account_identity_generation"),
+                ("security_generation", "security_identity_generation"),
+            )
+        ):
+            return False
+        return self._binding(row).currency_generation == member["currency_generation"]
+
     def invalidate_accepted(
         self, *, actor: str, parent_audit_id: str | None = None
     ) -> None:
@@ -223,24 +399,7 @@ class InvestmentMembershipService:
             if member["decision_id"] is None:
                 continue
             row = current.get(_identity(member))
-            changed = row is None or any(
-                member[key] != row.get(field)
-                for key, field in (
-                    ("source_event_key", "source_event_key"),
-                    ("observation_version", "observation_version"),
-                    ("semantic_leg_role", "leg_role"),
-                    ("bound_account_id", "account_id"),
-                    ("bound_security_id", "security_id"),
-                    ("bound_effective_currency", "currency_code"),
-                    ("account_generation", "account_identity_generation"),
-                    ("security_generation", "security_identity_generation"),
-                )
-            )
-            if row is not None and not changed:
-                changed = (
-                    self._binding(row).currency_generation
-                    != member["currency_generation"]
-                )
+            changed = not self._matches_current_binding(member, row)
             if changed:
                 decisions.mark_stale(
                     member["decision_id"],
@@ -299,7 +458,11 @@ class InvestmentMembershipService:
             })
         return result
 
-    def _opening_binding(self, row: dict[str, Any]) -> MembershipBinding | None:
+    def _opening_binding(
+        self,
+        row: dict[str, Any],
+        currency_overrides: dict[str, str | None] | None = None,
+    ) -> MembershipBinding | None:
         account = self._db.execute(
             f"SELECT currency_code FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",
             [row["account_id"]],
@@ -311,7 +474,20 @@ class InvestmentMembershipService:
             AND ref_value = ?""",  # TableRef and bound native identity
             [row["source_origin"], row["source_account_key"]],
         ).fetchall()[0]
-        currency = row["currency_code"] or (account[0] if account else None)
+        setting = self._db.execute(
+            f"SELECT currency_code FROM {ACCOUNT_SETTINGS.full_name} WHERE account_id = ?",  # fixed TableRef, bound identity
+            [row["account_id"]],
+        ).fetchone()
+        inherited = (
+            setting[0]
+            if setting and setting[0] is not None
+            else account[0]
+            if account
+            else None
+        )
+        if currency_overrides is not None and row["account_id"] in currency_overrides:
+            inherited = currency_overrides[row["account_id"]]
+        currency = row["currency_code"] or inherited
         security = self._db.execute(
             f"SELECT 1 FROM {SECURITIES.full_name} WHERE security_id = ?",  # TableRef and bound canonical identity
             [row["security_id"]],
@@ -378,7 +554,9 @@ class InvestmentMembershipService:
                 [
                     row["currency_code"],
                     str(stamp[0])
-                    if stamp and row["source_currency_code"] is None
+                    if stamp
+                    and stamp[0] is not None
+                    and row["source_currency_code"] is None
                     else None,
                 ],
             ),
@@ -395,7 +573,46 @@ class InvestmentMembershipService:
             self._db.rollback()
             raise
 
-    def _reconcile(self, *, actor: str) -> MembershipReconciliationResult:
+    def require_removable_sources(
+        self,
+        *,
+        source_type: str,
+        source_origin: str | None = None,
+        native_references: set[str] | None = None,
+    ) -> None:
+        """Refuse deletion of exact evidence still reserved by a reviewed Match."""
+        if not self._members.has_history():
+            return
+        if any(
+            row["decision_id"] is not None
+            and row["source_type"] == source_type
+            and (source_origin is None or row["source_origin"] == source_origin)
+            and (
+                native_references is None
+                or row["native_reference"] in native_references
+            )
+            for row in self._members.active_members()
+        ):
+            raise UserError(
+                "This source contains evidence used by an accepted investment Match.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                hint="Undo the affected Match acceptance before removing its source records.",
+            )
+
+    def removal_baseline(self) -> list[dict[str, Any]] | None:
+        """Hold the complete pre-delete ledger in memory for the shared proof."""
+        return self.project() if self._members.has_history() else None
+
+    def reconcile_after_removal(
+        self, baseline: list[dict[str, Any]] | None, *, actor: str
+    ) -> None:
+        """Retire removed standalone evidence inside the deletion owner's transaction."""
+        if baseline is not None:
+            self._reconcile(actor=actor, current_ledger_override=baseline)
+
+    def _reconcile(
+        self, *, actor: str, current_ledger_override: list[dict[str, Any]] | None = None
+    ) -> MembershipReconciliationResult:
         self.invalidate_accepted(actor=actor)
         rows = read_rows(
             self._db,
@@ -488,7 +705,9 @@ class InvestmentMembershipService:
             {**_member_row(m, now=now), "membership_id": uuid4().hex[:12]}
             for m in register
         ]
-        transition = self.build_membership_transition(proposed)
+        transition = self.build_membership_transition(
+            proposed, current_ledger_override=current_ledger_override
+        )
         old_openings = {
             r["native_reference"]: r
             for r in transition.current
@@ -515,12 +734,712 @@ class InvestmentMembershipService:
             registered=registered, advanced=advanced, retired=retired
         )
 
+    def plan_equivalence(
+        self, *, kind: Literal["account", "security"], previous: str, proposed: str
+    ) -> CurationRemap:
+        """Preview a typed identity merge through the same complete-ledger proof."""
+        mappings = {kind: {previous: proposed}}
+        sources = [
+            row
+            for row in self._members.active_members()
+            if row["member_kind"] == "source_event"
+        ]
+        revised: list[dict[str, Any]] = []
+        for row in sources:
+            binding = _from_row(row).binding
+            original = binding
+            binding = self._equivalent_binding(binding, mappings)
+            if row["decision_id"] is not None:
+                binding = replace(
+                    binding, effective_currency=original.effective_currency
+                )
+            revised.append(
+                {
+                    **_member_row(
+                        replace(_from_row(row), binding=binding), now=datetime.now(UTC)
+                    ),
+                    "membership_id": uuid4().hex[:12],
+                }
+                if binding != _from_row(row).binding
+                else row
+            )
+        return self.build_membership_transition(
+            revised, opening_equivalences=mappings
+        ).curation
+
+    def _equivalent_binding(
+        self, binding: MembershipBinding, mappings: dict[str, dict[str, str]]
+    ) -> MembershipBinding:
+        account = mappings.get("account", {}).get(
+            binding.account_id, binding.account_id
+        )
+        security = (
+            mappings.get("security", {}).get(binding.security_id, binding.security_id)
+            if binding.security_id is not None
+            else None
+        )
+        currency = binding.effective_currency
+        if account != binding.account_id and binding.currency_source == "account":
+            row = self._db.execute(
+                f"SELECT currency_code FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",  # fixed TableRef, bound survivor
+                [account],
+            ).fetchone()
+            if row is None or row[0] is None:
+                raise UserError(
+                    "Surviving investment Account currency is unresolved.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            currency = row[0]
+        return replace(
+            binding,
+            account_id=account,
+            security_id=security,
+            effective_currency=currency,
+        )
+
+    def rebind_dependency(
+        self,
+        events: list[AuditEvent],
+        *,
+        equivalences: dict[str, dict[str, str]] | None = None,
+    ) -> None:
+        """Preflight current dependency successors inside the dependency owner's transaction."""
+        from moneybin.repositories.investment_match_decisions_repo import (
+            InvestmentMatchDecisionsRepo,
+        )
+        from moneybin.services.investment_matching_service import (
+            InvestmentMatchingService,
+        )
+
+        has_history = self._members.has_history()
+        decisions = InvestmentMatchDecisionsRepo(self._db)
+        pending = (
+            [row for row in decisions.all_rows() if row["status"] == "pending"]
+            if has_column(self._db, INVESTMENT_MATCH_DECISIONS, "proposal_id")
+            else []
+        )
+        if not has_history and not pending:
+            return
+        if not has_column(self._db, INVESTMENT_EVENT_MEMBERS, "membership_id"):
+            raise UserError(
+                "Investment planning state requires a database upgrade before dependency changes.",
+                code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
+            )
+        active = self._members.active_members()
+        observed = read_rows(
+            self._db, f"SELECT * FROM {INVESTMENT_EVENT_LEGS.full_name}"
+        )  # fixed TableRef
+        evidence = load_member_evidence(self._db)
+        settings_before: dict[str, dict[str, Any] | None] = {}
+        currency_changes: dict[str, str | None] = {}
+        account_ids: set[str] = set()
+        securities: set[str] = set()
+        native_accounts: set[tuple[str, str]] = set()
+        native_securities: set[str] = set()
+        manual_rows: set[str] = set()
+        for event in events:
+            before, after = event.before_value or {}, event.after_value or {}
+            if event.target_table == ACCOUNT_SETTINGS.name:
+                identity = str(event.target_id)
+                settings_before.setdefault(identity, event.before_value)
+                account_ids.add(identity)
+                if before.get("currency_code") != after.get("currency_code"):
+                    currency_changes[identity] = after.get("currency_code")
+            elif event.target_table == ACCOUNT_LINKS.name:
+                account_ids.update(
+                    str(row["account_id"])
+                    for row in (before, after)
+                    if row.get("account_id")
+                )
+                for row in (before, after):
+                    if (
+                        row.get("source_type") == "plaid"
+                        and row.get("ref_kind") == "source_native"
+                    ):
+                        native_accounts.add((row["source_origin"], row["ref_value"]))
+            else:
+                securities.update(
+                    str(row["security_id"])
+                    for row in (before, after)
+                    if row.get("security_id")
+                )
+                for row in (before, after):
+                    if (
+                        row.get("source_type") == "plaid"
+                        and row.get("ref_kind") == "plaid_security_id"
+                    ):
+                        native_securities.add(row["ref_value"])
+                    if (
+                        row.get("source_type") == "manual"
+                        and row.get("ref_kind") == "manual_investment_transaction_id"
+                    ):
+                        manual_rows.add(row["ref_value"])
+        if any(value is None for value in currency_changes.values()):
+            from moneybin.investments.opening_sql import model_query
+
+            # The materialized Account still carries its old override until rebuild.
+            fresh_accounts = {
+                row["account_id"]: row["currency_code"]
+                for row in read_rows(
+                    self._db, model_query("int_accounts__merged").sql(dialect="duckdb")
+                )
+            }
+            currency_changes = {
+                identity: fresh_accounts.get(identity) if value is None else value
+                for identity, value in currency_changes.items()
+            }
+        for row in observed:
+            if (
+                row["source_currency_code"] is None
+                and row["account_id"] in currency_changes
+            ):
+                row["currency_code"] = currency_changes[row["account_id"]]
+
+        def affected(row: dict[str, Any]) -> bool:
+            identity = _identity(row)
+            fact = evidence.get(source_revision(row), row)
+            return (
+                row.get("bound_account_id", row.get("account_id")) in account_ids
+                or row.get("bound_security_id", row.get("security_id")) in securities
+                or (identity[1], fact.get("source_account_key")) in native_accounts
+                or fact.get("source_security_key") in native_securities
+                or identity[0] == "manual"
+                and identity[2] in manual_rows
+            )
+
+        impacted = {
+            _identity(row)
+            for row in active
+            if row["member_kind"] == "source_event" and affected(row)
+        }
+        impacted.update(_identity(row) for row in observed if affected(row))
+        current = {_identity(row): row for row in observed}
+        actor = events[-1].actor
+        for proposal in pending:
+            if any(affected(leg) for leg in proposal["legs"]):
+                decisions.mark_stale(
+                    proposal["proposal_id"],
+                    actor=actor,
+                    in_outer_txn=True,
+                    parent_audit_id=events[-1].audit_id,
+                )
+        if not has_history:
+            return
+
+        def equivalent(kind: str, identity: str | None) -> str | None:
+            mapping = (equivalences or {}).get(kind, {})
+            while identity is not None and identity in mapping:
+                identity = mapping[identity]
+            return identity
+
+        for index, member in enumerate(active):
+            if (
+                member["member_kind"] != "source_event"
+                or member["decision_id"] is None
+                or _identity(member) not in impacted
+            ):
+                continue
+            row = current.get(_identity(member))
+            account = equivalent("account", member["bound_account_id"])
+            security = equivalent("security", member["bound_security_id"])
+            if (
+                account != member["bound_account_id"]
+                or security != member["bound_security_id"]
+            ):
+                if (
+                    row is None
+                    or row["account_id"] != account
+                    or row["security_id"] != security
+                ):
+                    raise UserError(
+                        "Equivalent investment dependencies did not publish complete routes.",
+                        code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    )
+                successor = {
+                    **member,
+                    "bound_account_id": account,
+                    "bound_security_id": security,
+                    "account_generation": row["account_identity_generation"],
+                    "security_generation": row["security_identity_generation"],
+                }
+                if row["currency_code"] == member["bound_effective_currency"]:
+                    successor["currency_generation"] = self._binding(
+                        row
+                    ).currency_generation
+                member = {
+                    **_member_row(_from_row(successor), now=datetime.now(UTC)),
+                    "membership_id": uuid4().hex[:12],
+                }
+                active[index] = member
+            if not self._matches_current_binding(member, row):
+                decisions.mark_stale(
+                    member["decision_id"],
+                    actor=actor,
+                    in_outer_txn=True,
+                    parent_audit_id=events[-1].audit_id,
+                )
+        old_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        new_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for member in active:
+            if (
+                member["member_kind"] == "source_event"
+                and member["decision_id"] is None
+            ):
+                old_groups[member["source_event_key"]].append(member)
+        for row in observed:
+            if (
+                row["original_investment_transaction_id"] is not None
+                and row["has_resolved_identity"]
+                and row["currency_code"] is not None
+            ):
+                new_groups[row["source_event_key"]].append(row)
+        while True:
+            expanded = set(impacted)
+            for rows in [*old_groups.values(), *new_groups.values()]:
+                ids = {_identity(row) for row in rows}
+                if ids & impacted:
+                    expanded.update(ids)
+            if expanded == impacted:
+                break
+            impacted = expanded
+        retained = [
+            member
+            for member in active
+            if member["member_kind"] == "source_event"
+            and (member["decision_id"] is not None or _identity(member) not in impacted)
+        ]
+        reserved = {
+            _identity(member) for member in active if member["decision_id"] is not None
+        }
+        for rows in new_groups.values():
+            ids = {_identity(row) for row in rows}
+            if not ids & impacted or ids & reserved:
+                continue
+            shape = {(_identity(row), row["leg_role"]) for row in rows}
+            prior: list[dict[str, Any]] = next(
+                (
+                    group
+                    for group in old_groups.values()
+                    if {(_identity(row), row["semantic_leg_role"]) for row in group}
+                    == shape
+                ),
+                list[dict[str, Any]](),
+            )
+            prior_by_identity = {_identity(row): row for row in prior}
+            group_id = prior[0]["event_group_id"] if prior else uuid4().hex[:12]
+            for row in rows:
+                old = prior_by_identity.get(_identity(row))
+                if old is not None and self._matches_current_binding(old, row):
+                    retained.append(old)
+                else:
+                    retained.append(
+                        self.source_member(
+                            row,
+                            event_group_id=group_id,
+                            investment_transaction_id=old["investment_transaction_id"]
+                            if old
+                            else uuid4().hex[:12],
+                            decision_id=None,
+                        )
+                    )
+        transition = self.build_membership_transition(
+            retained,
+            prior_settings=settings_before,
+            account_currency_overrides=currency_changes,
+        )
+        self.publish_transition(
+            transition, actor=actor, parent_audit_id=events[-1].audit_id
+        )
+        InvestmentMatchingService(self._db).invalidate_pending(
+            actor=actor, parent_audit_id=events[-1].audit_id
+        )
+
+    def prepare_reversal(
+        self, acceptances: list[AuditEvent]
+    ) -> tuple["MembershipTransition", dict[str, str]]:
+        """Reconstruct former complete components using their normal current lifecycle."""
+        from moneybin.repositories.investment_match_decisions_repo import (
+            InvestmentMatchDecisionsRepo,
+        )
+
+        def refuse() -> UserError:
+            return UserError(
+                "Complete current investment successor topology cannot be proved.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+
+        required = {
+            "prior_membership_ids",
+            "new_membership_ids",
+            "supersedes_decision_ids",
+            "prior_resolution_ids",
+            "new_resolution_ids",
+        }
+        if not acceptances or any(
+            event.action != "investment_match.accept"
+            or event.target_id is None
+            or not required <= (event.context_json or {}).keys()
+            for event in acceptances
+        ):
+            raise refuse()
+        acceptance = acceptances[-1]
+        if any(event.operation_id != acceptance.operation_id for event in acceptances):
+            raise refuse()
+        contexts = [event.context_json or {} for event in acceptances]
+        for previous, following in zip(contexts, contexts[1:], strict=False):
+            if set(previous["new_membership_ids"]) != set(
+                following["prior_membership_ids"]
+            ) or set(previous["new_resolution_ids"]) != set(
+                following["prior_resolution_ids"]
+            ):
+                raise refuse()
+        targets = {str(event.target_id) for event in acceptances}
+        parents = {event.audit_id for event in acceptances}
+        if len(targets) != len(acceptances):
+            raise refuse()
+        context = {
+            "prior_membership_ids": contexts[0]["prior_membership_ids"],
+            "new_membership_ids": contexts[-1]["new_membership_ids"],
+            "prior_resolution_ids": contexts[0]["prior_resolution_ids"],
+            "new_resolution_ids": contexts[-1]["new_resolution_ids"],
+            "supersedes_decision_ids": [
+                identity
+                for item in contexts
+                for identity in item["supersedes_decision_ids"]
+            ],
+        }
+        history = {row["membership_id"]: row for row in self._members.history()}
+        try:
+            prior = [history[mid] for mid in context["prior_membership_ids"]]
+            published = [history[mid] for mid in context["new_membership_ids"]]
+        except KeyError as exc:
+            raise refuse() from exc
+        decisions = {
+            row["proposal_id"]: row
+            for row in InvestmentMatchDecisionsRepo(self._db).all_rows()
+        }
+        active = self._members.active_members()
+        ratified = [row for row in active if row["decision_id"] in targets]
+        if any(
+            identity not in decisions
+            or decisions[identity]["status"] not in {"accepted", "stale"}
+            or decisions[identity]["accepted_at"] is None
+            or not any(row["decision_id"] == identity for row in ratified)
+            for identity in targets
+        ):
+            raise refuse()
+        published_sources = [
+            row
+            for row in published
+            if row["member_kind"] == "source_event" and row["decision_id"] in targets
+        ]
+        if {_identity(row) for row in ratified} != {
+            _identity(row) for row in published_sources
+        }:
+            raise refuse()
+        events = AuditService(self._db).events_for_operation(acceptance.operation_id)
+        changed_ids = set(context["prior_membership_ids"]) - set(
+            context["new_membership_ids"]
+        )
+        former = [
+            row
+            for row in prior
+            if row["membership_id"] in changed_ids
+            and row["member_kind"] == "source_event"
+        ]
+        if {_identity(row) for row in former} != {_identity(row) for row in ratified}:
+            raise refuse()
+        proposed = [
+            row
+            for row in active
+            if row["member_kind"] == "source_event"
+            and row["decision_id"] not in targets
+        ]
+        reserved = {
+            _identity(row) for row in proposed if row["decision_id"] is not None
+        }
+        current = read_rows(
+            self._db, f"SELECT * FROM {INVESTMENT_EVENT_LEGS.full_name}"
+        )  # fixed TableRef
+        by_event: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in current:
+            if (
+                row["original_investment_transaction_id"] is not None
+                and row["has_resolved_identity"]
+                and row["currency_code"] is not None
+            ):
+                by_event[row["source_event_key"]].append(row)
+        groups: dict[tuple[str | None, str], list[dict[str, Any]]] = defaultdict(list)
+        for row in former:
+            groups[row["decision_id"], row["event_group_id"]].append(row)
+        statuses: dict[str, str] = {}
+        resolutions = [
+            row
+            for row in self._resolutions.active_resolutions()
+            if row["decision_id"] not in targets
+        ]
+        now = datetime.now(UTC)
+        used_events: set[str] = set()
+        for (prior_decision, _group), old in groups.items():
+            if prior_decision is not None:
+                if (
+                    prior_decision not in context["supersedes_decision_ids"]
+                    or prior_decision not in decisions
+                    or decisions[prior_decision]["status"] != "reversed"
+                ):
+                    raise refuse()
+                expected = {_identity(leg) for leg in decisions[prior_decision]["legs"]}
+                if {_identity(row) for row in old} != expected:
+                    raise refuse()
+                initial = {_identity(row): row for row in published_sources}
+                successors = {_identity(row): row for row in ratified}
+                restored: list[dict[str, Any]] = []
+                for member in old:
+                    baseline, successor = (
+                        initial[_identity(member)],
+                        successors[_identity(member)],
+                    )
+                    if any(
+                        baseline[key] != successor[key]
+                        for key in (
+                            "observation_version",
+                            "source_event_key",
+                            "semantic_leg_role",
+                            "decision_id",
+                        )
+                    ):
+                        raise refuse()
+                    bound = dict(member)
+                    # Within one accepted decision, binding advances are ratified
+                    # equivalences; other identity changes retain reviewed rows.
+                    for field, generation in (
+                        ("bound_account_id", "account_generation"),
+                        ("bound_security_id", "security_generation"),
+                    ):
+                        if (
+                            member[field] == baseline[field]
+                            and successor[field] != baseline[field]
+                        ):
+                            bound[field] = successor[field]
+                            bound[generation] = successor[generation]
+                            if (
+                                field == "bound_account_id"
+                                and member["bound_effective_currency"]
+                                == baseline["bound_effective_currency"]
+                                == successor["bound_effective_currency"]
+                            ):
+                                bound["currency_generation"] = successor[
+                                    "currency_generation"
+                                ]
+                    restored.append(bound)
+                proposed.extend(
+                    {
+                        **_member_row(_from_row(row), now=now),
+                        "membership_id": uuid4().hex[:12],
+                    }
+                    for row in restored
+                )
+                observed = {_identity(row): row for row in current}
+                stale = any(
+                    not self._matches_current_binding(row, observed.get(_identity(row)))
+                    for row in restored
+                )
+                statuses[prior_decision] = "stale" if stale else "accepted"
+                if (
+                    "prior_resolution_ids" not in context
+                    or "new_resolution_ids" not in context
+                ):
+                    raise refuse()
+                choice_history = {
+                    row["resolution_id"]: row for row in self._resolutions.history()
+                }
+                if not set(context["prior_resolution_ids"]) <= choice_history.keys():
+                    raise refuse()
+                prior_choices = [
+                    choice_history[rid]
+                    for rid in context["prior_resolution_ids"]
+                    if choice_history[rid]["decision_id"] == prior_decision
+                ]
+                keys = [
+                    (row["investment_transaction_id"], row["field_name"])
+                    for row in prior_choices
+                ]
+                if len(set(keys)) != len(keys):
+                    raise refuse()
+                resolutions.extend(
+                    {
+                        **row,
+                        "resolution_id": uuid4().hex[:12],
+                        "created_at": now,
+                        "retired_at": None,
+                    }
+                    for row in prior_choices
+                )
+                continue
+            identities = {_identity(row) for row in old}
+            candidates = {
+                key: rows
+                for key, rows in by_event.items()
+                if identities & {_identity(row) for row in rows}
+            }
+            if not candidates or any(
+                reserved & {_identity(row) for row in rows}
+                for rows in candidates.values()
+            ):
+                raise refuse()
+            for key, rows in candidates.items():
+                if key in used_events:
+                    raise refuse()
+                used_events.add(key)
+                same = {(_identity(row), row["leg_role"]) for row in rows} == {
+                    (_identity(row), row["semantic_leg_role"]) for row in old
+                }
+                group_id = old[0]["event_group_id"] if same else uuid4().hex[:12]
+                old_by_identity = {_identity(row): row for row in old}
+                for row in rows:
+                    proposed.append(
+                        self.source_member(
+                            row,
+                            event_group_id=group_id,
+                            investment_transaction_id=old_by_identity[_identity(row)][
+                                "investment_transaction_id"
+                            ]
+                            if same
+                            else uuid4().hex[:12],
+                            decision_id=None,
+                        )
+                    )
+        prior_choice_ids = context.get("prior_resolution_ids")
+        if prior_choice_ids is None:
+            raise refuse()
+        choice_history = {
+            row["resolution_id"]: row for row in self._resolutions.history()
+        }
+        if not set(prior_choice_ids) <= choice_history.keys():
+            raise refuse()
+        prior_choices = [choice_history[rid] for rid in prior_choice_ids]
+        curations = [
+            event
+            for event in events
+            if event.target_table == LOT_SELECTIONS.name
+            and event.parent_audit_id in parents
+        ]
+        overrides: dict[str, Selection] = {}
+        last: dict[str, Selection] = {}
+        for event in curations:
+            if (
+                event.before_value is None
+                or event.after_value is None
+                or event.target_id is None
+                or any(
+                    "selections" not in value
+                    for value in (event.before_value, event.after_value)
+                )
+            ):
+                raise refuse()
+            before = sorted(
+                (row["lot_id"], Decimal(row["quantity"]))
+                for row in event.before_value["selections"]
+            )
+            after = sorted(
+                (row["lot_id"], Decimal(row["quantity"]))
+                for row in event.after_value["selections"]
+            )
+            if event.target_id in last and last[event.target_id] != before:
+                raise refuse()
+            overrides.setdefault(event.target_id, before)
+            last[event.target_id] = after
+        if any(
+            LotSelectionsRepo(self._db).list_for_disposal(identity) != collection
+            for identity, collection in last.items()
+        ):
+            raise refuse()
+        mapping: dict[str, str] = {}
+        for old in former:
+            targets = {
+                row["investment_transaction_id"]
+                for row in proposed
+                if _identity(row) == _identity(old)
+                and row["semantic_leg_role"] == old["semantic_leg_role"]
+            }
+            if len(targets) == 1:
+                mapping[old["investment_transaction_id"]] = targets.pop()
+        origin = None
+        if curations:
+            affected_groups = {
+                row["event_group_id"]
+                for row in prior + published
+                if row["membership_id"]
+                in set(context["prior_membership_ids"])
+                ^ set(context["new_membership_ids"])
+            }
+            origin = [
+                row
+                for row in self._project(active, self._resolutions.active_resolutions())
+                if row["event_group_id"] not in affected_groups
+            ]
+            origin.extend(
+                row
+                for row in self._project(
+                    [{**member, "retired_at": None} for member in prior], prior_choices
+                )
+                if row["event_group_id"] in affected_groups
+            )
+        return self.build_membership_transition(
+            proposed,
+            resolutions=resolutions,
+            semantic_id_map=mapping,
+            curation_overrides=overrides if curations else None,
+            curation_origin_ledger=origin,
+        ), statuses
+
+    def undo_acceptances(self, acceptances: list[AuditEvent], *, actor: str) -> None:
+        """Preflight the entire operation before publishing any inverse topology."""
+        from moneybin.repositories.investment_match_decisions_repo import (
+            InvestmentMatchDecisionsRepo,
+        )
+        from moneybin.services.investment_matching_service import (
+            InvestmentMatchingService,
+        )
+
+        transition, statuses = self.prepare_reversal(acceptances)
+        decisions = InvestmentMatchDecisionsRepo(self._db)
+        roots = [
+            decisions.restore_lifecycle(
+                str(acceptance.target_id),
+                status="reversed",
+                actor=actor,
+                undoes_operation_id=acceptance.operation_id,
+            )
+            for acceptance in reversed(acceptances)
+        ]
+        root = roots[0]
+        for prior_id, status in statuses.items():
+            decisions.restore_lifecycle(
+                prior_id,
+                status=status,
+                actor=actor,
+                parent_audit_id=root.audit_id,
+                undoes_operation_id=acceptances[0].operation_id,
+            )
+        self.publish_transition(transition, actor=actor, parent_audit_id=root.audit_id)
+        InvestmentMatchingService(self._db).invalidate_pending(
+            actor=actor, parent_audit_id=root.audit_id
+        )
+
     def build_membership_transition(
         self,
         proposed_sources: list[dict[str, Any]],
         *,
         resolutions: list[dict[str, Any]] | None = None,
         semantic_id_map: dict[str, str] | None = None,
+        curation_overrides: dict[str, Selection] | None = None,
+        curation_origin_ledger: list[dict[str, Any]] | None = None,
+        prior_settings: dict[str, dict[str, Any] | None] | None = None,
+        proposed_settings: dict[str, dict[str, Any] | None] | None = None,
+        current_ledger_override: list[dict[str, Any]] | None = None,
+        opening_equivalences: dict[str, dict[str, str]] | None = None,
+        account_currency_overrides: dict[str, str | None] | None = None,
     ) -> "MembershipTransition":
         """Recompute opening topology before proving the complete proposed ledger."""
         active = self._members.active_members()
@@ -531,7 +1450,11 @@ class InvestmentMembershipService:
         )
         evidence = load_member_evidence(self._db)
         rows, contexts = reconstruct_openings(
-            self._db, proposed_sources, evidence, resolutions
+            self._db,
+            proposed_sources,
+            evidence,
+            resolutions,
+            source_choices=self._source_choices(proposed_settings),
         )
         prior = {
             r["native_reference"]: r
@@ -562,9 +1485,11 @@ class InvestmentMembershipService:
                     row["lot_key"],
                 ],
             )
-            binding = self._opening_binding(row)
+            binding = self._opening_binding(row, account_currency_overrides)
             if binding is None:
                 continue
+            if opening_equivalences is not None:
+                binding = self._equivalent_binding(binding, opening_equivalences)
             version = fingerprint("opening_revision", [context, asdict(binding)])
             old = prior.get(key)
             if old and old["observation_version"] == version:
@@ -599,10 +1524,27 @@ class InvestmentMembershipService:
                 "investment_transaction_id"
             ]
         projected = self._visible_ledger(
-            list(project_members(proposed, evidence, resolutions))
+            list(
+                project_members(
+                    proposed,
+                    evidence,
+                    resolutions,
+                    source_choices=self._source_choices(proposed_settings),
+                )
+            ),
+            proposed_settings,
         )
-        current = self._visible_ledger(
-            self._project(active, self._resolutions.active_resolutions())
+        current = (
+            current_ledger_override
+            if current_ledger_override is not None
+            else self._visible_ledger(
+                self._project(
+                    active,
+                    self._resolutions.active_resolutions(),
+                    source_choices=self._source_choices(prior_settings),
+                ),
+                prior_settings,
+            )
         )
         if (
             not active
@@ -625,7 +1567,16 @@ class InvestmentMembershipService:
                         code=error_codes.RECOVERY_NO_PATH,
                     )
                 mapping[original] = member["investment_transaction_id"]
-        remap = preflight_membership_transition(self._db, current, projected, mapping)
+        remap = preflight_membership_transition(
+            self._db,
+            current,
+            projected,
+            mapping,
+            restored_selections=curation_overrides,
+            restoration_ledger=self._visible_ledger(curation_origin_ledger)
+            if curation_origin_ledger is not None
+            else None,
+        )
         return MembershipTransition(
             active, proposed, resolutions, current, projected, remap, mapping
         )

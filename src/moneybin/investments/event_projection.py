@@ -55,6 +55,8 @@ def project_members(
     members: Sequence[Mapping[str, Any]],
     evidence: Mapping[SourceRevision, Mapping[str, Any]],
     resolutions: Sequence[Mapping[str, Any]] = (),
+    *,
+    source_choices: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Collapse matching semantic legs without re-resolving canonical dependencies."""
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -90,9 +92,17 @@ def project_members(
         })
     result: list[dict[str, Any]] = []
     for leg_id, rows in sorted(groups.items()):
-        selected = default_selection(rows)[0]
+        choice = (source_choices or {}).get(rows[0]["account_id"])
+        eligible = [
+            row for row in rows if choice is None or row["source_type"] == choice
+        ]
+        if not eligible:
+            continue
+        selected = default_selection(eligible)[0]
         for resolution in resolutions:
-            if resolution["investment_transaction_id"] != leg_id:
+            if resolution["investment_transaction_id"] != leg_id or (
+                choice is not None and resolution["source_type"] != choice
+            ):
                 continue
             observed = evidence.get(source_revision(resolution))
             if observed is None:

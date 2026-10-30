@@ -15,6 +15,8 @@ from moneybin.tables import (
     ACCOUNT_SETTINGS,
     FCT_INVESTMENT_TRANSACTIONS,
     INVESTMENT_EVENT_MEMBERS,
+    INVESTMENT_OPENING_PROJECTION,
+    INVESTMENT_SOURCE_PROJECTION,
 )
 
 
@@ -31,14 +33,27 @@ def latest_projection_change(db: Database) -> datetime | None:
     return row[0] if row else None
 
 
-def projection_pending(db: Database) -> bool:
+def projection_pending(
+    db: Database, *, latest_raw_landing: datetime | None = None
+) -> bool:
     """Require every dependent relation and every rebuild model's actual execution."""
     try:
         changed = latest_projection_change(db)
+        cut_roots: set[str] = set()
         if changed is None:
-            return False
-        expected = sqlmesh_registry.relations_downstream_of(
-            FCT_INVESTMENT_TRANSACTIONS.full_name
+            from moneybin.services.restate import _has_prod_environment  # pyright: ignore[reportPrivateUsage]  # same established SQLMesh presence boundary
+
+            if not _has_prod_environment(db):
+                return False
+            cut_roots = {
+                INVESTMENT_SOURCE_PROJECTION.full_name,
+                INVESTMENT_OPENING_PROJECTION.full_name,
+            }
+        expected = (
+            sqlmesh_registry.relations_downstream_of(
+                FCT_INVESTMENT_TRANSACTIONS.full_name
+            )
+            | cut_roots
         )
         rebuild = expected & sqlmesh_registry.materialized_model_names()
         if not rebuild:
@@ -56,10 +71,28 @@ def projection_pending(db: Database) -> bool:
                 "SELECT model_name, last_executed_at FROM meta.model_freshness"
             ).fetchall()
         )
+        from moneybin.services.transform_service import TransformService
+
+        landed = latest_raw_landing
+        if landed is None:
+            landed = TransformService(db)._max_raw_landed_at()  # pyright: ignore[reportPrivateUsage]  # reuse canonical receipt/import landing scan
+        timestamps = [value for value in (changed, landed) if value is not None]
+        if cut_roots:
+            epochs = dict(
+                db.execute(
+                    "SELECT model_name, last_changed_at FROM meta.model_freshness"
+                ).fetchall()
+            )
+            for root in cut_roots:
+                epoch = epochs.get(root)
+                if not isinstance(epoch, datetime):
+                    return True
+                timestamps.append(epoch)
+        watermark = max(timestamps)
         # VIEW intervals record creation, not read-through recomputation. Their
         # presence is required; only their materialized ancestors owe execution.
         return any(name not in executions for name in expected) or any(
-            executions.get(name) is None or executions[name] < changed
+            executions.get(name) is None or executions[name] < watermark
             for name in rebuild
         )
     except duckdb.Error:
@@ -68,7 +101,7 @@ def projection_pending(db: Database) -> bool:
 
 def _stale() -> UserError:
     return UserError(
-        "Investment decisions are saved, but dependent financial data needs rebuilding.",
+        "Investment data needs rebuilding before it can be read.",
         code=error_codes.REFRESH_STALE,
         hint="Run `moneybin refresh --step transform` before reading investment-dependent data.",
         recovery_actions=[

@@ -82,6 +82,9 @@ def preflight_membership_transition(
     current_ledger: Sequence[Mapping[str, Any]],
     proposed_ledger: Sequence[Mapping[str, Any]],
     semantic_id_map: Mapping[str, str],
+    *,
+    restored_selections: Mapping[str, Selection] | None = None,
+    restoration_ledger: Sequence[Mapping[str, Any]] | None = None,
 ) -> CurationRemap:
     """Remap whole collections and replay every affected downstream disposal."""
     selections: dict[str, Selection] = {}
@@ -91,9 +94,21 @@ def preflight_membership_transition(
         ORDER BY investment_transaction_id, lot_id"""  # noqa: S608  # TableRef constant
     ).fetchall():
         selections.setdefault(disposal, []).append((lot, Decimal(quantity)))
+    actual = dict(selections)
+    if restored_selections is not None:
+        validate_complete_selections(_events(current_ledger), actual, set(actual))
+        selections = {**selections, **restored_selections}
+        selections = {
+            disposal: collection
+            for disposal, collection in selections.items()
+            if collection
+        }
     if not selections:
-        return CurationRemap({}, {})
-    current, proposed = _events(current_ledger), _events(proposed_ledger)
+        return CurationRemap({disposal: [] for disposal in actual}, actual)
+    current = _events(
+        restoration_ledger if restoration_ledger is not None else current_ledger
+    )
+    proposed = _events(proposed_ledger)
     old = {e.investment_transaction_id: e for e in current}
     new = {e.investment_transaction_id: e for e in proposed}
     boundaries: dict[tuple[str, str | None], tuple[date, int, str]] = {}
@@ -112,7 +127,8 @@ def preflight_membership_transition(
             raise _refuse()
         position = (event.account_id, event.security_id)
         if (
-            disposal in semantic_id_map
+            restored_selections is not None
+            or disposal in semantic_id_map
             or position in boundaries
             and event_order_key(event) >= boundaries[position]
         ):
@@ -169,7 +185,7 @@ def preflight_membership_transition(
     )
     replacements = {
         disposal: remapped.get(disposal, [])
-        for disposal in selections.keys() | remapped.keys()
-        if selections.get(disposal, []) != remapped.get(disposal, [])
+        for disposal in actual.keys() | remapped.keys()
+        if actual.get(disposal, []) != remapped.get(disposal, [])
     }
-    return CurationRemap(replacements, {d: selections.get(d, []) for d in replacements})
+    return CurationRemap(replacements, {d: actual.get(d, []) for d in replacements})

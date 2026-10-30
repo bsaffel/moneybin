@@ -45,8 +45,21 @@ def supports_investment_rejection_undo(actions: Iterable[str]) -> bool:
     }
 
 
+def supports_investment_operation_undo(actions: Iterable[str]) -> bool:
+    """Recognize complete human decisions and their domain-owned lifecycle children."""
+    selected = set(actions)
+    return bool(
+        selected & {"investment_match.accept", "investment_match.reject"}
+    ) and selected <= {
+        "investment_match.accept",
+        "investment_match.reject",
+        "investment_match.supersede",
+        "investment_match.stale",
+    }
+
+
 def record_committed_investment_decisions(
-    decisions: Sequence[tuple[Literal["accepted", "rejected"], bool]],
+    decisions: Sequence[tuple[Literal["accepted", "rejected", "reversed"], bool]],
     *,
     duration_seconds: float,
 ) -> None:
@@ -515,6 +528,10 @@ class InvestmentMatchingService:
         transition = self.prepare_acceptance(
             decision_id, proposal, field_choices=field_choices
         )
+        from moneybin.repositories.investment_match_field_resolutions_repo import (
+            InvestmentMatchFieldResolutionsRepo,
+        )
+
         root = self._repo.accept(
             decision_id,
             actor=actor,
@@ -525,6 +542,15 @@ class InvestmentMatchingService:
                 ],
                 "new_membership_ids": [r["membership_id"] for r in transition.proposed],
                 "supersedes_decision_ids": list(proposal.supersedes_decision_ids),
+                "prior_resolution_ids": [
+                    r["resolution_id"]
+                    for r in InvestmentMatchFieldResolutionsRepo(
+                        self._db
+                    ).active_resolutions()
+                ],
+                "new_resolution_ids": [
+                    r["resolution_id"] for r in transition.resolutions
+                ],
             },
         )
         for prior_id in proposal.supersedes_decision_ids:
@@ -576,6 +602,14 @@ class InvestmentMatchingService:
             proposal = self.prepare_decision(
                 decision_id, decision=decision, field_choices=field_choices
             )
+            reversed_outcomes: list[
+                tuple[Literal["accepted", "rejected", "reversed"], bool]
+            ] = [
+                ("reversed", bool(row["auto_eligible"]))
+                for row in self._repo.all_rows()
+                if decision == "accept"
+                and row["proposal_id"] in proposal.supersedes_decision_ids
+            ]
             event = self.apply_in_active_txn(
                 decision_id, decision=decision, actor=actor, field_choices=field_choices
             )
@@ -584,13 +618,14 @@ class InvestmentMatchingService:
         except BaseException:
             self._db.rollback()
             raise
+        outcomes: list[tuple[Literal["accepted", "rejected", "reversed"], bool]] = [
+            (
+                "accepted" if decision == "accept" else "rejected",
+                proposal.auto_eligible,
+            )
+        ]
         record_committed_investment_decisions(
-            [
-                (
-                    "accepted" if decision == "accept" else "rejected",
-                    proposal.auto_eligible,
-                )
-            ],
+            outcomes + reversed_outcomes,
             duration_seconds=perf_counter() - started,
         )
 

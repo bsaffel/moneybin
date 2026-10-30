@@ -81,12 +81,14 @@ def seed_plaid_event(
     security_id: str | None = "native_security",
     explicit_date: bool = False,
     source_origin: str = "origin",
+    currency: str | None = None,
 ) -> None:
     txn = SyncInvestmentTransaction(
         investment_transaction_id=native,
         account_id="native_account",
         provider_item_id=source_origin,
         security_id=security_id,
+        iso_currency_code=currency,
         date=date(2026, 1, day),
         transaction_datetime=datetime(2026, 1, day, tzinfo=UTC)
         if explicit_date

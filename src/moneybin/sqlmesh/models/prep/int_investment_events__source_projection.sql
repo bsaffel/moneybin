@@ -62,6 +62,20 @@ WITH normalized AS (
   FROM app.investment_event_members AS o, JSON_EACH(o.reconstruction_evidence, '$.source_member_ids') AS j
   WHERE
     o.retired_at IS NULL AND o.member_kind = 'opening_lot_reconstruction'
+), scope_choices AS (
+  SELECT
+    'active' AS projection_scope,
+    account_id,
+    investment_source_type
+  FROM app.account_settings
+  UNION ALL
+  SELECT
+    o.membership_id,
+    j.key,
+    j.value ->> '$'
+  FROM app.investment_event_members AS o, JSON_EACH(o.reconstruction_evidence, '$.source_choices') AS j
+  WHERE
+    o.retired_at IS NULL AND o.member_kind = 'opening_lot_reconstruction'
 ), scoped AS (
   SELECT
     c.projection_scope,
@@ -83,6 +97,12 @@ WITH normalized AS (
     AND n.source_origin = m.source_origin
     AND n.native_reference = m.native_reference
     AND n.observation_version = m.observation_version
+  LEFT JOIN scope_choices AS choice
+    ON choice.projection_scope = c.projection_scope
+    AND choice.account_id = m.bound_account_id
+  WHERE
+    choice.investment_source_type IS NULL
+    OR m.source_type = choice.investment_source_type
 ), resolution_scopes AS (
   SELECT
     'active' AS projection_scope,

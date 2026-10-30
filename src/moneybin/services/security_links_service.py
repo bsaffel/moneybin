@@ -679,100 +679,119 @@ class SecurityLinksService:
         if not in_outer_txn:
             self._db.begin()
         try:
-            decision = self._require_pending(decision_id)
-            if into != decision["candidate_security_id"]:
-                raise UserError(
-                    "into does not match the candidate named in decision "
-                    f"{decision_id!r}; pass the decision's own "
-                    "candidate_security_id as a confirming safety check.",
-                    code=error_codes.MUTATION_INVALID_INPUT,
-                )
-            survivor = str(decision["candidate_security_id"])
-            provisional = self._links.lookup(
-                ref_kind=decision["ref_kind"],
-                ref_value=decision["ref_value"],
-                source_type=decision["source_type"],
+            from moneybin.investments.dependency_publication import (
+                dependency_publication,
+                record_equivalence,
             )
-            if provisional is None:
-                raise UserError(
-                    "No accepted binding exists for the provider ref under review; "
-                    f"decision {decision_id!r} has nothing to merge away.",
-                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+
+            with dependency_publication(self._db):
+                decision = self._require_pending(decision_id)
+                if into != decision["candidate_security_id"]:
+                    raise UserError(
+                        "into does not match the candidate named in decision "
+                        f"{decision_id!r}; pass the decision's own "
+                        "candidate_security_id as a confirming safety check.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                survivor = str(decision["candidate_security_id"])
+                provisional = self._links.lookup(
+                    ref_kind=decision["ref_kind"],
+                    ref_value=decision["ref_value"],
+                    source_type=decision["source_type"],
                 )
-            if provisional == survivor:
-                raise UserError(
-                    f"The ref in decision {decision_id!r} is already bound to the "
-                    "candidate security; there is nothing to merge.",
-                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                if provisional is None:
+                    raise UserError(
+                        "No accepted binding exists for the provider ref under review; "
+                        f"decision {decision_id!r} has nothing to merge away.",
+                        code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    )
+                if provisional == survivor:
+                    raise UserError(
+                        f"The ref in decision {decision_id!r} is already bound to the "
+                        "candidate security; there is nothing to merge.",
+                        code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    )
+                if self._security_created_by(provisional) != "plaid":
+                    # SecuritiesRepo.delete enforces the same rule at the LAST
+                    # write of the cascade (step 9); this pre-write check moves
+                    # the refusal ahead of the first write, per "Plan (and
+                    # validate) BEFORE the first write" below.
+                    raise UserError(
+                        f"The security bound to decision {decision_id!r} is "
+                        "user-authored; user-authored securities are never merged "
+                        "away.",
+                        code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    )
+                if not self._security_exists(survivor):
+                    raise UserError(
+                        f"No security found for id {survivor!r}.",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
+
+                # Plan (and validate) BEFORE the first write: a blocked merge should
+                # not depend on rollback to leave the database untouched.
+                plan = self._plan_lot_selections(provisional, survivor)
+                manual_source_ids = self._manual_events.list_ids_for_security(
+                    provisional
                 )
-            if self._security_created_by(provisional) != "plaid":
-                # SecuritiesRepo.delete enforces the same rule at the LAST
-                # write of the cascade (step 9); this pre-write check moves
-                # the refusal ahead of the first write, per "Plan (and
-                # validate) BEFORE the first write" below.
-                raise UserError(
-                    f"The security bound to decision {decision_id!r} is "
-                    "user-authored; user-authored securities are never merged "
-                    "away.",
-                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                if verify_accept is not None:
+                    verify_accept(self.accept_impact(decision_id, into=into))
+
+                record_equivalence(
+                    self._db, kind="security", previous=provisional, proposed=survivor
                 )
-            if not self._security_exists(survivor):
-                raise UserError(
-                    f"No security found for id {survivor!r}.",
-                    code=error_codes.MUTATION_NOT_FOUND,
+                event = self._decisions.update_status(
+                    decision_id,
+                    status="accepted",
+                    decided_by=decided_by,
+                    actor=self._actor,
+                    in_outer_txn=True,
+                )
+                parent_audit_id = event.audit_id
+
+                from moneybin.repositories.investment_event_members_repo import (
+                    InvestmentEventMembersRepo,
                 )
 
-            # Plan (and validate) BEFORE the first write: a blocked merge should
-            # not depend on rollback to leave the database untouched.
-            plan = self._plan_lot_selections(provisional, survivor)
-            manual_source_ids = self._manual_events.list_ids_for_security(provisional)
-            if verify_accept is not None:
-                verify_accept(self.accept_impact(decision_id, into=into))
-
-            event = self._decisions.update_status(
-                decision_id,
-                status="accepted",
-                decided_by=decided_by,
-                actor=self._actor,
-                in_outer_txn=True,
-            )
-            parent_audit_id = event.audit_id
-
-            for disposal_id, selections in plan.items():
-                self._lot_selections.set_for_disposal(
-                    investment_transaction_id=disposal_id,
-                    selections=selections,
+                # Membership publication owns curation after every route is represented.
+                legacy_plan = (
+                    {} if InvestmentEventMembersRepo(self._db).has_history() else plan
+                )
+                for disposal_id, selections in legacy_plan.items():
+                    self._lot_selections.set_for_disposal(
+                        investment_transaction_id=disposal_id,
+                        selections=selections,
+                        actor=self._actor,
+                        parent_audit_id=parent_audit_id,
+                        in_outer_txn=True,
+                    )
+                self._repoint_links(
+                    provisional,
+                    survivor,
+                    decided_by=decided_by,
+                    parent_audit_id=parent_audit_id,
+                )
+                manual_repointed = self._repoint_manual_events(
+                    provisional,
+                    survivor,
+                    parent_audit_id=parent_audit_id,
+                    source_ids=manual_source_ids,
+                )
+                marks_repointed = self._repoint_price_marks(
+                    provisional, survivor, parent_audit_id=parent_audit_id
+                )
+                self._reject_pending_siblings(
+                    decision,
+                    exclude=decision_id,
+                    decided_by=decided_by,
+                    parent_audit_id=parent_audit_id,
+                )
+                self._securities.delete(
+                    provisional,
                     actor=self._actor,
                     parent_audit_id=parent_audit_id,
                     in_outer_txn=True,
                 )
-            self._repoint_links(
-                provisional,
-                survivor,
-                decided_by=decided_by,
-                parent_audit_id=parent_audit_id,
-            )
-            manual_repointed = self._repoint_manual_events(
-                provisional,
-                survivor,
-                parent_audit_id=parent_audit_id,
-                source_ids=manual_source_ids,
-            )
-            marks_repointed = self._repoint_price_marks(
-                provisional, survivor, parent_audit_id=parent_audit_id
-            )
-            self._reject_pending_siblings(
-                decision,
-                exclude=decision_id,
-                decided_by=decided_by,
-                parent_audit_id=parent_audit_id,
-            )
-            self._securities.delete(
-                provisional,
-                actor=self._actor,
-                parent_audit_id=parent_audit_id,
-                in_outer_txn=True,
-            )
             if not in_outer_txn:
                 self._db.commit()
         except BaseException:
@@ -890,6 +909,22 @@ class SecurityLinksService:
         instead, which is recoverable — electing 'specific' on the survivor
         reactivates them.
         """
+        from moneybin.repositories.investment_event_members_repo import (
+            InvestmentEventMembersRepo,
+        )
+
+        if InvestmentEventMembersRepo(self._db).has_history():
+            from moneybin.services.investment_membership_service import (
+                InvestmentMembershipService,
+            )
+
+            return (
+                InvestmentMembershipService(self._db)
+                .plan_equivalence(
+                    kind="security", previous=provisional, proposed=survivor
+                )
+                .replacements
+            )
         try:
             rows = self._db.execute(
                 f"""

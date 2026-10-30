@@ -19,6 +19,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
+from time import perf_counter
 from typing import Literal, cast
 
 from moneybin import error_codes
@@ -43,11 +44,14 @@ from moneybin.sqlmesh_freshness import (
     restating_columns,
 )
 from moneybin.tables import (
+    ACCOUNT_LINKS,
+    ACCOUNT_SETTINGS,
     AUDIT_LOG,
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     INVESTMENT_MATCH_DECISIONS,
     LOT_SELECTIONS,
+    SECURITY_LINKS,
     TableRef,
 )
 from moneybin.temporal import format_utc
@@ -218,6 +222,7 @@ class UndoService:
         value the write path no longer admits, e.g. a pre-existing blank
         category — not retryable; recreate the entity instead).
         """
+        started = perf_counter()
         events = self._audit.events_for_operation(operation_id)
         if not events:
             audit_undo_total.labels(outcome="not_found").inc()
@@ -237,50 +242,55 @@ class UndoService:
         with operation() as undo_op:
             self._db.begin()
             try:
-                if expected_audit_ids is not None:
-                    current_audit_ids = tuple(
-                        event.audit_id
-                        for event in self._audit.events_for_operation(operation_id)
-                    )
-                    if current_audit_ids != expected_audit_ids:
-                        raise UserError(
-                            "The operation changed after the displayed preview. "
-                            "Inspect it again before undoing.",
-                            code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
-                            recovery_actions=[_undo_action(operation_id)],
-                        )
-                undone: list[AuditEvent] = []
-                touched: dict[str, BaseRepo] = {}
-                self._validate_identity_selections(row_events)
-                from moneybin.repositories.manual_investment_transactions_repo import (
-                    ManualInvestmentTransactionsRepo,
+                from moneybin.investments.dependency_publication import (
+                    dependency_publication,
                 )
 
-                for event in row_events:
-                    if (
-                        event.target_schema == "raw"
-                        and event.target_table == "manual_investment_transactions"
-                    ):
-                        ManualInvestmentTransactionsRepo(
-                            self._db, audit=self._audit
-                        ).validate_legacy_event(event)
-                investment_events = undo_investment_operation(
-                    row_events, self._db, actor=actor
-                )
-                for event in reversed(row_events):
-                    if event.audit_id in investment_events:
-                        continue
-                    repo = repo_for(
-                        event.target_schema or "",
-                        event.target_table or "",
-                        self._db,
-                        audit=self._audit,
+                with dependency_publication(self._db):
+                    if expected_audit_ids is not None:
+                        current_audit_ids = tuple(
+                            event.audit_id
+                            for event in self._audit.events_for_operation(operation_id)
+                        )
+                        if current_audit_ids != expected_audit_ids:
+                            raise UserError(
+                                "The operation changed after the displayed preview. "
+                                "Inspect it again before undoing.",
+                                code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                                recovery_actions=[_undo_action(operation_id)],
+                            )
+                    undone: list[AuditEvent] = []
+                    touched: dict[str, BaseRepo] = {}
+                    self._validate_identity_selections(row_events)
+                    from moneybin.repositories.manual_investment_transactions_repo import (
+                        ManualInvestmentTransactionsRepo,
                     )
-                    touched.setdefault(type(repo).__name__, repo)
-                    inverse = repo.undo_event(event, actor=actor, in_outer_txn=True)
-                    if inverse is not None:
-                        undone.append(inverse)
-                # Legacy Raw recovery can emit two Link inverses for one event.
+
+                    for event in row_events:
+                        if (
+                            event.target_schema == "raw"
+                            and event.target_table == "manual_investment_transactions"
+                        ):
+                            ManualInvestmentTransactionsRepo(
+                                self._db, audit=self._audit
+                            ).validate_legacy_event(event)
+                    investment_events = undo_investment_operation(
+                        row_events, self._db, actor=actor
+                    )
+                    for event in reversed(row_events):
+                        if event.audit_id in investment_events:
+                            continue
+                        repo = repo_for(
+                            event.target_schema or "",
+                            event.target_table or "",
+                            self._db,
+                            audit=self._audit,
+                        )
+                        touched.setdefault(type(repo).__name__, repo)
+                        inverse = repo.undo_event(event, actor=actor, in_outer_txn=True)
+                        if inverse is not None:
+                            undone.append(inverse)
+                    # Legacy Raw recovery can emit two Link inverses for one event.
                 undone = self._audit.events_for_operation(undo_op)
                 self._db.commit()
             except UserError as e:
@@ -330,6 +340,18 @@ class UndoService:
         logger.info(
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
+        )
+        from moneybin.services.investment_matching_service import (
+            record_committed_investment_decisions,
+        )
+
+        record_committed_investment_decisions(
+            [
+                ("reversed", bool((event.before_value or {}).get("auto_eligible")))
+                for event in row_events
+                if event.action == "investment_match.accept"
+            ],
+            duration_seconds=perf_counter() - started,
         )
         restated = _restated_inputs(undone)
         if restated:
@@ -740,6 +762,28 @@ class UndoService:
             liveness = self._build_undo_liveness()
         undone_by = liveness.live_undo_of(operation_id)
         blockers = self._cascade_blockers(operation_id, liveness)
+        original_events = self._audit.events_for_operation(operation_id)
+        if any(event.action == "investment_match.accept" for event in original_events):
+            domain_targets = {
+                (event.target_schema, event.target_table, event.target_id)
+                for event in original_events
+                if event.target_id is not None
+            }
+            blockers = [
+                blocker
+                for blocker in blockers
+                if any(
+                    (event.target_schema, event.target_table, event.target_id)
+                    in domain_targets
+                    and event.action != "investment_match.stale"
+                    and event.target_table
+                    not in {
+                        "investment_event_members",
+                        "investment_match_field_resolutions",
+                    }
+                    for event in self._audit.events_for_operation(blocker)
+                )
+            ]
         targets = self._row_targets(operation_id)
         unresolvable = sorted(
             f"{schema}.{table}"
@@ -752,7 +796,7 @@ class UndoService:
             INVESTMENT_MATCH_DECISIONS.name,
         ) in targets:
             from moneybin.services.investment_matching_service import (
-                supports_investment_rejection_undo,
+                supports_investment_operation_undo,
             )
 
             rows = self._db.conn.execute(
@@ -767,7 +811,21 @@ class UndoService:
                 ],
             ).fetchall()
             actions = [str(row[0]) for row in rows]
-            if actions and not supports_investment_rejection_undo(actions):
+            dependency_operation = bool(
+                set(targets)
+                & {
+                    (table.schema, table.name)
+                    for table in (ACCOUNT_SETTINGS, ACCOUNT_LINKS, SECURITY_LINKS)
+                }
+            )
+            lifecycle_only = dependency_operation and set(actions) <= {
+                "investment_match.stale"
+            }
+            if (
+                actions
+                and not supports_investment_operation_undo(actions)
+                and not lifecycle_only
+            ):
                 unsupported_actions = sorted(actions)
         # An operation with nothing to reverse — only marker rows (target_id NULL,
         # e.g. a tag.rename matching zero rows) or only no-ops (before == after,

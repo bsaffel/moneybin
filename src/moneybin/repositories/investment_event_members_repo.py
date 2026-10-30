@@ -55,6 +55,21 @@ class InvestmentEventMembersRepo(BaseRepo):
         columns = [c[0] for c in cursor.description]
         return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
 
+    def has_history(self) -> bool:
+        """Whether this profile has crossed the membership-owned identity boundary."""
+        present = self._db.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_catalog = current_database() AND table_schema = ? AND table_name = ?",
+            [INVESTMENT_EVENT_MEMBERS.schema, INVESTMENT_EVENT_MEMBERS.name],
+        ).fetchone()
+        if present is None:
+            return False
+        return (
+            self._db.execute(
+                f"SELECT 1 FROM {INVESTMENT_EVENT_MEMBERS.full_name} LIMIT 1"  # noqa: S608  # fixed TableRef
+            ).fetchone()
+            is not None
+        )  # fixed TableRef
+
     def active_members(self) -> list[dict[str, Any]]:
         """Read the sole active Golden membership authority."""
         return [row for row in self.history() if row["retired_at"] is None]

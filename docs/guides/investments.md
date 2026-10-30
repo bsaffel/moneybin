@@ -331,11 +331,25 @@ An AI client submits `reviews_decide(decisions=[{"kind":"investment_match",
 "decision_id":"<review-id>","decision":"reject"}])`. Every batch containing an
 investment decision requires your response to a human prompt; clients without
 that capability must use the CLI. No confirmation token can substitute for the
-prompt. Acceptance remains unavailable; its repeatable `--field-choice
-<conflict-id>=<choice-id>` contract validates one current observed choice for each
-conflict without changing the ledger.
+prompt. Accept a reviewed Proposal with `moneybin review --type investment-matches
+--confirm <review-id>` and repeat `--field-choice <conflict-id>=<choice-id>` for
+material conflicts. Acceptance consolidates exact reviewed evidence under stable
+Golden IDs, preserving complete lot selections or refusing atomically. Undo
+reconstructs current successors; it never copies old membership rows back into
+service. If rebuilding fails after saving a decision, refresh before reading
+investment-dependent data.
 
 One read tool and three write tools cover the surface. `investments(view=...)` returns `events`, `holdings`, `lots`, `gains`, or `securities` with the same filters as the commands above, and its holdings payload carries `total_market_value`, `market_value_by_currency`, `max_days_since_observed`, and a `warnings` list that counts the unpriced, withheld, and overlapping rows. `investments_record(events=[...])` validates and resolves every account before any row is written, so a bad account ref is a hard failure that aborts the whole batch with nothing written — that failure mode is safe to retry by resubmitting as-is. An unresolved security is a soft, per-event failure instead: that one event is skipped and named by index in `data.error_details`, while every other event in the same call still commits. Retrying by resubmitting the original batch after fixing the security therefore double-inserts the events that already committed; resubmit only the events named in `error_details`; `investments_securities_set` creates or updates a catalog entry including its method; `investments_lots_select` is the selection above. The per-account default method is a field on `accounts_set`. Pulling prices and storing the Tiingo token are CLI-only, the token because a credential must not travel through a model. The [MCP tool reference](../reference/mcp-tools.md#investments) lists every parameter.
+
+Recording rebuilds once per batch and returns the Golden leg IDs ready for
+reads or lot selection. If a batch was saved but rebuilding failed, run
+`moneybin refresh --step transform`, then look up the saved events. Do not
+record that batch again.
+
+Switching `manual`/`plaid` preserves accepted Matches and existing Golden IDs.
+Review the source-switch preview, including changed values and lot selections,
+then confirm once. An unsafe selection blocks the switch without writes.
+Clearing the setting restores eligible evidence and retained field choices.
 
 ## What is not built yet
 
@@ -343,7 +357,7 @@ One read tool and three write tools cover the surface. `investments(view=...)` r
 - **Positions do not fold into net worth.** `reports net-worth` reads balances; a brokerage counts at its reported or asserted balance, and `investments holdings` is the only place market value appears. There is no daily series of what a position was worth on a past date.
 - **No wash-sale detection, Schedule D, or Form 8949.** Lot selection is the tax-loss-harvesting primitive; the workflow around it is planned as a reference package on top of this ledger.
 - **Options, margin, short positions, and derivatives** are outside the ledger. A merger or spin-off is recorded as a `transfer_out` and `transfer_in` pair carrying the basis; there is no single command for either.
-- **A recorded event has no edit or delete.** `import revert` on the event's batch is the undo — including a wrong `--currency`: revert the batch, re-record with the correct value, then `moneybin refresh`. Revert only deletes the batch's rows from the raw layer; events, lots, gains, and holdings read from materialized `core.*` tables, so the reverted event stays visible until refresh rebuilds them.
-- **Manual entry and Plaid sync are not deduplicated on one account.** Recording by hand into an account Plaid also syncs makes every read on that account report `source_overlap` and `system doctor` fail until you choose which history counts: `moneybin accounts set <account> --investment-source-type manual|plaid` (or `accounts_set`). Nothing is deleted, holdings are valued again, and `--clear-investment-source-type` uses both histories again. While `plaid` is chosen, recording a trade into that account is refused.
+- **A recorded event has no edit or delete.** `import revert` on the event's batch is the undo — including a wrong `--currency`: revert the batch, re-record with the correct value, then `moneybin refresh`. A batch used by an accepted Match must have that acceptance undone first. Revert retires standalone membership with the Raw deletion and rebuilds derived data; if rebuilding fails, financial reads remain blocked until refresh succeeds.
+- **Unmatched overlapping histories still require a source choice.** Recording by hand into an account Plaid also syncs can make reads on that account report `source_overlap` and `system doctor` fail until you choose which history counts: `moneybin accounts set <account> --investment-source-type manual|plaid` (or `accounts_set`). Nothing is deleted, holdings are valued again, and `--clear-investment-source-type` uses both histories again. While `plaid` is chosen, recording a trade into that account is refused.
 
 The design, the shipped decisions, and what each of the above waits on are in the [investments overview](../specs/investments-overview.md) and its [data-model spec](../specs/investments-data-model.md).

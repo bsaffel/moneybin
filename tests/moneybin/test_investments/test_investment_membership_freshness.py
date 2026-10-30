@@ -238,8 +238,9 @@ def test_postcommit_rebuild_failure_keeps_accepted_decision_durable(
     assert len(InvestmentMembershipService(comparison_db).project()) == 1
 
 
+@pytest.mark.parametrize("deferred_recovery", ["apply", "restate"])
 def test_real_refresh_recovers_committed_acceptance_and_is_idempotent(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch, deferred_recovery: str
 ) -> None:
     from moneybin.investments.freshness import projection_pending
     from moneybin.services.investment_matching_service import InvestmentMatchingService
@@ -288,3 +289,81 @@ def test_real_refresh_recovers_committed_acceptance_and_is_idempotent(
         "SELECT COUNT(*) FROM core.fct_investment_transactions"
     ).fetchone() == (1,)
     assert InvestmentEventMembersRepo(db).history() == before
+
+    # A deferred source delivery must not masquerade as current before reconciliation.
+    from datetime import date
+    from decimal import Decimal
+
+    from moneybin.connectors.sync_models import SyncInvestmentTransaction
+    from moneybin.extractors.plaid.extractor import PlaidExtractor
+
+    arrived = datetime.now(UTC)
+    incoming = SyncInvestmentTransaction(
+        investment_transaction_id="incoming",
+        account_id="acc_1",
+        provider_item_id="item_1",
+        security_id="sec_1",
+        date=date(2026, 7, 7),
+        name="New delivery",
+        quantity=Decimal(1),
+        amount=Decimal("214.55"),
+        price=Decimal("214.55"),
+        fees=Decimal(0),
+        iso_currency_code="USD",
+        type="buy",
+        subtype="buy",
+    )
+    PlaidExtractor(db)._load_investment_transactions(  # pyright: ignore[reportPrivateUsage]  # synthetic deferred delivery
+        [incoming], "new_delivery", arrived, arrived
+    )
+    assert projection_pending(db)
+    from moneybin.tables import ACCOUNT_SETTINGS
+
+    recovered = (
+        TransformService(db).apply()
+        if deferred_recovery == "apply"
+        else TransformService(db).restate_models([ACCOUNT_SETTINGS.full_name])
+    )
+    assert recovered.applied, recovered.error
+    assert not projection_pending(db)
+    assert any(
+        row["native_reference"] == "incoming"
+        for row in InvestmentEventMembersRepo(db).active_members()
+    )
+
+
+def test_populated_pre_cut_warehouse_is_not_current_without_membership_projection(
+    db: Database,
+) -> None:
+    from moneybin.investments.freshness import (
+        projection_pending,
+        require_current_relations,
+    )
+
+    # A previous release's populated SQLMesh environment, before initial registration.
+    db.execute("CREATE SCHEMA IF NOT EXISTS sqlmesh")
+    db.execute("CREATE TABLE sqlmesh._environments (name VARCHAR)")
+    db.execute("INSERT INTO sqlmesh._environments VALUES ('prod')")
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions (investment_transaction_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES ('legacy_source_id')"
+    )
+    assert not InvestmentEventMembersRepo(db).has_history()
+    assert projection_pending(db)
+    with pytest.raises(UserError) as caught:
+        require_current_relations(db, {"core.fct_investment_transactions"})
+    assert caught.value.code == "refresh_stale"
+
+
+def test_successful_empty_profile_refresh_acknowledges_the_hard_cut(
+    db: Database,
+) -> None:
+    from moneybin.investments.freshness import projection_pending
+    from moneybin.services.transform_service import TransformService
+
+    result = TransformService(db).apply()
+    assert result.applied, result.error
+    assert not InvestmentEventMembersRepo(db).has_history()
+    assert not projection_pending(db)

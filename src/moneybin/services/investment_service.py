@@ -77,6 +77,7 @@ from moneybin.tables import (
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_REALIZED_GAINS,
+    INVESTMENT_EVENT_MEMBERS,
     LOT_SELECTIONS,
     MANUAL_INVESTMENT_TRANSACTIONS,
     SECURITIES,
@@ -1029,8 +1030,9 @@ class InvestmentService:
         - **Pass 2 (write, one transaction).** Every surviving event's rows are
           inserted under ONE ``app.import_log`` batch in ONE DuckDB transaction
           with ONE audit event. A failure part-way rolls the whole batch back,
-          so the tool's "nothing written / safe to retry" contract holds even
-          against an infra error mid-write.
+          so a failed write leaves nothing to retry. After commit, one rebuild
+          returns current Golden IDs; a rebuild failure reports the saved batch
+          and requires rebuilding rather than recording it again.
         """
         if created_by not in _VALID_CREATED_BY:
             raise UserError(
@@ -1320,7 +1322,7 @@ class InvestmentService:
     def _insert_event_row(
         self, *, import_id: str, account_id: str, row: dict[str, object]
     ) -> str:
-        """Insert one raw investment row; return its predicted gold-key id.
+        """Insert one Raw investment row; return its provenance ID.
 
         No transaction management — the caller owns the enclosing transaction so
         multi-row / multi-event writes stay atomic.
@@ -1435,7 +1437,7 @@ class InvestmentService:
             f"investment.record import_id={import_id} type={type_} "
             f"row_count={len(written)} actor={actor}"
         )
-        return written
+        return self._materialize_recorded(written, actor=actor)
 
     def _write_batch(
         self,
@@ -1506,7 +1508,45 @@ class InvestmentService:
             f"investment.record import_id={import_id} event_count={len(groups)} "
             f"row_count={len(written)} actor={actor}"
         )
-        return written
+        return self._materialize_recorded(written, actor=actor)
+
+    def _materialize_recorded(
+        self, provenance_ids: list[str], *, actor: str
+    ) -> list[str]:
+        """Finish committed recording once and resolve exact active Golden identities."""
+        from moneybin.services.transform_service import TransformService
+
+        failure = UserError(
+            "Investment events were saved, but the rebuild did not make their Golden IDs available.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+            hint="Resolve any pending Account, Security or currency issues, run `moneybin refresh --step transform`, then look up the saved events. Do not record them again.",
+        )
+        try:
+            result = TransformService(self._db).apply(actor=actor)
+            if not result.applied or result.error:
+                raise failure
+            identities: list[str] = []
+            for provenance in provenance_ids:
+                matches = self._db.execute(
+                    f"""SELECT m.investment_transaction_id
+                    FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS r
+                    JOIN {INVESTMENT_EVENT_MEMBERS.full_name} AS m
+                      ON m.source_type = r.source_type AND m.source_origin = r.source_origin
+                     AND m.native_reference = r.source_transaction_id
+                     AND m.retired_at IS NULL AND m.member_kind = 'source_event'
+                    JOIN {FCT_INVESTMENT_TRANSACTIONS.full_name} AS f
+                      ON f.investment_transaction_id = m.investment_transaction_id
+                    WHERE r.investment_transaction_id = ?""",  # fixed TableRefs, bound provenance
+                    [provenance],
+                ).fetchall()
+                if len(matches) != 1:
+                    raise failure
+                identities.append(matches[0][0])
+            return identities
+        except Exception as exc:
+            if exc is failure:
+                raise
+            raise failure from exc
 
     # ------------------------------------------------------------------
     # Lot selection (Req 13)

@@ -66,6 +66,12 @@ feature is that wholesale choice, made deliberately by the user, reversible,
 and available now. It does not replace matching. Once matching can accept
 events, a user who wants both histories clears the setting.
 
+The M1J.7 integration in [Investment Event Matching](investment-event-matching.md#source-choice-after-accepting-matches)
+extends this setting to already-accepted Matches: preserve the relationships,
+preview the chosen source's values and lot-selection impact, and confirm one
+atomic switch. Clearing restores the retained field choices and all eligible
+history.
+
 ## Goals
 
 1. One per-account setting chooses which investment source type feeds the

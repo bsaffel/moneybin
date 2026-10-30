@@ -64,6 +64,7 @@ def reconstruct_openings(
     *,
     snapshots: Sequence[Mapping[str, Any]] | None = None,
     guards: Sequence[Mapping[str, Any]] | None = None,
+    source_choices: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[tuple[str, str, str], dict[str, Any]]]:
     """Reuse canonical opening SQL with its transaction input bound to exact choices."""
     snapshots = first_snapshots(db) if snapshots is None else snapshots
@@ -71,14 +72,18 @@ def reconstruct_openings(
         return [], {}
     selected = {
         row["investment_transaction_id"]: row
-        for row in project_members(members, evidence, resolutions)
+        for row in project_members(
+            members, evidence, resolutions, source_choices=source_choices
+        )
     }
     transactions: list[dict[str, Any]] = []
     for member in members:
         if member["source_type"] != "plaid":
             continue
         observed = evidence[source_revision(member)]
-        chosen = selected[member["investment_transaction_id"]]
+        chosen = selected.get(member["investment_transaction_id"])
+        if chosen is None:
+            continue
         transactions.append({
             **observed,
             **{key: chosen[key] for key in ("quantity", "type", "trade_date")},
@@ -127,12 +132,20 @@ def reconstruct_openings(
                 for k in ("source_account_key", "source_security_key", "source_origin")
             )
             == key
+            and m["investment_transaction_id"] in selected
             and row["reconstruction_window_start"]
             <= selected[m["investment_transaction_id"]]["trade_date"]
             <= row["reconstruction_snapshot_date"]
         }
         contexts[key] = {
             "algorithm_version": ALGORITHM_VERSION,
+            "source_choices": {
+                m["bound_account_id"]: source_choices[m["bound_account_id"]]
+                for m in members
+                if source_choices
+                and m["investment_transaction_id"] in leg_ids
+                and m["bound_account_id"] in source_choices
+            },
             "snapshot": {
                 "account_id": key[0],
                 "source_origin": key[2],

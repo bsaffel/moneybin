@@ -107,7 +107,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         ),
         patch(
             "moneybin.orchestration.refresh.TransformService",
-            return_value=MagicMock(apply=transform_apply),
+            return_value=MagicMock(_apply_sqlmesh=transform_apply),
         ),
         patch(
             "moneybin.services.categorization.CategorizationService",
@@ -161,7 +161,7 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
             calls.append("transform")
             return _make_apply_result()
 
-        service.apply.side_effect = _apply
+        service._apply_sqlmesh.side_effect = _apply
         return service
 
     def _categorize(_db: Database) -> StageOutcome:
@@ -501,7 +501,7 @@ def test_refresh_surfaces_failure_while_consuming_written_rates(
     calls: list[str] = []
     patch_all_refresh_stages(monkeypatch, calls)
     transform = MagicMock()
-    transform.apply.side_effect = [
+    transform._apply_sqlmesh.side_effect = [
         _make_apply_result(),
         ApplyResult(applied=False, duration_seconds=2.0, error="SecondPassError"),
     ]
@@ -1577,7 +1577,9 @@ def test_refresh_surfaces_a_blocking_investment_match_failure(
 ) -> None:
     """A planner crash blocks apply and stays on its own stage in every carrier."""
 
-    def _blocked_investment_match(_db: Database, *, actor: str) -> StageOutcome:
+    def _blocked_investment_match(
+        _db: Database, *, actor: str, reconcile_membership: bool = False
+    ) -> StageOutcome:
         return StageOutcome(
             step="investment_match", ran=True, error="injected planner failure"
         )

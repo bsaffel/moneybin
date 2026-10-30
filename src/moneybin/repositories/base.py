@@ -168,20 +168,20 @@ class BaseRepo:
         (or another repo) that already opened a transaction can compose this
         mutation into it — DuckDB does not support nested transactions.
         """
+        from moneybin.investments.dependency_publication import dependency_publication
+
         if in_outer_txn:
-            yield
+            with dependency_publication(self._db):
+                yield
             return
         self._db.begin()
         try:
-            yield
+            with dependency_publication(self._db):
+                yield
+            self._db.commit()
         except BaseException:
-            # Roll back on BaseException, not just Exception, so a
-            # KeyboardInterrupt/SystemExit mid-write doesn't leave the
-            # transaction open. Re-raised immediately — never swallowed.
             self._db.rollback()
             raise
-        else:
-            self._db.commit()
 
     def _emit_audit(
         self,
@@ -225,6 +225,9 @@ class BaseRepo:
             is_undo=is_undo,
             undoes_operation_id=undoes_operation_id,
         )
+        from moneybin.investments.dependency_publication import record_dependency_change
+
+        record_dependency_change(self._db, event)
         app_mutation_audit_emitted_total.labels(
             repository=self.repository, action=action
         ).inc()

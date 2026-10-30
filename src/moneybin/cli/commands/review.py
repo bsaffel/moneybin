@@ -70,7 +70,7 @@ def review_command(
     Use --type to filter to a specific queue, then --confirm/--reject/
     --confirm-all to decide matches, or --type categorize --reject <decision-id>
     to reject a categorization attempt without prompting. Use --type investment-matches
-    --reject to reject an investment Proposal. Investment acceptance remains unavailable.
+    --confirm or --reject to decide one investment Proposal; --field-choice resolves material conflicts.
     """
     review_impl(
         type_=type_,

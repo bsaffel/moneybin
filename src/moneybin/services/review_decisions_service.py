@@ -630,6 +630,22 @@ class ReviewDecisionsService:
                 for item in live
                 if isinstance(item.request, InvestmentMatchDecisionRequest)
             }
+            superseded = {
+                prior
+                for item in live
+                if isinstance(item.request, InvestmentMatchDecisionRequest)
+                and item.request.decision == "accept"
+                for prior in prepared_investments[
+                    item.request.decision_id
+                ].supersedes_decision_ids
+            }
+            reversed_outcomes: list[
+                tuple[Literal["accepted", "rejected", "reversed"], bool]
+            ] = [
+                ("reversed", bool(row["auto_eligible"]))
+                for row in investment_service.history()
+                if row["proposal_id"] in superseded
+            ]
             decision_repo = CategorizationDecisionsRepo(self._db)
             for item in live:
                 if isinstance(item.request, CategorizationDecisionRequest):
@@ -719,17 +735,16 @@ class ReviewDecisionsService:
         except BaseException:
             self._db.rollback()
             raise
+        outcomes: list[tuple[Literal["accepted", "rejected", "reversed"], bool]] = [
+            (
+                "accepted" if item.request.decision == "accept" else "rejected",
+                bool(cast(dict[str, JsonValue], item.before_state)["auto_eligible"]),
+            )
+            for item in live
+            if isinstance(item.request, InvestmentMatchDecisionRequest)
+        ]
         record_committed_investment_decisions(
-            [
-                (
-                    "accepted" if item.request.decision == "accept" else "rejected",
-                    bool(
-                        cast(dict[str, JsonValue], item.before_state)["auto_eligible"]
-                    ),
-                )
-                for item in live
-                if isinstance(item.request, InvestmentMatchDecisionRequest)
-            ],
+            outcomes + reversed_outcomes,
             duration_seconds=perf_counter() - started,
         )
         record_committed_match_effects(effects)
@@ -772,6 +787,31 @@ class ReviewDecisionsService:
                 else None
             ),
         )
+
+    def _investment_dependencies(self) -> dict[str, Any] | None:
+        from moneybin.repositories.investment_event_members_repo import (
+            InvestmentEventMembersRepo,
+        )
+
+        if not InvestmentEventMembersRepo(self._db).has_history():
+            return None
+        from moneybin.investments.event_openings import first_snapshots
+        from moneybin.investments.event_projection import read_rows
+        from moneybin.tables import INVESTMENT_EVENT_LEGS
+
+        return {
+            **InvestmentMatchingService(self._db).decision_dependencies(),
+            "current_facts": read_rows(
+                self._db,
+                f"""SELECT source_event_key, source_type, source_origin,
+                native_reference, observation_version, leg_role, account_id, security_id,
+                currency_code, source_currency_code, account_identity_generation,
+                security_identity_generation, has_resolved_identity
+                FROM {INVESTMENT_EVENT_LEGS.full_name}
+                ORDER BY source_type, source_origin, native_reference""",
+            ),  # fixed TableRef
+            "opening_snapshots": first_snapshots(self._db),
+        }
 
     def _prepare_account(
         self,
@@ -895,6 +935,9 @@ class ReviewDecisionsService:
                 "affected_decisions": decisions,
                 "accepted_links": links,
                 "manual_identity": manual_identity,
+                "investment_membership": self._investment_dependencies()
+                if material_accept
+                else None,
                 "lot_selections": selections,
                 "settings": {
                     "moved": settings.moved,
@@ -1241,6 +1284,9 @@ class ReviewDecisionsService:
                 "accepted_links": links,
                 "securities": securities,
                 "manual_investment_transactions": manual,
+                "investment_membership": self._investment_dependencies()
+                if material_merge
+                else None,
                 "lot_selections": selections,
                 "security_price_overrides": marks,
             }),
@@ -1387,51 +1433,56 @@ class ReviewDecisionsService:
         """Re-preflight then apply every identity decision in one transaction."""
         self._db.begin()
         try:
-            plan = self.plan_identity(decisions)
-            verify(plan)
-            if plan.changed_count == 0:
-                raise UserError(
-                    "Every identity decision is already satisfied.",
-                    code=error_codes.MUTATION_NOTHING_TO_DO,
-                )
-            account_service = AccountLinksService(self._db, actor=self._actor)
-            merchant_service = MerchantLinksService(self._db, actor=self._actor)
-            security_service = SecurityLinksService(self._db, actor=self._actor)
-            for item in plan.items:
-                if not item.changed:
-                    continue
-                request = item.request
-                decided_by = "user" if request.decision == "accept" else "auto"
-                if isinstance(request, AccountLinkDecisionRequest):
-                    account_service.set(
-                        request.decision_id,
-                        target_account_id=request.target_id,
-                        decided_by=decided_by,
-                        in_outer_txn=True,
+            from moneybin.investments.dependency_publication import (
+                dependency_publication,
+            )
+
+            with dependency_publication(self._db):
+                plan = self.plan_identity(decisions)
+                verify(plan)
+                if plan.changed_count == 0:
+                    raise UserError(
+                        "Every identity decision is already satisfied.",
+                        code=error_codes.MUTATION_NOTHING_TO_DO,
                     )
-                elif isinstance(request, MerchantLinkDecisionRequest):
-                    merchant_service.set(
-                        request.decision_id,
-                        target_merchant_id=request.target_id,
-                        decided_by=decided_by,
-                        in_outer_txn=True,
-                    )
-                elif request.decision == "accept":
-                    # Routes on the service's own predicate rather than the plan
-                    # item, so the commit and the preflight that bound the user's
-                    # approval cannot disagree about which mutation runs.
-                    security_service.accept(
-                        request.decision_id,
-                        into=cast(str, request.target_id),
-                        decided_by=decided_by,
-                        in_outer_txn=True,
-                    )
-                else:
-                    security_service.reject_merge(
-                        request.decision_id,
-                        decided_by=decided_by,
-                        in_outer_txn=True,
-                    )
+                account_service = AccountLinksService(self._db, actor=self._actor)
+                merchant_service = MerchantLinksService(self._db, actor=self._actor)
+                security_service = SecurityLinksService(self._db, actor=self._actor)
+                for item in plan.items:
+                    if not item.changed:
+                        continue
+                    request = item.request
+                    decided_by = "user" if request.decision == "accept" else "auto"
+                    if isinstance(request, AccountLinkDecisionRequest):
+                        account_service.set(
+                            request.decision_id,
+                            target_account_id=request.target_id,
+                            decided_by=decided_by,
+                            in_outer_txn=True,
+                        )
+                    elif isinstance(request, MerchantLinkDecisionRequest):
+                        merchant_service.set(
+                            request.decision_id,
+                            target_merchant_id=request.target_id,
+                            decided_by=decided_by,
+                            in_outer_txn=True,
+                        )
+                    elif request.decision == "accept":
+                        # Routes on the service's own predicate rather than the plan
+                        # item, so the commit and the preflight that bound the user's
+                        # approval cannot disagree about which mutation runs.
+                        security_service.accept(
+                            request.decision_id,
+                            into=cast(str, request.target_id),
+                            decided_by=decided_by,
+                            in_outer_txn=True,
+                        )
+                    else:
+                        security_service.reject_merge(
+                            request.decision_id,
+                            decided_by=decided_by,
+                            in_outer_txn=True,
+                        )
             self._db.commit()
         except BaseException:
             self._db.rollback()

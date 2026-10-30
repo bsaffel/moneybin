@@ -18,6 +18,7 @@ import math
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, NamedTuple
+from uuid import uuid4
 
 import pytest
 from prometheus_client import REGISTRY
@@ -26,6 +27,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import PRICE_STALENESS_DAYS
+from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
@@ -51,6 +53,25 @@ def _add_account(db: Database, account_id: str = "acct_brokerage") -> str:
         VALUES (?, 'investment', 'Fidelity', 'manual')
         """,  # test fixture insert, static SQL
         [account_id],
+    )
+    # Recording now performs a real rebuild: the Account must have source evidence.
+    db.execute(
+        """INSERT INTO raw.plaid_accounts
+           (account_id, source_origin, account_type, account_subtype, name,
+            institution_name, source_file, extracted_at)
+           VALUES (?, 'record_fixture', 'investment', 'brokerage',
+                   'Synthetic Brokerage', 'Synthetic Broker', 'record_accounts', NOW())""",
+        [account_id],
+    )
+    AccountLinksRepo(db).insert(
+        link_id=uuid4().hex[:12],
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=account_id,
+        source_type="plaid",
+        source_origin="record_fixture",
+        decided_by="user",
+        actor="test",
     )
     return account_id
 
@@ -536,8 +557,19 @@ class TestRecordEventSigns:
         (txn_id, sec_id, type_, _sub, _grp, qty, _price, amount, _fees, _oad, cb) = (
             rows[0]
         )
-        assert txn_id == ids[0]
-        assert len(txn_id) == 16  # content-hash gold key
+        assert txn_id != ids[0]
+        assert len(txn_id) == 16  # immutable Raw provenance hash
+        assert len(ids[0]) == 12  # independent Golden leg ID
+        assert db.execute(
+            """SELECT f.investment_transaction_id
+               FROM raw.manual_investment_transactions AS r
+               JOIN app.investment_event_members AS m ON m.native_reference = r.source_transaction_id
+                 AND m.source_type = r.source_type AND m.source_origin = r.source_origin
+                 AND m.retired_at IS NULL
+               JOIN core.fct_investment_transactions AS f ON f.investment_transaction_id = m.investment_transaction_id
+               WHERE r.investment_transaction_id = ?""",
+            [txn_id],
+        ).fetchall() == [(ids[0],)]
         assert sec_id == "sec_1"
         assert type_ == "buy"
         assert qty == Decimal("10.0000000000")

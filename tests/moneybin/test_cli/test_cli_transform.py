@@ -509,3 +509,47 @@ class TestTransformRestate:
 
         assert result.exit_code == 0, result.output
         assert "2026-01-01 through 2026-01-31" in confirm.call_args.args[0]
+
+
+def test_investment_restate_uses_prerequisite_aware_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.services.transform_service import ApplyResult, TransformService
+
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+    direct, context = _mock_sqlmesh_context()
+    monkeypatch.setattr("moneybin.cli.commands.transform.sqlmesh_context", direct)
+    with patch.object(
+        TransformService,
+        "apply",
+        return_value=ApplyResult(applied=True, duration_seconds=0),
+    ) as rebuild:
+        result = runner.invoke(
+            app,
+            [
+                "restate",
+                "--model",
+                "core.fct_investment_transactions",
+                "--start",
+                "2026-01-01",
+                "--yes",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    rebuild.assert_called_once()
+    context.plan.assert_not_called()
+
+
+@pytest.mark.parametrize("model", ["*", "unknown_model"])
+def test_restate_opaque_selector_cannot_bypass_membership_gate(
+    monkeypatch: pytest.MonkeyPatch, model: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+    direct, context = _mock_sqlmesh_context()
+    monkeypatch.setattr("moneybin.cli.commands.transform.sqlmesh_context", direct)
+    result = runner.invoke(
+        app, ["restate", "--model", model, "--start", "2026-01-01", "--yes"]
+    )
+    assert result.exit_code != 0
+    assert "exact registered model" in caplog.text
+    context.plan.assert_not_called()

@@ -157,3 +157,39 @@ async def test_mcp_rejection_requires_exact_human_prompt(
         if response == "unsupported":
             assert result.error.code == "mutation_confirmation_required"
             assert "confirmation_token" not in str(result.error.details)
+
+
+def test_cli_acceptance_reports_accepted_golden_membership(
+    comparison_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.moneybin.test_investments.test_investment_match_acceptance import (
+        registered_proposal,
+    )
+
+    matching, proposal, _ = registered_proposal(comparison_db)
+    use_decision_database(monkeypatch, comparison_db)
+    result = CliRunner().invoke(
+        app, ["review", "--type", "investment-matches", "--confirm", proposal]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Accepted" in result.output
+    assert "Rejected" not in result.output
+    assert matching.history()[0]["status"] == "accepted"
+
+
+def test_mcp_acceptance_prompt_describes_golden_value_changes(
+    comparison_db: Database,
+) -> None:
+    from moneybin.mcp.tools.reviews import _investment_batch_message  # pyright: ignore[reportPrivateUsage]  # public human-confirmation wording
+    from moneybin.services.review_decisions_service import ReviewDecisionsService
+    from tests.moneybin.test_investments.test_investment_match_acceptance import (
+        registered_proposal,
+    )
+
+    _, proposal, _ = registered_proposal(comparison_db)
+    plan = ReviewDecisionsService(comparison_db, actor="mcp").plan_ordinary([
+        investment_request(proposal, decision="accept")
+    ])
+    message = _investment_batch_message(plan)
+    assert "Acceptance" in message
+    assert "changes no Golden ledger values" not in message

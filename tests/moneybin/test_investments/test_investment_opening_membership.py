@@ -23,7 +23,12 @@ from tests.moneybin.test_investments.comparison_helpers import (
 
 
 def seed_snapshot(
-    db: Database, file: str, quantity: str = "5", *, account: str = "native_account"
+    db: Database,
+    file: str,
+    quantity: str = "5",
+    *,
+    account: str = "native_account",
+    currency: str | None = "USD",
 ) -> None:
     holding = SyncHolding(
         account_id=account,
@@ -31,7 +36,7 @@ def seed_snapshot(
         security_id="native_security",
         quantity=Decimal(quantity),
         cost_basis=Decimal("50"),
-        iso_currency_code="USD",
+        iso_currency_code=currency,
     )
     at = datetime(2026, 2, 1, tzinfo=UTC)
     extractor = PlaidExtractor(db)

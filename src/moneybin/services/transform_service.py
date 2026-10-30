@@ -218,6 +218,29 @@ def _oldest_execution_scan(model_count: int) -> str:
     """  # kinds are a module constant; names are `?` placeholders
 
 
+def requires_investment_reconciliation(models: Collection[str]) -> bool:
+    """A restate that rebuilds Golden must reconcile exact membership first."""
+    from moneybin import error_codes
+    from moneybin.errors import UserError
+    from moneybin.tables import FCT_INVESTMENT_TRANSACTIONS
+
+    known = (
+        sqlmesh_registry.registered_model_names()
+        | sqlmesh_registry.external_model_names()
+    )
+    if any(name not in known for name in models):
+        raise UserError(
+            "Restatement requires exact registered model names.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+            hint="Use transform status to inspect models; use refresh --step transform for a complete rebuild.",
+        )
+    return any(
+        FCT_INVESTMENT_TRANSACTIONS.full_name
+        in sqlmesh_registry.relations_downstream_of(name)
+        for name in models
+    )
+
+
 @dataclass(frozen=True)
 class TransformFreshness:
     """Snapshot of transform freshness vs. raw imports.
@@ -506,6 +529,10 @@ class TransformService:
         if not requested:
             return ApplyResult(applied=True, duration_seconds=0.0)
 
+        if requires_investment_reconciliation(requested):
+            # A SQL-only restate can otherwise acknowledge Raw that membership never saw.
+            return self.apply()
+
         logger.info(f"Restating {len(requested)} transform model(s)")
         t0 = time.monotonic()
         try:
@@ -591,7 +618,9 @@ class TransformService:
         from moneybin.investments.freshness import projection_pending
 
         return TransformFreshness(
-            pending=bool(missing_models) or raw_ahead or projection_pending(self._db),
+            pending=bool(missing_models)
+            or raw_ahead
+            or projection_pending(self._db, latest_raw_landing=landed_at),
             last_apply_at=self._max_dim_accounts_updated_at(),
             latest_import_at=self._max_completed_import_at(),
             missing_models=missing_models,

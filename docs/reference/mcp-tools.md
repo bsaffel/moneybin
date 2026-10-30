@@ -117,7 +117,7 @@ Access: write, not idempotent. Sensitivity: at least `low`.
 
 ### accounts_set
 
-Update account settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type: depository/credit/loan/investment/other; subtype unchanged; clear restores source evidence. Noncanonical account_subtype/holder_category values warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid types/methods raise mutation_invalid_input. investment_source_type: manual/plaid selects ledger history; clear uses both; evidence is retained. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not date-scoped. include_in_net_worth=False excludes active accounts too. Audited app.account_settings writes; restore values or use system_audit_undo. Amounts use summary.display_currency.
+Update account settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type: depository/credit/loan/investment/other; clear restores source evidence. Noncanonical subtype/holder values warn; invalid types or cost-basis methods fail. default_cost_basis_method: fifo/hifo/specific/average. investment_source_type: manual/plaid; clear uses both. Source changes preserve Matches and require a financial/lot-selection preview and bound confirmation. is_archived excludes all net-worth history; include_in_net_worth acts independently. Other fields set names, last_four, currency and credit_limit. Audited app.account_settings writes; restore values or system_audit_undo. Amounts use summary.display_currency.
 
 Access: write, idempotent. Sensitivity: at least `critical`.
 
@@ -137,6 +137,7 @@ Access: write, idempotent. Sensitivity: at least `critical`.
 | `include_in_net_worth` | boolean |  |  |
 | `is_archived` | boolean |  |  |
 | `clear_fields` | array of string |  |  |
+| `confirmation_token` | string |  |  |
 
 ### export_run
 
@@ -448,7 +449,7 @@ Access: write, idempotent. Sensitivity: at least `high`.
 
 ### investments_record
 
-Record investment ledger events as one validated batch. Quantity and cash signs follow the investment event convention; no revert tool.
+Record investment ledger events as one validated batch. Quantity and cash signs follow the investment event convention. Rebuilds once and returns usable Golden IDs; a saved-batch rebuild failure must be retried as refresh.
 
 Access: write, idempotent. Sensitivity: at least `low`.
 
@@ -561,7 +562,7 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### reviews_decide
 
-Accept or reject an atomic batch of transaction, match, or investment_match review decisions. Investment rejection requires human Elicitation for the complete batch; investment acceptance remains unavailable. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts — reverse either with system_audit_undo. Keep auto-rule and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed — an accept that loses that tiebreak reads 'reversed'.
+Accept or reject an atomic batch of transaction, match, or investment_match review decisions. Investment decisions require human Elicitation for the complete batch; acceptance preserves exact evidence and complete lot selections under stable Golden IDs. Auto-rule decisions use kind='auto_rule'; inspect estimated_match_count before allow_broad. Rule conflicts use kind='rule_conflict' with replace, reprioritize or cancel. Keep auto-rule and rule-conflict decisions in separate calls. Audits write app.categorization_rules and app.rule_conflicts; undo with system_audit_undo. Accepting a match can reverse an accepted transfer when one component holds both legs: transfers_retired counts those; each status reports what committed, including 'reversed' when an accept loses that tiebreak.
 
 Access: write, idempotent. Sensitivity: at least `high`.
 
