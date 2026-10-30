@@ -1,22 +1,25 @@
 """Transactional review-only investment planning and durable inspection."""
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
 from moneybin import error_codes
 from moneybin.database import Database, has_column
 from moneybin.errors import UserError
-from moneybin.investments.event_planning import evaluate_plan
+from moneybin.investments.event_choices import validate_selection
+from moneybin.investments.event_planning import PlanningResult, Proposal, evaluate_plan
 from moneybin.metrics.registry import (
+    INVESTMENT_MATCH_DECISIONS_TOTAL,
     INVESTMENT_MATCH_DURATION_SECONDS,
     INVESTMENT_MATCH_PROPOSALS_TOTAL,
 )
 from moneybin.repositories.investment_match_decisions_repo import (
     InvestmentMatchDecisionsRepo,
 )
+from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     INVESTMENT_EVENT_EVIDENCE,
@@ -26,6 +29,33 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def supports_investment_rejection_undo(actions: Iterable[str]) -> bool:
+    """Only rejection operations and their dependent staleness have an inverse."""
+    selected = set(actions)
+    return "investment_match.reject" in selected and selected <= {
+        "investment_match.reject",
+        "investment_match.stale",
+    }
+
+
+def record_committed_investment_decisions(
+    auto_eligible: Sequence[bool], *, duration_seconds: float
+) -> None:
+    """Publish bounded first-decision telemetry only after its transaction commits."""
+    if not auto_eligible:
+        return
+    try:
+        for eligible in auto_eligible:
+            INVESTMENT_MATCH_DECISIONS_TOTAL.labels(
+                decision="rejected", auto_eligible=str(eligible).lower()
+            ).inc()
+        INVESTMENT_MATCH_DURATION_SECONDS.labels(operation="decision").observe(
+            duration_seconds
+        )
+    except Exception:
+        logger.warning("Investment decision telemetry could not be recorded")
 
 
 @dataclass(frozen=True)
@@ -219,6 +249,128 @@ class InvestmentMatchingService:
     def pending(self) -> list[dict[str, Any]]:
         """Read persisted pending evidence without rerunning assignment."""
         return [row for row in self._repo.all_rows() if row["status"] == "pending"]
+
+    def _decision_plan(self, existing: list[dict[str, Any]]) -> PlanningResult:
+        if any(
+            row["status"] == "accepted" or row["accepted_at"] is not None
+            for row in existing
+        ):
+            raise UserError(
+                "Active investment membership is unavailable for decisions.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        return evaluate_plan(
+            self._facts(INVESTMENT_EVENT_HEADERS),
+            self._facts(INVESTMENT_EVENT_LEGS),
+            self._facts(INVESTMENT_EVENT_EVIDENCE),
+            decisions=existing,
+        )
+
+    def prepare_decision(
+        self,
+        decision_id: str,
+        *,
+        decision: Literal["accept", "reject"],
+        field_choices: Sequence[Mapping[str, str]] = (),
+    ) -> Proposal:
+        """Recompute current revisions, dependencies, constraints and assignment."""
+        if decision == "reject" and field_choices:
+            raise UserError(
+                "Reject forbids field choices.", code=error_codes.MUTATION_INVALID_INPUT
+            )
+        existing = self._repo.all_rows()
+        row = next((r for r in existing if r["proposal_id"] == decision_id), None)
+        if row is None:
+            raise UserError(
+                "No investment Proposal exists for this id.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        current = self._decision_plan(existing)
+        proposal = next(
+            (
+                p
+                for p in current.proposals
+                if p.relationship_fingerprint == row["relationship_fingerprint"]
+                and p.candidate_graph_fingerprint == row["candidate_graph_fingerprint"]
+            ),
+            None,
+        )
+        if row["status"] != "pending" or proposal is None:
+            raise UserError(
+                "Investment Proposal is stale; run investment matching again.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        if decision == "accept":
+            validate_selection(proposal.legs, proposal.field_choices, field_choices)
+            raise UserError(
+                "Investment match acceptance is unavailable until atomic Golden materialization exists.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        return proposal
+
+    def invalidate_pending(self, *, actor: str, parent_audit_id: str) -> None:
+        """Stale changed assignment space in the caller's decision transaction."""
+        existing = self._repo.all_rows()
+        desired = {
+            (p.relationship_fingerprint, p.candidate_graph_fingerprint)
+            for p in self._decision_plan(existing).proposals
+        }
+        for row in existing:
+            if (
+                row["status"] == "pending"
+                and (
+                    row["relationship_fingerprint"],
+                    row["candidate_graph_fingerprint"],
+                )
+                not in desired
+            ):
+                self._repo.mark_stale(
+                    row["proposal_id"],
+                    actor=actor,
+                    in_outer_txn=True,
+                    parent_audit_id=parent_audit_id,
+                )
+
+    def decide(
+        self,
+        decision_id: str,
+        *,
+        decision: Literal["accept", "reject"],
+        actor: str,
+        field_choices: Sequence[Mapping[str, str]] = (),
+    ) -> None:
+        """Commit a whole-Proposal rejection and affected stale rows atomically."""
+        started = perf_counter()
+        self._db.begin()
+        try:
+            proposal = self.prepare_decision(
+                decision_id, decision=decision, field_choices=field_choices
+            )
+            event = self._repo.reject(decision_id, actor=actor, in_outer_txn=True)
+            self.invalidate_pending(actor=actor, parent_audit_id=event.audit_id)
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        record_committed_investment_decisions(
+            [proposal.auto_eligible], duration_seconds=perf_counter() - started
+        )
+
+    def undo_rejections(self, events: Sequence[AuditEvent], *, actor: str) -> None:
+        """Undo constraints as an operation; never restore historical row images."""
+        rejections = [
+            event for event in events if event.action == "investment_match.reject"
+        ]
+        if not supports_investment_rejection_undo(event.action for event in events):
+            raise UserError(
+                "Only investment rejection operations have an available undo path.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        inverses = [
+            self._repo.undo_rejection(event, actor=actor)
+            for event in reversed(rejections)
+        ]
+        self.invalidate_pending(actor=actor, parent_audit_id=inverses[-1].audit_id)
 
     def history(self) -> list[dict[str, Any]]:
         """Read historical lifecycle rows with their original review evidence."""

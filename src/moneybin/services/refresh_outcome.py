@@ -39,6 +39,8 @@ class StageOutcome:
     # which is the actual hazard a bare ``{}`` default would have.
     counts: Mapping[str, int] = field(default_factory=dict)
     error: str | None = None
+    # Internal recovery classification; public stage rows retain their existing shape.
+    error_code: str | None = None
 
     def count(self, key: str) -> int:
         """One of this step's counts, or 0 when it did not report that key.
@@ -77,11 +79,9 @@ def best_effort(stages: Sequence[StageOutcome]) -> tuple[StageOutcome, ...]:
     answers a different question than the rest: its own crash always
     hard-fails the run, every carrier reports it separately as
     ``transforms_error``, and it gates a non-zero exit the best-effort steps
-    do not. (``investment_match`` can also hard-fail the run — it blocks
-    apply from running at all — but it stays in ``best_effort`` here: only a
-    *blocking* investment_match crash sets ``transforms_error``, so a caller
-    already reads that field to tell a block apart from an ordinary
-    best-effort crash of this step.) A caller asking "did something degrade
+    do not. ``investment_match`` can block apply, but its error belongs only
+    to its stage; ``transform_blocked`` identifies that prerequisite failure.
+    A caller asking "did something degrade
     that I can offer a retry for?" and counting the apply answers yes for a
     blocker, and sends the user to a retry instead of a fix.
 
@@ -118,6 +118,8 @@ class RefreshStepOutcome:
 
     # What each step that ran actually did, in canonical order.
     stages: tuple[StageOutcome, ...] = field(default_factory=tuple)
+    # Expanded request, including steps prevented from running by a prerequisite.
+    requested_steps: tuple[str, ...] = field(default_factory=tuple)
     # Only the domains that failed; an empty tuple means the pass ran clean.
     identity_errors: tuple[str, ...] = field(default_factory=tuple)
     rate_pairs_failed: tuple[str, ...] = field(default_factory=tuple)
@@ -127,6 +129,14 @@ class RefreshStepOutcome:
     def stage(self, step: str) -> StageOutcome | None:
         """This outcome's entry for one step. See :func:`find_stage`."""
         return find_stage(self.stages, step)
+
+    @property
+    def transform_blocked(self) -> bool:
+        """A requested apply could not start because investment planning failed."""
+        stage = self.stage("investment_match")
+        return bool(
+            "transform" in self.requested_steps and stage is not None and stage.error
+        )
 
     @property
     def has_failure(self) -> bool:

@@ -121,6 +121,34 @@ contributed to it. Not lineage — see **"Provenance"** under Flagged
 ambiguities.
 _Avoid_: history, audit trail, source tracking
 
+### Financial time
+
+**Business date**:
+The source-defined calendar day a financial fact belongs to.
+_Avoid_: transaction timestamp, ingestion date
+
+**Source as-of time**:
+When a source says an observation was valid. A source update time instead
+records when the source says its claim changed.
+_Avoid_: fetch time, arrival time
+
+**Broker fetch time**:
+When the sync server obtained a source response.
+_Avoid_: source as-of time, local arrival time
+
+**Local arrival time**:
+When MoneyBin received or recorded an observation locally.
+_Avoid_: business date, source update time
+
+**Row freshness**:
+The latest contributing input time under a model's freshness rule; it can
+change independently of when the financial fact occurred.
+_Avoid_: source recency, change cursor
+
+**Model freshness**:
+When a model's definition, metadata, or execution was last applied.
+_Avoid_: row freshness, observation time
+
 ### Money
 
 **Transaction**:
@@ -324,9 +352,21 @@ _Avoid_: masking, sanitization, scrubbing, anonymization, obfuscation
 
 **Consent**:
 The user's recorded, revocable grant pairing one feature category with the one
-AI backend that may receive data for it. It is a ledger of what the user
-intends: the gate that withholds data per call is not yet built.
+recipient that may receive data for it: an AI backend, or an **AI host**. A
+persistent grant is a ledger row; a one-time consent leaves only its audit row.
+The per-call gate is enforced for one category, `smart-import-parsing` (PDF
+content reaching an AI host); the other categories remain ledger-only.
 _Avoid_: permission, opt-in, authorization, approval
+
+**AI host**:
+The app a person drives MoneyBin with (Claude Desktop, Claude Code, Cursor),
+identified from the MCP `clientInfo` name or a known agent-shell environment
+marker, as reported by the client. A remembered **Consent** for PDF content is
+tied to one AI host and its vendor-terms version; a host MoneyBin cannot
+identify gets one-time consent only, and so does any approval an agent carries
+(a relayed token or CLI flag): only the person answering MoneyBin directly can
+remember one.
+_Avoid_: client, agent (when the recipient of consent is meant)
 
 ### Verification
 

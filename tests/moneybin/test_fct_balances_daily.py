@@ -12,9 +12,10 @@ from __future__ import annotations
 import importlib.util
 import typing as t
 from collections.abc import Generator, Iterable
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -144,8 +145,7 @@ def _ts(day: str) -> pd.Timestamp:
 def _observation(
     account_id: str, day: str, balance: str, currency: str | None = "USD"
 ) -> tuple[object, ...]:
-    # fetchdf() returns DECIMAL as float64; the model recovers it via str().
-    return (account_id, _ts(day), float(balance), "ofx", _ts(day), currency)
+    return (account_id, _ts(day), balance, "ofx", _ts(day), currency)
 
 
 def _evidence(account_id: str, first: str, last: str) -> tuple[object, ...]:
@@ -378,3 +378,57 @@ def test_evidence_spans_first_to_last_across_kinds(evidence_db: Database) -> Non
 def test_evidence_drops_a_null_account_id(evidence_db: Database) -> None:
     evidence_db.execute("INSERT INTO t_txn VALUES (NULL, '2026-01-03')")
     assert _evidence_rows(evidence_db) == {}
+
+
+@pytest.mark.parametrize(
+    ("balance", "amount", "expected"),
+    [
+        ("999999999999999.91", "0.02", "999999999999999.93"),
+        ("1.00", "999999999999999.91", "1000000000000000.91"),
+    ],
+)
+def test_execute_preserves_cents_across_pandas_boundary(
+    evidence_db: Database, balance: str, amount: str, expected: str
+) -> None:
+    """The full DECIMAL(18,2) range survives observations and daily net amounts."""
+    db = evidence_db
+    db.execute("ALTER TABLE t_txn ADD COLUMN currency_code VARCHAR")
+    db.execute("ALTER TABLE t_txn ADD COLUMN amount DECIMAL(18,2)")
+    db.execute("INSERT INTO t_txn VALUES ('cash', '2026-01-02', 'USD', ?)", [amount])
+    db.execute(
+        """
+        CREATE TABLE t_obs AS SELECT 'cash' AS account_id,
+            DATE '2026-01-01' AS balance_date,
+            ?::DECIMAL(18,2) AS balance,
+            'ofx' AS source_type, TIMESTAMP '2026-01-01' AS updated_at,
+            'USD' AS currency_code, 'file' AS source_ref
+        """,
+        [balance],
+    )
+    db.execute("""
+        CREATE TABLE t_sf (account_id VARCHAR, balance_date DATE, source_file VARCHAR,
+            loaded_at TIMESTAMP)
+        """)
+    db.execute("""
+        CREATE TABLE t_accounts AS SELECT 'cash' AS account_id,
+            TRUE AS include_in_net_worth, FALSE AS archived,
+            NULL::TIMESTAMP AS archived_at, 'USD' AS currency_code
+        """)
+    tables = {
+        "core.fct_balances": "t_obs",
+        "prep.stg_simplefin__balances": "t_sf",
+        "core.fct_transactions": "t_txn",
+        "core.fct_investment_transactions": "t_inv",
+        "core.dim_holdings_broker_reported": "t_broker",
+        "prep.int_accounts__merged": "t_accounts",
+    }
+
+    def fetchdf(sql: str) -> pd.DataFrame:
+        return db.execute(sql).fetchdf()
+
+    context = SimpleNamespace(resolve_table=tables.__getitem__, fetchdf=fetchdf)
+    frame = next(_mod.execute(context, datetime.min, datetime.min, datetime.min))
+    assert list(frame["balance"]) == [
+        Decimal(balance),
+        Decimal(expected),
+    ]

@@ -37,7 +37,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`refresh_run`](#refresh_run) | Run the post-load refresh pipeline. | write, idempotent | at least `medium` |
 | [`reports`](#reports) | Browse registered financial reports or run one by stable report ID. | read-only, idempotent | up to `critical` |
 | [`reviews`](#reviews) | Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. | read-only, idempotent | up to `critical` |
-| [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. | write, idempotent | at least `low` |
+| [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, or investment_match review decisions. | write, idempotent | at least `high` |
 | [`sql_query`](#sql_query) | Execute a read-only SQL query against the database. | read-only, idempotent | up to `critical` |
 | [`sql_schema`](#sql_schema) | Return the curated database schema. | read-only, idempotent | up to `critical` |
 | [`sync_disconnect`](#sync_disconnect) | Disconnect one institution connection or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `medium` |
@@ -48,7 +48,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`system_audit_undo`](#system_audit_undo) | Undo one complete audited operation by operation_id. | write, idempotent | at least `low` |
 | [`system_status`](#system_status) | Return selected operator status sections. | write, idempotent | up to `medium` |
 | [`taxonomy`](#taxonomy) | Read categories or merchant mappings with deterministic filtering and exact cursor pagination. | read-only, idempotent | up to `medium` |
-| [`taxonomy_set`](#taxonomy_set) | Atomically declare categories present, inactive, or absent and merchant mappings present or absent. | write, destructive, idempotent | at least `low` |
+| [`taxonomy_set`](#taxonomy_set) | Atomically declare category, merchant, and imported category-term target states. | write, destructive, idempotent | at least `low` |
 | [`transactions`](#transactions) | Query operational transactions with exact cursor pagination. | read-only, idempotent | at least `high` |
 | [`transactions_annotate`](#transactions_annotate) | Atomically add, edit, or delete stable-ID notes; declare complete tag and split states; or rename one tag globally. | write, destructive, not idempotent | at least `low` |
 | [`transactions_categorize_assist`](#transactions_categorize_assist) | Fetch uncategorized transactions as PII-scrubbed records for LLM-assisted categorization. | read-only, idempotent | at least `medium` |
@@ -346,7 +346,7 @@ Access: write, not idempotent. Sensitivity: up to `critical`.
 
 ### import_files
 
-Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or "new"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them.
+Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or "new"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. PDFs needing AI help send nothing until the person consents: MoneyBin returns one consent_request, or prompts the person directly. Relay its risk_statement verbatim; only on a yes repeat with confirmation_token, which covers that request only. Consented PDFs return a preview_id for import_confirm.
 
 Access: write, not idempotent. Sensitivity: at least `critical`.
 
@@ -356,6 +356,7 @@ Access: write, not idempotent. Sensitivity: at least `critical`.
 | `refresh` | boolean | `true` |  |
 | `force` | boolean | `false` |  |
 | `account_bindings` | object of string |  |  |
+| `confirmation_token` | string |  |  |
 
 ### import_inbox_sync
 
@@ -380,7 +381,7 @@ Access: write, idempotent. Sensitivity: at least `medium`.
 
 ### import_preview
 
-Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping — it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged.
+Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping — it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged. A PDF needing AI help first returns ai_assistance_required: nothing is sent until the person consents. Show them consent_request.risk_statement verbatim; only on a yes repeat with confirmation_token, which covers that request only. Only the account numbers, routing numbers and SSNs MoneyBin identified are redacted.
 
 Access: write, not idempotent. Sensitivity: up to `critical`.
 
@@ -389,6 +390,7 @@ Access: write, not idempotent. Sensitivity: up to `critical`.
 | `file_path` | string |  | required |
 | `mapping` | object of string |  |  |
 | `omit_fields` | array of string |  |  |
+| `confirmation_token` | string |  |  |
 
 ### import_revert
 
@@ -546,26 +548,26 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### reviews
 
-Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted.
+Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted. kind='source_categories' holds category terms imported files carry: pending terms have no mapping yet, history holds mapped and ignored terms; resolve either with taxonomy_set kind='source_category'.
 
 Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `kind` | one of `summary`, `categorization`, `auto_rules`, `matches`, `investment_matches`, `rule_conflicts`, `account_links`, `merchant_links`, `security_links` | `summary` |  |
+| `kind` | one of `summary`, `categorization`, `auto_rules`, `matches`, `investment_matches`, `rule_conflicts`, `account_links`, `merchant_links`, `security_links`, `source_categories` | `summary` |  |
 | `status` | one of `pending`, `history` | `pending` |  |
 | `limit` | integer | `100` | ≥ 1 |
 | `cursor` | string |  |  |
 
 ### reviews_decide
 
-Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts — reverse either with system_audit_undo. Keep each kind in its own call. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed — an accept that loses that tiebreak reads 'reversed'.
+Accept or reject an atomic batch of transaction, match, or investment_match review decisions. Investment rejection requires human Elicitation for the complete batch; investment acceptance remains unavailable. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts — reverse either with system_audit_undo. Keep auto-rule and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed — an accept that loses that tiebreak reads 'reversed'.
 
-Access: write, idempotent. Sensitivity: at least `low`.
+Access: write, idempotent. Sensitivity: at least `high`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `decisions` | array of one of `categorization`, `match`, `auto_rule`, `rule_conflict` |  | required |
+| `decisions` | array of one of `categorization`, `match`, `investment_match`, `auto_rule`, `rule_conflict` |  | required |
 
 #### Variants of `decisions`
 
@@ -591,6 +593,17 @@ Accept or reject one transaction-match proposal.
 | `kind` | `match` |  | required |
 | `decision_id` | string |  | required; min length 1; max length 64 |
 | `decision` | one of `accept`, `reject` |  | required |
+
+##### `investment_match`
+
+Decide one whole investment Proposal with an exact choice set.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `investment_match` |  | required |
+| `decision_id` | string |  | required; min length 1; max length 64 |
+| `decision` | one of `accept`, `reject` |  | required |
+| `field_choices` | array of object |  | forbidden when `decision` is `reject` |
 
 ##### `auto_rule`
 
@@ -712,7 +725,7 @@ Access: read-only, idempotent. Sensitivity: up to `high`.
 
 ### system_audit_undo
 
-Undo one complete audited operation by operation_id. The inverse mutation is itself audited and undoable; dependency conflicts return the blocking operation IDs.
+Undo one complete audited operation by operation_id. The inverse mutation is itself audited; redo is offered only when supported. Dependency conflicts return the blocking operation IDs.
 
 Access: write, idempotent. Sensitivity: at least `low`.
 
@@ -747,13 +760,13 @@ Access: read-only, idempotent. Sensitivity: up to `medium`.
 
 ### taxonomy_set
 
-Atomically declare categories present, inactive, or absent and merchant mappings present or absent. The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.
+Atomically declare category, merchant, and imported category-term target states. Categories are present, inactive, or absent; merchant mappings present or absent; imported terms (kind='source_category', listed by reviews(kind='source_categories')) present, mapped to a category that may be one the same batch creates, ignored, or absent. A changed term re-categorizes its transactions at once; results report categorized and recategorized. Terms are stored in app.category_source_map; every write is audited and undone with system_audit_undo(operation_id=...). The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.
 
 Access: write, destructive, idempotent. Sensitivity: at least `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `items` | array of one of `category`, `merchant` |  | required |
+| `items` | array of one of `category`, `merchant`, `source_category` |  | required |
 | `confirmation_token` | string |  |  |
 
 #### Variants of `items`
@@ -786,6 +799,22 @@ Declare one merchant mapping's target state.
 | `match_type` | one of `exact`, `contains`, `regex` |  | forbidden when `state` is `absent` |
 | `category` | string |  | min length 1; max length 100; forbidden when `state` is `absent`; required when `subcategory` is set |
 | `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `absent` |
+
+##### `source_category`
+
+Declare one imported category term's mapping state.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `kind` | `source_category` |  | required |
+| `state` | one of `present`, `ignored`, `absent` |  | required |
+| `source_type` | string |  | min length 1; max length 100 |
+| `source_origin` | string |  | required |
+| `source_category_code` | string |  | required; min length 1 |
+| `source_subcategory_code` | string |  | min length 1 |
+| `category_id` | string |  | min length 1; max length 64; forbidden when `state` is `ignored` or `absent` |
+| `category` | string |  | min length 1; max length 100; forbidden when `state` is `ignored` or `absent` |
+| `subcategory` | string |  | min length 1; max length 100; forbidden when `state` is `ignored` or `absent` |
 
 ### transactions
 

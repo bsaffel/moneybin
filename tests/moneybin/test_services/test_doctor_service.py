@@ -6875,3 +6875,36 @@ def test_unproposed_check_skips_without_echoing_the_raw_cause() -> None:
     assert result.detail is not None
     assert "SAFEWAY" not in result.detail
     assert "81.27" not in result.detail
+
+
+@pytest.mark.parametrize("include_in_net_worth", [True, False])
+def test_sync_completeness_doctor_supplies_provider_window_and_review_recovery(
+    db: Database, include_in_net_worth: bool
+) -> None:
+    from moneybin.connectors.sync_models import ScopeOutcome
+    from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
+    from tests.moneybin.test_services.test_sync_completeness import (
+        _bind,  # pyright: ignore[reportPrivateUsage]  # shared synthetic fixture
+        _history,  # pyright: ignore[reportPrivateUsage]  # shared synthetic fixture
+    )
+
+    data = source()
+    data.outcomes = [
+        ScopeOutcome(
+            account_id="acct",
+            native_scope=_history(1).accounts[0].native_scope,
+            window=data.batches[0].window,
+            status="partial",
+            error_code="provider_error",
+        )
+    ]
+    load(db, data, status="partial")
+    _bind(db, include=include_in_net_worth)
+    result = DoctorService(db)._run_sync_completeness()  # pyright: ignore[reportPrivateUsage]  # focused invariant regression
+    assert result.status == "warn"
+    assert "SimpleFIN" in (result.detail or "")
+    assert ": ." not in (result.detail or "")
+    assert "2026-09-01" in (result.detail or "")
+    assert "2026-09-20" in (result.detail or "")
+    assert "acct" not in result.affected_ids
+    assert any(action.tool == "reviews" for action in result.recovery_actions or [])

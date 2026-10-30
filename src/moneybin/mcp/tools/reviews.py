@@ -1,8 +1,9 @@
-"""Normalized boundaries across MoneyBin's seven review queues."""
+"""Normalized boundaries across MoneyBin's review queues."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -18,7 +19,11 @@ from moneybin.adapters.matching_adapters import (
     match_history_row,
     match_pending_row,
 )
-from moneybin.adapters.rematch_report import rematch_actions, rematch_count
+from moneybin.adapters.rematch_report import (
+    rematch_actions,
+    rematch_count,
+    rematch_recovery_actions,
+)
 from moneybin.config import get_settings
 from moneybin.database import Database, get_database
 from moneybin.errors import (
@@ -61,6 +66,7 @@ from moneybin.privacy.payloads.reviews import (
     CategorizationReviewRow,
     IdentityDecisionOutcome,
     IdentityLinksDecidePayload,
+    InvestmentMatchDetails,
     MatchHistoryDetails,
     MatchPendingDetails,
     MatchReviewRow,
@@ -80,6 +86,7 @@ from moneybin.privacy.payloads.reviews import (
     ReviewsMerchantLinksView,
     ReviewsRuleConflictsView,
     ReviewsSecurityLinksView,
+    ReviewsSourceCategoriesView,
     ReviewsSummaryView,
     ReviewStatus,
     RuleConflictHistoryDetails,
@@ -90,6 +97,9 @@ from moneybin.privacy.payloads.reviews import (
     SecurityLinkHistoryDetails,
     SecurityLinkPendingDetails,
     SecurityLinkReviewRow,
+    SourceCategoryHistoryDetails,
+    SourceCategoryPendingDetails,
+    SourceCategoryReviewRow,
 )
 from moneybin.privacy.sensitivity import Sensitivity
 from moneybin.privacy.taxonomy import Tier
@@ -110,10 +120,12 @@ from moneybin.protocol.pagination import (
 from moneybin.protocol.write_contracts import (
     AutoRuleDecisionRequest,
     IdentityDecisionRequest,
+    InvestmentMatchDecisionRequest,
     OrdinaryReviewDecisionRequest,
     ReviewDecisionRequest,
     RuleConflictDecisionRequest,
 )
+from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.auto_rule_service import AutoRuleService
@@ -130,7 +142,9 @@ from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
+    OrdinaryDecisionPlanItem,
     ReviewDecisionsService,
+    ordinary_confirmation_state,
 )
 from moneybin.services.security_links_service import SecurityLinksService
 from moneybin.temporal import format_utc
@@ -146,6 +160,7 @@ _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
     "account_links",
     "merchant_links",
     "security_links",
+    "source_categories",
 )
 
 
@@ -768,6 +783,94 @@ def _security_link_history_rows(
     return result
 
 
+def _source_term_label(
+    source_type: str, source_origin: str, category: str, subcategory: str | None
+) -> str:
+    """Name one imported term the way its source wrote it."""
+    term = f"{category} / {subcategory}" if subcategory else category
+    return f"{source_type}/{source_origin or '-'}: {term}"
+
+
+def _pending_source_category_rows(
+    service: CategorizationService,
+) -> list[SourceCategoryReviewRow]:
+    """Project the unmapped imported terms as one pending queue."""
+    return [
+        SourceCategoryReviewRow(
+            decision_id=CategorySourceMapRepo.target_id(
+                term.source_type,
+                term.source_origin,
+                term.category,
+                term.subcategory or "",
+            ),
+            status="pending",
+            created_at=None,
+            summary=(
+                f"{_source_term_label(term.source_type, term.source_origin, term.category, term.subcategory)}"
+                f" ({term.transaction_count} uncategorized)"
+            ),
+            details=SourceCategoryPendingDetails(
+                source_type=term.source_type,
+                source_origin=term.source_origin,
+                source_category_code=term.category,
+                source_subcategory_code=term.subcategory,
+                transaction_count=term.transaction_count,
+                suggestions=term.suggestions,
+            ),
+        )
+        for term in service.list_unmapped_source_terms()
+    ]
+
+
+def _source_category_history_rows(
+    service: CategorizationService,
+) -> list[SourceCategoryReviewRow]:
+    """Project the curated imported-term mappings, mapped and ignored."""
+    rows: list[SourceCategoryReviewRow] = []
+    for mapping in service.list_source_term_mappings():
+        label = _source_term_label(
+            mapping.source_type,
+            mapping.source_origin,
+            mapping.category,
+            mapping.subcategory,
+        )
+        target = (
+            "ignored"
+            if mapping.category_id is None
+            else (
+                f"{mapping.mapped_category} / {mapping.mapped_subcategory}"
+                if mapping.mapped_subcategory
+                else str(mapping.mapped_category or mapping.category_id)
+            )
+        )
+        rows.append(
+            SourceCategoryReviewRow(
+                decision_id=CategorySourceMapRepo.target_id(
+                    mapping.source_type,
+                    mapping.source_origin,
+                    mapping.category,
+                    mapping.subcategory or "",
+                ),
+                status="history",
+                created_at=_text(mapping.updated_at),
+                summary=f"{label} -> {target}",
+                details=SourceCategoryHistoryDetails(
+                    source_type=mapping.source_type,
+                    source_origin=mapping.source_origin,
+                    source_category_code=mapping.category,
+                    source_subcategory_code=mapping.subcategory,
+                    target_state="ignored"
+                    if mapping.category_id is None
+                    else "present",
+                    category_id=mapping.category_id,
+                    category=mapping.mapped_category,
+                    subcategory=mapping.mapped_subcategory,
+                ),
+            )
+        )
+    return rows
+
+
 def _load_review_view(
     db: Database,
     *,
@@ -829,6 +932,14 @@ def _load_review_view(
             else _merchant_link_history_rows(merchant_service)
         )
         return ReviewsMerchantLinksView(status=status, rows=rows)
+    if kind == "source_categories":
+        source_service = CategorizationService(db)
+        rows = (
+            _pending_source_category_rows(source_service)
+            if status == "pending"
+            else _source_category_history_rows(source_service)
+        )
+        return ReviewsSourceCategoriesView(status=status, rows=rows)
     security_service = SecurityLinksService(db, actor="mcp")
     rows = (
         _pending_security_link_rows(security_service)
@@ -852,6 +963,9 @@ def _review_key_contract(
     status: ReviewStatus,
 ) -> tuple[tuple[type[object], ...], tuple[SortDirection, ...]]:
     """Return the typed immutable ordering contract for one review queue."""
+    if kind == "source_categories":
+        # The term itself, in both statuses: the pending count is mutable.
+        return ((str, str, str, str), ("asc", "asc", "asc", "asc"))
     if kind == "investment_matches":
         return ((str, str), ("desc", "asc"))
     if status == "history" or kind == "categorization":
@@ -874,6 +988,17 @@ def _review_ordering(
 ) -> tuple[tuple[KeysetScalar, ...], tuple[SortDirection, ...]]:
     """Return one immutable queue key whose directions match display order."""
     _, directions = _review_key_contract(kind, status)
+    if kind == "source_categories":
+        details = row.details
+        return (
+            (
+                str(details.source_type),
+                str(details.source_origin),
+                str(details.source_category_code),
+                str(details.source_subcategory_code or ""),
+            ),
+            directions,
+        )
     if status == "history" or kind == "investment_matches":
         return (
             (_instant_text(row.created_at), str(row.decision_id)),
@@ -1013,19 +1138,30 @@ def _review_actions(
     # History is checked first because it applies to every kind: no queue offers
     # a decision over settled rows, so the review-only note would displace the
     # one action that is useful there — the way back to the pending queue.
+    actions: list[str] = []
     if status == "history":
-        actions = [
+        actions.append(
             f"Open the active queue with reviews(kind={kind!r}, status='pending')"
-        ]
-    elif kind == "investment_matches":
-        actions = ["Investment matching is review-only; decisions are not available."]
-    else:
+        )
+    # A curated term stays editable, so its history offers the same write.
+    if kind == "source_categories":
+        actions.append(
+            "Map, ignore, or remove a term with taxonomy_set(items=[{'kind': "
+            "'source_category', 'state': 'present' | 'ignored' | 'absent', ...}]), "
+            "passing the row's source_type, source_origin, source_category_code, "
+            "and source_subcategory_code"
+        )
+    elif status == "pending" and kind == "investment_matches":
+        actions.append(
+            "Investment matching is review-only; decisions are not available."
+        )
+    elif status == "pending":
         decision_tool = (
             "reviews_decide"
             if kind in {"categorization", "auto_rules", "matches", "rule_conflicts"}
             else "identity_links_decide"
         )
-        actions = [f"Use {decision_tool} to decide a row from this queue"]
+        actions.append(f"Use {decision_tool} to decide a row from this queue")
     if next_cursor is not None:
         actions.append(
             f"Continue with reviews(kind={kind!r}, status={status!r}, "
@@ -1061,6 +1197,7 @@ def reviews_coarse(
         "account_links",
         "merchant_links",
         "security_links",
+        "source_categories",
     ] = "summary",
     status: ReviewStatus = "pending",
     limit: Annotated[int, Field(strict=True, ge=1)] = 100,
@@ -1159,7 +1296,10 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
         "with deterministic cursor pagination. kind='rule_conflicts' holds "
         "categorization rules refused because an active rule already matches "
         "the same transactions under a different category; each row names the "
-        "rule deciding today and the category the refused rule wanted.",
+        "rule deciding today and the category the refused rule wanted. "
+        "kind='source_categories' holds category terms imported files carry: "
+        "pending terms have no mapping yet, history holds mapped and ignored "
+        "terms; resolve either with taxonomy_set kind='source_category'.",
         privacy_actor="reviews",
     )
 
@@ -1178,9 +1318,10 @@ _REFUSED_UNSELECTIVE_REASON = (
 )
 
 
-@mcp_tool(read_only=False, idempotent=True)
-def reviews_decide_coarse(
+def _apply_review_decisions(
     decisions: list[ReviewDecisionRequest],
+    *,
+    grant: ConfirmationGrant | None = None,
 ) -> ResponseEnvelope[ReviewsDecidePayload]:
     """Accept or reject one atomic ordinary, auto-rule, or conflict batch."""
     operation_id = current_operation_id()
@@ -1306,7 +1447,10 @@ def reviews_decide_coarse(
                 decisions,
             )
             applied = ReviewDecisionsService(db, actor="mcp").apply_ordinary(
-                ordinary_decisions
+                ordinary_decisions,
+                verify=(lambda plan: grant.verify(_review_binding(plan)))
+                if grant is not None
+                else None,
             )
             transfers_retired = applied.transfers_retired
             outcomes = [
@@ -1362,6 +1506,81 @@ def reviews_decide_coarse(
             details=cast(dict[str, Any], refused_details),
         )
     )
+
+
+def _review_binding(plan: tuple[OrdinaryDecisionPlanItem, ...]) -> ConfirmationBinding:
+    """Bind the complete ordered batch and all revalidated Proposal evidence."""
+    return ConfirmationBinding(
+        arguments={
+            "plan": ordinary_confirmation_state(plan),
+        },
+        resolved_ids=tuple(item.request.decision_id for item in plan),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="reviews_decide",
+        blast_radius={"decisions": len(plan)},
+    )
+
+
+def _preview_investment_batch(
+    decisions: list[ReviewDecisionRequest],
+) -> tuple[OrdinaryDecisionPlanItem, ...]:
+    if any(
+        isinstance(item, (AutoRuleDecisionRequest, RuleConflictDecisionRequest))
+        for item in decisions
+    ):
+        raise UserError(
+            "Auto-rule and rule-conflict decisions require separate atomic batches.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    with get_database(read_only=True) as db:
+        return ReviewDecisionsService(db, actor="mcp").plan_ordinary(
+            cast(list[OrdinaryReviewDecisionRequest], decisions)
+        )
+
+
+def _investment_batch_message(plan: tuple[OrdinaryDecisionPlanItem, ...]) -> str:
+    evidence: list[dict[str, Any]] = []
+    for item in plan:
+        if isinstance(item.request, InvestmentMatchDecisionRequest):
+            details = InvestmentMatchDetails.model_validate(item.before_state)
+            masked = build_classified_envelope(details).data
+            evidence.append({
+                "decision_id": item.request.decision_id,
+                "evidence": masked.model_dump(mode="json"),
+            })
+    return (
+        "Confirm this complete atomic review batch. Rejection excludes the whole "
+        "investment Proposal and every superset with the same exact relationship "
+        "evidence. It changes no Golden ledger values.\n"
+        + json.dumps(
+            {
+                "decisions": [item.request.model_dump(mode="json") for item in plan],
+                "investment_proposals": evidence,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+@mcp_tool(read_only=False, idempotent=True, timeout_seconds=180.0, discloses=Tier.HIGH)
+async def reviews_decide_coarse(
+    decisions: list[ReviewDecisionRequest],
+) -> ResponseEnvelope[ReviewsDecidePayload]:
+    """Decide an atomic batch; investment decisions require a human prompt."""
+    grant: ConfirmationGrant | None = None
+    if any(isinstance(item, InvestmentMatchDecisionRequest) for item in decisions):
+        plan = await asyncio.to_thread(_preview_investment_batch, decisions)
+        grant = await grant_confirmation_or_raise(
+            binding=_review_binding(plan),
+            message=_investment_batch_message(plan),
+            confirmation_token=None,
+            elicitation_only=True,
+            cli_equivalent="moneybin review --type investment-matches --reject <review-id>",
+            cli_note="The CLI command decides one Proposal; review every remaining batch item separately.",
+        )
+    return await asyncio.to_thread(_apply_review_decisions, decisions, grant=grant)
 
 
 def _identity_binding(
@@ -1610,6 +1829,7 @@ async def identity_links_decide_coarse(
             ),
         ),
         actions=actions,
+        recovery_actions=rematch_recovery_actions(rematch) or None,
     )
 
 
@@ -1619,14 +1839,15 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         mcp,
         reviews_decide_coarse,
         "reviews_decide",
-        "Accept or reject an atomic batch of transaction, match, auto-rule, or "
-        "rule-conflict review decisions. Auto-rule decisions use "
+        "Accept or reject an atomic batch of transaction, match, or investment_match "
+        "review decisions. Investment rejection requires human Elicitation for the "
+        "complete batch; investment acceptance remains unavailable. Auto-rule decisions use "
         "kind='auto_rule' and may set allow_broad after inspecting "
         "estimated_match_count; kind='rule_conflict' takes replace (supersede "
         "the existing rule), reprioritize (activate beside it at an explicit "
         "priority), or cancel, writing app.categorization_rules and "
-        "app.rule_conflicts — reverse either with system_audit_undo. Keep each "
-        "kind in its own call. Accepting a match can reverse a transfer the "
+        "app.rule_conflicts — reverse either with system_audit_undo. Keep auto-rule "
+        "and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the "
         "user already accepted, once one component holds both its legs: "
         "`transfers_retired` counts those, and each result's `status` is what "
         "committed — an accept that loses that tiebreak reads 'reversed'.",

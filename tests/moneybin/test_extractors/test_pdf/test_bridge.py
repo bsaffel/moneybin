@@ -9,12 +9,13 @@ coverage.
 
 from __future__ import annotations
 
+import functools
+import json
 from typing import Any
 
 import pytest
 
 from moneybin.extractors.pdf.bridge import (
-    TRANSPARENCY_NOTICE,
     BridgeRequest,
     BridgeResponse,
     build_bridge_request,
@@ -22,6 +23,7 @@ from moneybin.extractors.pdf.bridge import (
 )
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.recipe import Recipe
+from moneybin.extractors.pdf.redaction import redact_critical
 
 _VALID_RECIPE_DICT: dict[str, Any] = {
     "row_region": {"start_anchor": "Date", "end_anchor": "Total:"},
@@ -38,6 +40,10 @@ _VALID_RECIPE_DICT: dict[str, Any] = {
     "sign_convention": "negative_is_expense",
     "routing": "transactions",
 }
+
+
+def _keep(value: str) -> str:
+    return value
 
 
 def _doc() -> PdfDocument:
@@ -70,7 +76,7 @@ def _doc() -> PdfDocument:
 
 
 def test_build_bridge_request_propose_recipe_returns_typed_request() -> None:
-    req = build_bridge_request(_doc(), request_kind="propose_recipe")
+    req = build_bridge_request(_doc(), request_kind="propose_recipe", redact=_keep)
     assert isinstance(req, BridgeRequest)
     assert req.request_kind == "propose_recipe"
     assert req.saved_recipe_for_re_derive is None
@@ -81,27 +87,38 @@ def test_build_bridge_request_replay_failed_carries_saved_recipe() -> None:
     req = build_bridge_request(
         _doc(),
         request_kind="replay_failed_re_derive",
+        redact=_keep,
         saved_recipe_for_re_derive=saved,
     )
     assert req.request_kind == "replay_failed_re_derive"
     assert req.saved_recipe_for_re_derive == saved
 
 
-def test_bridge_request_includes_transparency_notice() -> None:
-    req = build_bridge_request(_doc(), request_kind="propose_recipe")
-    assert req.transparency_notice == TRANSPARENCY_NOTICE
-    assert "audit_log" in req.transparency_notice
-    assert "smart_import_parse" in req.transparency_notice
+def test_bridge_request_carries_no_transparency_notice() -> None:
+    req = build_bridge_request(_doc(), request_kind="propose_recipe", redact=_keep)
+    assert not hasattr(req, "transparency_notice")
+
+
+def test_bridge_request_redacts_text_and_every_table_cell() -> None:
+    def _mark(value: str) -> str:
+        return value.replace("Coffee", "C*****")
+
+    req = build_bridge_request(_doc(), request_kind="propose_recipe", redact=_mark)
+    assert "Coffee" not in req.document_text
+    assert "C*****" in req.document_text
+    preview = req.tables_preview[0]
+    assert all("Coffee" not in cell for row in preview["rows"] for cell in row)
+    assert ["05/01", "C*****", "-4.50"] in preview["rows"]
 
 
 def test_bridge_request_carries_fingerprint_with_required_keys() -> None:
-    req = build_bridge_request(_doc(), request_kind="propose_recipe")
+    req = build_bridge_request(_doc(), request_kind="propose_recipe", redact=_keep)
     assert set(req.fingerprint.keys()) >= {"issuer", "headers", "page_bucket"}
     assert isinstance(req.fingerprint["headers"], list)
 
 
 def test_bridge_request_document_text_preserves_lines() -> None:
-    req = build_bridge_request(_doc(), request_kind="propose_recipe")
+    req = build_bridge_request(_doc(), request_kind="propose_recipe", redact=_keep)
     assert "Chase Bank" in req.document_text
     assert "Total: 5.50" in req.document_text
     # Newline-joined preserves separation
@@ -109,7 +126,7 @@ def test_bridge_request_document_text_preserves_lines() -> None:
 
 
 def test_bridge_request_tables_preview_caps_rows_per_table() -> None:
-    req = build_bridge_request(_doc(), request_kind="propose_recipe")
+    req = build_bridge_request(_doc(), request_kind="propose_recipe", redact=_keep)
     assert len(req.tables_preview) == 1
     preview = req.tables_preview[0]
     assert preview["page"] == 1
@@ -457,3 +474,65 @@ def test_parse_bridge_response_accepts_split_convention_with_debit_credit() -> N
     response = parse_bridge_response({"recipe": recipe, "rows": rows})
     assert isinstance(response, BridgeResponse)
     assert response.recipe.sign_convention == "split_debit_credit"
+
+
+_ACCOUNT = "314159265358"
+_redact_account = functools.partial(redact_critical, account_identifiers=[_ACCOUNT])
+
+
+def _doc_with_account_header() -> PdfDocument:
+    return PdfDocument(
+        source_file="statement.pdf",
+        text_lines=["Summary"],
+        tables=[
+            PdfTable(
+                page=1,
+                header=[f"Account {_ACCOUNT}", "Balance"],
+                rows=[["Opening", "10.00"]],
+            )
+        ],
+    )
+
+
+def test_bridge_request_redacts_fingerprint_headers() -> None:
+    req = build_bridge_request(
+        _doc_with_account_header(),
+        request_kind="propose_recipe",
+        redact=_redact_account,
+    )
+    assert req.fingerprint["headers"] == ["Account XXXXXXXX5358", "Balance"]
+    assert _ACCOUNT not in json.dumps(req.fingerprint)
+    assert "59265" not in json.dumps(req.fingerprint)
+
+
+def test_bridge_request_redacts_saved_recipe_strings_recursively() -> None:
+    saved = {
+        "name": "acme_checking_pdf",
+        "recipe": {
+            "row_region": {
+                "start_anchor": f"Account {_ACCOUNT} activity",
+                "end_anchor": "Total:",
+            },
+            "fields": [{"name": "date", "pattern": f"{_ACCOUNT}-ref"}],
+            "routing": "transactions",
+        },
+    }
+    req = build_bridge_request(
+        _doc(),
+        request_kind="replay_failed_re_derive",
+        redact=_redact_account,
+        saved_recipe_for_re_derive=saved,
+    )
+    released = req.saved_recipe_for_re_derive
+    assert released is not None
+    assert _ACCOUNT not in json.dumps(released)
+    assert released["name"] == "acme_checking_pdf"
+    assert released["recipe"]["row_region"] == {
+        "start_anchor": "Account XXXXXXXX5358 activity",
+        "end_anchor": "Total:",
+    }
+    assert released["recipe"]["fields"][0] == {
+        "name": "date",
+        "pattern": "XXXXXXXX5358-ref",
+    }
+    assert released["recipe"]["routing"] == "transactions"

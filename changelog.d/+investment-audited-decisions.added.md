@@ -1,0 +1,1 @@
+Investment match Proposals can be rejected through the review CLI or a human-confirmed MCP batch, with audited undo and stale-evidence protection. Acceptance requests validate observed field choices but remain unavailable until Golden event materialization is implemented.

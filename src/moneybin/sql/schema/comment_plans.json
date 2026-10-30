@@ -1,0 +1,4194 @@
+{
+ "extractors/ofx/schema/raw_ofx_accounts.sql": {
+  "sha256": "a7d25c0c0c152d155f81a3176b27e6d3777dc7b0fc347d2629ed112c65dc0f6d",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "ofx_accounts",
+    "table_sql": "raw.ofx_accounts",
+    "table_comment": "Account details extracted from OFX/QFX files; one record per account per source file per extraction timestamp",
+    "column_comments": [
+     [
+      "account_id",
+      "Unique account identifier from OFX <ACCTID> element; part of primary key"
+     ],
+     [
+      "routing_number",
+      "ABA bank routing number from OFX <BANKID> element; NULL when not present in file"
+     ],
+     [
+      "account_type",
+      "Account classification from OFX <ACCTTYPE>, e.g. CHECKING, SAVINGS, CREDITLINE; CREDITCARD or INVESTMENT when the statement is a <CCSTMTRS>/<INVSTMTRS> (neither container carries <ACCTTYPE>). Source vocabulary -- prep normalizes it via seeds.account_type_map"
+     ],
+     [
+      "institution_org",
+      "Financial institution name from OFX <ORG> element; mapped to institution_name in core"
+     ],
+     [
+      "institution_fid",
+      "Financial institution identifier from OFX <FID> element; used in OFX routing"
+     ],
+     [
+      "source_file",
+      "Path to the OFX/QFX file this record was loaded from; part of primary key"
+     ],
+     [
+      "extracted_at",
+      "Timestamp when the OFX file was parsed; part of primary key to allow re-extraction"
+     ],
+     [
+      "loaded_at",
+      "Timestamp when this record was inserted into the database"
+     ],
+     [
+      "import_id",
+      "UUID of the import batch this row belongs to; NULL for rows imported before V003"
+     ],
+     [
+      "source_type",
+      "Format taxonomy marker; always 'ofx' for OFX/QFX/QBO files"
+     ],
+     [
+      "source_origin",
+      "Institution slug resolved at import time; scopes source_native against slug collisions (matches app.account_links.source_origin for the staging JOIN)"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/ofx/schema/raw_ofx_balances.sql": {
+  "sha256": "459b1b47cae7577356752ba7373a26564ccaca58675a242c1b0ab83452fcb9b5",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "ofx_balances",
+    "table_sql": "raw.ofx_balances",
+    "table_comment": "Account balance snapshots from OFX/QFX files; one record per account per statement period per source file",
+    "column_comments": [
+     [
+      "account_id",
+      "Account this balance snapshot belongs to; foreign key to raw.ofx_accounts; part of primary key"
+     ],
+     [
+      "statement_start_date",
+      "Start of the statement period covered by this OFX file"
+     ],
+     [
+      "statement_end_date",
+      "End of the statement period covered by this OFX file; part of primary key"
+     ],
+     [
+      "statement_start_source_date",
+      "Calendar date stated by DTSTART before UTC normalization"
+     ],
+     [
+      "statement_end_source_date",
+      "Calendar date stated by DTEND before UTC normalization"
+     ],
+     [
+      "ledger_balance",
+      "OFX LEDGERBAL: settled balance including pending items"
+     ],
+     [
+      "ledger_balance_date",
+      "OFX DTASOF for the ledger balance snapshot"
+     ],
+     [
+      "ledger_balance_source_date",
+      "Calendar date stated by LEDGERBAL DTASOF before UTC normalization"
+     ],
+     [
+      "available_balance",
+      "OFX AVAILBAL: funds available for withdrawal; NULL when not provided"
+     ],
+     [
+      "source_file",
+      "Path to the OFX/QFX file this record was loaded from; part of primary key"
+     ],
+     [
+      "extracted_at",
+      "Timestamp when the OFX file was parsed"
+     ],
+     [
+      "loaded_at",
+      "Timestamp when this record was inserted into the database"
+     ],
+     [
+      "import_id",
+      "UUID of the import batch this row belongs to; NULL for rows imported before V003"
+     ],
+     [
+      "source_type",
+      "Format taxonomy marker; always 'ofx' for OFX/QFX/QBO files"
+     ],
+     [
+      "source_origin",
+      "Institution slug resolved at import time; scopes source_native against slug collisions (matches app.account_links.source_origin for the staging JOIN)"
+     ],
+     [
+      "currency_code",
+      "OFX CURDEF, verbatim (e.g. USD); NULL if the source statement lacked one"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/ofx/schema/raw_ofx_transactions.sql": {
+  "sha256": "47a7cdb95fdbb672931699dcbdc7d7d3181b2f37f5c6bf3dda5c47581f842efa",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "ofx_transactions",
+    "table_sql": "raw.ofx_transactions",
+    "table_comment": "Transaction records extracted from OFX/QFX files; one record per transaction per account per source file",
+    "column_comments": [
+     [
+      "source_transaction_id",
+      "OFX FITID element; institution-assigned unique transaction identifier"
+     ],
+     [
+      "account_id",
+      "Account this transaction belongs to; foreign key to raw.ofx_accounts; part of primary key"
+     ],
+     [
+      "transaction_type",
+      "OFX TRNTYPE element, e.g. DEBIT, CREDIT, CHECK, INT, DIV"
+     ],
+     [
+      "date_posted",
+      "UTC instant represented by OFX DTPOSTED"
+     ],
+     [
+      "date_posted_source_date",
+      "Calendar date stated by DTPOSTED before UTC normalization; maps to transaction_date in core"
+     ],
+     [
+      "amount",
+      "OFX TRNAMT element; negative = expense, positive = income"
+     ],
+     [
+      "payee",
+      "OFX NAME element (payee/merchant); mapped to description in core"
+     ],
+     [
+      "memo",
+      "OFX MEMO element; supplemental transaction notes from the institution"
+     ],
+     [
+      "check_number",
+      "OFX CHECKNUM element; check number for paper checks; NULL for electronic transactions"
+     ],
+     [
+      "source_file",
+      "Path to the OFX/QFX file this record was loaded from; part of primary key"
+     ],
+     [
+      "extracted_at",
+      "Timestamp when the OFX file was parsed"
+     ],
+     [
+      "loaded_at",
+      "Timestamp when this record was inserted into the database"
+     ],
+     [
+      "import_id",
+      "UUID of the import batch this row belongs to; NULL for rows imported before V003"
+     ],
+     [
+      "source_type",
+      "Format taxonomy marker; always 'ofx' for OFX/QFX/QBO files"
+     ],
+     [
+      "source_origin",
+      "Institution slug derived from <FI><ORG> or filename heuristic; NULL for legacy rows"
+     ],
+     [
+      "currency_code",
+      "OFX CURDEF, verbatim (e.g. USD); NULL if the source statement lacked one"
+     ],
+     [
+      "fitid_repaired",
+      "TRUE when the extractor rewrote source_transaction_id to break a FITID collision; the only proof staging may use to retire the id this row superseded"
+     ],
+     [
+      "to_amount",
+      "Received-leg amount for a source-provided single-row currency conversion; NULL when absent"
+     ],
+     [
+      "to_currency",
+      "Received-leg currency for a source-provided single-row currency conversion; NULL when absent"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_accounts.sql": {
+  "sha256": "03876f449c7a141928c55ee06cb8d6a4755556c65b3bfc4193c040712a329dc1",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_accounts",
+    "table_sql": "raw.plaid_accounts",
+    "table_comment": "Bank accounts connected via Plaid; one record per account per institution",
+    "column_comments": [
+     [
+      "account_id",
+      "Plaid account_id; globally unique per Plaid, but reissued when the item is relinked"
+     ],
+     [
+      "persistent_account_id",
+      "Plaid persistent_account_id; survives relink, so it is the cross-connection identity ref. NULL where the institution does not supply one"
+     ],
+     [
+      "account_type",
+      "depository, credit, loan, investment, other"
+     ],
+     [
+      "account_subtype",
+      "checking, savings, credit card, etc."
+     ],
+     [
+      "institution_name",
+      "Human-readable name from Plaid"
+     ],
+     [
+      "name",
+      "Account name as the institution reports it; distinguishes sibling accounts that share one official_name"
+     ],
+     [
+      "official_name",
+      "Official account name from the institution"
+     ],
+     [
+      "mask",
+      "Last 4 digits of the account number"
+     ],
+     [
+      "source_file",
+      "Logical identifier: sync_{job_id} (last sync to touch this row)"
+     ],
+     [
+      "source_origin",
+      "provider_item_id; scopes dedup to the institution connection"
+     ],
+     [
+      "extracted_at",
+      "From metadata.synced_at"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_balances.sql": {
+  "sha256": "c41ae6ba322cf290136fa3cb855075e865959dd133a7e06a00aa845ee5a2f383",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_balances",
+    "table_sql": "raw.plaid_balances",
+    "table_comment": "Account balance snapshots from Plaid; one record per account per balance date per institution",
+    "column_comments": [
+     [
+      "account_id",
+      "Plaid account_id"
+     ],
+     [
+      "balance_date",
+      "Date the balance was reported"
+     ],
+     [
+      "current_balance",
+      "Current balance including pending transactions"
+     ],
+     [
+      "available_balance",
+      "Available balance; NULL for credit accounts"
+     ],
+     [
+      "balance_limit",
+      "Plaid limit: credit limit, or overdraft limit on depository; distinct from the user-asserted app.account_settings.credit_limit"
+     ],
+     [
+      "margin_loan_amount",
+      "Borrowed funds on a margin account; investment accounts only, NULL elsewhere. current_balance is the gross value of assets, so core.fct_balances subtracts this"
+     ],
+     [
+      "iso_currency_code",
+      "ISO 4217; mutually exclusive with unofficial_currency_code"
+     ],
+     [
+      "unofficial_currency_code",
+      "Non-ISO (crypto) currency; core COALESCEs the pair"
+     ],
+     [
+      "last_updated_datetime",
+      "Provider \"as-of\" time for the balance; populated only by some institutions"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_investment_holding_lots.sql": {
+  "sha256": "556c35f2401387c281067a5a7a80cebd71f96917561f9b7028b3270ce7808322",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_investment_holding_lots",
+    "table_sql": "raw.plaid_investment_holding_lots",
+    "table_comment": "Per-lot detail within a Plaid holdings snapshot (Holding.tax_lots[], HoldingTaxLot); basis/acquisition-date source for opening-lot bootstrap. One row per broker lot per snapshot.",
+    "column_comments": [
+     [
+      "account_id",
+      "Plaid account_id"
+     ],
+     [
+      "security_id",
+      "Plaid security_id"
+     ],
+     [
+      "lot_index",
+      "Loader-assigned position within Holding.tax_lots[]; PK disambiguator (institution_lot_id is nullable)"
+     ],
+     [
+      "institution_lot_id",
+      "Broker's lot identifier; NULL where the institution does not provide one"
+     ],
+     [
+      "original_purchase_datetime",
+      "HoldingTaxLot.original_purchase_datetime; acquisition timestamp, NULL where absent"
+     ],
+     [
+      "quantity",
+      "Units in this lot"
+     ],
+     [
+      "purchase_price",
+      "Per-unit acquisition price for this lot (matches the schema-wide price precision)"
+     ],
+     [
+      "cost_basis",
+      "Broker-reported total cost basis of this lot (Plaid documents it fee-inclusive)"
+     ],
+     [
+      "current_value",
+      "Broker-reported current market value of this lot"
+     ],
+     [
+      "position_type",
+      "HoldingTaxLotPositionType (e.g. 'long' / 'short')"
+     ],
+     [
+      "source_file",
+      "Snapshot identity (part of the PK), same as the parent holdings table"
+     ],
+     [
+      "source_origin",
+      "Plaid item_id; part of the PK"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_investment_holdings.sql": {
+  "sha256": "41449cea5855349383295fea92040b0cd6ddb7c31b142c80d2521c87ec3f5eaa",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_investment_holdings",
+    "table_sql": "raw.plaid_investment_holdings",
+    "table_comment": "Broker-reported holdings, one row per (position, snapshot) — store-don't-trust reconciliation reference, never authoritative.\n   Each pull is a full snapshot keyed by source_file (the snapshot identity), NOT by date: two pulls on the same UTC day\n   are distinct snapshots, so a position dropped from the newer full snapshot is correctly absent from it (not masked by a\n   same-day survivor). Idempotent — re-loading the same job replaces its own rows.",
+    "column_comments": [
+     [
+      "account_id",
+      "Plaid account_id"
+     ],
+     [
+      "security_id",
+      "Plaid security_id"
+     ],
+     [
+      "holdings_date",
+      "Snapshot calendar date = extracted_at::DATE; informational (Plaid holdings carry no as-of date of their own)"
+     ],
+     [
+      "institution_price",
+      "Broker-reported price"
+     ],
+     [
+      "institution_price_as_of",
+      "Date of institution_price"
+     ],
+     [
+      "institution_value",
+      "Broker-reported market value"
+     ],
+     [
+      "cost_basis",
+      "Broker-reported cost basis; reconciliation reference ONLY — never overwrites ledger-derived basis"
+     ],
+     [
+      "quantity",
+      "Broker-reported open quantity"
+     ],
+     [
+      "iso_currency_code",
+      "ISO 4217; mutually exclusive with unofficial_currency_code"
+     ],
+     [
+      "unofficial_currency_code",
+      "Non-ISO (crypto) currency"
+     ],
+     [
+      "vested_quantity",
+      "Vested units (equity compensation); NULL otherwise"
+     ],
+     [
+      "vested_value",
+      "Vested value (equity compensation); NULL otherwise"
+     ],
+     [
+      "transactions_window_start",
+      "Per-item metadata.transactions_window_start; this item's /investments/transactions/get start boundary; opening-lot bootstrap's pre-window/in-window discriminant; constant per source_origin within a snapshot"
+     ],
+     [
+      "source_file",
+      "Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK)"
+     ],
+     [
+      "source_origin",
+      "Plaid item_id; scopes the snapshot to the institution connection; part of the PK"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_investment_holdings_snapshots.sql": {
+  "sha256": "ad6da60cc9336ab94ca63cf127a3c71cf50108c44fe23755b072db8274fed6f0",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_investment_holdings_snapshots",
+    "table_sql": "raw.plaid_investment_holdings_snapshots",
+    "table_comment": null,
+    "column_comments": [
+     [
+      "source_origin",
+      "Plaid item_id; the item that reported (part of the PK)"
+     ],
+     [
+      "source_file",
+      "Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK), same as the holdings rows it accounts for"
+     ],
+     [
+      "holdings_date",
+      "Snapshot calendar date = extracted_at::DATE (UTC); same derivation as raw.plaid_investment_holdings.holdings_date"
+     ],
+     [
+      "holdings_count",
+      "Positions this item returned in this snapshot; 0 = the item reported and holds NOTHING (the case this table exists to record)"
+     ],
+     [
+      "transactions_window_start",
+      "Per-item metadata.transactions_window_start, mirrored from the holdings rows this accounts for. Also stored on raw.plaid_investment_holdings, but that table is EMPTY for exactly the item that reported nothing — so a consumer asking \"when did this item's window open\" for a liquidated broker has nowhere else to read it. NOT NULL holds because the receipt is written iff the server declared a window."
+     ],
+     [
+      "ingestion_sequence",
+      "Local first-ingestion ordering, preserved on replay"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_investment_transaction_receipts.sql": {
+  "sha256": "be73b2c2ecf67b41823e4032b1a8c76bc5d2dff1af197997d4ebf8139a8136b8",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_investment_transaction_receipts",
+    "table_sql": "raw.plaid_investment_transaction_receipts",
+    "table_comment": null,
+    "column_comments": [
+     [
+      "investment_transaction_id",
+      "Native transaction reference"
+     ],
+     [
+      "source_origin",
+      "Source origin that delivered the observation"
+     ],
+     [
+      "source_file",
+      "Logical sync job identity"
+     ],
+     [
+      "observation_version",
+      "Exact immutable Raw revision delivered by this job"
+     ],
+     [
+      "ingestion_sequence",
+      "Local first-ingestion ordering, preserved on replay"
+     ],
+     [
+      "extracted_at",
+      "Extraction timestamp reported by the server"
+     ],
+     [
+      "loaded_at",
+      "First local receipt time"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_investment_transactions.sql": {
+  "sha256": "71d5d85d368e706a0aaf4c7e44b42b8085f61dd234cba81f9042afea595b908f",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_investment_transactions",
+    "table_sql": "raw.plaid_investment_transactions",
+    "table_comment": "Immutable investment transaction observation revisions from Plaid investments/transactions/get; delivery lineage lives on receipts.",
+    "column_comments": [
+     [
+      "investment_transaction_id",
+      "Plaid investment_transaction_id; stable unique identifier"
+     ],
+     [
+      "account_id",
+      "Plaid account_id; foreign key to raw.plaid_accounts"
+     ],
+     [
+      "security_id",
+      "Plaid security_id; NULL for cash-only events (deposit, withdrawal, account fee)"
+     ],
+     [
+      "transaction_date",
+      "Plaid date; POSTING date (\"typically the settlement date\" per Plaid docs) — NOT the trade date; staging derives trade_date"
+     ],
+     [
+      "transaction_datetime",
+      "Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source"
+     ],
+     [
+      "transaction_name",
+      "Plaid name; broker's description of the event"
+     ],
+     [
+      "quantity",
+      "Plaid quantity; already signed per ledger convention (+ acquire, − dispose)"
+     ],
+     [
+      "amount",
+      "Plaid amount (required field → NOT NULL faithful); CAUTION: positive = cash out (opposite of ledger); staging flips sign and maps basis-unknown transfers (amount 0) to a NULL ledger amount"
+     ],
+     [
+      "price",
+      "Per-unit price"
+     ],
+     [
+      "fees",
+      "Fee/commission component"
+     ],
+     [
+      "iso_currency_code",
+      "ISO 4217; mutually exclusive with unofficial_currency_code"
+     ],
+     [
+      "unofficial_currency_code",
+      "Non-ISO (crypto) currency"
+     ],
+     [
+      "investment_transaction_type",
+      "Plaid type (6-value: buy, sell, cash, fee, transfer, cancel)"
+     ],
+     [
+      "investment_transaction_subtype",
+      "Plaid subtype (48-value); preserved to core as provider_subtype"
+     ],
+     [
+      "observation_version",
+      "Immutable source-prefixed content digest; delivery lineage lives on receipts"
+     ],
+     [
+      "source_origin",
+      "Plaid item_id; part of the PK"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_securities.sql": {
+  "sha256": "13b067b50420123f9a4d71e0027559ff0523196c8619559437d2fe58d1d4cd95",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_securities",
+    "table_sql": "raw.plaid_securities",
+    "table_comment": "Securities referenced by Plaid holdings/investment transactions; one record per security per sync payload",
+    "column_comments": [
+     [
+      "security_id",
+      "Plaid security_id; adopt-quality (churns on corporate actions), not immutable"
+     ],
+     [
+      "institution_security_id",
+      "Institution's own identifier; unique only per institution; often NULL"
+     ],
+     [
+      "institution_id",
+      "Plaid institution_id; scopes institution_security_id"
+     ],
+     [
+      "ticker_symbol",
+      "Ticker as reported; may carry exchange suffix"
+     ],
+     [
+      "market_identifier_code",
+      "ISO-10383 MIC of the listing exchange/market; the exchange signal for ticker+exchange resolution"
+     ],
+     [
+      "security_name",
+      "Plaid name"
+     ],
+     [
+      "security_type",
+      "Plaid Security.type; prose enum, not schema-enforced — staging maps defensively"
+     ],
+     [
+      "close_price",
+      "Plaid close_price; point-in-time convenience, NOT the Pillar C price history"
+     ],
+     [
+      "close_price_as_of",
+      "Date of close_price"
+     ],
+     [
+      "iso_currency_code",
+      "ISO 4217; mutually exclusive with unofficial_currency_code"
+     ],
+     [
+      "unofficial_currency_code",
+      "Non-ISO (crypto) currency; staging COALESCEs the pair"
+     ],
+     [
+      "cusip",
+      "License-gated; NULL in practice since 2024-03"
+     ],
+     [
+      "isin",
+      "License-gated; NULL in practice"
+     ],
+     [
+      "is_cash_equivalent",
+      "Pairs with security_type = 'cash' (money-market/sweep)"
+     ],
+     [
+      "source_file",
+      "Logical identifier: sync_{job_id}"
+     ],
+     [
+      "source_origin",
+      "Plaid item_id; scopes dedup to the institution connection; part of the PK"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/plaid/schema/raw_plaid_transactions.sql": {
+  "sha256": "e9cdb12001f1a28187db57d1aaa6fdc790c40bcca0f7403b2a36808643d93039",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "plaid_transactions",
+    "table_sql": "raw.plaid_transactions",
+    "table_comment": "Transactions fetched from Plaid /transactions/sync; one record per transaction per institution",
+    "column_comments": [
+     [
+      "transaction_id",
+      "Plaid transaction_id; globally unique per Plaid"
+     ],
+     [
+      "account_id",
+      "Plaid account_id; foreign key to raw.plaid_accounts"
+     ],
+     [
+      "transaction_date",
+      "Date the transaction posted; from Plaid date field"
+     ],
+     [
+      "amount",
+      "CAUTION: Plaid convention is positive = expense; sign flip is in stg_plaid__transactions"
+     ],
+     [
+      "description",
+      "Plaid name field"
+     ],
+     [
+      "merchant_name",
+      "Plaid merchant_name; NULL when Plaid cannot identify"
+     ],
+     [
+      "category",
+      "Plaid personal_finance_category.primary"
+     ],
+     [
+      "original_description",
+      "Plaid original_description; raw bank text, distinct from description=name; NULL for non-Plaid"
+     ],
+     [
+      "iso_currency_code",
+      "Plaid iso_currency_code (ISO 4217)"
+     ],
+     [
+      "authorized_date",
+      "Plaid authorized_date"
+     ],
+     [
+      "pending_transaction_id",
+      "Plaid pending_transaction_id; links pending -> posted"
+     ],
+     [
+      "payment_channel",
+      "Plaid payment_channel: online, in store, other"
+     ],
+     [
+      "check_number",
+      "Plaid check_number; NULL for non-check"
+     ],
+     [
+      "merchant_entity_id",
+      "Plaid merchant_entity_id; stable merchant id (Tier-2a, not yet wired to core)"
+     ],
+     [
+      "location_address",
+      "Plaid location.address"
+     ],
+     [
+      "location_city",
+      "Plaid location.city"
+     ],
+     [
+      "location_region",
+      "Plaid location.region"
+     ],
+     [
+      "location_postal_code",
+      "Plaid location.postal_code"
+     ],
+     [
+      "location_country",
+      "Plaid location.country"
+     ],
+     [
+      "location_latitude",
+      "Plaid location.lat"
+     ],
+     [
+      "location_longitude",
+      "Plaid location.lon"
+     ],
+     [
+      "category_detailed",
+      "Plaid personal_finance_category.detailed (Tier-2b)"
+     ],
+     [
+      "category_confidence",
+      "Plaid personal_finance_category.confidence_level (Tier-2b)"
+     ],
+     [
+      "source_file",
+      "Logical identifier: sync_{job_id} (last sync to touch this row)"
+     ],
+     [
+      "source_origin",
+      "provider_item_id; scopes dedup to the institution connection"
+     ],
+     [
+      "to_amount",
+      "Received-leg amount for a source-provided single-row currency conversion; NULL when absent"
+     ],
+     [
+      "to_currency",
+      "Received-leg currency for a source-provided single-row currency conversion; NULL when absent"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/simplefin/schema/raw_simplefin_accounts.sql": {
+  "sha256": "73d479c0185aac604d20ea6a93298716793b5da3834cc6793740c36565f2022f",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "simplefin_accounts",
+    "table_sql": "raw.simplefin_accounts",
+    "table_comment": "Immutable SimpleFIN accounts evidence",
+    "column_comments": [
+     [
+      "batch_id",
+      "Immutable broker batch identity"
+     ],
+     [
+      "source_origin",
+      "Scoped source identity"
+     ],
+     [
+      "account_id",
+      "Original native account identity"
+     ],
+     [
+      "native_scope",
+      "Original protocol scope identity"
+     ],
+     [
+      "identity_strength",
+      "Strong native ID or weak v1 fallback"
+     ],
+     [
+      "observation_version",
+      "Full SHA-256 content revision"
+     ],
+     [
+      "original_record",
+      "Original credential-free source record"
+     ],
+     [
+      "validation_error",
+      "Safe reason excluding this observation from projection"
+     ],
+     [
+      "fetched_at",
+      "Broker fetch time, never client arrival time"
+     ],
+     [
+      "source_file",
+      "First delivery job lineage"
+     ],
+     [
+      "source_type",
+      "Provider source type"
+     ],
+     [
+      "loaded_at",
+      "Local observation time"
+     ],
+     [
+      "name",
+      "Provider account name"
+     ],
+     [
+      "currency",
+      "Original provider currency"
+     ],
+     [
+      "account_label",
+      "Display-ready name using the shared account-number masker; original name retained"
+     ],
+     [
+      "institution_label",
+      "Display-ready institution using the shared masker; response remains original"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/simplefin/schema/raw_simplefin_balances.sql": {
+  "sha256": "f2a582cc6cb42b084219bd9118742cec295bd3b1ee8925b6879f9c0b6f270d14",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "simplefin_balances",
+    "table_sql": "raw.simplefin_balances",
+    "table_comment": "Immutable SimpleFIN balances evidence",
+    "column_comments": [
+     [
+      "batch_id",
+      "Immutable broker batch identity"
+     ],
+     [
+      "source_origin",
+      "Scoped source identity"
+     ],
+     [
+      "account_id",
+      "Original native account identity"
+     ],
+     [
+      "native_scope",
+      "Original protocol scope identity"
+     ],
+     [
+      "identity_strength",
+      "Strong native ID or weak v1 fallback"
+     ],
+     [
+      "observation_version",
+      "Full SHA-256 content revision"
+     ],
+     [
+      "original_record",
+      "Original credential-free source record"
+     ],
+     [
+      "validation_error",
+      "Safe reason excluding this observation from projection"
+     ],
+     [
+      "fetched_at",
+      "Broker fetch time, never client arrival time"
+     ],
+     [
+      "source_file",
+      "First delivery job lineage"
+     ],
+     [
+      "source_type",
+      "Provider source type"
+     ],
+     [
+      "loaded_at",
+      "Local observation time"
+     ],
+     [
+      "balance",
+      "Exact signed provider balance"
+     ],
+     [
+      "balance_original",
+      "Original balance numeric string"
+     ],
+     [
+      "available_balance",
+      "Optional exact available balance"
+     ],
+     [
+      "available_balance_original",
+      "Original available balance string"
+     ],
+     [
+      "balance_at",
+      "Valid provider balance instant"
+     ],
+     [
+      "currency",
+      "Original account currency"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/simplefin/schema/raw_simplefin_responses.sql": {
+  "sha256": "43337c2a568fba1855ae3a0a0ba3707292144f91f1eb72d4ad25bd2e1c6ad002",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "simplefin_responses",
+    "table_sql": "raw.simplefin_responses",
+    "table_comment": "Immutable SimpleFIN responses evidence",
+    "column_comments": [
+     [
+      "batch_id",
+      "Immutable broker batch identity"
+     ],
+     [
+      "connection_id",
+      "Broker grant identity"
+     ],
+     [
+      "credential_generation",
+      "Broker credential generation"
+     ],
+     [
+      "protocol_version",
+      "Pinned upstream protocol version"
+     ],
+     [
+      "fetched_at",
+      "Broker fetch time"
+     ],
+     [
+      "window_start",
+      "Inclusive requested UTC boundary"
+     ],
+     [
+      "window_end",
+      "Exclusive requested UTC boundary"
+     ],
+     [
+      "original_payload",
+      "Original credential-free Account Set"
+     ],
+     [
+      "source_errors",
+      "Original source error objects or strings"
+     ],
+     [
+      "content_digest",
+      "Immutable complete batch digest"
+     ],
+     [
+      "source_file",
+      "First delivery job lineage"
+     ],
+     [
+      "source_type",
+      "Provider source type"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/simplefin/schema/raw_simplefin_sync_receipts.sql": {
+  "sha256": "60b17615dbbb1e3229ce76d1ecb01f4a0139ee76a1b758f5e73b1715d6349bc6",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "simplefin_sync_receipts",
+    "table_sql": "raw.simplefin_sync_receipts",
+    "table_comment": "Immutable SimpleFIN sync receipts evidence",
+    "column_comments": [
+     [
+      "job_id",
+      "Authenticated broker job identity"
+     ],
+     [
+      "connection_id",
+      "Broker grant identity"
+     ],
+     [
+      "credential_generation",
+      "Observed credential generation"
+     ],
+     [
+      "protocol_version",
+      "Pinned protocol version"
+     ],
+     [
+      "status",
+      "Authenticated terminal broker job status"
+     ],
+     [
+      "started_at",
+      "Broker requested-job order"
+     ],
+     [
+      "completed_at",
+      "Authenticated broker completion evidence"
+     ],
+     [
+      "batch_ids",
+      "Immutable batch identities including an empty list"
+     ],
+     [
+      "source_metadata",
+      "Complete accepted source metadata excluding payload batches"
+     ],
+     [
+      "local_outcomes",
+      "Safe local validation outcomes including unscoped failures"
+     ],
+     [
+      "content_digest",
+      "Immutable job/source receipt digest"
+     ],
+     [
+      "source_type",
+      "Provider source type"
+     ],
+     [
+      "loaded_at",
+      "Local receipt observation time"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/simplefin/schema/raw_simplefin_transactions.sql": {
+  "sha256": "2aa849722063a5bae5de2d96ac2171ddf16b2db0be50ade627b548efa65c545b",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "simplefin_transactions",
+    "table_sql": "raw.simplefin_transactions",
+    "table_comment": "Immutable SimpleFIN transactions evidence",
+    "column_comments": [
+     [
+      "batch_id",
+      "Immutable broker batch identity"
+     ],
+     [
+      "source_origin",
+      "Scoped source identity"
+     ],
+     [
+      "account_id",
+      "Original native account identity"
+     ],
+     [
+      "native_scope",
+      "Original protocol scope identity"
+     ],
+     [
+      "identity_strength",
+      "Strong native ID or weak v1 fallback"
+     ],
+     [
+      "observation_version",
+      "Full SHA-256 content revision"
+     ],
+     [
+      "original_record",
+      "Original credential-free source record"
+     ],
+     [
+      "validation_error",
+      "Safe reason excluding this observation from projection"
+     ],
+     [
+      "fetched_at",
+      "Broker fetch time, never client arrival time"
+     ],
+     [
+      "source_file",
+      "First delivery job lineage"
+     ],
+     [
+      "source_type",
+      "Provider source type"
+     ],
+     [
+      "loaded_at",
+      "Local observation time"
+     ],
+     [
+      "transaction_id",
+      "Native transaction identity"
+     ],
+     [
+      "transaction_reference",
+      "Full framed source event identity"
+     ],
+     [
+      "amount",
+      "Exact supported signed monetary amount"
+     ],
+     [
+      "amount_original",
+      "Provider numeric string without normalization"
+     ],
+     [
+      "posted_at",
+      "Valid provider posting instant"
+     ],
+     [
+      "transacted_at",
+      "Optional provider transaction instant"
+     ],
+     [
+      "pending",
+      "Explicit pending marker where supplied"
+     ],
+     [
+      "description",
+      "Original provider description"
+     ],
+     [
+      "currency",
+      "Original account currency"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/tabular/schema/raw_tabular_accounts.sql": {
+  "sha256": "05171ea21d2e70c6e9ab5838c148181e2e513275c85d7f07763af75348eb4ac7",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "tabular_accounts",
+    "table_sql": "raw.tabular_accounts",
+    "table_comment": "Accounts discovered during tabular file imports. For single-account files, one\n   record is created from the --account-name flag. For multi-account files (Tiller,\n   Mint), one record per unique account found in the data. Account numbers are stored\n   here (not per-transaction) and masked at the application layer for display.",
+    "column_comments": [
+     [
+      "account_id",
+      "Source-native account key, NEVER a canonical MoneyBin account id; app.account_links maps it to the canonical id"
+     ],
+     [
+      "account_name",
+      "Human-readable account label provided by user or extracted from multi-account file"
+     ],
+     [
+      "account_label",
+      "Display-safe form of account_name for core.dim_accounts.display_name: trailing last-four token dropped, embedded account numbers masked. NULL when no human authored a name and the importer synthesized one from the filename"
+     ],
+     [
+      "account_number",
+      "Full account number if available in source; stored encrypted at rest, masked at application layer for all output"
+     ],
+     [
+      "account_number_masked",
+      "Last 4 digits for display (e.g. \"...4521\"); derived from account_number or extracted directly if source only provides masked"
+     ],
+     [
+      "account_type",
+      "Account type if known (e.g. checking, savings, credit, brokerage, investment)"
+     ],
+     [
+      "institution_name",
+      "Financial institution name from format metadata, source file content, or user input"
+     ],
+     [
+      "currency",
+      "Default currency for this account if known (ISO 4217 code)"
+     ],
+     [
+      "source_file",
+      "Source path or locator supplied to the extractor; not necessarily absolute"
+     ],
+     [
+      "source_type",
+      "Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe, pdf"
+     ],
+     [
+      "source_origin",
+      "Institution/connection/format that produced this data; matches the format name for tabular imports"
+     ],
+     [
+      "import_id",
+      "UUID linking this row to its import batch in app.import_log; enables import reverting and history"
+     ],
+     [
+      "extracted_at",
+      "Timestamp when the extraction pipeline processed this record"
+     ],
+     [
+      "loaded_at",
+      "Timestamp when this record was written to the raw table"
+     ]
+    ]
+   }
+  ]
+ },
+ "extractors/tabular/schema/raw_tabular_transactions.sql": {
+  "sha256": "8b71724aa84fa99ca8a23aab9e8a0a469f9801f453540650db5ac64c8c9b4645",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "tabular_transactions",
+    "table_sql": "raw.tabular_transactions",
+    "table_comment": "Imported financial transactions from tabular file sources (CSV, TSV, Excel,\n   Parquet, Feather). Each row represents a single transaction as extracted from the\n   source file with minimal transformation — amounts are sign-normalized but all\n   original values are preserved for audit.",
+    "column_comments": [
+     [
+      "transaction_id",
+      "Deterministic identifier: account_id:source_transaction_id when available, else source-prefixed SHA-256 of date|amount|description|account_id; only repeated identical content adds an occurrence suffix"
+     ],
+     [
+      "account_id",
+      "Source-system account identifier; for multi-account files extracted from per-row account column, for single-account files provided or generated"
+     ],
+     [
+      "transaction_date",
+      "Primary transaction date parsed from source using detected or specified date format"
+     ],
+     [
+      "post_date",
+      "Settlement or posting date when distinct from transaction date; NULL if source provides only one date"
+     ],
+     [
+      "amount",
+      "Normalized amount: negative = expense, positive = income regardless of source sign convention"
+     ],
+     [
+      "original_amount",
+      "Raw amount string exactly as it appeared in the source file before sign normalization and parsing"
+     ],
+     [
+      "original_date_str",
+      "Raw date string exactly as it appeared in the source file before format parsing"
+     ],
+     [
+      "description",
+      "Primary transaction description, payee, or merchant name from source"
+     ],
+     [
+      "memo",
+      "Supplementary transaction details, extended description, or notes from source"
+     ],
+     [
+      "category",
+      "Source-provided transaction category if present; preserved as-is for migration bootstrap, not MoneyBin categorization"
+     ],
+     [
+      "subcategory",
+      "Source-provided transaction subcategory if present; preserved as-is"
+     ],
+     [
+      "transaction_type",
+      "Source-provided transaction type (e.g. Sale, Return, Payment, Dividend, Fee, Transfer)"
+     ],
+     [
+      "status",
+      "Source-provided transaction status (e.g. Cleared, Pending, Posted, Reconciled)"
+     ],
+     [
+      "check_number",
+      "Check or cheque number for check-based transactions"
+     ],
+     [
+      "source_transaction_id",
+      "Institution-assigned unique transaction identifier if present; strongest dedup signal for same-source re-imports"
+     ],
+     [
+      "reference_number",
+      "Institution-assigned reference, confirmation, or receipt number; not guaranteed unique across transactions"
+     ],
+     [
+      "balance",
+      "Running account balance after this transaction if provided by source"
+     ],
+     [
+      "currency",
+      "ISO 4217 currency code if present in source (e.g. USD, EUR); captured now, multi-currency processing deferred"
+     ],
+     [
+      "member_name",
+      "Account holder, cardholder, or member name if present in source"
+     ],
+     [
+      "source_file",
+      "Source path or locator supplied to the extractor; not necessarily absolute"
+     ],
+     [
+      "source_type",
+      "Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe, pdf"
+     ],
+     [
+      "source_origin",
+      "Institution/connection/format that produced this data (e.g. \"chase_credit\", \"tiller\", Plaid item_id); scopes Tier 2b dedup"
+     ],
+     [
+      "import_id",
+      "UUID linking this row to its import batch in app.import_log; enables import reverting and history"
+     ],
+     [
+      "row_number",
+      "1-based row/line number in the source file for import diagnostics; never contributes to transaction identity"
+     ],
+     [
+      "extracted_at",
+      "Timestamp when the extraction pipeline processed this record"
+     ],
+     [
+      "loaded_at",
+      "Timestamp when this record was written to the raw table"
+     ],
+     [
+      "deleted_from_source_at",
+      "For live tabular sources (gsheet): timestamp when this row was observed absent from the source on the most recent pull. NULL means the row is currently present in source (or the source is non-live like a one-shot CSV import)."
+     ],
+     [
+      "to_amount",
+      "Received-leg amount for a source-provided single-row currency conversion; NULL when absent"
+     ],
+     [
+      "to_currency",
+      "Received-leg currency for a source-provided single-row currency conversion; NULL when absent"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/analytics_schema.sql": {
+  "sha256": "ae3a165e79989e53ec095c5a6c13dcef1a6ff8042444b0a12ea0a604395cc138",
+  "plan": []
+ },
+ "sql/schema/app_account_link_decisions.sql": {
+  "sha256": "da242254bfbf5093c64d6b42605e597f8b5d4c80645768da24577e62177733d8",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "account_link_decisions",
+    "table_sql": "app.account_link_decisions",
+    "table_comment": "Merge-proposal review queue for account identity (M1S, account-identity-resolution.md Decision 2).\n   match_decisions-shaped: one row per (provisional account, candidate account) proposal, so candidates are\n   relational rows -- queryable, not JSON. This is the ONLY place pending/ambiguous account-link state lives;\n   the review queue reads the pending rows. Written only through AccountLinkDecisionsRepo, which pairs every\n   mutation with an app.audit_log row (Invariant 10).",
+    "column_comments": [
+     [
+      "decision_id",
+      "uuid4[:12] primary key for this proposal"
+     ],
+     [
+      "provisional_account_id",
+      "the just-minted source account under review"
+     ],
+     [
+      "candidate_account_id",
+      "an existing canonical account proposed as the same"
+     ],
+     [
+      "confidence_score",
+      "weak-signal confidence 0.0000 to 1.0000"
+     ],
+     [
+      "match_signals",
+      "which weak signal fired + its value (institution_last4 / last_four / name / institution_reissue / manual)"
+     ],
+     [
+      "match_reason",
+      "human-readable explanation of why this pairing was proposed"
+     ],
+     [
+      "provisional_display_name",
+      "both accounts' names as they stood when the decision was made; NULL while pending, when they resolve live"
+     ],
+     [
+      "candidate_display_name",
+      "frozen because accepting removes the provisional from core.dim_accounts, leaving the record of the merge unreadable"
+     ],
+     [
+      "decided_at",
+      "when the decision was made (or the proposal created)"
+     ],
+     [
+      "reversed_at",
+      "when a prior decision was undone; NULL otherwise"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_account_links.sql": {
+  "sha256": "08801f5a132bf040932c19572770dac6477b266268ed9b676c4dd665db25e04a",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "account_links",
+    "table_sql": "app.account_links",
+    "table_comment": "Invariant: at most one accepted binding per (source_type, ref_kind, ref_value).\n   Enforced at the repository layer (AccountLinksRepo._guard_uniqueness) — DuckDB cannot\n   express a partial unique index (WHERE status='accepted') or a unique constraint\n   on a generated column, so this cannot be a storage-level constraint.",
+    "column_comments": [
+     [
+      "link_id",
+      "uuid4[:12] primary key for this mapping"
+     ],
+     [
+      "account_id",
+      "canonical (opaque, minted) account this ref maps to"
+     ],
+     [
+      "ref_value",
+      "the native identifier; read-surface masking is per-ref_kind (taxonomy)"
+     ],
+     [
+      "source_type",
+      "provenance: ofx, csv, pdf, plaid, ..."
+     ],
+     [
+      "source_origin",
+      "institution/connection/format; scopes source_native against slug collisions"
+     ],
+     [
+      "decided_at",
+      "when this mapping was decided"
+     ],
+     [
+      "reversed_at",
+      "when reversed; NULL while accepted"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_account_settings.sql": {
+  "sha256": "131009a20bf291a0e596ef7683d606336868b75d0bbbfba81ffb751539c561c9",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "account_settings",
+    "table_sql": "app.account_settings",
+    "table_comment": "Per-account user-controlled settings: Plaid-parity metadata + lifecycle flags.\n   One row per account_id; absence means all defaults.\n   Joined by core.dim_accounts to surface as the canonical resolved view.",
+    "column_comments": [
+     [
+      "account_id",
+      "Foreign key to core.dim_accounts.account_id"
+     ],
+     [
+      "display_name",
+      "User-supplied label override; NULL falls back to derived default"
+     ],
+     [
+      "official_name",
+      "Institution's formal account name (mirrors Plaid official_name); free text"
+     ],
+     [
+      "last_four",
+      "Last 4 digits of account number (mirrors Plaid mask); validated ^[0-9]{4}$ at service boundary"
+     ],
+     [
+      "account_subtype",
+      "Plaid-style subtype (checking, savings, credit card, mortgage, ...); open vocabulary"
+     ],
+     [
+      "holder_category",
+      "'personal' / 'business' / 'joint'; open vocabulary"
+     ],
+     [
+      "currency_code",
+      "ISO-4217 (USD, EUR, ...); NULL inherits the account's core.dim_accounts.currency_code fallback"
+     ],
+     [
+      "credit_limit",
+      "User-asserted credit limit on credit cards / lines (drives utilization metrics)"
+     ],
+     [
+      "archived",
+      "Hides account from default list and from reports.net_worth"
+     ],
+     [
+      "include_in_net_worth",
+      "Whether this account contributes to reports.net_worth (independent toggle, not forced by archiving)"
+     ],
+     [
+      "default_cost_basis_method",
+      "Per-account cost-basis default (investments-data-model.md); NULL falls back to global FIFO"
+     ],
+     [
+      "updated_at",
+      "Last modification time"
+     ],
+     [
+      "archived_at",
+      "The date the account stopped being part of the position. NULL while active. Lets a stock-measure report (net worth) exclude the account only for dates after this one, instead of retroactively; set by AccountService on the archived FALSE->TRUE transition, cleared on unarchive. Appended last (not beside `archived`) because DuckDB's ALTER TABLE ADD COLUMN always appends, and init_schemas() must produce the same column order as an upgraded database (database-migration.md's \"key invariant\")"
+     ],
+     [
+      "investment_source_type",
+      "The source type whose investment rows feed this account's ledger (manual or plaid); NULL uses every source"
+     ],
+     [
+      "investment_source_type_changed_at",
+      "Last source-choice edit, clear or undo"
+     ],
+     [
+      "archived_changed_at",
+      "Last archive edit or undo"
+     ],
+     [
+      "currency_code_changed_at",
+      "Last currency edit, clear or undo"
+     ],
+     [
+      "default_cost_basis_method_changed_at",
+      "Last cost-basis edit, clear or undo"
+     ],
+     [
+      "account_type",
+      "Canonical user type override; NULL uses source evidence"
+     ],
+     [
+      "account_type_changed_at",
+      "Last type edit, clear, merge or undo; eligibility freshness"
+     ],
+     [
+      "account_subtype_changed_at",
+      "Last subtype edit, clear, merge or undo; eligibility freshness"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_ai_consent_grants.sql": {
+  "sha256": "79b791a553de3878d05d732ee0ecfcdb2ca59abac9980c5e672137c6ca582619",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "ai_consent_grants",
+    "table_sql": "app.ai_consent_grants",
+    "table_comment": "Consent ledger: one row per granted (feature_category, backend, recipient_kind) authorization for sending real financial data to an AI backend or, for ai_host rows, to the AI app that reads MoneyBin output. Persisted record + user control surface. smart-import-parsing is enforced: the PDF disclosure gate sends PDF content to an AI host only under an active ai_host grant (see pdf-disclosure-consent.md); every other category remains record-only (ledger-first, enforcement gate deferred, see privacy-and-ai-trust.md). All mutations route through ConsentRepo to emit paired app.audit_log rows per app-integrity-invariant.md. Revoked grants are retained (revoked_at set) for audit history.",
+    "column_comments": [
+     [
+      "grant_id",
+      "Truncated UUID4 (uuid4().hex[:12]) per identifiers.md strategy 3"
+     ],
+     [
+      "feature_category",
+      "AI flow category: mcp-data-sharing, smart-import-parsing, ml-categorization, matching-overview (free string; per-tool granularity deferred)"
+     ],
+     [
+      "backend",
+      "Recipient this consent applies to: an AI backend name (e.g. anthropic, openai, ollama) when recipient_kind='ai_backend', or the host recipient key (transport-class:name, e.g. local:claude-code) when recipient_kind='ai_host'; consent is per (feature_category, backend, recipient_kind)"
+     ],
+     [
+      "consent_mode",
+      "persistent: survives sessions until revoked; one-time: single authorized use"
+     ],
+     [
+      "granted_at",
+      "When the user granted this consent"
+     ],
+     [
+      "revoked_at",
+      "When revoked; NULL while active. Revoked rows are retained for audit history."
+     ],
+     [
+      "grant_prompt",
+      "Exact consent text the user saw and agreed to (source of truth for \"what did I consent to?\"); not surfaced in read payloads"
+     ],
+     [
+      "recipient_kind",
+      "Kind of recipient the backend column names: ai_backend (a model vendor, set by privacy grant --backend) or ai_host (the AI app reading the output, keyed transport-class:name such as local:claude-code); consent is per (feature_category, backend, recipient_kind)"
+     ],
+     [
+      "terms_version",
+      "Vendor terms version the user consented under (ai_host rows only; NULL for ai_backend); a release that changes the shipped terms stops honoring the grant"
+     ],
+     [
+      "approved_via",
+      "Surface that recorded the consent, e.g. cli_prompt (ai_host rows only; NULL for ai_backend)"
+     ],
+     [
+      "redaction_policy_version",
+      "Redaction policy version the user consented under (ai_host rows only; NULL for ai_backend); a release that changes the redaction policy stops honoring the grant"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_audit_log.sql": {
+  "sha256": "dc63eae0cc01ca22f6fbbbb52ef6970d4db3d4b76f694dad94943f674a38b42c",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "audit_log",
+    "table_sql": "app.audit_log",
+    "table_comment": "Unified audit log for user-driven mutations to in-scope app state plus\n   AI-call provenance (subsumes the previously planned app.ai_audit_log).\n   Audit emission is synchronous in the same DuckDB transaction as the\n   mutation. AI-specific fields (flow_tier, backend, model, data_sent_hash,\n   consent_reference, user_initiated) ride context_json — promoted to indexed\n   columns only when a real query pattern demands it.",
+    "column_comments": [
+     [
+      "audit_id",
+      "Full UUID4 hex (32 chars). Audit log row count grows with every mutation, plus per-row tag.rename_row children — sized for >100K rows per identifiers.md."
+     ],
+     [
+      "occurred_at",
+      "When the event happened"
+     ],
+     [
+      "actor",
+      "Who drove the mutation. Surface: 'cli', 'mcp'. Internal driver: 'import' (an import-pipeline side-effect on app state), 'auto_rule_service', 'system' (auto-detected/programmatic). AI call: 'ai:<provider>:<model>'"
+     ],
+     [
+      "action",
+      "e.g. 'manual.create', 'note.add', 'tag.rename', 'split.add', 'category.set', 'ai.external_call'"
+     ],
+     [
+      "target_schema",
+      "e.g. 'app', 'core'"
+     ],
+     [
+      "target_table",
+      "e.g. 'transaction_categories', 'transaction_tags'"
+     ],
+     [
+      "target_id",
+      "gold transaction_id, rule_id, merchant_id, import_id, etc."
+     ],
+     [
+      "before_value",
+      "Full prior row state; NULL on creation (INSERT). Invariant 10: complete pre-mutation row, not a diff."
+     ],
+     [
+      "after_value",
+      "Full resulting row state; NULL on deletion (DELETE). Invariant 10: complete post-mutation row, not a diff."
+     ],
+     [
+      "parent_audit_id",
+      "Self-FK; chains AI-call → user-confirm → category-write, or bulk-rename → per-row events"
+     ],
+     [
+      "context_json",
+      "Discriminator-shaped extras: AI fields (flow_tier, backend, model, data_sent_hash), source surface, hashes, etc."
+     ],
+     [
+      "operation_id",
+      "Per-call group: every row from one MCP/CLI call shares this op_<uuid4_hex>. A flat sibling group (vs parent_audit_id's causal tree); the unit a later system_audit_undo reverses. Set by the service-layer MutationContext. (Placed last + indexes deferred to V023 — see below.)"
+     ],
+     [
+      "is_undo",
+      "TRUE for rows produced by system_audit_undo; FALSE for original mutations. (Added by V024.)"
+     ],
+     [
+      "undoes_operation_id",
+      "When is_undo=TRUE, the operation_id this undo reverses; NULL otherwise. (Added by V024.)"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_balance_assertions.sql": {
+  "sha256": "8c9782e4c78f9aa497c84a660517f322cec12be8b6fd6192cbd7704624282eaf",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "balance_assertions",
+    "table_sql": "app.balance_assertions",
+    "table_comment": "User-entered balance anchors for accounts; primary observation source alongside\n   OFX statement balances and tabular running balances. Composite PK enforces\n   one assertion per account per date.",
+    "column_comments": [
+     [
+      "account_id",
+      "Foreign key to core.dim_accounts.account_id"
+     ],
+     [
+      "assertion_date",
+      "Date the balance was observed"
+     ],
+     [
+      "balance",
+      "Asserted balance amount"
+     ],
+     [
+      "notes",
+      "Optional user notes (e.g., \"from paper statement\")"
+     ],
+     [
+      "created_at",
+      "When the assertion was first entered"
+     ],
+     [
+      "updated_at",
+      "When the assertion was last edited; refreshed by BalanceService.assert_balance on conflict"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_budgets.sql": {
+  "sha256": "5862aeee9973a89fded799c3dad15aea4fa3a8b8c901d7f5464b8917179d8e8c",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "budgets",
+    "table_sql": "app.budgets",
+    "table_comment": "Monthly spending budget targets by category; each record defines a spending limit for a category over a date range",
+    "column_comments": [
+     [
+      "budget_id",
+      "Unique identifier for this budget record"
+     ],
+     [
+      "category",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "category_id",
+      "Foreign key to core.dim_categories.category_id (top-level row, subcategory IS NULL); NULL only for orphaned legacy rows"
+     ],
+     [
+      "monthly_amount",
+      "Target monthly spending limit for this category in USD"
+     ],
+     [
+      "start_month",
+      "First month this budget is active, in YYYY-MM format"
+     ],
+     [
+      "end_month",
+      "Last month this budget is active, in YYYY-MM format; NULL means no end date"
+     ],
+     [
+      "created_at",
+      "Timestamp when this budget was created"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_categories.sql": {
+  "sha256": "014d8c036bc76b3f2b3ad13d18f87d37fd3dbb81d1da758bc9d604d9358b029e",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "user_categories",
+    "table_sql": "app.user_categories",
+    "table_comment": "User-created spending categories. Seed defaults live in seeds.categories (managed by SQLMesh) and are exposed alongside these via the app.categories view",
+    "column_comments": [
+     [
+      "category_id",
+      "12-char UUID hex assigned at creation"
+     ],
+     [
+      "category",
+      "Top-level spending category name"
+     ],
+     [
+      "subcategory",
+      "Subcategory within the parent category; NULL for top-level-only entries"
+     ],
+     [
+      "description",
+      "Human-readable description of what transactions belong in this category"
+     ],
+     [
+      "class",
+      "Accounting class: income | expense | transfer | debt"
+     ],
+     [
+      "is_active",
+      "False to soft-delete a user category without losing existing categorizations"
+     ],
+     [
+      "created_at",
+      "Timestamp when this category was added"
+     ]
+    ]
+   },
+   {
+    "schema_name": "app",
+    "table_name": "category_overrides",
+    "table_sql": "app.category_overrides",
+    "table_comment": "User overrides on default (seeded) categories — the only mutation users can make to defaults is deactivation",
+    "column_comments": [
+     [
+      "category_id",
+      "Matches seeds.categories.category_id"
+     ],
+     [
+      "is_active",
+      "False to hide a default category from the taxonomy"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_categorization_decisions.sql": {
+  "sha256": "170bd5f94d085ce9a1602721912504ecad1d62e1f1f1ab64141746884e8487c2",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "categorization_decisions",
+    "table_sql": "app.categorization_decisions",
+    "table_comment": "Transaction-level categorization review decisions for the normalized review surface",
+    "column_comments": [
+     [
+      "decision_id",
+      "Deterministic cat_<sha256[:16]>[_aN] attempt identifier"
+     ],
+     [
+      "transaction_id",
+      "Canonical core.fct_transactions transaction under review"
+     ],
+     [
+      "attempt_number",
+      "Monotonic proposal attempt for this transaction"
+     ],
+     [
+      "status",
+      "Explicit proposal-attempt lifecycle state"
+     ],
+     [
+      "category_id",
+      "Accepted canonical category target; NULL while pending or rejected"
+     ],
+     [
+      "merchant_id",
+      "Accepted canonical merchant target; NULL when no merchant was assigned"
+     ],
+     [
+      "category",
+      "Immutable accepted category display snapshot"
+     ],
+     [
+      "subcategory",
+      "Immutable accepted subcategory display snapshot"
+     ],
+     [
+      "categorized_by",
+      "Immutable assignment-method snapshot"
+     ],
+     [
+      "confidence",
+      "Immutable accepted confidence snapshot"
+     ],
+     [
+      "rule_id",
+      "Immutable accepted categorization-rule snapshot"
+     ],
+     [
+      "source_type",
+      "Immutable accepted source snapshot"
+     ],
+     [
+      "category_revision",
+      "Category audit revision observed by this attempt"
+     ],
+     [
+      "proposed_at",
+      "When the pending proposal was materialized"
+     ],
+     [
+      "decided_at",
+      "When accepted or rejected; NULL while pending"
+     ],
+     [
+      "decided_by",
+      "User for MCP/CLI decisions; system for migration backfill"
+     ],
+     [
+      "reversed_at",
+      "When audit undo reversed the terminal outcome without deleting history"
+     ],
+     [
+      "reversed_by",
+      "Actor that reversed the terminal outcome"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_categorization_rules.sql": {
+  "sha256": "5d14595c3b75195c4d926b063499a6080e4250afc2b4fc2b5e3d93ea838f6e75",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "categorization_rules",
+    "table_sql": "app.categorization_rules",
+    "table_comment": "Auto-categorization rules evaluated in priority order; assign categories based on description patterns, amount bounds, and account filters",
+    "column_comments": [
+     [
+      "rule_id",
+      "Unique identifier for this rule"
+     ],
+     [
+      "name",
+      "Human-readable label for this rule, e.g. Starbucks coffee purchases"
+     ],
+     [
+      "merchant_pattern",
+      "Pattern matched against fct_transactions.description to trigger this rule"
+     ],
+     [
+      "match_type",
+      "How merchant_pattern is applied: contains, exact, or regex"
+     ],
+     [
+      "min_amount",
+      "Lower bound (absolute value) for amount matching; NULL means no lower bound"
+     ],
+     [
+      "max_amount",
+      "Upper bound (absolute value) for amount matching; NULL means no upper bound"
+     ],
+     [
+      "account_id",
+      "Restricts rule to a specific account; NULL means rule applies to all accounts"
+     ],
+     [
+      "category",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference. NOT NULL retained until Phase 2 drops the column."
+     ],
+     [
+      "subcategory",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "category_id",
+      "Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows"
+     ],
+     [
+      "priority",
+      "Evaluation order; lower number = higher priority. Default 100; use lower values for more specific rules"
+     ],
+     [
+      "is_active",
+      "False for rules that have been disabled without being deleted"
+     ],
+     [
+      "created_by",
+      "Who created the rule: user (manually entered) or ai (LLM-suggested)"
+     ],
+     [
+      "created_at",
+      "Timestamp when this rule was created"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_category_source_map.sql": {
+  "sha256": "705cd282396a59ea4b6f0c8c21a170fd009279c08626b82df6b2a53e61f176f8",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "category_source_map",
+    "table_sql": "app.category_source_map",
+    "table_comment": "Category-source mapping → canonical MoneyBin category, or to nothing when the term is ignored. User curations and provider overrides; seed defaults live in seeds.category_source_map, unioned via core.bridge_category_source_map.",
+    "column_comments": [
+     [
+      "source_type",
+      "The transaction row's own source_type: plaid for provider rows; csv, tsv, excel, parquet, feather, pdf, or manual for imported rows. Never a provider alias or an origin slug"
+     ],
+     [
+      "source_origin",
+      "The row's source_origin for an imported mapping (e.g. chase_credit; '' when the import carries an empty slug). '' on a provider row means provider-wide"
+     ],
+     [
+      "source_category_code",
+      "Source category text, stored verbatim"
+     ],
+     [
+      "source_subcategory_code",
+      "Second half of the source's (category, subcategory) key; '' is the sentinel for \"no subcategory\" (DuckDB PKs reject NULL) — never a distinct real value"
+     ],
+     [
+      "code_level",
+      "'detailed' or 'primary'; detailed wins in reverse lookup"
+     ],
+     [
+      "category_id",
+      "FK to core.dim_categories.category_id (may be a user category). NULL marks the term as ignored: it is known and categorizes nothing"
+     ],
+     [
+      "source_taxonomy_version",
+      "Provider taxonomy revision this row was curated against"
+     ],
+     [
+      "created_at",
+      "When the user added this mapping"
+     ],
+     [
+      "updated_at",
+      "Last change to this mapping"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_exchange_rate_overrides.sql": {
+  "sha256": "25e0ee43697cbec7a32ab0aa5ba6df1296946a752b81bb513347d88d1205d505",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "exchange_rate_overrides",
+    "table_sql": "app.exchange_rate_overrides",
+    "table_comment": "User corrections to provider reference rates (multi-currency.md Requirement 14).\n   An override outranks every cached provider rate for its own pair and date, and a\n   later refetch never overwrites it — raw.exchange_rates is append-only precisely\n   so a disagreement is recorded here instead of edited into the cache.\n\n   The grain is one DAILY reference rate, not one rate per transaction: two\n   same-day conversions at different effective rates (spread, fee) are out of\n   scope, and a genuine per-transaction rate belongs on the M1K.3 conversion-pair\n   model. Written only through ExchangeRateOverridesRepo, which pairs every\n   mutation with app.audit_log (Invariant 10). No provider write ever touches\n   this table.",
+    "column_comments": [
+     [
+      "from_currency",
+      "ISO 4217, upper; the currency being converted out of"
+     ],
+     [
+      "to_currency",
+      "ISO 4217, upper; the currency being converted into"
+     ],
+     [
+      "rate_date",
+      "The business day this correction applies to, not the day it was entered; per-date scoping is what lets an override survive a refetch without suppressing other days"
+     ],
+     [
+      "rate",
+      "Mirrors raw.exchange_rates: a zero or negative rate is never a real quote, and this one outranks the provider, so it would convert every balance to zero"
+     ],
+     [
+      "note",
+      "Why the user overrode the provider rate; the only provenance an override carries beyond its audit row"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_export_destinations.sql": {
+  "sha256": "679d83389f6fd965224435f5d5dce3cc473352cba59f6f3b41381e133fd7353a",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "export_destinations",
+    "table_sql": "app.export_destinations",
+    "table_comment": "Saved local and Google Sheets export targets. All mutations route through ExportDestinationsRepo to emit paired app.audit_log rows per app-integrity-invariant.md.",
+    "column_comments": [
+     [
+      "destination_id",
+      "Opaque truncated UUID (uuid4().hex[:12]) identifying this saved destination"
+     ],
+     [
+      "name",
+      "User-facing destination name; unique across local and Google Sheets kinds"
+     ],
+     [
+      "kind",
+      "Destination type: 'local' for a visible directory or 'sheets' for a workbook"
+     ],
+     [
+      "local_path",
+      "Visible local export directory; required only when kind='local'"
+     ],
+     [
+      "spreadsheet_id",
+      "Google Sheets workbook id; required only when kind='sheets'"
+     ],
+     [
+      "managed_tab_prefix",
+      "Prefix for tabs managed by MoneyBin in this workbook; required only for Sheets"
+     ],
+     [
+      "created_at",
+      "Destination configuration creation timestamp"
+     ],
+     [
+      "updated_at",
+      "Last destination-configuration mutation timestamp"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_gsheet_connections.sql": {
+  "sha256": "bbfcd3d84166196da1d5b19ac51ceed386c899a8021ca0e0a7417927e66ad0f5",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "gsheet_connections",
+    "table_sql": "app.gsheet_connections",
+    "table_comment": "One row per connected (Google Sheets tab, adapter). Pre-refresh pull replays the sheet's current state through this connection's pinned mapping. All mutations route through GSheetConnectionsRepo to emit paired app.audit_log rows per app-integrity-invariant.md.",
+    "column_comments": [
+     [
+      "connection_id",
+      "Truncated UUID (uuid4().hex[:12]) per identifiers.md strategy 3; stable across renames"
+     ],
+     [
+      "spreadsheet_id",
+      "Google Sheets workbook id (from URL); shared across tabs in the same workbook"
+     ],
+     [
+      "sheet_gid",
+      "Numeric tab id (URL fragment gid=); stable across sheet renames"
+     ],
+     [
+      "sheet_name",
+      "Tab name at last successful pull; informational only — may drift, not used for joins"
+     ],
+     [
+      "workbook_name",
+      "Workbook title at last successful pull; informational"
+     ],
+     [
+      "adapter",
+      "Adapter target: 'transactions' (Tiller-style ledger → raw.tabular_transactions) or 'seed' (catch-all → raw.gsheet_seeds). v1 values; future values add as new adapters ship."
+     ],
+     [
+      "account_id",
+      "FK to dim_accounts: the one account every row is attributed to. NULL for the seed adapter, and for a transactions sheet carrying its own account column — there each row is keyed by the account it names and this stays NULL."
+     ],
+     [
+      "account_name",
+      "As provided via --account-name at connect time; denormalized for display"
+     ],
+     [
+      "column_mapping",
+      "{source_header: dest_field} pinned at connect/reconnect time; the contract for subsequent pulls"
+     ],
+     [
+      "header_signature",
+      "Ordered list of source headers at connect/reconnect time; drift detection baseline"
+     ],
+     [
+      "date_format",
+      "Pinned strftime format (e.g. '%m/%d/%Y'); NULL means auto-detect on each pull"
+     ],
+     [
+      "sign_convention",
+      "One of: negative_is_expense, negative_is_income, split_debit_credit; NULL = auto"
+     ],
+     [
+      "number_format",
+      "One of: us, european, swiss_french, zero_decimal; NULL = auto"
+     ],
+     [
+      "skip_rows",
+      "Rows to skip before the header row (Tiller sheets often have a banner row)"
+     ],
+     [
+      "skip_trailing_patterns",
+      "Optional list of regex strings flagging trailing junk rows; NULL = use default patterns, [] = none, ['^Total'] = custom"
+     ],
+     [
+      "status",
+      "Connection health; drives pre-refresh hook decisions and the system_status gsheet block"
+     ],
+     [
+      "last_pull_at",
+      "Timestamp of most recent pull attempt (success or failure)"
+     ],
+     [
+      "last_pull_import_id",
+      "FK to app.import_log.import_id for the most recent attempt; NULL before first pull"
+     ],
+     [
+      "last_success_at",
+      "Timestamp of most recent pull that ingested cleanly; NULL before first successful pull"
+     ],
+     [
+      "last_status_reason",
+      "Human-readable explanation of the current non-healthy status (drift detail or sanitized failure message); NULL when healthy"
+     ],
+     [
+      "consecutive_failure_count",
+      "Number of consecutive failed pulls since the last success; resets to 0 on success"
+     ],
+     [
+      "alias",
+      "User-supplied slug; required for adapter='seed' (becomes view name raw.gsheet_<alias>); NULL for adapter='transactions'. Globally unique across all connections."
+     ],
+     [
+      "created_at",
+      "Connection-row creation timestamp"
+     ],
+     [
+      "updated_at",
+      "Last mutation timestamp (refreshed by GSheetConnectionsRepo on every audited write)"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_import_log.sql": {
+  "sha256": "1cdc71c151dd8edeefbe2ff534b100396a134584e74f2c5a31a052cbe0d65f74",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "import_log",
+    "table_sql": "app.import_log",
+    "table_comment": "Audit log of every tabular file import. Each import batch gets a UUID that is\n   stamped on every raw row it produces, enabling import history, reverting, and\n   diagnostics.",
+    "column_comments": [
+     [
+      "import_id",
+      "UUID generated at the start of each import batch"
+     ],
+     [
+      "source_file",
+      "Absolute path to the imported file"
+     ],
+     [
+      "source_type",
+      "File format: csv, tsv, excel, parquet, feather, pipe, pdf"
+     ],
+     [
+      "source_origin",
+      "Format/institution that produced this data"
+     ],
+     [
+      "format_name",
+      "Name of the matched or saved format (NULL if no format matched)"
+     ],
+     [
+      "format_source",
+      "How the format was resolved: \"built-in\", \"saved\", \"detected\", \"override\""
+     ],
+     [
+      "account_names",
+      "List of account names affected by this import"
+     ],
+     [
+      "status",
+      "Lifecycle: importing → complete | partial | failed | reverted. gsheet drift events close as 'failed' here; the drift distinction lives on app.gsheet_connections.status"
+     ],
+     [
+      "rows_total",
+      "Total rows in source file (before filtering)"
+     ],
+     [
+      "rows_imported",
+      "Rows successfully written to raw tables"
+     ],
+     [
+      "rows_rejected",
+      "Rows that failed validation (with reasons in rejection_details)"
+     ],
+     [
+      "rows_skipped_trailing",
+      "Trailing junk rows removed by skip patterns"
+     ],
+     [
+      "rejection_details",
+      "Per-rejected-row: [{row_number, reason}]"
+     ],
+     [
+      "detection_confidence",
+      "Confidence tier of the column mapping: high, medium, low (NULL if format matched)"
+     ],
+     [
+      "number_format",
+      "Detected number convention: us, european, swiss_french, zero_decimal"
+     ],
+     [
+      "date_format",
+      "Date format string used for parsing"
+     ],
+     [
+      "sign_convention",
+      "Sign convention applied: negative_is_expense, negative_is_income, split_debit_credit"
+     ],
+     [
+      "balance_validated",
+      "Whether running balance validation passed (NULL if no balance column)"
+     ],
+     [
+      "started_at",
+      "When the import batch began"
+     ],
+     [
+      "completed_at",
+      "When the import batch finished (NULL if still running or failed)"
+     ],
+     [
+      "reverted_at",
+      "When the import was reverted (NULL if not reverted)"
+     ],
+     [
+      "file_sha256",
+      "SHA-256 over the source file bytes; identifies the same document across renames and moves. NULL for batches imported before this column existed"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_import_previews.sql": {
+  "sha256": "006f05748cdbdd65a40b8c3f435873e147fa1ad0494a3e2bfe16cd67bacca8b8",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "import_previews",
+    "table_sql": "app.import_previews",
+    "table_comment": "Persisted trust state for staged imports. A preview binds confirmation to one immutable file snapshot and one canonical detection result; every lifecycle mutation is audited through ImportPreviewsRepo.",
+    "column_comments": [
+     [
+      "preview_id",
+      "Opaque truncated UUID (uuid4().hex[:12]); never derived from file content"
+     ],
+     [
+      "file_path",
+      "Canonical absolute path used only to re-open the exact previewed file"
+     ],
+     [
+      "file_sha256",
+      "Full SHA-256 of previewed file bytes for exact unchanged-file rebinding"
+     ],
+     [
+      "file_size_bytes",
+      "Previewed byte length; defense-in-depth alongside SHA-256"
+     ],
+     [
+      "channel",
+      "Import channel whose canonical detection snapshot is stored"
+     ],
+     [
+      "snapshot_json",
+      "Complete canonical preview/detection payload required to explain and rebind confirmation"
+     ],
+     [
+      "issued_at",
+      "UTC time at which this preview became confirmable"
+     ],
+     [
+      "expires_at",
+      "UTC deadline; confirmation refuses at or after this timestamp"
+     ],
+     [
+      "consumed_at",
+      "UTC time the preview entered one successful caller-owned import transaction; NULL while reusable after rollback"
+     ],
+     [
+      "import_id",
+      "Resulting app.import_log id, set in the same transaction as consumption and import completion"
+     ],
+     [
+      "updated_at",
+      "Latest lifecycle mutation watermark for audit-coverage checks"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_imports.sql": {
+  "sha256": "745439dd9ab40605e73136ad66e57b96019bed35da83b0e13c3b03d452de9a4d",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "imports",
+    "table_sql": "app.imports",
+    "table_comment": "User-applied labels on import batches. One row per labeled import; absence\n   means no user-state on that batch. Labels follow the same slug pattern as\n   transaction tags but live in their own column because import labels and\n   transaction tags are queried independently.",
+    "column_comments": [
+     [
+      "import_id",
+      "Foreign key to app.import_log.import_id; one row per labeled import"
+     ],
+     [
+      "labels",
+      "LIST(VARCHAR); NULL when no labels; same slug pattern as tags"
+     ],
+     [
+      "updated_at",
+      "When the labels were last updated"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_investment_match_decisions.sql": {
+  "sha256": "3969872cde1d38c7235449caf9773402acecc23c18787611a5440c7e47e8a716",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "investment_match_decisions",
+    "table_sql": "app.investment_match_decisions",
+    "table_comment": "Durable whole-investment-event Proposals; planner writes never alter Golden membership.",
+    "column_comments": [
+     [
+      "proposal_id",
+      "Opaque review lifecycle identity"
+     ],
+     [
+      "algorithm_version",
+      "Exact planning contract version"
+     ],
+     [
+      "relationship_fingerprint",
+      "Exact members and canonical dependencies"
+     ],
+     [
+      "candidate_graph_fingerprint",
+      "Connected alternatives and rejection constraints"
+     ],
+     [
+      "confidence_band",
+      "Weakest member-pair evidence"
+     ],
+     [
+      "status",
+      "Human transitions unavailable during review-only rollout"
+     ],
+     [
+      "auto_eligible",
+      "Immutable measurement only; no mutation authority"
+     ],
+     [
+      "is_competing",
+      "Derived by the persisted constrained optimal solve"
+     ],
+     [
+      "proposal",
+      "Exact legs, evidence, conflicts, alternatives and supersession topology"
+     ],
+     [
+      "actor",
+      "Surface requesting the planning operation"
+     ],
+     [
+      "created_at",
+      "First planning time"
+     ],
+     [
+      "updated_at",
+      "Last planner lifecycle change"
+     ],
+     [
+      "decided_at",
+      "First human decision time; NULL for planner writes"
+     ],
+     [
+      "accepted_at",
+      "Ratification time; NULL throughout review-only rollout"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_lot_selections.sql": {
+  "sha256": "66689933f6e6a2fb05ac94fffaa05a0737bf158735b8997695f61803873673ad",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "lot_selections",
+    "table_sql": "app.lot_selections",
+    "table_comment": "Specific-identification lot-selection overrides (investments-data-model.md).\n   Core app.* state — cost basis is core, not the us_tax package. Records, for\n   a disposal, which lots to draw from and how much from each; unselected\n   remainder falls back to FIFO. Written only through LotSelectionsRepo\n   (declarative set-for-disposal; empty set clears).",
+    "column_comments": [
+     [
+      "investment_transaction_id",
+      "FK to the disposal row in core.fct_investment_transactions"
+     ],
+     [
+      "lot_id",
+      "FK to core.fct_investment_lots; the chosen lot (content-hash id, stable across rebuilds)"
+     ],
+     [
+      "quantity",
+      "Units to draw from this lot for this disposal"
+     ],
+     [
+      "created_at",
+      "When the selection was recorded"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_match_decisions.sql": {
+  "sha256": "4cc7ba08ee6d1a6bbe459b49564c141e44420aeb2ed8565a4df7c74e309dc46e",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "match_decisions",
+    "table_sql": "app.match_decisions",
+    "table_comment": "Match decisions from the Python matcher and user review; one row per proposed pair",
+    "column_comments": [
+     [
+      "match_id",
+      "UUID primary key for this match decision"
+     ],
+     [
+      "source_transaction_id_a",
+      "Source-native ID of first row in the pair"
+     ],
+     [
+      "source_type_a",
+      "source_type of first row (ofx, csv, etc.)"
+     ],
+     [
+      "source_origin_a",
+      "source_origin of first row (institution/format)"
+     ],
+     [
+      "source_transaction_id_b",
+      "Source-native ID of second row in the pair"
+     ],
+     [
+      "source_type_b",
+      "source_type of second row"
+     ],
+     [
+      "source_origin_b",
+      "source_origin of second row"
+     ],
+     [
+      "account_id",
+      "Shared account (blocking requirement for dedup)"
+     ],
+     [
+      "confidence_score",
+      "Match confidence 0.0000 to 1.0000"
+     ],
+     [
+      "match_signals",
+      "Per-signal scores: {\"date_distance\": 0, \"description_similarity\": 0.87}"
+     ],
+     [
+      "match_type",
+      "dedup or transfer (transfer added by matching-transfer-detection.md)"
+     ],
+     [
+      "match_tier",
+      "Dedup-specific: 2b (within-source overlap) or 3 (cross-source); NULL for transfers"
+     ],
+     [
+      "account_id_b",
+      "Second account; NULL for dedup (same account); populated for transfers"
+     ],
+     [
+      "match_status",
+      "pending, accepted, rejected, reversed"
+     ],
+     [
+      "match_reason",
+      "Human-readable explanation of why this match was proposed"
+     ],
+     [
+      "decided_by",
+      "auto, user, system"
+     ],
+     [
+      "decided_at",
+      "When the decision was made"
+     ],
+     [
+      "reversed_at",
+      "When the match was undone; NULL if active"
+     ],
+     [
+      "reversed_by",
+      "Who reversed: user or system; NULL if active"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_merchant_link_decisions.sql": {
+  "sha256": "25aece4bf43634fd9794d3d8f706c36ecfecad70d312de0f9ab1e6d40b5925d8",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "merchant_link_decisions",
+    "table_sql": "app.merchant_link_decisions",
+    "table_comment": "Merchant-link review queue (M1T, merchant-entity-resolution.md Decision 2). match_decisions-shaped:\n   one row per (unbound provider id, candidate merchant) proposal — candidates are relational rows, not JSON.\n   The review queue reads pending rows; this is the only place ambiguous merchant-binding state lives.\n   Written only through MerchantLinkDecisionsRepo (Invariant 10).",
+    "column_comments": [
+     [
+      "decision_id",
+      "uuid4[:12] primary key"
+     ],
+     [
+      "ref_value",
+      "the unbound provider id under review"
+     ],
+     [
+      "source_type",
+      "issuing provider"
+     ],
+     [
+      "provider_merchant_name",
+      "provider's merchant_name (reviewer display + match basis)"
+     ],
+     [
+      "candidate_merchant_id",
+      "existing merchant proposed as the binding target"
+     ],
+     [
+      "confidence_score",
+      "informational; fuzzy matches always go to review"
+     ],
+     [
+      "match_signals",
+      "JSON: which signal fired + value (per match_decisions convention)"
+     ],
+     [
+      "match_reason",
+      "short human reason (e.g. signal name)"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_merchant_links.sql": {
+  "sha256": "fa1b5467b57392e29a7aeed719f3a890a58e27e389fe54209120a74802322c3a",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "merchant_links",
+    "table_sql": "app.merchant_links",
+    "table_comment": "Invariant: at most one accepted binding per (source_type, ref_kind, ref_value).\n   Enforced at the repository layer (MerchantLinksRepo._guard_uniqueness) — DuckDB cannot\n   express a partial unique index (WHERE status='accepted') or a unique constraint\n   on a generated column, so this cannot be a storage-level constraint.",
+    "column_comments": [
+     [
+      "link_id",
+      "uuid4[:12] primary key for this binding"
+     ],
+     [
+      "merchant_id",
+      "canonical merchant this provider id maps to"
+     ],
+     [
+      "ref_value",
+      "the provider's stable merchant id (opaque, non-PII)"
+     ],
+     [
+      "source_type",
+      "issuing provider: plaid (future: mx, simplefin, ...)"
+     ],
+     [
+      "decided_at",
+      "when this binding was decided"
+     ],
+     [
+      "reversed_at",
+      "when reversed; NULL while accepted"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_metrics.sql": {
+  "sha256": "23a0bf4112dd19f57d4d68c36356070c45fb22c8ee1f145d30d1a2a4ec6890c9",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "metrics",
+    "table_sql": "app.metrics",
+    "table_comment": "Prometheus metric snapshots written via flush_metrics(); each row is a point-in-time snapshot of one metric",
+    "column_comments": [
+     [
+      "metric_name",
+      "Prometheus metric name (e.g. 'moneybin_import_records_total')"
+     ],
+     [
+      "metric_type",
+      "One of: 'counter', 'histogram', 'gauge'"
+     ],
+     [
+      "labels",
+      "Label key-value pairs as JSON object"
+     ],
+     [
+      "value",
+      "Counter/gauge current value, or histogram sum"
+     ],
+     [
+      "bucket_bounds",
+      "Histogram upper bounds (NULL for counter/gauge)"
+     ],
+     [
+      "bucket_counts",
+      "Histogram cumulative bucket counts (NULL for counter/gauge)"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_pdf_formats.sql": {
+  "sha256": "3f2248e67af385e76ca4cb795d0585c6e114ce0707ae74e21451916e9132b25d",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "pdf_formats",
+    "table_sql": "app.pdf_formats",
+    "table_comment": "Learned PDF layouts. On first contact the bridge proposes a recipe + mapping +\n   routing; the user vets it; it is saved here. Future PDFs whose fingerprint\n   matches replay the recipe deterministically with no bridge. Parallels\n   app.tabular_formats.",
+    "column_comments": [
+     [
+      "name",
+      "Machine identifier (e.g. \"chase_checking_pdf\")"
+     ],
+     [
+      "institution_name",
+      "Human-readable issuer (e.g. \"Chase\")"
+     ],
+     [
+      "document_kind",
+      "Free slug for the document type (e.g. \"checking_statement\", \"1099b\")"
+     ],
+     [
+      "layout_fingerprint",
+      "Text/structural signature used to recognize this layout on future imports"
+     ],
+     [
+      "front_end",
+      "IR producer for replay: text (pdfplumber), table (camelot), or vision (re-run via bridge; not cheap-replay)"
+     ],
+     [
+      "extraction_recipe",
+      "Declarative rules: metadata-capture anchors (account id, period, balances) + IR->rows rules (region anchors, row delimiters, field order, type/sign)"
+     ],
+     [
+      "routing",
+      "Outcome this format produces"
+     ],
+     [
+      "field_mapping",
+      "Destination field -> extracted field (transactions routing); NULL for seed"
+     ],
+     [
+      "seed_alias",
+      "View alias for routing='seed' (raw.pdf_<seed_alias>); NULL for transactions"
+     ],
+     [
+      "sign_convention",
+      "negative_is_expense | negative_is_income (credit cards, confirm-gated) | split_debit_credit (transactions)"
+     ],
+     [
+      "date_format",
+      "strftime format for date parsing"
+     ],
+     [
+      "number_format",
+      "us | european | swiss_french | zero_decimal"
+     ],
+     [
+      "source",
+      "detected (machine auto-derive) | bridge (agent-authored, human-vetted) | manual (hand-authored/edited). Self-heal re-derives only 'detected' rows -- see extractors/pdf/routing.py::_attempt_self_heal"
+     ],
+     [
+      "version",
+      "Bumped on each recipe refresh via PdfFormatsRepo.bump_version (mutation audited per Invariant 10); prior versions recoverable through app.audit_log undo (Invariant 11, data-recovery-contract.md)"
+     ],
+     [
+      "times_used",
+      "Successful imports using this format"
+     ],
+     [
+      "last_used_at",
+      "Most recent successful use"
+     ],
+     [
+      "created_at",
+      "Timestamp when this format was first created"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_profile_settings.sql": {
+  "sha256": "aeb3d2a4885c065598f0995e5ed6204ae3f38c9f990cd4c75bc1c16e41cc8ece",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "profile_settings",
+    "table_sql": "app.profile_settings",
+    "table_comment": "Profile-level user settings (multi-currency.md Requirement 4).\n   Exactly one row per profile database — the database *is* the profile — so\n   SQLMesh report guards can read `home_currency` with a bare SELECT.\n   Absence of a row (or a NULL) means the user has not chosen one yet; it is\n   never defaulted to 'USD', which would relabel a EUR-only user's money.",
+    "column_comments": [
+     [
+      "scope",
+      "Singleton guard: one settings row per profile database"
+     ],
+     [
+      "home_currency",
+      "ISO 4217 (USD, EUR, ...); NULL means not yet chosen, never an implied USD"
+     ],
+     [
+      "display_currency_targets",
+      "Explicit read targets; empty leaves refresh cost unchanged"
+     ],
+     [
+      "reporting_timezone",
+      "Persisted IANA reporting calendar; initialized explicitly on fresh profiles"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_proposed_rules.sql": {
+  "sha256": "58989ffa12fc93ec630282762d4959ccb19037dd4aee72c5c1da00e8f7b392db",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "proposed_rules",
+    "table_sql": "app.proposed_rules",
+    "table_comment": "Auto-rule proposals generated from user categorization patterns; staged for review before activation",
+    "column_comments": [
+     [
+      "proposed_rule_id",
+      "12-char truncated UUID4 hex identifier"
+     ],
+     [
+      "merchant_pattern",
+      "Pattern to match: canonical merchant name or cleaned description"
+     ],
+     [
+      "match_type",
+      "How merchant_pattern is matched: contains, exact, or regex"
+     ],
+     [
+      "category",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference. NOT NULL retained until Phase 2 drops the column."
+     ],
+     [
+      "subcategory",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "category_id",
+      "Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows"
+     ],
+     [
+      "rule_id",
+      "Foreign key to app.categorization_rules.rule_id; set when status='approved'. NULL until approval. Replaces the text-keyed proposal->rule linkage that V016 retired."
+     ],
+     [
+      "status",
+      "Lifecycle state: tracking (sub-threshold accumulation), pending (awaiting decision), approved, rejected, or superseded"
+     ],
+     [
+      "trigger_count",
+      "Number of categorizations that triggered or reinforced this proposal"
+     ],
+     [
+      "source",
+      "How proposal was generated: pattern_detection or ml"
+     ],
+     [
+      "sample_txn_ids",
+      "Up to 5 transaction_ids that triggered this proposal"
+     ],
+     [
+      "proposed_at",
+      "When the proposal was first created"
+     ],
+     [
+      "decided_at",
+      "When the user approved or rejected; NULL while pending"
+     ],
+     [
+      "decided_by",
+      "Who decided: 'user' (CLI/MCP) or 'system' (automated); NULL while pending"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_rule_conflicts.sql": {
+  "sha256": "b55a30178658ed0ac40c9533c4005eace815bb338f6dc40a8f4b88dfdf2e5489",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "rule_conflicts",
+    "table_sql": "app.rule_conflicts",
+    "table_comment": "Categorization rules that claim the same canonical matcher but disagree about the category, held for an explicit user decision. A row binds to (existing_rule_id, existing_rule_updated_at): editing the rule changes its updated_at, so the recorded conflict no longer describes live state and drops out of the review queue. All mutations route through RuleConflictsRepo to emit paired app.audit_log rows per app-integrity-invariant.md.",
+    "column_comments": [
+     [
+      "conflict_id",
+      "Content hash over the conflict's identity ('conf_' + 16 hex of the existing rule, its updated_at, the matcher digest, and the proposed category) so re-detecting the same conflict updates one row"
+     ],
+     [
+      "matcher_digest",
+      "SHA-256 over the canonical matcher key (pattern, match type, amount bounds, account) shared by both rules; see canonical_matcher_key"
+     ],
+     [
+      "existing_rule_id",
+      "The active app.categorization_rules row that already owns this matcher"
+     ],
+     [
+      "existing_rule_updated_at",
+      "The existing rule's updated_at when the conflict was detected; a mismatch against live state means the conflict is stale"
+     ],
+     [
+      "existing_name",
+      "The existing rule's label, so review can name it without a second read"
+     ],
+     [
+      "existing_category",
+      "Category the existing rule assigns"
+     ],
+     [
+      "existing_subcategory",
+      "Subcategory the existing rule assigns; NULL when it assigns none"
+     ],
+     [
+      "existing_priority",
+      "The existing rule's evaluation priority; lower wins"
+     ],
+     [
+      "proposed_name",
+      "Label of the rule that was refused"
+     ],
+     [
+      "proposed_merchant_pattern",
+      "Pattern of the refused rule, stored verbatim as authored"
+     ],
+     [
+      "proposed_match_type",
+      "How the refused rule's pattern is applied: contains, exact, or regex"
+     ],
+     [
+      "proposed_min_amount",
+      "Lower bound of the refused rule; NULL means no lower bound"
+     ],
+     [
+      "proposed_max_amount",
+      "Upper bound of the refused rule; NULL means no upper bound"
+     ],
+     [
+      "proposed_account_id",
+      "Account the refused rule was scoped to; NULL means all accounts"
+     ],
+     [
+      "proposed_category",
+      "Category the refused rule would have assigned"
+     ],
+     [
+      "proposed_subcategory",
+      "Subcategory the refused rule would have assigned; NULL when it assigns none"
+     ],
+     [
+      "proposed_priority",
+      "Evaluation priority the refused rule asked for"
+     ],
+     [
+      "proposed_created_by",
+      "Who authored the refused rule: user or ai"
+     ],
+     [
+      "status",
+      "pending until decided; resolved once the user replaced, reprioritized, or cancelled it"
+     ],
+     [
+      "resolution",
+      "The decision taken: replace, reprioritize, or cancel; NULL while pending"
+     ],
+     [
+      "resolved_rule_id",
+      "Rule the resolution activated; NULL for cancel and while pending"
+     ],
+     [
+      "detected_at",
+      "When rule creation refused the proposal and recorded this conflict"
+     ],
+     [
+      "resolved_at",
+      "When the user decided; NULL while pending"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_schema.sql": {
+  "sha256": "3a2898fa25196a3a91e7d9332d17c8fa4e82830538ee726eb5594c36bec42573",
+  "plan": []
+ },
+ "sql/schema/app_schema_migrations.sql": {
+  "sha256": "c6fb33673d9df7c9de86db258d23c7057f9f62f83d26c0e8acb42da08f835778",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "schema_migrations",
+    "table_sql": "app.schema_migrations",
+    "table_comment": "Schema migration history — one row per applied migration file",
+    "column_comments": [
+     [
+      "version",
+      "monotonic integer from V### filename prefix"
+     ],
+     [
+      "filename",
+      "full migration filename including extension"
+     ],
+     [
+      "checksum",
+      "lowercase hex SHA-256 of file contents at apply time"
+     ],
+     [
+      "success",
+      "FALSE if migration failed mid-execution"
+     ],
+     [
+      "execution_ms",
+      "migration duration in milliseconds"
+     ],
+     [
+      "applied_at",
+      "when applied"
+     ],
+     [
+      "content_hash",
+      "SHA-256 of body truncated to 16 hex chars; identifies the code that was attempted. NULL on rows that predate self-heal (V013)"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_securities.sql": {
+  "sha256": "45a070ec3082609901a8b1bf581fbf7cc33e208eebaabbec4fd8718cc2670462",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "securities",
+    "table_sql": "app.securities",
+    "table_comment": "Manually-maintained security catalog (investments-data-model.md). Keyed on\n   a stable surrogate security_id; ticker/CUSIP/ISIN/FIGI are attributes,\n   never the key. Managed via CLI/MCP (investments securities add/set)\n   through SecuritiesRepo only.",
+    "column_comments": [
+     [
+      "security_id",
+      "Stable surrogate (truncated UUID4, 12 hex); never derived from ticker"
+     ],
+     [
+      "name",
+      "Human-readable label (\"Apple Inc.\", \"Bitcoin\")"
+     ],
+     [
+      "security_type",
+      "Instrument classification; 'cash' = money-market/sweep positions"
+     ],
+     [
+      "ticker",
+      "Exchange ticker (\"AAPL\"); nullable, not unique (tickers get reused)"
+     ],
+     [
+      "exchange",
+      "Listing exchange (\"NASDAQ\"); disambiguates duplicate tickers"
+     ],
+     [
+      "cusip",
+      "9-char CUSIP if supplied by user data; licensed — accepted, never redistributed"
+     ],
+     [
+      "isin",
+      "ISIN if supplied; international identifier"
+     ],
+     [
+      "figi",
+      "OpenFIGI identifier (open mapping aid)"
+     ],
+     [
+      "coingecko_id",
+      "CoinGecko slug for crypto price lookup (Pillar C)"
+     ],
+     [
+      "is_cash_equivalent",
+      "Highly liquid, treat-like-cash flag (money-market/sweep); NULL = unknown"
+     ],
+     [
+      "cost_basis_method",
+      "Per-security election override; NULL falls back to account default"
+     ],
+     [
+      "currency_code",
+      "Instrument's denominating currency; no FX conversion in v1"
+     ],
+     [
+      "created_at",
+      "When the catalog entry was created"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_security_link_decisions.sql": {
+  "sha256": "af5f48c0548b75d47be023f7b93dbb511c80526660e59230a6c7b57ab82a1d52",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "security_link_decisions",
+    "table_sql": "app.security_link_decisions",
+    "table_comment": "Fuzzy-match review queue for security identity (sync-plaid-investments.md).\n   MERGE semantics: the provisional security already exists by review time (rung-3\n   mint-now/merge-later), so accept rebinds the provider ref to candidate_security_id,\n   deletes the provisional created_by='plaid' catalog row, and migrates\n   app.lot_selections; reject keeps the minted security and records the declined\n   pairing so the resolver never re-proposes it. Pending rows surface via the\n   domain-neutral review sweep as security_links_pending. Written only through\n   SecurityLinkDecisionsRepo (Invariant 10).",
+    "column_comments": [
+     [
+      "decision_id",
+      "uuid4[:12]"
+     ],
+     [
+      "ref_value",
+      "the unbound provider ref under review"
+     ],
+     [
+      "source_type",
+      "issuing provider"
+     ],
+     [
+      "provider_ticker",
+      "the PROVIDER's symbol, never the catalog's (reviewer display + match basis): Plaid ticker_symbol, or the symbol a market feed was queried by. NULL when the provider was never consulted (a ticker ambiguous inside our own catalog is refused before any round-trip)"
+     ],
+     [
+      "provider_name",
+      "the PROVIDER's name for that symbol. Writing the catalog's own name here shows the reviewer two identical names and hides the divergence under review"
+     ],
+     [
+      "candidate_security_id",
+      "existing app.securities entry proposed as merge survivor"
+     ],
+     [
+      "confidence_score",
+      "match confidence (0-1)"
+     ],
+     [
+      "match_signals",
+      "which signal fired + value (match_decisions convention)"
+     ],
+     [
+      "match_reason",
+      "e.g. fuzzy_name"
+     ],
+     [
+      "decided_at",
+      "when this decision row last changed state"
+     ],
+     [
+      "reversed_at",
+      "when reversed; NULL otherwise"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_security_links.sql": {
+  "sha256": "a4e62460756c5139461b01fba112a42cab99c888e1bf08dbbe9424b9aa2cc544",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "security_links",
+    "table_sql": "app.security_links",
+    "table_comment": "Invariant: at most one accepted binding per (source_type, ref_kind, ref_value).\n   Enforced at the repository layer (SecurityLinksRepo._guard_uniqueness) — DuckDB\n   cannot express a partial unique index (WHERE status='accepted'), so this cannot\n   be a storage-level constraint.",
+    "column_comments": [
+     [
+      "link_id",
+      "uuid4[:12] primary key for this binding"
+     ],
+     [
+      "security_id",
+      "canonical app.securities entry this provider ref maps to"
+     ],
+     [
+      "ref_value",
+      "the provider ref; institution rows store '{institution_id}:{institution_security_id}'"
+     ],
+     [
+      "source_type",
+      "issuing provider: plaid (future: ofx institutions, ...)"
+     ],
+     [
+      "decided_at",
+      "when this binding was decided"
+     ],
+     [
+      "reversed_at",
+      "when reversed; NULL while accepted"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_security_price_overrides.sql": {
+  "sha256": "a453244a4d14d20d99239adf66af64f8b82c0cb2f6488c4170a821a747e7243f",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "security_price_overrides",
+    "table_sql": "app.security_price_overrides",
+    "table_comment": "User price marks (investments-price-feeds.md phase C.2). One row per security,\n   date, and quote currency. A mark exists to state a price the feeds either got\n   wrong or never covered — a restricted grant, a private fund, a security no\n   provider quotes — and a later provider fetch never overwrites it: source\n   precedence ranks 'override' above every provider for its own date, while\n   freshness still lets a newer close win across dates. Written only through\n   SecurityPriceRepo, which pairs every mutation with app.audit_log (Invariant 10).\n   No provider write ever touches this table.",
+    "column_comments": [
+     [
+      "security_id",
+      "FK to app.securities; the canonical id, never a provider key — a mark is authored against MoneyBin's own catalog"
+     ],
+     [
+      "price_date",
+      "The date this mark applies to, not the date it was entered; scoping per-date is what lets a mark survive re-fetch without suppressing newer closes"
+     ],
+     [
+      "quote_currency",
+      "ISO 4217; in the key for the same reason as raw.security_prices — a dual-quoted security has two legitimate prices for one date"
+     ],
+     [
+      "close",
+      "Mirrors raw.security_prices: zero is the value 'an unpriced holding is NULL, never zero' exists to refuse, so a mark must not be able to assert it"
+     ],
+     [
+      "note",
+      "Why the user set it; optional, and the only provenance a mark carries beyond the audit row"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_seed_source_priority.sql": {
+  "sha256": "c271c1d906bb11f312503e040662bcb25eef67daa41e5947cee2996fa8fbbf3a",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "seed_source_priority",
+    "table_sql": "app.seed_source_priority",
+    "table_comment": "Source-priority ranking for golden-record merge rules; rebuilt from MatchingSettings on every matcher run",
+    "column_comments": [
+     [
+      "source_type",
+      "Source type identifier (e.g. plaid, csv, ofx)"
+     ],
+     [
+      "priority",
+      "Lower number = higher precedence (1 = best)"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_sync_job_state.sql": {
+  "sha256": "d9d87833eb449a864ddd217a4c7ca25e453ee4fe67fd9d93011354df93f61944",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "sync_job_state",
+    "table_sql": "app.sync_job_state",
+    "table_comment": "Operational recovery for a durably ingested broker job; not user-editable state.",
+    "column_comments": [
+     [
+      "job_id",
+      "Immutable broker job identity"
+     ],
+     [
+      "consumer_id",
+      "Internal owning profile identity"
+     ],
+     [
+      "ingested_at",
+      "Local durable ingestion time"
+     ],
+     [
+      "ack_state",
+      "Broker acknowledgement confirmation"
+     ],
+     [
+      "acked_at",
+      "Broker-confirmed acknowledgement time"
+     ],
+     [
+      "setup_state",
+      "Local account and security binding obligation"
+     ],
+     [
+      "refresh_state",
+      "Independent local derivation obligation"
+     ],
+     [
+      "job_details",
+      "Protected typed source references, receipt and post-ack evidence"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_tabular_formats.sql": {
+  "sha256": "4b51baa84a350a269834069196096543dcfee2be7a729d72457dacf710e117a0",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "tabular_formats",
+    "table_sql": "app.tabular_formats",
+    "table_comment": "Saved column mappings for known tabular file formats. Built-in formats (Chase,\n   Citi, Tiller, Mint, YNAB) are seeded from YAML files on db init. User formats\n   are auto-saved after successful heuristic detection or created via --override +\n   --save-format. User formats override built-ins of the same name.",
+    "column_comments": [
+     [
+      "name",
+      "Machine identifier for this format (e.g. \"chase_credit\", \"tiller\", \"mint\")"
+     ],
+     [
+      "institution_name",
+      "Institution for single-institution formats; for multi_account exporter formats (Tiller/Mint/Monarch) this is the tool/exporter name, NOT a per-account institution (those come from row data, Decision 8)"
+     ],
+     [
+      "file_type",
+      "Expected file type: csv, tsv, xlsx, parquet, feather, pipe, or \"auto\" for any type"
+     ],
+     [
+      "delimiter",
+      "Explicit delimiter character for text formats; NULL means auto-detected at import time"
+     ],
+     [
+      "encoding",
+      "Character encoding for text formats (e.g. utf-8, latin-1, windows-1252)"
+     ],
+     [
+      "skip_rows",
+      "Number of non-data rows to skip before the header row in the source file"
+     ],
+     [
+      "sheet",
+      "Excel sheet name to read; NULL means auto-select the sheet with the most data rows"
+     ],
+     [
+      "header_signature",
+      "Ordered list of column names that uniquely fingerprint this format for auto-detection (case-insensitive subset matching)"
+     ],
+     [
+      "field_mapping",
+      "Mapping of destination field names to source column names"
+     ],
+     [
+      "sign_convention",
+      "How amounts are represented in the source: negative_is_expense, negative_is_income, split_debit_credit"
+     ],
+     [
+      "date_format",
+      "strftime format string for parsing date values (e.g. \"%m/%d/%Y\", \"%Y-%m-%d\")"
+     ],
+     [
+      "number_format",
+      "Number convention: us (1,234.56), european (1.234,56), swiss_french (1 234,56), zero_decimal (1,234)"
+     ],
+     [
+      "skip_trailing_patterns",
+      "Regex patterns for trailing non-data rows: NULL = use default patterns, [] = no patterns, [\"^Total\"] = custom"
+     ],
+     [
+      "multi_account",
+      "Whether this format expects per-row account identification (Tiller, Mint, Monarch)"
+     ],
+     [
+      "source",
+      "How this format was created: \"detected\", \"manual\", \"built-in-override\""
+     ],
+     [
+      "times_used",
+      "Number of successful imports completed using this format"
+     ],
+     [
+      "last_used_at",
+      "Timestamp of the most recent successful import using this format"
+     ],
+     [
+      "created_at",
+      "Timestamp when this format was first created"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_transaction_categories.sql": {
+  "sha256": "679d78c349c965e7ed5a559df078886fb986066f6014654a07b03e1036ab2000",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "transaction_categories",
+    "table_sql": "app.transaction_categories",
+    "table_comment": "Category assignments for transactions; written by the rules engine, AI model, or user; one record per transaction",
+    "column_comments": [
+     [
+      "transaction_id",
+      "Foreign key to core.fct_transactions; one categorization record per transaction"
+     ],
+     [
+      "category",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "subcategory",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "category_id",
+      "Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows"
+     ],
+     [
+      "categorized_at",
+      "Timestamp when this categorization was last written"
+     ],
+     [
+      "categorized_by",
+      "Assignment METHOD: user | rule | auto_rule | migration | ml | provider_native | ai"
+     ],
+     [
+      "merchant_id",
+      "Foreign key to core.dim_merchants if this transaction was matched to a known merchant; NULL otherwise"
+     ],
+     [
+      "confidence",
+      "Model confidence score for AI-assigned categories, 0.00-1.00; NULL for rule or user assignments"
+     ],
+     [
+      "rule_id",
+      "Foreign key to app.categorization_rules if assigned by a rule; NULL otherwise"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_transaction_id_aliases.sql": {
+  "sha256": "1a7cd70337680a088d153f649091ecf6d245653b80cd6157f943cada511e0a45",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "transaction_id_aliases",
+    "table_sql": "app.transaction_id_aliases",
+    "table_comment": "Transaction-id forwarding map (M1S, account-identity-resolution.md Decision 4 / ADR-015).\n   Append-only old_id -> new_id pointers, written only when a dedup merge changes a transaction_id (the Plaid\n   pending_transaction_id model). SQL, agent, external, and curation-FK references resolve old->new through it,\n   so a held id stays resolvable -- never an orphan -- even though it is not byte-stable across merges.\n   old_transaction_id is the PK: each old id forwards to exactly one new id.",
+    "column_comments": [
+     [
+      "old_transaction_id",
+      "the superseded transaction_id (forwards from)"
+     ],
+     [
+      "new_transaction_id",
+      "the current canonical transaction_id (forwards to)"
+     ],
+     [
+      "created_at",
+      "when this alias was recorded"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_transaction_notes.sql": {
+  "sha256": "4c5e5714ab593b6e9c5d4d256987a2c2afded8e2825988d36c749e4738877535",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "transaction_notes",
+    "table_sql": "app.transaction_notes",
+    "table_comment": "Free-form user notes on individual transactions. Multi-note shape: each\n   transaction may carry zero or more notes; each note has its own primary\n   key. Migrated from the prior single-note shape by V007.",
+    "column_comments": [
+     [
+      "note_id",
+      "Truncated UUID4 (12 hex); unique per note"
+     ],
+     [
+      "transaction_id",
+      "Foreign key to core.fct_transactions"
+     ],
+     [
+      "text",
+      "Note body; max 2000 chars (service-layer enforced)"
+     ],
+     [
+      "author",
+      "'cli', 'mcp', 'legacy' (migrated rows), or future user identity"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_transaction_splits.sql": {
+  "sha256": "410aca9968076ec522e55a28aad01691269fe19c3834f2f41d853335b132c208",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "transaction_splits",
+    "table_sql": "app.transaction_splits",
+    "table_comment": "Split children of a parent gold transaction. The sum of child amounts\n   should equal parent.amount but is not strictly enforced — curator workflow\n   is iterative. The CLI warns when sums are unbalanced after each add/remove.",
+    "column_comments": [
+     [
+      "split_id",
+      "Truncated UUID4 (12 hex)"
+     ],
+     [
+      "transaction_id",
+      "Foreign key to core.fct_transactions; the parent"
+     ],
+     [
+      "amount",
+      "Signed; sum across children should equal parent.amount but is not strictly enforced"
+     ],
+     [
+      "category",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "subcategory",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "category_id",
+      "Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows"
+     ],
+     [
+      "note",
+      "Optional per-split note"
+     ],
+     [
+      "ord",
+      "Display order; ties broken by split_id"
+     ],
+     [
+      "created_at",
+      "When the split was added"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_transaction_tags.sql": {
+  "sha256": "d6cfc5f0566db017ce39fb6c386354d944187a4d5e51136dea3e3da7a4e5cf47",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "transaction_tags",
+    "table_sql": "app.transaction_tags",
+    "table_comment": "Slug-flavored tags applied to individual transactions. Pattern\n   ^[a-z0-9_-]+(:[a-z0-9_-]+)?$ is enforced at the service layer. Composite\n   primary key prevents duplicate (transaction, tag) pairs.",
+    "column_comments": [
+     [
+      "transaction_id",
+      "Foreign key to core.fct_transactions"
+     ],
+     [
+      "tag",
+      "'namespace:value' or bare 'value'; pattern enforced at service layer"
+     ],
+     [
+      "applied_at",
+      "When this tag was applied"
+     ],
+     [
+      "applied_by",
+      "'cli', 'mcp', or future user identity"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_user_merchants.sql": {
+  "sha256": "5773851d17fc13e152ceb687d857f363e206e68c14dc3fbb4b07333d0dce35ba",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "user_merchants",
+    "table_sql": "app.user_merchants",
+    "table_comment": "Mutable merchant entries: user-created, LLM-created, Plaid-created, migration-created.\n   Replaces the legacy app.merchants table. Exposed via the\n   core.dim_merchants resolved-dim view.",
+    "column_comments": [
+     [
+      "merchant_id",
+      "12-char UUID hex from uuid.uuid4().hex[:12]"
+     ],
+     [
+      "raw_pattern",
+      "match pattern; NULL when merchant is exemplar-only (match_type='oneOf')"
+     ],
+     [
+      "match_type",
+      "'exact' | 'contains' | 'regex' | 'oneOf'"
+     ],
+     [
+      "canonical_name",
+      "display name; LLM-proposed for created_by='ai'"
+     ],
+     [
+      "category",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "subcategory",
+      "DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference"
+     ],
+     [
+      "category_id",
+      "Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows or merchants with no default category"
+     ],
+     [
+      "created_by",
+      "'user' | 'ai' | 'rule' | 'plaid' | 'migration'"
+     ],
+     [
+      "exemplars",
+      "exact match_text values for oneOf set-membership lookup"
+     ],
+     [
+      "created_at",
+      "when this entry was added"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_user_reports.sql": {
+  "sha256": "d292e8197545cd3dde877e6d679c1f9656e29703f87878cb4e8274ee5b5b053b",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "user_reports",
+    "table_sql": "app.user_reports",
+    "table_comment": "User-created saved reports, evaluated at query time. All mutations route through UserReportsRepo to emit paired app.audit_log rows per app-integrity-invariant.md.",
+    "column_comments": [
+     [
+      "report_id",
+      "Namespaced letter-led saved-report identity ('user:r' + uuid4().hex[:12]); the audit target and the identity that survives a rename"
+     ],
+     [
+      "name",
+      "User-facing report name; the handle every lifecycle operation takes, resolved to report_id at the service boundary"
+     ],
+     [
+      "description",
+      "Agent-visible summary of what the report answers"
+     ],
+     [
+      "query_sql",
+      "User-authored read-only SELECT carrying $name placeholders bound at run time"
+     ],
+     [
+      "params",
+      "Declared ParamSpec list; data_class is derived at save, never declared by the author"
+     ],
+     [
+      "classes",
+      "Derived output-column privacy map, keyed by DuckDB result column name"
+     ],
+     [
+      "semantics",
+      "ReportSemantics fields, explicitly unknown for an arbitrary user query"
+     ],
+     [
+      "class_downgrades",
+      "Approved downgrades as {column: {from, to, reason}}; 'from' is the derived class the approval was granted against"
+     ],
+     [
+      "class_fingerprint",
+      "Hash over the derivation inputs; a mismatch forces re-resolution before the run rather than trusting the stored map"
+     ],
+     [
+      "is_active",
+      "False archives the report: hidden from the default catalog, still runnable by name"
+     ],
+     [
+      "created_at",
+      "Saved-report creation timestamp"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_utc_upgrade_provenance.sql": {
+  "sha256": "87e523785aa5ec612e7c5c25556c39098e8d9ff49d1f7370fa32af26add3cab6",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "utc_upgrade_provenance",
+    "table_sql": "app.utc_upgrade_provenance",
+    "table_comment": "Migration-owned historical clock attribution; never rewrites original audit JSON",
+    "column_comments": [
+     [
+      "contract_version",
+      "Temporal interpretation contract version"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_versions.sql": {
+  "sha256": "0e90b9af97bf63940889a1d013c87f2c841f5414277735d6800cb38d62974f29",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "versions",
+    "table_sql": "app.versions",
+    "table_comment": "Component version tracking for upgrade detection",
+    "column_comments": [
+     [
+      "component",
+      "component identifier: 'moneybin', 'sqlmesh', etc."
+     ],
+     [
+      "version",
+      "current version string (semver)"
+     ],
+     [
+      "previous_version",
+      "version before the last update (NULL on first install)"
+     ],
+     [
+      "updated_at",
+      "when version was last changed"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/core_schema.sql": {
+  "sha256": "60be84aae5fea6c1f5479d444a5f0adce5179a53aa2d3fa91635a1e115073a53",
+  "plan": []
+ },
+ "sql/schema/meta_schema.sql": {
+  "sha256": "185c8c935b86166bd6714c616b7bf2168037d9d2fcba8a466683138fdc55a03a",
+  "plan": []
+ },
+ "sql/schema/raw_exchange_rate_coverage.sql": {
+  "sha256": "cea4e7d76b131b6073bda42b252b7c793078a450812ce88e51f8159ea601dfa5",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "exchange_rate_coverage",
+    "table_sql": "raw.exchange_rate_coverage",
+    "table_comment": "Date spans an exchange-rate feed has answered for completely, one row per\n   answer (multi-currency.md Requirement 13). Inside a span, every date the\n   provider published is in raw.exchange_rates, so a date with no row there was\n   a closed market rather than a day nobody fetched — the proof the offline\n   market-closure rule needs before it prices that date from the publication\n   before it. raw.exchange_rates alone cannot give that proof: two separate\n   `moneybin fx rate` lookups leave the same rows as a full range fetch with a\n   real gap between them.\n\n   Written by the refresh backfill (the first to last publication a range\n   answer kept, and only when it dropped nothing from the middle) and by a\n   single `fx rate` fetch (the publication the provider resolved a date back to,\n   through that date). APPEND-ONLY, like the rate cache it vouches for.",
+    "column_comments": [
+     [
+      "from_currency",
+      "ISO 4217, upper; matches raw.exchange_rates.from_currency"
+     ],
+     [
+      "to_currency",
+      "ISO 4217, upper; matches raw.exchange_rates.to_currency"
+     ],
+     [
+      "start_date",
+      "First date of the span the provider answered for completely"
+     ],
+     [
+      "end_date",
+      "Last date of that span, inclusive"
+     ],
+     [
+      "source_type",
+      "Provider that answered; matches raw.exchange_rates.source_type"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/raw_exchange_rate_currencies.sql": {
+  "sha256": "86e3bed817524b8764556e4d7c5e2ac115233f4e2548107a89b2cee910f0acf3",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "exchange_rate_currencies",
+    "table_sql": "raw.exchange_rate_currencies",
+    "table_comment": "The currencies each exchange-rate feed publishes at all, as of the last time\n   MoneyBin read its list (multi-currency.md Requirement 18). Written when a\n   refresh or `moneybin fx rate` reads the provider's list to tell an unsupported\n   pair from a missing date, and replaced whole per provider on each read, so a\n   currency the provider stops carrying stops counting as published.\n\n   It exists so a report read, which never reaches the network, can still say\n   whether a missing rate needs `moneybin fx set` (the provider never publishes\n   that currency) or `moneybin refresh` (it does, and the date was not fetched).\n   No list for a provider means neither is claimed.",
+    "column_comments": [
+     [
+      "source_type",
+      "Provider whose list this is: 'frankfurter' | ...; matches raw.exchange_rates.source_type"
+     ],
+     [
+      "currency_code",
+      "ISO 4217, upper; a currency that provider publishes rates for"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/raw_exchange_rates.sql": {
+  "sha256": "f48c0a083dec9c726f59ac175f0e116b2f3184e6456073e780f4d032ece97a52",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "exchange_rates",
+    "table_sql": "raw.exchange_rates",
+    "table_comment": "Reference rates published by an exchange-rate feed, one row per pair, business\n   day, and provider. APPEND-ONLY: a rate a provider published for a date is a\n   historical fact, so a refetch never rewrites one. User corrections live in\n   app.exchange_rate_overrides and outrank every row here — nothing in this table\n   is ever edited to record a disagreement with it.\n\n   Keyed by the provider's own resolution, not the caller's request: a rate asked\n   for on a weekend resolves back to the last published business day, and\n   rate_date stores the day the provider answered with. Storing the requested day\n   instead would file a rate under a day no provider ever published, which is\n   what the whole conversion path is later audited against. See\n   docs/specs/multi-currency.md.",
+    "column_comments": [
+     [
+      "from_currency",
+      "ISO 4217, upper; the currency being converted out of"
+     ],
+     [
+      "to_currency",
+      "ISO 4217, upper; the currency being converted into"
+     ],
+     [
+      "rate_date",
+      "The business day the provider published this rate for, which may precede the date requested"
+     ],
+     [
+      "rate",
+      "A zero or negative rate is never a real quote, and this table is append-only, so a bad row could never be corrected in place"
+     ],
+     [
+      "source_type",
+      "Provider only: 'frankfurter' | ...; never 'override', which is a different table. Named source_type to match the canonical provenance column across layers (database.md)"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/raw_gsheet_seeds.sql": {
+  "sha256": "2cc56ba8050839dfc1613f8875af216d00ecd1d085399f6e8cd018901bfcffdd",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "gsheet_seeds",
+    "table_sql": "raw.gsheet_seeds",
+    "table_comment": "Row-level storage for the seed (catch-all) gsheet adapter. JSON column holds the original sheet row data; per-connection auto-generated views in raw.gsheet_<alias> project the JSON paths into typed columns for ergonomic SQL access. Diff semantics: each pull recomputes row_hash for every current row — matches are no-ops (or undelete), missing hashes get deleted_from_source_at set, new hashes get inserted.",
+    "column_comments": [
+     [
+      "connection_id",
+      "FK reference to app.gsheet_connections.connection_id (logical FK; not enforced cross-schema)"
+     ],
+     [
+      "spreadsheet_id",
+      "Denormalized from app.gsheet_connections for query convenience"
+     ],
+     [
+      "sheet_gid",
+      "Denormalized tab gid"
+     ],
+     [
+      "row_number",
+      "1-based row index in the source sheet (informational; may shift on edits)"
+     ],
+     [
+      "row_hash",
+      "Content hash of the row's cell values (stable identity for the seed adapter)"
+     ],
+     [
+      "data",
+      "JSON object: column-name → cell-value, captured verbatim from the sheet"
+     ],
+     [
+      "deleted_from_source_at",
+      "Set when the row is observed absent on a subsequent pull (soft-delete; mirrors the raw.tabular_transactions pattern)"
+     ],
+     [
+      "import_id",
+      "Import run that wrote this row (FK to import_runs)"
+     ],
+     [
+      "loaded_at",
+      "Timestamp this row was first observed (does NOT update on subsequent pulls)"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/raw_import_preview_snapshots.sql": {
+  "sha256": "1fbc266b952cfecc046325db0a9a0b07d8d8d0765848ec290599fdf4ffc13d35",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "import_preview_snapshots",
+    "table_sql": "raw.import_preview_snapshots",
+    "table_comment": "Exact staged-import bytes. The database is encrypted at rest; bytes never enter app audit images and are deleted in the same transaction as successful preview consumption.",
+    "column_comments": [
+     [
+      "preview_id",
+      "Opaque app.import_previews handle"
+     ],
+     [
+      "source_bytes",
+      "Exact immutable source bytes parsed at preview and loaded at confirm"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/raw_manual_investment_transactions.sql": {
+  "sha256": "0501098d10d83deff24626b9d16cad1550b94c7a8e71f77cb1d2608e69255bf0",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "manual_investment_transactions",
+    "table_sql": "raw.manual_investment_transactions",
+    "table_comment": "Manual investment events entered by the user via CLI or MCP. Mirrors\n   raw.manual_transactions (per-provider raw pattern); importer children add\n   their own provider-shaped raw tables. Account and security are resolved\n   interactively at entry time, so this table carries resolved IDs plus the\n   user's original security reference for audit. One app.import_log batch is\n   created per CLI call or MCP bulk call.",
+    "column_comments": [
+     [
+      "source_transaction_id",
+      "Truncated UUID4 (12 hex), prefixed with 'manual_' for source-clarity in joins"
+     ],
+     [
+      "source_type",
+      "Discriminator; constant for this table"
+     ],
+     [
+      "source_origin",
+      "Origin tag; always 'user' for manual entries"
+     ],
+     [
+      "import_id",
+      "FK to app.import_log.import_id; one batch per CLI call or MCP bulk call"
+     ],
+     [
+      "account_id",
+      "FK to core.dim_accounts; resolved at entry"
+     ],
+     [
+      "security_id",
+      "FK to app.securities; resolved at entry; NULL for cash-only events"
+     ],
+     [
+      "security_ref",
+      "User-supplied security reference as typed (audit trail for the resolution)"
+     ],
+     [
+      "type",
+      "Core taxonomy value (CLI/MCP validate at entry; manual rows arrive canonical)"
+     ],
+     [
+      "subtype",
+      "Per-type refinement (tax character, reinvest funding source)"
+     ],
+     [
+      "event_group_id",
+      "Links legs of one economic event (reinvest pair, merger legs)"
+     ],
+     [
+      "trade_date",
+      "Trade date (drives holding period); NOT settlement date"
+     ],
+     [
+      "settlement_date",
+      "Settlement date if supplied; informational"
+     ],
+     [
+      "original_acquisition_date",
+      "For transfer_in: shares' original acquisition date (holding period transfers in); NULL otherwise"
+     ],
+     [
+      "quantity",
+      "Units (high precision for fractional shares / crypto); signed per spec Requirement 6"
+     ],
+     [
+      "price",
+      "Per-unit price; NULL for non-priced events"
+     ],
+     [
+      "amount",
+      "Cash effect; signed per spec Requirement 6"
+     ],
+     [
+      "fees",
+      "Commissions/fees component; folded into cost basis"
+     ],
+     [
+      "currency_code",
+      "Denominating currency as supplied; NULL when the user named none (never fabricated) — core.fct_investment_transactions inherits the account's"
+     ],
+     [
+      "description",
+      "Free-text description"
+     ],
+     [
+      "created_at",
+      "When the row was inserted"
+     ],
+     [
+      "created_by",
+      "'cli' or 'mcp'; future-extensible for multi-user identity"
+     ],
+     [
+      "investment_transaction_id",
+      "Predicted gold-key (content hash, per raw.manual_transactions.transaction_id precedent); populated at INSERT"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/raw_manual_transactions.sql": {
+  "sha256": "d6782279226c12fcde7686ee2e81a5a517ad5935677694d8cccf485daf6aa93e",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "manual_transactions",
+    "table_sql": "raw.manual_transactions",
+    "table_comment": "Manual transactions entered by the user via CLI or MCP. Mirrors the column\n   shape of raw.tabular_transactions; the source-type discriminator is\n   'manual' and source-origin is 'user'. One app.import_log batch is created\n   per CLI call or MCP bulk call.",
+    "column_comments": [
+     [
+      "source_transaction_id",
+      "Truncated UUID4 (12 hex), prefixed with 'manual_' for source-clarity in joins"
+     ],
+     [
+      "source_type",
+      "Discriminator; matches matcher and auto-rule exemption predicates"
+     ],
+     [
+      "source_origin",
+      "Origin tag; always 'user' for manual entries"
+     ],
+     [
+      "import_id",
+      "FK to app.import_log.import_id; one batch per CLI call or MCP bulk call"
+     ],
+     [
+      "account_id",
+      "FK to core.dim_accounts"
+     ],
+     [
+      "transaction_date",
+      "Date of the transaction as the user reports it"
+     ],
+     [
+      "amount",
+      "Signed; negative = expense, positive = income"
+     ],
+     [
+      "description",
+      "User-supplied description (free text)"
+     ],
+     [
+      "merchant_name",
+      "Optional user-supplied merchant; resolved against core.dim_merchants on next pipeline pass"
+     ],
+     [
+      "memo",
+      "Additional free-text memo"
+     ],
+     [
+      "category",
+      "Optional user-supplied category at entry time"
+     ],
+     [
+      "subcategory",
+      "Optional user-supplied subcategory"
+     ],
+     [
+      "payment_channel",
+      "Optional: in_store, online, other"
+     ],
+     [
+      "transaction_type",
+      "Optional source-style type code"
+     ],
+     [
+      "check_number",
+      "Optional check number"
+     ],
+     [
+      "currency_code",
+      "ISO 4217 currency code; NULL when unknown (never fabricated)"
+     ],
+     [
+      "created_at",
+      "When the row was inserted"
+     ],
+     [
+      "created_by",
+      "'cli' or 'mcp'; future-extensible for multi-user identity"
+     ],
+     [
+      "transaction_id",
+      "Predicted gold-key (SHA256 of 'manual|user|account_id|source_transaction_id'[:16] per ADR-015/RD-2); populated at INSERT so doctor orphan_app_state can suppress false-positives on rows not yet materialized in core.fct_transactions"
+     ],
+     [
+      "to_amount",
+      "Received-leg amount for a source-provided single-row currency conversion; NULL when absent"
+     ],
+     [
+      "to_currency",
+      "Received-leg currency for a source-provided single-row currency conversion; NULL when absent"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/raw_pdf_seeds.sql": {
+  "sha256": "ecef7315e88760bf7e4d01c9057915581bcd54318d3664d569e0fdf26607c7bd",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "pdf_seeds",
+    "table_sql": "raw.pdf_seeds",
+    "table_comment": "Row-level storage for the PDF seed (catch-all) path. JSON column holds the\n   extracted row verbatim; per-alias auto-generated views in raw.pdf_<alias>\n   project JSON paths into typed columns for ergonomic SQL. Identity is a\n   content hash so re-importing the same statement is a no-op (idempotent).",
+    "column_comments": [
+     [
+      "alias",
+      "Logical seed source; becomes view name raw.pdf_<alias>"
+     ],
+     [
+      "row_hash",
+      "Content hash of the row (pdf_ prefix); stable identity for dedup"
+     ],
+     [
+      "data",
+      "Extracted row as a JSON object: field-name -> value"
+     ],
+     [
+      "source_file",
+      "Original filename (basename only, no path)"
+     ],
+     [
+      "page",
+      "Source page number (informational)"
+     ],
+     [
+      "import_id",
+      "Import that wrote this row (FK to app.import_log; reversibility)"
+     ],
+     [
+      "loaded_at",
+      "First observed; does not change on re-import"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/raw_schema.sql": {
+  "sha256": "e983e8cb5ccbbd84f9d837edb5983ccc6384535ea2fbbda5da35f1879ac122e2",
+  "plan": []
+ },
+ "sql/schema/raw_security_prices.sql": {
+  "sha256": "157d6284745f4ed8faa60aff6d1ba3682359a7a505d4d4c70438047fc9ffa156",
+  "plan": [
+   {
+    "schema_name": "raw",
+    "table_name": "security_prices",
+    "table_sql": "raw.security_prices",
+    "table_comment": "Daily price observations per security, date, quote currency, and source. APPEND-ONLY:\n   a stored row is never updated or deleted, because a historical close is an immutable\n   fact. The one exception is a purging sync disconnect, which deletes a whole\n   (source_type, source_origin) partition: a connection's history leaves with the\n   connection, never one row of it. Writers pass on_conflict=\"ignore\" so a re-reported observation keeps the row\n   first written — \"insert\" would raise on the second sync and \"upsert\" would silently\n   mutate history. Deliberately unlike raw.plaid_securities, whose close_price is\n   upsert-overwritten on every pull and therefore cannot carry a history.\n\n   Keyed by the PROVIDER's own identifier, not the canonical security_id: the extractor\n   writes during ingestion, before SecurityResolver has minted one, and on a first pull\n   for a new security no canonical id exists to write. Resolution happens in staging.\n   See docs/specs/investments-price-feeds.md.",
+    "column_comments": [
+     [
+      "provider_security_key",
+      "The provider's own id: Plaid security_id, a ticker, a CoinGecko slug; resolved to canonical security_id in prep.stg_security_prices"
+     ],
+     [
+      "price_date",
+      "The date the close applies to, not the date it was fetched"
+     ],
+     [
+      "quote_currency",
+      "ISO 4217; in the key so an ADR and its ordinary listing keep both prices instead of colliding"
+     ],
+     [
+      "source_type",
+      "plaid, tiingo, coingecko — stored provider observations only; override and trade_implied are derived at model build and never land here. Named source_type to match the canonical provenance column across layers (database.md)"
+     ],
+     [
+      "source_origin",
+      "The connection that produced it (Plaid item_id); '' for single-tenant feeds. Mirrors raw.plaid_securities"
+     ],
+     [
+      "close",
+      "A zero or negative close is never a real price; the Plaid extractor already drops them, but a direct writer (tiingo/coingecko) must not land one on this append-only table where it could never be corrected"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/reports_schema.sql": {
+  "sha256": "dabf624920b5b35f92cd4838fec23eb6e63e4b45dc26a3c147d5eebe60c54467",
+  "plan": []
+ }
+}

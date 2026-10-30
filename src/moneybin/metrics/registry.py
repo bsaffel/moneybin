@@ -135,19 +135,27 @@ PDF_SEED_ROWS_TOTAL = Counter(
     ["alias"],
 )
 
-# Phase 2b — bridge egress events (Req 14). One increment per hand-off to the
-# driving agent. Outcomes: "proposed" (egress occurred, no response yet),
-# "applied" (agent returned a vetted recipe + rows that landed), "declined"
-# (agent or user rejected the proposal), "invalid" (response failed
-# parse_bridge_response / Recipe.model_validate). Labels stay bounded for stable
-# dashboards.
+# Phase 2b — bridge egress events. Outcomes: "released" (consented, redacted
+# content left in a response), "applied" (agent returned a vetted recipe + rows
+# that landed), "declined" (agent or user rejected the proposal), "invalid"
+# (response failed parse_bridge_response / Recipe.model_validate). A content-free
+# ai_assistance_required result counts nothing here. Labels stay bounded.
 PDF_BRIDGE_EGRESS_TOTAL = Counter(
     "moneybin_pdf_bridge_egress_total",
-    # Unit is tool invocations, NOT unique documents: "proposed" bumps once per
-    # escalating call, so one document previewed then imported emits two
-    # "proposed" increments. Do not normalize as a per-document count.
+    # Unit is tool invocations, NOT unique documents: "released" bumps once per
+    # consented call, so one document previewed then imported emits two
+    # "released" increments. Do not normalize as a per-document count.
     "PDF bridge hand-offs (per escalating tool call) to the driving agent by outcome.",
-    ["outcome"],  # values: "proposed", "applied", "declined", "invalid"
+    ["outcome"],  # values: "released", "applied", "declined", "invalid"
+)
+
+# PDF disclosure consent decisions (pdf-disclosure-consent.md section 9).
+PDF_DISCLOSURE_CONSENT_TOTAL = Counter(
+    "moneybin_pdf_disclosure_consent_total",
+    "PDF disclosure consent decisions by outcome and how consent was given.",
+    # outcome: "approved", "declined", "timeout", "expired"; approved_via:
+    # "prompt", "agent_relay", "cli_prompt", "cli_flag", "remembered".
+    ["outcome", "approved_via"],
 )
 
 # Sign-convention gate outcomes (ImportService._gate_pdf_sign_convention). A
@@ -570,8 +578,8 @@ CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
 CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL = Counter(
     "moneybin_category_source_mapping_outcomes_total",
     "Outcomes of curating one imported category term into "
-    "app.category_source_map via resolve_source_term.",
-    # outcome: added | updated | refused
+    "app.category_source_map (categories mappings set/remove, taxonomy_set).",
+    # outcome: added | updated | removed | refused
     ["outcome"],
 )
 
@@ -788,6 +796,12 @@ INVESTMENT_MATCH_DURATION_SECONDS = Histogram(
     "moneybin_investment_match_duration_seconds",
     "Investment matching operation duration",
     ["operation"],
+)
+
+INVESTMENT_MATCH_DECISIONS_TOTAL = Counter(
+    "moneybin_investment_match_decisions_total",
+    "Committed first human investment decisions and subsequent reversals",
+    ["decision", "auto_eligible"],
 )
 
 
@@ -1269,6 +1283,7 @@ HISTOGRAM_UNITS: dict[str, str] = {
 # `app.metrics` kept from a version that has since renamed the metric keep
 # their value, the way an undeclared histogram keeps its sum.
 METRIC_DOMAINS: dict[str, str] = {
+    "moneybin_investment_match_decisions": "Investment matching",
     "moneybin_investment_match_proposals": "Investment matching",
     "moneybin_investment_match_duration_seconds": "Investment matching",
     # Import pipeline
@@ -1291,6 +1306,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_pdf_self_heal": "Tabular import",
     "moneybin_pdf_seed_rows": "Tabular import",
     "moneybin_pdf_bridge_egress": "Tabular import",
+    "moneybin_pdf_disclosure_consent": "Tabular import",
     "moneybin_pdf_sign_gate": "Tabular import",
     "moneybin_tabular_sign_gate": "Tabular import",
     # MCP elicitation

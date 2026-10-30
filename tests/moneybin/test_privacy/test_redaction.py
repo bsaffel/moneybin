@@ -531,7 +531,6 @@ def test_import_files_preserves_bridge_input_but_masks_explicit_account_keys() -
                 confirmation_payload={
                     "channel": "pdf",
                     "bridge_payload": {
-                        "transparency_notice": "Review this statement.",
                         "source_file": "statement.pdf",
                         "document_text": (
                             "Account ending 5678\n"

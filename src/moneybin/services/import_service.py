@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from moneybin.extractors.tabular.format_detector import FormatInfo
     from moneybin.extractors.tabular.formats import TabularFormat
     from moneybin.extractors.tabular.readers import ReadResult
+    from moneybin.privacy.disclosure import AIHost
     from moneybin.repositories.pdf_formats_repo import PdfFormat
 
 from moneybin import error_codes
@@ -98,8 +99,12 @@ from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
     ActorKind,
+    AIAssistanceRequired,
+    BridgePayload,
     Channel,
     ConfirmationRequired,
+    DisclosureApproval,
+    DisclosureConsent,
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
@@ -584,6 +589,75 @@ _BRIDGE_ELIGIBLE_REASONS: frozenset[str] = frozenset({
     "metadata_incomplete",
     "transaction_table_underivable",
 })
+
+
+def _pdf_account_identifiers(
+    doc: "PdfDocument", decision: "RouteDecision", file_sha256: str
+) -> list[str]:
+    """Account numbers this document identifies, for redaction before release.
+
+    Many bridge-eligible decisions stop before metadata capture, so the default
+    anchors are also run over the text. A last-four-only identifier redacts
+    nothing beyond itself (the redactor keeps the last four).
+    """
+    from moneybin.extractors.pdf.identity import derive_pdf_account_identity
+    from moneybin.extractors.pdf.metadata import capture_metadata
+
+    issuer = (decision.fp or {}).get("issuer", "unknown")
+    found: list[str] = []
+    for metadata in (decision.metadata, capture_metadata("\n".join(doc.text_lines))):
+        identifier = (metadata.account_id or "").strip()
+        if not identifier or identifier in found:
+            continue
+        identity = derive_pdf_account_identity(
+            issuer=issuer,
+            identifier=identifier,
+            document_sha256=file_sha256,
+            identifier_is_complete=metadata.account_id_complete,
+        )
+        if identity.has_usable_identifier:
+            found.append(identifier)
+    return found
+
+
+def _redacted_fingerprint(
+    doc: "PdfDocument", decision: "RouteDecision", file_sha256: str
+) -> dict[str, Any] | None:
+    """The preview fingerprint with identified Critical values redacted.
+
+    Its headers are raw table cells, and the preview result reaches MCP and
+    CLI JSON, so it gets the same redaction as a released bridge request.
+    """
+    import functools
+
+    from moneybin.extractors.pdf.bridge import redact_strings
+    from moneybin.extractors.pdf.redaction import redact_critical
+
+    if decision.fp is None:
+        return None
+    redact = functools.partial(
+        redact_critical,
+        account_identifiers=_pdf_account_identifiers(doc, decision, file_sha256),
+    )
+    return redact_strings(decision.fp, redact)
+
+
+def _no_text_layer_error() -> UserError:
+    """The explicit unsupported outcome for a scanned / image-only PDF."""
+    return UserError(
+        "This PDF has no selectable text layer — it looks scanned or "
+        "image-only. Extracting transactions from it needs a "
+        "vision-capable backend (an agent or bridge that can read the "
+        "page image), which MoneyBin does not yet provide. Re-import a "
+        "PDF that has a selectable text layer, or run the file through "
+        "OCR first.",
+        code=error_codes.IMPORT_PDF_NO_TEXT_LAYER,
+        hint=(
+            "💡 Scanned PDFs need OCR or a vision-capable agent backend "
+            "(not yet supported)."
+        ),
+    )
+
 
 # A card-statement inversion is a confident inference (the disclosures are
 # unambiguous) whose COST IF WRONG is a corrupted ledger, on this import and on
@@ -4349,30 +4423,23 @@ class ImportService:
         doc: "PdfDocument",
         decision: "RouteDecision",
         *,
+        file_sha256: str,
+        disclosure_consent: DisclosureConsent | None,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
     ) -> NoReturn:
-        """Hand a bridge-eligible PDF to the driving agent. Always raises.
+        """Stop on a bridge-eligible PDF. Always raises.
 
-        Builds the bridge payload, writes the ``smart_import_parse`` egress
-        audit row (Req 14), bumps ``PDF_BRIDGE_EGRESS_TOTAL{outcome="proposed"}``,
-        and raises ``ImportConfirmationRequiredError`` carrying the payload.
-        Shared by ``pdf_preview`` (inspection) and ``_import_pdf`` (import) so
-        both surface the identical hand-off — the egress is the audited event
-        regardless of whether the agent later ratifies via ``import_confirm``.
+        Without ``disclosure_consent`` the proposal is a content-free
+        ``AIAssistanceRequired``: no bridge request is built, nothing is audited
+        or counted (pdf-disclosure-consent.md section 1). With it, Critical
+        fields are redacted, the bridge request is built (the release point),
+        the ``smart_import_parse`` row records the consent reference, and
+        ``PDF_BRIDGE_EGRESS_TOTAL{outcome="released"}`` is bumped. Shared by
+        ``pdf_preview`` and ``_import_pdf`` so both stop identically.
         """
         from moneybin.config import get_settings
         from moneybin.extractors.confidence import Confidence, tier_for
-        from moneybin.extractors.pdf.bridge import (
-            build_bridge_request,
-            recipe_for_agent,
-        )
-        from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
-        from moneybin.services.import_confirmation import (
-            BridgePayload,
-            ConfirmationRequired,
-            ImportConfirmationRequiredError,
-        )
 
         # Routing guarantees matched_format_name is non-None for
         # replay_reconciliation_failed, but its annotation allows None —
@@ -4384,60 +4451,44 @@ class ImportService:
             and decision.matched_format_name is not None
         )
         request_kind = "replay_failed_re_derive" if is_replay else "propose_recipe"
-        # For replay failures, surface both the saved format name AND the actual
-        # recipe patterns the agent needs to inspect and propose a refreshed
-        # version. Carrying only the name forces a first-contact parse,
-        # defeating the point of the replay path.
-        # recipe_for_agent, not model_dump: `sign_ratified` is not the agent's to
-        # see or return (bridge.parse_bridge_response rejects a response naming it).
-        saved_recipe = (
-            {
-                "name": decision.matched_format_name,
-                "recipe": recipe_for_agent(decision.recipe)
-                if decision.recipe is not None
-                else None,
-            }
-            if is_replay
-            else None
-        )
-        bridge_request = build_bridge_request(
-            doc,
-            request_kind=request_kind,
-            saved_recipe_for_re_derive=saved_recipe,
-        )
-        payload = BridgePayload(payload=dataclasses.asdict(bridge_request))
-        self._audit.record_audit_event(
-            action="smart_import_parse",
-            target=("raw", "pdf_seeds", str(canonical)),
-            before=None,
-            after={
-                "request_kind": request_kind,
-                "fingerprint": bridge_request.fingerprint,
-                "source_file": bridge_request.source_file,
-                "decision_reason": decision.reason,
-            },
-            actor="system",
-            # Req 14: context carries routing reason + confidence so analytics
-            # can filter bridge egress by either dimension via json_extract on
-            # app.audit_log.context_json.
-            context={
-                "decision_reason": decision.reason,
-                "confidence": decision.confidence,
-            },
-        )
-        record_counter(
-            PDF_BRIDGE_EGRESS_TOTAL,
-            labels={"outcome": "proposed"},
-            emit_metrics=emit_metrics,
-            observations=observations,
-            disposition="rollback",
-        )
         bands = get_settings().import_.confidence
         confidence_obj = Confidence(
             score=decision.confidence,
             tier=tier_for(decision.confidence, t_high=bands.t_high, t_med=bands.t_med),
             flagged=(),
             missing_required=(),
+        )
+        if disclosure_consent is not None and not disclosure_consent.covers(
+            file_sha256
+        ):
+            # Consent is bound to the bytes the person saw; these differ.
+            logger.info(
+                "PDF disclosure consent does not cover these bytes; asking again"
+            )
+            disclosure_consent = None
+        if disclosure_consent is None:
+            raise ImportConfirmationRequiredError(
+                ConfirmationRequired(
+                    channel="pdf",
+                    confidence=confidence_obj,
+                    proposed=AIAssistanceRequired(
+                        file_path=str(canonical),
+                        file_sha256=file_sha256,
+                        decision_reason=decision.reason,
+                        request_kind=request_kind,
+                    ),
+                    reason="ai_assistance_required",
+                )
+            )
+        payload = self._release_pdf_bridge_payload(
+            canonical,
+            doc,
+            decision,
+            request_kind=request_kind,
+            file_sha256=file_sha256,
+            consent=disclosure_consent,
+            emit_metrics=emit_metrics,
+            observations=observations,
         )
         raise ImportConfirmationRequiredError(
             ConfirmationRequired(
@@ -4452,6 +4503,145 @@ class ImportService:
             )
         )
 
+    def _release_pdf_bridge_payload(
+        self,
+        canonical: Path,
+        doc: "PdfDocument",
+        decision: "RouteDecision",
+        *,
+        request_kind: Literal["propose_recipe", "replay_failed_re_derive"],
+        file_sha256: str,
+        consent: DisclosureConsent,
+        emit_metrics: bool,
+        observations: MetricObservations | None,
+    ) -> BridgePayload:
+        """Redact, build, audit and count one consented bridge release."""
+        import functools
+
+        from moneybin.extractors.pdf import bridge
+        from moneybin.extractors.pdf.redaction import redact_critical
+        from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+        from moneybin.privacy.disclosure import (
+            REDACTION_POLICY_VERSION,
+            terms_version_for,
+        )
+
+        # For replay failures, surface both the saved format name AND the actual
+        # recipe patterns the agent needs to inspect and propose a refreshed
+        # version. Carrying only the name forces a first-contact parse,
+        # defeating the point of the replay path.
+        # recipe_for_agent, not model_dump: `sign_ratified` is not the agent's to
+        # see or return (bridge.parse_bridge_response rejects a response naming it).
+        saved_recipe = (
+            {
+                "name": decision.matched_format_name,
+                "recipe": bridge.recipe_for_agent(decision.recipe)
+                if decision.recipe is not None
+                else None,
+            }
+            if request_kind == "replay_failed_re_derive"
+            else None
+        )
+        redact = functools.partial(
+            redact_critical,
+            account_identifiers=_pdf_account_identifiers(doc, decision, file_sha256),
+        )
+        bridge_request = bridge.build_bridge_request(
+            doc,
+            request_kind=request_kind,
+            redact=redact,
+            saved_recipe_for_re_derive=saved_recipe,
+        )
+        host = consent.host
+        self._audit.record_audit_event(
+            action="smart_import_parse",
+            target=("raw", "pdf_seeds", str(canonical)),
+            before=None,
+            after={
+                "request_kind": request_kind,
+                "fingerprint": bridge_request.fingerprint,
+                "source_file": bridge_request.source_file,
+                "decision_reason": decision.reason,
+            },
+            actor="system",
+            context={
+                "decision_reason": decision.reason,
+                "confidence": decision.confidence,
+                "file_sha256": file_sha256,
+                "approved_via": consent.approved_via,
+                "grant_id": consent.grant_id,
+                "binding_id": consent.binding_id,
+                "remembered": consent.remembered,
+                "recipient": host.recipient_key,
+                "identified": host.identified,
+                "terms_version": terms_version_for(host),
+                "redaction_policy_version": REDACTION_POLICY_VERSION,
+            },
+        )
+        record_counter(
+            PDF_BRIDGE_EGRESS_TOTAL,
+            labels={"outcome": "released"},
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition="rollback",
+        )
+        return BridgePayload(payload=dataclasses.asdict(bridge_request))
+
+    def record_disclosure_decision(
+        self,
+        *,
+        host: "AIHost",
+        outcome: Literal["approved", "declined", "timeout", "expired"],
+        approved_via: DisclosureApproval,
+        remembered: bool,
+        grant_id: str | None,
+        pending: Sequence[AIAssistanceRequired],
+        refusal_code: str | None = None,
+        binding_id: str | None = None,
+        released: bool = False,
+    ) -> None:
+        """Audit one consent decision covering ``pending``; no document content.
+
+        ``refusal_code`` is the error code behind a refused relay token or flag;
+        ``binding_id`` joins a one-time decision to its ``smart_import_parse`` row;
+        ``released`` says whether any content actually left after an approval.
+        """
+        from moneybin.metrics.registry import PDF_DISCLOSURE_CONSENT_TOTAL
+        from moneybin.privacy.disclosure import (
+            REDACTION_POLICY_VERSION,
+            terms_version_for,
+        )
+
+        self._audit.record_audit_event(
+            action="smart_import_consent",
+            target=("app", "ai_consent_grants", grant_id),
+            before=None,
+            after={
+                "outcome": outcome,
+                "approved_via": approved_via,
+                "recipient": host.recipient_key,
+                "identified": host.identified,
+                "terms_version": terms_version_for(host),
+                "redaction_policy_version": REDACTION_POLICY_VERSION,
+                "remembered": remembered,
+                "grant_id": grant_id,
+                "binding_id": binding_id,
+                "released": released,
+                "file_sha256s": sorted(p.file_sha256 for p in pending),
+                "decision_reason": ",".join(
+                    sorted({p.decision_reason for p in pending})
+                ),
+                "refusal_code": refusal_code,
+            },
+            actor="system",
+        )
+        record_counter(
+            PDF_DISCLOSURE_CONSENT_TOTAL,
+            labels={"outcome": outcome, "approved_via": approved_via},
+            emit_metrics=True,
+            observations=None,
+        )
+
     def pdf_preview(
         self,
         file_path: Path,
@@ -4459,30 +4649,26 @@ class ImportService:
         confirm: bool = False,
         sign: str | None = None,
         source_bytes: bytes | None = None,
+        disclosure_consent: DisclosureConsent | None = None,
     ) -> PdfPreviewResult:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
-        Four outcomes — same machinery as ``_import_pdf`` but no side effects
-        on raw tables and no ``app.import_log`` row:
+        Same machinery as ``_import_pdf`` but no side effects on raw tables and
+        no ``app.import_log`` row:
 
         - Deterministic success (``decision.outcome == "transactions"``):
           returns ``PdfPreviewResult(deterministic=True, ...)`` with the row
           count and fingerprint. The caller can then call ``import_files``
           to actually load.
         - Bridge-eligible failure (``decision.outcome == "seed"`` with a
-          ``_BRIDGE_ELIGIBLE_REASONS`` reason): escalates by raising
-          ``ImportConfirmationRequiredError`` carrying a ``BridgePayload``
-          (a typed ``BridgeRequest`` wrapped in the channel-agnostic
-          envelope). Writes a ``smart_import_parse`` audit row (Req 14)
-          and increments ``PDF_BRIDGE_EGRESS_TOTAL{outcome="proposed"}``
-          before raising — the egress is the audited event regardless of
-          whether the agent ratifies.
-
-        Args:
-            file_path: Path used for provenance and file-type routing.
-            confirm: Ratify a proposed sign inversion.
-            sign: Explicit sign convention override.
-            source_bytes: Immutable PDF object to extract instead of reopening path.
+          ``_BRIDGE_ELIGIBLE_REASONS`` reason) raises
+          ``ImportConfirmationRequiredError``. Without ``disclosure_consent``
+          it carries a content-free ``AIAssistanceRequired`` and writes
+          nothing. With it, the redacted ``BridgePayload`` is released, the
+          ``smart_import_parse`` audit row is written and
+          ``PDF_BRIDGE_EGRESS_TOTAL{outcome="released"}`` is bumped.
+        - Scanned / image-only PDF: raises the ``import_pdf_no_text_layer``
+          ``UserError``, as ``_import_pdf`` does. Nothing leaves.
         - Non-bridge-eligible failure (``no_transaction_table`` / ``no_rows``
           / ``unsupported_number_format``): returns
           ``PdfPreviewResult(deterministic=False, ...)``. The bridge would
@@ -4495,13 +4681,15 @@ class ImportService:
           preview and import agree on what the statement will do to the ledger.
           ``confirm=True`` (or an explicit ``sign=``) previews past it.
 
-        This is a read-mostly path: side effects are the audit row on
-        escalation (Req 14) and the metric bump. No ``raw.*`` rows land.
+        This is a read-mostly path: the only side effects are the audit row
+        and metric bump of a consented release. No ``raw.*`` rows land.
 
         Args:
             file_path: Path to the PDF to preview.
             confirm: Ratify an auto-derived sign inversion instead of raising.
             sign: Override the detected sign convention (``SignConventionType``).
+            source_bytes: Immutable PDF object to extract instead of reopening path.
+            disclosure_consent: An adapter-verified consent; releases content.
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -4511,9 +4699,12 @@ class ImportService:
             doc = PDFExtractor().extract(canonical)
         else:
             doc = PDFExtractor().extract(canonical, source_bytes=source_bytes)
+        if not doc.text_lines and not doc.tables:
+            raise _no_text_layer_error()
         decision = route_pdf_import(doc, self._db)
         decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
 
+        file_sha256 = source_sha256(canonical, source_bytes)
         if decision.outcome == "transactions":
             return PdfPreviewResult(
                 file_path=str(canonical),
@@ -4521,15 +4712,18 @@ class ImportService:
                 decision_reason=decision.reason,
                 confidence=decision.confidence,
                 row_count=len(decision.rows),
-                fingerprint=decision.fp,
+                fingerprint=_redacted_fingerprint(doc, decision, file_sha256),
             )
 
         if decision.reason in _BRIDGE_ELIGIBLE_REASONS:
-            # Bridge escalation — hand the document to the driving agent.
-            # Always raises ImportConfirmationRequiredError after auditing the
-            # egress (Req 14) and bumping the metric. Shared with _import_pdf
-            # so preview and import surface the identical bridge payload.
-            self._raise_pdf_bridge_escalation(canonical, doc, decision)
+            # Always raises; content leaves only under disclosure_consent.
+            self._raise_pdf_bridge_escalation(
+                canonical,
+                doc,
+                decision,
+                file_sha256=file_sha256,
+                disclosure_consent=disclosure_consent,
+            )
 
         # Non-bridge-eligible seed fallback — return the honest gap.
         return PdfPreviewResult(
@@ -4538,7 +4732,7 @@ class ImportService:
             decision_reason=decision.reason,
             confidence=decision.confidence,
             row_count=0,
-            fingerprint=decision.fp,
+            fingerprint=_redacted_fingerprint(doc, decision, file_sha256),
         )
 
     def apply_pdf_bridge_response(
@@ -5202,6 +5396,7 @@ class ImportService:
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
+        disclosure_consent: DisclosureConsent | None = None,
     ) -> ImportResult:
         """Import a native-text PDF via the Phase 2a routing state machine.
 
@@ -5213,13 +5408,13 @@ class ImportService:
 
         Bridge escalation (Phase 2b, Option B): when a driving agent is present
         (``actor_kind="agent"``) and the deterministic rung can't crack a
-        bridge-eligible layout, the document is handed to the agent
-        (``ImportConfirmationRequiredError``) instead of silently seeding — the
-        agent can extract real transactions and ratify via ``import_confirm``.
-        With no agent (bare CLI / inbox drain), it falls through to the Phase 2a
-        seed path (raw.pdf_seeds); the agent-aware CLI signal is tracked as
-        follow-up work. Non-bridge-eligible failures (no transaction table, no
-        rows) always seed.
+        bridge-eligible layout, the import stops instead of silently seeding —
+        content-free without ``disclosure_consent``, a redacted bridge payload
+        with it — and the agent ratifies via ``import_confirm``. With no agent
+        (bare CLI / inbox drain), it falls through to the Phase 2a seed path
+        (raw.pdf_seeds) and a consent is ignored: unattended paths never
+        disclose. Non-bridge-eligible failures (no transaction table, no rows)
+        always seed.
 
         Args:
             file_path: Path to the PDF file.
@@ -5258,6 +5453,7 @@ class ImportService:
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
             observations: Buffer observations for a caller-owned transaction.
+            disclosure_consent: An adapter-verified consent; agent actors only.
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -5306,19 +5502,7 @@ class ImportService:
                 observations=observations,
                 disposition="rollback",
             )
-            raise UserError(
-                "This PDF has no selectable text layer — it looks scanned or "
-                "image-only. Extracting transactions from it needs a "
-                "vision-capable backend (an agent or bridge that can read the "
-                "page image), which MoneyBin does not yet provide. Re-import a "
-                "PDF that has a selectable text layer, or run the file through "
-                "OCR first.",
-                code=error_codes.IMPORT_PDF_NO_TEXT_LAYER,
-                hint=(
-                    "💡 Scanned PDFs need OCR or a vision-capable agent backend "
-                    "(not yet supported)."
-                ),
-            )
+            raise _no_text_layer_error()
 
         # Bridge escalation (Option B): with a driving agent present, hand a
         # bridge-eligible layout to the agent instead of silently seeding.
@@ -5332,6 +5516,8 @@ class ImportService:
                 canonical,
                 doc,
                 decision,
+                file_sha256=file_sha256,
+                disclosure_consent=disclosure_consent,
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
@@ -6221,6 +6407,7 @@ class ImportService:
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
+        disclosure_consent: DisclosureConsent | None = None,
     ) -> ImportResult:
         """Import a financial data file into DuckDB.
 
@@ -6280,6 +6467,8 @@ class ImportService:
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
             observations: Buffer observations for a caller-owned transaction.
+            disclosure_consent: Verified consent to release a bridge-eligible
+                PDF's redacted content (agent actors only).
 
         Returns:
             ImportResult with summary of what was imported.
@@ -6318,6 +6507,7 @@ class ImportService:
             in_outer_txn=in_outer_txn,
             emit_metrics=emit_metrics,
             observations=observations,
+            disclosure_consent=disclosure_consent,
         )
 
         # Include PDFs only when the deterministic path landed transactions —
@@ -6339,16 +6529,18 @@ class ImportService:
                 and result.details.get("transactions_extracted", 0) > 0
             )
         ):
-            # Single-file imports preserve the legacy fail-loud contract so
-            # CLI exit codes reflect the broken state. Batch imports use the
-            # soft-fail variant via import_files() instead.
+            # SQLMesh failures keep the legacy exception. Planner blocks retain
+            # their stage and durable import outcome for the CLI's nonzero exit.
             refresh_result = _refresh(self._db)
             # Ahead of the fail-loud raise: the reconciliation runs in the match
             # step and commits there, so a transform apply that dies afterwards
             # leaves the reversal on disk.
             result.transfers_retired = refresh_result.transfers_retired
             result.refresh_steps = _step_outcome(refresh_result)
-            if not refresh_result.applied:
+            if (
+                not refresh_result.applied
+                and not result.refresh_steps.transform_blocked
+            ):
                 # Carry committed state so confirmation can archive the file
                 # without retrying the import after a failed refresh.
                 raise ImportRefreshError(
@@ -6356,7 +6548,7 @@ class ImportService:
                     transfers_retired=refresh_result.transfers_retired,
                     result=result,
                 )
-            result.core_tables_rebuilt = True
+            result.core_tables_rebuilt = refresh_result.applied
 
         logger.info(f"Import complete: {result.summary()}")
         return result
@@ -6394,6 +6586,7 @@ class ImportService:
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
+        disclosure_consent: DisclosureConsent | None = None,
     ) -> ImportResult:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
@@ -6472,6 +6665,7 @@ class ImportService:
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
                 observations=observations,
+                disclosure_consent=disclosure_consent,
             )
         raise ValueError(f"Unsupported file type: {file_type}")
 
@@ -6484,6 +6678,7 @@ class ImportService:
         interactive: bool = False,
         confirm: bool = False,
         actor_kind: ActorKind = "human",
+        disclosure_consent: DisclosureConsent | None = None,
     ) -> BatchImportResult:
         """Import a list of files; run refresh once at end of batch.
 
@@ -6495,7 +6690,9 @@ class ImportService:
 
         Per-file overrides (account_name, institution, format_name, etc.)
         are not available for batch — use ``import_file()`` for single
-        imports with overrides.
+        imports with overrides. ``disclosure_consent`` applies to every
+        bridge-eligible PDF in the call; without it each reports a content-free
+        ``ai_assistance_required`` confirmation.
         """
         from moneybin.metrics.registry import IMPORT_BATCH_SIZE
 
@@ -6513,6 +6710,7 @@ class ImportService:
                     confirm=confirm,
                     actor_kind=actor_kind,
                     include_unmaterialized_account_candidates=True,
+                    disclosure_consent=disclosure_consent,
                 )
                 # PDFs land in raw.pdf_seeds (transactions=0); report the seed
                 # count so batch output reflects actual rows persisted.

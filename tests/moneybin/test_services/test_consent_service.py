@@ -10,6 +10,11 @@ from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.consent import ConsentMode
+from moneybin.privacy.disclosure import (
+    host_from_client_info,
+    host_from_environment,
+    terms_version_for,
+)
 from moneybin.privacy.log import read_privacy_events
 from moneybin.repositories.consent_repo import ConsentRepo
 from moneybin.services.consent_service import ConsentService
@@ -346,3 +351,191 @@ def test_consent_target_batch_rolls_back_late_failure(
         "SELECT COUNT(*) FROM app.audit_log WHERE action = 'consent.revoke'"
     ).fetchone() == (0,)
     assert read_privacy_events({"action": "consent.revoke"}, max_rows=10) == []
+
+
+# --- ai_host recipients (MB-59) ---
+
+
+_HOST_CATEGORY = "smart-import-parsing"
+
+
+def _host(name: str = "claude-ai", transport: str = "stdio"):  # test helper
+    return host_from_client_info(name, "1", transport=transport)  # type: ignore[arg-type]  # test transport literal
+
+
+def test_host_grant_does_not_collide_with_backend_grant(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_consent(
+        feature_category=_HOST_CATEGORY,
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    grant, created = svc.grant_host_consent(
+        host=_host(), approved_via="cli_prompt", actor="cli"
+    )
+    assert created is True
+    assert grant.recipient_kind == "ai_host"
+    assert grant.backend == "local:claude-ai"
+    assert grant.approved_via == "cli_prompt"
+    assert grant.terms_version == terms_version_for(_host())
+    assert svc.active_host_grant(host=_host()) is not None
+
+
+def test_legacy_backend_grant_does_not_satisfy_host_gate(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_consent(
+        feature_category=_HOST_CATEGORY,
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    assert svc.active_host_grant(host=_host()) is None
+
+
+def test_terms_version_bump_deactivates_host_grant(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+
+    def _bumped(_host: object) -> str:
+        return "bumped"
+
+    monkeypatch.setattr("moneybin.services.consent_service.terms_version_for", _bumped)
+    assert svc.active_host_grant(host=_host()) is None
+
+
+def test_active_host_grant_requires_matching_transport(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+    assert svc.active_host_grant(host=_host(transport="http")) is None
+
+
+def test_unidentified_host_cannot_be_granted(db: Database) -> None:
+    svc = ConsentService(db)
+    with pytest.raises(ValueError):
+        svc.grant_host_consent(
+            host=host_from_environment({}), approved_via="cli_prompt", actor="cli"
+        )
+    assert svc.active_host_grant(host=host_from_environment({})) is None
+
+
+def test_revoke_host_consent(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+    result = svc.revoke_host_consent(recipient_key="local:claude-ai", actor="cli")
+    assert result.count == 1 and result.backend == "local:claude-ai"
+    assert svc.active_host_grant(host=_host()) is None
+    assert (
+        svc.revoke_host_consent(recipient_key="local:claude-ai", actor="cli").count == 0
+    )
+
+
+def test_backend_name_shaped_like_recipient_key_is_refused(db: Database) -> None:
+    with pytest.raises(UserError) as exc:
+        ConsentService(db).grant_consent(
+            feature_category=_HOST_CATEGORY,
+            backend="local:claude-ai",
+            consent_mode=ConsentMode.PERSISTENT,
+            actor="mcp",
+        )
+    assert exc.value.code == "privacy_consent_recipient_unsupported"
+
+
+def test_host_grant_stores_redaction_policy_version(db: Database) -> None:
+    from moneybin.privacy.disclosure import REDACTION_POLICY_VERSION
+
+    grant, _ = ConsentService(db).grant_host_consent(
+        host=_host(), approved_via="cli_prompt", actor="cli"
+    )
+    assert grant.redaction_policy_version == REDACTION_POLICY_VERSION
+
+
+def test_redaction_policy_bump_deactivates_and_regrant_replaces(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+    monkeypatch.setattr(
+        "moneybin.services.consent_service.REDACTION_POLICY_VERSION", "99"
+    )
+    assert svc.active_host_grant(host=_host()) is None
+    regrant, created = svc.grant_host_consent(
+        host=_host(), approved_via="cli_prompt", actor="cli"
+    )
+    assert created is True and regrant.redaction_policy_version == "99"
+    assert svc.active_host_grant(host=_host()) is not None
+    rows = db.execute(
+        "SELECT COUNT(*) FILTER (WHERE revoked_at IS NULL), COUNT(*) "
+        "FROM app.ai_consent_grants WHERE recipient_kind = 'ai_host'"
+    ).fetchone()
+    assert rows == (1, 2)
+
+
+def test_terms_bump_regrant_creates_new_active_row_and_revokes_old(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    svc = ConsentService(db)
+    first, _ = svc.grant_host_consent(
+        host=_host(), approved_via="cli_prompt", actor="cli"
+    )
+
+    def _bumped(_host: object) -> str:
+        return "bumped"
+
+    monkeypatch.setattr("moneybin.services.consent_service.terms_version_for", _bumped)
+    second, created = svc.grant_host_consent(
+        host=_host(), approved_via="cli_prompt", actor="cli"
+    )
+    assert created is True and second.grant_id != first.grant_id
+    assert svc.active_host_grant(host=_host()) is not None
+    old = db.execute(
+        "SELECT revoked_at IS NOT NULL FROM app.ai_consent_grants WHERE grant_id = ?",
+        [first.grant_id],
+    ).fetchone()
+    assert old == (True,)
+
+
+def test_regrant_same_terms_is_not_created(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+    _, created = svc.grant_host_consent(
+        host=_host(), approved_via="cli_prompt", actor="cli"
+    )
+    assert created is False
+
+
+def test_host_grant_records_the_given_prompt(db: Database) -> None:
+    ConsentService(db).grant_host_consent(
+        host=_host(),
+        approved_via="cli_prompt",
+        actor="cli",
+        grant_prompt="exact text shown",
+    )
+    row = db.execute(
+        "SELECT grant_prompt FROM app.ai_consent_grants WHERE recipient_kind='ai_host'"
+    ).fetchone()
+    assert row == ("exact text shown",)
+
+
+def test_stale_terms_regrant_logs_consent_revoke(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Privacy log shows the stale grant's revoke before the replacing grant."""
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir", lambda: tmp_path
+    )
+    svc = ConsentService(db)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+
+    def _bumped(_host: object) -> str:
+        return "bumped"
+
+    monkeypatch.setattr("moneybin.services.consent_service.terms_version_for", _bumped)
+    svc.grant_host_consent(host=_host(), approved_via="cli_prompt", actor="cli")
+
+    revokes = read_privacy_events({"action": "consent.revoke"}, max_rows=10)
+    assert [(e["feature_category"], e["backend"]) for e in revokes] == [
+        (_HOST_CATEGORY, "local:claude-ai")
+    ]

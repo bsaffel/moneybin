@@ -154,15 +154,15 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 5. **Audit-log undo consumer.** The standard MCP audit contract plus its
    dedicated undo operation (with CLI parity):
 
-    - **`system_audit_undo(operation_id=...)`** — push consumer. Reads all audit rows for the operation, computes per-row inverse (insert→delete, update→update-to-before_value, delete→insert), wraps in a transaction, writes new audit rows with `is_undo=True` and `undoes_operation_id`, returns summary with the new operation_id (so the undo itself is undoable). Errors:
+    - **`system_audit_undo(operation_id=...)`** — push consumer. Reads all audit rows for the operation, computes per-row inverse (insert→delete, update→update-to-before_value, delete→insert), wraps in a transaction, writes new audit rows with `is_undo=True` and `undoes_operation_id`, and returns the new operation_id. Domain-owned actions must also support reversal; history, detail, and recovery actions use that same capability check before offering to undo an undo. Errors:
         - `undo_operation_not_found` — bad operation_id. `recovery_actions` lists `system_audit(view="history")` to enumerate valid ids.
-        - `undo_already_undone` — an undo already reversed this op. `recovery_actions` suggests undoing the undo, `confidence=suggested`.
+        - `undo_already_undone` — an undo already reversed this op. `recovery_actions` suggests undoing the undo only when supported, `confidence=suggested`.
         - `undo_cascade_blocked` — a later operation modified the same `(target_table, target_id)`. `recovery_actions` lists blocker operation_ids with `system_audit_undo` calls in reverse chronological order.
     - **`system_audit(view="history", limit=..., cursor=...)`** — pull surface.
       Returns recent operations grouped by `operation_id`. Each entry includes the
       tool, arguments, actor, timestamp, tables touched, row count, `can_undo`,
-      `undo_blocked_by`, and a `recovery_actions` list (always one
-      `system_audit_undo` call).
+      `undo_blocked_by`, and a `recovery_actions` list containing supported
+      `system_audit_undo` calls, or empty when no supported reversal is available.
     - **`system_audit(view="detail", operation_id=...)`** — single-operation
       detail. It returns full `before_value` / `after_value` for every audit row
       in the operation, letting agents pre-check what an undo would change

@@ -44,6 +44,9 @@ def privacy_status(
                 backend=g.backend,
                 consent_mode=g.consent_mode.value,
                 granted_at=format_utc(g.granted_at),
+                recipient_kind=g.recipient_kind,
+                approved_via=g.approved_via,
+                terms_version=g.terms_version,
             )
             for g in status.active_grants
         ],
@@ -80,15 +83,31 @@ def privacy_status(
             ])
         )
     else:
+        has_host = any(g.recipient_kind == "ai_host" for g in payload.active_grants)
+        headers = ["Category", "Backend", "Mode", "Granted"]
+        if has_host:
+            headers = [
+                "Category",
+                "Recipient",
+                "Mode",
+                "Granted",
+                "Approved via",
+                "Terms",
+            ]
         parts.append(
             build_rows(
-                ["Category", "Backend", "Mode", "Granted"],
+                headers,
                 [
                     (
                         g.feature_category,
                         g.backend,
                         g.consent_mode,
                         parse_utc(g.granted_at),
+                        *(
+                            (g.approved_via or "", g.terms_version or "")
+                            if has_host
+                            else ()
+                        ),
                     )
                     for g in payload.active_grants
                 ],

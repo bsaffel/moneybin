@@ -1,5 +1,5 @@
 {
-  "sha256": "025f864689d5f66b7315cb3e758600742dc49009a36a21efc052845d4575f9aa",
+  "sha256": "a264acf1b656587acac15c9aecff740c6c0339d2711611cc0e656009db0a011b",
   "tool_count": 50,
   "tools": [
     {
@@ -1683,7 +1683,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them.",
+        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). A completed import runs the refresh cascade, whose match step can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. PDFs needing AI help send nothing until the person consents: MoneyBin returns one consent_request, or prompts the person directly. Relay its risk_statement verbatim; only on a yes repeat with confirmation_token, which covers that request only. Consented PDFs return a preview_id for import_confirm.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1694,6 +1694,17 @@
                     "type": "string"
                   },
                   "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -1724,12 +1735,12 @@
         "name": "import_files",
         "title": "Import Files"
       },
-      "description_bytes": 493,
-      "input_schema_bytes": 341,
+      "description_bytes": 792,
+      "input_schema_bytes": 423,
       "name": "import_files",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 1052
+      "total_bytes": 1433
     },
     {
       "annotation_bytes": 91,
@@ -1824,10 +1835,21 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping \u2014 it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged.",
+        "description": "Persist an exact, expiring staged-import preview. For a tabular file, mapping={destination_field: source_column} corrects the detected column mapping \u2014 it merges onto the proposal rather than replacing it, so name only the fields to change. Destinations are transaction_date, description, and either amount or the debit_amount/credit_amount pair (never both shapes). A staged preview is immutable, so this is the only place to correct a mapping; import_confirm ratifies the preview unchanged. A PDF needing AI help first returns ai_assistance_required: nothing is sent until the person consents. Show them consent_request.risk_statement verbatim; only on a yes repeat with confirmation_token, which covers that request only. Only the account numbers, routing numbers and SSNs MoneyBin identified are redacted.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "file_path": {
               "type": "string"
             },
@@ -1868,12 +1890,12 @@
         "name": "import_preview",
         "title": "Import Preview"
       },
-      "description_bytes": 494,
-      "input_schema_bytes": 328,
+      "description_bytes": 811,
+      "input_schema_bytes": 410,
       "name": "import_preview",
       "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 1045
+      "total_bytes": 1444
     },
     {
       "annotation_bytes": 90,
@@ -2903,7 +2925,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted.",
+        "description": "Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted. kind='source_categories' holds category terms imported files carry: pending terms have no mapping yet, history holds mapped and ignored terms; resolve either with taxonomy_set kind='source_category'.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2929,7 +2951,8 @@
                 "rule_conflicts",
                 "account_links",
                 "merchant_links",
-                "security_links"
+                "security_links",
+                "source_categories"
               ],
               "type": "string"
             },
@@ -2952,12 +2975,12 @@
         "name": "reviews",
         "title": "Reviews"
       },
-      "description_bytes": 331,
-      "input_schema_bytes": 452,
+      "description_bytes": 531,
+      "input_schema_bytes": 472,
       "name": "reviews",
       "other_bytes": 68,
       "output_schema_bytes": 0,
-      "total_bytes": 987
+      "total_bytes": 1207
     },
     {
       "annotation_bytes": 90,
@@ -2973,7 +2996,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts \u2014 reverse either with system_audit_undo. Keep each kind in its own call. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
+        "description": "Accept or reject an atomic batch of transaction, match, or investment_match review decisions. Investment rejection requires human Elicitation for the complete batch; investment acceptance remains unavailable. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts \u2014 reverse either with system_audit_undo. Keep auto-rule and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3124,6 +3147,83 @@
                       },
                       "kind": {
                         "const": "match",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "decision_id",
+                      "decision"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "reject"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "field_choices"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Decide one whole investment Proposal with an exact choice set.",
+                    "properties": {
+                      "decision": {
+                        "enum": [
+                          "accept",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "field_choices": {
+                        "items": {
+                          "additionalProperties": false,
+                          "description": "Select an observed value issued by the current Proposal.",
+                          "properties": {
+                            "choice_id": {
+                              "maxLength": 64,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "conflict_id": {
+                              "maxLength": 64,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "conflict_id",
+                            "choice_id"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "kind": {
+                        "const": "investment_match",
                         "type": "string"
                       }
                     },
@@ -3314,12 +3414,12 @@
         "name": "reviews_decide",
         "title": "Reviews Decide"
       },
-      "description_bytes": 717,
-      "input_schema_bytes": 3211,
+      "description_bytes": 854,
+      "input_schema_bytes": 4047,
       "name": "reviews_decide",
       "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 4153
+      "total_bytes": 5126
     },
     {
       "annotation_bytes": 89,
@@ -3827,7 +3927,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Undo one complete audited operation by operation_id. The inverse mutation is itself audited and undoable; dependency conflicts return the blocking operation IDs.",
+        "description": "Undo one complete audited operation by operation_id. The inverse mutation is itself audited; redo is offered only when supported. Dependency conflicts return the blocking operation IDs.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3843,12 +3943,12 @@
         "name": "system_audit_undo",
         "title": "System Audit Undo"
       },
-      "description_bytes": 161,
+      "description_bytes": 185,
       "input_schema_bytes": 122,
       "name": "system_audit_undo",
       "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 508
+      "total_bytes": 532
     },
     {
       "annotation_bytes": 90,
@@ -3993,7 +4093,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically declare categories present, inactive, or absent and merchant mappings present or absent. The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.",
+        "description": "Atomically declare category, merchant, and imported category-term target states. Categories are present, inactive, or absent; merchant mappings present or absent; imported terms (kind='source_category', listed by reviews(kind='source_categories')) present, mapped to a category that may be one the same batch creates, ignored, or absent. A changed term re-categorizes its transactions at once; results report categorized and recategorized. Terms are stored in app.category_source_map; every write is audited and undone with system_audit_undo(operation_id=...). The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -4420,6 +4520,170 @@
                       "state"
                     ],
                     "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "ignored"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "category_id"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "category"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "subcategory"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "absent"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "category_id"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "category"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "subcategory"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Declare one imported category term's mapping state.",
+                    "properties": {
+                      "category": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "category_id": {
+                        "anyOf": [
+                          {
+                            "maxLength": 64,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "kind": {
+                        "const": "source_category",
+                        "type": "string"
+                      },
+                      "source_category_code": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "source_origin": {
+                        "type": "string"
+                      },
+                      "source_subcategory_code": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "source_type": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "state": {
+                        "enum": [
+                          "present",
+                          "ignored",
+                          "absent"
+                        ],
+                        "type": "string"
+                      },
+                      "subcategory": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "state",
+                      "source_origin",
+                      "source_category_code"
+                    ],
+                    "type": "object"
                   }
                 ]
               },
@@ -4434,12 +4698,12 @@
         "name": "taxonomy_set",
         "title": "Taxonomy Set"
       },
-      "description_bytes": 205,
-      "input_schema_bytes": 3257,
+      "description_bytes": 666,
+      "input_schema_bytes": 4552,
       "name": "taxonomy_set",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 3676
+      "total_bytes": 5432
     },
     {
       "annotation_bytes": 89,
@@ -5480,5 +5744,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 66545
+  "total_bytes": 70298
 }

@@ -241,6 +241,10 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "granted_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "revoked_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "grant_prompt": DataClass.DESCRIPTION,
+        "recipient_kind": DataClass.TXN_TYPE,
+        "terms_version": DataClass.TXN_TYPE,
+        "approved_via": DataClass.TXN_TYPE,
+        "redaction_policy_version": DataClass.TXN_TYPE,
     },
     ("app", "audit_log"): {
         "action": DataClass.TXN_TYPE,

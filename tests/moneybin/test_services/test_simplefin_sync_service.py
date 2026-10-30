@@ -842,7 +842,9 @@ def test_mixed_provider_late_failure_rolls_back_plaid_receipts_and_deletes(
     data = _envelope()
     native = _plaid()
     native.metadata.job_id = str(JOB)
-    native.removed_transactions = ["previous"]
+    native.removed_transactions = [
+        sync_models.PlaidRemovedTransaction(transaction_id="previous")
+    ]
     db.execute(
         "INSERT INTO raw.plaid_transactions (transaction_id, account_id, amount, transaction_date, source_file, source_origin) VALUES ('previous', 'account', 1, DATE '2026-09-01', 'prior', 'item_1')"
     )

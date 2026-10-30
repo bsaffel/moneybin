@@ -40,16 +40,16 @@ coverage catalog.
 
 ## Coverage
 
-Counted from the map on 2026-10-18, it contains:
+Counted from the map on 2026-10-30, it contains:
 
-- 50 non-exempt capability rows covering all 50 standard MCP tools. `reports`
+- 51 non-exempt capability rows covering all 50 standard MCP tools. `reports`
   serves two capabilities — the catalog read and report execution — under one
   tool identity.
-- 200 implemented Typer paths, including hidden compatibility aliases and the
+- 208 implemented Typer paths, including hidden compatibility aliases and the
   revision-bound native schedule callback, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.
-- 19 policy-exempt rows.
+- 18 policy-exempt rows.
 - 6 reserved Typer paths that are still explicit `_not_implemented` stubs.
 
 The stub list is executable, not documentary: every excluded path is invoked
@@ -75,12 +75,12 @@ is added.
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate` | `transactions list/create`, notes, tags, and splits | Same transaction rows, stable-ID note lifecycle, and complete tag/split target state |
 | Categorization | `transactions_categorize_*`, `reviews*`, `identity_links_decide` | `transactions categorize *`, match and identity review commands | Same engine results, rules, queue state, and decisions. A rule claiming an active rule's canonical matcher under a different category is refused on both surfaces, queued in `app.rule_conflicts`, and decided with `replace` / `reprioritize` / `cancel` — `reviews_decide(kind='rule_conflict')` on MCP, `transactions categorize rules resolve` on the CLI |
 | Taxonomy | `taxonomy`, `taxonomy_set` | `categories *`, `merchants *` | Same category and merchant target state through `CategorizationService` |
-| Category-source-mapping curation | none — `admission-pending` | `categories mappings pending`, `categories mappings set` | Same distinct unmapped imported-vocabulary terms (grouped by term, not by transaction) with suggestions, and the same map-to-existing-or-new-category-or-ignore write, with its immediate re-categorization, through `CategorizationService.resolve_source_term` |
-| Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels`, `import formats *` | Same import log, raw rows, confirmation state, labels, and audited saved-format lifecycle |
+| Category-source-mapping curation | `reviews(kind="source_categories")`, `taxonomy_set` (`source_category` items) | `categories mappings pending`, `categories mappings set`, `categories mappings remove` | Same distinct unmapped imported-vocabulary terms (grouped by term, not by transaction) with suggestions, and the same map-to-existing-or-new-category, ignore, or remove write, with its immediate re-categorization, through `CategorizationService.resolve_source_term`, `remove_source_term`, and `apply_taxonomy_targets` |
+| Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels`, `import formats *` | Same import log, raw rows, confirmation state, labels, and audited saved-format lifecycle; PDF content reaches an AI host only after consent (MCP elicitation or one-time `confirmation_token`, CLI `import preview --allow-ai-disclosure`; only elicitation or `privacy grant --recipient` remembers) |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect` | `sync login/link/status/pull/disconnect [--purge]/logout` | Same authenticated, linked, pulled, disconnected, purged, or logged-out state |
 | Desktop schedule (in progress) | none — `admission-pending` | `sync schedule set/show/remove` | Owned native job lifecycle and bounded latest-attempt outcome; the hidden revision-bound runner is an internal native callback |
 | Google Sheets | `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | `gsheet *` | Same connection and pulled source state |
-| Privacy | `privacy`, `privacy_consent_set` | `privacy status/log/grant/revoke/revoke-all` | Same effective grants and privacy log |
+| Privacy | `privacy`, `privacy_consent_set` | `privacy status/log/grant/revoke/revoke-all` | Same effective grants and privacy log. AI-host grants (`--recipient`) are CLI-only by design: `privacy_consent_set` refuses `ai_host` recipients so an agent cannot grant itself standing access |
 | Refresh | `refresh_run` | `refresh`, match/identity commands, `transform apply` | Same selected step outcomes and proposal state |
 | Exchange-rate coverage | `refresh_run(steps=["rates"])` | `refresh --step rates` | Same cached span in `raw.exchange_rates`; both report rates written and the pairs the provider could not answer |
 | SQL | `sql_query`, `sql_schema` | `sql query` | Same rows, classification, cap, and CRITICAL masking. Schema discovery is MCP-only: `sql_schema`'s curated catalog, per-table detail, and `'<schema>.*'` relation listing have no CLI counterpart, and this is an unclosed gap rather than an exemption — an operator driving `moneybin sql query` composes against `DESCRIBE` and the docs |

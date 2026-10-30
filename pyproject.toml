@@ -2,7 +2,7 @@
 # Documentation: https://packaging.python.org/en/latest/specifications/build-backend/
 # setuptools>=77.0 required for PEP 639 license metadata (`project.license`
 # SPDX expression + `project.license-files` field).
-requires = ["setuptools>=77.0", "wheel"]
+requires = ["setuptools>=84.2.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -50,7 +50,7 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     # Data transforms (SQLMesh manages raw → staging → core pipeline)
-    "sqlmesh[duckdb]>=0.236.2",
+    "sqlmesh[duckdb]>=0.236.3",
     # SQL AST parsing for schema introspection and package-write validation.
     # Also a transitive dep of sqlmesh, but declared directly because schema.py,
     # privacy/comment_sync.py, and the package framework import it independently —
@@ -61,7 +61,6 @@ dependencies = [
     "polars>=2.0.0",
     "pyarrow>=25.0.1",
     # API integrations
-    "plaid-python>=46.0.0",
     "ofxparse>=0.21",
     "requests>=2.34.2",
     "python-dotenv>=1.2.4",
@@ -134,9 +133,9 @@ dependencies = [
     # requires it. Protocol model fields are snake_case for Python attribute
     # access; the JSON wire format is unchanged, so a model_dump that feeds a
     # peer or a snapshot must pass by_alias=True (see surface_inventory).
-    "mcp>=2.2.0,<3",
+    "mcp>=2.3.0,<3",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
-    "tomlkit>=0.15.1",
+    "tomlkit>=0.15.2",
     "httpx>=0.28.1",
     "pdfplumber>=0.11.10",
     # Used instead of stdlib `re` because stdlib has no `timeout=` parameter.
@@ -188,6 +187,7 @@ include = ["moneybin*"]
 # runtime resource on disk is missing from it. Add new resource dirs there too.
 moneybin = [
     "sql/schema/*.sql",
+    "sql/schema/comment_plans.json",
     "sql/migrations/*.sql",
     "sql/migrations/*.py",
     "sqlmesh/config.py",
@@ -230,7 +230,7 @@ dev = [
     "pip>=26.2.1",
     # Security floor for msgpack (transitive via pip-audit → cachecontrol):
     # GHSA-6v7p-g79w-8964 — fixed in 1.2.1.
-    "msgpack>=1.2.2",
+    "msgpack>=1.2.3",
     # Testing framework and tools
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
@@ -244,18 +244,11 @@ dev = [
     # Property-based testing. Named by multi-currency.md's testing strategy for
     # the conversion and lot-conservation properties, where the claim quantifies
     # over all amounts and rates and examples cannot establish it.
-    "hypothesis>=6.168.1",
+    "hypothesis>=6.170.5",
     # pyarrow 25 dropped the placeholder stub that typed its whole API as Any,
     # leaving pyright strict with no types at all. Drop once pyarrow ships its
     # own annotations (apache/arrow GH-48970).
     "pyarrow-stubs>=20.0.0.20260819",
-]
-
-server = [
-    # Server-side API framework (for future hosted MoneyBin Sync)
-    "fastapi>=0.141.1",
-    "uvicorn>=0.53.0",
-    # plaid-python already in main dependencies
 ]
 
 [tool.ruff]

@@ -18,6 +18,7 @@ from collections.abc import Set
 from typing import Any
 
 from moneybin import error_codes
+from moneybin.database import has_column
 from moneybin.errors import UserError
 from moneybin.privacy.consent import ConsentMode, GrantInfo
 from moneybin.repositories.base import BaseRepo, quote_ident
@@ -31,7 +32,21 @@ _COLUMNS = (
     "granted_at",
     "revoked_at",
     "grant_prompt",
+    "recipient_kind",
+    "terms_version",
+    "approved_via",
+    "redaction_policy_version",
 )
+
+# V081 columns and their legacy values, for reads before V081 applies.
+_V081_DEFAULTS = {
+    "recipient_kind": "'ai_backend'",
+    "terms_version": "NULL",
+    "approved_via": "NULL",
+    "redaction_policy_version": "NULL",
+}
+
+_RECIPIENT_KINDS = frozenset({"ai_backend", "ai_host"})  # no CHECK: DuckDB ADD COLUMN
 
 
 def _row_to_grant(row: dict[str, Any]) -> GrantInfo:
@@ -42,6 +57,10 @@ def _row_to_grant(row: dict[str, Any]) -> GrantInfo:
         consent_mode=ConsentMode(row["consent_mode"]),
         granted_at=row["granted_at"],
         revoked_at=row["revoked_at"],
+        recipient_kind=row["recipient_kind"],
+        terms_version=row["terms_version"],
+        approved_via=row["approved_via"],
+        redaction_policy_version=row["redaction_policy_version"],
     )
 
 
@@ -71,12 +90,35 @@ class ConsentRepo(BaseRepo):
         ).fetchone()
         return row is not None
 
-    def _active_for(self, feature_category: str, backend: str) -> dict[str, Any] | None:
+    def _read_projection(self) -> str:
+        """Select list that supplies V081 defaults when the columns are absent.
+
+        A read-only open skips migrations, so an upgraded profile can still
+        hold the V022 shape until the next write-mode open.
+        """
+        parts: list[str] = []
+        for column in _COLUMNS:
+            default = _V081_DEFAULTS.get(column)
+            if default is not None and not has_column(
+                self._db, AI_CONSENT_GRANTS, column
+            ):
+                parts.append(f"{default} AS {quote_ident(column)}")
+            else:
+                parts.append(quote_ident(column))
+        return ", ".join(parts)
+
+    def _active_for(
+        self,
+        feature_category: str,
+        backend: str,
+        recipient_kind: str = "ai_backend",
+    ) -> dict[str, Any] | None:
         cols = ", ".join(quote_ident(c) for c in _COLUMNS)
         row = self._db.execute(
             f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
-            "WHERE feature_category = ? AND backend = ? AND revoked_at IS NULL",
-            [feature_category, backend],
+            "WHERE feature_category = ? AND backend = ? AND recipient_kind = ? "
+            "AND revoked_at IS NULL",
+            [feature_category, backend, recipient_kind],
         ).fetchone()
         return dict(zip(_COLUMNS, row, strict=True)) if row is not None else None
 
@@ -88,6 +130,10 @@ class ConsentRepo(BaseRepo):
         consent_mode: ConsentMode,
         grant_prompt: str,
         actor: str,
+        recipient_kind: str = "ai_backend",
+        terms_version: str | None = None,
+        approved_via: str | None = None,
+        redaction_policy_version: str | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> tuple[GrantInfo, bool]:
@@ -100,8 +146,10 @@ class ConsentRepo(BaseRepo):
         a mode, revoke then re-grant. Otherwise a new active grant is inserted
         with a paired audit row and ``created=True``.
         """
+        if recipient_kind not in _RECIPIENT_KINDS:
+            raise ValueError(f"Unknown recipient_kind: {recipient_kind!r}")
         with self._transaction(in_outer_txn=in_outer_txn):
-            existing = self._active_for(feature_category, backend)
+            existing = self._active_for(feature_category, backend, recipient_kind)
             if existing is not None:
                 return _row_to_grant(existing), False
             grant_id = uuid.uuid4().hex[:12]
@@ -109,10 +157,22 @@ class ConsentRepo(BaseRepo):
                 f"""
                 INSERT INTO {AI_CONSENT_GRANTS.full_name}
                     (grant_id, feature_category, backend, consent_mode,
-                     granted_at, revoked_at, grant_prompt)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, ?)
+                     granted_at, revoked_at, grant_prompt,
+                     recipient_kind, terms_version, approved_via,
+                     redaction_policy_version)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, ?, ?, ?, ?, ?)
                 """,  # noqa: S608  # TableRef + parameterized values
-                [grant_id, feature_category, backend, consent_mode.value, grant_prompt],
+                [
+                    grant_id,
+                    feature_category,
+                    backend,
+                    consent_mode.value,
+                    grant_prompt,
+                    recipient_kind,
+                    terms_version,
+                    approved_via,
+                    redaction_policy_version,
+                ],
             )
             after = self._fetch_row(grant_id)
             if after is None:  # pragma: no cover — just inserted, must exist
@@ -135,12 +195,13 @@ class ConsentRepo(BaseRepo):
         feature_category: str,
         backend: str,
         actor: str,
+        recipient_kind: str = "ai_backend",
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> int:
-        """Revoke the active grant for (feature_category, backend). Returns 0 or 1."""
+        """Revoke the active grant for the (category, backend, kind). Returns 0 or 1."""
         with self._transaction(in_outer_txn=in_outer_txn):
-            existing = self._active_for(feature_category, backend)
+            existing = self._active_for(feature_category, backend, recipient_kind)
             if existing is None:
                 return 0
             grant_id = existing["grant_id"]
@@ -212,9 +273,9 @@ class ConsentRepo(BaseRepo):
         """Return all active (non-revoked) grants, newest first."""
         if not self._table_exists():
             return []
-        cols = ", ".join(quote_ident(c) for c in _COLUMNS)
+        cols = self._read_projection()
         rows = self._db.execute(
-            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
+            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + quoted cols / constant defaults
             "WHERE revoked_at IS NULL ORDER BY granted_at DESC"
         ).fetchall()
         return [_row_to_grant(dict(zip(_COLUMNS, r, strict=True))) for r in rows]
@@ -223,9 +284,9 @@ class ConsentRepo(BaseRepo):
         """Return all grants including revoked, newest first (audit history)."""
         if not self._table_exists():
             return []
-        cols = ", ".join(quote_ident(c) for c in _COLUMNS)
+        cols = self._read_projection()
         rows = self._db.execute(
-            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
+            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + quoted cols / constant defaults
             "ORDER BY granted_at DESC"
         ).fetchall()
         return [_row_to_grant(dict(zip(_COLUMNS, r, strict=True))) for r in rows]
