@@ -55,6 +55,7 @@ from moneybin.tables import (
     TableRef,
 )
 from moneybin.temporal import format_utc
+from moneybin.temporal_contract import decode_audit_row, read_audit_temporal_policy
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,11 @@ class UndoService:
             audit_undo_total.labels(outcome="not_found").inc()
             raise self._not_found_error(operation_id)
         u = self._undoability(operation_id)
-        row_events = self._reversible_events(events)
+        try:
+            row_events = self._reversible_events(events)
+        except UserError as refusal:
+            self._record_refusal_metric(refusal)
+            raise
         if refusal := self._undo_refusal(operation_id, u, events, row_events):
             self._record_refusal_metric(refusal)
             raise refusal
@@ -375,8 +380,6 @@ class UndoService:
             if event.target_table == LOT_SELECTIONS.name
         }
         for event in events:
-            if event.before_value == event.after_value:
-                continue
             if event.target_table not in {
                 "account_links",
                 "account_link_decisions",
@@ -593,8 +596,12 @@ class UndoService:
         if not events:
             raise self._not_found_error(operation_id)
         u = self._undoability(operation_id)
-        source_events = self._reversible_events(events)
-        refusal = self._undo_refusal(operation_id, u, events, source_events)
+        try:
+            source_events = self._reversible_events(events)
+            refusal = self._undo_refusal(operation_id, u, events, source_events)
+        except UserError as error:
+            source_events = []
+            refusal = error
         return OperationDetail(
             operation_id=operation_id,
             events=events,
@@ -612,14 +619,37 @@ class UndoService:
             undo_recovery_actions=refusal.recovery_actions if refusal else None,
         )
 
-    @staticmethod
-    def _reversible_events(events: Iterable[AuditEvent]) -> list[AuditEvent]:
-        """Return event rows whose captured images describe a state change."""
-        return [
-            event
-            for event in events
-            if event.target_id is not None and event.before_value != event.after_value
-        ]
+    def _reversible_events(self, events: Iterable[AuditEvent]) -> list[AuditEvent]:
+        """Compare decoded images while retaining the original audit evidence."""
+        changed: list[AuditEvent] = []
+        try:
+            policy = read_audit_temporal_policy(self._db)
+            for event in events:
+                if event.target_id is None:
+                    continue
+                before = (
+                    decode_audit_row(
+                        event, event.before_value, policy, image_side="before"
+                    )
+                    if event.before_value is not None
+                    else None
+                )
+                after = (
+                    decode_audit_row(
+                        event, event.after_value, policy, image_side="after"
+                    )
+                    if event.after_value is not None
+                    else None
+                )
+                if before != after:
+                    changed.append(event)
+        except ValueError:
+            raise UserError(
+                "Cannot undo: historical timestamps lack unambiguous accepted "
+                "UTC upgrade provenance. Inspect the operation and its upgrade evidence.",
+                code=error_codes.RECOVERY_NO_PATH,
+            ) from None
+        return changed
 
     def _undo_refusal(
         self,
@@ -861,20 +891,13 @@ class UndoService:
         ]
 
     def _has_reversible_row(self, operation_id: str) -> bool:
-        """Whether the operation has at least one row that actually changed state.
-
-        A row is reversible only if it mutated something (``target_id`` set and
-        ``before_value`` distinct from ``after_value``). Markers and no-ops fail
-        both clauses — the same two conditions ``undo()`` filters on before it
-        refuses with ``recovery_no_path``.
-        """
-        row = self._db.conn.execute(
-            f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
-            "WHERE operation_id = ? AND target_id IS NOT NULL "
-            "AND before_value IS DISTINCT FROM after_value LIMIT 1",
-            [operation_id],
-        ).fetchone()
-        return row is not None
+        """Require a proven semantic change before advertising undoability."""
+        try:
+            return bool(
+                self._reversible_events(self._audit.events_for_operation(operation_id))
+            )
+        except UserError:
+            return False
 
     def undone_operation_ids(self, operation_ids: Iterable[str]) -> frozenset[str]:
         """Which of ``operation_ids`` are *currently* reversed (net liveness).

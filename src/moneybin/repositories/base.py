@@ -358,8 +358,8 @@ class BaseRepo:
           locating the row by the *after* image's primary key so a pk-changing
           update (e.g. a tag rename) is found by its current key.
 
-        A no-op event (``before == after``, covering both-None and a zero-change
-        update) writes nothing and returns ``None``. Otherwise the undo is itself
+        A no-op event (decoded ``before == after``, including both-None)
+        writes nothing and returns ``None``. Otherwise the undo is itself
         audited (``is_undo=True``, ``undoes_operation_id=event.operation_id``) and
         the new event is returned — so it is undoable in turn (undo-the-undo).
 
@@ -377,17 +377,17 @@ class BaseRepo:
         write path can produce (#547). No-op on the many repos with no declared
         ``_CATEGORY_TEXT_COLUMNS``.
         """
-        if event.before_value == event.after_value:
+        if event.before_value is None and event.after_value is None:
             return None
         try:
             policy = read_audit_temporal_policy(self._db)
             before = (
-                decode_audit_row(event, event.before_value, policy)
+                decode_audit_row(event, event.before_value, policy, image_side="before")
                 if event.before_value is not None
                 else None
             )
             after = (
-                decode_audit_row(event, event.after_value, policy)
+                decode_audit_row(event, event.after_value, policy, image_side="after")
                 if event.after_value is not None
                 else None
             )
@@ -398,6 +398,8 @@ class BaseRepo:
                 code=error_codes.RECOVERY_NO_PATH,
             ) from None
 
+        if before == after:
+            return None
         with self._transaction(in_outer_txn=in_outer_txn):
             resulting = before
             if before is None and after is not None:

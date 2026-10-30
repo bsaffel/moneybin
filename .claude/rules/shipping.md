@@ -58,7 +58,7 @@ The README is a storefront — it points to `docs/roadmap.md` rather than carryi
 
 **Do not** re-add an in-README roadmap matrix. **Do not** re-add a detailed "What Works Today" feature table. Those live in `docs/`.
 
-Read the README before editing it, and check its length after: the storefront is 158 lines, and 200 is the ceiling. Growth past that means content that belongs in `docs/` is accumulating in the shopfront window.
+Read the README before editing it, and check its length after: 200 lines is the ceiling. Growth past that means content that belongs in `docs/` is accumulating in the shopfront window.
 
 See `docs/specs/user-facing-doc-polish.md` for the README structure rationale.
 
