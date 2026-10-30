@@ -123,13 +123,15 @@ def report_note_lines(
     *,
     quiet: bool = False,
     symbols: TerminalSymbols | None = None,
+    include_actions: bool = True,
 ) -> tuple[str, ...]:
     """Build report fidelity disclosures for one complete terminal answer.
 
-    ``quiet`` drops the next-step hints and nothing else: the conversion
+    ``quiet`` drops optional next-step hints and nothing else: the conversion
     disclosure and the two warnings say how far the numbers can be trusted,
     and asking for less chatter is not a claim that truncation or a currency
     conversion stopped happening.
+    ``include_actions=False`` keeps typed commands separate for final rendering.
     """
     if symbols is None:
         symbols = get_terminal_policy().symbols
@@ -150,9 +152,11 @@ def report_note_lines(
             f"{symbols.attention} Showing the first {len(result.records):,} rows; more exist. "
             "Raise --limit or narrow the report to see the rest."
         )
-    if not quiet:
+    if include_actions:
         lines.extend(
-            f"{symbols.action} {_next_step_line(action)}" for action in result.actions
+            f"{symbols.action} {_next_step_line(action)}"
+            for action in result.actions
+            if not quiet or isinstance(action, NextStep) and action.required
         )
     return tuple(lines)
 
@@ -506,19 +510,20 @@ def render_report_result(
         return
     policy = get_terminal_policy(no_pager=no_pager)
     notes: list[object] = list(
-        report_note_lines(result, quiet=True, symbols=policy.symbols)
+        report_note_lines(result, symbols=policy.symbols, include_actions=False)
     )
-    if not quiet:
-        for action in result.actions:
-            if isinstance(action, NextStep):
-                reason = action.reason[:1].upper() + action.reason[1:]
-                notes.append(
-                    build_next_step(
-                        reason, generated_cli_command(*action.cli), terminal=policy
-                    )
+    for action in result.actions:
+        if quiet and not (isinstance(action, NextStep) and action.required):
+            continue
+        if isinstance(action, NextStep):
+            reason = action.reason[:1].upper() + action.reason[1:]
+            notes.append(
+                build_next_step(
+                    reason, generated_cli_command(*action.cli), terminal=policy
                 )
-            else:
-                notes.append(f"{policy.symbols.action} {action}")
+            )
+        else:
+            notes.append(f"{policy.symbols.action} {action}")
     parts: list[object] = []
     if result.records:
         human = build_rows(

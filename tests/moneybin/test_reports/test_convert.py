@@ -8,6 +8,7 @@ would satisfy the assertions while proving nothing about that.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date, datetime
@@ -18,7 +19,7 @@ import pytest
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import NextStep, UserError
 from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.catalog import ReportCatalog
@@ -708,12 +709,103 @@ def test_missing_home_currency_does_not_offer_a_refresh_that_cannot_fetch(
     _record_provider_catalog(saved_db, "USD", "EUR")
     ProfileSettingsRepo(saved_db).set_display_currency_targets(targets, actor="test")
 
-    reason = _missing_eur_reason(saved_db)
+    outcome = convert_records(
+        [_row()],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
+    )
+    reason = outcome.degraded_reason
 
+    assert reason is not None
     assert "home currency" in reason
-    assert "`moneybin profile set home_currency '<CODE>'`" in reason
-    assert "`moneybin fx set EUR USD '<date>' '<rate>'`" in reason
-    assert "run 'moneybin refresh'" not in reason
+    assert "moneybin" not in reason
+    assert "2026-03-05" not in reason
+    assert [action.cli for action in outcome.actions] == [
+        ("profile", "set", "home_currency", "<CODE>"),
+        ("fx", "set", "EUR", "USD", "<date>", "<rate>"),
+    ]
+    assert all(action.required for action in outcome.actions)
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_missing_home_recovery_survives_conversion_and_quiet_rendering(
+    saved_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    quiet: bool,
+) -> None:
+    from moneybin.cli.output import OutputFormat
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+    from moneybin.reports._framework.cli_register import (
+        render_report_result,
+        report_note_lines,
+    )
+
+    _record_provider_catalog(saved_db, "EUR", "USD")
+    result = _run(saved_db, display_currency="USD")
+    optional = NextStep("optional exploration", ("reports", "list"), "reports_list()")
+    result = replace(result, actions=[*result.actions, optional])
+    profile = "sample profile " + "p" * 100
+    monkeypatch.setattr("moneybin.cli.utils._flags.profile", profile)
+    policy = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=100,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+    def _policy(**_kwargs: object) -> TerminalPolicy:
+        return policy
+
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy", _policy
+    )
+    render_report_result(
+        result, OutputFormat.TEXT, cli_actor="test", quiet=quiet, no_pager=True
+    )
+    output = capsys.readouterr().out
+    commands = [
+        shlex.split(line)
+        for line in output.splitlines()
+        if line.startswith("moneybin ")
+    ]
+
+    assert [
+        "moneybin",
+        "--profile",
+        profile,
+        "profile",
+        "set",
+        "home_currency",
+        "<CODE>",
+    ] in commands
+    assert [
+        "moneybin",
+        "--profile",
+        profile,
+        "fx",
+        "set",
+        "EUR",
+        "USD",
+        "<date>",
+        "<rate>",
+    ] in commands
+    assert "! EUR->USD is unfetched" in output
+    assert ("Optional exploration" in output) is not quiet
+    notes = "\n".join(report_note_lines(result, quiet=quiet, symbols=policy.symbols))
+    assert "home_currency '<CODE>'" in notes
+    assert "fx set EUR USD '<date>' '<rate>'" in notes
 
 
 def test_an_unrecorded_provider_list_never_claims_unsupported(

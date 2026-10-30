@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 from datetime import date
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
@@ -28,6 +29,7 @@ from moneybin.cli.commands.fx import app
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
 from moneybin.services.currency_service import (
+    CurrencyService,
     RateUnavailableError,
     ResolvedRate,
 )
@@ -69,6 +71,58 @@ def _patched_resolve_raising(error: RateUnavailableError):
 
 class TestFxRate:
     """`fx rate` answers one pair and one date, with its provenance."""
+
+    @pytest.mark.parametrize("date_args", [["2026-03-13"], []])
+    def test_rate_recovery_preserves_explicit_profile_and_known_arguments_under_quiet(
+        self,
+        db: Database,
+        monkeypatch: pytest.MonkeyPatch,
+        date_args: list[str],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from moneybin.cli.utils import stash_cli_flags
+
+        def today(_self: ProfileSettingsService) -> date:
+            return date(2026, 3, 13)
+
+        monkeypatch.setattr(ProfileSettingsService, "today", today)
+        with (
+            patch("moneybin.cli.commands.fx.get_database") as opened,
+            patch(
+                "moneybin.services.currency_service.build_currency_service",
+                return_value=CurrencyService(db, adapter=None),
+            ),
+        ):
+            opened.return_value.__enter__.return_value = db
+            stash_cli_flags("synthetic profile;$(literal)", False)
+            try:
+                result = runner.invoke(
+                    app, ["rate", "usd", "eur", *date_args, "--quiet"]
+                )
+            finally:
+                stash_cli_flags(None, False)
+
+        assert result.exit_code == 1, result.output
+        assert result.stdout == ""
+        commands = [
+            line.strip()
+            for line in result.stderr.splitlines()
+            if line.strip().startswith("moneybin ")
+        ]
+        assert len(commands) == 1, result.stderr
+        assert shlex.split(commands[0]) == [
+            "moneybin",
+            "--profile",
+            "synthetic profile;$(literal)",
+            "fx",
+            "set",
+            "USD",
+            "EUR",
+            "2026-03-13",
+            "<rate>",
+        ]
+        assert "no rate provider is configured" in caplog.text
+        assert "replace <rate>" in result.stderr
 
     @patch("moneybin.cli.commands.fx.get_database")
     @_patched_resolve(_resolved())
@@ -240,6 +294,10 @@ class TestFxRate:
         assert (
             json.loads(result.output)["error"]["code"]
             == error_codes.FX_CURRENCY_UNSUPPORTED
+        )
+        assert json.loads(result.output)["error"]["hint"] == (
+            "Record the rate yourself with 'moneybin fx set' — this pair "
+            "will not become available by retrying."
         )
 
 
