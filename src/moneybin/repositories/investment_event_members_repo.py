@@ -68,7 +68,7 @@ class InvestmentEventMembersRepo(BaseRepo):
                 f"SELECT 1 FROM {INVESTMENT_EVENT_MEMBERS.full_name} LIMIT 1"  # noqa: S608  # fixed TableRef
             ).fetchone()
             is not None
-        )  # fixed TableRef
+        )
 
     def active_members(self) -> list[dict[str, Any]]:
         """Read the sole active Golden membership authority."""
@@ -103,7 +103,7 @@ class InvestmentEventMembersRepo(BaseRepo):
         })
         columns = _COLUMNS[:19]
         with self._transaction(in_outer_txn=in_outer_txn):
-            # The Database writer lock serializes this check and insert across processes.
+            # The database writer lock covers this check and insert.
             if self._db.execute(
                 f"""SELECT 1 FROM {INVESTMENT_EVENT_MEMBERS.full_name}
                     WHERE member_kind = ? AND source_type = ? AND source_origin = ?

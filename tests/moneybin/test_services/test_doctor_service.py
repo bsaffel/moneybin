@@ -32,6 +32,8 @@ from moneybin.repositories import concrete_repo_classes
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.doctor_service import (
     DoctorReport,
@@ -39,6 +41,8 @@ from moneybin.services.doctor_service import (
     InvariantResult,
     _orient_overlap_pair,  # pyright: ignore[reportPrivateUsage]  # pure ordering helper, pinned directly
 )
+from moneybin.services.investment_membership_service import InvestmentMembershipService
+from moneybin.services.mutation_context import operation
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import (
     CORE_DIM_ACCOUNTS_DDL,
@@ -47,6 +51,18 @@ from tests.moneybin.db_helpers import (
     create_core_tables,
     derive_is_categorizable,
     install_prep_view,
+)
+from tests.moneybin.test_investments.comparison_helpers import (
+    install_comparison_models,
+    seed_account_metadata,
+    seed_manual_event,
+    seed_plaid_event,
+)
+from tests.moneybin.test_investments.test_investment_golden_projection import (
+    install_golden_models,
+)
+from tests.moneybin.test_investments.test_investment_match_acceptance import (
+    registered_proposal,
 )
 
 _COVERAGE_PREFIX: Final = "app_audit_coverage_"
@@ -909,7 +925,8 @@ def test_run_all_returns_expected_invariants(
     # V063 could not tell from a chosen one).
     # + sync_completeness + sync_health + net_worth_stale_balance (MB-86).
     # + net_worth_unanchored_accounts (M2B.3).
-    assert len(report.invariants) == 68
+    # + investment_event_members / investment_match_field_resolutions audit coverage.
+    assert len(report.invariants) == 70
     names = [r.name for r in report.invariants]
     for name in (
         "sync_completeness",
@@ -919,6 +936,8 @@ def test_run_all_returns_expected_invariants(
     ):
         assert names.count(name) == 1
     assert "app_audit_coverage_investment_match_decisions" in names
+    assert "app_audit_coverage_investment_event_members" in names
+    assert "app_audit_coverage_investment_match_field_resolutions" in names
     assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -1974,56 +1993,181 @@ def test_source_overlap_passes_once_the_ledger_holds_only_the_chosen_source(
     assert result.affected_ids == []
 
 
+@pytest.fixture
+def unresolved_security_db(db: Database) -> Database:
+    """Install the shipped comparison models with synthetic resolved identities."""
+    db.execute(
+        "CREATE TABLE core.dim_accounts (account_id VARCHAR, currency_code VARCHAR)"
+    )
+    db.execute("INSERT INTO core.dim_accounts VALUES ('account', 'USD')")
+    SecuritiesRepo(db).upsert(
+        security_id="security",
+        name="Test Security",
+        security_type="equity",
+        actor="test",
+    )
+    seed_account_metadata(
+        db, "account", native="native_account", origin="origin", currency="USD"
+    )
+    SecurityLinksRepo(db).insert(
+        security_id="security",
+        ref_kind="plaid_security_id",
+        ref_value="native_security",
+        source_type="plaid",
+        decided_by="user",
+        actor="test",
+    )
+    install_comparison_models(db)
+    return db
+
+
 @pytest.mark.unit
-def test_unresolved_securities_warn(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+def test_unresolved_securities_warn_without_holdings_or_golden_rows(
+    unresolved_security_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute(
-        "CREATE TABLE prep.stg_plaid__investment_transactions "
-        "(investment_transaction_id VARCHAR, source_security_key VARCHAR)"
+    """A fully disposed unresolved source position still needs security-link review."""
+    db = unresolved_security_db
+    seed_plaid_event(db, "unresolved_buy", security_id="unbound_security")
+    seed_plaid_event(
+        db,
+        "unresolved_sell",
+        type_="sell",
+        subtype="sell",
+        quantity="-1",
+        amount="-100",
+        day=11,
+        security_id="unbound_security",
     )
-    db.execute(
-        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
-        "('itx_1', 'plaid_sec_abc'), ('itx_2', NULL)"
-    )
-    db.execute("CREATE SCHEMA IF NOT EXISTS core")
-    db.execute(
-        "CREATE TABLE core.fct_investment_transactions "
-        "(investment_transaction_id VARCHAR, security_id VARCHAR)"
-    )
-    db.execute(
-        "INSERT INTO core.fct_investment_transactions VALUES "
-        "('itx_1', NULL), ('itx_2', NULL)"
-    )
+    membership = InvestmentMembershipService(db)
+    membership.reconcile(actor="test")
+    install_golden_models(db)
+    assert db.execute(
+        "SELECT SUM(quantity) FROM prep.int_investment_events__legs"
+    ).fetchone() == (0,)
+    assert db.execute(
+        "SELECT COUNT(*) FROM core.fct_investment_transactions"
+    ).fetchone() == (0,)
+    assert membership.project() == []
+
     result = _investment_result(db, monkeypatch, "investment_unresolved_securities")
     assert result.status == "warn"
-    # itx_2 has no provider security key at all (a legitimate cash-only row,
-    # e.g. deposit/withdrawal) — a NULL security_id there is not a gap.
-    assert result.affected_ids == ["itx_1"]
+    assert result.affected_ids == ["unresolved_buy", "unresolved_sell"]
+    assert "securities links pending" in (result.detail or "")
 
 
 @pytest.mark.unit
-def test_unresolved_securities_pass_when_resolved(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+def test_unresolved_securities_warn_for_unbound_manual_security(
+    unresolved_security_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute(
-        "CREATE TABLE prep.stg_plaid__investment_transactions "
-        "(investment_transaction_id VARCHAR, source_security_key VARCHAR)"
+    db = unresolved_security_db
+    db.execute("""
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            type, trade_date, quantity, amount, created_by, investment_transaction_id
+        ) VALUES ('manual_unbound', 'import', 'account', 'missing_security',
+                  'buy', DATE '2026-01-10', 1, -100, 'cli', 'manual_unbound')
+    """)
+    InvestmentMembershipService(db).reconcile(actor="test")
+    install_golden_models(db)
+    assert db.execute(
+        "SELECT COUNT(*) FROM core.fct_investment_transactions"
+    ).fetchone() == (0,)
+
+    result = _investment_result(db, monkeypatch, "investment_unresolved_securities")
+    assert result.status == "warn"
+    assert result.affected_ids == ["manual_unbound"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("cash_only", "account_present"),
+    [(False, True), (True, True), (False, False)],
+    ids=["resolved", "cash-only", "unresolved-account-only"],
+)
+def test_unresolved_securities_pass_when_resolved_or_cash_only(
+    unresolved_security_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    cash_only: bool,
+    account_present: bool,
+) -> None:
+    db = unresolved_security_db
+    if not account_present:
+        db.execute("DELETE FROM core.dim_accounts")
+    seed_plaid_event(
+        db,
+        "native",
+        type_="cash" if cash_only else "buy",
+        subtype="deposit" if cash_only else "buy",
+        quantity=None if cash_only else "1",
+        security_id=None if cash_only else "native_security",
     )
+    membership = InvestmentMembershipService(db)
+    membership.reconcile(actor="test")
+    install_golden_models(db)
+    rows = membership.project()
+    assert len(rows) == int(account_present)
+    if rows:
+        assert rows[0]["investment_transaction_id"] != "native"
+
+    result = _investment_result(db, monkeypatch, "investment_unresolved_securities")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("selected_source", ["manual", "plaid"])
+def test_unresolved_securities_respect_selected_source(
+    unresolved_security_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    selected_source: str,
+) -> None:
+    db = unresolved_security_db
+    seed_manual_event(db, "manual")
+    seed_plaid_event(db, "unresolved", security_id="unbound_security")
     db.execute(
-        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
-        "('itx_1', 'plaid_sec_abc')"
+        "INSERT INTO app.account_settings (account_id, investment_source_type) VALUES (?, ?)",
+        ["account", selected_source],
     )
-    db.execute("CREATE SCHEMA IF NOT EXISTS core")
-    db.execute(
-        "CREATE TABLE core.fct_investment_transactions "
-        "(investment_transaction_id VARCHAR, security_id VARCHAR)"
+    InvestmentMembershipService(db).reconcile(actor="test")
+    install_golden_models(db)
+
+    result = _investment_result(db, monkeypatch, "investment_unresolved_securities")
+    assert result.status == ("pass" if selected_source == "manual" else "warn")
+    assert result.affected_ids == (
+        [] if selected_source == "manual" else ["unresolved"]
     )
-    db.execute(
-        "INSERT INTO core.fct_investment_transactions VALUES ('itx_1', 'sec_canonical')"
-    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalidate", [False, True], ids=["accepted", "stale"])
+def test_unresolved_securities_exclude_reviewed_native_reservations(
+    unresolved_security_db: Database, monkeypatch: pytest.MonkeyPatch, invalidate: bool
+) -> None:
+    """Reviewed membership retains its exact binding when current routing disappears."""
+    db = unresolved_security_db
+    matching, proposal_id, _oldest = registered_proposal(db)
+    with operation():
+        matching.decide(proposal_id, decision="accept", actor="test")
+    seed_plaid_event(db, "native", security_id="unbound_revision_security")
+    db.execute("""
+        INSERT INTO raw.plaid_investment_transaction_receipts (
+            investment_transaction_id, source_origin, source_file,
+            observation_version, extracted_at
+        )
+        SELECT investment_transaction_id, source_origin, 'unbound_revision',
+               observation_version, TIMESTAMPTZ '2026-02-02T00:00:00Z'
+        FROM raw.plaid_investment_transactions
+        WHERE security_id = 'unbound_revision_security'
+    """)
+    if invalidate:
+        InvestmentMembershipService(db).invalidate_accepted(actor="test")
+    assert matching.history()[0]["status"] == ("stale" if invalidate else "accepted")
+    assert db.execute(
+        "SELECT security_id FROM prep.int_investment_events__legs WHERE native_reference = 'native'"
+    ).fetchone() == (None,)
+    install_golden_models(db)
+    assert len(InvestmentMembershipService(db).project()) == 1
+
     result = _investment_result(db, monkeypatch, "investment_unresolved_securities")
     assert result.status == "pass"
     assert result.affected_ids == []

@@ -176,7 +176,7 @@ class TestRefreshCategorizationProposalSummary:
 
         with (
             patch(
-                "moneybin.orchestration.refresh._run_investment_match_step",
+                "moneybin.services.transform_service.TransformService.prepare_investments",
                 return_value=StageOutcome(step="investment_match", ran=True),
             ),
             caplog.at_level(logging.INFO, logger="moneybin.orchestration.refresh"),
@@ -186,6 +186,7 @@ class TestRefreshCategorizationProposalSummary:
         text = "\n".join(r.message for r in caplog.records)
         assert "4 new auto-rule proposals" in text
         assert "auto review" in text
+        mock_auto_cls.return_value.stats.assert_called_once()
 
     @patch("moneybin.services.auto_rule_service.AutoRuleService")
     @patch("moneybin.services.categorization.CategorizationService")
@@ -224,7 +225,7 @@ class TestRefreshCategorizationProposalSummary:
 
         with (
             patch(
-                "moneybin.orchestration.refresh._run_investment_match_step",
+                "moneybin.services.transform_service.TransformService.prepare_investments",
                 return_value=StageOutcome(step="investment_match", ran=True),
             ),
             caplog.at_level(logging.INFO, logger="moneybin.orchestration.refresh"),
@@ -234,3 +235,4 @@ class TestRefreshCategorizationProposalSummary:
         text = "\n".join(r.message for r in caplog.records)
         assert "auto-rule proposals" not in text
         assert "auto review" not in text
+        mock_auto_cls.return_value.stats.assert_called_once()
