@@ -297,12 +297,6 @@ def spending_trend(
 
     actions: list[NextStep] = [
         NextStep(
-            reason="filtering to one category",
-            cli=("reports", "spending-trend", "--category", "<name>"),
-            mcp="reports(report_id='core:spending_trend', "
-            "parameters={'category': '<name>'})",
-        ),
-        NextStep(
             reason="inflow, outflow, and net",
             cli=("reports", "cash-flow"),
             mcp="reports(report_id='core:cash_flow')",
@@ -313,6 +307,16 @@ def spending_trend(
             mcp="reports(report_id='core:recurring_subscriptions')",
         ),
     ]
+    if not category:
+        actions.insert(
+            0,
+            NextStep(
+                reason="filtering to one category",
+                cli=("reports", "spending-trend", "--category", "<name>"),
+                mcp="reports(report_id='core:spending_trend', "
+                "parameters={'category': '<name>'})",
+            ),
+        )
     if hint:
         actions.insert(0, hint)
     start = date.fromisoformat(from_month + "-01") if from_month else None

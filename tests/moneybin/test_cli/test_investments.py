@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Generator
 from contextlib import contextmanager
 from decimal import Decimal
@@ -2133,6 +2134,70 @@ class TestLotsSelect:
         ).fetchone()
         assert count is not None
         assert count[0] == 0
+
+    @pytest.mark.unit
+    def test_specific_method_recovery_quotes_literal_id_and_keeps_explicit_profile(
+        self, runner: CliRunner, db: Database, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from moneybin.cli.commands.investments.lots import app as lots_app
+        from moneybin.cli.utils import set_quiet_flag, stash_cli_flags
+
+        _seed_single_lot_disposal(db, "fifo")
+        security_id = "synthetic security;$(literal)"
+        for table in (
+            "app.securities",
+            "core.fct_investment_transactions",
+            "core.fct_investment_lots",
+        ):
+            db.conn.execute(
+                f"UPDATE {table} SET security_id = ? WHERE security_id = 'sec_1'",  # noqa: S608  # fixed test table allowlist
+                [security_id],
+            )
+
+        profile = "synthetic profile with a deliberately long display name;$(literal)"
+        stash_cli_flags(profile, False)
+        set_quiet_flag(True)
+        try:
+            result = runner.invoke(lots_app, ["select", "sell_1", "--lot", "lot_a:5"])
+            json_result = runner.invoke(
+                lots_app, ["select", "sell_1", "--lot", "lot_a:5", "--output", "json"]
+            )
+        finally:
+            stash_cli_flags(None, False)
+
+        assert result.exit_code == 1, result.output
+        assert result.stdout == ""
+        commands = [
+            line.strip()
+            for line in result.stderr.splitlines()
+            if line.strip().startswith("moneybin ")
+        ]
+        assert len(commands) == 1, result.stderr
+        assert shlex.split(commands[0]) == [
+            "moneybin",
+            "--profile",
+            profile,
+            "investments",
+            "securities",
+            "set",
+            security_id,
+            "--method",
+            "specific",
+        ]
+        assert "Elect specific identification before retrying the selection" in (
+            " ".join(result.stderr.split())
+        )
+        assert "replays under 'fifo' cost basis" in caplog.text
+        assert json_result.exit_code == 1, json_result.output
+        error = json.loads(json_result.stdout)["error"]
+        assert error["code"] == "investment_method_not_specific"
+        assert (
+            "moneybin investments securities set 'synthetic security;$(literal)' "
+            "--method specific"
+        ) in error["hint"]
+        assert "--profile" not in error["hint"]
+        count = db.conn.execute("SELECT COUNT(*) FROM app.lot_selections").fetchone()
+        assert count is not None and count[0] == 0
 
     @pytest.mark.unit
     def test_select_and_clear_mutually_exclusive_exits_2(

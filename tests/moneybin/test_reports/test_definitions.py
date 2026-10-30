@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
-from moneybin.errors import next_step_text
+from moneybin.errors import NextStep, next_step_text
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -35,6 +35,35 @@ from moneybin.reports.definitions.recurring_subscriptions import recurring_subsc
 from moneybin.reports.definitions.spending_trend import spending_trend
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("by", ["account", "category"])
+def test_cash_flow_only_offers_category_regrouping_when_it_changes_the_view(
+    db: Database, by: str
+) -> None:
+    query = cash_flow(db, by=by, from_month="2026-01", to_month="2026-12")
+
+    category_retry = ("reports", "cash-flow", "--by", "category")
+    assert any(
+        isinstance(action, NextStep) and action.cli == category_retry
+        for action in query.actions
+    ) == (by != "category")
+
+
+@pytest.mark.parametrize("category", [None, "Groceries"])
+def test_spending_trend_only_offers_category_filter_when_unfiltered(
+    db: Database, category: str | None
+) -> None:
+    query = spending_trend(
+        db, category=category, from_month="2026-01", to_month="2026-12"
+    )
+
+    category_retry = ("reports", "spending-trend", "--category", "<name>")
+    assert any(
+        isinstance(action, NextStep) and action.cli == category_retry
+        for action in query.actions
+    ) == (category is None)
+
 
 _CORE_REPORT_IDS = {
     "spending_trend": "core:spending_trend",

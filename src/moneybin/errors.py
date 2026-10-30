@@ -81,6 +81,8 @@ class NextStep:
     """The MCP call expression, e.g. ``"reports(report_id='core:net_worth')"``."""
     verb: str = "Run"
     """'Run' or 'Rerun' — used by the MCP text only."""
+    required: bool = False
+    """Required terminal recovery remains visible under quiet; never a wire field."""
 
     def for_mcp(self) -> str:
         """The MCP envelope's ``actions[]`` string."""
