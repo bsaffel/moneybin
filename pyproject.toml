@@ -228,7 +228,7 @@ dev = [
     "pip>=26.2.1",
     # Security floor for msgpack (transitive via pip-audit → cachecontrol):
     # GHSA-6v7p-g79w-8964 — fixed in 1.2.1.
-    "msgpack>=1.2.2",
+    "msgpack>=1.2.3",
     # Testing framework and tools
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
