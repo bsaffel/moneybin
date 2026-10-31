@@ -910,6 +910,18 @@ audit_undo_rows_reversed_total = Counter(
 
 # ── Sync (moneybin-sync pull/connect lifecycle) ────────────────────────────
 
+SYNC_SCHEDULE_OPERATIONS_TOTAL = Counter(
+    "moneybin_sync_schedule_operations_total",
+    "Desktop schedule operations by mechanism and bounded outcome",
+    ["operation", "mechanism", "outcome"],
+)
+
+SYNC_SCHEDULE_ATTEMPTS_TOTAL = Counter(
+    "moneybin_sync_schedule_attempts_total",
+    "Desktop scheduled attempts by mechanism and bounded outcome",
+    ["mechanism", "outcome"],
+)
+
 SYNC_PULL_DURATION_SECONDS = Histogram(
     "moneybin_sync_pull_duration_seconds",
     "End-to-end duration of SyncService.pull() (trigger + fetch + load + remove).",
@@ -1410,6 +1422,8 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_sync_disconnect_outcomes": "Sync",
     "moneybin_sync_purge_rows_deleted": "Sync",
     "moneybin_sync_server_address_outcomes": "Sync",
+    "moneybin_sync_schedule_operations": "Sync",
+    "moneybin_sync_schedule_attempts": "Sync",
     # Investments sync
     "moneybin_sync_investments_records_loaded": "Investments sync",
     "moneybin_investment_amount_drift_rows": "Investments sync",

@@ -40,16 +40,17 @@ coverage catalog.
 
 ## Coverage
 
-Counted from the map on 2026-09-23, it contains:
+Counted from the map on 2026-10-30, it contains:
 
-- 50 non-exempt capability rows covering all 50 standard MCP tools. `reports`
+- 51 non-exempt capability rows covering all 50 standard MCP tools. `reports`
   serves two capabilities — the catalog read and report execution — under one
   tool identity.
-- 196 implemented Typer paths, including hidden compatibility aliases, with
+- 208 implemented Typer paths, including hidden compatibility aliases and the
+  revision-bound native schedule callback, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.
 - 18 policy-exempt rows.
-- 9 reserved Typer paths that are still explicit `_not_implemented` stubs.
+- 6 reserved Typer paths that are still explicit `_not_implemented` stubs.
 
 The stub list is executable, not documentary: every excluded path is invoked
 with valid minimal arguments and must return the not-implemented outcome.
@@ -77,6 +78,7 @@ is added.
 | Category-source-mapping curation | `reviews(kind="source_categories")`, `taxonomy_set` (`source_category` items) | `categories mappings pending`, `categories mappings set`, `categories mappings remove` | Same distinct unmapped imported-vocabulary terms (grouped by term, not by transaction) with suggestions, and the same map-to-existing-or-new-category, ignore, or remove write, with its immediate re-categorization, through `CategorizationService.resolve_source_term`, `remove_source_term`, and `apply_taxonomy_targets` |
 | Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels`, `import formats *` | Same import log, raw rows, confirmation state, labels, and audited saved-format lifecycle; PDF content reaches an AI host only after consent (MCP elicitation or one-time `confirmation_token`, CLI `import preview --allow-ai-disclosure`; only elicitation or `privacy grant --recipient` remembers) |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect` | `sync login/link/status/pull/disconnect [--purge]/logout` | Same authenticated, linked, pulled, disconnected, purged, or logged-out state |
+| Desktop schedule (in progress) | none — `admission-pending` | `sync schedule set/show/remove` | Owned native job lifecycle and bounded latest-attempt outcome; the hidden revision-bound runner is an internal native callback |
 | Google Sheets | `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | `gsheet *` | Same connection and pulled source state |
 | Privacy | `privacy`, `privacy_consent_set` | `privacy status/log/grant/revoke/revoke-all` | Same effective grants and privacy log. AI-host grants (`--recipient`) are CLI-only by design: `privacy_consent_set` refuses `ai_host` recipients so an agent cannot grant itself standing access |
 | Refresh | `refresh_run` | `refresh`, match/identity commands, `transform apply` | Same selected step outcomes and proposal state |

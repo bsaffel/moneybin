@@ -1,8 +1,9 @@
 """Data synchronization commands for MoneyBin CLI."""
 
 import logging
+import re
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -55,6 +56,8 @@ from .stubs import _not_implemented
 
 if TYPE_CHECKING:
     from moneybin.connectors.sync_models import SyncConnectionView
+    from moneybin.secrets import ScheduledSecretAddressing
+    from moneybin.services.sync_schedule import ScheduleResult, SyncScheduleService
     from moneybin.services.sync_service import SyncPurgePlan
 
 app = typer.Typer(
@@ -216,11 +219,15 @@ def _render_sync_pull_receipt(
         typer.echo(f"{terminal.symbols.action} moneybin system doctor")
 
 
-def _build_sync_client():
+def _build_sync_client(*, profile_id: str | None = None):
     """Construct a SyncClient from current settings. Extracted for test mocking."""
     from moneybin.services.sync_server_address import build_sync_client
 
-    return build_sync_client()
+    return (
+        build_sync_client(profile_id=profile_id)
+        if profile_id is not None
+        else build_sync_client()
+    )
 
 
 def _emit_sync_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
@@ -233,8 +240,27 @@ def _emit_sync_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
     )
 
 
+def _validate_scheduled_pull_binding(
+    profile_id: str | None, revision: str | None
+) -> "ScheduledSecretAddressing | None":
+    if profile_id is None and revision is None:
+        return
+    from moneybin.services.sync_schedule_native import schedule_error
+
+    if profile_id is None or revision is None:
+        raise schedule_error("Scheduled pull binding is incomplete.")
+    return _build_schedule_service().validate_pull_binding(
+        profile_id=profile_id, revision=revision
+    )
+
+
 @contextmanager
-def _build_sync_service(*, local_only: bool = False):
+def _build_sync_service(
+    *,
+    local_only: bool = False,
+    scheduled_profile_id: str | None = None,
+    scheduled_revision: str | None = None,
+):
     """Yield a SyncService with an active Database connection (per ADR-010)."""
     from moneybin.config import get_settings
     from moneybin.database import get_database
@@ -242,11 +268,25 @@ def _build_sync_service(*, local_only: bool = False):
     from moneybin.services.sync_service import SyncService
     from moneybin.utils.user_config import get_or_create_profile_id
 
-    client = None if local_only else _build_sync_client()
+    def validate() -> None:
+        _validate_scheduled_pull_binding(scheduled_profile_id, scheduled_revision)
+
+    validate()
+    client = (
+        None
+        if local_only
+        else (
+            _build_sync_client(profile_id=scheduled_profile_id)
+            if scheduled_profile_id is not None
+            else _build_sync_client()
+        )
+    )
     consumer_id = (
         get_or_create_profile_id(get_settings().profile_dir) if local_only else None
     )
+    validate()
     with get_database(read_only=False) as db:
+        validate()
         loader = PlaidExtractor(db)
         yield SyncService(client=client, db=db, loader=loader, consumer_id=consumer_id)
 
@@ -1037,6 +1077,72 @@ def _sync_disconnect_purge(
         )
 
 
+@contextmanager
+def _scheduled_pull_access(
+    scheduled: bool,
+    profile_id: str | None = None,
+    revision: str | None = None,
+    *,
+    local_only: bool = False,
+) -> Generator[None, None, None]:
+    """Keep shutdown metrics inside the same policy as the scheduled pull."""
+    if not scheduled:
+        yield
+        return
+    from moneybin.database import DatabaseKeyError
+    from moneybin.observability import finish_cli_metrics
+    from moneybin.secrets import SecretStorageUnavailableError, scheduled_secret_access
+
+    entered = False
+    try:
+        if local_only:
+            from moneybin.services.sync_schedule_native import schedule_error
+
+            raise schedule_error("Scheduled pulls cannot use local-only recovery.")
+        addressing = None
+        if profile_id is not None or revision is not None:
+            from moneybin.cli.utils import get_verbose_flag
+            from moneybin.config import get_current_profile
+            from moneybin.observability import setup_observability
+
+            addressing = _validate_scheduled_pull_binding(profile_id, revision)
+            setup_observability(
+                stream="cli",
+                verbose=get_verbose_flag(),
+                profile=get_current_profile(auto_resolve=False),
+            )
+        with (
+            scheduled_secret_access(addressing)
+            if addressing is not None
+            else scheduled_secret_access()
+        ):
+            entered = True
+            try:
+                yield
+            except DatabaseKeyError:
+                raise UserError(
+                    "Scheduled sync could not read the database key from the OS keychain.",
+                    code=error_codes.INFRA_WRONG_KEY,
+                    hint="Unlock a supported OS keychain and verify the database key manually before the next scheduled attempt.",
+                ) from None
+            finally:
+                persist = False
+                try:
+                    _validate_scheduled_pull_binding(profile_id, revision)
+                    persist = True
+                finally:
+                    finish_cli_metrics(persist=persist)
+    except SecretStorageUnavailableError as error:
+        raise UserError(
+            str(error),
+            code=error_codes.INFRA_SETUP_REQUIRED,
+            hint="Configure an unlocked stock macOS Keychain or Linux Secret Service and verify credentials manually before the next scheduled attempt.",
+        ) from None
+    finally:
+        if not entered:
+            finish_cli_metrics(persist=False)
+
+
 @app.command("pull")
 def sync_pull(
     institution: str | None = typer.Option(
@@ -1081,41 +1187,79 @@ def sync_pull(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    scheduled: bool = typer.Option(False, "--scheduled", hidden=True),
+    scheduled_profile_id: str | None = typer.Option(
+        None, "--scheduled-profile-id", hidden=True
+    ),
+    scheduled_revision: str | None = typer.Option(
+        None, "--scheduled-revision", hidden=True
+    ),
 ) -> None:
     """Pull data from connected institutions."""
-    terminal = get_terminal_policy()
+    if not scheduled and (
+        scheduled_profile_id is not None or scheduled_revision is not None
+    ):
+        raise typer.BadParameter(
+            "--scheduled-profile-id and --scheduled-revision require --scheduled."
+        )
+    if scheduled:
+        from moneybin.config import CLISettings
+
+        # Before binding validation even presentation must avoid lazy resolution.
+        terminal = get_terminal_policy(settings=CLISettings())
+    else:
+        terminal = get_terminal_policy()
     try:
         with handle_cli_errors():
-            from moneybin.services.sync_service import validate_pull_selectors
-
-            history = validate_pull_selectors(
-                institution=institution,
-                provider=provider,
-                connection_id=connection_id,
-                history_start=history_start,
-                job_id=job_id,
+            with _scheduled_pull_access(
+                scheduled,
+                scheduled_profile_id,
+                scheduled_revision,
                 local_only=local_only,
-                force=force,
-            )
-            with _build_sync_service(local_only=local_only) as service:
-                with operation_progress(terminal, quiet=quiet) as report:
-                    if job_id is not None:
-                        result = service.recover(
-                            job_id,
-                            local_only=local_only,
-                            refresh=refresh,
-                            progress=report,
-                        )
-                    else:
-                        result = service.pull(
-                            institution=institution,
-                            provider=provider,
-                            connection_id=connection_id,
-                            history_start=history,
-                            force=force,
-                            refresh=refresh,
-                            progress=report,
-                        )
+            ):
+                if scheduled:
+                    terminal = get_terminal_policy()
+                from moneybin.services.sync_service import validate_pull_selectors
+
+                history = validate_pull_selectors(
+                    institution=institution,
+                    provider=provider,
+                    connection_id=connection_id,
+                    history_start=history_start,
+                    job_id=job_id,
+                    local_only=local_only,
+                    force=force,
+                )
+                service_context = (
+                    _build_sync_service(
+                        scheduled_profile_id=scheduled_profile_id,
+                        scheduled_revision=scheduled_revision,
+                    )
+                    if scheduled_profile_id is not None
+                    or scheduled_revision is not None
+                    else _build_sync_service(local_only=True)
+                    if local_only
+                    else _build_sync_service()
+                )
+                with service_context as service:
+                    with operation_progress(terminal, quiet=quiet) as report:
+                        if job_id is not None:
+                            result = service.recover(
+                                job_id,
+                                local_only=local_only,
+                                refresh=refresh,
+                                progress=report,
+                            )
+                        else:
+                            result = service.pull(
+                                institution=institution,
+                                provider=provider,
+                                connection_id=connection_id,
+                                history_start=history,
+                                force=force,
+                                refresh=refresh,
+                                progress=report,
+                            )
     except KeyboardInterrupt:
         if output == OutputFormat.TEXT:
             typer.echo("! Sync cancelled")
@@ -1372,22 +1516,128 @@ def sync_key_rotate() -> None:
 
 # sync schedule subgroup
 schedule_app = typer.Typer(help="Manage scheduled sync jobs")
-app.add_typer(schedule_app, name="schedule", hidden=True)
+app.add_typer(schedule_app, name="schedule")
 
 
-@schedule_app.command("set", hidden=True)
-def sync_schedule_set() -> None:
+def _build_schedule_service() -> "SyncScheduleService":
+    from moneybin.config import (
+        MoneyBinSettings,
+        get_base_dir,
+        get_current_profile,
+        register_profile_resolver,
+        set_current_profile,
+    )
+    from moneybin.services.sync_schedule import SyncScheduleService
+    from moneybin.services.sync_schedule_native import native_adapter, schedule_error
+    from moneybin.utils.user_config import get_default_profile
+
+    # Recovery commands must inspect an explicit stale name without the wizard.
+    register_profile_resolver(None)
+    try:
+        profile = get_current_profile(auto_resolve=False)
+    except RuntimeError:
+        profile = get_default_profile()
+        if profile is None:
+            raise schedule_error(
+                "Select an existing sync profile with --profile."
+            ) from None
+        set_current_profile(profile)
+    try:
+        diagnostic_location = MoneyBinSettings(
+            profile=profile
+        ).logging.log_file_path.parent
+    except ValueError:
+        # Broken profile configuration must not block removal of its OS job.
+        diagnostic_location = None
+    return SyncScheduleService(
+        home=get_base_dir(),
+        profile=profile,
+        adapter=native_adapter(),
+        diagnostic_location=diagnostic_location,
+    )
+
+
+def _emit_schedule_result(result: "ScheduleResult", output: OutputFormat) -> None:
+    from moneybin.privacy.payloads.sync import (
+        SyncScheduleAttemptPayload,
+        SyncSchedulePayload,
+    )
+    from moneybin.protocol.envelope import build_envelope
+
+    attempt = result.latest_attempt
+    latest = (
+        None
+        if attempt is None
+        else SyncScheduleAttemptPayload(
+            state=attempt.state,
+            started_at=attempt.started_at.isoformat(),
+            ended_at=attempt.ended_at.isoformat() if attempt.ended_at else None,
+            exit_status=attempt.exit_status,
+            recovery_code=attempt.recovery_code,
+        )
+    )
+    payload = SyncSchedulePayload(
+        state=result.state,
+        mechanism=result.mechanism,
+        time=result.time,
+        timezone=result.timezone,
+        nominal_next_run=result.nominal_next_run,
+        diagnostic_location=result.diagnostic_location,
+        latest_attempt=latest,
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(build_envelope(data=payload), output)
+    else:
+        pairs = [
+            ("State", result.state),
+            ("Mechanism", result.mechanism),
+            ("Daily time", result.time or "not configured"),
+            ("Time zone", result.timezone),
+            ("Nominal next run", result.nominal_next_run or "unknown"),
+            ("Sanitized diagnostics", result.diagnostic_location),
+        ]
+        if attempt is not None:
+            pairs.extend([
+                ("Latest attempt", attempt.state),
+                ("Started", attempt.started_at.isoformat()),
+                ("Exit status", str(attempt.exit_status)),
+                ("Recovery code", attempt.recovery_code or "none"),
+            ])
+        _emit_sync_receipt("Sync schedule", pairs)
+
+
+@schedule_app.command("set")
+def sync_schedule_set(
+    time: str = typer.Option(..., "--time", help="Daily local time, HH:MM (24-hour)."),
+    output: OutputFormat = output_option,
+) -> None:
     """Install daily sync schedule."""
-    _not_implemented("scheduled sync")
+    from moneybin.services.sync_schedule_native import schedule_error
+
+    with handle_cli_errors():
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", time):
+            raise schedule_error("Time must be HH:MM in 24-hour local time.")
+        _emit_schedule_result(_build_schedule_service().set(time), output)
 
 
-@schedule_app.command("show", hidden=True)
-def sync_schedule_show() -> None:
+@schedule_app.command("show")
+def sync_schedule_show(output: OutputFormat = output_option) -> None:
     """Show current schedule details."""
-    _not_implemented("scheduled sync")
+    with handle_cli_errors():
+        _emit_schedule_result(_build_schedule_service().show(), output)
 
 
-@schedule_app.command("remove", hidden=True)
-def sync_schedule_remove() -> None:
+@schedule_app.command("remove")
+def sync_schedule_remove(output: OutputFormat = output_option) -> None:
     """Uninstall scheduled sync job."""
-    _not_implemented("scheduled sync")
+    with handle_cli_errors():
+        _emit_schedule_result(_build_schedule_service().remove(), output)
+
+
+@schedule_app.command("_run", hidden=True)
+def sync_schedule_run(
+    revision: str = typer.Option(..., "--revision", hidden=True),
+) -> None:
+    """Run one native trigger; invoked only by an owned native job."""
+    with handle_cli_errors():
+        raise typer.Exit(_build_schedule_service().run(revision=revision))

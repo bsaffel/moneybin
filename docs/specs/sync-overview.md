@@ -1,7 +1,7 @@
 # Sync — Overview
 
-> Last updated: 2026-10-18 — ADR-017 governs encryption custody and recovery; the older encryption protocol sketch is historical
-> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 require protocol design under ADR-017. All older encryption mechanism sketches in this document are historical, not selected contracts.
+> Last updated: 2026-10-30 — reconcile Phase 2 scheduling implementation with ADR-017 custody and recovery principles
+> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 desktop-session scheduling is implemented in this PR, with native lifecycle acceptance pending (MB-291). ADR-017 governs encryption custody and recovery; older encryption sketches are historical, not selected contracts.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
 > Replaces: `plaid-integration.md` (removed in #28) and `sync-client-integration.md` (moved to `archived/`)
@@ -347,13 +347,315 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 
 ### Schedule management
 
+**Design status: approved; implementation in progress (MB-291).** The following is the
+Phase 2 contract, not a description of shipped commands. It replaces this
+spec's earlier Linux cron proposal. Scheduling remains CLI-only.
+
 | Command | Description |
 |---|---|
-| `moneybin sync schedule set --time HH:MM` | Install launchd plist (macOS) or cron entry (Linux) for daily sync |
-| `moneybin sync schedule show` | Display current schedule: time, next run, mechanism (launchd/cron) |
-| `moneybin sync schedule remove` | Uninstall the scheduled job |
+| `moneybin sync schedule set --time HH:MM` | Install or update the selected profile's daily desktop-session job |
+| `moneybin sync schedule show` | Show configured time, scheduler state, nominal next run, and latest attempt outcome |
+| `moneybin sync schedule remove` | Disable and remove only the selected profile's owned job and scheduling state |
 
-Schedule commands are thin wrappers around OS scheduling primitives — no MoneyBin daemon. The generated job runs `moneybin sync pull` with the user's current config. Logs go to MoneyBin's standard log location.
+#### User contract
+
+- macOS uses a user LaunchAgent in the graphical login session. Linux uses a
+  systemd user timer and service bound to `graphical-session.target`. A Linux
+  desktop without that session lifecycle is unsupported with an actionable
+  refusal. Installation never enables lingering, installs a system service,
+  adds cron fallback, or changes authentication policy.
+- A locked screen is still a logged-in session. Logout stops the owned job;
+  lock, sleep, network availability, and credential availability are distinct
+  conditions. Credential-store refusal always prevents authenticated work.
+- The daily time follows the computer's local wall clock. The OS owns calendar
+  triggering, including daylight-saving and clock changes. The displayed next
+  run is nominal, not a promise that the machine, session, network, or secrets
+  will be available at that instant.
+- Missed occurrences coalesce into one attempt after the session becomes
+  eligible. The schedule does not wake the computer or replay every missed day.
+  Installing or changing a schedule starts a new interval from installation;
+  it does not sync retroactively. Setting identical configuration preserves
+  the previous interval and attempt record.
+- A failed attempt is consumed. Authentication failure, offline operation,
+  writer contention, interruption, and incomplete refresh remain visible
+  failures. There is no automatic retry loop; the next daily occurrence or a
+  manual `sync pull` is the next opportunity. Manual pulls do not advance the
+  scheduler's attempt record.
+
+#### Native scheduling and the catch-up gap
+
+The OS waits for time and manages process lifetime. MoneyBin has no persistent
+scheduler process and no polling loop. A short scheduled entry point delegates
+the actual work to the existing `sync pull` command with its normal validation,
+credentials, writer lock, ingestion, refresh, and completion semantics.
+
+On Linux, `OnCalendar` supplies the daily trigger and `Persistent=true`
+coalesces missed triggers when the timer becomes active. Both timer and service
+must stop with the graphical session and refuse activation without it; they
+must not pull that session target into existence. This is stronger than merely
+running a timer in a user manager that may outlive logout. Keep `WakeSystem`
+disabled and use one service instance per owned job.
+
+Linux unit files use an absolute `XDG_CONFIG_HOME` when configured, otherwise
+`~/.config`; empty or relative values use that default. Preserve the selected
+configuration root through native commands and scheduled child processes.
+The desktop user manager must use the same unit location. Verify loaded paths
+and exact persistent registration after installation; activity alone is not
+success, and a location mismatch must not adopt or remove unrelated jobs.
+
+On macOS, `StartCalendarInterval` already coalesces triggers missed during
+sleep. It does not supply persistent catch-up across unloaded login sessions
+or shutdown. A login/load trigger therefore invokes a small due-check, using
+the configured daily time and the last scheduled-attempt record. Login and
+calendar triggers share the same claim path. A login before any occurrence is
+due exits without sync. Repeated login or simultaneous triggers cannot claim
+the same occurrence again. Use `RunAtLoad` only for this short check, without
+`KeepAlive` or repeated launch retries.
+
+The macOS due-check evaluates elapsed occurrences since installation or the
+last claim; it does not use financial data or the latest successful pull to
+infer whether a launch was missed. Repeated wall-clock times must not create
+two automatic attempts for one daily occurrence. Nonexistent times follow the
+native scheduler's calendar behavior rather than a new cross-platform DST
+guarantee; tests and user documentation must state that behavior explicitly.
+
+#### Profile binding and local state
+
+An owned job is identified by a deterministic digest of the canonical absolute
+MoneyBin home and normalized profile name. Store the complete binding in its
+owned metadata and verify it before use; a digest match alone is insufficient.
+Two homes with the same profile name must remain independent.
+
+Generated invocations pin the absolute executable, absolute `--home`, and
+explicit `--profile`. Reuse the installed-versus-checkout launch-resolution
+precedent used by MCP installation. An installed job binds the existing console
+entrypoint in the current persistent uv tool environment, verified through uv's
+tool directory and the loaded installation. It never resolves a package through
+`uv tool run` at execution time. Cache-only and unrecognized environments refuse
+scheduling; checkout jobs retain their canonical offline launch shape.
+Use argument arrays and each OS's native
+escaping, never a shell command assembled from profile or path input. Reject
+ephemeral or unresolved launch locations before changing any job. Current
+persisted profile configuration is read on each real sync; the job does not
+copy MoneyBin shell configuration overrides or environment secrets. Only validated
+nonsecret stock-store addressing selectors are captured in the job binding.
+
+Schedule metadata lives under the configured MoneyBin home, separately from
+the encrypted database, so inspection and removal need no database key. Paths
+are derived through settings. Owner-only directories and files contain only
+the format version, binding, existing sync profile identity, daily time,
+installation revision/time, and latest attempt summary. No token, encryption
+key, account, institution, balance, downloaded data, or raw exception text is
+stored there. Read the existing sync profile identity without creating it;
+require a configured sync profile before enabling a schedule.
+
+For macOS, keep a last-claimed-occurrence marker. Linux's persistent timer owns
+its missed-trigger timestamp; do not duplicate that scheduling algorithm in
+MoneyBin. Both platforms keep a single bounded latest-attempt summary for
+`show`: start/end time, attempted/running/completed/failed/interrupted-or-unknown
+state, exit status, and a stable recovery code when available. This summary is
+not a history or proof that the remote server or every local step succeeded.
+
+Use a separate stable lock file for schedule changes and macOS claims. Write
+state through a same-directory temporary file and atomic replacement; never
+replace the inode used for the lock. Commit a claim before starting sync. If
+the claim cannot be durably written, do no sync. A crash after the claim but
+before work consumes that occurrence and leaves an unknown completion result;
+this deliberately prevents duplicate automatic attempts, not all missed work.
+Launch the sync child under that short lock, then release it without waiting
+for sync completion. This prevents removal from completing between a claim and
+its process launch; never hold the metadata lock across the sync duration.
+
+The due-check and no-op path must not open DuckDB, access secrets, generate a
+profile identity, or construct a sync client. A missing profile or mismatched
+identity is stale configuration, never permission to recreate or adopt a
+profile with the same name. Before moving or deleting a profile, remove its
+schedule. `show` and `remove` must also work with an explicit stale profile
+name, without invoking first-run setup. Automated profile-delete cleanup and
+profile rename support are outside this slice.
+
+#### Lifecycle, output, and failures
+
+`set` validates the target, launcher, time, and supported session before any
+installation. Serialize changes against runs, stage the complete definition,
+and verify the OS accepted the intended binding before reporting success.
+An identical `set` is a no-op only while the owned registration is complete.
+Linux inspection verifies persistent enablement and the exact owned
+`graphical-session.target.wants` link; an active but disabled timer is partial.
+Runtime-only or unrelated registration refuses modification. An owned missing
+registration can be repaired by setting the same time again.
+A changed schedule disables and stops its old
+owned process tree before activating a new revision. Completion writes must
+match their original revision so an older process cannot overwrite new state.
+Refuse modification of an unrecognized or
+externally edited job. If replacement fails, restore the prior owned definition
+when safe; otherwise report the actual partial state and a concrete removal or
+repair action. Never report a failed install as successful or delete unrelated
+jobs to recover.
+
+The first implementation has no shipped MoneyBin schedule format to migrate.
+Do not adopt cron entries or other unowned jobs. Across executable upgrades,
+`set` may refresh the launch path of a recognized owned definition; unknown
+metadata versions fail with an upgrade/removal action rather than silent
+reinterpretation.
+
+`remove` disables future launches before stopping the owned running process
+and removing its definition/state. Preserve the stable lock until competing
+operations are excluded. Repeat removal succeeds as a no-op. If stopping or
+unregistering fails, retain enough metadata to retry and report that failure.
+On Linux, remove the native timer's persistent timestamp as well. A surviving
+invocation must revalidate ownership before attempting work.
+
+If native definitions are missing after failed installation or removal, require
+known inactive manager state, matching loaded paths, no drop-ins, and stopped
+service PID evidence. Reload stale inactive cache and prove missing units absent
+before restoring only their exact owned definitions for native timestamp cleanup.
+Never activate them. Stop/clean before unlinking; retain definitions and metadata
+when recovery or cleanup fails. Unknown native evidence refuses recovery.
+
+`show` compares owned configuration with live OS state and distinguishes
+absent, installed, inactive-session, running, stale, and partially installed
+jobs. Report the mechanism, local time zone, nominal next run when known, latest
+attempt outcome, and sanitized diagnostic location. A stale running receipt
+with no live process is interrupted-or-unknown, never completed. Keep text and
+JSON outcomes consistent with existing CLI result/error conventions.
+
+Scheduled execution never prompts, starts a browser, unlocks a credential
+store, or adds an environment fallback. Preserve the existing command's
+nonzero result for institution, transform, security-resolution, and refresh
+failures. Logout or removal terminates the owned process tree through the OS;
+it does not undo already committed sync work. Subsequent work uses existing
+transaction, refresh, and recovery behavior.
+
+Scheduled credentials support the selected stock macOS Keychain or Linux
+Secret Service backend only. Refuse custom backends, chains, unsupported
+persisted selectors, and third-party discovery plugins before they can evaluate
+their access policy. Preserve the selected store's collection, scheme,
+application attributes, and existing credential addresses; do not substitute a
+backend or migrate credentials. Ordinary manual commands retain their existing
+authentication behavior.
+
+The pre-release scheduling format requires a typed store-address descriptor.
+For Secret Service, capture only its known scheme, preferred collection object
+path, and application attribute, with bounded values and no control characters.
+Reject arbitrary backend-property overrides before creating a schedule. The
+descriptor also binds the original keyring config path and its validated stock
+backend selection. Revalidate that file on each scheduled access; changed,
+unreadable, or unsupported configuration refuses access. An explicitly selected
+stock backend loads through keyring's public loader inside the no-UI scope,
+without forwarding a custom XDG configuration directory globally. Default
+discovery retains its guarded selection and exact-class check; a custom empty
+config also requires no competing effective global selection. The native
+definition binds the descriptor and the runner forwards only its known nonsecret
+store-address selectors to its fresh pull child; changed addressing starts a new
+revision. These selectors are not MoneyBin shell overrides or credential material.
+A direct scheduled child verifies the binding before keyring or database access.
+Older unbound metadata is refused through the existing unknown-format guidance;
+this unshipped format has no credential or schedule migration path.
+
+On macOS, disable process keychain interaction with the public Security
+framework API, restoring its previous state on exit. This deprecated API is
+required by the existing file-keychain backend; data-protection-keychain query
+flags do not govern that backend. Before each operation, conservatively require
+the default and every search-list file keychain to report unlocked, including
+unrelated listed stores. An unknown status refuses access. Check again after
+mutations; read the addressed item before deletion, because native deletion can
+otherwise succeed against a locked keychain. These checks cannot make OS lock
+state atomic: a lock racing an already-authorized operation can leave a partial
+mutation and failed receipt. Never unlock or show UI, and never treat an observed
+failure as success. Existing mixed-token publication protection remains in force.
+
+On Linux, use SecretStorage's public existing-collection and item operations
+over a guarded Jeepney connection. Refuse Unlock, Prompt, CreateCollection,
+interactive authorization flags, unknown outgoing methods, and prompt waits
+before transmission. Close each operation's connection even on refusal. This
+assumes a compliant Secret Service daemon; no guarantee is made for a daemon
+that displays UI contrary to the protocol. Missing collections fail rather than
+being created or replaced. An initially absent token publication marker may be
+created inside an existing unlocked collection.
+
+The fresh internal `sync pull --scheduled` child activates this policy before
+opening the database or constructing its sync service, clears the process key
+cache at both policy boundaries, and retains the policy through token rotation,
+readback, cleanup, and metrics persistence. Remove its atexit metrics hook before
+leaving the policy; failed policy setup discards that hook without database
+access. Recover unavailable credentials in a manual command, then let the next
+daily attempt run; scheduled execution never adds a fallback or retry.
+
+The child also carries the claimed profile ID and revision. Validate these
+against owned schedule metadata and the existing profile before constructing
+the client, after client construction before opening the database, and after
+database construction before yielding the sync service. Pass the expected ID
+explicitly through the existing client factory; never resolve or create another
+ID in that path. A delayed child cannot adopt a replacement same-name profile,
+including a replacement during client construction. These checks do not provide
+an atomic lock against arbitrary external filesystem replacement after a
+connection is opened, or revoke already-open OS resources. The client remains
+bound to its original broker identity; remove the schedule before profile
+deletion, as required above.
+
+Do not redirect raw CLI receipts or raw stderr into scheduler log files or the
+system journal. Keep diagnostics in MoneyBin's existing sanitized daily logs
+and expose the bounded attempt summary through `show`. The earlier Phase 2
+size-limited-log promise is not implemented by the current daily file handler;
+this slice does not claim global log retention or introduce a second logger.
+Validate the child binding before resolving profile presentation settings, then
+explicitly initialize the existing profile logging pipeline. Initialization
+refusals must discard the metrics shutdown hook without DB or credential access.
+
+#### Components and observability
+
+Keep the CLI responsible for flags and presentation, a schedule service for
+owned lifecycle/state, and two small platform adapters for native definitions
+and process supervision. Evaluate native tools and standard-library plist/JSON
+serialization first: they cover these fixed jobs without a new scheduler
+framework, background daemon, or authentication library. Financial work stays
+in the existing sync pipeline.
+
+Reuse current sync duration, ingestion, and authentication metrics. Add bounded
+schedule operation and attempt outcome counters to `metrics/registry.py`, using
+only operation, mechanism, and fixed outcome labels. Do not label by home,
+profile, job ID, path, or exception. Metric emission must not open the database
+on a due-check or metadata-only path. The existing pull-success counter is
+recorded before refresh, so scheduled completion follows the full CLI result.
+
+#### Verification and delivery boundary
+
+- Test idempotent set/show/remove, two homes with the same profile name,
+  missing/recreated profiles, malformed state, external edits, paths requiring
+  escaping, unavailable launchers, and partial OS-install failures.
+- Test install after today's time, unchanged and changed schedules, several
+  missed days, login before/after the deadline, sleep/wake, repeated triggers,
+  daylight-saving transitions, clock changes, and claim/write failures.
+- Prove no secrets, profile creation, database access, or network work occurs
+  on the no-op due-check path. Prove concurrent macOS login/calendar triggers
+  claim at most one attempt, and a post-claim crash never looks successful.
+- Exercise the real sync command boundary for auth refusal, offline failure,
+  writer contention, incomplete refresh, cancellation, and successful completion.
+  Preserve existing financial and audit tests.
+- Validate native definitions with the OS tools and run disposable-profile
+  lifecycle tests on actual macOS and a supported Linux desktop: install,
+  login, logout, sleep, wake, locked credential store, removal during a run,
+  and process-tree cleanup. Mocked definitions alone do not establish support.
+- Run the affected suites and repository quality checks locally; CI owns the
+  broad test tiers. Record any unavailable real-OS verification as incomplete.
+
+Native Windows scheduling, SSH-only/server scheduling, retry policy expansion,
+and MCP schedule management remain outside this first implementation. Existing
+Windows support and broader headless-operation work retain their own boundaries.
+
+Native behavior references: [launchd timed jobs](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/ScheduledJobs.html),
+[launchd session lifecycle](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html),
+[systemd timers](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html),
+and [graphical-session.target](https://www.freedesktop.org/software/systemd/man/latest/systemd.special.html#graphical-session.target).
+
+**Current native inspection boundary.** macOS ownership verification compares
+the complete argument blocks from both `launchctl list` and `launchctl print`,
+the registered origin path, and the owned plist bytes. These raw text formats
+are compatibility-bound: an unknown rendering refuses ownership rather than
+adopting a same-label job. Comparing both argument renderings prevents quoted
+or newline delimiters in one rendering from impersonating another argument.
+This does not establish untested macOS versions or desktop lifecycle behavior.
 
 ### Non-interactive parity
 
@@ -405,18 +707,11 @@ Schwab (connected 2026-03-20, via plaid)
   Status: ❌ error — ITEM_LOGIN_REQUIRED
   💡 Run 'moneybin sync link' to re-authenticate Schwab
 
-$ moneybin sync schedule set --time 02:00
-✅ Scheduled daily sync at 02:00 via launchd
-   Next run: 2026-04-20 02:00
-
-$ moneybin sync schedule show
-Daily sync at 02:00 via launchd (com.moneybin.sync)
-  Next run: 2026-04-20 02:00
-  Log: ~/.moneybin/logs/sync.log
-
-$ moneybin sync schedule remove
-✅ Removed daily sync schedule
 ```
+
+Schedule receipts report the native mechanism, state, daily local time,
+nominal next run, sanitized diagnostic location, and latest attempt summary.
+The command and outcome contract is in [Schedule management](#schedule-management).
 
 ---
 
@@ -819,7 +1114,7 @@ All unit tests and SQL tests run against mocked HTTP responses and in-memory Duc
 | Provider extractors | JSON parsing, raw table loading, dedup on re-load, removed-record handling |
 | Auth flow | Device Authorization polling (success, timeout, denied, slow_down), token storage/retrieval (fake SecretStore, verified legacy-file import, denied/unavailable keychain), refresh logic |
 | Connection health | `GET /institutions` response mapping and error-code-to-guidance mapping |
-| Schedule management | Plist/cron generation and parsing, idempotent install/remove |
+| Schedule management | Plist/systemd definitions, profile binding, idempotent lifecycle, catch-up claims, failure outcomes, and real desktop-session verification |
 | Staging views (SQL) | Sign convention flip, column mapping to core-compatible schema |
 | Core integration (SQL) | Provider data appears with correct `source_type`, `UNION ALL` produces no duplicates |
 | Dedup (SQL) | Same JSON loaded twice → no duplicate rows in raw tables |
@@ -867,9 +1162,11 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 
 - `moneybin sync schedule set/show/remove` CLI commands
 - Scheduling remains CLI-only until a bounded MCP capability is separately admitted.
-- launchd (macOS) and cron (Linux) job generation
-- Logging configuration for unattended runs (rotate, size limit)
-- Schedule lifecycle management (idempotent set, clean remove)
+- Desktop-session launchd (macOS) and systemd (Linux) job generation
+- One coalesced catch-up attempt, using native timers and a macOS login due-check
+- Existing sanitized diagnostics plus a bounded latest-attempt summary
+- Profile-bound lifecycle management (idempotent set, verified show, clean remove)
+- Approved implementation contract, in progress: [Schedule management](#schedule-management)
 
 ### Phase 3: E2E encryption
 
@@ -944,7 +1241,7 @@ Not designed here. Architectural constraints noted so the current design does no
 ## Success criteria
 
 - **Time-to-first-sync.** A user goes from `moneybin sync login` to seeing bank transactions in `core.fct_transactions` in under 5 minutes. The flow is: login (30s) → link (2 min, mostly bank UI) → pull (30s) → done.
-- **Incremental reliability.** Nightly scheduled syncs complete without intervention for 30+ consecutive days. Failures produce actionable error messages, not silent gaps in data.
+- **Incremental reliability.** Daily scheduled attempts complete without intervention for 30+ consecutive days when the desktop session, credentials, and network are available. Missed triggers coalesce into one catch-up attempt; failures expose their outcome and recovery action.
 - **Provider expansion boundary.** A second provider (SimpleFIN or MX) needs a
   child spec, the provider artifacts, and the unresolved response-model and
   extractor-dispatch decision; it is not yet a no-framework-change extension.
@@ -953,7 +1250,6 @@ Not designed here. Architectural constraints noted so the current design does no
 
 ## Open questions
 
-- **Schedule persistence across upgrades.** If MoneyBin is upgraded and the schedule mechanism changes (e.g., cron → systemd timer), should `moneybin sync schedule set` detect and migrate the old schedule?
 - **Multi-provider institution.** If the same bank is connectable through both Plaid and SimpleFIN, how does the client prevent duplicate data? Likely a matching-engine concern (same institution, different `source_type`), but worth noting.
 - **Cross-provider response shape.** Whether the server normalizes per-provider payloads into a canonical client shape (Option A) or passes provider-shaped data through (Option B). Phase 1 baked in Option B at the artifact layer (`raw.plaid_*`, `stg_plaid__*`) but named the HTTP-layer models as if they were Option A (`SyncTransaction`, `SyncDataResponse`). See "Cross-provider response shape" under "Data flow & provider contract" — must be reconciled before provider #2 ships.
 - **Rate limiting.** Should the client enforce any rate limiting on `sync pull` calls, or is this purely a server-side concern?

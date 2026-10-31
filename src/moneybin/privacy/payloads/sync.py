@@ -14,7 +14,6 @@ Tier derivation summary:
                                         link is a sensitive one-time credential)
   - ``SyncLinkStatusPayload``         → Tier.MEDIUM (error = DESCRIPTION)
   - ``SyncDisconnectPayload``         → Tier.MEDIUM (account labels = USER_NOTE)
-  - ``SyncSchedulePlaceholderPayload``→ Tier.LOW (stub; not-implemented payloads)
 """
 
 from __future__ import annotations
@@ -430,19 +429,25 @@ SyncDisconnectCoarsePayload = Annotated[
 ]
 
 
-# ---------------------------------------------------------------------------
-# sync_schedule_* — stub / not-implemented placeholder payload
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class SyncScheduleAttemptPayload:
+    """Latest bounded scheduler outcome, with no financial receipt."""
+
+    state: Annotated[str, DataClass.TXN_TYPE]
+    started_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    ended_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    exit_status: Annotated[int | None, DataClass.AGGREGATE]
+    recovery_code: Annotated[str | None, DataClass.TXN_TYPE]
 
 
 @dataclass(frozen=True, slots=True)
-class SyncSchedulePlaceholderPayload:
-    """Placeholder payload for stub sync_schedule_* tools.
+class SyncSchedulePayload:
+    """Operational metadata for CLI-only desktop scheduling."""
 
-    These tools are not yet implemented (return not_implemented_envelope).
-    The payload keeps the annotation footprint minimal and Tier.LOW so the
-    middleware applies the least-restrictive gate to the stub response.
-    """
-
-    action: Annotated[str, DataClass.TXN_TYPE]
-    status: Annotated[str, DataClass.TXN_TYPE]
+    state: Annotated[str, DataClass.TXN_TYPE]
+    mechanism: Annotated[str, DataClass.TXN_TYPE]
+    time: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    timezone: Annotated[str, DataClass.TXN_TYPE]
+    nominal_next_run: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    diagnostic_location: Annotated[str, DataClass.RECORD_ID]
+    latest_attempt: SyncScheduleAttemptPayload | None
