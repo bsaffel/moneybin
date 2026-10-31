@@ -139,6 +139,59 @@ WITH provider AS (
     'raw' AS price_basis,
     o.updated_at AS extracted_at
   FROM app.security_price_overrides AS o
+), source_trade_prices AS (
+  SELECT
+    source_type,
+    source_origin,
+    native_reference,
+    observation_version,
+    price
+  FROM prep.int_investment_events__observations
+  WHERE
+    source_type = 'manual'
+  UNION ALL
+  SELECT
+    source_type,
+    source_origin,
+    investment_transaction_id AS native_reference,
+    observation_version,
+    price
+  FROM prep.stg_plaid__investment_revisions
+), trade_provenance AS (
+  /* Golden IDs are random; ties follow the exact native evidence supplying the price. */
+  SELECT
+    m.investment_transaction_id,
+    m.source_origin,
+    m.source_type || ':' || m.native_reference AS observation_key
+  FROM app.investment_event_members AS m
+  JOIN source_trade_prices AS p
+    ON p.source_type = m.source_type
+    AND p.source_origin = m.source_origin
+    AND p.native_reference = m.native_reference
+    AND p.observation_version = m.observation_version
+  JOIN core.fct_investment_transactions AS t
+    ON t.investment_transaction_id = m.investment_transaction_id AND t.price = p.price
+  LEFT JOIN app.account_settings AS a
+    ON a.account_id = m.bound_account_id
+  LEFT JOIN app.investment_match_field_resolutions AS r
+    ON r.investment_transaction_id = m.investment_transaction_id
+    AND r.field_name = 'price'
+    AND r.retired_at IS NULL
+    AND r.source_type = m.source_type
+    AND r.source_origin = m.source_origin
+    AND r.native_reference = m.native_reference
+    AND r.observation_version = m.observation_version
+  WHERE
+    m.retired_at IS NULL
+    AND m.member_kind = 'source_event'
+    AND (
+      a.investment_source_type IS NULL OR a.investment_source_type = m.source_type
+    )
+  QUALIFY
+    ROW_NUMBER() OVER (
+      PARTITION BY m.investment_transaction_id
+      ORDER BY r.resolution_id IS NULL, m.source_type = 'manual', m.source_type, m.source_origin, m.native_reference
+    ) = 1
 ), trade_implied AS (
   SELECT
     t.security_id,
@@ -146,11 +199,13 @@ WITH provider AS (
     UPPER(t.currency_code) AS quote_currency,
     t.price AS close,
     'trade_implied' AS source_type,
-    t.source_origin,
-    t.investment_transaction_id AS observation_key,
+    provenance.source_origin,
+    provenance.observation_key,
     'raw' AS price_basis,
     t.updated_at AS extracted_at
   FROM core.fct_investment_transactions AS t
+  JOIN trade_provenance AS provenance
+    ON provenance.investment_transaction_id = t.investment_transaction_id
   /* Only an execution sets a market price. `security_id IS NOT NULL AND price > 0`
      does NOT select executions: prep.stg_plaid__investment_transactions NULLs quantity
      for cash-type events but passes price through verbatim, and dividend, fee,

@@ -1550,10 +1550,24 @@ def _investment_batch_message(plan: tuple[OrdinaryDecisionPlanItem, ...]) -> str
                 "decision_id": item.request.decision_id,
                 "evidence": masked.model_dump(mode="json"),
             })
+    effects: list[str] = []
+    investment_items = [
+        item
+        for item in plan
+        if isinstance(item.request, InvestmentMatchDecisionRequest)
+    ]
+    if any(item.request.decision == "accept" for item in investment_items):
+        effects.append(
+            "Acceptance consolidates exact reviewed evidence into Golden membership, applies the selected values, and preserves or remaps complete lot selections. Undo reconstructs current successors."
+        )
+    if any(item.request.decision == "reject" for item in investment_items):
+        effects.append(
+            "Rejection excludes the whole investment Proposal and every superset with the same exact relationship evidence; rejection changes no Golden ledger values."
+        )
     return (
-        "Confirm this complete atomic review batch. Rejection excludes the whole "
-        "investment Proposal and every superset with the same exact relationship "
-        "evidence. It changes no Golden ledger values.\n"
+        "Confirm this complete atomic review batch. "
+        + " ".join(effects)
+        + "\n"
         + json.dumps(
             {
                 "decisions": [item.request.model_dump(mode="json") for item in plan],
@@ -1577,7 +1591,19 @@ async def reviews_decide_coarse(
             message=_investment_batch_message(plan),
             confirmation_token=None,
             elicitation_only=True,
-            cli_equivalent="moneybin review --type investment-matches --reject <review-id>",
+            cli_equivalent=(
+                "moneybin review --type investment-matches "
+                + (
+                    "--confirm"
+                    if any(
+                        isinstance(item, InvestmentMatchDecisionRequest)
+                        and item.decision == "accept"
+                        for item in decisions
+                    )
+                    else "--reject"
+                )
+                + " <review-id>"
+            ),
             cli_note="The CLI command decides one Proposal; review every remaining batch item separately.",
         )
     return await asyncio.to_thread(_apply_review_decisions, decisions, grant=grant)
@@ -1840,17 +1866,16 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         reviews_decide_coarse,
         "reviews_decide",
         "Accept or reject an atomic batch of transaction, match, or investment_match "
-        "review decisions. Investment rejection requires human Elicitation for the "
-        "complete batch; investment acceptance remains unavailable. Auto-rule decisions use "
-        "kind='auto_rule' and may set allow_broad after inspecting "
-        "estimated_match_count; kind='rule_conflict' takes replace (supersede "
-        "the existing rule), reprioritize (activate beside it at an explicit "
-        "priority), or cancel, writing app.categorization_rules and "
-        "app.rule_conflicts — reverse either with system_audit_undo. Keep auto-rule "
-        "and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the "
-        "user already accepted, once one component holds both its legs: "
-        "`transfers_retired` counts those, and each result's `status` is what "
-        "committed — an accept that loses that tiebreak reads 'reversed'.",
+        "review decisions. Investment decisions require human Elicitation for the "
+        "complete batch; acceptance preserves exact evidence and complete lot "
+        "selections under stable Golden IDs. Auto-rule decisions use kind='auto_rule'; "
+        "inspect estimated_match_count before allow_broad. Rule conflicts use "
+        "kind='rule_conflict' with replace, reprioritize or cancel. Keep auto-rule and "
+        "rule-conflict decisions in separate calls. Audits write app.categorization_rules "
+        "and app.rule_conflicts; undo with system_audit_undo. Accepting a match can reverse "
+        "an accepted transfer when one component holds both legs: transfers_retired counts "
+        "those; each status reports what committed, including 'reversed' when an accept "
+        "loses that tiebreak.",
         privacy_actor="reviews_decide",
     )
     register(

@@ -20,9 +20,9 @@ jobs:
   run-scenarios:
     name: Run Scenarios (shard ${{ matrix.group }})
     runs-on: ubuntu-latest
-    # Observed progress projects about 12 minutes for classification-heavy shards;
-    # leave setup/reporting headroom without changing individual test timeouts.
-    timeout-minutes: 15
+    # A shard reached 26/27 passing cases at 15 minutes; allow the suite to finish
+    # without changing individual subprocess limits or test coverage.
+    timeout-minutes: 20
     # Four duration-balanced shards; strategy.job-total keeps --splits in sync.
     strategy:
       fail-fast: false

@@ -2427,6 +2427,103 @@
    }
   ]
  },
+ "sql/schema/app_investment_event_members.sql": {
+  "sha256": "0a0d576ce6d8e54d8cfff3dc09d7e2b53c7f7e2a9bcd4758fa766698d1226105",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "investment_event_members",
+    "table_sql": "app.investment_event_members",
+    "table_comment": "Exact source membership, immutable canonical bindings and Golden identity history.",
+    "column_comments": [
+     [
+      "membership_id",
+      "Identity of this immutable membership revision"
+     ],
+     [
+      "event_group_id",
+      "MoneyBin-owned Golden economic event"
+     ],
+     [
+      "investment_transaction_id",
+      "MoneyBin-owned Golden semantic leg"
+     ],
+     [
+      "member_kind",
+      "Source-backed or reconstructed membership"
+     ],
+     [
+      "source_event_key",
+      "Complete adapter-constructed Source event"
+     ],
+     [
+      "source_type",
+      "Comparison adapter type"
+     ],
+     [
+      "source_origin",
+      "Source identity scope"
+     ],
+     [
+      "native_reference",
+      "Stable source row or reconstruction key"
+     ],
+     [
+      "observation_version",
+      "Exact immutable observation or reconstruction revision"
+     ],
+     [
+      "semantic_leg_role",
+      "Correspondence within the complete economic event"
+     ],
+     [
+      "bound_account_id",
+      "Account selected at publication"
+     ],
+     [
+      "bound_security_id",
+      "Security selected at publication; NULL for cash-only legs"
+     ],
+     [
+      "bound_effective_currency",
+      "Exact denomination selected at publication"
+     ],
+     [
+      "currency_source",
+      "Explicit source denomination or inherited Account currency"
+     ],
+     [
+      "account_generation",
+      "Producing Account identity dependency generation"
+     ],
+     [
+      "security_generation",
+      "Producing Security identity dependency generation"
+     ],
+     [
+      "currency_generation",
+      "Producing Currency dependency generation"
+     ],
+     [
+      "decision_id",
+      "Owning accepted Match; NULL for standalone membership"
+     ],
+     [
+      "reconstruction_evidence",
+      "Exact reconstruction evidence references and algorithm version, never an observation-value snapshot"
+     ],
+     [
+      "created_at",
+      "Initial activation time"
+     ],
+     [
+      "retired_at",
+      "Retirement time; NULL while active"
+     ]
+    ]
+   }
+  ]
+ },
  "sql/schema/app_investment_match_decisions.sql": {
   "sha256": "3969872cde1d38c7235449caf9773402acecc23c18787611a5440c7e47e8a716",
   "plan": [
@@ -2491,6 +2588,59 @@
      [
       "accepted_at",
       "Ratification time; NULL throughout review-only rollout"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_investment_match_field_resolutions.sql": {
+  "sha256": "0e6c205891ca644261dfd172631946253ce81a816c790fc28f6184e71502e8d6",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "investment_match_field_resolutions",
+    "table_sql": "app.investment_match_field_resolutions",
+    "table_comment": "Explicit selected fields retain exact source provenance, not copied observations.",
+    "column_comments": [
+     [
+      "resolution_id",
+      "Identity of this selected field revision"
+     ],
+     [
+      "decision_id",
+      "Human-accepted Match owning this resolution"
+     ],
+     [
+      "investment_transaction_id",
+      "Golden semantic leg receiving the field"
+     ],
+     [
+      "field_name",
+      "Validated proposal-issued field"
+     ],
+     [
+      "source_type",
+      "Selected comparison adapter"
+     ],
+     [
+      "source_origin",
+      "Selected source scope"
+     ],
+     [
+      "native_reference",
+      "Selected stable source row"
+     ],
+     [
+      "observation_version",
+      "Selected exact immutable source revision"
+     ],
+     [
+      "created_at",
+      "Selection publication time"
+     ],
+     [
+      "retired_at",
+      "Retirement time; NULL while selected"
      ]
     ]
    }

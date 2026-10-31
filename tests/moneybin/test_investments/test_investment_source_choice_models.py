@@ -19,10 +19,12 @@ from moneybin.investments.source_overlap import (
     stale_source_choice_accounts,
 )
 from moneybin.services.account_service import CLEAR, AccountService
+from moneybin.services.investment_membership_service import InvestmentMembershipService
 from moneybin.services.investment_service import InvestmentService
 from moneybin.services.mutation_context import operation
 from moneybin.services.transform_service import TransformService
 from moneybin.services.undo_service import UndoService
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 pytestmark = pytest.mark.integration
 
@@ -80,6 +82,7 @@ def _seed_plaid_account(db: Database) -> None:
         """,  # test fixture, not executing user SQL
         [_ACCOUNT, _ORIGIN],
     )
+    seed_account_metadata(db, _ACCOUNT, origin=_ORIGIN)
 
 
 def _seed_manual_buy(db: Database, *, account_id: str, txn_id: str) -> None:
@@ -197,7 +200,12 @@ def test_manual_choice_keeps_only_recorded_rows(db: Database) -> None:
     assert ("plaid", "opening_bootstrap") in _ledger(db)
 
     AccountService(db).settings_update(
-        _ACCOUNT, actor="test", investment_source_type="manual"
+        _ACCOUNT,
+        actor="test",
+        investment_source_type="manual",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ACCOUNT, "manual")
+        .verify,
     )
 
     assert _ledger(db) == [("manual", None)]
@@ -209,7 +217,12 @@ def test_plaid_choice_keeps_synced_rows_and_bootstrap(db: Database) -> None:
     _seed_overlap(db, snapshot_quantity="15")
 
     AccountService(db).settings_update(
-        _ACCOUNT, actor="test", investment_source_type="plaid"
+        _ACCOUNT,
+        actor="test",
+        investment_source_type="plaid",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ACCOUNT, "plaid")
+        .verify,
     )
 
     assert _ledger(db) == [("plaid", None), ("plaid", "opening_bootstrap")]
@@ -219,8 +232,22 @@ def test_plaid_choice_keeps_synced_rows_and_bootstrap(db: Database) -> None:
 def test_clear_returns_rows_with_a_newer_watermark(db: Database) -> None:
     _seed_overlap(db)
     service = AccountService(db)
-    service.settings_update(_ACCOUNT, actor="test", investment_source_type="manual")
-    service.settings_update(_ACCOUNT, actor="test", investment_source_type=CLEAR)
+    service.settings_update(
+        _ACCOUNT,
+        actor="test",
+        investment_source_type="manual",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ACCOUNT, "manual")
+        .verify,
+    )
+    service.settings_update(
+        _ACCOUNT,
+        actor="test",
+        investment_source_type=CLEAR,
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ACCOUNT, None)
+        .verify,
+    )
 
     row = db.execute(
         """
@@ -274,7 +301,12 @@ def test_failed_restate_leaves_a_stale_choice_until_refresh(
     )
     with pytest.raises(UserError) as failed:
         AccountService(db).settings_update(
-            _ACCOUNT, actor="test", investment_source_type="manual"
+            _ACCOUNT,
+            actor="test",
+            investment_source_type="manual",
+            verify_source_choice=InvestmentMembershipService(db)
+            .preview_source_choice(_ACCOUNT, "manual")
+            .verify,
         )
     assert failed.value.code == error_codes.REFRESH_MODEL_FAILED
 
@@ -294,10 +326,24 @@ def test_a_built_choice_is_not_stale(db: Database) -> None:
     _seed_overlap(db)
     service = AccountService(db)
 
-    service.settings_update(_ACCOUNT, actor="test", investment_source_type="manual")
+    service.settings_update(
+        _ACCOUNT,
+        actor="test",
+        investment_source_type="manual",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ACCOUNT, "manual")
+        .verify,
+    )
     assert stale_source_choice_accounts(db) == []
 
-    service.settings_update(_ACCOUNT, actor="test", investment_source_type=CLEAR)
+    service.settings_update(
+        _ACCOUNT,
+        actor="test",
+        investment_source_type=CLEAR,
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ACCOUNT, None)
+        .verify,
+    )
     assert stale_source_choice_accounts(db) == []
 
     result = TransformService(db).apply()
@@ -311,7 +357,12 @@ def test_failed_restate_after_a_clear_is_stale_until_refresh(
     """Clearing a choice only adds rows back, so no wrong-source row exists to see."""
     _seed_overlap(db)
     AccountService(db).settings_update(
-        _ACCOUNT, actor="test", investment_source_type="manual"
+        _ACCOUNT,
+        actor="test",
+        investment_source_type="manual",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ACCOUNT, "manual")
+        .verify,
     )
     assert _ledger(db) == [("manual", None)]
 
@@ -320,7 +371,12 @@ def test_failed_restate_after_a_clear_is_stale_until_refresh(
     )
     with pytest.raises(UserError) as failed:
         AccountService(db).settings_update(
-            _ACCOUNT, actor="test", investment_source_type=CLEAR
+            _ACCOUNT,
+            actor="test",
+            investment_source_type=CLEAR,
+            verify_source_choice=InvestmentMembershipService(db)
+            .preview_source_choice(_ACCOUNT, None)
+            .verify,
         )
     assert failed.value.code == error_codes.REFRESH_MODEL_FAILED
 
@@ -348,7 +404,12 @@ def test_undo_of_a_choice_advances_the_account_watermark(db: Database) -> None:
     )
     with operation() as op:
         AccountService(db).settings_update(
-            _ACCOUNT, actor="test", investment_source_type="manual"
+            _ACCOUNT,
+            actor="test",
+            investment_source_type="manual",
+            verify_source_choice=InvestmentMembershipService(db)
+            .preview_source_choice(_ACCOUNT, "manual")
+            .verify,
         )
     UndoService(db).undo(op, actor="test")
 
@@ -365,11 +426,21 @@ def test_undo_of_a_choice_advances_the_account_watermark(db: Database) -> None:
     assert row[2] >= row[1]
 
 
-def test_row_without_a_dim_accounts_match_stays(db: Database) -> None:
-    """A NULL choice means every source, including for an account dim has never seen."""
+def test_unbound_account_is_not_published_as_golden_history(db: Database) -> None:
+    """Unresolved account evidence stays in Raw until canonical binding exists."""
     _seed_security(db)
     _seed_manual_buy(db, account_id=_ORPHAN, txn_id="manual_orphan_buy")
+    raw_before = db.execute(
+        "SELECT * FROM raw.manual_investment_transactions"
+    ).fetchall()
     result = TransformService(db).apply()
     assert result.applied, f"transform failed: {result.error}"
 
-    assert _ledger(db, _ORPHAN) == [("manual", None)]
+    assert _ledger(db, _ORPHAN) == []
+    assert (
+        db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+        == raw_before
+    )
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.investment_event_members WHERE retired_at IS NULL"
+    ).fetchone() == (0,)

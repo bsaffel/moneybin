@@ -466,7 +466,7 @@ def test_cli_pending_json_keeps_the_typed_envelope_and_masks_account_ids(
 def test_cli_run_no_input_prints_a_factual_receipt(
     comparison_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An empty planner run does not claim proposals were prepared."""
+    """A fresh empty database bootstraps and reports zero proposals."""
 
     @contextmanager
     def database_context(
@@ -481,8 +481,7 @@ def test_cli_run_no_input_prints_a_factual_receipt(
 
     assert result.exit_code == 0, result.output
     assert "Investment match planning" in result.stdout
-    assert "Comparison inputs are not ready; run refresh first." in result.stdout
-    assert "prepared for review" not in result.stdout
+    assert "0 investment Proposals prepared for review." in result.stdout
 
 
 def test_bounded_refresh_persists_proposals_without_transform(
@@ -498,7 +497,11 @@ def test_bounded_refresh_persists_proposals_without_transform(
         "pending_competing": 0,
         "stale": 0,
         "suppressed": 0,
-    }
+    }, comparison_db.execute(
+        """SELECT source_type, account_id, security_id, currency_code,
+                  account_currency_code, has_resolved_identity, is_match_eligible
+        FROM prep.int_investment_events__legs ORDER BY source_type"""
+    ).fetchall()
     assert comparison_db.execute(
         "SELECT status FROM app.investment_match_decisions"
     ).fetchall() == [("pending",)]
@@ -513,7 +516,8 @@ def test_transform_selector_transitively_plans(
         return SimpleNamespace(applied=True, error=None, duration_seconds=0)
 
     monkeypatch.setattr(
-        "moneybin.orchestration.refresh.TransformService.apply", apply_transform
+        "moneybin.orchestration.refresh.TransformService._apply_sqlmesh",
+        apply_transform,
     )
     assert "investment_match" in expand_steps(["transform"])
     result = refresh(comparison_db, steps=["transform"])

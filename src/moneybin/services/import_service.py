@@ -2030,20 +2030,18 @@ class ImportService:
         return ""
 
     def run_transforms(self) -> bool:
-        """Apply SQLMesh transforms via :class:`TransformService`.
-
-        Transitional shim: callers will move to ``TransformService.apply()``
-        directly in a later phase. Preserves the original fail-loud contract
-        — ``TransformService.apply()`` soft-fails to ``ApplyResult(error=...)``,
-        but several callers here (``transactions matches run/backfill``,
-        ``synthetic generate``) ignore the return value, so raising on
-        failure is required to keep the exit code honest.
-        """
-        from moneybin.services.transform_service import TransformService
-
-        result = TransformService(self._db).apply()
+        """Run the prerequisite-aware transform route; fail loudly on any blocker."""
+        result = _refresh(self._db, steps=["transform"], actor="import")
         if not result.applied:
-            raise RuntimeError(f"SQLMesh transforms failed: {result.error}")
+            failure = result.error or next(
+                (
+                    f"{stage.step}: {stage.error}"
+                    for stage in result.stages
+                    if stage.error
+                ),
+                "transform did not run",
+            )
+            raise RuntimeError(f"Transforms failed: {failure}")
         return True
 
     def _import_ofx(
@@ -6925,6 +6923,23 @@ class ImportService:
                 source_type=src_type,
             )
 
+        if src_type == "manual":
+            from moneybin.services.investment_membership_service import (
+                InvestmentMembershipService,
+            )
+            from moneybin.tables import MANUAL_INVESTMENT_TRANSACTIONS
+
+            natives = {
+                row[0]
+                for row in self._db.execute(
+                    f"SELECT source_transaction_id FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} WHERE import_id = ?",
+                    [import_id],
+                ).fetchall()
+            }  # fixed TableRef, bound batch
+            InvestmentMembershipService(self._db).require_removable_sources(
+                source_type="manual", native_references=natives
+            )
+
         # Count every table the source_type populates. OFX statements with zero
         # transactions but populated accounts/balances must still be detectable
         # as live (not superseded) and reportable in rows_deleted.
@@ -7021,26 +7036,43 @@ class ImportService:
             live = self.plan_revert(import_id)
             verify(live)
             if live.revertable:
-                from moneybin.repositories.security_links_repo import SecurityLinksRepo
-
-                links = SecurityLinksRepo(self._db, audit=self._audit)
-                for link_id in live.security_link_ids:
-                    links.reverse(
-                        link_id=link_id,
-                        reversed_by="system" if actor == "system" else "user",
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                for table in REVERT_TABLES[cast(str, live.source_type)]:
-                    self._db.execute(
-                        f"DELETE FROM {table.full_name} WHERE import_id = ?",
-                        [import_id],
-                    )
-                self._import_log.mark_reverted(import_id)
-                # After the deletes: the re-key it causes is what the pass reads.
-                forwarding = forward_rekeyed_transaction_ids(
-                    self._db, actor=actor, in_outer_txn=True
+                from moneybin.investments.dependency_publication import (
+                    dependency_publication,
                 )
+                from moneybin.services.investment_membership_service import (
+                    InvestmentMembershipService,
+                )
+
+                membership = InvestmentMembershipService(self._db)
+                baseline = (
+                    membership.removal_baseline()
+                    if live.source_type == "manual"
+                    else None
+                )
+                with dependency_publication(self._db):
+                    from moneybin.repositories.security_links_repo import (
+                        SecurityLinksRepo,
+                    )
+
+                    links = SecurityLinksRepo(self._db, audit=self._audit)
+                    for link_id in live.security_link_ids:
+                        links.reverse(
+                            link_id=link_id,
+                            reversed_by="system" if actor == "system" else "user",
+                            actor=actor,
+                            in_outer_txn=True,
+                        )
+                    for table in REVERT_TABLES[cast(str, live.source_type)]:
+                        self._db.execute(
+                            f"DELETE FROM {table.full_name} WHERE import_id = ?",
+                            [import_id],
+                        )
+                    self._import_log.mark_reverted(import_id)
+                    # After the deletes: the re-key it causes is what the pass reads.
+                    forwarding = forward_rekeyed_transaction_ids(
+                        self._db, actor=actor, in_outer_txn=True
+                    )
+                    membership.reconcile_after_removal(baseline, actor=actor)
             self._db.commit()
         except BaseException:
             self._db.rollback()

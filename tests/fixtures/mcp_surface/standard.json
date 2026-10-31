@@ -1,5 +1,5 @@
 {
-  "sha256": "a264acf1b656587acac15c9aecff740c6c0339d2711611cc0e656009db0a011b",
+  "sha256": "928dc724ea35f69d6b5a4bbf907874eb8d5f0ffafbc88b0b966ba0396f1cdc01",
   "tool_count": 50,
   "tools": [
     {
@@ -406,7 +406,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Update account settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type: depository/credit/loan/investment/other; subtype unchanged; clear restores source evidence. Noncanonical account_subtype/holder_category values warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid types/methods raise mutation_invalid_input. investment_source_type: manual/plaid selects ledger history; clear uses both; evidence is retained. Other fields: display_name, official_name, last_four, currency_code, credit_limit. is_archived and include_in_net_worth are independent: archiving excludes all net-worth history; archived_at is not date-scoped. include_in_net_worth=False excludes active accounts too. Audited app.account_settings writes; restore values or use system_audit_undo. Amounts use summary.display_currency.",
+        "description": "Update account settings. None leaves fields unchanged; clear_fields resets nullable fields, never booleans. account_type: depository/credit/loan/investment/other; clear restores source evidence. Noncanonical subtype/holder values warn; invalid types or cost-basis methods fail. default_cost_basis_method: fifo/hifo/specific/average. investment_source_type: manual/plaid; clear uses both. Source changes preserve Matches and require a financial/lot-selection preview and bound confirmation. is_archived excludes all net-worth history; include_in_net_worth acts independently. Other fields set names, last_four, currency and credit_limit. Audited app.account_settings writes; restore values or system_audit_undo. Amounts use summary.display_currency.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -442,6 +442,17 @@
                     "type": "string"
                   },
                   "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -572,12 +583,12 @@
         "name": "accounts_set",
         "title": "Accounts Set"
       },
-      "description_bytes": 862,
-      "input_schema_bytes": 1194,
+      "description_bytes": 748,
+      "input_schema_bytes": 1276,
       "name": "accounts_set",
       "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 2271
+      "total_bytes": 2239
     },
     {
       "annotation_bytes": 90,
@@ -2291,7 +2302,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Record investment ledger events as one validated batch. Quantity and cash signs follow the investment event convention; no revert tool.",
+        "description": "Record investment ledger events as one validated batch. Quantity and cash signs follow the investment event convention. Rebuilds once and returns usable Golden IDs; a saved-batch rebuild failure must be retried as refresh.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2311,12 +2322,12 @@
         "name": "investments_record",
         "title": "Investments Record"
       },
-      "description_bytes": 135,
+      "description_bytes": 222,
       "input_schema_bytes": 163,
       "name": "investments_record",
       "other_bytes": 90,
       "output_schema_bytes": 0,
-      "total_bytes": 525
+      "total_bytes": 612
     },
     {
       "annotation_bytes": 90,
@@ -2996,7 +3007,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Accept or reject an atomic batch of transaction, match, or investment_match review decisions. Investment rejection requires human Elicitation for the complete batch; investment acceptance remains unavailable. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; kind='rule_conflict' takes replace (supersede the existing rule), reprioritize (activate beside it at an explicit priority), or cancel, writing app.categorization_rules and app.rule_conflicts \u2014 reverse either with system_audit_undo. Keep auto-rule and rule-conflict decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
+        "description": "Accept or reject an atomic batch of transaction, match, or investment_match review decisions. Investment decisions require human Elicitation for the complete batch; acceptance preserves exact evidence and complete lot selections under stable Golden IDs. Auto-rule decisions use kind='auto_rule'; inspect estimated_match_count before allow_broad. Rule conflicts use kind='rule_conflict' with replace, reprioritize or cancel. Keep auto-rule and rule-conflict decisions in separate calls. Audits write app.categorization_rules and app.rule_conflicts; undo with system_audit_undo. Accepting a match can reverse an accepted transfer when one component holds both legs: transfers_retired counts those; each status reports what committed, including 'reversed' when an accept loses that tiebreak.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3414,12 +3425,12 @@
         "name": "reviews_decide",
         "title": "Reviews Decide"
       },
-      "description_bytes": 854,
+      "description_bytes": 788,
       "input_schema_bytes": 4047,
       "name": "reviews_decide",
       "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 5126
+      "total_bytes": 5054
     },
     {
       "annotation_bytes": 89,
@@ -5744,5 +5755,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 70298
+  "total_bytes": 70281
 }

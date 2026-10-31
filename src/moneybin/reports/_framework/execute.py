@@ -716,7 +716,10 @@ def execute_catalog_report(
     **params: Any,
 ) -> CatalogReportExecution:
     """Execute a catalog runner once; do not apply terminal redaction."""
+    from moneybin.investments.freshness import require_current_query
+
     rq = spec.runner(db, **params)
+    require_current_query(db, rq.sql)
     # `list()` on a Mapping yields its KEYS, which would bind parameter names as
     # values. A named-binding runner's params must reach DuckDB as the mapping.
     # Each entry is unwrapped from its `Binding`: the class travels with the value

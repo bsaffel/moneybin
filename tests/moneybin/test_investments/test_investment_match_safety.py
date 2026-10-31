@@ -55,6 +55,12 @@ def test_replacement_lifecycle_comes_from_durable_decision(
     service = InvestmentMatchingService(comparison_db)
     service.run()
     original = service.pending()[0]
+    from moneybin.services.investment_membership_service import (
+        InvestmentMembershipService,
+    )
+
+    InvestmentMembershipService(comparison_db).reconcile(actor="test")
+    service.decide(original["proposal_id"], decision="accept", actor="test")
     comparison_db.execute(
         """UPDATE app.investment_match_decisions
         SET status = ?, accepted_at = CURRENT_TIMESTAMP""",

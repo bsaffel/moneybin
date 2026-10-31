@@ -1606,6 +1606,13 @@ class SyncService:
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
 
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        InvestmentMembershipService(self.db).require_removable_sources(
+            source_type=_PROVIDER, source_origin=provider_item_id
+        )
         table_counts = tuple(
             (table.full_name, self._count_item_rows(table, provider_item_id))
             for table in _PURGE_TABLES
@@ -1734,32 +1741,41 @@ class SyncService:
 
     def _purge_local(self, live: SyncPurgePlan, actor: str) -> None:
         """The local half of a purge, inside the caller's open transaction."""
-        links = AccountLinksRepo(self.db)
-        for link_id in live.account_link_ids:
-            # A purge is only reachable through a confirmed user action, so
-            # the domain actor is "user" whichever surface carried it.
-            links.reverse(
-                link_id=link_id,
-                reversed_by="user",
-                actor=actor,
-                in_outer_txn=True,
-            )
-        self._reject_proposals(live.decision_ids, actor)
-        for table in _PURGE_TABLES:
+        from moneybin.investments.dependency_publication import dependency_publication
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        membership = InvestmentMembershipService(self.db)
+        baseline = membership.removal_baseline()
+        with dependency_publication(self.db):
+            links = AccountLinksRepo(self.db)
+            for link_id in live.account_link_ids:
+                # A purge is only reachable through a confirmed user action, so
+                # the domain actor is "user" whichever surface carried it.
+                links.reverse(
+                    link_id=link_id,
+                    reversed_by="user",
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+            self._reject_proposals(live.decision_ids, actor)
+            for table in _PURGE_TABLES:
+                self.db.execute(
+                    f"""
+                    DELETE FROM {table.full_name}
+                    WHERE source_origin = ?
+                    """,  # TableRef + parameterized value
+                    [live.provider_item_id],
+                )
             self.db.execute(
                 f"""
-                DELETE FROM {table.full_name}
-                WHERE source_origin = ?
-                """,  # TableRef + parameterized value
-                [live.provider_item_id],
+                DELETE FROM {SECURITY_PRICES.full_name}
+                WHERE source_type = ? AND source_origin = ?
+                """,  # TableRef + parameterized values
+                [_PROVIDER, live.provider_item_id],
             )
-        self.db.execute(
-            f"""
-            DELETE FROM {SECURITY_PRICES.full_name}
-            WHERE source_type = ? AND source_origin = ?
-            """,  # TableRef + parameterized values
-            [_PROVIDER, live.provider_item_id],
-        )
+            membership.reconcile_after_removal(baseline, actor=actor)
 
     def _count_item_rows(self, table: TableRef, provider_item_id: str) -> int:
         row = self.db.execute(

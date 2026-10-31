@@ -66,6 +66,12 @@ feature is that wholesale choice, made deliberately by the user, reversible,
 and available now. It does not replace matching. Once matching can accept
 events, a user who wants both histories clears the setting.
 
+The M1J.7 integration in [Investment Event Matching](investment-event-matching.md#source-choice-after-accepting-matches)
+extends this setting to already-accepted Matches: preserve the relationships,
+preview the chosen source's values and lot-selection impact, and confirm one
+atomic switch. Clearing restores the retained field choices and all eligible
+history.
+
 ## Goals
 
 1. One per-account setting chooses which investment source type feeds the
@@ -395,8 +401,10 @@ A check that reports on rows the choice excluded skips them:
   staging or bootstrap rows directly. Each one skips Plaid rows in an account
   set to `manual`. On a `core.dim_accounts` that predates the column (migrated
   but not yet refreshed) no choice is readable, so both run without the filter.
-- `investment_unmodeled_legs` and `investment_unresolved_securities` read the
-  ledger, so they inherit the filter and need no change.
+- `investment_unmodeled_legs` reads the ledger and inherits its source filter.
+- `investment_unresolved_securities` reads current Source legs, including
+  unresolved observations withheld from Golden. It applies the saved source
+  choice and excludes identities reserved by an active accepted or stale Match.
 - `investment_holdings_divergence`, `investment_unreported_holdings` and
   `investment_phantom_holdings` compare the ledger to the broker's snapshot.
   They are unchanged and keep running under both choices. Under `manual`,

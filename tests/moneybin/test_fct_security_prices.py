@@ -10,8 +10,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.price_sources import REF_KIND_BY_SOURCE_TYPE
+from moneybin.services.investment_matching_service import InvestmentMatchingService
+from moneybin.services.mutation_context import operation
+from moneybin.services.transform_service import TransformService
+from tests.moneybin.sqlmesh_model_helpers import rendered_model_sql
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
+from tests.moneybin.test_stg_plaid_investments import (
+    _publish_investment_fixture,  # pyright: ignore[reportPrivateUsage]  # canonical fixture prerequisites and real refresh
+)
 
 pytestmark = pytest.mark.integration
 
@@ -471,8 +479,7 @@ def security_price_cases_template(
                 source_type=source,
             )
 
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    _publish_investment_fixture(db)
     db.close()
     return db.path
 
@@ -548,8 +555,8 @@ def test_winner_is_stable_across_rebuilds(security_price_cases: Database) -> Non
         "WHERE security_id = 'mb21_stable_security'"
     ).fetchone()
     assert initial is not None
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    result = TransformService(db).apply()
+    assert result.applied, result.error
     rebuilt = db.execute(
         "SELECT close FROM core.fct_security_prices "
         "WHERE security_id = 'mb21_stable_security'"
@@ -752,8 +759,8 @@ def test_quote_currency_case_variants_resolve_deterministically(
         "WHERE security_id = 'mb21_currency_fresh_security'"
     ).fetchall()
     assert len(initial) == 1, "the casing duplicate must collapse to one winner"
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    result = TransformService(db).apply()
+    assert result.applied, result.error
     rebuilt = db.execute(
         "SELECT quote_currency, close FROM core.fct_security_prices "
         "WHERE security_id = 'mb21_currency_fresh_security'"
@@ -1056,35 +1063,93 @@ def test_a_dividend_rate_never_becomes_the_resolved_close(
 def test_an_unbound_security_contributes_no_price(
     security_price_cases: Database,
 ) -> None:
-    """A priced trade whose security never bound must not emit a NULL-keyed row.
-
-    core.fct_investment_transactions.security_id is NULL in two situations, and only
-    one of them is caught by the positivity filter. A cash-only event (deposit,
-    withdrawal, fee) carries a NULL price, which already fails `price > 0` — so a
-    cash-only fixture trips BOTH guards and would prove nothing about either.
-
-    The case that isolates the NULL guard is the other one the ledger documents: a
-    synced security with no accepted binding. That row carries a real, positive
-    price and a NULL security_id, so the positivity filter passes it through. Without
-    the NULL guard it lands in a table whose grain leads with security_id, and every
-    downstream join against that grain either drops it or fans out.
-
-    The fixture reaches the state through the manual branch because this model cannot
-    tell which staging branch a ledger row came from; the production shape is a Plaid
-    buy whose SecurityResolver binding was never accepted.
-    """
+    """Unbound positive-price evidence stays in Raw, without a Golden ID or close."""
     db = security_price_cases
 
+    assert db.execute(
+        """
+        SELECT COUNT(*) FROM raw.manual_investment_transactions
+        WHERE source_origin = 'mb21_unbound' AND security_id IS NULL AND price > 0
+        """
+    ).fetchone() == (1,)
     ledger = db.execute(
         "SELECT COUNT(*) FROM core.fct_investment_transactions "
         "WHERE source_origin = 'mb21_unbound' AND security_id IS NULL AND price > 0"
     ).fetchone()
-    assert ledger is not None and ledger[0] == 1, (
-        "the priced-but-unbound row must reach the ledger for this to isolate the "
-        "NULL guard rather than the positivity filter"
-    )
+    assert ledger == (0,)
+    assert db.execute(
+        """
+        SELECT COUNT(*) FROM app.investment_event_members
+        WHERE source_type = 'manual' AND source_origin = 'mb21_unbound'
+          AND native_reference = 'mb21_unbound_trade' AND retired_at IS NULL
+        """
+    ).fetchone() == (0,)
 
     resolved = db.execute(
         "SELECT COUNT(*) FROM core.fct_security_prices WHERE security_id IS NULL"
     ).fetchone()
     assert resolved is not None and resolved[0] == 0
+
+
+def test_trade_price_provenance_skips_a_missing_provider_price(db: Database) -> None:
+    """A Match's representative source cannot claim another member's present price."""
+    from sqlglot import exp, parse_one
+
+    seed_account_metadata(
+        db, "acc_1", native="native_account", origin="missing_price", currency="USD"
+    )
+    _seed_security(db, security_id="security")
+    _accept_link(db, key="provider_security", canonical_id="security")
+    _insert_manual_trade(
+        db,
+        txn_id="manual_present_price",
+        security_id="security",
+        price="100",
+        origin="present_price",
+    )
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_transactions (
+            investment_transaction_id, account_id, security_id,
+            investment_transaction_type, investment_transaction_subtype,
+            transaction_date, quantity, price, amount, fees, iso_currency_code,
+            observation_version, source_type, source_origin
+        ) VALUES ('provider_missing_price', 'native_account', 'provider_security',
+                  'buy', 'buy', DATE '2026-07-15', 10, NULL, 1000, 0, 'USD',
+                  'missing_price_revision', 'plaid', 'missing_price')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_transaction_receipts (
+            investment_transaction_id, source_origin, source_file,
+            observation_version, extracted_at, loaded_at
+        ) VALUES ('provider_missing_price', 'missing_price', 'fixture',
+                  'missing_price_revision', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """
+    )
+    _publish_investment_fixture(db)
+    matching = InvestmentMatchingService(db)
+    proposals = matching.pending()
+    assert len(proposals) == 1
+    with operation():
+        matching.decide(proposals[0]["proposal_id"], decision="accept", actor="test")
+
+    assert db.execute(
+        "SELECT source_type, price FROM core.fct_investment_transactions"
+    ).fetchall() == [("plaid", Decimal("100.0000000000"))]
+    assert db.execute(
+        "SELECT source_type, close FROM core.fct_security_prices "
+        "WHERE security_id = 'security'"
+    ).fetchall() == [("trade_implied", Decimal("100.0000000000"))]
+    model = parse_one(
+        rendered_model_sql(SQLMESH_ROOT / "models/core/fct_security_prices.sql"),
+        read="duckdb",
+    )
+    provenance = exp.select("source_origin", "observation_key").from_(
+        "trade_provenance"
+    )
+    provenance.set("with_", model.args["with_"].copy())
+    assert db.execute(provenance.sql(dialect="duckdb")).fetchall() == [
+        ("present_price", "manual:manual_present_price")
+    ]

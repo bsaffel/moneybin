@@ -88,6 +88,27 @@ WITH first_snapshot AS (
     p.source_account_key,
     p.source_security_key,
     p.source_origin
+), split_positions AS (
+  /* A grouped join avoids DuckDB's nested-correlation binder in the retained
+     opening projection; the split guard and date boundary are unchanged. */
+  SELECT
+    p.source_account_key,
+    p.source_security_key,
+    p.source_origin,
+    COUNT(*) AS split_count
+  FROM positions AS p
+  JOIN prep.stg_plaid__investment_transactions AS sp
+    ON sp.source_account_key = p.source_account_key
+    AND sp.source_security_key = p.source_security_key
+    AND sp.source_origin = p.source_origin
+  WHERE
+    sp.type = 'split'
+    AND sp.trade_date >= p.window_start
+    AND sp.trade_date <= p.snapshot_date
+  GROUP BY
+    p.source_account_key,
+    p.source_security_key,
+    p.source_origin
 )
 /* The three guards. Each routes the position to review and synthesizes nothing —
    a visible gap, never a plausible-looking guess. held_qty is COALESCEd to 0 so an
@@ -117,20 +138,13 @@ SELECT
         AND LOWER(COALESCE(gl.position_type, '')) = 'short'
     )
   ) AS is_short_or_nonpositive,
-  EXISTS(
-    SELECT
-      1
-    FROM prep.stg_plaid__investment_transactions AS sp
-    WHERE
-      sp.source_account_key = p.source_account_key
-      AND sp.source_security_key = p.source_security_key
-      AND sp.source_origin = p.source_origin
-      AND sp.type = 'split'
-      AND sp.trade_date >= p.window_start
-      AND sp.trade_date <= p.snapshot_date
-  ) AS has_in_window_split
+  COALESCE(splits.split_count, 0) > 0 AS has_in_window_split
 FROM positions AS p
 LEFT JOIN in_window AS iw
   ON iw.source_account_key = p.source_account_key
   AND iw.source_security_key = p.source_security_key
   AND iw.source_origin = p.source_origin
+LEFT JOIN split_positions AS splits
+  ON splits.source_account_key = p.source_account_key
+  AND splits.source_security_key = p.source_security_key
+  AND splits.source_origin = p.source_origin

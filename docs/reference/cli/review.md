@@ -7,7 +7,7 @@ One sweep answers "what needs my attention?" across all review domains.
 Use --type to filter to a specific queue, then --confirm/--reject/
 --confirm-all to decide matches, or --type categorize --reject \<decision-id>
 to reject a categorization attempt without prompting. Use --type investment-matches
---reject to reject an investment Proposal. Investment acceptance remains unavailable.
+--confirm or --reject to decide one investment Proposal; --field-choice resolves material conflicts.
 
 Generated from the registered command tree, so every option below is one the command declares; `--help` on any command prints the same text. Shared flags, exit codes, and JSON envelopes: [CLI reference](../../guides/cli-reference.md).
 

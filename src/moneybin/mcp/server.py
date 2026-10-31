@@ -187,7 +187,7 @@ def _check_and_heal_schema() -> None:
     if not drift:
         return
 
-    from moneybin.services.transform_service import TransformService
+    from moneybin.orchestration.refresh import refresh
 
     logger.info(
         f"Stale snapshots detected for {sorted(drift)}; running transform apply "
@@ -201,19 +201,14 @@ def _check_and_heal_schema() -> None:
     # `always_include_local_changes` docstring), so it would no-op against
     # the very drift we need to fix.
     with get_database(read_only=False, operation_type="transform_apply") as db:
-        result = TransformService(db).apply()
+        result = refresh(db, steps=["transform"], actor="mcp:schema_self_heal")
     if not result.applied:
-        # apply() soft-fails by returning applied=False with the SQLMesh
-        # error type name (apply() itself drops the full message for PII
-        # reasons). Raise SchemaDriftError so classify_user_error maps it
-        # to the standard "run moneybin transform apply" hint — the user's
-        # recovery path is to re-run apply manually and see the real
-        # SQLMesh error in the terminal.
-        raise SchemaDriftError(
-            f"Auto-heal failed: TransformService.apply() reported "
-            f"error={result.error} after {result.duration_seconds:.2f}s"
+        failure = result.error or next(
+            (f"{stage.step}: {stage.error}" for stage in result.stages if stage.error),
+            "transform did not run",
         )
-    logger.info(f"Self-heal completed in {result.duration_seconds:.2f}s")
+        raise SchemaDriftError(f"Auto-heal failed: {failure}")
+    logger.info("Schema self-heal completed")
 
     with get_database(read_only=True) as db:
         post_heal_drift = check_core_schema_drift(db)

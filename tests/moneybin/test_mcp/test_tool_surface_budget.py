@@ -185,7 +185,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # failure retries the batch instead of opening the conflict queue.
     "transactions_categorize_rules_set": (3_334, 2_672),
     # The one cohort whose candidate now costs more than the four tools it
-    # replaced (5,126 vs 2,568). The overrun includes disclosures the replaced
+    # replaced (5,054 vs 2,568). The overrun includes disclosures the replaced
     # tools never owed. First: accepting a match can reverse a transfer the
     # user accepted, and an agent that cannot read that from the description
     # reports the reversal as a clean accept. Then more for the rule-conflict
@@ -195,7 +195,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # error. Investment decisions add issued field choices, reject-only
     # validation, and whole-batch human confirmation. Registry-wide carrying
     # weight is measured from the fixtures below, including these additions.
-    "reviews_decide": (5_126, 2_568),
+    "reviews_decide": (5_054, 2_568),
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user
     # accepted. Still less than half the cohort it replaced.

@@ -7,14 +7,20 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from moneybin.database import SQLMESH_ROOT, Database, sqlmesh_context
+from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.services.account_service import AccountService
+from moneybin.services.investment_membership_service import InvestmentMembershipService
 from moneybin.services.investment_service import InvestmentService
 from tests.moneybin.sqlmesh_model_helpers import rendered_model_sql
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
+from tests.moneybin.test_stg_plaid_investments import (
+    _publish_investment_fixture,  # pyright: ignore[reportPrivateUsage]  # canonical fixture prerequisites and real refresh
+)
 
 pytestmark = pytest.mark.integration
 
@@ -90,9 +96,7 @@ def _seed_security(db: Database, *, security_id: str = _DEFAULT_SECURITY_ID) -> 
 
 _POSITION_TRADE_DATE = date(2026, 1, 5)
 
-# The two fixture timestamps behind the overlap-watermark case. Spelled here as
-# constants because the assertion is an equality against them, not a comparison
-# against whatever the model happened to produce.
+# Historical Raw observation times; Golden freshness follows actual publication.
 _OVERLAP_HELD_LOT_AT = "2026-01-06 09:00:00+00:00"
 _OVERLAP_SECOND_SOURCE_AT = "2026-02-10 09:00:00+00:00"
 
@@ -210,9 +214,8 @@ def _seed_broker_snapshot(
     divergence under test would not fire and the assertion would pass for the wrong
     reason.
 
-    ``account_id`` is written as the canonical id directly:
-    prep.stg_plaid__investment_holdings COALESCEs to the source-native id when no
-    account_link resolves, so this needs no account binding. ``security_id`` is the
+    The publication helper binds the native ``account_id`` to the synthetic
+    canonical Account before the real refresh. ``security_id`` is the
     PROVIDER id; the default resolves to canonvti0000001 through the
     'plaid_security_id' link ``_seed_price`` writes, and any other value stays
     unresolved (canonical NULL) — which is what a phantom-position fixture wants: the
@@ -261,9 +264,7 @@ def _seed_plaid_buy(
     double-count anything, so it is not a source overlap. This one carries
     ``buy``/``buy``, which staging maps and includes.
 
-    ``account_id`` is written as the canonical id directly:
-    prep.stg_plaid__investment_transactions COALESCEs to the source-native id
-    when no account_link resolves, so this needs no binding. ``amount`` is
+    The publication helper supplies the scoped Account binding. ``amount`` is
     POSITIVE, Plaid's own convention for cash out; staging owns the one sign
     flip and the ledger sees -1000.00. ``security_id`` is passed as the provider
     key so ``_seed_price``'s ``plaid_security_id`` link resolves it onto the
@@ -448,12 +449,43 @@ def _account_quantities(db: Database, account_id: str) -> tuple[object, object]:
 class _ValuationCases:
     db: Database
     anchor: date
+    held_published_at: datetime
+    overlap_published_at: datetime
 
 
 @dataclass(frozen=True)
 class _ValuationTemplate:
     path: Path
     anchor: date
+    held_published_at: datetime
+    overlap_published_at: datetime
+
+
+def _publish_at_database_clock(db: Database, native_reference: str) -> datetime:
+    """Observe the real transaction clock before the target membership is written."""
+    begin = db.begin
+    publication_clock: datetime | None = None
+
+    def observe_begin() -> None:
+        nonlocal publication_clock
+        begin()
+        row = db.execute(
+            """
+            SELECT CURRENT_TIMESTAMP, NOT EXISTS (
+                SELECT 1 FROM app.investment_event_members
+                WHERE native_reference = ? AND retired_at IS NULL
+            )
+            """,
+            [native_reference],
+        ).fetchone()
+        assert row is not None
+        if row[1]:
+            publication_clock = row[0]
+
+    with patch.object(db, "begin", side_effect=observe_begin):
+        _publish_investment_fixture(db)
+    assert publication_clock is not None
+    return publication_clock
 
 
 @pytest.fixture(scope="module")
@@ -785,6 +817,24 @@ def valuation_cases_template(
     )
     _seed_price(db, security_id=unknown_security, price_date=anchor, close="120.00")
 
+    unchosen_security = security("unknown_currency_unchosen")
+    unchosen_account = account("unknown_currency_unchosen")
+    _seed_position(
+        db,
+        account_id=unchosen_account,
+        security_id=unchosen_security,
+        transaction_id=f"{origin('unknown_currency_unchosen')}_unknown",
+        currency_code=None,
+        quantity="5",
+    )
+    _seed_price(db, security_id=unchosen_security, price_date=anchor, close="120.00")
+    _seed_plaid_buy(
+        db,
+        account_id=unchosen_account,
+        security_id=unchosen_security,
+        source_origin=origin("unknown_currency_unchosen"),
+    )
+
     # Source overlap: one account whose investment ledger arrives from BOTH a
     # manual import and a Plaid sync, on one security. Both feeds price cleanly
     # and the close resolves, so a blank figure here can only come from the
@@ -871,14 +921,6 @@ def valuation_cases_template(
         price_date=anchor,
         close="120.00",
     )
-    _seed_plaid_buy(
-        db,
-        account_id=account("overlap_watermark"),
-        security_id=security("overlap_watermark_b"),
-        source_origin=origin("overlap_watermark"),
-        loaded_at=_OVERLAP_SECOND_SOURCE_AT,
-    )
-
     # Its unaffected twin: one account, one source, one pinned input and no
     # price or snapshot — so its watermark is exactly its lot's, and inheriting
     # the overlap account's newer timestamp would be visible immediately.
@@ -912,10 +954,33 @@ def valuation_cases_template(
     )
     _seed_price(db, security_id=mixed_security, price_date=anchor, close="120.00")
 
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    # Establish identity before either publication; the late event changes only overlap.
+    seed_account_metadata(
+        db,
+        account("overlap_watermark"),
+        origin=origin("overlap_watermark"),
+    )
+    held_published_at = _publish_at_database_clock(
+        db, f"{origin('clean_watermark')}_buy"
+    )
+
+    _seed_plaid_buy(
+        db,
+        account_id=account("overlap_watermark"),
+        security_id=security("overlap_watermark_b"),
+        source_origin=origin("overlap_watermark"),
+        loaded_at=_OVERLAP_SECOND_SOURCE_AT,
+    )
+    overlap_published_at = _publish_at_database_clock(
+        db, f"itx_buy_{account('overlap_watermark')}"
+    )
     db.close()
-    return _ValuationTemplate(path=db.path, anchor=anchor)
+    return _ValuationTemplate(
+        path=db.path,
+        anchor=anchor,
+        held_published_at=held_published_at,
+        overlap_published_at=overlap_published_at,
+    )
 
 
 @pytest.fixture()
@@ -937,7 +1002,12 @@ def valuation_cases(
         read_only=False,
     )
     request.addfinalizer(db.close)
-    return _ValuationCases(db=db, anchor=valuation_cases_template.anchor)
+    return _ValuationCases(
+        db=db,
+        anchor=valuation_cases_template.anchor,
+        held_published_at=valuation_cases_template.held_published_at,
+        overlap_published_at=valuation_cases_template.overlap_published_at,
+    )
 
 
 def _install_calendar_view(db: Database, instant: str) -> None:
@@ -1752,6 +1822,28 @@ def test_mixed_currency_lots_withhold_the_value(
 
 
 @pytest.mark.slow
+def test_unresolved_currency_in_an_unchosen_source_does_not_withhold(
+    valuation_cases: _ValuationCases,
+) -> None:
+    """A source choice excludes unresolved quantity evidence from the other feed."""
+    db = valuation_cases.db
+    account = _case_account("unknown_currency_unchosen")
+    _assert_withheld_publishes_nothing(_holding(db, account))
+
+    AccountService(db).settings_update(
+        account,
+        investment_source_type="plaid",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(account, "plaid")
+        .verify,
+        actor="test",
+    )
+    row = _holding(db, account)
+    assert row[:2] == (Decimal("1200.00"), Decimal("200.00"))
+    assert row[-1] == _expected_status((_db_today(db) - valuation_cases.anchor).days)
+
+
+@pytest.mark.slow
 def test_two_source_ledgers_withhold_every_figure(
     valuation_cases: _ValuationCases,
 ) -> None:
@@ -1903,14 +1995,14 @@ def test_an_overlap_flip_advances_the_row_watermark(
 
     # Preconditions: the scenario really is "the row's own inputs did not move".
     assert status == "source_overlap", "the sibling event did not flip this row"
-    assert lot_row[0] == datetime.fromisoformat(_OVERLAP_HELD_LOT_AT), (
+    assert lot_row[0] == valuation_cases.held_published_at, (
         "fixture no longer pins the held position's own freshness"
     )
-    assert datetime.fromisoformat(_OVERLAP_HELD_LOT_AT) < datetime.fromisoformat(
-        _OVERLAP_SECOND_SOURCE_AT
-    ), "the second-source event must be the newer input for this to prove anything"
+    assert valuation_cases.held_published_at < valuation_cases.overlap_published_at, (
+        "the second-source publication must be newer for this to prove anything"
+    )
 
-    assert updated_at == datetime.fromisoformat(_OVERLAP_SECOND_SOURCE_AT)
+    assert updated_at == valuation_cases.overlap_published_at
 
 
 @pytest.mark.slow
@@ -1936,7 +2028,7 @@ def test_a_single_source_row_keeps_its_own_watermark(
         [_case_account("clean_watermark")],
     ).fetchone()
     assert row is not None
-    assert row[0] == datetime.fromisoformat(_OVERLAP_HELD_LOT_AT)
+    assert row[0] == valuation_cases.held_published_at
 
 
 @pytest.mark.slow

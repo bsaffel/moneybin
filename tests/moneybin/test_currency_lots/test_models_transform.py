@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -13,6 +14,7 @@ from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.currency_service import CurrencyService
 from moneybin.services.transform_service import TransformService
 from moneybin.services.undo_service import UndoService
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 pytestmark = pytest.mark.integration
 
@@ -157,6 +159,7 @@ def _insert_conversion(
 
 
 def _seed_real_transform_inputs(db: Database) -> None:
+    seed_account_metadata(db, "acct-eur-fifo", currency="EUR")
     db.execute(
         """
         UPDATE app.profile_settings
@@ -687,6 +690,23 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
     result = TransformService(db).apply()
     assert result.applied, f"transform apply failed: {result.error}"
 
+    sale_member = db.execute(
+        """SELECT investment_transaction_id, projection_changed_at
+        FROM app.investment_event_members
+        WHERE source_type = 'manual' AND native_reference = 'security-sale-eur'
+          AND retired_at IS NULL"""
+    ).fetchone()
+    assert sale_member is not None
+    sale_id, sale_changed_at = sale_member
+    assert sale_id != "inv-eur-sale"
+    assert sale_changed_at >= datetime(2026, 4, 2, 10, tzinfo=UTC)
+    sale_lot_id = (
+        "clot_"
+        + hashlib.sha256(
+            f"acct-eur-fifo|EUR|{sale_id}:currency_acquire".encode()
+        ).hexdigest()[:16]
+    )
+
     conversion_summary = db.execute(
         """
         SELECT conversion_id, source_shape, coverage_status, coverage_reason
@@ -799,7 +819,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             False,
             "complete",
             None,
-            datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC),
+            sale_changed_at,
         ),
         "clot_b48056b8a404035f": (
             "acct-gbp-average",
@@ -855,7 +875,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             None,
             datetime(2026, 3, 2, 12, 0, 0, tzinfo=UTC),
         ),
-        "clot_e05af1a4b4dba32e": (
+        sale_lot_id: (
             "acct-eur-fifo",
             "EUR",
             date(2026, 4, 1),
@@ -867,11 +887,11 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             "fifo",
             "USD",
             None,
-            "inv-eur-sale",
+            sale_id,
             False,
             "complete",
             None,
-            datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC),
+            sale_changed_at,
         ),
     }
 
@@ -931,7 +951,7 @@ def test_transform_materializes_currency_lots_gains_and_bounded_metrics(
             "actual",
             "complete",
             None,
-            datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC),
+            sale_changed_at,
         ),
         "rfx_7be9cd658f8b45f5": (
             "acct-gbp-average",

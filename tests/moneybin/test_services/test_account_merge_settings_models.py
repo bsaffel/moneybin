@@ -22,7 +22,9 @@ from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisio
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_service import AccountService
+from moneybin.services.investment_membership_service import InvestmentMembershipService
 from moneybin.services.transform_service import TransformService
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 pytestmark = pytest.mark.integration
 
@@ -121,6 +123,7 @@ def _seed(db: Database) -> None:
         actor="system",
         status="accepted",
     )
+    seed_account_metadata(db, _SURVIVOR, origin=_ORIGIN)
     AccountLinkDecisionsRepo(db).insert(
         decision_id=_DECISION,
         provisional_account_id=_ABSORBED,
@@ -165,7 +168,12 @@ def test_an_overlap_the_absorbed_choice_resolved_stays_resolved_after_the_merge(
 ) -> None:
     _seed(db)
     AccountService(db).settings_update(
-        _ABSORBED, actor="test", investment_source_type="manual"
+        _ABSORBED,
+        actor="test",
+        investment_source_type="manual",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ABSORBED, "manual")
+        .verify,
     )
 
     AccountLinksService(db, actor="cli").set(_DECISION, target_account_id=_SURVIVOR)
@@ -205,6 +213,9 @@ def test_the_survivors_dim_accounts_row_shows_every_moved_value(db: Database) ->
         credit_limit=Decimal("2500.00"),
         default_cost_basis_method="hifo",
         investment_source_type="manual",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(_ABSORBED, "manual")
+        .verify,
     )
 
     AccountLinksService(db, actor="cli").set(_DECISION, target_account_id=_SURVIVOR)

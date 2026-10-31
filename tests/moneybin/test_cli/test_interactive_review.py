@@ -29,7 +29,7 @@ def test_interactive_investments_refused_before_database(command: list[str]) -> 
         )
     assert result.exit_code == 2
     assert "moneybin review --type investment-matches --reject" in result.output
-    assert "acceptance remains unavailable" in result.output
+    assert "--confirm <proposal-id>" in result.output
     database.assert_not_called()
     session_db.assert_not_called()
 

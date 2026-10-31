@@ -3,8 +3,10 @@
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from time import perf_counter
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
 
 from moneybin import error_codes
 from moneybin.database import Database, has_column
@@ -28,6 +30,9 @@ from moneybin.tables import (
     TableRef,
 )
 
+if TYPE_CHECKING:
+    from moneybin.services.investment_membership_service import MembershipTransition
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,16 +45,31 @@ def supports_investment_rejection_undo(actions: Iterable[str]) -> bool:
     }
 
 
+def supports_investment_operation_undo(actions: Iterable[str]) -> bool:
+    """Recognize complete human decisions and their domain-owned lifecycle children."""
+    selected = set(actions)
+    return bool(
+        selected & {"investment_match.accept", "investment_match.reject"}
+    ) and selected <= {
+        "investment_match.accept",
+        "investment_match.reject",
+        "investment_match.supersede",
+        "investment_match.stale",
+    }
+
+
 def record_committed_investment_decisions(
-    auto_eligible: Sequence[bool], *, duration_seconds: float
+    decisions: Sequence[tuple[Literal["accepted", "rejected", "reversed"], bool]],
+    *,
+    duration_seconds: float,
 ) -> None:
     """Publish bounded first-decision telemetry only after its transaction commits."""
-    if not auto_eligible:
+    if not decisions:
         return
     try:
-        for eligible in auto_eligible:
+        for status, eligible in decisions:
             INVESTMENT_MATCH_DECISIONS_TOTAL.labels(
-                decision="rejected", auto_eligible=str(eligible).lower()
+                decision=status, auto_eligible=str(eligible).lower()
             ).inc()
         INVESTMENT_MATCH_DURATION_SECONDS.labels(operation="decision").observe(
             duration_seconds
@@ -138,6 +158,12 @@ class InvestmentMatchingService:
         dispositions: list[tuple[str, str]] = []
         self._db.begin()
         try:
+            from moneybin.services.investment_membership_service import (
+                InvestmentMembershipService,
+            )
+
+            membership = InvestmentMembershipService(self._db)
+            membership.invalidate_accepted(actor=actor)
             existing = self._repo.all_rows()
             active = {
                 row["proposal_id"]: row
@@ -145,34 +171,27 @@ class InvestmentMatchingService:
                 if row["status"] == "accepted"
                 or (row["status"] == "stale" and row["accepted_at"] is not None)
             }
-            supplied = {row["decision_id"]: row for row in locked_components or ()}
-            complete = len(supplied) == len(locked_components or ()) and set(
-                supplied
-            ) == set(active)
-            for decision_id, row in active.items():
-                component = supplied.get(decision_id, {})
-                expected_rows = {
-                    (leg["source_type"], leg["source_origin"], leg["native_reference"])
-                    for leg in row["legs"]
-                }
-                complete = (
-                    complete
-                    and bool(expected_rows)
-                    and (
-                        set(component.get("members", ())) == set(row["members"])
-                        and {tuple(item) for item in component.get("reserved_rows", ())}
-                        == expected_rows
+            authoritative_components = membership.locked_components(existing)
+            if locked_components is not None:
+                supplied = {r["decision_id"]: r for r in locked_components}
+                if (
+                    len(supplied) != len(locked_components)
+                    or set(supplied) != set(active)
+                    or any(
+                        set(supplied[c["decision_id"]].get("members", ()))
+                        != set(c["members"])
+                        or {
+                            tuple(r)
+                            for r in supplied[c["decision_id"]].get("reserved_rows", ())
+                        }
+                        != set(c["reserved_rows"])
+                        for c in authoritative_components
                     )
-                )
-            if not complete:
-                raise UserError(
-                    "Active investment membership is required for replacement planning.",
-                    code=error_codes.MUTATION_INVALID_INPUT,
-                )
-            authoritative_components = [
-                {**component, "status": active[decision_id]["status"]}
-                for decision_id, component in supplied.items()
-            ]
+                ):
+                    raise UserError(
+                        "Supplied investment membership is incomplete.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
             plan = evaluate_plan(
                 self._facts(INVESTMENT_EVENT_HEADERS, authoritative_components),
                 self._facts(INVESTMENT_EVENT_LEGS, authoritative_components),
@@ -251,19 +270,17 @@ class InvestmentMatchingService:
         return [row for row in self._repo.all_rows() if row["status"] == "pending"]
 
     def _decision_plan(self, existing: list[dict[str, Any]]) -> PlanningResult:
-        if any(
-            row["status"] == "accepted" or row["accepted_at"] is not None
-            for row in existing
-        ):
-            raise UserError(
-                "Active investment membership is unavailable for decisions.",
-                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
-            )
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        locked = InvestmentMembershipService(self._db).locked_components(existing)
         return evaluate_plan(
-            self._facts(INVESTMENT_EVENT_HEADERS),
-            self._facts(INVESTMENT_EVENT_LEGS),
+            self._facts(INVESTMENT_EVENT_HEADERS, locked),
+            self._facts(INVESTMENT_EVENT_LEGS, locked),
             self._facts(INVESTMENT_EVENT_EVIDENCE),
             decisions=existing,
+            locked_components=locked,
         )
 
     def prepare_decision(
@@ -302,13 +319,252 @@ class InvestmentMatchingService:
             )
         if decision == "accept":
             validate_selection(proposal.legs, proposal.field_choices, field_choices)
-            raise UserError(
-                "Investment match acceptance is unavailable until atomic Golden materialization exists.",
-                code=error_codes.MUTATION_INVALID_INPUT,
-            )
+            self.prepare_acceptance(decision_id, proposal, field_choices=field_choices)
         return proposal
 
-    def invalidate_pending(self, *, actor: str, parent_audit_id: str) -> None:
+    def decision_dependencies(self) -> dict[str, Any]:
+        """Bind complete membership, choices and saved curation during confirmation."""
+        from moneybin.investments.event_projection import read_rows
+        from moneybin.repositories.investment_event_members_repo import (
+            InvestmentEventMembersRepo,
+        )
+        from moneybin.repositories.investment_match_field_resolutions_repo import (
+            InvestmentMatchFieldResolutionsRepo,
+        )
+        from moneybin.tables import LOT_SELECTIONS
+
+        return {
+            "membership": InvestmentEventMembersRepo(self._db).active_members(),
+            "resolutions": InvestmentMatchFieldResolutionsRepo(
+                self._db
+            ).active_resolutions(),
+            "selections": read_rows(
+                self._db,
+                f"SELECT * FROM {LOT_SELECTIONS.full_name} ORDER BY investment_transaction_id, lot_id",
+            ),
+        }  # TableRef constant
+
+    def prepare_acceptance(
+        self,
+        decision_id: str,
+        proposal: Proposal,
+        *,
+        field_choices: Sequence[Mapping[str, str]] = (),
+        prior: "MembershipTransition | None" = None,
+    ) -> "MembershipTransition":
+        """Build the whole proposed ledger without publishing any App rows."""
+        from moneybin.repositories.investment_event_members_repo import (
+            InvestmentEventMembersRepo,
+        )
+        from moneybin.repositories.investment_match_field_resolutions_repo import (
+            InvestmentMatchFieldResolutionsRepo,
+        )
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        membership = InvestmentMembershipService(self._db)
+        repo = InvestmentEventMembersRepo(self._db)
+        active = prior.proposed if prior is not None else repo.active_members()
+
+        def identity(row: Mapping[str, Any]) -> tuple[str, str, str]:
+            return row["source_type"], row["source_origin"], row["native_reference"]
+
+        selected = {identity(leg) for leg in proposal.legs}
+        affected = [
+            r
+            for r in active
+            if identity(r) in selected
+            or r["decision_id"] in proposal.supersedes_decision_ids
+        ]
+        if not affected or not selected <= {identity(r) for r in affected}:
+            raise UserError(
+                "Complete registered investment membership is required; run a full refresh.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        selected_fields = validate_selection(
+            proposal.legs, proposal.field_choices, field_choices
+        )
+        roles = {r["leg_role"] for r in selected_fields}
+        candidate_groups = {r["event_group_id"] for r in affected}
+        history = repo.history()
+        group_id = min(
+            candidate_groups,
+            key=lambda group: (
+                min(r["created_at"] for r in history if r["event_group_id"] == group),
+                group,
+            ),
+        )
+        role_ids: dict[str, str] = {}
+        for role in roles:
+            candidates = [
+                r
+                for r in affected
+                if r["semantic_leg_role"] == role and r["event_group_id"] == group_id
+            ]
+            role_ids[role] = (
+                min(
+                    candidates,
+                    key=lambda r: (r["created_at"], r["investment_transaction_id"]),
+                )["investment_transaction_id"]
+                if candidates
+                else uuid4().hex[:12]
+            )
+        proposed = [
+            r
+            for r in active
+            if r["member_kind"] == "source_event" and r not in affected
+        ]
+        proposed += [
+            membership.source_member(
+                dict(leg),
+                event_group_id=group_id,
+                investment_transaction_id=role_ids[leg["leg_role"]],
+                decision_id=decision_id,
+            )
+            for leg in proposal.legs
+        ]
+        mapping = {
+            r["investment_transaction_id"]: role_ids[r["semantic_leg_role"]]
+            for r in affected
+            if r["semantic_leg_role"] in role_ids
+        }
+        resolutions = [
+            r
+            for r in (
+                prior.resolutions
+                if prior is not None
+                else InvestmentMatchFieldResolutionsRepo(self._db).active_resolutions()
+            )
+            if r["decision_id"] not in proposal.supersedes_decision_ids
+        ]
+        for selection in field_choices:
+            conflict = next(
+                c
+                for c in proposal.field_choices
+                if c["conflict_id"] == selection["conflict_id"]
+            )
+            choice = next(
+                c
+                for c in conflict["choices"]
+                if c["choice_id"] == selection["choice_id"]
+            )
+            resolutions.append({
+                "resolution_id": uuid4().hex[:12],
+                "decision_id": decision_id,
+                "investment_transaction_id": role_ids[conflict["leg_role"]],
+                "field_name": conflict["field"],
+                **{
+                    key: choice[key]
+                    for key in (
+                        "source_type",
+                        "source_origin",
+                        "native_reference",
+                        "observation_version",
+                    )
+                },
+                "created_at": datetime.now(UTC),
+                "retired_at": None,
+            })
+        return membership.build_membership_transition(
+            proposed,
+            resolutions=resolutions,
+            semantic_id_map={
+                **(prior.semantic_id_map if prior is not None else {}),
+                **mapping,
+            },
+        )
+
+    def preflight_batch(
+        self,
+        decisions: Sequence[
+            tuple[
+                str, Literal["accept", "reject"], Proposal, Sequence[Mapping[str, str]]
+            ]
+        ],
+    ) -> None:
+        """Prove the combined ledger before any member of a batch writes."""
+        accepted = [item for item in decisions if item[1] == "accept"]
+        claimed: set[tuple[str, str, str]] = set()
+        prior: MembershipTransition | None = None
+        for decision_id, _decision, proposal, choices in accepted:
+            identities = {
+                (leg["source_type"], leg["source_origin"], leg["native_reference"])
+                for leg in proposal.legs
+            }
+            if claimed & identities or any(
+                set(rejected.members) <= set(proposal.members)
+                for _id, decision, rejected, _choices in decisions
+                if decision == "reject"
+            ):
+                raise UserError(
+                    "Investment batch contains conflicting complete decisions.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            claimed.update(identities)
+            prior = self.prepare_acceptance(
+                decision_id, proposal, field_choices=choices, prior=prior
+            )
+
+    def apply_in_active_txn(
+        self,
+        decision_id: str,
+        *,
+        decision: Literal["accept", "reject"],
+        actor: str,
+        field_choices: Sequence[Mapping[str, str]] = (),
+        prepared: Proposal | None = None,
+    ) -> AuditEvent:
+        """Apply one verified whole-event decision in the batch owner's transaction."""
+        proposal = prepared or self.prepare_decision(
+            decision_id, decision=decision, field_choices=field_choices
+        )
+        if decision == "reject":
+            return self._repo.reject(decision_id, actor=actor, in_outer_txn=True)
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        transition = self.prepare_acceptance(
+            decision_id, proposal, field_choices=field_choices
+        )
+        from moneybin.repositories.investment_match_field_resolutions_repo import (
+            InvestmentMatchFieldResolutionsRepo,
+        )
+
+        root = self._repo.accept(
+            decision_id,
+            actor=actor,
+            in_outer_txn=True,
+            context={
+                "prior_membership_ids": [
+                    r["membership_id"] for r in transition.current
+                ],
+                "new_membership_ids": [r["membership_id"] for r in transition.proposed],
+                "supersedes_decision_ids": list(proposal.supersedes_decision_ids),
+                "prior_resolution_ids": [
+                    r["resolution_id"]
+                    for r in InvestmentMatchFieldResolutionsRepo(
+                        self._db
+                    ).active_resolutions()
+                ],
+                "new_resolution_ids": [
+                    r["resolution_id"] for r in transition.resolutions
+                ],
+            },
+        )
+        for prior_id in proposal.supersedes_decision_ids:
+            self._repo.supersede(
+                prior_id, actor=actor, parent_audit_id=root.audit_id, in_outer_txn=True
+            )
+        InvestmentMembershipService(self._db).publish_transition(
+            transition, actor=actor, parent_audit_id=root.audit_id
+        )
+        return root
+
+    def invalidate_pending(
+        self, *, actor: str, parent_audit_id: str | None = None
+    ) -> None:
         """Stale changed assignment space in the caller's decision transaction."""
         existing = self._repo.all_rows()
         desired = {
@@ -346,15 +602,45 @@ class InvestmentMatchingService:
             proposal = self.prepare_decision(
                 decision_id, decision=decision, field_choices=field_choices
             )
-            event = self._repo.reject(decision_id, actor=actor, in_outer_txn=True)
+            reversed_outcomes: list[
+                tuple[Literal["accepted", "rejected", "reversed"], bool]
+            ] = [
+                ("reversed", bool(row["auto_eligible"]))
+                for row in self._repo.all_rows()
+                if decision == "accept"
+                and row["proposal_id"] in proposal.supersedes_decision_ids
+            ]
+            event = self.apply_in_active_txn(
+                decision_id, decision=decision, actor=actor, field_choices=field_choices
+            )
             self.invalidate_pending(actor=actor, parent_audit_id=event.audit_id)
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
+        outcomes: list[tuple[Literal["accepted", "rejected", "reversed"], bool]] = [
+            (
+                "accepted" if decision == "accept" else "rejected",
+                proposal.auto_eligible,
+            )
+        ]
         record_committed_investment_decisions(
-            [proposal.auto_eligible], duration_seconds=perf_counter() - started
+            outcomes + reversed_outcomes,
+            duration_seconds=perf_counter() - started,
         )
+
+        if decision == "accept":
+            from moneybin.services.restate import restate_after_write
+            from moneybin.tables import (
+                INVESTMENT_EVENT_MEMBERS,
+                INVESTMENT_MATCH_FIELD_RESOLUTIONS,
+            )
+
+            restate_after_write(
+                self._db,
+                [INVESTMENT_EVENT_MEMBERS, INVESTMENT_MATCH_FIELD_RESOLUTIONS],
+                committed_change="investment decision",
+            )
 
     def undo_rejections(self, events: Sequence[AuditEvent], *, actor: str) -> None:
         """Undo constraints as an operation; never restore historical row images."""

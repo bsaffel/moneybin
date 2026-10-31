@@ -2,7 +2,7 @@
 
 Builds a SQLMesh-applied DB via ImportService and simulates a drifted live
 view, then asserts ``check_schema_at_boot`` walks the full self-heal flow:
-detect drift → invoke ``TransformService.apply()`` → re-verify. End-to-end
+detect drift → refresh → prerequisite-aware apply → re-verify. End-to-end
 "heal restores drift" relies on a real SQLMesh model-fingerprint change
 (the production trigger) which can't be reproduced from tmp_path without
 copying the model tree; that case lives in manual verification. This test
@@ -28,10 +28,10 @@ def test_boot_check_runs_self_heal_under_real_sqlmesh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Boot helper runs plain TransformService.apply() when live core.dim_accounts drifts."""
+    """Boot self-heal reaches the real SQLMesh apply through its prerequisites."""
     from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.import_service import ImportService
-    from moneybin.services.transform_service import TransformService
+    from moneybin.services.transform_service import ApplyResult, TransformService
 
     secret_store = MagicMock()
     secret_store.get_key.return_value = "integration-test-key-0123456789abcdef"
@@ -72,17 +72,27 @@ def test_boot_check_runs_self_heal_under_real_sqlmesh(
     )
     db.close()
 
-    # Count apply() invocations to confirm the heal pipeline ran under a
-    # real SQLMesh context (not a mock).
+    # Wrap both phases so the assertion proves the safe boundary reached SQLMesh.
     apply_calls = 0
+    sqlmesh_calls = 0
     original_apply = TransformService.apply
+    original_sqlmesh = TransformService._apply_sqlmesh  # pyright: ignore[reportPrivateUsage]  # observe the real SQLMesh phase
 
-    def _counting_apply(self: TransformService) -> object:
+    def _counting_apply(
+        self: TransformService, *, actor: str = "system"
+    ) -> ApplyResult:
         nonlocal apply_calls
         apply_calls += 1
-        return original_apply(self)
+        assert actor == "mcp:schema_self_heal"
+        return original_apply(self, actor=actor)
+
+    def _counting_sqlmesh(self: TransformService) -> ApplyResult:
+        nonlocal sqlmesh_calls
+        sqlmesh_calls += 1
+        return original_sqlmesh(self)
 
     monkeypatch.setattr(TransformService, "apply", _counting_apply)
+    monkeypatch.setattr(TransformService, "_apply_sqlmesh", _counting_sqlmesh)
 
     # SQLMesh's regular plan sees no model-file changes (the simulation
     # only tampered with the live view), so the plain apply re-promotes
@@ -94,4 +104,7 @@ def test_boot_check_runs_self_heal_under_real_sqlmesh(
 
     assert apply_calls == 1, (
         f"expected exactly one TransformService.apply() call, got {apply_calls}"
+    )
+    assert sqlmesh_calls == 1, (
+        "self-heal must reach the real SQLMesh phase exactly once"
     )
