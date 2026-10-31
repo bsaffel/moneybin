@@ -75,7 +75,7 @@ def test_single_source_account_is_reconciled(db: Database) -> None:
     assert _statuses(db) == {"reconciled"}
 
 
-def test_bootstrap_plus_one_source_is_reconciled(db: Database) -> None:
+def test_plaid_buy_with_its_bootstrap_is_reconciled(db: Database) -> None:
     seed_security(db)
     seed_plaid_account(db)
     seed_plaid_buy(db, loaded_at="2026-02-01 09:00:00")
@@ -90,6 +90,25 @@ def test_bootstrap_plus_one_source_is_reconciled(db: Database) -> None:
         [ACCOUNT],
     ).fetchall()
     assert "opening_bootstrap" in {r[0] for r in subtypes}, "no bootstrap row seeded"
+    assert _statuses(db) == {"reconciled"}
+
+
+def test_bootstrap_does_not_count_as_a_second_source(db: Database) -> None:
+    """Manual buy + a snapshot-only gap: the Plaid bootstrap row must not flag it."""
+    seed_security(db)
+    seed_plaid_account(db)
+    seed_manual_buy(db, account_id=ACCOUNT, txn_id="manual_bootstrap_buy")
+    seed_snapshot(db, quantity="10")
+    _apply(db)
+
+    row = db.execute(
+        """
+        SELECT count(*) FROM core.fct_investment_transactions
+        WHERE account_id = ? AND subtype = 'opening_bootstrap'
+        """,
+        [ACCOUNT],
+    ).fetchone()
+    assert row is not None and row[0] >= 1, "no bootstrap row seeded"
     assert _statuses(db) == {"reconciled"}
 
 
