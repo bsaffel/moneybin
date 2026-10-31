@@ -19,7 +19,6 @@ from moneybin.investments.source_overlap import (
     stale_source_choice_accounts,
 )
 from moneybin.services.account_service import CLEAR, AccountService
-from moneybin.services.investment_service import InvestmentService
 from moneybin.services.mutation_context import operation
 from moneybin.services.transform_service import TransformService
 from moneybin.services.undo_service import UndoService
@@ -56,7 +55,7 @@ def _ledger(db: Database, account_id: str = _ACCOUNT) -> list[tuple[str, str | N
 
 def _status(db: Database) -> str:
     row = db.execute(
-        "SELECT valuation_status FROM core.dim_holdings WHERE account_id = ?",
+        "SELECT reconciliation_status FROM core.dim_holdings WHERE account_id = ?",
         [_ACCOUNT],
     ).fetchone()
     assert row is not None, "the position produced no dim_holdings row"
@@ -67,7 +66,7 @@ def test_no_choice_keeps_both_sources(db: Database) -> None:
     _seed_overlap(db)
 
     assert _ledger(db) == [("manual", None), ("plaid", None)]
-    assert _status(db) == "source_overlap"
+    assert _status(db) == "unreconciled"
 
 
 def test_manual_choice_keeps_only_recorded_rows(db: Database) -> None:
@@ -81,8 +80,7 @@ def test_manual_choice_keeps_only_recorded_rows(db: Database) -> None:
     )
 
     assert _ledger(db) == [("manual", None)]
-    assert _status(db) != "source_overlap"
-    assert _ACCOUNT not in InvestmentService(db)._source_overlap_accounts()  # pyright: ignore[reportPrivateUsage]  # the claim under test is the overlap predicate lifting
+    assert _status(db) == "reconciled"
 
 
 def test_plaid_choice_keeps_synced_rows_and_bootstrap(db: Database) -> None:
@@ -93,7 +91,7 @@ def test_plaid_choice_keeps_synced_rows_and_bootstrap(db: Database) -> None:
     )
 
     assert _ledger(db) == [("plaid", None), ("plaid", "opening_bootstrap")]
-    assert _status(db) != "source_overlap"
+    assert _status(db) == "reconciled"
 
 
 def test_clear_returns_rows_with_a_newer_watermark(db: Database) -> None:
@@ -131,7 +129,7 @@ def test_clear_returns_rows_with_a_newer_watermark(db: Database) -> None:
     ).fetchone()
     assert holding is not None
     assert holding[0] >= changed_at
-    assert _status(db) == "source_overlap", "clearing should bring the overlap back"
+    assert _status(db) == "unreconciled", "clearing should bring the overlap back"
 
 
 def _fail_restatement(*_args: object, committed_change: str) -> None:

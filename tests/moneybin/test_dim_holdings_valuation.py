@@ -13,7 +13,6 @@ import pytest
 
 from moneybin.database import SQLMESH_ROOT, Database, sqlmesh_context
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
-from moneybin.services.investment_service import InvestmentService
 from tests.moneybin.sqlmesh_model_helpers import rendered_model_sql
 
 pytestmark = pytest.mark.integration
@@ -1590,6 +1589,7 @@ def test_manual_account_without_a_snapshot_still_values(
     )
     assert status == _expected_status(elapsed)
     assert market_value == Decimal("1200.00")
+    assert _reconciliation_status(db, _case_account("plaid_only")) == "reconciled"
 
 
 @pytest.mark.slow
@@ -1751,51 +1751,61 @@ def test_mixed_currency_lots_withhold_the_value(
     )
 
 
+def _reconciliation_status(db: Database, account_id: str) -> object:
+    rows = db.execute(
+        "SELECT reconciliation_status FROM core.dim_holdings WHERE account_id = ?",
+        [account_id],
+    ).fetchall()
+    assert len(rows) == 1, f"expected one dim_holdings row for {account_id}: {rows}"
+    return rows[0][0]
+
+
 @pytest.mark.slow
-def test_two_source_ledgers_withhold_every_figure(
+def test_overlapping_account_publishes_valuation_and_is_unreconciled(
     valuation_cases: _ValuationCases,
 ) -> None:
-    """A position whose account carries two source ledgers publishes nothing.
-
-    The double-count reaches quantity, cost basis, market value and gain alike,
-    so the row makes no valuation claim at all — and says ``source_overlap``
-    rather than ``withheld``, because the remedy is to remove one of the two
-    feeds, not to reconcile a share count.
-    """
+    """Two source ledgers annotate the row; they never blank it."""
     db = valuation_cases.db
-    market_value, gain, price_date, source, days, status = _holding(
+    elapsed = (_db_today(db) - valuation_cases.anchor).days
+    market_value, _gain, price_date, source, days, status = _holding(
         db, _case_account("source_overlap")
     )
 
-    assert status == "source_overlap"
-    assert market_value is None
-    assert gain is None
-    assert price_date is None, "a held-back row must not advertise a price date"
-    assert source is None, "a held-back row must not advertise a price source"
-    assert days is None, "a held-back row must not advertise price freshness"
-    # Proves the blank is the withhold and not an absent price: the close is
-    # sitting in core.fct_security_prices, resolved, one model over.
-    assert (
-        _resolved_close(db, _case_security("source_overlap"), valuation_cases.anchor)
-        is not None
+    assert status == _expected_status(elapsed)
+    assert status in ("valued", "carried_forward")
+    assert market_value is not None
+    assert price_date is not None
+    assert source is not None
+    assert days is not None
+    assert _reconciliation_status(db, _case_account("source_overlap")) == (
+        "unreconciled"
     )
 
 
 @pytest.mark.slow
-def test_source_overlap_outranks_a_quantity_divergence(
+def test_withheld_and_unreconciled_coexist(
     valuation_cases: _ValuationCases,
 ) -> None:
-    """When both hold, the account-level fault is the one reported.
-
-    A quantity that disagrees with the broker is a *symptom* here — the ledger
-    counted every buy twice, so of course the count is wrong. Reporting
-    ``withheld`` would send the user to reconcile a share count that reconciling
-    cannot fix.
-    """
+    """A share-count dispute on a mixed-source account is both, independently."""
     db = valuation_cases.db
-    *_, status = _holding(db, _case_account("overlap_beats_withheld"))
+    row = _holding(db, _case_account("overlap_beats_withheld"))
 
-    assert status == "source_overlap"
+    _assert_withheld_publishes_nothing(row)
+    assert _reconciliation_status(db, _case_account("overlap_beats_withheld")) == (
+        "unreconciled"
+    )
+
+
+@pytest.mark.slow
+def test_valuation_status_never_reads_source_overlap(
+    valuation_cases: _ValuationCases,
+) -> None:
+    rows = valuation_cases.db.execute(
+        "SELECT DISTINCT valuation_status FROM core.dim_holdings"
+    ).fetchall()
+    statuses = {str(r[0]) for r in rows}
+    assert "source_overlap" not in statuses
+    assert statuses <= {"valued", "carried_forward", "unpriced", "withheld"}
 
 
 @pytest.mark.slow
@@ -1855,17 +1865,19 @@ def test_an_opening_bootstrap_is_not_a_second_source_ledger(
 
     *_, status = _holding(db, account_id)
     assert status != "source_overlap"
+    assert _reconciliation_status(db, account_id) == "reconciled"
 
 
 @pytest.mark.slow
 def test_an_overlap_flip_advances_the_row_watermark(
     valuation_cases: _ValuationCases,
 ) -> None:
-    """A status change caused by a sibling position still moves updated_at.
+    """A marker change caused by a sibling position still moves updated_at.
 
-    The overlap flag is ACCOUNT-scoped, so a second-source event recorded
-    against security B flips security A from a valued row to ``source_overlap``
-    while none of A's own lots, price, or snapshot timestamps move. A watermark
+    The reconciliation flag is ACCOUNT-scoped, so a second-source event recorded
+    against security B flips security A to ``unreconciled`` while none of A's
+    own price or snapshot timestamps move; the lots carry the account-level
+    fold and dim_holdings inherits it. A watermark
     folding only position-scoped inputs would report A as unchanged, and an
     incremental consumer querying by the documented row watermark — the
     contract ``core-updated-at-convention.md`` sets and this model's own column
@@ -1882,7 +1894,7 @@ def test_an_overlap_flip_advances_the_row_watermark(
 
     row = db.execute(
         """
-        SELECT updated_at, valuation_status
+        SELECT updated_at, reconciliation_status
         FROM core.dim_holdings
         WHERE account_id = ? AND security_id = ?
         """,
@@ -1902,10 +1914,7 @@ def test_an_overlap_flip_advances_the_row_watermark(
     assert lot_row is not None
 
     # Preconditions: the scenario really is "the row's own inputs did not move".
-    assert status == "source_overlap", "the sibling event did not flip this row"
-    assert lot_row[0] == datetime.fromisoformat(_OVERLAP_HELD_LOT_AT), (
-        "fixture no longer pins the held position's own freshness"
-    )
+    assert status == "unreconciled", "the sibling event did not flip this row"
     assert datetime.fromisoformat(_OVERLAP_HELD_LOT_AT) < datetime.fromisoformat(
         _OVERLAP_SECOND_SOURCE_AT
     ), "the second-source event must be the newer input for this to prove anything"
@@ -1917,11 +1926,10 @@ def test_an_overlap_flip_advances_the_row_watermark(
 def test_a_single_source_row_keeps_its_own_watermark(
     valuation_cases: _ValuationCases,
 ) -> None:
-    """The overlap term contributes only where the overlap exists.
+    """The account-level fold reaches only unreconciled accounts.
 
-    ``source_overlap_accounts`` holds only overlapping accounts, so a
-    single-source position LEFT JOINs to nothing and falls back to its own
-    inputs. Without that scoping every row in the database would inherit
+    A single-source position's lots carry no ledger fold and fall back to their
+    own inputs. Without that scoping every row in the database would inherit
     whatever the freshest overlapping ledger row happened to be — a watermark
     that advances on an unrelated account's fault is as useless as one that
     misses its own.
@@ -1937,45 +1945,3 @@ def test_a_single_source_row_keeps_its_own_watermark(
     ).fetchone()
     assert row is not None
     assert row[0] == datetime.fromisoformat(_OVERLAP_HELD_LOT_AT)
-
-
-@pytest.mark.slow
-def test_both_overlap_implementations_agree_on_the_same_ledger(
-    valuation_cases: _ValuationCases,
-) -> None:
-    """One overlap predicate, two implementations, the same verdict.
-
-    ``core.dim_holdings`` decides the withhold in SQL. ``InvestmentService``
-    re-derives the same account set in Python for the ``lots`` and ``gains``
-    reads, because those two models carry no status column of their own — a
-    row-level trust marker across the three derived investment models is a
-    separate design decision. Two implementations of one predicate drift, and
-    the load-bearing half is the exclusion nobody would guess: an
-    ``opening_bootstrap`` row is MoneyBin's own reconstruction of a pre-window
-    position, not a second observation, and must not count on either side.
-
-    Compared over the accounts ``dim_holdings`` can speak for. Its grain is
-    OPEN positions, so the Python set is legitimately the wider of the two —
-    that is why the gains surface reads the ledger rather than this view.
-
-    Reaches for the private helper deliberately: the claim under test is that
-    two *implementations* agree, and the fixture accounts carry no
-    ``core.dim_accounts`` rows, so the public reads cannot resolve them.
-    """
-    db = valuation_cases.db
-
-    holdings_rows = db.execute(
-        "SELECT account_id, valuation_status FROM core.dim_holdings"
-    ).fetchall()
-    sql_side = {str(r[0]) for r in holdings_rows if r[1] == "source_overlap"}
-    open_accounts = {str(r[0]) for r in holdings_rows}
-    python_side = InvestmentService(db)._source_overlap_accounts()  # pyright: ignore[reportPrivateUsage]  # the claim under test is that two implementations agree
-
-    # Preconditions: both sides really evaluated something, and the fixture
-    # holds accounts of each verdict — a green comparison of two empty sets
-    # would prove nothing.
-    assert _case_account("source_overlap") in sql_side
-    assert _case_account("bootstrap_only") in open_accounts
-    assert _case_account("plaid_only") in open_accounts
-
-    assert open_accounts & python_side == sql_side

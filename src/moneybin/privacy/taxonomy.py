@@ -968,6 +968,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # rather than TXN_DATE.
         "days_since_observed": DataClass.TIMESTAMP_OBSERVABILITY,
         "valuation_status": DataClass.TXN_TYPE,
+        "reconciliation_status": DataClass.TXN_TYPE,
         # The broker's non-authoritative claim about the same position. Being a
         # reference rather than MoneyBin's own figure changes nothing about its
         # sensitivity — it discloses the identical holding, so each column

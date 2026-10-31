@@ -725,7 +725,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="What are my positions worth, and how fresh is each price? "
             "(market_value is NULL — never zero — when valuation_status is "
-            "'unpriced', 'withheld' or 'source_overlap')",
+            "'unpriced' or 'withheld'; reconciliation_status is 'unreconciled' "
+            "when the account's ledger mixes two sources)",
             sql="""
                 SELECT security_id, quantity, cost_basis, market_value,
                        unrealized_gain, valuation_status, days_since_observed
@@ -739,7 +740,7 @@ EXAMPLES: dict[str, list[Example]] = {
                 SELECT account_id, security_id, quantity, cost_basis,
                        valuation_status
                 FROM core.dim_holdings
-                WHERE valuation_status IN ('unpriced', 'withheld', 'source_overlap')
+                WHERE valuation_status IN ('unpriced', 'withheld')
                 ORDER BY account_id, security_id
             """,
         ),
