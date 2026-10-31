@@ -1,5 +1,5 @@
 {
-  "sha256": "025f864689d5f66b7315cb3e758600742dc49009a36a21efc052845d4575f9aa",
+  "sha256": "79842b71b4b291505c91d6482c266c2b1aa1f4f6864d2e6ff265803c8e5b303b",
   "tool_count": 50,
   "tools": [
     {
@@ -2107,7 +2107,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return investment events, holdings, tax lots (open or all), realized gains, or securities. Amounts use the ledger sign convention; currency is summary.display_currency except holdings rows, which keep their currency_code. For holdings, valuation_status is valued, carried_forward, unpriced, withheld (wrong share count or currency), or source_overlap (two source ledgers on one account; lots and gains degrade too \u2014 see summary.degraded_reason); the last three null market_value/unrealized_gain (never zero), counted in data.warnings. Never sum market_value across rows: read data.total_market_value in data.total_market_value_currency \u2014 mixed currencies price into home at each position's close, both null with no covering rate; data.market_value_by_currency gives the original-unit split and data.applied_rates names each rate. data.max_days_since_observed is the stalest close behind a figure.",
+        "description": "Return investment events, holdings, tax lots (open or all), realized gains, or securities. Amounts use the ledger sign convention; currency is summary.display_currency except holdings rows (own currency_code). Holdings valuation_status: valued, carried_forward, unpriced, withheld (wrong share count or currency); the last two null market_value/unrealized_gain (never zero), counted in data.warnings. reconciliation_status=unreconciled: one account, two source ledgers; holdings, lots and gains double-count (summary.degraded_reason). Never sum market_value across rows: read data.total_market_value in data.total_market_value_currency \u2014 mixed currencies price into home at each position's close, both null with no covering rate; data.market_value_by_currency gives the original-unit split and data.applied_rates names each rate. data.max_days_since_observed is the stalest close behind a figure.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2201,12 +2201,12 @@
         "name": "investments",
         "title": "Investments"
       },
-      "description_bytes": 900,
+      "description_bytes": 898,
       "input_schema_bytes": 672,
       "name": "investments",
       "other_bytes": 76,
       "output_schema_bytes": 0,
-      "total_bytes": 1790
+      "total_bytes": 1785
     },
     {
       "annotation_bytes": 90,
@@ -5480,5 +5480,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 66545
+  "total_bytes": 66540
 }

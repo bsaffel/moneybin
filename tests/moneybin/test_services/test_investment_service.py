@@ -35,7 +35,17 @@ from moneybin.services.investment_service import (
     InvestmentService,
     SecurityResolutionError,
 )
+from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import create_core_dim_stub_views, create_core_tables
+from tests.moneybin.test_investments._overlap_seed import (
+    ACCOUNT,
+    seed_manual_buy,
+    seed_manual_sell,
+    seed_overlap,
+    seed_plaid_account,
+    seed_plaid_buy,
+    seed_security,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -981,9 +991,12 @@ class TestRecordRefusesAnExcludedSource:
         svc = self._svc(db, None)
         assert svc.record_event(**self._buy(), actor="cli", created_by="cli")
 
-    def test_source_overlap_reason_names_the_setting(self, db: Database) -> None:
-        reason = self._svc(db, None)._source_overlap_reason(  # pyright: ignore[reportPrivateUsage]  # pins the user-facing text
-            2, "positions"
+    def test_unreconciled_reason_names_the_setting(self, db: Database) -> None:
+        reason = self._svc(db, None)._unreconciled_reason(  # pyright: ignore[reportPrivateUsage]  # pins the user-facing text
+            3, 2, "position(s)"
+        )
+        assert reason.startswith(
+            "investment_source_overlap: 3 position(s) in 2 account(s) are unreconciled"
         )
         assert "accounts set" in reason
         assert "--investment-source-type manual|plaid" in reason
@@ -1224,6 +1237,39 @@ class TestSelectLots:
         assert _selected_lots(db) != []
         svc.select_lots("sell_1", [], actor="cli")
         assert _selected_lots(db) == []
+
+    def test_selection_in_a_reconciled_account_carries_no_warning(
+        self, db: Database
+    ) -> None:
+        _seed_disposal_and_lots(db)
+        db.conn.execute(
+            "UPDATE core.fct_investment_transactions "
+            "SET reconciliation_status = 'reconciled'"  # test fixture update, static SQL
+        )
+        result = db_service(db).select_lots(
+            "sell_1", [("lot_a", Decimal("6"))], actor="cli"
+        )
+        assert result.warnings == []
+        assert result.degraded_reason is None
+
+    def test_selection_in_an_unreconciled_account_warns_and_still_writes(
+        self, db: Database
+    ) -> None:
+        """A selected lot may be one of a duplicated pair, so the write says so (D5)."""
+        _seed_disposal_and_lots(db)
+        db.conn.execute(
+            "UPDATE core.fct_investment_transactions "
+            "SET reconciliation_status = 'unreconciled'"  # test fixture update, static SQL
+        )
+        result = db_service(db).select_lots(
+            "sell_1", [("lot_a", Decimal("6"))], actor="cli"
+        )
+        assert result.degraded_reason is not None
+        assert result.degraded_reason.startswith(
+            "investment_source_overlap: 1 disposal(s) in 1 account(s) are unreconciled"
+        )
+        assert result.warnings == [result.degraded_reason]
+        assert _selected_lots(db) == [("lot_a", Decimal("6.0000000000"))]
 
     def test_unknown_disposal_raises(self, db: Database) -> None:
         _seed_disposal_and_lots(db)
@@ -1610,31 +1656,6 @@ def _insert_event(
     )
 
 
-def _seed_two_source_ledger(
-    db: Database, *, account_id: str = "acct_brokerage"
-) -> None:
-    """Give one account an investment ledger from two sources at once.
-
-    The state ``core.dim_holdings``'s ``source_overlap_accounts`` keys on:
-    more than one ``source_type`` among the account's non-bootstrap ledger
-    rows. Seeded on the ledger rather than on a lot or a gain because that is
-    where the fault lives — the derived rows carry no marker of their own, which
-    is why the ledger has to be consulted at read time.
-    """
-    _insert_event(
-        db,
-        investment_transaction_id=f"{account_id}_manual_buy",
-        account_id=account_id,
-        source_type="manual",
-    )
-    _insert_event(
-        db,
-        investment_transaction_id=f"{account_id}_plaid_buy",
-        account_id=account_id,
-        source_type="plaid",
-    )
-
-
 def _insert_lot(
     db: Database,
     *,
@@ -1647,15 +1668,16 @@ def _insert_lot(
     is_open: bool = True,
     basis_incomplete: bool = False,
     currency_code: str | None = "USD",
+    reconciliation_status: str = "reconciled",
 ) -> None:
     db.conn.execute(
         """
         INSERT INTO core.fct_investment_lots
             (lot_id, account_id, security_id, acquisition_date, acquisition_type,
              original_quantity, remaining_quantity, cost_basis_total,
-             cost_basis_remaining, cost_basis_method, currency_code, is_open,
-             basis_incomplete)
-        VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', ?, ?, ?)
+             cost_basis_remaining, cost_basis_method, reconciliation_status,
+             currency_code, is_open, basis_incomplete)
+        VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', ?, ?, ?, ?)
         """,  # test fixture insert, static SQL
         [
             lot_id,
@@ -1666,6 +1688,7 @@ def _insert_lot(
             remaining_quantity,
             cost_basis_remaining,
             cost_basis_remaining,
+            reconciliation_status,
             currency_code,
             is_open,
             basis_incomplete,
@@ -1688,14 +1711,16 @@ def _insert_gain(
     term: str = "long",
     basis_incomplete: bool = False,
     currency_code: str | None = "USD",
+    reconciliation_status: str = "reconciled",
 ) -> None:
     db.conn.execute(
         """
         INSERT INTO core.fct_realized_gains
             (realized_gain_id, account_id, security_id, disposal_txn_id, lot_id,
              quantity, acquisition_date, disposal_date, proceeds, cost_basis,
-             gain_loss, term, cost_basis_method, basis_incomplete, currency_code)
-        VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, ?)
+             gain_loss, term, cost_basis_method, basis_incomplete,
+             reconciliation_status, currency_code)
+        VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, ?, ?)
         """,  # test fixture insert, static SQL
         [
             realized_gain_id,
@@ -1709,6 +1734,7 @@ def _insert_gain(
             gain_loss,
             term,
             basis_incomplete,
+            reconciliation_status,
             currency_code,
         ],
     )
@@ -1734,6 +1760,7 @@ class _Holding(NamedTuple):
     price_source: str | None = None
     days_since_observed: str | None = None
     valuation_status: str = "unpriced"
+    reconciliation_status: str = "reconciled"
 
 
 def _holding_select(h: _Holding) -> str:
@@ -1768,7 +1795,8 @@ def _holding_select(h: _Holding) -> str:
             else f"{h.days_since_observed}::INT"
         )
         + " AS days_since_observed, "
-        f"'{h.valuation_status}' AS valuation_status"
+        f"'{h.valuation_status}' AS valuation_status, "
+        f"'{h.reconciliation_status}' AS reconciliation_status"
     )
 
 
@@ -2100,32 +2128,57 @@ class TestHoldings:
         assert "unpriced" in warning
         assert "withheld" in warning
 
-    def test_source_overlap_is_warned_and_degrades_the_read(self, db: Database) -> None:
-        """A mixed-source account gets its own warning and a machine-readable code.
+    def test_unreconciled_holding_publishes_its_value_and_degrades(
+        self, db: Database
+    ) -> None:
+        """An unreconciled position keeps its figure, is counted in the total, and warns.
 
-        Counted in the no-market-value warning like any other blank row, so the
-        count matches what is on screen — but with a second warning of its own,
-        because the remedy shares nothing with the other two. `unpriced` wants a
-        price feed and `withheld` wants a share count reconciled; this one wants
-        a whole feed removed, and no re-run of the pipeline will clear it.
+        The no-market-value warning counts only the genuinely unpriced row: an
+        unreconciled position carries a number, so it is not one of the blanks.
         """
         _seed_read_fixtures(db)
+        unreconciled = _priced("sec_2", "USD", "500.00")._replace(
+            reconciliation_status="unreconciled"
+        )
         _replace_holdings_view(
             db,
-            [
-                _Holding(security_id="sec_1", valuation_status="unpriced"),
-                _Holding(security_id="sec_2", valuation_status="source_overlap"),
-            ],
+            [_Holding(security_id="sec_1", valuation_status="unpriced"), unreconciled],
         )
         result = db_service(db).holdings()
 
+        row = next(r for r in result.rows if r.security_id == "sec_2")
+        assert row.reconciliation_status == "unreconciled"
+        assert row.market_value == Decimal("500.00")
+        assert result.total_market_value == Decimal("500.00")
         assert len(result.warnings) == 2
-        assert "2 position(s) report no market value" in result.warnings[0]
-        overlap = result.warnings[1]
-        assert "1 position(s)" in overlap
-        assert "two sources" in overlap
+        assert "1 position(s) report no market value" in result.warnings[0]
+        assert "source_overlap" not in result.warnings[0]
         assert result.degraded_reason is not None
-        assert result.degraded_reason.startswith("investment_source_overlap:")
+        assert result.degraded_reason.startswith(
+            "investment_source_overlap: 1 position(s) in 1 account(s) are unreconciled"
+        )
+        assert result.warnings[1] == result.degraded_reason
+
+    def test_unreconciled_reason_counts_distinct_accounts(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        rows = [
+            _priced(sec, "USD", "10.00", account_id=acct)._replace(
+                reconciliation_status="unreconciled"
+            )
+            for acct, sec in [
+                ("acct_brokerage", "sec_1"),
+                ("acct_brokerage", "sec_2"),
+                ("acct_roth", "sec_1"),
+            ]
+        ]
+        _replace_holdings_view(db, rows)
+
+        reason = db_service(db).holdings().degraded_reason
+
+        assert reason is not None
+        assert reason.startswith(
+            "investment_source_overlap: 3 position(s) in 2 account(s)"
+        )
 
     def test_no_degraded_reason_without_a_source_overlap(self, db: Database) -> None:
         """The code is set only when the state it names is present.
@@ -2695,32 +2748,24 @@ class TestLots:
         result = db_service(db).lots()
         assert result.warnings == []
 
-    def test_source_overlap_degrades_the_lots_read(self, db: Database) -> None:
-        """Lots derived from two interleaved ledgers say so on the envelope.
-
-        ``dim_holdings`` withholds a market value for exactly this account, and
-        the holdings response points the caller here for per-lot basis. Without
-        this, the caller lands on the double-counted quantities and basis with
-        nothing marking them — a correctly-withheld figure traded for an
-        uncaveated wrong one.
-        """
+    def test_unreconciled_lots_degrade_the_lots_read(self, db: Database) -> None:
+        """Lots from an unreconciled account say so, per row and on the envelope."""
         _seed_read_fixtures(db)
-        _seed_two_source_ledger(db)
-        _insert_lot(db, lot_id="lot_1")
+        _insert_lot(db, lot_id="lot_1", reconciliation_status="unreconciled")
+        _insert_lot(db, lot_id="lot_2", reconciliation_status="reconciled")
 
         result = db_service(db).lots()
 
+        statuses = {r.lot_id: r.reconciliation_status for r in result.rows}
+        assert statuses == {"lot_1": "unreconciled", "lot_2": "reconciled"}
         assert result.degraded_reason is not None
-        assert result.degraded_reason.startswith("investment_source_overlap:")
-        assert "1 lot(s)" in result.degraded_reason
+        assert result.degraded_reason.startswith(
+            "investment_source_overlap: 1 lot(s) in 1 account(s)"
+        )
         assert result.degraded_reason in result.warnings
 
-    def test_a_single_source_ledger_does_not_degrade_the_lots_read(
-        self, db: Database
-    ) -> None:
-        """One source is one ledger: the flag must mean something when set."""
+    def test_reconciled_lots_do_not_degrade_the_lots_read(self, db: Database) -> None:
         _seed_read_fixtures(db)
-        _insert_event(db, investment_transaction_id="only_buy", source_type="plaid")
         _insert_lot(db, lot_id="lot_1")
 
         result = db_service(db).lots()
@@ -2731,46 +2776,19 @@ class TestLots:
     def test_lots_from_an_unaffected_account_are_not_degraded(
         self, db: Database
     ) -> None:
-        """The flag is scoped to the rows returned, not to the database.
-
-        The overlap is account-scoped, so a read filtered to a clean account
-        carries no double-counted row and must not inherit another account's
-        fault — a `degraded` that rides along on every read is one no consumer
-        can act on.
-        """
+        """The flag is scoped to the rows returned, not to the database."""
         _seed_read_fixtures(db)
-        _seed_two_source_ledger(db, account_id="acct_brokerage")
+        _insert_lot(
+            db,
+            lot_id="lot_brokerage",
+            account_id="acct_brokerage",
+            reconciliation_status="unreconciled",
+        )
         _insert_lot(db, lot_id="lot_roth", account_id="acct_roth")
 
         result = db_service(db).lots(account_ref="acct_roth")
 
         assert [r.lot_id for r in result.rows] == ["lot_roth"]
-        assert result.degraded_reason is None
-
-    def test_an_opening_bootstrap_is_not_a_second_source_ledger(
-        self, db: Database
-    ) -> None:
-        """A reconstructed pre-window lot re-reports nothing, so it overlaps nothing.
-
-        ``prep.int_plaid__opening_positions`` synthesizes a plaid-sourced
-        ``transfer_in`` for the gap the in-window transactions leave. Counting
-        its source_type would degrade every broker-covered account that also
-        holds a manual entry — and would disagree with ``dim_holdings``, whose
-        CTE excludes the same subtype.
-        """
-        _seed_read_fixtures(db)
-        _insert_event(db, investment_transaction_id="manual_buy", source_type="manual")
-        _insert_event(
-            db,
-            investment_transaction_id="bootstrap",
-            source_type="plaid",
-            type_="transfer_in",
-            subtype="opening_bootstrap",
-        )
-        _insert_lot(db, lot_id="lot_1")
-
-        result = db_service(db).lots()
-
         assert result.degraded_reason is None
 
 
@@ -2884,30 +2902,25 @@ class TestGains:
         with pytest.raises(UserError):
             db_service(db).gains(account_ref="does-not-exist")
 
-    def test_source_overlap_degrades_the_gains_read(self, db: Database) -> None:
-        """Realized gains from two interleaved ledgers are double-counted too.
-
-        Proceeds, basis and gain all come off the same ledger the holdings
-        withhold exists to contain, and this is the surface a user files taxes
-        from — the last place a wrong figure should arrive uncaveated.
-        """
+    def test_unreconciled_gains_degrade_the_gains_read(self, db: Database) -> None:
+        """This is the surface a user files taxes from; a doubled figure is marked."""
         _seed_read_fixtures(db)
-        _seed_two_source_ledger(db)
-        _insert_gain(db, realized_gain_id="gain_1")
+        _insert_gain(
+            db, realized_gain_id="gain_1", reconciliation_status="unreconciled"
+        )
 
         result = db_service(db).gains()
 
+        assert result.rows[0].reconciliation_status == "unreconciled"
+        assert result.rows[0].gain_loss == Decimal("200.00")
         assert result.degraded_reason is not None
-        assert result.degraded_reason.startswith("investment_source_overlap:")
-        assert "1 realized-gain row(s)" in result.degraded_reason
+        assert result.degraded_reason.startswith(
+            "investment_source_overlap: 1 realized-gain row(s) in 1 account(s)"
+        )
         assert result.degraded_reason in result.warnings
 
-    def test_a_single_source_ledger_does_not_degrade_the_gains_read(
-        self, db: Database
-    ) -> None:
-        """One source is one ledger: the flag must mean something when set."""
+    def test_reconciled_gains_do_not_degrade_the_gains_read(self, db: Database) -> None:
         _seed_read_fixtures(db)
-        _insert_event(db, investment_transaction_id="only_buy", source_type="plaid")
         _insert_gain(db, realized_gain_id="gain_1")
 
         result = db_service(db).gains()
@@ -2918,3 +2931,155 @@ class TestGains:
 
 def db_service(db: Database) -> InvestmentService:
     return InvestmentService(db)
+
+
+# ---------------------------------------------------------------------------
+# reconciliation_status through the real models (docs/specs/reconciliation-status.md)
+# ---------------------------------------------------------------------------
+
+_CLEAN_ACCOUNT = "acc_clean"
+
+
+def _seed_second_account(db: Database, account_id: str = _CLEAN_ACCOUNT) -> None:
+    """A second resolvable account so a filtered read can name it."""
+    db.execute(
+        """
+        INSERT INTO raw.plaid_accounts
+            (account_id, account_type, account_subtype, institution_name,
+             official_name, mask, source_file, source_type, source_origin,
+             extracted_at, loaded_at)
+        VALUES (?, 'investment', 'brokerage', 'TestBank', 'Clean Brokerage',
+                '5678', 'sync_test', 'plaid', 'item_clean',
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # test fixture, not executing user SQL
+        [account_id],
+    )
+
+
+def _seed_liquidating_sell(db: Database) -> None:
+    """A manual sell of all 20 units the two overlapping buys put on the ledger."""
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees,
+            created_by, investment_transaction_id, currency_code, created_at
+        ) VALUES ('manual_liquidate', 'imp_manual_liquidate', ?, 'sec_choice_0001',
+                  'CHC', 'sell', DATE '2026-03-05', 20, 120.00, 2400.00, 0.00,
+                  'test', 'manual_liquidate', 'USD', TIMESTAMP '2026-03-06 09:00:00')
+        """,  # test fixture, not executing user SQL
+        [ACCOUNT],
+    )
+
+
+def _transform(db: Database) -> None:
+    result = TransformService(db).apply()
+    assert result.applied, f"transform failed: {result.error}"
+
+
+@pytest.mark.integration
+class TestReconciliationStatusReads:
+    """Holdings, lots, gains and lot selection read the column the models derive."""
+
+    def test_holdings_publish_unreconciled_values_and_degrade(
+        self, db: Database
+    ) -> None:
+        seed_overlap(db)
+        result = InvestmentService(db).holdings()
+
+        row = next(x for x in result.rows if x.account_id == ACCOUNT)
+        assert row.reconciliation_status == "unreconciled"
+        assert row.market_value is not None
+        assert result.total_market_value is not None
+        assert result.degraded_reason is not None
+        assert result.degraded_reason.startswith(
+            "investment_source_overlap: 1 position(s) in 1 account(s)"
+        )
+        assert result.degraded_reason in result.warnings
+
+    def test_filtered_read_of_clean_account_is_not_degraded(self, db: Database) -> None:
+        seed_security(db)
+        seed_plaid_account(db)
+        _seed_second_account(db)
+        seed_manual_buy(db, account_id=ACCOUNT, txn_id="manual_choice_buy")
+        seed_plaid_buy(db, loaded_at="2026-02-01 09:00:00")
+        seed_manual_buy(db, account_id=_CLEAN_ACCOUNT, txn_id="manual_clean_buy")
+        _transform(db)
+        svc = InvestmentService(db)
+
+        holdings = svc.holdings(account_ref=_CLEAN_ACCOUNT)
+        lots = svc.lots(account_ref=_CLEAN_ACCOUNT)
+
+        assert [r.account_id for r in holdings.rows] == [_CLEAN_ACCOUNT]
+        assert holdings.rows[0].reconciliation_status == "reconciled"
+        assert holdings.degraded_reason is None
+        assert lots.rows and lots.degraded_reason is None
+        assert svc.holdings().degraded_reason is not None
+
+    def test_gains_of_liquidated_overlapping_account_are_degraded(
+        self, db: Database
+    ) -> None:
+        seed_security(db)
+        seed_plaid_account(db)
+        seed_manual_buy(db, account_id=ACCOUNT, txn_id="manual_choice_buy")
+        seed_plaid_buy(db, loaded_at="2026-02-01 09:00:00")
+        _seed_liquidating_sell(db)
+        _transform(db)
+        svc = InvestmentService(db)
+
+        assert [r for r in svc.holdings().rows if r.account_id == ACCOUNT] == []
+        gains = svc.gains()
+
+        assert gains.rows
+        assert {r.reconciliation_status for r in gains.rows} == {"unreconciled"}
+        assert gains.degraded_reason is not None
+        assert gains.degraded_reason.startswith(
+            f"investment_source_overlap: {len(gains.rows)} realized-gain row(s) "
+            "in 1 account(s)"
+        )
+
+    def test_lots_degraded_reason_counts_accounts(self, db: Database) -> None:
+        seed_overlap(db)
+        lots = InvestmentService(db).lots()
+
+        assert len(lots.rows) == 2
+        assert {r.reconciliation_status for r in lots.rows} == {"unreconciled"}
+        assert lots.degraded_reason is not None
+        assert lots.degraded_reason.startswith(
+            "investment_source_overlap: 2 lot(s) in 1 account(s)"
+        )
+
+    def test_select_lots_in_unreconciled_account_warns(self, db: Database) -> None:
+        seed_security(db)
+        seed_plaid_account(db)
+        seed_manual_buy(db, account_id=ACCOUNT, txn_id="manual_choice_buy")
+        seed_plaid_buy(db, loaded_at="2026-02-01 09:00:00")
+        seed_manual_sell(db, account_id=ACCOUNT, txn_id="manual_choice_sell")
+        _transform(db)
+        svc = InvestmentService(db)
+        svc.set_security("sec_choice_0001", cost_basis_method="specific", actor="test")
+        lot_id = svc.lots(account_ref=ACCOUNT, open_only=False).rows[0].lot_id
+
+        result = svc.select_lots(
+            "manual_choice_sell", [(lot_id, Decimal("4"))], actor="test"
+        )
+
+        assert result.degraded_reason is not None
+        assert result.degraded_reason.startswith("investment_source_overlap:")
+        assert result.warnings == [result.degraded_reason]
+
+    def test_reconciled_reads_never_degrade(self, db: Database) -> None:
+        seed_security(db)
+        seed_plaid_account(db)
+        seed_manual_buy(db, account_id=ACCOUNT, txn_id="manual_only_buy")
+        seed_manual_sell(db, account_id=ACCOUNT, txn_id="manual_only_sell")
+        _transform(db)
+        svc = InvestmentService(db)
+
+        holdings, lots, gains = svc.holdings(), svc.lots(open_only=False), svc.gains()
+
+        assert holdings.rows and lots.rows and gains.rows
+        assert holdings.degraded_reason is None
+        assert lots.degraded_reason is None
+        assert gains.degraded_reason is None
+        assert {r.reconciliation_status for r in holdings.rows} == {"reconciled"}

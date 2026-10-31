@@ -65,6 +65,7 @@ from moneybin.services.investment_service import (
 )
 
 from . import lots, matches, prices, securities
+from ._reconciliation import with_reconciliation_column
 from .securities import security_label
 
 logger = logging.getLogger(__name__)
@@ -359,14 +360,16 @@ those numbers rather than the answer itself, so `--wide` carries them. Chosen
 by hand, not by width: a fit that measures columns would drop `market value` —
 the figure the command exists to report — because it sits in the middle.
 
-`status` stays because it is the only thing separating three different facts
-that all render `-`: `unpriced` (no close resolved), `withheld` (a known-wrong
-share count), and `source_overlap` (the account's ledger arrives from two
-sources at once), whose remedies are a price refresh, a position fix, and
-dropping one of the two feeds respectively. `InvestmentService.holdings` warns
-by telling the reader to see each row's `valuation_status`, so a default view
-without it names something not on screen — and that warning is a `render_note`,
-which `-q` drops.
+`status` stays because it is the only thing separating the two facts that
+render `-`: `unpriced` (no close resolved) and `withheld` (a known-wrong share
+count), whose remedies are a price refresh and a position fix.
+`InvestmentService.holdings` warns by telling the reader to see each row's
+`valuation_status`, so a default view without it names something not on screen
+— and that warning is a `render_note`, which `-q` drops.
+
+A `reconciliation` column joins the default set only when a row is
+unreconciled (`with_reconciliation_column`): that row's figures print but
+double-count, and the warning beneath the table names the account count.
 
 `security` is the ticker; the catalog id is `--wide` material like the rest of
 the audit trail.
@@ -395,11 +398,14 @@ def investments_holdings(
     """Current positions: what you hold, what it is worth, and whether you are up.
 
     Market value and unrealized gain come from the most recent close at or
-    before today. A position with no usable price, one whose share count is
-    known wrong, or one in an account whose investment ledger arrives from two
-    sources at once shows ``-`` rather than a zero, and the ``status`` column
-    beside it says which — it prints by default, because the three cases have
-    different remedies. A position is named by its ticker. ``--wide`` adds the
+    before today. A position with no usable price, or one whose share count is
+    known wrong, shows ``-`` rather than a zero, and the ``status`` column
+    beside it says which — it prints by default, because the two cases have
+    different remedies. A position in an account whose investment ledger
+    arrives from two sources at once keeps its figures, which double-count: a
+    ``reconciliation`` column marks it ``unreconciled`` and a warning beneath
+    the table names how many accounts are affected and the fix; ``-q`` does
+    not silence it. A position is named by its ticker. ``--wide`` adds the
     security's catalog id, the cost basis, the average cost, and the date the
     price was observed, omitting those it cannot fit the terminal and saying
     which.
@@ -430,9 +436,10 @@ def investments_holdings(
         )
         return
     if result.rows:
-        view = column_view(
-            _HOLDINGS_COLUMNS, result.rows, default=_HOLDINGS_DEFAULT, wide=wide
+        columns, default = with_reconciliation_column(
+            _HOLDINGS_COLUMNS, _HOLDINGS_DEFAULT, result.rows
         )
+        view = column_view(columns, result.rows, default=default, wide=wide)
         policy = get_terminal_policy(no_pager=no_pager)
         table = build_rows(
             view.names,
@@ -622,8 +629,10 @@ def investments_gains(
     commenting on the run.
 
     Rows in an account whose investment ledger arrives from two sources at once
-    double-count outright — proceeds, basis and gain alike. That is disclosed
-    the same way, and under ``--output json`` in ``summary.degraded_reason``.
+    double-count outright — proceeds, basis and gain alike. They still print,
+    marked ``unreconciled`` in a ``reconciliation`` column, and the warning is
+    disclosed the same way; under ``--output json`` it rides
+    ``summary.degraded_reason``.
     """
     with handle_cli_errors(
         cli_actor="investments_gains", payload_type=InvestmentGainsPayload
@@ -651,9 +660,10 @@ def investments_gains(
         )
         return
     if result.rows:
-        view = column_view(
-            _GAINS_COLUMNS, result.rows, default=_GAINS_DEFAULT, wide=wide
+        columns, default = with_reconciliation_column(
+            _GAINS_COLUMNS, _GAINS_DEFAULT, result.rows
         )
+        view = column_view(columns, result.rows, default=default, wide=wide)
         policy = get_terminal_policy(no_pager=no_pager)
         emit_human_result(
             compose_human_result(

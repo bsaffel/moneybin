@@ -110,20 +110,6 @@ def _insert_event(
         )
 
 
-def _seed_two_source_ledger(security_id: str) -> None:
-    """One account whose investment ledger arrives from two sources at once."""
-    _insert_event(
-        investment_transaction_id="evt_manual",
-        security_id=security_id,
-        source_type="manual",
-    )
-    _insert_event(
-        investment_transaction_id="evt_plaid",
-        security_id=security_id,
-        source_type="plaid",
-    )
-
-
 def _count_raw_investment_rows() -> int:
     """Count rows in raw.manual_investment_transactions (the record write target)."""
     with get_database(read_only=True) as db:
@@ -183,6 +169,7 @@ def _investment_result(
                     quantity=Decimal("1"),
                     cost_basis=Decimal("1"),
                     average_cost=Decimal("1"),
+                    reconciliation_status="reconciled",
                     currency_code="USD",
                     market_value=None,
                     unrealized_gain=None,
@@ -213,6 +200,7 @@ def _investment_result(
                     cost_basis_total=Decimal("1"),
                     cost_basis_remaining=Decimal("1"),
                     cost_basis_method="fifo",
+                    reconciliation_status="reconciled",
                     currency_code="USD",
                     is_open=True,
                     basis_incomplete=False,
@@ -243,6 +231,7 @@ def _investment_result(
                     term="short",
                     cost_basis_method="fifo",
                     basis_incomplete=False,
+                    reconciliation_status="reconciled",
                     currency_code="USD",
                 )
                 for row_id in ids
@@ -692,17 +681,10 @@ async def test_investment_lots_open_only_matches_the_cli_selector(
     assert reused.error.code == "investment_cursor_invalid"
 
 
-async def test_lots_view_degrades_on_a_source_overlap(mcp_db: Path) -> None:
-    """The view holdings points at must not answer with an uncaveated wrong number.
-
-    ``lots`` is computed from the same interleaved ledger ``core.dim_holdings``
-    withholds a market value for, so for an overlapping account it holds exactly
-    the double-counted quantities and basis. Left undegraded, the feature would
-    steer a caller from a correctly-withheld figure to a wrong one.
-    """
+async def test_lots_view_degrades_on_an_unreconciled_lot(mcp_db: Path) -> None:
+    """An unreconciled lot publishes its figures, marked per row and on the envelope."""
     _seed_investment_core()
     sec = _add_security()
-    _seed_two_source_ledger(sec)
     with get_database(read_only=False) as db:
         db.execute(
             """
@@ -710,15 +692,17 @@ async def test_lots_view_degrades_on_a_source_overlap(mcp_db: Path) -> None:
                 (lot_id, account_id, security_id, acquisition_date,
                  acquisition_type, original_quantity, remaining_quantity,
                  cost_basis_total, cost_basis_remaining, cost_basis_method,
-                 currency_code, is_open, basis_incomplete)
+                 reconciliation_status, currency_code, is_open, basis_incomplete)
             VALUES ('lot_open', ?, ?, '2024-01-15', 'buy', 10, 10, 1500, 1500,
-                    'fifo', 'USD', TRUE, FALSE)
+                    'fifo', 'unreconciled', 'USD', TRUE, FALSE)
             """,  # test fixture insert, static SQL
             [_ACCOUNT, sec],
         )
 
     response = await investments_coarse(view="lots")
 
+    assert response.data.rows[0].reconciliation_status == "unreconciled"
+    assert response.data.rows[0].cost_basis_remaining == Decimal("1500")
     assert response.summary.degraded is True
     assert response.summary.degraded_reason is not None
     # The same leading token the holdings path uses, so one vocabulary covers
@@ -726,11 +710,10 @@ async def test_lots_view_degrades_on_a_source_overlap(mcp_db: Path) -> None:
     assert response.summary.degraded_reason.startswith("investment_source_overlap:")
 
 
-async def test_gains_view_degrades_on_a_source_overlap(mcp_db: Path) -> None:
+async def test_gains_view_degrades_on_an_unreconciled_gain(mcp_db: Path) -> None:
     """Realized gains double-count for the same reason, on the tax surface."""
     _seed_investment_core()
     sec = _add_security()
-    _seed_two_source_ledger(sec)
     with get_database(read_only=False) as db:
         db.execute(
             """
@@ -738,16 +721,18 @@ async def test_gains_view_degrades_on_a_source_overlap(mcp_db: Path) -> None:
                 (realized_gain_id, account_id, security_id, disposal_txn_id,
                  lot_id, quantity, acquisition_date, disposal_date, proceeds,
                  cost_basis, gain_loss, term, cost_basis_method,
-                 basis_incomplete, currency_code)
+                 basis_incomplete, reconciliation_status, currency_code)
             VALUES ('gain_1', ?, ?, 'sell_1', 'lot_1', 5, '2024-01-01',
                     '2024-06-12', 950.00, 750.00, 200.00, 'long', 'fifo',
-                    FALSE, 'USD')
+                    FALSE, 'unreconciled', 'USD')
             """,  # test fixture insert, static SQL
             [_ACCOUNT, sec],
         )
 
     response = await investments_coarse(view="gains")
 
+    assert response.data.rows[0].reconciliation_status == "unreconciled"
+    assert response.data.rows[0].gain_loss == Decimal("200.00")
     assert response.summary.degraded is True
     assert response.summary.degraded_reason is not None
     assert response.summary.degraded_reason.startswith("investment_source_overlap:")
@@ -756,15 +741,22 @@ async def test_gains_view_degrades_on_a_source_overlap(mcp_db: Path) -> None:
 async def test_degraded_holdings_caveats_the_views_it_points_at(
     mcp_db: Path,
 ) -> None:
-    """A withheld figure must not be handed off to an uncaveated wrong one.
+    """The holdings hand-off to lots and gains carries the same caveat.
 
-    The holdings ``actions`` recommend ``lots`` and ``gains``. While the overlap
-    stands those views carry the double-count this response exists to contain,
-    so the recommendation has to say so where the agent reads it.
+    While the overlap stands those views carry the same double-count, so the
+    recommendation has to say so where the agent reads it.
     """
     _seed_investment_core()
     sec = _add_security()
-    _replace_holdings_view([_Holding(_ACCOUNT, sec, valuation_status="source_overlap")])
+    _replace_holdings_view([
+        _Holding(
+            _ACCOUNT,
+            sec,
+            market_value="1200.00",
+            valuation_status="valued",
+            reconciliation_status="unreconciled",
+        )
+    ])
 
     response = await investments_coarse(view="holdings")
 
@@ -1417,6 +1409,39 @@ class TestInvestmentsLotsSelect:
             )
 
     @pytest.mark.unit
+    async def test_unreconciled_disposal_degrades_the_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        """The selection is written, and the response says a lot may be doubled."""
+        self._seed_disposal_and_lots()
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE core.fct_investment_transactions "
+                "SET reconciliation_status = 'unreconciled'"  # test fixture update
+            )
+        result = await investments_lots_select(
+            disposal_txn_id="sell_1", selections=[{"lot_id": "lot_a", "quantity": "6"}]
+        )
+        assert result.summary.degraded is True
+        assert result.summary.degraded_reason is not None
+        assert result.summary.degraded_reason.startswith("investment_source_overlap:")
+        assert len(result.data.selections) == 1
+
+    @pytest.mark.unit
+    async def test_reconciled_disposal_is_not_degraded(self, mcp_db: Path) -> None:
+        self._seed_disposal_and_lots()
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE core.fct_investment_transactions "
+                "SET reconciliation_status = 'reconciled'"  # test fixture update
+            )
+        result = await investments_lots_select(
+            disposal_txn_id="sell_1", selections=[{"lot_id": "lot_a", "quantity": "6"}]
+        )
+        assert result.summary.degraded is False
+        assert result.summary.degraded_reason is None
+
+    @pytest.mark.unit
     async def test_sets_selection(self, mcp_db: Path) -> None:
         self._seed_disposal_and_lots()
         result = await investments_lots_select(
@@ -1524,6 +1549,7 @@ class _Holding(NamedTuple):
     price_source: str | None = None
     days_since_observed: str | None = None
     valuation_status: str = "unpriced"
+    reconciliation_status: str = "reconciled"
 
 
 def _replace_holdings_view(rows: list[_Holding]) -> None:
@@ -1570,7 +1596,8 @@ def _replace_holdings_view(rows: list[_Holding]) -> None:
             f"{mv_sql} AS market_value, {ug_sql} AS unrealized_gain, "
             f"{pd_sql} AS price_date, {ps_sql} AS price_source, "
             f"{dso_sql} AS days_since_observed, "
-            f"'{h.valuation_status}' AS valuation_status"
+            f"'{h.valuation_status}' AS valuation_status, "
+            f"'{h.reconciliation_status}' AS reconciliation_status"
         )
     select_sql = " UNION ALL ".join(parts)
     with get_database(read_only=False) as db:
@@ -1636,25 +1663,29 @@ class TestHoldingsValuation:
         assert "1" in result.data.warnings[0]
 
     @pytest.mark.unit
-    async def test_source_overlap_degrades_the_envelope(self, mcp_db: Path) -> None:
-        """The state an agent must branch on rides `summary`, not only prose.
-
-        A `source_overlap` row nulls its money like `unpriced` does, so an agent
-        reading rows alone cannot tell "no price yet" from "these numbers would
-        double-count". `summary.degraded_reason` carries the code that separates
-        them, and its remedy is outside the pipeline.
-        """
+    async def test_unreconciled_holding_publishes_and_degrades_the_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        """The figure publishes; `summary.degraded_reason` carries the caveat."""
         _seed_investment_core()
         sec = _add_security()
         _replace_holdings_view([
-            _Holding(_ACCOUNT, sec, valuation_status="source_overlap")
+            _Holding(
+                _ACCOUNT,
+                sec,
+                market_value="1200.00",
+                valuation_status="valued",
+                reconciliation_status="unreconciled",
+            )
         ])
         result = await investments_coarse(view="holdings")
 
         assert result.summary.degraded is True
         assert result.summary.degraded_reason is not None
         assert result.summary.degraded_reason.startswith("investment_source_overlap:")
-        assert result.data.rows[0].market_value is None
+        assert result.data.rows[0].reconciliation_status == "unreconciled"
+        assert result.data.rows[0].market_value == Decimal("1200.00")
+        assert result.data.total_market_value == Decimal("1200.00")
 
     @pytest.mark.unit
     async def test_a_valued_holdings_read_is_not_degraded(self, mcp_db: Path) -> None:

@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -111,10 +112,11 @@ TAXONOMY: frozenset[str] = frozenset({
 })
 
 # The machine-readable code every investment read prefixes its degraded_reason
-# with when an account's ledger arrives from two sources at once. Exported so
-# the MCP and CLI surfaces branch on one token rather than re-spelling it: the
-# doctor invariant of the same name is what blocks on the state, and the same
-# string ties a degraded response back to the check that explains it.
+# with when a returned row is unreconciled (its account's ledger arrives from
+# two sources at once). Exported so the MCP and CLI surfaces branch on one token
+# rather than re-spelling it: the doctor invariant of the same name is what
+# blocks on the state, and the same string ties a degraded response back to the
+# check that explains it.
 SOURCE_OVERLAP_CODE = "investment_source_overlap"
 
 # Closed vocabulary (Req 12) — mirrors the app.securities.security_type CHECK
@@ -336,9 +338,11 @@ class HoldingRow:
     """One current position — cost basis plus the Pillar-C valuation.
 
     ``market_value``/``unrealized_gain`` are NULL — never zero — whenever
-    ``valuation_status`` is ``unpriced``, ``withheld`` or ``source_overlap``;
-    a zero is indistinguishable from a worthless position. ``unrealized_gain`` is
-    signed (negative below cost); ``market_value`` is not.
+    ``valuation_status`` is ``unpriced`` or ``withheld``; a zero is
+    indistinguishable from a worthless position. ``unrealized_gain`` is signed
+    (negative below cost); ``market_value`` is not. ``reconciliation_status``
+    is ``unreconciled`` when the account's ledger arrives from two sources; the
+    figures still publish and the read's ``degraded_reason`` carries the caveat.
     """
 
     account_id: str
@@ -350,6 +354,7 @@ class HoldingRow:
     quantity: Decimal
     cost_basis: Decimal
     average_cost: Decimal | None
+    reconciliation_status: str
     currency_code: str | None
     market_value: Decimal | None
     unrealized_gain: Decimal | None
@@ -390,10 +395,11 @@ class HoldingsResult:
     look alike to a reader.
 
     ``degraded_reason`` is the machine-readable half of the warning above it:
-    set only when a ``source_overlap`` position is in the result, so the flag
-    means one thing and a consumer can branch on it. Both CLI and MCP put it on
-    ``summary.degraded_reason``, which is where an agent reads "this answer is
-    less than you asked for" without parsing prose.
+    set only when an ``unreconciled`` position is in the result, so the flag
+    means one thing and a consumer can branch on it. The totals still include
+    that position's figure; the reason names how many accounts contributed.
+    Both CLI and MCP put it on ``summary.degraded_reason``, which is where an
+    agent reads "this answer is less than you asked for" without parsing prose.
     """
 
     rows: list[HoldingRow]
@@ -424,6 +430,7 @@ class LotRow:
     cost_basis_total: Decimal
     cost_basis_remaining: Decimal
     cost_basis_method: str
+    reconciliation_status: str
     currency_code: str | None
     is_open: bool
     basis_incomplete: bool
@@ -434,10 +441,8 @@ class LotsResult:
     """Result of :meth:`InvestmentService.lots`.
 
     ``degraded_reason`` carries the same machine-readable code
-    ``HoldingsResult`` uses, set when any returned lot belongs to an account
-    whose investment ledger arrives from two sources at once. Lots are computed
-    from that interleaved ledger, so they hold exactly the double-counted
-    quantities and basis ``core.dim_holdings`` withholds a market value for.
+    ``HoldingsResult`` uses, set when any returned lot is ``unreconciled``:
+    computed from two interleaved ledgers, its quantity and basis double-count.
     """
 
     rows: list[LotRow]
@@ -467,6 +472,7 @@ class RealizedGainRow:
     term: str
     cost_basis_method: str
     basis_incomplete: bool
+    reconciliation_status: str
     currency_code: str | None
 
 
@@ -475,14 +481,25 @@ class GainsResult:
     """Result of :meth:`InvestmentService.gains`.
 
     ``degraded_reason`` carries the same machine-readable code
-    ``HoldingsResult`` uses, set when any returned row belongs to an account
-    whose investment ledger arrives from two sources at once. Proceeds, basis
-    and gain are all computed from that interleaved ledger.
+    ``HoldingsResult`` uses, set when any returned row is ``unreconciled``:
+    proceeds, basis and gain are all computed from two interleaved ledgers.
     """
 
     rows: list[RealizedGainRow]
     warnings: list[str]
     degraded_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LotSelectionResult:
+    """Result of :meth:`InvestmentService.select_lots`.
+
+    ``degraded_reason`` is set when the disposal's account is unreconciled: the
+    selection is written, but a selected lot may be one of a duplicated pair.
+    """
+
+    warnings: list[str]
+    degraded_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1518,7 +1535,7 @@ class InvestmentService:
         selections: list[tuple[str, Decimal]],
         *,
         actor: str,
-    ) -> None:
+    ) -> LotSelectionResult:
         """Set the full specific-identification selection for a disposal.
 
         Validates that the disposal exists and is a ``sell``, that the security
@@ -1526,10 +1543,12 @@ class InvestmentService:
         exists, and that the selected quantities sum to no more than the
         disposal's magnitude — raising a :class:`UserError` naming the problem —
         then delegates to :meth:`LotSelectionsRepo.set_for_disposal` (the
-        declarative set; ``selections=[]`` clears all overrides → FIFO).
+        declarative set; ``selections=[]`` clears all overrides → FIFO). Warns,
+        without refusing, when the disposal's account is unreconciled (D5).
         """
         row = self._db.execute(
-            f"SELECT account_id, security_id, type, quantity, trade_date "  # TableRef constant
+            f"SELECT account_id, security_id, type, quantity, trade_date, "  # TableRef constant
+            "reconciliation_status "
             f"FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "
             "WHERE investment_transaction_id = ?",
             [disposal_txn_id],
@@ -1546,6 +1565,7 @@ class InvestmentService:
             disposal_type,
             disposal_quantity,
             disposal_date,
+            disposal_reconciliation_status,
         ) = row
         if disposal_type != "sell":
             raise UserError(
@@ -1587,6 +1607,15 @@ class InvestmentService:
 
         restate_after_write(
             self._db, [LOT_SELECTIONS], committed_change="lot selection"
+        )
+        degraded_reason = (
+            self._unreconciled_reason(1, 1, "disposal(s)")
+            if disposal_reconciliation_status == "unreconciled"
+            else None
+        )
+        return LotSelectionResult(
+            warnings=[degraded_reason] if degraded_reason is not None else [],
+            degraded_reason=degraded_reason,
         )
 
     def _require_specific_identification(
@@ -1783,84 +1812,39 @@ class InvestmentService:
 
     # Statuses that publish no market value. Mirrors dim_holdings.sql's
     # valuation_status vocabulary; 'valued'/'carried_forward' both carry a number.
-    _UNVALUED_STATUSES: frozenset[str] = frozenset({
-        "unpriced",
-        "withheld",
-        "source_overlap",
-    })
-    # The one status whose remedy is outside the pipeline: an account fed by two
-    # sources at once has two interleaved ledgers, and no refresh, price pull or
-    # reconciliation clears it — one of the feeds has to go. This is the value
-    # dim_holdings writes; SOURCE_OVERLAP_CODE above is what the reads report.
-    _SOURCE_OVERLAP_STATUS: str = "source_overlap"
+    _UNVALUED_STATUSES: frozenset[str] = frozenset({"unpriced", "withheld"})
     _VALID_TERMS: frozenset[str] = frozenset({"short", "long"})
 
-    def _source_overlap_accounts(self) -> frozenset[str]:
-        """Accounts whose investment ledger arrives from more than one source.
-
-        The same predicate ``core.dim_holdings``' ``source_overlap_accounts``
-        CTE applies, run here because ``core.fct_investment_lots`` and
-        ``core.fct_realized_gains`` carry no status column of their own — a
-        row-level trust marker across the three derived investment models is a
-        separate design decision, and this needs no new column.
-
-        Read from the LEDGER, not from ``dim_holdings``: that view is scoped to
-        OPEN lots, so an account whose positions are all closed has no row
-        there at all — and closed positions are precisely what the realized
-        gains surface reports. Sourcing the set from it would leave the gains
-        of a fully-liquidated overlapping account silently uncaveated.
-
-        ``opening_bootstrap`` is excluded for the reason ``dim_holdings.sql``
-        spells out at length: that subtype is MoneyBin's own reconstruction of
-        a pre-window position, not a second observation of an event another
-        source also reported, so it double-counts nothing.
-        """
-        rows = self._db.execute(
-            f"""
-            SELECT account_id
-              FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
-             WHERE COALESCE(subtype, '') <> 'opening_bootstrap'
-             GROUP BY account_id
-            HAVING COUNT(DISTINCT source_type) > 1
-            """  # TableRef constant, no interpolated values
-        ).fetchall()
-        return frozenset(str(r[0]) for r in rows)
-
-    def _source_overlap_reason(self, count: int, noun: str) -> str:
+    def _unreconciled_reason(self, rows: int, accounts: int, noun: str) -> str:
         """The one degraded_reason vocabulary every investment read speaks.
 
-        Same leading code on holdings, lots and gains so an agent branches on
-        one token rather than parsing three prose variants; only the noun and
-        the count differ, because only they do.
+        Same leading code on holdings, lots, gains and lot selection so an agent
+        branches on one token rather than parsing prose variants.
         """
         return (
-            f"{SOURCE_OVERLAP_CODE}: {count} {noun} sit in an account "
-            "whose investment ledger arrives from two sources at once — the "
-            "two ledgers interleave, so these figures double-count and their "
-            "cost basis mixes two accountings. Choose one source for the "
-            "account with 'moneybin accounts set <account> "
+            f"{SOURCE_OVERLAP_CODE}: {rows} {noun} in {accounts} account(s) are "
+            "unreconciled — their investment ledger arrives from two sources "
+            "at once and the two ledgers interleave, so these figures "
+            "double-count and their cost basis mixes two accountings. Choose one "
+            "source for the account with 'moneybin accounts set <account> "
             "--investment-source-type manual|plaid' (if one is already "
             "chosen, run 'moneybin refresh'), then run 'moneybin system "
             "doctor' to confirm."
         )
 
-    def _source_overlap_degradation(
-        self, row_accounts: list[str], noun: str
+    def _unreconciled_degradation(
+        self, rows: Sequence[HoldingRow | LotRow | RealizedGainRow], noun: str
     ) -> str | None:
-        """Return the reason when the RETURNED rows touch an overlapping account.
+        """Return the reason when any RETURNED row is unreconciled.
 
-        Scoped to the rows actually returned, never to the database: the fault
-        is account-level, so a read filtered to a clean account must not
-        inherit another account's overlap. An empty result short-circuits
-        before the ledger scan.
+        Scoped to the rows actually returned, so a read filtered to a clean
+        account never inherits another account's overlap.
         """
-        if not row_accounts:
+        unreconciled = [r for r in rows if r.reconciliation_status == "unreconciled"]
+        if not unreconciled:
             return None
-        overlapping = self._source_overlap_accounts()
-        affected = sum(1 for account_id in row_accounts if account_id in overlapping)
-        if not affected:
-            return None
-        return self._source_overlap_reason(affected, noun)
+        accounts = len({r.account_id for r in unreconciled})
+        return self._unreconciled_reason(len(unreconciled), accounts, noun)
 
     def _resolve_filters(
         self, account_ref: str | None, security_ref: str | None
@@ -1977,11 +1961,12 @@ class InvestmentService:
 
         Each row carries cost basis and — when a close resolved — market value,
         unrealized gain, the date of the close used, and how many days old it
-        is. A position whose value is ``unpriced``, ``withheld`` or
-        ``source_overlap`` reports NULL rather than zero; the count of those
-        rows is named in a warning, the same shape ``lots()`` uses for
-        ``basis_incomplete``. ``source_overlap`` adds a second warning and sets
-        ``degraded_reason``, because its remedy is outside the pipeline.
+        is. A position whose value is ``unpriced`` or ``withheld`` reports NULL
+        rather than zero; the count of those rows is named in a warning, the
+        same shape ``lots()`` uses for ``basis_incomplete``. An
+        ``unreconciled`` position keeps its figures and counts toward the
+        totals, but adds a second warning and sets ``degraded_reason``, because
+        its remedy is outside the pipeline.
 
         ``max_days_since_observed`` carries the age of the stalest close behind
         any published figure — always present, never a warning.
@@ -2007,7 +1992,7 @@ class InvestmentService:
                    h.cost_basis, h.average_cost, h.currency_code, h.market_value,
                    h.unrealized_gain, h.price_date, h.price_source,
                    h.days_since_observed, h.valuation_status, s.exchange,
-                   s.ticker_shared
+                   s.ticker_shared, h.reconciliation_status
               FROM {DIM_HOLDINGS.full_name} AS h
               LEFT JOIN {_SECURITY_LABELS_SQL} AS s
                 ON s.security_id = h.security_id
@@ -2025,6 +2010,7 @@ class InvestmentService:
                 quantity=r[4],
                 cost_basis=r[5],
                 average_cost=r[6],
+                reconciliation_status=str(r[16]),
                 # Normalize to the price layer's canonical UPPER form (lots store the
                 # code verbatim; 'usd' and 'USD' are one currency): keeps a row's own
                 # currency_code equal to the market_value_by_currency key a consumer
@@ -2048,23 +2034,14 @@ class InvestmentService:
         if unvalued:
             warnings.append(
                 f"{unvalued} position(s) report no market value — see each row's "
-                "valuation_status: 'unpriced' (no close resolved), 'withheld' "
-                "(a known-wrong share count, or lots that disagree on currency), "
-                "or 'source_overlap' (the account's investment ledger arrives "
-                "from two sources at once)."
+                "valuation_status: 'unpriced' (no close resolved) or 'withheld' "
+                "(a known-wrong share count, or lots that disagree on currency)."
             )
-        # A second warning rather than a third clause in the first: the count
-        # above says how many figures are missing, and this says which repair
-        # brings one class of them back. Folding them would send a reader whose
-        # only blank row is an unpriced one to revert a perfectly good import.
-        overlapping = sum(
-            1
-            for row in holding_rows
-            if row.valuation_status == self._SOURCE_OVERLAP_STATUS
-        )
-        degraded_reason: str | None = None
-        if overlapping:
-            degraded_reason = self._source_overlap_reason(overlapping, "position(s)")
+        # A second warning rather than a clause in the first: the count above
+        # says how many figures are missing, while this one says which figures
+        # are present but double-count, and how to fix that.
+        degraded_reason = self._unreconciled_degradation(holding_rows, "position(s)")
+        if degraded_reason is not None:
             warnings.append(degraded_reason)
         # Scope the age to the rows carrying a figure: it discloses how old the
         # published numbers are, not how old an absent one would have been.
@@ -2219,10 +2196,9 @@ class InvestmentService:
         warning naming the count of ``basis_incomplete`` rows (e.g. a
         ``transfer_in`` recorded with no supplied basis) when any are present.
 
-        Sets ``degraded_reason`` when any returned lot sits in an account whose
-        ledger arrives from two sources at once: those lots double-count, which
-        is a different claim from an incomplete basis (conservative, not wrong)
-        and gets its own warning for that reason.
+        Sets ``degraded_reason`` when any returned lot is ``unreconciled``:
+        those lots double-count, which is a different claim from an incomplete
+        basis (conservative, not wrong) and gets its own warning for that reason.
         """
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
@@ -2244,7 +2220,8 @@ class InvestmentService:
                    l.acquisition_date, l.acquisition_type, l.original_quantity,
                    l.remaining_quantity, l.cost_basis_total,
                    l.cost_basis_remaining, l.cost_basis_method, l.currency_code,
-                   l.is_open, l.basis_incomplete, s.exchange, s.ticker_shared
+                   l.is_open, l.basis_incomplete, s.exchange, s.ticker_shared,
+                   l.reconciliation_status
               FROM {FCT_INVESTMENT_LOTS.full_name} AS l
               LEFT JOIN {_SECURITY_LABELS_SQL} AS s
                 ON s.security_id = l.security_id
@@ -2267,6 +2244,7 @@ class InvestmentService:
                 cost_basis_total=r[9],
                 cost_basis_remaining=r[10],
                 cost_basis_method=str(r[11]),
+                reconciliation_status=str(r[17]),
                 currency_code=_opt_currency(r[12]),
                 is_open=bool(r[13]),
                 basis_incomplete=bool(r[14]),
@@ -2286,9 +2264,7 @@ class InvestmentService:
         # A separate warning from the one above, and a separate degradation:
         # an incomplete basis makes a figure conservative, while a source
         # overlap makes it wrong. A reader must not confuse the two.
-        degraded_reason = self._source_overlap_degradation(
-            [row.account_id for row in lot_rows], "lot(s)"
-        )
+        degraded_reason = self._unreconciled_degradation(lot_rows, "lot(s)")
         if degraded_reason is not None:
             warnings.append(degraded_reason)
         return LotsResult(
@@ -2309,9 +2285,8 @@ class InvestmentService:
         Carries a warning naming the count of ``basis_incomplete`` rows
         (oversold / missing acquisition) when any are present in the result.
 
-        Sets ``degraded_reason`` when any returned row sits in an account whose
-        ledger arrives from two sources at once — proceeds, basis and gain all
-        double-count until one of the two feeds is removed.
+        Sets ``degraded_reason`` when any returned row is ``unreconciled`` —
+        proceeds, basis and gain all double-count until one source is chosen.
         """
         if term is not None and term not in self._VALID_TERMS:
             raise ValueError(
@@ -2344,7 +2319,8 @@ class InvestmentService:
                    s.name, g.disposal_txn_id, g.lot_id, g.quantity,
                    g.acquisition_date, g.disposal_date, g.proceeds, g.cost_basis,
                    g.gain_loss, g.term, g.cost_basis_method, g.basis_incomplete,
-                   g.currency_code, s.exchange, s.ticker_shared
+                   g.currency_code, s.exchange, s.ticker_shared,
+                   g.reconciliation_status
               FROM {FCT_REALIZED_GAINS.full_name} AS g
               LEFT JOIN {_SECURITY_LABELS_SQL} AS s
                 ON s.security_id = g.security_id
@@ -2371,6 +2347,7 @@ class InvestmentService:
                 term=str(r[13]),
                 cost_basis_method=str(r[14]),
                 basis_incomplete=bool(r[15]),
+                reconciliation_status=str(r[19]),
                 currency_code=_opt_currency(r[16]),
                 exchange=r[17],
                 ticker_shared=bool(r[18]),
@@ -2385,8 +2362,8 @@ class InvestmentService:
                 "basis (oversold / missing acquisition) — figures are "
                 "conservative."
             )
-        degraded_reason = self._source_overlap_degradation(
-            [row.account_id for row in gain_rows], "realized-gain row(s)"
+        degraded_reason = self._unreconciled_degradation(
+            gain_rows, "realized-gain row(s)"
         )
         if degraded_reason is not None:
             warnings.append(degraded_reason)

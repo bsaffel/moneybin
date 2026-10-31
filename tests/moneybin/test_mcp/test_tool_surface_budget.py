@@ -155,8 +155,11 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # degrade with it: it nulls its money exactly like `unpriced` does, so an
     # agent that cannot read it from the description reports a double-counted
     # portfolio as an incomplete one — and, told only about holdings, walks
-    # from the withheld figure to the double-counted one next door.
-    "investments": (1_790, 4_913),
+    # from the withheld figure to the double-counted one next door. Then 5 bytes
+    # came back out when `source_overlap` left `valuation_status`: unreconciled
+    # rows now publish their figures, so the description names
+    # `reconciliation_status` and the three views it marks instead.
+    "investments": (1_785, 4_913),
     "transactions": (1_311, 2_384),
     "transactions_categorize_rules": (605, 319),
     # Grew 244 bytes for the rule-conflict queue: one more `kind` enum member

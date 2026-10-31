@@ -91,6 +91,7 @@ def _holding(currency: str) -> InvestmentHoldingRow:
         quantity=Decimal("1"),
         cost_basis=Decimal("10.00"),
         average_cost=Decimal("10.00"),
+        reconciliation_status="reconciled",
         currency_code=currency,
         market_value=Decimal("12.00"),
         unrealized_gain=Decimal("2.00"),
