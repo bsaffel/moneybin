@@ -1,0 +1,1 @@
+CLI next-step commands stay whole when explanations wrap, preserve explicit profile arguments, and avoid suggesting report options already in use. Database, investment, and currency recovery guidance names complete commands and shows how to configure a missing display-currency target before refreshing.

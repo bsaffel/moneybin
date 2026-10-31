@@ -334,7 +334,7 @@ def _require_event_fields(item: dict[str, Any], index: int) -> tuple[str, str, s
     return str(account), str(type_), str(date_str)
 
 
-@mcp_tool(read_only=False)
+@mcp_tool(read_only=False, timeout_seconds=180.0)
 def investments_record(
     events: list[dict[str, Any]],
 ) -> ResponseEnvelope[InvestmentRecordPayload]:
@@ -389,6 +389,10 @@ def investments_record(
     abort. Events skipped for an unresolved security are simply omitted from
     the write.
 
+    After saving, one rebuild returns current Golden investment IDs ready for
+    reads and lot selection. A rebuild failure reports the saved batch and asks
+    for refresh rather than recording again.
+
     Mutation surface: writes raw.manual_investment_transactions (one row per
     event, two for reinvest). No revert tool; every write is recorded in
     app.audit_log under action="investment.record".
@@ -437,8 +441,6 @@ def investments_record(
             error_details=result.error_details,
         ),
         actions=[
-            "Use refresh_run to materialize them into "
-            "core.fct_investment_transactions (and derive holdings, lots, gains)",
             "Use investments to view recorded events",
             "Use investments(view='holdings') to see updated positions",
         ],
@@ -1579,7 +1581,8 @@ def register_investments_tools(mcp: FastMCP) -> None:
         investments_record,
         "investments_record",
         "Record investment ledger events as one validated batch. Quantity and "
-        "cash signs follow the investment event convention; no revert tool.",
+        "cash signs follow the investment event convention. Rebuilds once and returns "
+        "usable Golden IDs; a saved-batch rebuild failure must be retried as refresh.",
     )
     register(
         mcp,

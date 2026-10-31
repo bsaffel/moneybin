@@ -3,6 +3,10 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from moneybin.services.refresh_outcome import StageOutcome
+
 
 class TestImportRefreshIntegration:
     """Tests that the refresh pipeline is hooked into the import flow."""
@@ -137,7 +141,7 @@ class TestRefreshCategorizationProposalSummary:
 
     @patch("moneybin.services.auto_rule_service.AutoRuleService")
     @patch("moneybin.services.categorization.CategorizationService")
-    @patch("moneybin.services.transform_service.TransformService.apply")
+    @patch("moneybin.services.transform_service.TransformService._apply_sqlmesh")
     @patch("moneybin.matching.engine.TransactionMatcher")
     @patch("moneybin.matching.priority.seed_source_priority")
     def test_logs_proposal_count_when_pending(
@@ -147,7 +151,7 @@ class TestRefreshCategorizationProposalSummary:
         mock_apply: MagicMock,
         mock_cat_cls: MagicMock,
         mock_auto_cls: MagicMock,
-        caplog: object,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Pending proposals trigger a hint line referencing auto-review."""
         import logging
@@ -170,16 +174,23 @@ class TestRefreshCategorizationProposalSummary:
             pending_proposals=4
         )
 
-        with caplog.at_level(logging.INFO, logger="moneybin.orchestration.refresh"):  # type: ignore[attr-defined]
+        with (
+            patch(
+                "moneybin.services.transform_service.TransformService.prepare_investments",
+                return_value=StageOutcome(step="investment_match", ran=True),
+            ),
+            caplog.at_level(logging.INFO, logger="moneybin.orchestration.refresh"),
+        ):
             refresh(MagicMock())
 
-        text = "\n".join(r.message for r in caplog.records)  # type: ignore[attr-defined]
+        text = "\n".join(r.message for r in caplog.records)
         assert "4 new auto-rule proposals" in text
         assert "auto review" in text
+        mock_auto_cls.return_value.stats.assert_called_once()
 
     @patch("moneybin.services.auto_rule_service.AutoRuleService")
     @patch("moneybin.services.categorization.CategorizationService")
-    @patch("moneybin.services.transform_service.TransformService.apply")
+    @patch("moneybin.services.transform_service.TransformService._apply_sqlmesh")
     @patch("moneybin.matching.engine.TransactionMatcher")
     @patch("moneybin.matching.priority.seed_source_priority")
     def test_no_proposal_line_when_zero(
@@ -189,7 +200,7 @@ class TestRefreshCategorizationProposalSummary:
         mock_apply: MagicMock,
         mock_cat_cls: MagicMock,
         mock_auto_cls: MagicMock,
-        caplog: object,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """No pending proposals → no hint line."""
         import logging
@@ -212,9 +223,16 @@ class TestRefreshCategorizationProposalSummary:
             pending_proposals=0
         )
 
-        with caplog.at_level(logging.INFO, logger="moneybin.orchestration.refresh"):  # type: ignore[attr-defined]
+        with (
+            patch(
+                "moneybin.services.transform_service.TransformService.prepare_investments",
+                return_value=StageOutcome(step="investment_match", ran=True),
+            ),
+            caplog.at_level(logging.INFO, logger="moneybin.orchestration.refresh"),
+        ):
             refresh(MagicMock())
 
-        text = "\n".join(r.message for r in caplog.records)  # type: ignore[attr-defined]
+        text = "\n".join(r.message for r in caplog.records)
         assert "auto-rule proposals" not in text
         assert "auto review" not in text
+        mock_auto_cls.return_value.stats.assert_called_once()

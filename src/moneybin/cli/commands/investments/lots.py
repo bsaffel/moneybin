@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     currency_label,
@@ -20,13 +21,20 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.render import (
     Money,
+    build_next_step,
     build_rows,
     build_summary,
     column_view,
     compose_human_result,
+    render_human_text,
 )
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.investments import (
     InvestmentLotSelectionEntry,
     InvestmentLotsPayload,
@@ -289,7 +297,37 @@ def investments_lots_select(
     ):
         selections = [] if clear else [_parse_lot_selection(entry) for entry in lot]
         with get_database(read_only=False) as db:
-            InvestmentService(db).select_lots(disposal_txn_id, selections, actor="cli")
+            try:
+                InvestmentService(db).select_lots(
+                    disposal_txn_id, selections, actor="cli"
+                )
+            except UserError as error:
+                if (
+                    output == OutputFormat.TEXT
+                    and error.code == error_codes.INVESTMENT_METHOD_NOT_SPECIFIC
+                ):
+                    for action in error.recovery_actions or []:
+                        if action.tool == "investments_securities_set":
+                            command = generated_cli_command(
+                                "investments",
+                                "securities",
+                                "set",
+                                action.arguments["security_id"],
+                                "--method",
+                                "specific",
+                            )
+                            policy = get_terminal_policy()
+                            error.hint = render_human_text(
+                                build_next_step(
+                                    "Elect specific identification before "
+                                    "retrying the selection",
+                                    command,
+                                    terminal=policy,
+                                ),
+                                terminal=policy,
+                            ).rstrip("\n")
+                            break
+                raise
 
     if output == OutputFormat.JSON:
         # No explicit sensitivity: selections[].quantity carries TXN_AMOUNT

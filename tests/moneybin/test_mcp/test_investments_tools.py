@@ -50,6 +50,7 @@ from moneybin.services.investment_service import (
     SecurityRow,
 )
 from tests.moneybin.db_helpers import create_core_dim_stub_views
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -60,6 +61,7 @@ def _seed_investment_core() -> None:
     """Materialize the SQLMesh-managed investment core.* stubs for this test's DB."""
     with get_database(read_only=False) as db:
         create_core_dim_stub_views(db)
+        seed_account_metadata(db, _ACCOUNT, currency="USD")
 
 
 def _add_security(**kwargs: object) -> str:
@@ -908,6 +910,20 @@ class TestInvestmentsRecord:
         ids = parsed["data"]["investment_transaction_ids"]
         assert len(ids) == 1
         assert parsed["data"]["error_details"] == []
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                """SELECT account_id, security_id, type
+                FROM core.fct_investment_transactions
+                WHERE investment_transaction_id = ?""",
+                ids,
+            ).fetchall() == [(_ACCOUNT, "sec_1", "buy")]
+            raw_ids = {
+                row[0]
+                for row in db.execute(
+                    "SELECT investment_transaction_id FROM raw.manual_investment_transactions"
+                ).fetchall()
+            }
+            assert set(ids).isdisjoint(raw_ids)
 
     @pytest.mark.unit
     async def test_omitted_currency_is_stored_as_unknown(self, mcp_db: Path) -> None:
@@ -1012,7 +1028,14 @@ class TestInvestmentsRecord:
             ]
         )
         parsed = result.to_dict()
-        assert len(parsed["data"]["investment_transaction_ids"]) == 2
+        ids = parsed["data"]["investment_transaction_ids"]
+        assert len(ids) == 2
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                """SELECT type FROM core.fct_investment_transactions
+                WHERE investment_transaction_id IN (?, ?) ORDER BY type""",
+                ids,
+            ).fetchall() == [("dividend",), ("reinvest",)]
 
     @pytest.mark.unit
     async def test_unresolved_security_is_soft_others_still_written(
@@ -1238,10 +1261,9 @@ class TestInvestmentsRecord:
         assert _count_raw_investment_rows() == 0
 
     @pytest.mark.unit
-    async def test_record_actions_hint_at_refresh_run(self, mcp_db: Path) -> None:
-        # record_event writes only raw.*; the returned read-tool hints go stale
-        # until refresh_run materializes core.* — the actions[] must say so,
-        # matching the sibling transactions_create tool.
+    async def test_record_actions_offer_current_events_and_holdings(
+        self, mcp_db: Path
+    ) -> None:
         _seed_investment_core()
         _add_security(security_id="sec_1", ticker="AAPL")
         result = await investments_record(
@@ -1257,8 +1279,19 @@ class TestInvestmentsRecord:
                 }
             ]
         )
-        actions = result.to_dict()["actions"]
-        assert any("refresh_run" in a for a in actions)
+        assert result.to_dict()["status"] == "ok"
+        assert result.to_dict()["actions"] == [
+            "Use investments to view recorded events",
+            "Use investments(view='holdings') to see updated positions",
+        ]
+        events = await investments_coarse(view="events", account=_ACCOUNT)
+        assert events.error is None
+        assert [
+            row["investment_transaction_id"] for row in events.to_dict()["data"]["rows"]
+        ] == result.to_dict()["data"]["investment_transaction_ids"]
+        holdings = await investments_coarse(view="holdings", account=_ACCOUNT)
+        assert holdings.error is None
+        assert len(holdings.to_dict()["data"]["rows"]) == 1
 
 
 class TestInvestmentsSecuritiesSet:

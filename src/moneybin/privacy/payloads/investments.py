@@ -554,7 +554,8 @@ InvestmentsCoarsePayload = Annotated[
 class InvestmentRecordPayload:
     """Payload for ``investments_record`` — batch event-recording result.
 
-    ``investment_transaction_ids`` carries RECORD_ID tier (opaque ids, safe
+    ``investment_transaction_ids`` contains rebuilt Golden leg IDs and carries
+    RECORD_ID tier (opaque ids, safe
     to echo back). ``error_details`` uses ``list[dict[str, str]]`` (not a
     typed nested dataclass) so the introspection walker does not recurse
     into per-item content — same rationale/shape as

@@ -31,6 +31,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import MONEY_CLASSES, DataClass
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
@@ -40,6 +41,7 @@ from moneybin.reports._framework.contract import (
 from moneybin.services._validators import validate_currency_code
 from moneybin.services.currency_service import (
     CurrencyService,
+    MissingRate,
     RateUnavailableError,
     ResolvedRate,
     apply_rate,
@@ -87,6 +89,7 @@ class ConversionOutcome:
     and an empty tuple says that without a caller having to cross-check
     ``display_currency``.
     """
+    actions: tuple[NextStep, ...] = ()
 
 
 def money_columns(classes: Mapping[str, DataClass]) -> tuple[str, ...]:
@@ -332,9 +335,7 @@ def convert_records(
             try:
                 resolved[(base, on)] = service.resolve_rate(base, target, on)
             except RateUnavailableError:
-                return ConversionOutcome(
-                    rows, None, _missing_reason(service, base, target)
-                )
+                return _missing_conversion(rows, service, base, target)
 
         # Resolved only for a row that actually holds a home-basis amount. A
         # report whose home-basis column is null on some rows would otherwise
@@ -350,9 +351,7 @@ def convert_records(
                 try:
                     resolved[home_key] = service.resolve_rate(home, target, on)
                 except RateUnavailableError:
-                    return ConversionOutcome(
-                        rows, None, _missing_reason(service, home, target)
-                    )
+                    return _missing_conversion(rows, service, home, target)
 
     # Built beside the originals rather than in place: a row that fails to
     # convert half way through would otherwise leave the caller holding a
@@ -499,8 +498,32 @@ def _rate_date(value: Any, *, today: date) -> date | None:
         return None
 
 
-def _missing_reason(service: CurrencyService, base: str, target: str) -> str:
-    """Why ``base``→``target`` could not be priced, with the one fix for it.
+def _missing_conversion(
+    rows: list[dict[str, Any]], service: CurrencyService, base: str, target: str
+) -> ConversionOutcome:
+    """Keep recovery commands separate from the durable conversion disclosure."""
+    missing = service.explain_missing(base, target)
+    actions: tuple[NextStep, ...] = ()
+    if missing.rate_targets_unset and not missing.unsupported:
+        actions = (
+            NextStep(
+                reason=f"configuring {missing.to_currency} as a display currency for this report",
+                cli=("profile", "set", "display_currency_targets", missing.to_currency),
+                mcp=f"profile_set(display_currency_targets=['{missing.to_currency}'])",
+                required=True,
+            ),
+            NextStep(
+                reason="gathering the requested rates after configuring the display currency",
+                cli=("refresh",),
+                mcp="refresh_run()",
+                required=True,
+            ),
+        )
+    return ConversionOutcome(rows, None, _missing_reason(missing), actions=actions)
+
+
+def _missing_reason(missing: MissingRate) -> str:
+    """Why the pair could not be priced, with recovery prose where still needed.
 
     Unsupported is judged from the provider's currency list as the last refresh
     recorded it, since a report read has no provider to ask; see
@@ -512,7 +535,6 @@ def _missing_reason(service: CurrencyService, base: str, target: str) -> str:
     the CLI's durable log, and a date someone asked about is a date money moved
     on — so the `fx set` command keeps a placeholder for it.
     """
-    missing = service.explain_missing(base, target)
     pair = f"{missing.from_currency}->{missing.to_currency}"
     if missing.unsupported:
         names = ", ".join(missing.unsupported)
@@ -521,6 +543,11 @@ def _missing_reason(service: CurrencyService, base: str, target: str) -> str:
             f"rates, so refresh cannot fetch it; record the rate with "
             f"'moneybin fx set {missing.from_currency} {missing.to_currency} "
             "<date> <rate>'"
+        )
+    if missing.rate_targets_unset:
+        return (
+            f"{pair} is unfetched: no home currency or display currency targets "
+            "are configured"
         )
     if not missing.gathered and not missing.targets:
         return (

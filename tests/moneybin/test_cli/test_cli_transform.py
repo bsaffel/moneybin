@@ -17,8 +17,8 @@ from typer.testing import CliRunner
 
 from moneybin.cli.commands.transform import app
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services.transform_service import (
-    ApplyResult,
     AuditResult,
     TransformStatus,
     ValidationResult,
@@ -218,8 +218,8 @@ def test_apply_receipt_never_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     """A mutation receipt stays direct even when its terminal allows paging."""
     monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
-    def fake_apply(_self: Any) -> ApplyResult:
-        return ApplyResult(applied=True, duration_seconds=0.1, error=None)
+    def fake_apply(_db: Any, **_kwargs: Any) -> RefreshResult:
+        return RefreshResult(applied=True, duration_seconds=0.1, error=None)
 
     policy = TerminalPolicy(
         output="text",
@@ -244,9 +244,7 @@ def test_apply_receipt_never_pages(monkeypatch: pytest.MonkeyPatch) -> None:
         paged.append(text)
         return True
 
-    monkeypatch.setattr(
-        "moneybin.services.transform_service.TransformService.apply", fake_apply
-    )
+    monkeypatch.setattr("moneybin.orchestration.refresh.refresh", fake_apply)
     monkeypatch.setattr(
         "moneybin.cli.commands.transform.get_terminal_policy", fake_policy
     )
@@ -266,11 +264,11 @@ def test_apply_interrupt_reports_unknown_saved_scope(
     """Direct apply and plan delegation clean progress before interruption output."""
     monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
-    def interrupted_apply(_self: Any) -> ApplyResult:
+    def interrupted_apply(_db: Any, **_kwargs: Any) -> RefreshResult:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(
-        "moneybin.services.transform_service.TransformService.apply",
+        "moneybin.orchestration.refresh.refresh",
         interrupted_apply,
     )
 
@@ -289,11 +287,11 @@ def test_apply_interrupt_json_uses_structured_failure(
     """Both routes keep stdout parseable for an interrupted JSON mutation."""
     monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
-    def interrupted_apply(_self: Any) -> ApplyResult:
+    def interrupted_apply(_db: Any, **_kwargs: Any) -> RefreshResult:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(
-        "moneybin.services.transform_service.TransformService.apply",
+        "moneybin.orchestration.refresh.refresh",
         interrupted_apply,
     )
 
@@ -313,11 +311,11 @@ def test_plan_apply_delegates_to_apply_result(monkeypatch: pytest.MonkeyPatch) -
     """The proposed-change shortcut uses the same write result and receipt."""
     monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
 
-    def successful_apply(_self: Any) -> ApplyResult:
-        return ApplyResult(applied=True, duration_seconds=0.1, error=None)
+    def successful_apply(_db: Any, **_kwargs: Any) -> RefreshResult:
+        return RefreshResult(applied=True, duration_seconds=0.1, error=None)
 
     monkeypatch.setattr(
-        "moneybin.services.transform_service.TransformService.apply",
+        "moneybin.orchestration.refresh.refresh",
         successful_apply,
     )
 
@@ -511,3 +509,47 @@ class TestTransformRestate:
 
         assert result.exit_code == 0, result.output
         assert "2026-01-01 through 2026-01-31" in confirm.call_args.args[0]
+
+
+def test_investment_restate_uses_prerequisite_aware_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.services.transform_service import ApplyResult, TransformService
+
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+    direct, context = _mock_sqlmesh_context()
+    monkeypatch.setattr("moneybin.cli.commands.transform.sqlmesh_context", direct)
+    with patch.object(
+        TransformService,
+        "apply",
+        return_value=ApplyResult(applied=True, duration_seconds=0),
+    ) as rebuild:
+        result = runner.invoke(
+            app,
+            [
+                "restate",
+                "--model",
+                "core.fct_investment_transactions",
+                "--start",
+                "2026-01-01",
+                "--yes",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    rebuild.assert_called_once()
+    context.plan.assert_not_called()
+
+
+@pytest.mark.parametrize("model", ["*", "unknown_model"])
+def test_restate_opaque_selector_cannot_bypass_membership_gate(
+    monkeypatch: pytest.MonkeyPatch, model: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr("moneybin.database.get_database", _fake_get_database)
+    direct, context = _mock_sqlmesh_context()
+    monkeypatch.setattr("moneybin.cli.commands.transform.sqlmesh_context", direct)
+    result = runner.invoke(
+        app, ["restate", "--model", model, "--start", "2026-01-01", "--yes"]
+    )
+    assert result.exit_code != 0
+    assert "exact registered model" in caplog.text
+    context.plan.assert_not_called()

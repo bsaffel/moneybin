@@ -443,18 +443,8 @@ def refresh(
             )
         )
 
-    if "investment_match" in requested:
-        investment_stage = _run_investment_match_step(db, actor=actor)
-        stages.append(investment_stage)
-        if investment_stage.error is not None and "transform" in requested:
-            # Keep the planner's failure on its stage; SQLMesh was not attempted.
-            return RefreshResult(
-                applied=False,
-                duration_seconds=None,
-                transfers_retired=transfers_retired,
-                stages=tuple(stages),
-                requested_steps=requested_steps,
-            )
+    if "investment_match" in requested and "transform" not in requested:
+        stages.append(_run_investment_match_step(db, actor=actor))
 
     if "transform" not in requested:
         # Caller asked for a partial cascade that omits transform. Return
@@ -491,7 +481,18 @@ def refresh(
     if progress is not None:
         progress(ProgressEvent("Applying reports"))
     transform_service = TransformService(db)
-    apply_result = transform_service.apply()
+    apply_result = transform_service.apply(actor=actor)
+    if apply_result.investment_match is not None:
+        stages.append(apply_result.investment_match)
+        if apply_result.investment_match.error is not None:
+            # The service stopped before SQLMesh; the failure belongs to its prerequisite.
+            return RefreshResult(
+                applied=False,
+                duration_seconds=None,
+                transfers_retired=transfers_retired,
+                stages=tuple(stages),
+                requested_steps=requested_steps,
+            )
     # No counts: apply rebuilds models rather than producing a countable
     # outcome, and its duration and error already ride on the result itself.
     # The stage exists so the renderer's per-stage loop has an entry to name
@@ -534,7 +535,7 @@ def refresh(
 
     duration_seconds = apply_result.duration_seconds
     if rate_backfill is not None and rate_backfill.rates_written > 0:
-        rate_apply_result = transform_service.apply()
+        rate_apply_result = transform_service._apply_sqlmesh()  # pyright: ignore[reportPrivateUsage]  # reuse this run's successful membership reconciliation
         duration_seconds += rate_apply_result.duration_seconds
         if not rate_apply_result.applied:
             stages[transform_stage_index] = StageOutcome(
@@ -588,53 +589,8 @@ def _step_error(exc: Exception, *, step: str) -> str:
 
 
 def _run_investment_match_step(db: Database, *, actor: str) -> StageOutcome:
-    """Persist review-only Proposals before any requested dependent transform."""
-    from moneybin.services.investment_matching_service import InvestmentMatchingService
-    from moneybin.tables import (
-        INVESTMENT_EVENT_EVIDENCE,
-        INVESTMENT_EVENT_HEADERS,
-        INVESTMENT_EVENT_LEGS,
-    )
-
-    try:
-        for table in (
-            INVESTMENT_EVENT_HEADERS,
-            INVESTMENT_EVENT_LEGS,
-            INVESTMENT_EVENT_EVIDENCE,
-        ):
-            present = db.execute(
-                """SELECT 1 FROM information_schema.tables
-                WHERE table_schema = ? AND table_name = ?""",
-                [table.schema, table.name],
-            ).fetchone()
-            if present is None:
-                # Slice 4 owns comparison bootstrap on a newly initialized profile.
-                return StageOutcome(step="investment_match", ran=False)
-        result = InvestmentMatchingService(db).run(actor=actor)
-    except Exception as exc:  # surface a real crash; never abort the pipeline
-        # Same classification path as match/categorize (`_step_error`): a
-        # recognized `UserError` — e.g. the component-size-too-large refusal
-        # in `event_assignment._solve_component` — surfaces its own
-        # actionable message verbatim; anything unclassified falls back to
-        # the generic step-failed string rather than leaking DuckDB/financial
-        # detail.
-        classified = classify_user_error(exc)
-        return StageOutcome(
-            step="investment_match",
-            ran=True,
-            error=_step_error(exc, step="Investment matching"),
-            error_code=None if classified is None else classified.code,
-        )
-    return StageOutcome(
-        step="investment_match",
-        ran=True,
-        counts={
-            "pending_unique": result.pending_unique,
-            "pending_competing": result.pending_competing,
-            "stale": result.stale,
-            "suppressed": result.suppressed,
-        },
-    )
+    """Persist review-only Proposals without registering Golden membership."""
+    return TransformService(db).prepare_investments(actor=actor)
 
 
 def _run_gsheet_step(db: Database) -> list[Any]:

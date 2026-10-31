@@ -44,6 +44,7 @@ Correctness contracts implemented here (see
 from __future__ import annotations
 
 import logging
+import shlex
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -77,6 +78,7 @@ from moneybin.tables import (
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_REALIZED_GAINS,
+    INVESTMENT_EVENT_MEMBERS,
     LOT_SELECTIONS,
     MANUAL_INVESTMENT_TRANSACTIONS,
     SECURITIES,
@@ -1029,8 +1031,9 @@ class InvestmentService:
         - **Pass 2 (write, one transaction).** Every surviving event's rows are
           inserted under ONE ``app.import_log`` batch in ONE DuckDB transaction
           with ONE audit event. A failure part-way rolls the whole batch back,
-          so the tool's "nothing written / safe to retry" contract holds even
-          against an infra error mid-write.
+          so a failed write leaves nothing to retry. After commit, one rebuild
+          returns current Golden IDs; a rebuild failure reports the saved batch
+          and requires rebuilding rather than recording it again.
         """
         if created_by not in _VALID_CREATED_BY:
             raise UserError(
@@ -1320,7 +1323,7 @@ class InvestmentService:
     def _insert_event_row(
         self, *, import_id: str, account_id: str, row: dict[str, object]
     ) -> str:
-        """Insert one raw investment row; return its predicted gold-key id.
+        """Insert one Raw investment row; return its provenance ID.
 
         No transaction management — the caller owns the enclosing transaction so
         multi-row / multi-event writes stay atomic.
@@ -1435,7 +1438,7 @@ class InvestmentService:
             f"investment.record import_id={import_id} type={type_} "
             f"row_count={len(written)} actor={actor}"
         )
-        return written
+        return self._materialize_recorded(written, actor=actor)
 
     def _write_batch(
         self,
@@ -1506,7 +1509,45 @@ class InvestmentService:
             f"investment.record import_id={import_id} event_count={len(groups)} "
             f"row_count={len(written)} actor={actor}"
         )
-        return written
+        return self._materialize_recorded(written, actor=actor)
+
+    def _materialize_recorded(
+        self, provenance_ids: list[str], *, actor: str
+    ) -> list[str]:
+        """Finish committed recording once and resolve exact active Golden identities."""
+        from moneybin.services.transform_service import TransformService
+
+        failure = UserError(
+            "Investment events were saved, but the rebuild did not make their Golden IDs available.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+            hint="Resolve any pending Account, Security or currency issues, run `moneybin refresh --step transform`, then look up the saved events. Do not record them again.",
+        )
+        try:
+            result = TransformService(self._db).apply(actor=actor)
+            if not result.applied or result.error:
+                raise failure
+            identities: list[str] = []
+            for provenance in provenance_ids:
+                matches = self._db.execute(
+                    f"""SELECT m.investment_transaction_id
+                    FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS r
+                    JOIN {INVESTMENT_EVENT_MEMBERS.full_name} AS m
+                      ON m.source_type = r.source_type AND m.source_origin = r.source_origin
+                     AND m.native_reference = r.source_transaction_id
+                     AND m.retired_at IS NULL AND m.member_kind = 'source_event'
+                    JOIN {FCT_INVESTMENT_TRANSACTIONS.full_name} AS f
+                      ON f.investment_transaction_id = m.investment_transaction_id
+                    WHERE r.investment_transaction_id = ?""",  # fixed TableRefs, bound provenance
+                    [provenance],
+                ).fetchall()
+                if len(matches) != 1:
+                    raise failure
+                identities.append(matches[0][0])
+            return identities
+        except Exception as exc:
+            if exc is failure:
+                raise
+            raise failure from exc
 
     # ------------------------------------------------------------------
     # Lot selection (Req 13)
@@ -1528,6 +1569,9 @@ class InvestmentService:
         then delegates to :meth:`LotSelectionsRepo.set_for_disposal` (the
         declarative set; ``selections=[]`` clears all overrides → FIFO).
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {FCT_INVESTMENT_TRANSACTIONS.full_name})
         row = self._db.execute(
             f"SELECT account_id, security_id, type, quantity, trade_date "  # TableRef constant
             f"FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "
@@ -1666,8 +1710,8 @@ class InvestmentService:
             "lot selections; only 'specific' identification consumes them.",
             code=error_codes.INVESTMENT_METHOD_NOT_SPECIFIC,
             hint=(
-                "Elect specific identification first — 'moneybin investments "
-                f"securities set {security_id} --method specific' — then "
+                "Elect specific identification first — `moneybin investments "
+                f"securities set {shlex.quote(security_id)} --method specific` — then "
                 "retry the selection."
             ),
             recovery_actions=[
@@ -1899,6 +1943,9 @@ class InvestmentService:
         ``security_ref`` accept free text and resolve to ids before binding
         (Guard 2). Carries no mandatory warning.
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {FCT_INVESTMENT_TRANSACTIONS.full_name})
         if type_filter is not None and type_filter not in TAXONOMY:
             raise ValueError(
                 f"type_filter must be one of {sorted(TAXONOMY)}, got {type_filter!r}"
@@ -1989,6 +2036,9 @@ class InvestmentService:
         shares one currency; otherwise it is NULL and
         ``market_value_by_currency`` carries the per-currency split.
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {DIM_HOLDINGS.full_name})
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
         where: list[str] = []
@@ -2224,6 +2274,9 @@ class InvestmentService:
         is a different claim from an incomplete basis (conservative, not wrong)
         and gets its own warning for that reason.
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {FCT_INVESTMENT_LOTS.full_name})
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
         where: list[str] = []
@@ -2313,6 +2366,9 @@ class InvestmentService:
         ledger arrives from two sources at once — proceeds, basis and gain all
         double-count until one of the two feeds is removed.
         """
+        from moneybin.investments.freshness import require_current_relations
+
+        require_current_relations(self._db, {FCT_REALIZED_GAINS.full_name})
         if term is not None and term not in self._VALID_TERMS:
             raise ValueError(
                 f"term must be one of {sorted(self._VALID_TERMS)}, got {term!r}"

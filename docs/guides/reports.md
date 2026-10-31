@@ -8,7 +8,7 @@ beside them. One catalog serves every surface: `moneybin reports …` on the CLI
 the `reports` MCP tool, and `moneybin export report`. Same report ids, same
 parameters, same masking.
 
-Every transcript below is real output from the family demo persona at a 100-column width, trimmed only by whole lines:
+The table and receipt excerpts below come from the family demo persona at a 100-column width, trimmed only by whole lines. The affected next-step lines were refreshed separately with the current renderer and report actions without reopening the profile; retained tables and receipts are from the original capture:
 
 ```bash
 uv run moneybin demo --persona family
@@ -49,9 +49,11 @@ $ uv run moneybin reports net-worth-accounts
 
 › The single home-currency total: moneybin reports net-worth
 › The currency-level breakdown: moneybin reports net-worth-currencies
+› Converted totals; this profile has no usable home currency:
+moneybin profile set home_currency '<CODE>'
 ```
 
-A third hint, pointing at `profile set home_currency <CODE>` for converted totals, is trimmed above; it runs to two lines at this width. With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Net worth is not valued from holdings yet: an account counts through its recorded balance. An account in net worth that holds value (holdings, or any transaction) but has no balance at all blanks the `net-worth` total, with `unanchored_account_count` (under `--wide`) saying how many, and appears on `net-worth-accounts` with an empty balance. `moneybin system doctor` names those accounts under `net_worth_unanchored_accounts`. Record a balance with `accounts balance assert`, or leave the account out with `accounts set <id> --exclude`, then run `moneybin refresh`; the total returns once the rebuild picks the change up.
+Replace `<CODE>` with the home currency you choose. With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Net worth is not valued from holdings yet: an account counts through its recorded balance. An account in net worth that holds value (holdings, or any transaction) but has no balance at all blanks the `net-worth` total, with `unanchored_account_count` (under `--wide`) saying how many, and appears on `net-worth-accounts` with an empty balance. `moneybin system doctor` names those accounts under `net_worth_unanchored_accounts`. Record a balance with `accounts balance assert`, or leave the account out with `accounts set <id> --exclude`, then run `moneybin refresh`; the total returns once the rebuild picks the change up.
 
 ### Net worth over time
 
@@ -78,9 +80,12 @@ $ uv run moneybin reports net-worth --interval monthly --from-date 2025-01-01 --
 
 › The single latest-day total: moneybin reports net-worth
 › The account-level breakdown: moneybin reports net-worth-accounts
+› A recent window — rows return oldest-first, so a row limit keeps the earliest buckets, not the
+most recent:
+moneybin reports net-worth --interval monthly --from-date '<YYYY-MM-DD>'
 ```
 
-`net-worth` is a home-currency total, so it reports no figure until the profile has a home currency; the `profile set` output is trimmed above, and so is a third hint naming a narrower window, which runs to two lines. `home_currency_code` names the currency the total is priced in. `--interval` is `daily`, `weekly` (ISO weeks starting Monday), or `monthly`; each row is the bucket's last available balance date, and `change_abs` (with `change_pct` under `--wide`) compares it to the bucket before it. Both bounds are optional.
+`net-worth` is a home-currency total, so it reports no figure until the profile has a home currency; the `profile set` output is trimmed above. Replace `<YYYY-MM-DD>` with the start date of the window you want. `home_currency_code` names the currency the total is priced in. `--interval` is `daily`, `weekly` (ISO weeks starting Monday), or `monthly`; each row is the bucket's last available balance date, and `change_abs` (with `change_pct` under `--wide`) compares it to the bucket before it. Both bounds are optional.
 
 ### Spending
 

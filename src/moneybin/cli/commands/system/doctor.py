@@ -16,6 +16,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.render import build_next_step, compose_human_result
 from moneybin.cli.utils import (
     generated_cli_command,
     get_terminal_policy,
@@ -125,7 +126,8 @@ def doctor_command(
         with get_database(read_only=False) as db:
             report = DoctorService(db).run_all(verbose=verbose, full=full)
 
-    symbols = get_terminal_policy().symbols
+    policy = get_terminal_policy()
+    symbols = policy.symbols
     status_icon = {
         "pass": symbols.success,
         "fail": symbols.failure,
@@ -184,7 +186,7 @@ def doctor_command(
             raise typer.Exit(1)
         return
 
-    lines: list[str] = []
+    lines: list[object] = []
     for result in report.invariants:
         # Requirement 20: a passing invariant is not news, and five ✅ lines are
         # five a reader has to rule out before finding the one ❌ among them.
@@ -207,14 +209,18 @@ def doctor_command(
         for action in recovery:
             rationale = action.rationale
             if action.confidence == "suggested":
-                rationale = f"Consider {rationale}"
+                rationale = f"Suggested: {rationale}"
             command = _recovery_command(action)
             if command is None:
                 lines.append(f"   {symbols.action} {rationale}")
             else:
                 lines.append(
-                    f"   {symbols.action} {rationale}: "
-                    f"{generated_cli_command(*command)}"
+                    build_next_step(
+                        rationale,
+                        generated_cli_command(*command),
+                        terminal=policy,
+                        indent="   ",
+                    )
                 )
 
     # Ungated by `quiet`, unlike most summary lines: once requirement 20 stops
@@ -243,8 +249,8 @@ def doctor_command(
         summary += " — all passing"
     lines.append(summary)
     emit_human_result(
-        "\n".join(lines),
-        policy=get_terminal_policy(),
+        compose_human_result(lines),
+        policy=policy,
         finite_read=False,
         receipt=True,
     )

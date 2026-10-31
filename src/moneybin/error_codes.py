@@ -133,6 +133,7 @@ AUDIT_UNBALANCED_TRANSFER = "audit_unbalanced_transfer"
 REFRESH_CATEGORIZE_FAILED = "refresh_categorize_failed"
 REFRESH_MATCH_FAILED = "refresh_match_failed"
 REFRESH_MODEL_FAILED = "refresh_model_failed"
+REFRESH_STALE = "refresh_stale"
 REFRESH_UNKNOWN_STEP = "refresh_unknown_step"
 
 

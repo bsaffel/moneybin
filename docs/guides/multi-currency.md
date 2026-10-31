@@ -8,6 +8,11 @@ read time; aggregated reports retain a subtotal for each currency. Provider
 rates come from Frankfurter's ECB reference series. Your own corrections
 outrank them, and report-time conversions do not alter source amounts.
 
+The affected next-step lines below were refreshed separately at 100 columns
+with the current renderer and report actions without reopening the profile.
+Retained table and receipt excerpts are from the original captures described
+in each section.
+
 ## Where a currency comes from
 
 | Source | Currency read from |
@@ -55,6 +60,8 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 
 › The single home-currency total: moneybin --profile cli-ux-international reports net-worth
 › The account-level breakdown: moneybin --profile cli-ux-international reports net-worth-accounts
+› Converted totals; this profile has no usable home currency:
+moneybin --profile cli-ux-international profile set home_currency '<CODE>'
 $ uv run moneybin --profile cli-ux-international reports net-worth-accounts --no-pager
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ account_name                  ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
@@ -69,12 +76,13 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-accounts --no
 
 › The single home-currency total: moneybin --profile cli-ux-international reports net-worth
 › The currency-level breakdown: moneybin --profile cli-ux-international reports net-worth-currencies
+› Converted totals; this profile has no usable home currency:
+moneybin --profile cli-ux-international profile set home_currency '<CODE>'
 ```
 
-Each report's third hint, which points to `moneybin profile set home_currency`
-because this profile has none, is two lines trimmed above. Each hint repeats
-the `--profile cli-ux-international` the command was run with. The `*_home`
-columns stay `-` until a home currency is set.
+Replace `<CODE>` with the home currency you choose. Each hint repeats the
+`--profile cli-ux-international` the command was run with. The `*_home` columns
+stay `-` until a home currency is set.
 
 The doctor reports this as a warning: the profile is internally coherent, but
 it cannot produce one combined figure until it has rates for the requested
@@ -149,6 +157,8 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --from-date 2
 └────────────────────┴──────────────┴─────────────────────────┴────────────┘
 4 of 10 columns shown — --wide for all
 
+› Period-over-period change:
+moneybin --profile cli-ux-international reports net-worth --interval monthly
 › The currency-level breakdown: moneybin --profile cli-ux-international reports net-worth-currencies
 $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
 ┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
@@ -161,11 +171,13 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 │ USD           │ USD                    │ 2025-12-27   │  6,294.20 │       6,294.20 │
 └───────────────┴────────────────────────┴──────────────┴───────────┴────────────────┘
 5 of 14 columns shown — --wide for all
+
+› The single home-currency total: moneybin --profile cli-ux-international reports net-worth
+› The account-level breakdown: moneybin --profile cli-ux-international reports net-worth-accounts
 ```
 
-The net-worth report's first hint, which points to `--interval monthly` and
-runs to two lines, and the currency report's two-line closing disclosure and
-two next-step hints are trimmed above. The disclosure reads "Converted from
+The currency report's two-line closing disclosure is trimmed above.
+The disclosure reads "Converted from
 AED, CAD, EUR, GBP using 4 stored rates" and points to `moneybin --profile
 cli-ux-international fx rate AED USD 2025-12-27` for any one of them, or
 `--output json` for all.
@@ -209,9 +221,15 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --interval mo
 │ USD                │ 2025-12-27   │                       0 │ 106,066.73 │          - │
 └────────────────────┴──────────────┴─────────────────────────┴────────────┴────────────┘
 5 of 12 columns shown — --wide for all
+
+› The single latest-day total: moneybin --profile cli-ux-international reports net-worth
+› The account-level breakdown: moneybin --profile cli-ux-international reports net-worth-accounts
+› A recent window — rows return oldest-first, so a row limit keeps the earliest buckets, not the
+most recent:
+moneybin --profile cli-ux-international reports net-worth --interval monthly --from-date '<YYYY-MM-DD>'
 ```
 
-The three next-step hints, five lines at this width, are trimmed above.
+Replace `<YYYY-MM-DD>` with the start date of the window you want.
 
 ## When the market was closed
 
@@ -259,6 +277,9 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 
 ! AED->USD is unsupported: the rate provider publishes no AED rates, so refresh cannot fetch it;
 record the rate with 'moneybin fx set AED USD <date> <rate>'
+
+› The single home-currency total: moneybin --profile cli-ux-international reports net-worth
+› The account-level breakdown: moneybin --profile cli-ux-international reports net-worth-accounts
 ```
 
 An *unfetched* pair names `moneybin refresh` instead. If the display currency
@@ -289,9 +310,12 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 Converted from AED, CAD, EUR, GBP using 4 stored rates, 3 published on an earlier day than the date
 they price; run 'moneybin --profile cli-ux-international fx rate CAD USD 2025-12-26' for one of
 them, or --output json for all
+
+› The single home-currency total: moneybin --profile cli-ux-international reports net-worth
+› The account-level breakdown: moneybin --profile cli-ux-international reports net-worth-accounts
 ```
 
-Both reports' two next-step hints are trimmed above. Under `--output json`,
+Under `--output json`,
 each entry in `summary.applied_rates` carries both `requested_date` and
 `rate_date`. The `--wide` column `rate_published_date` names the publication
 behind each row's `net_worth_home`.

@@ -828,6 +828,40 @@ selection through the same semantic-leg mapping or block atomically when the
 mapping is incomplete or ambiguous; pre-M1J.7 source-derived transaction ids do
 not receive compatibility forwarding.
 
+### Source choice after accepting Matches
+
+The per-account `investment_source_type` setting constrains eligible evidence
+before field selection. Choosing `manual` or `plaid` preserves accepted Match
+relationships and existing Golden identities. A matched event projects from its
+members of the chosen source type; it is never excluded merely because its
+previous representative came from the other source. Standalone events from the
+other source remain excluded. Stored field choices are retained, apply when
+their evidence is eligible, and become available again when the setting clears.
+Source choice alone does not stale a Match; independent evidence or dependency
+drift still does.
+
+CLI and MCP show the proposed source and each affected event's inclusion,
+dates, quantities, amounts and other changed ledger fields, plus complete lot
+selection remaps. One confirmation covers the complete switch. The shared
+transition builder reconstructs openings and validates every affected selection
+before prompting and again inside the settings transaction. Changed evidence
+invalidates approval; unsafe selections refuse the switch without writes.
+MCP uses payload-bound confirmation, while CLI presents the preview before its
+prompt or explicit `--yes`. Clearing the setting follows the same contract.
+
+### Recording result identity
+
+`record_event` and `record_events` commit each recorded batch atomically, then
+run one prerequisite-aware rebuild per call and return current Golden leg IDs
+in input order. A reinvest returns both semantic-leg IDs. Returned IDs must
+resolve through active exact manual provenance to materialized Core events;
+Raw hashes are never exposed as Golden identities or accepted as aliases.
+
+A rebuild or identity-resolution failure after commit reports that recording
+was saved and requires rebuilding and looking up the saved events. It must not
+mark the import failed, claim rollback, return obsolete source IDs, or invite
+recording the batch again. All-skipped batches do not rebuild.
+
 ### Field fidelity
 
 Golden fields follow this order:

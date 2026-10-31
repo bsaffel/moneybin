@@ -304,6 +304,51 @@ WITH reporting_calendar AS (
     account_id
   HAVING
     COUNT(DISTINCT source_type) > 1
+), unresolved_currency_positions AS (
+  /* Unpublished quantity evidence cannot silently make a partial position look complete.
+     Accepted Matches retain their immutable bindings and reserve their source identities. */
+  SELECT
+    l.account_id,
+    l.security_id,
+    MAX(COALESCE(m.created_at, p.created_at)) AS observed_at
+  FROM prep.int_investment_events__legs AS l
+  LEFT JOIN app.account_settings AS a
+    ON a.account_id = l.account_id
+  LEFT JOIN prep.stg_manual__investment_transactions AS m
+    ON l.source_type = 'manual'
+    AND m.source_type = l.source_type
+    AND m.source_origin = l.source_origin
+    AND m.source_transaction_id = l.native_reference
+  LEFT JOIN prep.stg_plaid__investment_transactions AS p
+    ON l.source_type = 'plaid'
+    AND p.source_type = l.source_type
+    AND p.source_origin = l.source_origin
+    AND p.investment_transaction_id = l.native_reference
+    AND p.observation_version = l.observation_version
+  WHERE
+    l.has_resolved_identity
+    AND l.currency_code IS NULL
+    AND NOT l.original_investment_transaction_id IS NULL
+    AND NOT l.quantity IS NULL
+    AND l.quantity <> 0
+    AND l.type IN ('buy', 'sell', 'reinvest', 'transfer_in', 'transfer_out', 'split')
+    AND (
+      a.investment_source_type IS NULL OR a.investment_source_type = l.source_type
+    )
+    AND NOT EXISTS(
+      SELECT
+        1
+      FROM app.investment_event_members AS reserved
+      WHERE
+        reserved.retired_at IS NULL
+        AND NOT reserved.decision_id IS NULL
+        AND reserved.source_type = l.source_type
+        AND reserved.source_origin = l.source_origin
+        AND reserved.native_reference = l.native_reference
+    )
+  GROUP BY
+    l.account_id,
+    l.security_id
 ), withheld AS (
   /* Four clauses, none redundant — each guards a failure the others miss. The first
      three are quantity-specific: market value is quantity x price and does not depend
@@ -377,14 +422,18 @@ WITH reporting_calendar AS (
     OR pos.currency_count > 1
     OR (
       pos.currency_count = 1 AND pos.unknown_currency_lots > 0
-    ) AS is_withheld,
+    )
+    OR NOT uc.account_id IS NULL AS is_withheld,
     NOT so.account_id IS NULL AS is_source_overlap,
-    so.overlap_observed_at AS source_overlap_at
+    so.overlap_observed_at AS source_overlap_at,
+    uc.observed_at AS unresolved_currency_at
   FROM positions AS pos
   LEFT JOIN provider_reported AS pr
     ON pr.account_id = pos.account_id AND pr.security_id = pos.security_id
   LEFT JOIN source_overlap_accounts AS so
     ON so.account_id = pos.account_id
+  LEFT JOIN unresolved_currency_positions AS uc
+    ON uc.account_id = pos.account_id AND uc.security_id = pos.security_id
 ), usable_price AS (
   /* The latest close for each position, dropped — so the LEFT JOIN below reads NULL and
      the position falls back to 'unpriced' — when the ledger carries a recorded split
@@ -480,6 +529,7 @@ SELECT
     COALESCE(lp.price_updated_at, p.updated_at),
     COALESCE(psf.newest_snapshot_at, p.updated_at),
     COALESCE(wh.source_overlap_at, p.updated_at),
+    COALESCE(wh.unresolved_currency_at, p.updated_at),
     COALESCE(acct.investment_source_type_changed_at, p.updated_at)
   ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots, the resolved close's freshness (market_value advances when a newer close lands), for a broker-reported position the newest snapshot receipt's time (valuation_status flips to 'withheld' when a fresh pull contradicts or omits the position), and for a position in a mixed-source account the newest ledger row behind that overlap (valuation_status flips to 'source_overlap'). The snapshot term keys on the position, not the account, so a purely manual holding in a covered account is not advanced by an unrelated pull; and it uses the snapshot RECEIPT (not the per-position claim), so a pull that DROPS a position still advances its watermark. The overlap term is the one deliberately ACCOUNT-scoped input: the flag it tracks is account-scoped too, so a second-source event on security B flips security A's status without touching any of A's position-scoped timestamps, and folding only those would report A unchanged. It reaches only overlapping accounts — source_overlap_accounts holds no others, so a single-source position joins to NULL and keeps its own watermark. COALESCE folds the LEFT-JOINed price, snapshot and overlap timestamps only when present, so an unpriced, manual, single-source position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. A source choice (investment_source_type) clears an overlap without that rewind, because the account's investment_source_type_changed_at is folded here too. KNOWN LIMITATION: the overlap term folds the overlap's own timestamp only while source_overlap_accounts still flags the account, so updated_at can still fall backwards when import_revert clears the overlap by deleting the redundant batch's raw rows — see "Known limitation: dim_holdings can rewind when a source overlap clears" in docs/specs/core-updated-at-convention.md. */
 FROM positions AS p

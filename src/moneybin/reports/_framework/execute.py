@@ -331,6 +331,7 @@ def convert_execution(
         # actually being returned, since a total below that is never true.
         total_count=max(execution.total_count - removed, len(outcome.records)),
         applied_rates=outcome.applied_rates,
+        actions=[*execution.actions, *outcome.actions],
         # A fallback leaves the rows in their own currencies, so the currency
         # already derived from those rows is still the true answer. Overwriting
         # it with the failed conversion's ``None`` would report a mixed result
@@ -673,7 +674,14 @@ def redact_catalog_execution(
     # a home-basis column on a profile that has chosen no home currency returns
     # NULL in it and names no cause. Gated on the *declared* column rather than
     # on `applied_rates`, which is false precisely in the case being explained.
-    if execution.home_currency is None and home_basis_columns(execution.output_columns):
+    if (
+        execution.home_currency is None
+        and home_basis_columns(execution.output_columns)
+        and not any(
+            isinstance(action, NextStep) and action.cli == HOME_CURRENCY_HINT.cli
+            for action in actions
+        )
+    ):
         actions.append(HOME_CURRENCY_HINT)
 
     return CatalogReportResult(
@@ -708,7 +716,10 @@ def execute_catalog_report(
     **params: Any,
 ) -> CatalogReportExecution:
     """Execute a catalog runner once; do not apply terminal redaction."""
+    from moneybin.investments.freshness import require_current_query
+
     rq = spec.runner(db, **params)
+    require_current_query(db, rq.sql)
     # `list()` on a Mapping yields its KEYS, which would bind parameter names as
     # values. A named-binding runner's params must reach DuckDB as the mapping.
     # Each entry is unwrapped from its `Binding`: the class travels with the value

@@ -3,8 +3,8 @@
 This module provides commands for running SQLMesh transformations on the
 loaded DuckDB data. ``plan``/``apply``/``status``/``validate``/``audit``
 route through ``TransformService`` so the CLI and MCP layers share the same
-business logic and the same response envelope. ``restate`` keeps the direct
-``sqlmesh_context()`` path — it's operator-only and has no MCP equivalent.
+business logic and the same response envelope. Investment-dependent ``restate``
+runs membership prerequisites; other operator restates retain date-scoped SQLMesh planning.
 """
 
 from collections.abc import Sequence
@@ -128,10 +128,13 @@ def transform_apply(
     Equivalent to 'moneybin transform plan --apply'. Rebuilds only changed
     models since the last run.
     """
+    from dataclasses import replace
+
+    from moneybin.adapters.refresh_adapters import refresh_envelope
     from moneybin.cli.output import render_or_json
     from moneybin.database import get_database
-    from moneybin.protocol.envelope import build_envelope
-    from moneybin.services.transform_service import TransformService
+    from moneybin.orchestration.refresh import expand_steps, refresh
+    from moneybin.protocol.envelope import serialize_payload
 
     terminal = get_terminal_policy()
     try:
@@ -141,7 +144,7 @@ def transform_apply(
         ):
             with operation_progress(terminal, quiet=quiet) as report:
                 report(ProgressEvent("Applying transforms"))
-                result = TransformService(db).apply()
+                result = refresh(db, steps=["transform"], actor="cli:transform_apply")
     except KeyboardInterrupt:
         if output == OutputFormat.JSON:
             emit_json_failure(
@@ -171,14 +174,14 @@ def transform_apply(
         raise typer.Exit(130) from None
 
     if output == OutputFormat.JSON:
-        data: dict[str, object] = {
-            "applied": result.applied,
-            "duration_seconds": result.duration_seconds,
-        }
-        if result.error is not None:
-            data["error"] = result.error
+        envelope = refresh_envelope(
+            result, requested=frozenset(expand_steps(["transform"]))
+        )
+        data = serialize_payload(envelope.data)
+        if result.error is None:
+            data.pop("error", None)
         render_or_json(
-            build_envelope(data=data, sensitivity="low"),
+            replace(envelope, data=data),
             output,
             cli_actor="transform_apply",
         )
@@ -197,7 +200,24 @@ def transform_apply(
     else:
         _emit_transform_text(
             "Transforms failed",
-            [("Failure", result.error or "Unknown failure")],
+            [
+                (
+                    "Failure",
+                    result.error
+                    or next(
+                        (
+                            f"{stage.step}: {stage.error}"
+                            for stage in result.stages
+                            if stage.error
+                        ),
+                        "Unknown failure",
+                    ),
+                ),
+                (
+                    "Recovery",
+                    "Run `moneybin refresh --step transform` after resolving the failed stage.",
+                ),
+            ],
             finite_read=False,
         )
         raise typer.Exit(1)
@@ -428,14 +448,27 @@ def transform_restate(
                 finite_read=False,
             )
             return
-    with (
-        sqlmesh_command(f"Restating {model}", success=f"Restated {model}") as db,
-        sqlmesh_context(db) as ctx,
-    ):
-        ctx.plan(
-            restate_models=[model],
-            start=start,
-            end=end,
-            auto_apply=True,
-            no_prompts=True,
-        )
+    from moneybin.services.transform_service import (
+        TransformService,
+        requires_investment_reconciliation,
+    )
+
+    with sqlmesh_command(f"Restating {model}", success=f"Restated {model}") as db:
+        if requires_investment_reconciliation([model]):
+            typer.echo("Investment events, lots and gains rebuild together.", err=True)
+            result = TransformService(db).apply(actor="cli")
+            if not result.applied or result.error:
+                raise UserError(
+                    "Investment restatement could not finish.",
+                    code=error_codes.REFRESH_MODEL_FAILED,
+                    hint="Run moneybin refresh --step transform and retry dependent reads.",
+                )
+        else:
+            with sqlmesh_context(db) as ctx:
+                ctx.plan(
+                    restate_models=[model],
+                    start=start,
+                    end=end,
+                    auto_apply=True,
+                    no_prompts=True,
+                )

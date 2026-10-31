@@ -18,6 +18,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.orchestration.refresh import (
     RefreshResult,
+    StageOutcome,
     expand_steps,
     refresh,
     step_outcome,
@@ -79,6 +80,11 @@ def _successful_apply(_service: object) -> ApplyResult:
     return ApplyResult(applied=True, duration_seconds=0.1)
 
 
+def _unavailable_stage(_service: object, **_kwargs: object) -> StageOutcome:
+    """Inject a skipped stage at the carrier boundary, without running bootstrap."""
+    return StageOutcome(step="investment_match", ran=False)
+
+
 @pytest.mark.parametrize(
     "steps,retry",
     [
@@ -101,7 +107,9 @@ def test_planner_crash_is_stage_owned_and_retry_retains_requested_scope(
         fail,
     )
     apply = MagicMock(side_effect=AssertionError("blocked apply must not run"))
-    monkeypatch.setattr("moneybin.orchestration.refresh.TransformService.apply", apply)
+    monkeypatch.setattr(
+        "moneybin.orchestration.refresh.TransformService._apply_sqlmesh", apply
+    )
     result = refresh(refresh_database, steps=steps)
     assert result.error is None
     assert result.applied is False
@@ -133,8 +141,12 @@ def test_unavailable_comparison_inputs_offer_retry_without_inventing_counts(
     retry: str,
 ) -> None:
     monkeypatch.setattr(
-        "moneybin.orchestration.refresh.TransformService.apply",
+        "moneybin.orchestration.refresh.TransformService._apply_sqlmesh",
         _successful_apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.orchestration.refresh.TransformService.prepare_investments",
+        _unavailable_stage,
     )
     result = refresh(comparison_db, steps=steps)
     stage = result.stage("investment_match")
@@ -316,8 +328,12 @@ def test_unavailable_inputs_keep_transform_recovery_through_embedded_carriers(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "moneybin.orchestration.refresh.TransformService.apply",
+        "moneybin.orchestration.refresh.TransformService._apply_sqlmesh",
         _successful_apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.orchestration.refresh.TransformService.prepare_investments",
+        _unavailable_stage,
     )
     result = refresh(comparison_db, steps=["transform"])
     for envelope in _embedded_envelopes(result, monkeypatch, tmp_path):
@@ -464,8 +480,12 @@ def test_skipped_planner_and_failed_apply_retry_transform_without_cash_retry(
         "moneybin.services.matching_service.MatchingService.run", fail_cash
     )
     monkeypatch.setattr(
-        "moneybin.orchestration.refresh.TransformService.apply",
+        "moneybin.orchestration.refresh.TransformService._apply_sqlmesh",
         fail_apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.orchestration.refresh.TransformService.prepare_investments",
+        _unavailable_stage,
     )
     result = refresh(comparison_db, steps=["match", "transform"])
     envelopes = [

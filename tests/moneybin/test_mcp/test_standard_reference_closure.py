@@ -340,6 +340,7 @@ def test_report_result_actions_use_executable_standard_calls() -> None:
         cursor = MagicMock()
         cursor.description = [(column.name,) for column in spec.columns]
         cursor.fetchmany.return_value = []
+        cursor.fetchone.return_value = None
         db_mock = MagicMock(spec=Database)
         db_mock.execute.return_value = cursor
         db = cast(Database, with_reporting_timezone(db_mock))

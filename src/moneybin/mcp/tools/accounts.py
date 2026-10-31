@@ -232,7 +232,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
 
 
 @mcp_tool(read_only=False, timeout_seconds=180.0)
-def accounts_set(
+async def accounts_set(
     account_id: str,
     official_name: str | None = None,
     last_four: str | None = None,
@@ -247,6 +247,7 @@ def accounts_set(
     include_in_net_worth: bool | None = None,
     is_archived: bool | None = None,
     clear_fields: list[str] | None = None,
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[AccountSettingsPayload]:
     """Partial update of an account's settings (structural + behavioral fields).
 
@@ -269,7 +270,10 @@ def accounts_set(
       ``investment_source_type`` — which investment history feeds the
         account's ledger: ``"manual"`` (recorded trades) or ``"plaid"``
         (synced). Nothing is deleted; clearing it uses both. A set or clear
-        answers in ``actions`` with the trades now used and ignored.
+        answers in ``actions`` with the trades now used and ignored. Accepted
+        Matches remain linked; changed investment values and lot selections are
+        previewed once for payload-bound confirmation. ``confirmation_token``
+        redeems that preview when the client cannot elicit confirmation.
       ``include_in_net_worth``— toggle inclusion in net-worth aggregates.
       ``is_archived`` — archive / unarchive flag.
 
@@ -320,18 +324,82 @@ def accounts_set(
             )
         for field in clear_fields:
             kwargs[field] = CLEAR
-    with get_database(read_only=False) as db:
-        settings, warnings = update_account_settings(
-            db,
-            account_id,
+    from moneybin.investments.source_choice import SourceChoicePreview
+    from moneybin.services.investment_membership_service import (
+        InvestmentMembershipService,
+    )
+
+    def binding(preview: SourceChoicePreview) -> ConfirmationBinding:
+        return ConfirmationBinding(
+            arguments={
+                "source_choice_fingerprint": preview.fingerprint,
+                "settings": {
+                    key: None if value is CLEAR else str(value)
+                    for key, value in kwargs.items()
+                    if value is not None
+                },
+            },
+            resolved_ids=(account_id,),
             actor="mcp",
-            **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
+            profile=get_settings().profile,
+            authorization_context="local-profile",
+            operation_kind="investment_source_choice",
+            blast_radius={
+                "events": len(preview.changes),
+                "lot_selections": len(preview.curation.before),
+            },
         )
-        confirmation = (
-            AccountService(db).investment_source_confirmation(account_id)
-            if kwargs["investment_source_type"] is not None
-            else None
+
+    def load_preview() -> SourceChoicePreview:
+        with get_database(read_only=True) as db:
+            return InvestmentMembershipService(db).preview_source_choice(
+                account_id,
+                None
+                if kwargs["investment_source_type"] is CLEAR
+                else investment_source_type,
+            )
+
+    approved: ConfirmationGrant | None = None
+    if kwargs["investment_source_type"] is not None:
+        preview = await asyncio.to_thread(load_preview)
+        if preview.changes or confirmation_token is not None:
+            approved = await grant_confirmation_or_raise(
+                binding=binding(preview),
+                message=preview.message(),
+                confirmation_token=confirmation_token,
+                cli_equivalent="moneybin accounts set --investment-source-type",
+            )
+    elif confirmation_token is not None:
+        raise UserError(
+            "confirmation_token requires an investment source change.",
+            code=error_codes.MUTATION_INVALID_INPUT,
         )
+
+    def verify(fresh: SourceChoicePreview) -> None:
+        if approved is None:
+            raise UserError(
+                "Investment source confirmation is required.",
+                code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+            )
+        approved.verify(binding(fresh))
+
+    def apply_settings():
+        with get_database(read_only=False) as db:
+            settings, warnings = update_account_settings(
+                db,
+                account_id,
+                actor="mcp",
+                verify_source_choice=verify if approved else None,
+                **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel for partial settings updates
+            )
+            confirmation = (
+                AccountService(db).investment_source_confirmation(account_id)
+                if kwargs["investment_source_type"] is not None
+                else None
+            )
+            return settings, warnings, confirmation
+
+    settings, warnings, confirmation = await asyncio.to_thread(apply_settings)
     d = settings.to_dict()
     payload = AccountSettingsPayload(
         account_id=str(d["account_id"]),
@@ -1822,19 +1890,15 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_set,
         "accounts_set",
-        "Update account settings. None leaves fields unchanged; clear_fields resets"
-        " nullable fields, never booleans. account_type: "
-        "depository/credit/loan/investment/other; subtype unchanged; clear restores"
-        " source evidence. Noncanonical account_subtype/holder_category values "
-        "warn. default_cost_basis_method: fifo/hifo/specific/average. Invalid "
-        "types/methods raise mutation_invalid_input. investment_source_type: "
-        "manual/plaid selects ledger history; clear uses both; evidence is "
-        "retained. Other fields: display_name, official_name, last_four, "
-        "currency_code, credit_limit. is_archived and include_in_net_worth are "
-        "independent: archiving excludes all net-worth history; archived_at is not "
-        "date-scoped. include_in_net_worth=False excludes active accounts too. "
-        "Audited app.account_settings writes; restore values or use "
-        "system_audit_undo. Amounts use summary.display_currency.",
+        "Update account settings. None leaves fields unchanged; clear_fields resets "
+        "nullable fields, never booleans. account_type: depository/credit/loan/investment/other; "
+        "clear restores source evidence. Noncanonical subtype/holder values warn; invalid "
+        "types or cost-basis methods fail. default_cost_basis_method: fifo/hifo/specific/average. "
+        "investment_source_type: manual/plaid; clear uses both. Source changes preserve "
+        "Matches and require a financial/lot-selection preview and bound confirmation. "
+        "is_archived excludes all net-worth history; include_in_net_worth acts independently. "
+        "Other fields set names, last_four, currency and credit_limit. Audited app.account_settings "
+        "writes; restore values or system_audit_undo. Amounts use summary.display_currency.",
     )
     register(
         mcp,
