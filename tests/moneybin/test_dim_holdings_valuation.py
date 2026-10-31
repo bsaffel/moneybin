@@ -1589,7 +1589,7 @@ def test_manual_account_without_a_snapshot_still_values(
     )
     assert status == _expected_status(elapsed)
     assert market_value == Decimal("1200.00")
-    assert _reconciliation_status(db, _case_account("plaid_only")) == "reconciled"
+    assert _reconciliation_status(db, _case_account("manual_only")) == "reconciled"
 
 
 @pytest.mark.slow
@@ -1826,6 +1826,7 @@ def test_a_single_source_ledger_still_values(
 
     assert status == _expected_status(elapsed)
     assert market_value == Decimal("1200.00")
+    assert _reconciliation_status(db, _case_account("plaid_only")) == "reconciled"
 
 
 @pytest.mark.slow
