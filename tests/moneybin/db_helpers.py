@@ -356,6 +356,7 @@ CREATE TABLE IF NOT EXISTS core.fct_investment_transactions (
     price DECIMAL(28, 10),
     amount DECIMAL(18, 2),
     fees DECIMAL(18, 2),
+    reconciliation_status VARCHAR,
     currency_code VARCHAR,
     provider_type VARCHAR,
     provider_subtype VARCHAR,

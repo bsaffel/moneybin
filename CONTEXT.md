@@ -232,6 +232,15 @@ The items of one kind still awaiting Decisions. Most carry a Proposal; the
 categorization queue carries transactions with no candidate offered.
 _Avoid_: inbox, backlog, pending list, worklist
 
+**Reconciliation status**:
+Whether a published figure rests only on records whose cross-source
+correspondence is settled. A figure is unreconciled while two sources may
+describe the same activity and nothing has decided whether they do, including
+a figure derived from such activity. It is always derived from Decisions,
+source choices, and the data, and never set directly. A figure with one source
+and nothing left to compare is reconciled.
+_Avoid_: trust, verified, cleared, match status, double-count
+
 **Confirm**:
 The visible ratification step an uncertain inference or a destructive change
 must pass before it takes effect. Silence is reserved for near-certain signals
@@ -407,6 +416,8 @@ _Avoid_: launch, 1.0 without context, hosted launch
   dedicated to it
 - A **Match** groups source rows; a **Transfer** pairs two **Transactions**
   across two **Accounts**
+- A **Decision** on a **Match** settles part of a figure's **Reconciliation
+  status**; the status is the consequence, the **Decision** is the input
 - A **Link** binds one **Native reference** to one **Account**, **Merchant**,
   or **Security**
 - A **Review queue** item waits until a **Decision** resolves it, whether or

@@ -1149,6 +1149,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "source_type": DataClass.TXN_TYPE,
         "source_origin": DataClass.TXN_TYPE,
         "description": DataClass.DESCRIPTION,
+        "reconciliation_status": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "fct_realized_gains"): {
