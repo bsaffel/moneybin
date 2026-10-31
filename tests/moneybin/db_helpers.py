@@ -381,6 +381,7 @@ CREATE TABLE IF NOT EXISTS core.fct_investment_lots (
     cost_basis_total DECIMAL(18, 2),
     cost_basis_remaining DECIMAL(18, 2),
     cost_basis_method VARCHAR,
+    reconciliation_status VARCHAR,
     currency_code VARCHAR,
     is_open BOOLEAN,
     source_transaction_id VARCHAR,
@@ -407,6 +408,7 @@ CREATE TABLE IF NOT EXISTS core.fct_realized_gains (
     term VARCHAR,
     cost_basis_method VARCHAR,
     basis_incomplete BOOLEAN,
+    reconciliation_status VARCHAR,
     currency_code VARCHAR,
     updated_at TIMESTAMPTZ
 );

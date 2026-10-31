@@ -76,6 +76,21 @@ def seed_manual_buy(db: Database, *, account_id: str, txn_id: str) -> None:
     )
 
 
+def seed_manual_sell(db: Database, *, account_id: str, txn_id: str) -> None:
+    """A manual sell of 4 units after the buy; engine reads abs() of qty/amount."""
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees,
+            created_by, investment_transaction_id, currency_code, created_at
+        ) VALUES (?, ?, ?, ?, 'CHC', 'sell', DATE '2026-03-05', 4, 120.00, 480.00,
+                  0.00, 'test', ?, 'USD', TIMESTAMP '2026-03-06 09:00:00')
+        """,  # test fixture, not executing user SQL
+        [txn_id, f"imp_{txn_id}", account_id, _SECURITY, txn_id],
+    )
+
+
 def seed_plaid_buy(db: Database, *, loaded_at: str) -> None:
     """A Plaid buy on the canonical id; ``amount`` is Plaid's positive cash-out."""
     db.execute(

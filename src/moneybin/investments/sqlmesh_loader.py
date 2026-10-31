@@ -96,13 +96,14 @@ def _opt_timestamp(value: object) -> datetime | None:
 
 def _load_ledger(
     context: ExecutionContext,
-) -> tuple[list[LedgerEvent], dict[tuple[str, str], datetime]]:
-    """Fetch the canonical ledger and the per-group freshness map.
+) -> tuple[list[LedgerEvent], dict[tuple[str, str], datetime], dict[str, str]]:
+    """Fetch the canonical ledger, the per-group freshness map and account status.
 
-    Returns the ``LedgerEvent`` list (engine input) plus
-    ``{(account_id, security_id): MAX(updated_at)}`` — the row-freshness the two
-    fact models stamp on every lot/gain in that group (core-updated-at
-    convention: MAX of the contributing input rows, never CURRENT_TIMESTAMP).
+    Returns the ``LedgerEvent`` list (engine input), ``{(account_id,
+    security_id): MAX(updated_at)}`` — the row-freshness the two fact models
+    stamp on every lot/gain in that group (core-updated-at convention: MAX of
+    the contributing input rows, never CURRENT_TIMESTAMP) — and
+    ``{account_id: reconciliation_status}`` (account-scoped, one value each).
     """
     # resolve_table() gives the versioned physical name valid during backfill;
     # the plain "core.fct_investment_transactions" only exists after promotion.
@@ -121,6 +122,7 @@ def _load_ledger(
           amount::VARCHAR AS amount,
           fees::VARCHAR AS fees,
           currency_code,
+          reconciliation_status,
           updated_at::VARCHAR AS updated_at
         FROM {ledger_table}
         """  # noqa: S608  # table name from context.resolve_table(), not user input
@@ -128,11 +130,13 @@ def _load_ledger(
 
     events: list[LedgerEvent] = []
     group_updated_at: dict[tuple[str, str], datetime] = {}
+    account_reconciliation: dict[str, str] = {}
     for record in _records(frame):
         account_id = _opt_str(record["account_id"])
         if account_id is None:
             # account_id is NOT NULL in the ledger; skip defensively.
             continue
+        account_reconciliation[account_id] = str(record["reconciliation_status"])
         security_id = _opt_str(record["security_id"])
         events.append(
             LedgerEvent(
@@ -159,7 +163,7 @@ def _load_ledger(
             current = group_updated_at.get(key)
             if current is None or updated_at > current:
                 group_updated_at[key] = updated_at
-    return events, group_updated_at
+    return events, group_updated_at, account_reconciliation
 
 
 def _load_method_for(context: ExecutionContext) -> MethodFor:
@@ -233,11 +237,16 @@ def _load_selections_for(context: ExecutionContext) -> SelectionsFor:
 def load_engine_inputs(
     context: ExecutionContext,
 ) -> tuple[
-    list[LedgerEvent], MethodFor, SelectionsFor, dict[tuple[str, str], datetime]
+    list[LedgerEvent],
+    MethodFor,
+    SelectionsFor,
+    dict[tuple[str, str], datetime],
+    dict[str, str],
 ]:
     """Fetch and shape every input the cost-basis engine needs.
 
-    Returns ``(events, method_for, selections_for, group_updated_at)``:
+    Returns ``(events, method_for, selections_for, group_updated_at,
+    account_reconciliation)``:
 
     - ``events`` — the ledger as ``LedgerEvent`` objects, decimals/dates parsed
       exactly (no float64 round-trip).
@@ -247,14 +256,17 @@ def load_engine_inputs(
       specific-identification overrides for a disposal (empty when none).
     - ``group_updated_at`` — ``{(account_id, security_id): MAX(updated_at)}`` for
       stamping row freshness on the derived lots/gains.
+    - ``account_reconciliation`` — ``{account_id: reconciliation_status}`` read
+      from the ledger column (account-scoped), stamped on every lot/gain.
 
-    The fourth element extends the three engine arguments so both fact models
-    share one ledger fetch (DRY) instead of each re-querying freshness.
+    The last two elements extend the three engine arguments so both fact models
+    share one ledger fetch (DRY) instead of each re-querying.
     """
-    events, group_updated_at = _load_ledger(context)
+    events, group_updated_at, account_reconciliation = _load_ledger(context)
     return (
         events,
         _load_method_for(context),
         _load_selections_for(context),
         group_updated_at,
+        account_reconciliation,
     )

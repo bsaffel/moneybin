@@ -17,6 +17,7 @@ from moneybin.services.transform_service import TransformService
 from tests.moneybin.test_investments._overlap_seed import (
     ACCOUNT,
     seed_manual_buy,
+    seed_manual_sell,
     seed_overlap,
     seed_plaid_account,
     seed_plaid_buy,
@@ -149,3 +150,58 @@ def test_row_without_account_row_gets_a_status(db: Database) -> None:
     _apply(db)
 
     assert _statuses(db, "acc_no_dim_row") == {"reconciled"}
+
+
+CLEAN = "acc_clean_manual"
+
+
+def _statuses_of(db: Database, table: str, account_id: str) -> set[str]:
+    rows = db.execute(
+        f"SELECT reconciliation_status FROM {table} WHERE account_id = ?",  # noqa: S608  # fixed table names from this module
+        [account_id],
+    ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+def _seed_overlap_and_clean(db: Database) -> None:
+    seed_security(db)
+    seed_plaid_account(db)
+    seed_manual_buy(db, account_id=ACCOUNT, txn_id="manual_choice_buy")
+    seed_manual_sell(db, account_id=ACCOUNT, txn_id="manual_choice_sell")
+    seed_plaid_buy(db, loaded_at="2026-02-01 09:00:00")
+    seed_manual_buy(db, account_id=CLEAN, txn_id="clean_buy")
+    seed_manual_sell(db, account_id=CLEAN, txn_id="clean_sell")
+    _apply(db)
+
+
+def test_lots_and_gains_carry_the_account_status(db: Database) -> None:
+    _seed_overlap_and_clean(db)
+
+    for table in ("core.fct_investment_lots", "core.fct_realized_gains"):
+        n_overlap = db.execute(
+            f"SELECT count(*) FROM {table} WHERE account_id = ?",  # noqa: S608  # fixed table names
+            [ACCOUNT],
+        ).fetchone()
+        assert n_overlap is not None and n_overlap[0] >= 1, f"no {table} rows seeded"
+        assert _statuses_of(db, table, ACCOUNT) == {"unreconciled"}
+        assert _statuses_of(db, table, CLEAN) == {"reconciled"}
+
+
+def test_lot_figures_are_unchanged_by_the_marker(db: Database) -> None:
+    projection = """
+        SELECT * EXCLUDE (reconciliation_status) FROM core.fct_investment_lots
+        WHERE account_id = ? ORDER BY lot_id
+        """
+    seed_security(db)
+    seed_manual_buy(db, account_id=CLEAN, txn_id="clean_buy")
+    seed_manual_sell(db, account_id=CLEAN, txn_id="clean_sell")
+    _apply(db)
+    alone = db.execute(projection, [CLEAN]).fetchall()
+    assert alone, "no clean-account lots seeded"
+
+    seed_plaid_account(db)
+    seed_manual_buy(db, account_id=ACCOUNT, txn_id="manual_choice_buy")
+    seed_plaid_buy(db, loaded_at="2026-02-01 09:00:00")
+    _apply(db)
+
+    assert db.execute(projection, [CLEAN]).fetchall() == alone
