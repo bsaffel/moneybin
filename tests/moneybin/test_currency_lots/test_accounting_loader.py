@@ -75,6 +75,7 @@ def _sale(**changes: object) -> sqlmesh_loader.ForeignSecuritySale:
         "valuation_rate": D("1.25000000"),
         "valuation_rate_date": date(2026, 2, 1),
         "valuation_source_type": "override",
+        "reconciliation_status": "reconciled",
         "updated_at": T2,
     }
     values.update(changes)
@@ -1152,6 +1153,7 @@ def test_security_sale_loader_preserves_missing_currencies_as_null(
             "net_proceeds": ["40.00"],
             "fees": ["2.00"],
             "currency_code": [currency],
+            "reconciliation_status": ["reconciled"],
             "event_updated_at": [str(T5)],
         })
     )
@@ -1537,6 +1539,7 @@ def test_load_currency_accounting_values_foreign_sale_from_exact_cached_rate() -
             "net_proceeds": ["40.00"],
             "fees": ["2.00"],
             "currency_code": ["EUR"],
+            "reconciliation_status": ["reconciled"],
             "event_updated_at": [str(T5)],
         }),
         pd.DataFrame({
@@ -1662,6 +1665,7 @@ class _RoutingContext:
                         "net_proceeds",
                         "fees",
                         "currency_code",
+                        "reconciliation_status",
                         "event_updated_at",
                     ],
                 )
@@ -1735,3 +1739,50 @@ def test_load_currency_accounting_applies_materialized_same_currency_transfer() 
     assert moved.source_conversion_id == "fxc_acquire"
     assert moved.cost_basis_total == D("50.00")
     assert moved.updated_at == T2
+
+
+def _eur_disposal() -> sqlmesh_loader.CurrencyConversionRow:
+    return _conversion(
+        conversion_id="fxc_dispose",
+        transfer_pair_id="decision-dispose",
+        from_transaction_id="eur-out-1",
+        to_transaction_id="usd-in-1",
+        from_account_id="acct-eur",
+        to_account_id="acct-usd",
+        from_date=date(2026, 3, 1),
+        to_date=date(2026, 3, 1),
+        from_amount=D("30.00"),
+        from_currency="EUR",
+        to_amount=D("45.00"),
+        to_currency="USD",
+        executed_rate=D("1.50000000"),
+        home_value=D("45.00"),
+        valuation_rate=D("1.50000000"),
+        valuation_rate_date=date(2026, 3, 1),
+        updated_at=T3,
+    )
+
+
+def test_unreconciled_security_sale_marks_its_currency_lot() -> None:
+    result = _derive(sales=(_sale(reconciliation_status="unreconciled"),))
+
+    assert result.lots[0].reconciliation_status == "unreconciled"
+    assert result.lots[0].coverage_status == "complete"
+
+
+def test_fx_gain_consuming_an_unreconciled_lot_is_unreconciled() -> None:
+    result = _derive(
+        _eur_disposal(), sales=(_sale(reconciliation_status="unreconciled"),)
+    )
+
+    assert result.gains[0].reconciliation_status == "unreconciled"
+    assert result.gains[0].coverage_status == "complete"
+
+
+def test_conversion_lots_and_their_gains_are_reconciled() -> None:
+    result = _derive(_conversion(), _eur_disposal())
+
+    assert result.lots
+    assert result.gains
+    assert {lot.reconciliation_status for lot in result.lots} == {"reconciled"}
+    assert {gain.reconciliation_status for gain in result.gains} == {"reconciled"}

@@ -105,6 +105,7 @@ class ForeignSecuritySale:
     valuation_rate: Decimal | None
     valuation_rate_date: date | None
     valuation_source_type: str | None
+    reconciliation_status: str
     updated_at: datetime | None
 
 
@@ -134,6 +135,7 @@ class CurrencyLotRow:
     source_conversion_id: str | None
     source_investment_transaction_id: str | None
     source_transfer_id: str | None
+    reconciliation_status: str
     currency_code: str | None
     acquisition_type: str
     cost_basis_method: str
@@ -157,6 +159,7 @@ class RealizedFXGainRow:
     account_id: str
     conversion_id: str
     currency_lot_id: str | None
+    reconciliation_status: str
     currency_code: str | None
     home_currency: str | None
     cost_basis_method: str
@@ -198,6 +201,7 @@ class _EventMetadata:
     valuation_rate_date: date | None
     valuation_source_type: str | None
     updated_at: datetime | None
+    reconciliation_status: str = "reconciled"
 
 
 @dataclass(frozen=True)
@@ -1168,6 +1172,7 @@ def _sale_event(sale: ForeignSecuritySale) -> tuple[LedgerEvent, _EventMetadata]
             valuation_rate_date=sale.valuation_rate_date,
             valuation_source_type=sale.valuation_source_type,
             updated_at=sale.updated_at,
+            reconciliation_status=sale.reconciliation_status,
         ),
     )
 
@@ -1198,6 +1203,7 @@ def _incomplete_lot(
         source_conversion_id=metadata.source_conversion_id,
         source_investment_transaction_id=metadata.source_investment_transaction_id,
         source_transfer_id=None,
+        reconciliation_status=metadata.reconciliation_status,
         basis_incomplete=True,
         coverage_status="incomplete",
         coverage_reason=reason,
@@ -1218,6 +1224,7 @@ def _incomplete_gain(
         account_id=metadata.account_id,
         conversion_id=conversion_id,
         currency_lot_id=None,
+        reconciliation_status="reconciled",
         currency_code=metadata.currency_code,
         home_currency=metadata.home_currency,
         acquisition_date=event.trade_date,
@@ -1408,6 +1415,7 @@ def _derive_currency_accounting(
     lots: list[CurrencyLotRow] = []
     engine_lot_ids: dict[str, str] = {}
     engine_lot_reasons: dict[str, str | None] = {}
+    engine_lot_status: dict[str, str] = {}
     engine_lot_updated_at: dict[str, datetime | None] = {}
     for lot in engine_lots:
         metadata = metadata_for[lot.source_transaction_id]
@@ -1432,6 +1440,13 @@ def _derive_currency_accounting(
         if reason is None and lot.basis_incomplete:
             reason = "incomplete_history"
         engine_lot_reasons[lot.lot_id] = reason
+        # Transferred lots are reconciled (spec D11), whatever the origin.
+        lot_status = (
+            "reconciled"
+            if lot.source_transfer_id is not None
+            else metadata.reconciliation_status
+        )
+        engine_lot_status[lot.lot_id] = lot_status
         lot_updated_at = _latest(
             group_updated_at.get((lot.account_id, metadata.currency_code)),
             group_updated_at.get((metadata.account_id, metadata.currency_code)),
@@ -1466,6 +1481,7 @@ def _derive_currency_accounting(
                     metadata.source_investment_transaction_id
                 ),
                 source_transfer_id=lot.source_transfer_id,
+                reconciliation_status=lot_status,
                 basis_incomplete=incomplete,
                 coverage_status="incomplete" if incomplete else "complete",
                 coverage_reason=reason,
@@ -1494,6 +1510,7 @@ def _derive_currency_accounting(
                 account_id=gain.account_id,
                 conversion_id=conversion_id,
                 currency_lot_id=public_lot_id,
+                reconciliation_status=engine_lot_status.get(gain.lot_id, "reconciled"),
                 currency_code=metadata.currency_code,
                 home_currency=metadata.home_currency,
                 acquisition_date=gain.acquisition_date,
@@ -1573,6 +1590,7 @@ def _load_security_sales(
                trade_date::VARCHAR AS trade_date,
                amount::VARCHAR AS net_proceeds,
                fees::VARCHAR AS fees, currency_code,
+               reconciliation_status,
                updated_at::VARCHAR AS event_updated_at
         FROM {ledger}
         WHERE type = 'sell' AND amount > 0
@@ -1613,6 +1631,7 @@ def _load_security_sales(
                 valuation_rate=_quantize_rate(rate.rate) if rate else None,
                 valuation_rate_date=rate.rate_date if rate else None,
                 valuation_source_type=rate.source_type if rate else None,
+                reconciliation_status=str(record["reconciliation_status"]),
                 updated_at=_latest(
                     _opt_timestamp(record["event_updated_at"]),
                     home_updated_at,
